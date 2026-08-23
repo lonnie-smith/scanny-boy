@@ -62,15 +62,13 @@ struct CLICommandTests {
         let command = CLICommand.convert(
             input: Self.input,
             files: ["a.NEF", "b.NEF", "c.NEF"],
-            out: Self.out,
-            filmDate: "2026-08-02"
+            out: Self.out
         )
         #expect(
             command.arguments == [
                 "convert", "--input", "/Volumes/Scans/roll-12",
                 "--files", "a.NEF", "b.NEF", "c.NEF",
                 "--out", "/Volumes/Scans/roll-12-tif",
-                "--film-date", "2026-08-02",
             ]
         )
     }
@@ -81,7 +79,6 @@ struct CLICommandTests {
             input: Self.input,
             files: ["a.NEF"],
             out: Self.out,
-            filmDate: "2026-08-02",
             perNegative: 1,
             jobs: 4,
             overwrite: true
@@ -91,7 +88,6 @@ struct CLICommandTests {
                 "convert", "--input", "/Volumes/Scans/roll-12",
                 "--files", "a.NEF",
                 "--out", "/Volumes/Scans/roll-12-tif",
-                "--film-date", "2026-08-02",
                 "--per-negative", "1",
                 "--jobs", "4",
                 "--overwrite",
@@ -104,8 +100,7 @@ struct CLICommandTests {
         let command = CLICommand.convert(
             input: Self.input,
             files: ["a.NEF"],
-            out: Self.out,
-            filmDate: "2026-08-02"
+            out: Self.out
         )
         #expect(!command.arguments.contains("--overwrite"))
     }

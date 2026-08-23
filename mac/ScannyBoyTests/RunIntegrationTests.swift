@@ -128,17 +128,18 @@ struct RunIntegrationTests {
     /// stitch), not `convert` alone. `SampleFixtures.files` are Phase 1's
     /// original conversion fixtures (appendix A) — real NEFs, but never shot
     /// to actually overlap, unlike the gate-B stitching scans of appendix C.
-    /// `negative-01` (`_DSC4638`-`_DSC4640`) does overlap and stitches
-    /// cleanly; `negative-02` (`_DSC4644`-`_DSC4646`) genuinely does not
-    /// share film and is refused with `STITCH_UNDERCONSTRAINED` — exactly
-    /// the real, already-observed behaviour this test asserts, rather than a
-    /// six-for-six result these fixtures were never meant to produce.
+    /// Both negatives stitch: `negative-01` (`_DSC4638`-`_DSC4640`) shares
+    /// enough film to register plainly, and `negative-02`
+    /// (`_DSC4644`-`_DSC4646`) — whose frames share little film — is rescued
+    /// by the CLAHE retry (PR #49), which is why this asserts a six-for-six
+    /// result today where the pre-CLAHE helper refused `negative-02` with
+    /// `STITCH_UNDERCONSTRAINED`.
     @Test(
-        "six sample files at three per negative stitch one negative and refuse the other",
+        "six sample files at three per negative stitch both negatives",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(5))
     )
-    func sixFilesStitchOneNegativeAndRefuseTheOther() async throws {
+    func sixFilesStitchBothNegatives() async throws {
         let roll = try await Self.createRoll()
 
         let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files)
@@ -155,42 +156,38 @@ struct RunIntegrationTests {
 
         #expect(run.streamFailures.isEmpty)
         #expect(run.cliError == nil)
-        // A negative failed, so the run as a whole is not a success — the
-        // CLI's own `partial` status maps to exit 1 (section 3.5).
-        #expect(run.outcome == .failure)
-        // The convert stage itself succeeds for every frame; only the
-        // stitch stage's registration fails, and only for one negative.
+        #expect(run.outcome == .success)
         #expect(run.failedGroups.isEmpty)
+        #expect(run.failedNegatives.isEmpty)
         #expect(run.completedGroups == ["negative-01", "negative-02"])
 
-        #expect(run.stitchedNegatives.count == 1)
-        let stitched = try #require(run.stitchedNegatives.first)
-        #expect(stitched.negativeID == "negative-01")
-        #expect(stitched.output == Self.tiffNames(SampleFixtures.files)[0])
-
-        #expect(run.failedNegatives.count == 1)
-        let failed = try #require(run.failedNegatives.first)
-        #expect(failed.code == .stitchUnderconstrained)
-        #expect(
-            failed.message
-                == "Could not find a stitching solution for \(failed.groupID) "
-                    + "(_DSC4644.NEF, _DSC4645.NEF, _DSC4646.NEF)"
-        )
+        #expect(run.stitchedNegatives.count == 2)
+        // Roll negative ids are `<run short id>-negative-NN`, so ids are
+        // matched by suffix rather than pinned to a bare `negative-01`.
+        // Publishing follows group order: `negative-01`'s first member is
+        // `_DSC4638.NEF`, `negative-02`'s is `_DSC4644.NEF`.
+        for (index, suffix) in ["-negative-01", "-negative-02"].enumerated() {
+            let stitched = run.stitchedNegatives[index]
+            #expect(stitched.negativeID.hasSuffix(suffix))
+            #expect(stitched.output == Self.tiffNames(SampleFixtures.files)[index * 3])
+        }
 
         let report = try #require(run.rollManifestReport)
         guard case .final(let manifest) = report else {
             Issue.record("expected a final roll manifest, got \(report)")
             return
         }
-        #expect(manifest.runs.last?.status == "partial")
-        #expect(manifest.publishedOutputs == [Self.tiffNames(SampleFixtures.files)[0]])
+        #expect(manifest.runs.last?.status == "complete")
+        // One stitched TIFF per negative, each named for its first member.
+        let published = Self.tiffNames([SampleFixtures.files[0], SampleFixtures.files[3]])
+        #expect(manifest.publishedOutputs == published)
 
-        #expect(
-            FileManager.default.fileExists(
-                atPath: roll.appending(path: Self.tiffNames(SampleFixtures.files)[0]).path
-            ),
-            "the stitched negative was not published"
-        )
+        for name in published {
+            #expect(
+                FileManager.default.fileExists(atPath: roll.appending(path: name).path),
+                "the stitched negative \(name) was not published"
+            )
+        }
         #expect(try Self.stagingDirectories(in: roll).isEmpty)
     }
 
@@ -329,7 +326,6 @@ struct RunIntegrationTests {
             input: SampleFixtures.directory,
             files: SampleFixtures.files,
             out: out,
-            filmDate: "2026-08-02",
             perNegative: 3,
             jobs: 1
         )
@@ -433,7 +429,8 @@ struct RunIntegrationTests {
         #expect(restitch.outcome == .success)
         #expect(restitch.stitchedNegatives.count == 1)
         let stitched = try #require(restitch.stitchedNegatives.first)
-        #expect(stitched.negativeID == "negative-01")
+        // Same rule: the roll prefixes the run's short id to `negative-01`.
+        #expect(stitched.negativeID.hasSuffix("-negative-01"))
         #expect(stitched.output == Self.tiffNames(negativeOne)[0])
         #expect(
             FileManager.default.fileExists(

@@ -55,7 +55,22 @@ struct CLIIntegrationTests {
 
         #expect(collected.failures.isEmpty)
         let result = try #require(collected.events.first { $0.kind == .probeResult })
-        #expect(result.catalogue == SampleFixtures.files)
+        let catalogue = try #require(result.catalogue)
+        // The fixture folder also holds the gate-B stitching scans, which
+        // this test does not use, so the catalogue is not asserted in full —
+        // only that the six files this test names appear in it in canonical
+        // order, which INVENTORY.md records as one uninterrupted run of
+        // capture times.
+        var searchFrom = catalogue.startIndex
+        for name in SampleFixtures.files {
+            guard let found = catalogue[searchFrom...].firstIndex(of: name) else {
+                Issue.record(
+                    "\(name) is missing from the catalogue, or out of canonical order"
+                )
+                return
+            }
+            searchFrom = catalogue.index(after: found)
+        }
         #expect(collected.terminalCompletion?.outcome == .success)
     }
 
@@ -113,7 +128,6 @@ struct CLIIntegrationTests {
                 input: SampleFixtures.directory,
                 files: SampleFixtures.files,
                 out: out,
-                filmDate: "2026-08-02",
                 perNegative: 3,
                 jobs: 2
             )
