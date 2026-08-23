@@ -1,6 +1,6 @@
 # Scanny Boy — Phase 1 implementation plan
 
-**Last reviewed:** 2026-08-28
+**Last reviewed:** 2026-08-28 (drift review after Chunk 7)
 
 ## 1. Goal
 
@@ -503,19 +503,33 @@ any output whose size or SHA-256 differs.
 - Default workers:
   `min(shots_per_negative, os.process_cpu_count() or 1, 4)`.
 - `--jobs 1` uses the serial path. Accept explicit values from 1–12.
-- Budget **512 MiB of memory per worker**. One output frame is about 140 MiB,
-  and LibRaw needs working space on top of that, so this is roughly a
-  three-times margin.
+- Budget **640 MiB of memory per worker**. This began at 512 MiB — one output
+  frame is about 140 MiB, with LibRaw working space on top — and Chunk 6
+  raised it to 640 MiB from measurement, as the last item below instructed.
   - If the computed **default** worker count exceeds the budget for this
     machine, silently reduce it. Never fail a run because of the default.
   - If an **explicit** `--jobs` value exceeds the budget, reject it with
     `INSUFFICIENT_MEMORY` and report both numbers.
-  - The budget is workers × 512 MiB, and it must not exceed half of physical
-    RAM. On the 7 GB CI runner this permits three workers, which is the
-    default there.
-  - Chunk 6 measures peak resident memory for jobs 1 and 4. Raise the
-    per-worker budget if the measured peak plus 25% is larger, and record the
-    measurement in the pull request.
+  - The budget is workers × 640 MiB, and it must not exceed half of physical
+    RAM. On the 7 GB CI runner that permits five workers, so the default
+    there — three, from `min(shots_per_negative, 3 CPUs, 4)` — is never
+    reduced.
+  - Chunk 6 measured peak resident memory on the six real sample NEFs using
+    `scripts/measure-concurrency.py` (macOS 14.6.1, Apple silicon). Peak
+    resident set size, and the per-worker budget each row demands:
+
+    | jobs | peak MiB | peak + 25% | per worker |
+    | --- | --- | --- | --- |
+    | 1 | 463.8 | 579.8 | **579.8** |
+    | 2 | 846.8 | 1058.5 | 529.3 |
+    | 3 | 1217.4 | 1521.7 | 507.2 |
+    | 4 | 1608.8 | 2011.0 | 502.8 |
+
+    The serial row binds, because much of its peak is the fixed interpreter,
+    numpy, rawpy, and imagecodecs baseline rather than per-frame cost. Its
+    579.8 MiB exceeds 512 MiB, which is why the budget is now 640 MiB.
+    Figures move by a few MiB between runs; re-measure before changing this
+    again.
 - Performance is measured on sample files. Near-linear speedup is not a
   requirement.
 - The app requests cancellation with SIGTERM.
@@ -601,6 +615,13 @@ result.
 allows roughly a megabyte of arguments, so a folder of several thousand frames
 is safe; reject a selection above 5000 files with a usage error rather than
 letting the operating system truncate it.
+
+There is a third invocation, `scanny-boy --version`. It prints one plain-text
+line (`scanny-boy 0.1.0`) and exits 0. It is deliberately outside the event
+stream: the app never calls it, and it exists because section 5.2's packaged
+checks need the cheapest possible proof that the frozen program starts and
+can read its own package metadata. Every other invocation writes only JSON
+event lines to stdout. Added in Chunk 7.
 
 ### 4.2 Output transport
 
@@ -692,7 +713,11 @@ The event stream, not message text, is the app's machine-readable interface.
 Use PyInstaller one-directory mode, not one-file mode. Frequent `probe`
 launches must not extract a large package on every call.
 
-- Build the helper bundle at `cli/dist/ScannyBoyCLI.app`.
+- Build the helper bundle at `cli/dist/ScannyBoyCLI.app`, then stage a copy at
+  `mac/ScannyBoy/Helpers/ScannyBoyCLI.app`. Chunk 7 added that staging step:
+  an Xcode copy-files phase needs a path inside the project directory, so it
+  cannot reach into `cli/dist/` directly. The staged copy is build output and
+  is gitignored, exactly like `cli/dist/` itself.
 - Use `BUNDLE()` in the spec with `console=True`. This is verified to produce a
   valid, signable bundle whose stdout and stderr work through pipes.
   PyInstaller also emits a plain `cli/dist/scanny-boy/` directory; ignore it
@@ -702,11 +727,11 @@ launches must not extract a large package on every call.
 - Launch the executable declared at
   `ScannyBoyCLI.app/Contents/MacOS/scanny-boy`.
 
-#### Two fixes the spec file must contain
+#### Three fixes the spec file must contain
 
-Both failures below were reproduced with the exact dependency set in section
-5.1. Neither is optional, and neither produces a build error — they fail only
-at run time, so the packaged checks are what catch a regression.
+Every failure below was reproduced with the exact dependency set in section
+5.1. None is optional, and none produces a build error — they fail only at
+run time, so the packaged checks are what catch a regression.
 
 1. **`tifftools` reads its own package metadata at import.** Without collected
    metadata the packaged program dies immediately with
@@ -722,6 +747,13 @@ at run time, so the packaged checks are what catch a regression.
    tried and **does not work** — do not attempt to trim it without rebuilding
    and rerunning the packaged checks.
 
+3. **Scanny Boy reads its own package metadata.** `manifest.py` and
+   `tiff_writer.py` both call `importlib.metadata.version("scanny-boy")` for
+   the manifest's Scanny Boy version and every TIFF's `Software` tag, so the
+   packaged program fails with the same `PackageNotFoundError` that
+   `tifftools` does. Fix with `copy_metadata("scanny-boy")`. Found in
+   Chunk 7; the plan originally listed only the two fixes above.
+
 LibRaw needs no hook. `libraw_r.25.dylib` is collected automatically. Do not
 add a rawpy hook unless a packaged check proves one is needed.
 
@@ -731,7 +763,7 @@ add a rawpy hook unless a packaged check proves one is needed.
   conversion, and cancellation. These must exercise a real TIFF write, because
   that is the only thing that catches the `imagecodecs` failure.
 - Inspect PyInstaller warnings and `otool -L` output.
-- Copy `ScannyBoyCLI.app` into
+- Copy the staged `mac/ScannyBoy/Helpers/ScannyBoyCLI.app` into
   `ScannyBoy.app/Contents/Helpers/ScannyBoyCLI.app` with Xcode's
   **Code Sign On Copy** enabled. Sign the helper before the outer app.
   `Contents/Helpers` is a permitted nested-code location; never
@@ -771,9 +803,19 @@ Every chunk:
 5. Includes actual command output in the pull-request body.
 6. Does not change a decision in section 3 without user approval.
 
+Every chunk below carries a **Status:** line. That line is the single record
+of what has landed — there is deliberately no second summary table to fall out
+of step with it. Update it in the same pull request that finishes the chunk,
+and give the landing commit, because a closed-but-not-merged pull request is
+otherwise invisible from this document. Chunk 7 was lost exactly that way: its
+pull request was closed, its branch deleted, and only its build output
+survived on disk, which made the tree look finished.
+
 ### Chunk 0 — Repository, licence, Python environment, and CI
 
 **Branch:** `chunk-00-repository`
+
+**Status:** Merged 2026-08-28, PR #1, `a747267`.
 
 Do:
 
@@ -828,6 +870,8 @@ absent, stop and report rather than substituting a synthetic RAW.
 
 **Branch:** `chunk-01-protocol`
 
+**Status:** Merged 2026-08-28, PR #2, `5ee5d8c`.
+
 Do:
 
 - Replace the shared contract and JSON format with section 4, including the
@@ -850,6 +894,8 @@ Tests:
 ### Chunk 2 — Catalogue, sorting, selection, and grouping
 
 **Branch:** `chunk-02-catalogue`
+
+**Status:** Merged 2026-08-28, PR #3, `971e202`.
 
 Do:
 
@@ -884,6 +930,8 @@ Tests:
 ### Chunk 3 — RAW decode and base TIFF
 
 **Branch:** `chunk-03-raw-tiff`
+
+**Status:** Merged 2026-08-28, PR #4, `eab0fb6`.
 
 Do:
 
@@ -926,6 +974,8 @@ Manual gate:
 
 **Branch:** `chunk-04-metadata`
 
+**Status:** Merged 2026-08-28, PR #5, `3c4c1de`.
+
 Do:
 
 - Implement the date rules and the curated tag mapping in section 3.5.
@@ -955,6 +1005,8 @@ Tests:
 ### Chunk 5 — Manifest and serial group pipeline
 
 **Branch:** `chunk-05-serial-pipeline`
+
+**Status:** Merged 2026-08-28, PR #6, `330d03b`.
 
 Do:
 
@@ -1000,6 +1052,8 @@ Tests:
 
 **Branch:** `chunk-06-concurrency`
 
+**Status:** Merged 2026-08-28, PR #7, `c130c0c`.
+
 Do:
 
 - Add the thread-worker path and conservative default worker count.
@@ -1024,25 +1078,38 @@ Tests:
   incomplete group.
 - Thread workers never return image arrays to the parent.
 - TIFF compression uses one inner worker.
-- On a simulated 7 GB machine the default worker count is reduced rather than
-  rejected; an explicit `--jobs 12` is rejected with `INSUFFICIENT_MEMORY`.
-- Record peak resident memory for jobs 1 and 4, and raise the 512 MiB budget
-  if the measured peak plus 25% exceeds it.
+- On a simulated 7 GB machine the default worker count always resolves,
+  never below one and never above what the budget permits — section 2.5's
+  "any memory guard must not reject a default run on that machine". At
+  640 MiB that machine permits five workers, so its default of three is
+  admitted unreduced; do not assert that a reduction happens. An explicit
+  `--jobs 12` on the same machine is rejected with `INSUFFICIENT_MEMORY`.
+- Record peak resident memory for jobs 1 and 4, and raise the per-worker
+  budget if the measured peak plus 25% exceeds it. **Done:** the measurement
+  is the table in section 3.8, and the budget is now 640 MiB.
 - Record benchmark results, but do not require a fixed speedup.
 
 ### Chunk 7 — Package the command-line program
 
 **Branch:** `chunk-07-package-cli`
 
+**Status:** Merged 2026-08-28, `487c589` via `dfb4d33`. PR #8 was closed
+rather than merged and its branch deleted; the commit was recovered from a
+dangling object and merged directly.
+
 Do:
 
 - Build a PyInstaller one-directory distribution wrapped in
   `ScannyBoyCLI.app` using `BUNDLE()` with `console=True`.
-- Add `copy_metadata("tifftools")` and `collect_submodules("imagecodecs")` to
-  the spec. Both are required; see section 5.2.
+- Add all three fixes of section 5.2 to the spec — `copy_metadata("tifftools")`,
+  `collect_submodules("imagecodecs")`, and `copy_metadata("scanny-boy")`. Every
+  one is required, and none fails at build time.
 - Bundle all runtime libraries and the ICC profile.
-- Update `build-cli.sh` to invoke PyInstaller through `uv run` and to copy the
-  `.app`, not the plain `dist/scanny-boy/` directory.
+- Add `scanny-boy --version` (section 4.1). The packaged checks below need it
+  and the command-line program had none before this chunk.
+- Update `build-cli.sh` to invoke PyInstaller through `uv run`, and to stage
+  the `.app` at `mac/ScannyBoy/Helpers/ScannyBoyCLI.app` rather than the plain
+  `dist/scanny-boy/` directory.
 - Inspect macOS library dependencies rather than assuming hooks are missing.
 - Give the helper a unique bundle identifier and `LSBackgroundOnly`.
 - Verify the helper's signature before it can be copied into the outer app.
@@ -1060,6 +1127,8 @@ Tests:
 ### Chunk 8 — XcodeGen project and streaming runner
 
 **Branch:** `chunk-08-xcode-runner`
+
+**Status:** Not started.
 
 Do:
 
@@ -1109,6 +1178,8 @@ xcodebuild test \
 
 **Branch:** `chunk-09-configuration-ui`
 
+**Status:** Not started.
+
 Do:
 
 - Add input-folder selection and last-folder memory.
@@ -1133,6 +1204,8 @@ Tests:
 ### Chunk 10 — Run, progress, cancellation, and completion UI
 
 **Branch:** `chunk-10-run-ui`
+
+**Status:** Not started.
 
 Do:
 
@@ -1168,6 +1241,8 @@ Manual verification:
 
 **Branch:** `chunk-11-documentation`
 
+**Status:** Not started.
+
 Do:
 
 - Rewrite root and component READMEs from a clean-clone perspective. The root
@@ -1201,10 +1276,29 @@ push an annotated `v0.1.0` tag. Do not create the tag from the PR branch.
   Compare two decodes of the same file to each other instead.
 - Do not mock rawpy's decoding. Use a real NEF or test a lower-level synthetic
   TIFF operation.
+- The synthetic-TIFF route above has one shared implementation:
+  `fake_nef_support.write_fake_nef` writes a tiny TIFF carrying crafted IFD0
+  and nested-EXIF tags, so metadata tests can control exactly which tags are
+  present without a real RAW. It works because the catalogue and metadata
+  code reads through `exifread`, which cares about TIFF/EXIF structure and
+  not about whether the file is really a NEF. These fixtures are **not**
+  openable by rawpy, so anything reaching `rawpy.imread` — white-balance
+  multipliers, and the full `probe --files` path — must still be tested
+  against the real sample NEFs.
 - Compare pixel hashes and metadata after documented changing fields are
   ignored, not entire TIFF bytes, which contain conversion timestamps.
 - Use isolated temporary directories. Do not share filenames between
   concurrently running Swift tests.
+- Schema conformance is checked by hand-rolled validators, not a JSON Schema
+  engine: `schema_test_support.py` for events and
+  `manifest_schema_test_support.py` for manifests. Both read their enums and
+  required-field lists out of the schema files themselves, so a
+  code/schema divergence is still caught. This keeps the dev dependency set
+  exactly what section 5.1 lists, at a real cost: neither validator checks
+  value types or `additionalProperties`. Where section 3.7 says Chunk 5's
+  tests "validate every written manifest against it", that is the strength of
+  the guarantee — structural, not total. Adding `jsonschema` to the dev group
+  would close the gap and needs section 5.1 changed to match.
 - Never hide a failing build by piping it through `tail`.
 - Synthetic test images must not be pure random noise. Deflate cannot compress
   it, and a full-resolution random frame takes minutes to write instead of
@@ -1374,5 +1468,13 @@ stay far inside the film date. `CAPTURE_SPAN_TOO_LONG` cannot be reached with
 these files; test it with synthetic timestamps.
 
 Disk-check sanity: six outputs at `P` = 6064 × 4040 × 3 × 2 = 146,991,360
-bytes each. With `B = ceil(P × 1.05)`, `M` = 6, `G` = 3, and `D` = 1 MiB, the
-section 3.9 requirement is about **1.42 GiB** for a fresh six-file run.
+bytes each. With `B = ceil(P × 1.05)` = 154,340,928, `M` = 6, `G` = 3, and
+`D` = 1 MiB, the section 3.9 requirement for a fresh six-file run is
+
+```text
+ceil((6 × B + 2 × 3 × B + 1 MiB) × 1.20) = 2,223,767,655 bytes ≈ 2.07 GiB
+```
+
+Earlier revisions of this appendix said "about 1.42 GiB". That figure was
+wrong — it did not follow the section 3.9 formula, which
+`cli/src/scanny_boy/disk_check.py` implements exactly. Use 2.07 GiB.

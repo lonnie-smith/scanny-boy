@@ -4,14 +4,15 @@
 The rules, verbatim from the plan:
 
 - Default workers: `min(shots_per_negative, os.process_cpu_count() or 1, 4)`.
-- "Budget **512 MiB of memory per worker**. One output frame is about
-  140 MiB, and LibRaw needs working space on top of that, so this is
-  roughly a three-times margin."
+- "Budget **640 MiB of memory per worker**." One output frame is about
+  140 MiB, with LibRaw working space on top. The plan set this at 512 MiB
+  and instructed Chunk 6 to raise it from measurement; see the comment on
+  `WORKER_MEMORY_BUDGET_BYTES` below.
 - "If the computed **default** worker count exceeds the budget for this
   machine, silently reduce it. Never fail a run because of the default."
 - "If an **explicit** `--jobs` value exceeds the budget, reject it with
   `INSUFFICIENT_MEMORY` and report both numbers."
-- "The budget is workers x 512 MiB, and it must not exceed half of
+- "The budget is workers x 640 MiB, and it must not exceed half of
   physical RAM."
 
 Physical RAM comes from `os.sysconf`, which reports it identically on
@@ -29,12 +30,12 @@ from scanny_boy.events import Code
 
 MIB = 1024 * 1024
 
-# Section 3.8 sets this at 512 MiB and then says: "Chunk 6 measures peak
-# resident memory for jobs 1 and 4. Raise the per-worker budget if the
-# measured peak plus 25% is larger, and record the measurement in the pull
-# request." It is larger, so this is 640 MiB. Measured on the six real
-# sample NEFs (`scripts/measure-concurrency.py`, macOS 14.6.1, Apple
-# silicon), peak resident set size and the budget each row demands:
+# Section 3.8 now states 640 MiB and carries this table itself; keep the two
+# in step when re-measuring. The plan originally set 512 MiB and told Chunk 6
+# to raise the budget if the measured peak plus 25% came out larger. It did.
+# Measured on the six real sample NEFs (`scripts/measure-concurrency.py`,
+# macOS 14.6.1, Apple silicon), peak resident set size and the budget each
+# row demands:
 #
 #     jobs  peak MiB  peak+25%  per worker
 #        1     463.8     579.8       579.8   <- binding
@@ -87,7 +88,8 @@ def physical_memory_bytes() -> int:
 
 
 def workers_permitted_by_memory(total_memory: int) -> int:
-    """How many workers fit in half of `total_memory` at 512 MiB each.
+    """How many workers fit in half of `total_memory` at
+    `WORKER_MEMORY_BUDGET_BYTES` each.
 
     Never returns less than one: a serial run holds one frame at a time
     and is the floor of what the program can do at all.
