@@ -40,8 +40,13 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            RollSidebar(library: library, selection: $selection, runIsActive: run.isActive)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            RollSidebar(
+                library: library,
+                selection: $selection,
+                runIsActive: run.isActive,
+                onRollCreated: { workspaceTab = .addScans }
+            )
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             if selection != nil {
                 workspace
@@ -81,6 +86,10 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingNewRollSheet) {
             NewRollSheet(library: library) { roll in
                 selection = roll.id
+                // A freshly created roll has no scans yet — land on Add Scans
+                // so the user can begin adding them, regardless of which tab
+                // was active when the sheet opened.
+                workspaceTab = .addScans
             }
         }
     }
