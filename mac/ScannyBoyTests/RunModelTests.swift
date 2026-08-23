@@ -551,8 +551,8 @@ struct RunModelTests {
     // MARK: - Chunk 10's additions to the configuration model, reworked onto
     // rolls by Chunk P3-11
 
-    @Test("Run is offered before overlap review, and the sheet's decisions become --skip-sources")
-    func overlapReviewIsAskedForAtRunTime() async throws {
+    @Test("An overlapping selection still runs and never passes --skip-sources")
+    func overlappingSelectionStillRuns() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -588,18 +588,14 @@ struct RunModelTests {
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
-        // The button is live, but pressing it asks for the overlap sheet
-        // rather than running unreviewed.
-        #expect(model.isReadyPendingOverlapReview)
-        #expect(model.needsOverlapReview)
+        // Overlapping a negative already in the roll is never a reason to
+        // withhold the Run button.
         #expect(model.runEnabled)
 
-        // Left at the sheet's own Skip default (section 3.5), every
-        // overlapping source becomes `--skip-sources`.
-        let review = OverlapReview(entries: model.rollOverlap)
-        let command = try #require(model.runCommand(skipSources: review.skipSources))
-        let skipIndex = try #require(command.arguments.firstIndex(of: "--skip-sources"))
-        #expect(Set(command.arguments[(skipIndex + 1)...]) == Set(["a.NEF", "b.NEF", "c.NEF"]))
+        // Every group runs and supersedes whatever it overlaps — no
+        // `--skip-sources` is ever passed.
+        let command = try #require(model.runCommand())
+        #expect(!command.arguments.contains("--skip-sources"))
         #expect(!command.arguments.contains("--film-date"))
         #expect(!command.arguments.contains("--overwrite"))
     }
@@ -641,7 +637,6 @@ struct RunModelTests {
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
-        #expect(!model.needsOverlapReview)
         let command = try #require(model.runCommand())
         #expect(!command.arguments.contains("--skip-sources"))
         // Canonical order, straight from the catalogue.
