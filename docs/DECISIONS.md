@@ -252,11 +252,10 @@ recorded on `punchlist.md`.
   next negative and ends `partial`, mirroring Phase 1's group-failure rule.
 - A cancelled negative is abandoned, not failed — no `negative_failed`
   event, exactly as Phase 1 treats a cancelled group.
-- The work directory is removed only on complete success. It is kept, with
-  its path reported through an `INTERMEDIATES_KEPT` warning, when any
-  negative failed, the run was cancelled, or `--keep-intermediates` was
-  given — and a directory the user named with `--work` is never deleted by
-  cleanup, whatever happens.
+- The work directory a run creates itself is removed on every outcome —
+  failure and cancellation no longer keep it, since a rerun regenerates
+  it. A directory the user named with `--work` is never deleted by cleanup,
+  whatever happens.
 
 ## Command surface
 

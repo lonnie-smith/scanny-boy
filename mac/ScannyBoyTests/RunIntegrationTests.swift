@@ -144,7 +144,6 @@ struct RunIntegrationTests {
         let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files)
         #expect(model.groups.count == 2)
         #expect(model.runEnabled)
-        #expect(!model.needsOverlapReview)
 
         let run = RunModel(runner: try Self.runner())
         run.start(
@@ -171,8 +170,12 @@ struct RunIntegrationTests {
 
         #expect(run.failedNegatives.count == 1)
         let failed = try #require(run.failedNegatives.first)
-        #expect(failed.groupID == "negative-02")
         #expect(failed.code == .stitchUnderconstrained)
+        #expect(
+            failed.message
+                == "Could not find a stitching solution for \(failed.groupID) "
+                    + "(_DSC4644.NEF, _DSC4645.NEF, _DSC4646.NEF)"
+        )
 
         let report = try #require(run.rollManifestReport)
         guard case .final(let manifest) = report else {
@@ -189,8 +192,6 @@ struct RunIntegrationTests {
             "the stitched negative was not published"
         )
         #expect(try Self.stagingDirectories(in: roll).isEmpty)
-        // A negative failed, so the work directory is kept (section 3.5).
-        #expect(run.keptWorkDirectory != nil)
     }
 
     // MARK: - Blocked selections
@@ -249,16 +250,14 @@ struct RunIntegrationTests {
     // MARK: - Rerunning against a roll that already holds the negative
 
     /// Section 3.4: a selection that overlaps a negative already in the roll
-    /// is never rejected outright — the overlap sheet decides, defaulting to
-    /// Skip. Left at that default, every overlapping source is skipped, so a
-    /// rerun with nothing left to convert fails safely with `NO_FILES`
-    /// rather than silently touching the first run's negative.
+    /// is never rejected outright, and the app no longer asks — it always
+    /// replaces (supersedes) whatever it overlaps.
     @Test(
-        "a rerun left at the overlap sheet's Skip default touches nothing",
+        "a rerun over the same selection supersedes the earlier negative",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(10))
     )
-    func rerunLeftAtSkipDefaultTouchesNothing() async throws {
+    func rerunSupersedesTheEarlierNegative() async throws {
         let roll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
@@ -272,20 +271,14 @@ struct RunIntegrationTests {
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
         #expect(firstRun.stitchedNegatives.count == 1)
+        let firstNegativeID = try #require(firstRun.stitchedNegatives.first?.negativeID)
 
-        // A second configuration over the same roll and selection reports
-        // the overlap rather than rejecting it outright.
+        // A second configuration over the same roll and selection overlaps
+        // the negative the first run just published.
         let second = try await Self.configuredModel(roll: roll, select: negativeOne)
         #expect(second.rollError == nil)
-        #expect(second.needsOverlapReview)
-        #expect(second.rollOverlap.count == 1)
-        #expect(second.rollOverlap.first?.overlappingSources.sorted() == negativeOne.sorted())
-
-        // Left at the sheet's own Skip default (`OverlapReview`), every
-        // overlapping source is skipped.
-        let review = OverlapReview(entries: second.rollOverlap)
-        let command = try #require(second.runCommand(skipSources: review.skipSources))
-        #expect(!command.arguments.contains("--overwrite"))
+        let command = try #require(second.runCommand())
+        #expect(!command.arguments.contains("--skip-sources"))
 
         let secondRun = RunModel(runner: try Self.runner())
         secondRun.start(
@@ -295,10 +288,19 @@ struct RunIntegrationTests {
         )
         await secondRun.waitForCompletion()
 
-        // Nothing was left to convert once every source was skipped.
-        #expect(secondRun.outcome == .failure)
-        #expect(secondRun.cliError?.code == .noFiles)
-        #expect(secondRun.stitchedNegatives.isEmpty)
+        #expect(secondRun.outcome == .success)
+        #expect(secondRun.stitchedNegatives.count == 1)
+
+        let report = try #require(secondRun.rollManifestReport)
+        guard case .final(let manifest) = report else {
+            Issue.record("expected a final roll manifest, got \(report)")
+            return
+        }
+        let firstNegative = try #require(
+            manifest.negatives.first { $0.negativeID == firstNegativeID }
+        )
+        #expect(firstNegative.isSuperseded)
+        #expect(manifest.liveNegatives.count == 1)
     }
 
     // MARK: - Cancel retains earlier groups and discards the current one
@@ -377,11 +379,13 @@ struct RunIntegrationTests {
     // MARK: - Chunk P2-10's additions: re-stitch
 
     /// The whole point of a kept work directory: re-stitching it costs no
-    /// RAW decoding at all. `--keep-intermediates` keeps the work directory
-    /// from `run` even though every negative succeeds, so this test does not
-    /// have to rely on a failure to get one to re-stitch.
+    /// RAW decoding at all. A `run` never keeps the work directory it
+    /// creates itself (on any outcome), so this test supplies its own
+    /// `--work` directory — the one kind of work directory `run` never
+    /// deletes, since deleting a folder the caller pointed at is never this
+    /// program's decision — to get one to re-stitch.
     @Test(
-        "re-stitching a kept work directory reuses its intermediates and stitches again",
+        "re-stitching a supplied work directory reuses its intermediates and stitches again",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(5))
     )
@@ -389,28 +393,33 @@ struct RunIntegrationTests {
         let firstRoll = try await Self.createRoll()
         let secondRoll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
+        let workDirectory = try Self.makeTemporaryDirectory()
 
         let model = try await Self.configuredModel(roll: firstRoll, select: negativeOne)
-        model.keepIntermediates = true
-        await model.waitForPendingProbes()
 
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(model.runCommand()),
+            command: CLICommand.run(
+                input: SampleFixtures.directory,
+                files: model.selectedFilesInCanonicalOrder,
+                roll: firstRoll,
+                perNegative: model.perNegative,
+                skipSources: [],
+                work: workDirectory
+            ),
             files: model.selectedFilesInCanonicalOrder,
             outputFolder: firstRoll
         )
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
         #expect(firstRun.stitchedNegatives.count == 1)
-        // Section 3.5: `--keep-intermediates` keeps the work directory even
-        // on complete success.
-        let workDirectory = try #require(firstRun.keptWorkDirectory)
-        #expect(FileManager.default.fileExists(atPath: workDirectory))
+        // A caller-supplied `--work` directory survives regardless of
+        // outcome — it's the one kind `run` never deletes.
+        #expect(FileManager.default.fileExists(atPath: workDirectory.path))
 
         let restitch = RunModel(runner: try Self.runner())
         restitch.start(
-            command: .stitch(work: URL(filePath: workDirectory), roll: secondRoll),
+            command: .stitch(work: workDirectory, roll: secondRoll),
             files: [],
             outputFolder: secondRoll
         )
@@ -438,7 +447,7 @@ struct RunIntegrationTests {
         #expect(manifest.runs.last?.status == "complete")
         // A plain `stitch` did not create the work directory, so it is never
         // this run's to remove — it must still be there afterwards.
-        #expect(FileManager.default.fileExists(atPath: workDirectory))
+        #expect(FileManager.default.fileExists(atPath: workDirectory.path))
     }
 
     /// The error path Chunk P2-10 asks for: a folder that never held a work

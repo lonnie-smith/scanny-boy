@@ -104,7 +104,7 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy run --input DIR --files ... --roll DIR [--skip-sources ...] [--work DIR] [--keep-intermediates]`
+    /// `scanny-boy run --input DIR --files ... --roll DIR [--skip-sources ...] [--work DIR]`
     ///
     /// One process, one event stream, one cancellation, from a selection of
     /// NEFs all the way to finished, stitched negatives, published into a
@@ -121,8 +121,7 @@ public struct CLICommand: Sendable, Hashable {
         perNegative: Int? = nil,
         jobs: Int? = nil,
         skipSources: [String] = [],
-        work: URL? = nil,
-        keepIntermediates: Bool = false
+        work: URL? = nil
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
         arguments.append("--files")
@@ -136,9 +135,6 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let work {
             arguments.append(contentsOf: ["--work", work.path])
-        }
-        if keepIntermediates {
-            arguments.append("--keep-intermediates")
         }
         if !skipSources.isEmpty {
             arguments.append("--skip-sources")

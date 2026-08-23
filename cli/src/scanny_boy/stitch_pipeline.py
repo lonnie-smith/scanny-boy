@@ -783,6 +783,27 @@ def _append_this_run(
     return run_record, records
 
 
+def _friendly_failure_message(
+    code: Code, negative_id: str, members: list[str], detail: str
+) -> str:
+    """Turns a technical `StitchError`/exception message into a sentence a
+    user scanning film can act on, naming the negative and its source files
+    rather than the intermediate names or internal metrics a developer would
+    want. `CONTRACT.md` is explicit that message text isn't the app's
+    machine interface, so rewording it here changes nothing about `code`,
+    which is what the app actually keys behavior off of."""
+    files = ", ".join(members)
+    if code is Code.STITCH_UNDERCONSTRAINED:
+        return f"Could not find a stitching solution for {negative_id} ({files})"
+    if code is Code.STITCH_RESIDUAL_TOO_HIGH:
+        return f"The images for {negative_id} did not align closely enough ({files})"
+    if code is Code.STITCH_OUTPUT_TOO_LARGE:
+        return f"The stitched result for {negative_id} would be too large to save ({files})"
+    if code in (Code.INTERMEDIATE_MISSING, Code.INTERMEDIATE_CHANGED):
+        return f"{negative_id}'s saved intermediates are missing or changed ({files})"
+    return f"Could not stitch {negative_id} ({files}): {detail}"
+
+
 def _record_failure(
     out_dir: Path,
     roll: RollManifest,
@@ -794,6 +815,7 @@ def _record_failure(
 ) -> None:
     """Section 3.5: a negative that cannot be stitched fails alone. Its
     failure is recorded, the run continues, and the run ends `partial`."""
+    message = _friendly_failure_message(code, record.negative_id, record.members, message)
     record.status = "failed"
     record.error_code = code.value
     record.error_message = message

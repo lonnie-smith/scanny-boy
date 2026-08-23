@@ -135,9 +135,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--jobs", type=int, metavar="N")
     run.add_argument("--work", metavar="DIR")
     run.add_argument(
-        "--keep-intermediates", action="store_true", dest="keep_intermediates"
-    )
-    run.add_argument(
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
 
@@ -333,7 +330,6 @@ def _run_run_command(
                 args.per_negative,
                 run_id=run_id,
                 work_dir=Path(args.work) if args.work else None,
-                keep_intermediates=args.keep_intermediates,
                 skip_sources=args.skip_sources,
                 jobs=jobs,
                 cancel=cancel,

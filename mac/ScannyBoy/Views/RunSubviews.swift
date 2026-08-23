@@ -20,7 +20,11 @@ struct RunProgressView: View {
             HStack {
                 Text(stepDescription)
                 Spacer()
-                Text("\(run.completedSteps) of \(run.totalSteps) steps")
+                if let totalNegatives = run.totalNegatives {
+                    Text("\(run.negativesCompleted) of \(totalNegatives) negative(s)")
+                } else {
+                    Text("\(run.completedSteps) of \(run.totalSteps) steps")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -79,10 +83,6 @@ enum RunTimeFormat {
 struct RunResultView: View {
     let run: RunModel
     let outputFolder: URL?
-    /// Called with the kept work directory's path when the user asks to
-    /// re-stitch it (Chunk P2-10's "button"). `ContentView` owns actually
-    /// presenting the sheet.
-    let onRestitch: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -122,12 +122,9 @@ struct RunResultView: View {
             }
 
             ForEach(run.failedNegatives, id: \.self) { negative in
-                Label(
-                    "\(negative.groupID) failed — \(negative.code.name): \(negative.message)",
-                    systemImage: "xmark.octagon"
-                )
-                .font(.caption)
-                .foregroundStyle(.red)
+                Label(negative.message, systemImage: "xmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             ForEach(run.warnings, id: \.self) { warning in
@@ -178,19 +175,6 @@ struct RunResultView: View {
                         ? run.publishedOutputs
                         : run.stitchedNegatives.map(\.output)
                     RunFinderReveal.reveal(outputFolder: outputFolder, published: published)
-                }
-            }
-
-            // Section 3.5: the work directory survives whenever a negative
-            // failed, the run was cancelled, or intermediates were asked to
-            // be kept — this is how the app finds it again, most usefully
-            // for Chunk P2-10's re-stitch.
-            if let keptWorkDirectory = run.keptWorkDirectory {
-                HStack {
-                    Button("Open Kept Work Directory") {
-                        NSWorkspace.shared.open(URL(filePath: keptWorkDirectory))
-                    }
-                    Button("Re-stitch…") { onRestitch(keptWorkDirectory) }
                 }
             }
         }

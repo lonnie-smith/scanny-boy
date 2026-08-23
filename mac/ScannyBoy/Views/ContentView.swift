@@ -14,8 +14,8 @@ import SwiftUI
 /// Chunk 10 adds Run with live progress, cooperative Cancel, the
 /// completed/failed negatives, Reveal in Finder, and the manifest the run
 /// left behind. Chunk P2-10 adds re-stitch: the same `run` driving
-/// `scanny-boy stitch` over a kept work directory instead of `scanny-boy
-/// run` over a fresh selection.
+/// `scanny-boy stitch` over a work directory you point at instead of
+/// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
     @Bindable var model: ConfigurationModel
@@ -29,7 +29,6 @@ struct ContentView: View {
 
     @State private var selection: Roll.ID?
     @State private var workspaceTab: WorkspaceTab = .addScans
-    @State private var isPresentingOverlapSheet = false
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
@@ -174,10 +173,7 @@ struct ContentView: View {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
-                        RunResultView(
-                            run: run, outputFolder: run.outputFolder,
-                            onRestitch: presentRestitch
-                        )
+                        RunResultView(run: run, outputFolder: run.outputFolder)
                     }
                 }
             }
@@ -207,11 +203,6 @@ struct ContentView: View {
                 IssueLabel(issue: error, style: .error)
             }
         }
-
-        Section("Intermediates") {
-            Toggle("Keep intermediates after a complete run", isOn: $model.keepIntermediates)
-                .accessibilityIdentifier("keepIntermediatesToggle")
-        }
     }
 
     private var runSection: some View {
@@ -227,37 +218,24 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Run") { startRun() }
-                    .disabled(!model.isReadyPendingOverlapReview || run.isActive)
+                    .disabled(!model.runEnabled || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }
-            // Section 3.4/3.5: the overlap sheet replaces the old
-            // overwrite-confirmation dialog — one row per overlapping
-            // prospective negative, Skip or Replace, before the run starts.
-            .sheet(isPresented: $isPresentingOverlapSheet) {
-                OverlapSheet(entries: model.rollOverlap) { skipSources in
-                    beginRun(skipSources: skipSources)
-                }
-            }
         }
     }
 
+    // A run always replaces (supersedes) whatever it overlaps — passing no
+    // `--skip-sources` is exactly that (CONTRACT.md: "replace is expressed
+    // by *not* skipping its sources").
     private func startRun() {
-        if model.needsOverlapReview {
-            isPresentingOverlapSheet = true
-        } else {
-            beginRun(skipSources: [])
-        }
-    }
-
-    private func beginRun(skipSources: [String]) {
-        guard let command = model.runCommand(skipSources: skipSources), let rollURL = model.rollURL
-        else { return }
+        guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
         run.start(
             command: command,
             files: model.selectedFilesInCanonicalOrder,
-            outputFolder: rollURL
+            outputFolder: rollURL,
+            totalNegatives: model.groups.count
         )
-        // The roll's contents, and therefore the overlap preview, change as
+        // The roll's contents, and therefore selection validity, change as
         // soon as this finishes.
         Task {
             await run.waitForCompletion()
@@ -265,18 +243,8 @@ struct ContentView: View {
         }
     }
 
-    /// Opens the re-stitch sheet, pre-filled with a kept work directory (the
-    /// "button" of Chunk P2-10's "a menu command and a button") — `nil` from
-    /// the menu command, which has no run to pre-fill from.
-    private func presentRestitch(workDirectory: String) {
-        restitchWorkDirectory = URL(filePath: workDirectory)
-        restitchOutputFolder = model.rollURL
-        isPresentingRestitch = true
-    }
-
-    /// Mirrors `beginRun`'s tail: a re-stitch can target `model.rollURL`
-    /// (most often, since the button pre-fills it), so its contents may have
-    /// changed too.
+    /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
+    /// so its contents may have changed too.
     private func handleRestitchStarted() {
         Task {
             await run.waitForCompletion()

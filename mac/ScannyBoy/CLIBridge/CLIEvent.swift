@@ -139,11 +139,6 @@ extension CLIEvent {
     public var outputConflicts: [String]? { fields["output_conflicts"]?.stringArrayValue }
     public var estimatedRequiredBytes: Int? { fields["estimated_required_bytes"]?.intValue }
     public var availableBytes: Int? { fields["available_bytes"]?.intValue }
-    public var rollOverlap: [[String: JSONValue]]? {
-        fields["roll_overlap"]?.arrayValue?.compactMap { entry in
-            entry.objectValue
-        }
-    }
 
     // `roll_created`
     public var rollID: String? { fields["roll_id"]?.stringValue }
@@ -286,7 +281,6 @@ public enum CLICode: Sendable, Hashable {
     case stitchLayoutUnexpected
     case stitchRebateCheckFailed
     case outputDimensionsLarge
-    case intermediatesKept
     case rollNotFound
     case rollManifestUnsupported
     case rollExists
@@ -334,7 +328,6 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
-        case "INTERMEDIATES_KEPT": self = .intermediatesKept
         case "ROLL_NOT_FOUND": self = .rollNotFound
         case "ROLL_MANIFEST_UNSUPPORTED": self = .rollManifestUnsupported
         case "ROLL_EXISTS": self = .rollExists
@@ -384,7 +377,6 @@ public enum CLICode: Sendable, Hashable {
         case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
-        case .intermediatesKept: "INTERMEDIATES_KEPT"
         case .rollNotFound: "ROLL_NOT_FOUND"
         case .rollManifestUnsupported: "ROLL_MANIFEST_UNSUPPORTED"
         case .rollExists: "ROLL_EXISTS"

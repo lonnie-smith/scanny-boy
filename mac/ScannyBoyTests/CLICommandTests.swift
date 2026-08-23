@@ -136,8 +136,7 @@ struct CLICommandTests {
             perNegative: 1,
             jobs: 4,
             skipSources: ["a.NEF"],
-            work: work,
-            keepIntermediates: true
+            work: work
         )
         #expect(
             command.arguments == [
@@ -147,7 +146,6 @@ struct CLICommandTests {
                 "--per-negative", "1",
                 "--jobs", "4",
                 "--work", "/Volumes/Scans/roll-12-work",
-                "--keep-intermediates",
                 "--skip-sources", "a.NEF",
             ]
         )

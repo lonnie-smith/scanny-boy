@@ -149,7 +149,6 @@ def run_full(
     *,
     run_id: str,
     work_dir: Path | None,
-    keep_intermediates: bool,
     skip_sources: list[str],
     jobs: int | None,
     cancel: CancellationToken,
@@ -173,9 +172,12 @@ def run_full(
     special-cased check needed here.
 
     Section 3.6: the default work directory is `<roll>/.work/<run_id>/`,
-    created here rather than a scattered temp directory, so a kept one
-    (failure, cancellation, or `keep_intermediates`) is discoverable from
-    inside the roll.
+    created here rather than a scattered temp directory. A work directory
+    this run created is always removed once it ends, on any outcome — a
+    failure or cancellation is not a reason to keep it, since a rerun
+    regenerates it. Only a caller-supplied `--work` directory ever survives,
+    because deleting a folder the user pointed at is never this program's
+    decision.
     """
     created_work_dir = work_dir is None
     if created_work_dir:
@@ -246,22 +248,10 @@ def run_full(
     else:
         status = "complete"
 
-    # Deleting a folder the user pointed at is never this program's
-    # decision (section 3.6): only a work dir this run created is ever
-    # removed, and only on complete success with no explicit request to
-    # keep it.
-    keep = status != "complete" or keep_intermediates or not created_work_dir
-    warn = status != "complete" or keep_intermediates
-    if keep:
-        if warn:
-            emit(
-                WarningEvent(
-                    run_id=run_id,
-                    code=Code.INTERMEDIATES_KEPT,
-                    message=f"intermediates kept at {resolved_work_dir}",
-                )
-            )
-    else:
+    # Deleting a folder the user pointed at is never this program's decision
+    # (section 3.6): only a work dir this run created is ever removed, and
+    # that now happens unconditionally, regardless of outcome.
+    if created_work_dir:
         shutil.rmtree(resolved_work_dir, ignore_errors=True)
 
     return RunOutcome(
@@ -270,5 +260,5 @@ def run_full(
         convert=convert_outcome,
         stitch=stitch_outcome,
         work_dir=resolved_work_dir,
-        work_dir_kept=keep,
+        work_dir_kept=not created_work_dir,
     )

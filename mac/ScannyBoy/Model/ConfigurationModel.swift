@@ -63,11 +63,6 @@ final class ConfigurationModel {
         }
     }
 
-    /// Section 3.5: kept, with an `INTERMEDIATES_KEPT` warning, when true —
-    /// even on an otherwise complete success. Off by default, matching the
-    /// CLI's own default.
-    var keepIntermediates = false
-
     private(set) var groups: [[String]] = []
     private(set) var selectionWarnings: [Issue] = []
     private(set) var selectionError: Issue?
@@ -104,11 +99,6 @@ final class ConfigurationModel {
     /// the selection alone caused (section 3.4's roll-invariant checks).
     private(set) var rollError: Issue?
 
-    /// One entry per prospective negative that overlaps a negative already
-    /// in the roll (section 3.4), from `probe --roll`'s `roll_overlap`.
-    /// Non-overlapping groups never appear here and always run.
-    private(set) var rollOverlap: [RollOverlapEntry] = []
-
     // MARK: - Status
 
     private(set) var isProbing = false
@@ -137,27 +127,14 @@ final class ConfigurationModel {
         .outputNotWritable,
     ]
 
-    /// Every gate section 3.10 names except the overlap review: a
-    /// contiguous, divisible selection with consistent settings, targeting a
-    /// roll that validated.
-    ///
-    /// Separate from a stricter "no review needed" gate because the overlap
-    /// sheet is asked for at the moment Run is pressed rather than as
-    /// something to notice beforehand. The Run button is offered from here.
-    var isReadyPendingOverlapReview: Bool {
+    /// Every gate section 3.10 names: a contiguous, divisible selection with
+    /// consistent settings, targeting a roll that validated. The Run button
+    /// is offered from here.
+    var runEnabled: Bool {
         !selectedFiles.isEmpty
             && selectionError == nil
             && rollError == nil
             && rollURL != nil
-    }
-
-    var runEnabled: Bool { isReadyPendingOverlapReview }
-
-    /// True when the only thing left before Run is reviewing the overlap
-    /// sheet (section 3.4/3.5) — some prospective negative in this selection
-    /// overlaps one already in the roll.
-    var needsOverlapReview: Bool {
-        isReadyPendingOverlapReview && !rollOverlap.isEmpty
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -177,19 +154,17 @@ final class ConfigurationModel {
     }
 
     /// The `run` invocation this configuration describes, or `nil` when it
-    /// does not yet describe a runnable one. `skipSources` comes from the
-    /// overlap sheet's decisions (section 3.5) — empty when there was
-    /// nothing to review, in which case every group runs and, per section
-    /// 3.4, supersedes whatever it overlaps.
-    func runCommand(skipSources: [String] = []) -> CLICommand? {
+    /// does not yet describe a runnable one. `skipSources` is always empty:
+    /// every group in the selection runs and, per section 3.4, supersedes
+    /// whatever it overlaps in the roll.
+    func runCommand() -> CLICommand? {
         guard runEnabled, let inputFolder, let rollURL else { return nil }
         return .run(
             input: inputFolder,
             files: selectedFilesInCanonicalOrder,
             roll: rollURL,
             perNegative: perNegative,
-            skipSources: skipSources,
-            keepIntermediates: keepIntermediates
+            skipSources: []
         )
     }
 
@@ -197,7 +172,7 @@ final class ConfigurationModel {
 
     /// Re-runs selection and roll validation. Chunk 10 calls this once a
     /// conversion has ended: the roll now holds negatives it did not
-    /// before, so the overlap preview is out of date.
+    /// before, so the selection may need re-validating.
     func refreshValidation() {
         scheduleValidation()
     }
@@ -247,7 +222,6 @@ final class ConfigurationModel {
             selectionWarnings = []
             selectionError = nil
             rollError = nil
-            rollOverlap = []
             return
         }
 
@@ -264,7 +238,7 @@ final class ConfigurationModel {
                 )
             )
             guard let self, !Task.isCancelled else { return }
-            self.apply(result, rollWasGiven: rollURL != nil)
+            self.apply(result)
             self.isProbing = false
         }
     }
@@ -273,12 +247,11 @@ final class ConfigurationModel {
     /// produces a `probe_result` or an `error`, never a partial mix — so on
     /// failure every derived field here is cleared, not just the ones the
     /// failing step would have touched.
-    private func apply(_ result: ProbeCallResult, rollWasGiven: Bool) {
+    private func apply(_ result: ProbeCallResult) {
         selectionWarnings = result.warnings
 
         if let error = result.error {
             groups = []
-            rollOverlap = []
             if Self.rollRelatedCodes.contains(error.code) {
                 selectionError = nil
                 rollError = error
@@ -292,7 +265,6 @@ final class ConfigurationModel {
         selectionError = nil
         rollError = nil
         groups = result.groups ?? []
-        rollOverlap = rollWasGiven ? (result.rollOverlap ?? []) : []
     }
 
     // MARK: - Folder memory
@@ -311,7 +283,6 @@ final class ConfigurationModel {
         var catalogue: [String]?
         var groups: [[String]]?
         var warnings: [Issue] = []
-        var rollOverlap: [RollOverlapEntry]?
         var error: Issue?
     }
 
@@ -326,9 +297,6 @@ final class ConfigurationModel {
                     case .probeResult:
                         result.catalogue = event.catalogue
                         result.groups = event.groups
-                        result.rollOverlap = (event.rollOverlap ?? []).compactMap(
-                            RollOverlapEntry.init(fields:)
-                        )
                     case .warning:
                         if let code = event.code, let message = event.message {
                             result.warnings.append(Issue(code: code, message: message))
@@ -360,52 +328,5 @@ final class ConfigurationModel {
         await catalogueTask?.value
         await rollTask?.value
         await validationTask?.value
-    }
-}
-
-/// One `probe --roll`'s `roll_overlap` entry: a prospective group in the
-/// current selection that shares sources, by content hash, with a negative
-/// already in the roll (section 3.4). `negativeID` and `groupIndex`
-/// together identify the row, since one prospective group can in principle
-/// overlap more than one existing negative.
-struct RollOverlapEntry: Sendable, Hashable {
-    let negativeID: String
-    let expectedOutput: String
-    let runID: String
-    let overlappingSources: [String]
-    let groupIndex: Int
-
-    /// A stable identity for this row across the group and the negative it
-    /// overlaps — used both as `List`'s `id` and as `OverlapReview`'s
-    /// decision key, since `negativeID` alone is not guaranteed unique.
-    var reviewKey: String { "\(groupIndex)_\(negativeID)" }
-
-    init(negativeID: String, expectedOutput: String, runID: String, overlappingSources: [String], groupIndex: Int) {
-        self.negativeID = negativeID
-        self.expectedOutput = expectedOutput
-        self.runID = runID
-        self.overlappingSources = overlappingSources
-        self.groupIndex = groupIndex
-    }
-
-    /// Decodes one entry of `probe_result`'s `roll_overlap` array
-    /// (`{negative_id, expected_output, run_id, overlapping_sources,
-    /// group_index}`, CONTRACT.md). `nil` for a malformed entry — a CLI
-    /// this version understands never sends one.
-    init?(fields: [String: JSONValue]) {
-        guard
-            let negativeID = fields["negative_id"]?.stringValue,
-            let expectedOutput = fields["expected_output"]?.stringValue,
-            let runID = fields["run_id"]?.stringValue,
-            let overlappingSources = fields["overlapping_sources"]?.stringArrayValue,
-            let groupIndex = fields["group_index"]?.intValue
-        else { return nil }
-        self.init(
-            negativeID: negativeID,
-            expectedOutput: expectedOutput,
-            runID: runID,
-            overlappingSources: overlappingSources,
-            groupIndex: groupIndex
-        )
     }
 }
