@@ -82,7 +82,6 @@ enum RunTimeFormat {
 /// published, and what the manifest says about the state of the folder.
 struct RunResultView: View {
     let run: RunModel
-    let outputFolder: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -168,15 +167,6 @@ struct RunResultView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
-
-            if let outputFolder {
-                Button("Reveal in Finder") {
-                    let published = run.stitchedNegatives.isEmpty
-                        ? run.publishedOutputs
-                        : run.stitchedNegatives.map(\.output)
-                    RunFinderReveal.reveal(outputFolder: outputFolder, published: published)
-                }
-            }
         }
     }
 
@@ -204,17 +194,3 @@ enum RunFailureText {
     }
 }
 
-enum RunFinderReveal {
-    /// Selects the run's published files when there are any, and otherwise
-    /// just opens the output folder.
-    static func reveal(outputFolder: URL, published: [String]) {
-        let urls = published.map {
-            outputFolder.appending(path: $0, directoryHint: .notDirectory)
-        }
-        if urls.isEmpty {
-            NSWorkspace.shared.activateFileViewerSelecting([outputFolder])
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting(urls)
-        }
-    }
-}
