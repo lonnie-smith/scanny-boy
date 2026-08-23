@@ -40,7 +40,7 @@ def library_db_path() -> Path:
 def _script_location() -> Path:
     """The Alembic `versions/` directory: beside this module in a checkout,
     unpacked at the bundle root in the PyInstaller build (see the `datas`
-    entry in `build/scanny_boy.spec`)."""
+    entry in `packaging/scanny_boy.spec`)."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "migrations"
     return Path(__file__).resolve().parent / "migrations"
