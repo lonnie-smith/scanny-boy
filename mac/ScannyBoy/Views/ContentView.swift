@@ -70,6 +70,11 @@ struct ContentView: View {
         // before `library.rolls` has re-scanned to include it — this catches
         // that up rather than leaving `model.rollURL` stuck at `nil`.
         .onChange(of: library.rolls) { _, _ in resolveSelectedRoll() }
+        // The run log belongs to the roll it stitched: switching rolls clears
+        // it, so the "Stitch Results" section only ever describes the roll
+        // now selected. Safe even mid-run — the sidebar blocks switching
+        // while a run is active — and `clearResults` guards anyway.
+        .onChange(of: model.rollURL) { _, _ in run.clearResults() }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
             restitchOutputFolder = model.rollURL
@@ -174,11 +179,27 @@ struct ContentView: View {
 
     private var detailColumn: some View {
         Form {
-            configurationSections
-                .disabled(run.isActive)
-            runSection
+            // While a probe is in flight the configuration (and the Stitch
+            // button, whose enablement depends on it) is not yet trustworthy
+            // — show a spinner instead. A run's own results stay visible:
+            // the post-run re-validation probe must not blank them out.
+            if model.isProbing {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.large)
+                        Spacer()
+                    }
+                    .padding(.vertical, 24)
+                }
+            } else {
+                configurationSections
+                    .disabled(run.isActive)
+                runSection
+            }
             if run.phase != .idle {
-                Section("Run") {
+                Section("Stitch Results") {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
@@ -217,16 +238,12 @@ struct ContentView: View {
     private var runSection: some View {
         Section {
             HStack {
-                if model.isProbing {
-                    ProgressView()
-                        .controlSize(.small)
-                }
                 Spacer()
                 if run.isActive {
                     Button("Cancel", role: .destructive) { run.cancel() }
                         .disabled(!run.canCancel)
                 }
-                Button("Run") { startRun() }
+                Button("Stitch") { startRun() }
                     .disabled(!model.runEnabled || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }

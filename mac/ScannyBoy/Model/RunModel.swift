@@ -450,6 +450,17 @@ final class RunModel {
 
     // MARK: - Housekeeping
 
+    /// Clears the log of the last finished run (Chunk 10's results, the
+    /// manifest reports, the phase) back to a fresh `.idle` state, used when
+    /// the user switches rolls: the log belonged to the roll it stitched,
+    /// not to the workspace. Never interrupts a run in flight — `reset`'s
+    /// task cancellation is for `start`'s benefit; here a guard simply
+    /// refuses while something is running.
+    func clearResults() {
+        guard !isActive else { return }
+        reset()
+    }
+
     private func reset() {
         runTask?.cancel()
         tickTask?.cancel()
