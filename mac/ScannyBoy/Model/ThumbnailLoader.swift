@@ -86,15 +86,34 @@ actor ThumbnailLoader {
         }
     }
 
+    /// The thumbnail for one negative's CLI-rendered preview (protocol
+    /// version 5's Edit tab).
+    ///
+    /// The CLI rewrites the preview file in place whenever an edit changes
+    /// the rendering, so the cache key carries a caller-supplied `generation`
+    /// token — the negative's `rotationQuarterTurns` — that changes with the
+    /// file's contents. Swift still draws only what the CLI produced.
+    func thumbnail(
+        forPreview url: URL, generation: String, pointSize: CGSize, scale: CGFloat
+    ) async -> Thumbnail? {
+        await cachedThumbnail(
+            url: url, pointSize: pointSize, scale: scale, keySuffix: "|gen-\(generation)"
+        ) { url, pointSize, scale in
+            Self.embeddedPreview(url: url, pointSize: pointSize, scale: scale)
+        }
+    }
+
     private func cachedThumbnail(
         url: URL, pointSize: CGSize, scale: CGFloat,
+        keySuffix: String = "",
         generate: @escaping @Sendable (URL, CGSize, CGFloat) async -> Thumbnail?
     ) async -> Thumbnail? {
-        let key = Self.cacheKey(url: url, pointSize: pointSize, scale: scale) as NSString
-        if let cached = cache.object(forKey: key) {
+        let cacheKey =
+            (Self.cacheKey(url: url, pointSize: pointSize, scale: scale) + keySuffix) as NSString
+        if let cached = cache.object(forKey: cacheKey) {
             return cached.thumbnail
         }
-        if let existing = inFlight[key as String] {
+        if let existing = inFlight[cacheKey as String] {
             return await existing.value
         }
 
@@ -104,10 +123,10 @@ actor ThumbnailLoader {
             defer { throttle.release() }
             return await generate(url, pointSize, scale)
         }
-        inFlight[key as String] = task
+        inFlight[cacheKey as String] = task
         let thumbnail = await task.value
-        inFlight[key as String] = nil
-        cache.setObject(CachedThumbnail(thumbnail: thumbnail), forKey: key)
+        inFlight[cacheKey as String] = nil
+        cache.setObject(CachedThumbnail(thumbnail: thumbnail), forKey: cacheKey)
         return thumbnail
     }
 

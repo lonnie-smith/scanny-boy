@@ -3,9 +3,11 @@ import json
 from scanny_boy.events import (
     PROTOCOL_VERSION,
     Code,
+    EditRecorded,
     ErrorEvent,
     Event,
     EventWriter,
+    ExportDone,
     Finished,
     GroupDone,
     GroupFailed,
@@ -105,6 +107,25 @@ ALL_EVENTS: list[Event] = [
         code=Code.OUTPUT_MODIFIED_EXTERNALLY,
         message="published TIFF hash differs from manifest",
     ),
+    EditRecorded(
+        negative_id="a1b2c3-negative-03",
+        edit={
+            "id": 1,
+            "negative_id": "a1b2c3-negative-03",
+            "position": 1,
+            "op": "rotate",
+            "params": {"direction": "cw"},
+            "created_at": "2026-08-31T12:00:00Z",
+        },
+        rotation_quarter_turns=1,
+        preview_path="/Users/me/Library/Application Support/ScannyBoy/previews/roll/a1b2c3-negative-03.png",
+    ),
+    ExportDone(
+        negative_id="a1b2c3-negative-03",
+        output="_DSC4638.tif",
+        width=4553,
+        height=13972,
+    ),
     ProbeResult(
         catalogue=["DSC_0001.NEF"],
         groups=[["DSC_0001.NEF"]],
@@ -186,8 +207,8 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_four():
-    assert PROTOCOL_VERSION == 4
+def test_protocol_version_is_five():
+    assert PROTOCOL_VERSION == 5
 
 
 def test_new_event_kinds_round_trip():
@@ -202,10 +223,17 @@ def test_new_event_kinds_round_trip():
             code=Code.METADATA_WRITE_FAILED,
             message="verify failed",
         ),
+        EditRecorded(
+            negative_id="neg-3",
+            edit={"position": 1, "op": "rotate", "params": {"direction": "cw"}},
+            rotation_quarter_turns=1,
+            preview_path=None,
+        ),
+        ExportDone(negative_id="neg-4", output="out.tif", width=4, height=3),
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 4
+        assert data["protocol_version"] == 5
         assert json.loads(json.dumps(data)) == data
 
 

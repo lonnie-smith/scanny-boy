@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from scanny_boy.events import Code
+from scanny_boy.library import repo
 from scanny_boy.manifest import (
     MANIFEST_FILENAME,
     check_rerun_compatible,
@@ -35,7 +36,6 @@ from scanny_boy.manifest import (
     load_manifest,
 )
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     check_roll_invariants,
     load_roll_manifest,
 )
@@ -58,9 +58,16 @@ class UnitView:
 class FolderRules:
     """Everything `_plan_rerun` needs to know about *which* manifest kind an
     output folder holds. Section 3.7: generalise this module over the
-    manifest it is reading rather than copying it."""
+    manifest it is reading rather than copying it.
+
+    A roll folder's record lives in the library database, not in a file, so
+    "does this folder hold one?" is `registered` rather than a filename
+    existence check; `manifest_filename` survives only to name the Phase 1
+    work manifest in errors and the known-artifacts list."""
 
     manifest_filename: str
+    registered: Callable[[Path], bool]
+    unregistered_reason: Callable[[Path], str]
     load: Callable[[Path], Any]
     run_id_of: Callable[[Any], str]
     units_of: Callable[[Any], list[UnitView]]
@@ -69,6 +76,10 @@ class FolderRules:
 
 CONVERT_RULES = FolderRules(
     manifest_filename=MANIFEST_FILENAME,
+    registered=lambda output_dir: (output_dir / MANIFEST_FILENAME).exists(),
+    unregistered_reason=lambda output_dir: (
+        f"{output_dir} is not empty and has no {MANIFEST_FILENAME}"
+    ),
     load=load_manifest,
     run_id_of=lambda manifest: manifest.run_id,
     units_of=lambda manifest: [
@@ -83,7 +94,12 @@ CONVERT_RULES = FolderRules(
 )
 
 ROLL_RULES = FolderRules(
-    manifest_filename=ROLL_MANIFEST_FILENAME,
+    manifest_filename="",
+    registered=repo.roll_registered,
+    unregistered_reason=lambda output_dir: (
+        f"{output_dir} is not empty and is not a registered roll; "
+        "create the roll first"
+    ),
     load=load_roll_manifest,
     # Phase 3 section 5.4 decision 2: the v2 roll manifest has no top-level
     # `run_id`. Staging directories belong to the run in flight, which is
@@ -172,20 +188,22 @@ def _plan_rerun(
     `rules` supplies the manifest filename, loader, run id, and units, so
     the identical logic serves Phase 1's per-frame manifest and Phase 2's
     roll manifest."""
+    registered = rules.registered(output_dir)
     entries = list_non_dot_entries(output_dir)
-    if not entries:
+    # A registered roll folder may be genuinely empty — its record lives in
+    # the library database, not in a file — so registration, not entries,
+    # decides whether there is a prior manifest to plan against.
+    if not entries and not registered:
         return RerunPlan(None, [], [], [])
 
-    if not (output_dir / rules.manifest_filename).exists():
-        raise OutputFolderError(
-            Code.OUTPUT_NOT_EMPTY,
-            f"{output_dir} is not empty and has no {rules.manifest_filename}",
-        )
+    if not registered:
+        raise OutputFolderError(Code.OUTPUT_NOT_EMPTY, rules.unregistered_reason(output_dir))
 
     existing = rules.load(output_dir)
 
     run_id = rules.run_id_of(existing)
-    known_names = {rules.manifest_filename, *rules.all_expected_outputs_of(existing)}
+    known_names = {name for name in (rules.manifest_filename,) if name}
+    known_names.update(rules.all_expected_outputs_of(existing))
     for entry in entries:
         if entry.name in known_names:
             continue

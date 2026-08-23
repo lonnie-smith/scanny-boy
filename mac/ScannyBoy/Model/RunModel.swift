@@ -402,7 +402,8 @@ final class RunModel {
                 )
             }
         case .started, .probeResult, .finished, .unknown,
-             .rollCreated, .rollList, .rollInfo, .rollRenamed:
+             .rollCreated, .rollList, .rollInfo, .rollRenamed,
+             .editRecorded, .exportDone:
             break
         }
     }

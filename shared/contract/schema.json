@@ -23,7 +23,9 @@
         "roll_info",
         "roll_renamed",
         "metadata_applied",
-        "metadata_skipped"
+        "metadata_skipped",
+        "edit_recorded",
+        "export_done"
       ]
     },
     "stage": {
@@ -95,7 +97,11 @@
         "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY",
         "METADATA_WRITE_FAILED",
-        "ORPHAN_FILE_NOT_REMOVED"
+        "ORPHAN_FILE_NOT_REMOVED",
+        "NEGATIVE_NOT_FOUND",
+        "INVALID_EDIT",
+        "EXPORT_FAILED",
+        "PREVIEW_FAILED"
       ]
     },
     "rollOverlapEntry": {
@@ -145,7 +151,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -256,7 +262,9 @@
               "roll list",
               "roll info",
               "roll rename",
-              "apply-metadata"
+              "apply-metadata",
+              "edit rotate",
+              "export"
             ]
           }
         }
@@ -332,6 +340,41 @@
           "negative_id": { "type": "string" },
           "code": { "$ref": "#/definitions/code" },
           "message": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "edit_recorded" } } },
+      "then": {
+        "required": ["negative_id", "edit", "rotation_quarter_turns", "preview_path"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "edit": {
+            "type": "object",
+            "required": ["id", "negative_id", "position", "op", "params", "created_at"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "negative_id": { "type": "string" },
+              "position": { "type": "integer", "minimum": 1 },
+              "op": { "type": "string" },
+              "params": { "type": "object" },
+              "created_at": { "type": "string" }
+            }
+          },
+          "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "preview_path": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "export_done" } } },
+      "then": {
+        "required": ["negative_id", "output", "width", "height"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "output": { "type": "string" },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
         }
       }
     }
