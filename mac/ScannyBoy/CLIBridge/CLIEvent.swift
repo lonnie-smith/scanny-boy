@@ -139,11 +139,6 @@ extension CLIEvent {
     public var outputConflicts: [String]? { fields["output_conflicts"]?.stringArrayValue }
     public var estimatedRequiredBytes: Int? { fields["estimated_required_bytes"]?.intValue }
     public var availableBytes: Int? { fields["available_bytes"]?.intValue }
-    public var rollOverlap: [[String: JSONValue]]? {
-        fields["roll_overlap"]?.arrayValue?.compactMap { entry in
-            entry.objectValue
-        }
-    }
 
     // `roll_created`
     public var rollID: String? { fields["roll_id"]?.stringValue }

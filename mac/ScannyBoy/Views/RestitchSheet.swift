@@ -105,10 +105,15 @@ struct RestitchSheet: View {
 
     private func startRestitch() {
         guard let workDirectory, let outputFolder else { return }
+        // The kept work directory always holds `scanny-boy-manifest.json`,
+        // the convert stage's own record (CONTRACT.md) — the only place a
+        // negative count for this re-stitch is known ahead of time.
+        let totalNegatives = try? RunManifest.read(inOutputFolder: workDirectory).groups.count
         run.start(
             command: .stitch(work: workDirectory, roll: outputFolder, overwrite: true),
             files: [],
-            outputFolder: outputFolder
+            outputFolder: outputFolder,
+            totalNegatives: totalNegatives
         )
         onStarted()
         dismiss()

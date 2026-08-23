@@ -103,7 +103,9 @@ struct EditStageView: View {
 
     private func applyMetadata() {
         guard let command = edit.applyCommand, let rollURL = edit.rollURL else { return }
-        run.start(command: command, files: [], outputFolder: rollURL)
+        run.start(
+            command: command, files: [], outputFolder: rollURL, totalNegatives: edit.dirtyCount
+        )
         Task {
             await run.waitForCompletion()
             edit.refresh()

@@ -72,6 +72,11 @@ final class RunModel {
     private(set) var completedSteps = 0
     private(set) var totalSteps = 0
     private(set) var currentStep: CLIPipelineStep?
+    /// The total negatives this invocation is expected to process, known
+    /// upfront by the caller (`ConfigurationModel.groups.count`,
+    /// `EditModel.dirtyCount`, or a kept work directory's manifest for a
+    /// re-stitch) — `nil` when the caller didn't supply one.
+    private(set) var totalNegatives: Int?
     /// The source file the most recent `progress` event named. With more than
     /// one worker this is "one of the frames in flight", not "the frame the
     /// run has reached".
@@ -176,6 +181,20 @@ final class RunModel {
         Self.estimatedRemaining(elapsed: elapsed, completed: completedSteps, total: totalSteps)
     }
 
+    /// Negatives finished so far, counted the same way `completionSummary`
+    /// counts them at the end — by stitched/published negative, not by
+    /// frame. `stage` tells `run` apart from its convert and stitch halves;
+    /// `stitch` (re-stitch) has no convert stage at all.
+    var negativesCompleted: Int {
+        if invokedCommandName == "apply-metadata" {
+            return appliedNegativeIDs.count + skippedMetadata.count
+        }
+        if invokedCommandName == "stitch" || stage == "stitch" {
+            return stitchedNegatives.count + failedNegatives.count
+        }
+        return completedGroups.count + failedGroups.count
+    }
+
     /// Split out as a pure function so the estimate can be tested without a
     /// real clock or a real subprocess.
     static func estimatedRemaining(
@@ -264,11 +283,14 @@ final class RunModel {
     /// Starts one `convert`. `files` must be the selection in canonical order:
     /// it is what turns a `source_index` back into a filename, and section 3.3
     /// forbids this app from working that order out for itself.
-    func start(command: CLICommand, files: [String], outputFolder: URL) {
+    func start(
+        command: CLICommand, files: [String], outputFolder: URL, totalNegatives: Int? = nil
+    ) {
         guard !isActive else { return }
         reset()
         sourceNames = files
         self.outputFolder = outputFolder
+        self.totalNegatives = totalNegatives
         invokedCommandName = command.arguments.first
         phase = .running
         startedAt = now()
@@ -457,6 +479,7 @@ final class RunModel {
         completedSteps = 0
         totalSteps = 0
         currentStep = nil
+        totalNegatives = nil
         currentFilename = nil
         stage = nil
         publishedOutputs = []

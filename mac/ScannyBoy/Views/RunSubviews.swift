@@ -20,7 +20,11 @@ struct RunProgressView: View {
             HStack {
                 Text(stepDescription)
                 Spacer()
-                Text("\(run.completedSteps) of \(run.totalSteps) steps")
+                if let totalNegatives = run.totalNegatives {
+                    Text("\(run.negativesCompleted) of \(totalNegatives) negative(s)")
+                } else {
+                    Text("\(run.completedSteps) of \(run.totalSteps) steps")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
