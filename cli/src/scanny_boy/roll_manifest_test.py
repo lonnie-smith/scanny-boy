@@ -124,8 +124,8 @@ def _completed_negative(**overrides) -> NegativeRecord:
             "height": 730,
         },
         "frames": [
-            FrameRecord(name="_DSC4638.tif", rotation_deg=0.0, translation=(0.0, 0.0)),
-            FrameRecord(name="_DSC4639.tif", rotation_deg=1.5, translation=(900.0, 3.0)),
+            FrameRecord(name="_DSC4638.tif", rotation_deg=0.0, translation=(0.0, 0.0), gain=(1.0, 1.0, 1.0)),
+            FrameRecord(name="_DSC4639.tif", rotation_deg=1.5, translation=(900.0, 3.0), gain=(1.05, 0.98, 1.02)),
         ],
         "pairs": [
             PairRecord(
@@ -138,6 +138,7 @@ def _completed_negative(**overrides) -> NegativeRecord:
                 scale_drift=0.0004,
                 overlap_fraction=0.35,
                 overlap_mad=0.04,
+                overlap_mad_pregain=0.11,
                 accepted=True,
             )
         ],
@@ -152,7 +153,7 @@ def _completed_negative(**overrides) -> NegativeRecord:
 # --- shape, round trip, and the version break ---------------------------
 
 
-def test_v3_round_trips(tmp_path):
+def test_v4_round_trips(tmp_path):
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
@@ -160,7 +161,7 @@ def test_v3_round_trips(tmp_path):
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 3
+    assert loaded.manifest_format_version == 4
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id

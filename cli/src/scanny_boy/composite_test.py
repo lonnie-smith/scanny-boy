@@ -82,6 +82,7 @@ def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7):
         inlier_points_b=pts_b,
         overlap_fraction=None,
         overlap_mad=None,
+        overlap_mad_pregain=None,
     )
 
     layout = solve_layout(names, _FRAME_SIZE, [pair])
@@ -191,6 +192,53 @@ def test_feather_weights_sum_to_one_inside_coverage():
     assert np.max(np.abs(linear[covered] - constant_value)) < 0.01
 
 
+def test_gain_correction_reconciles_a_known_brightness_offset():
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    # Scale frame f1's linear values down per channel (never up: no clipping
+    # to confound the measured means), so mean_b = k * mean_a exactly.
+    k = (0.8, 0.9, 1.0)
+    offset_frames = {}
+    for name, frame in uint16_frames.items():
+        linear = decode_to_linear(frame).astype(np.float32)
+        if name == "f1":
+            linear = linear * np.asarray(k, dtype=np.float32)
+        offset_frames[name] = encode_from_linear(linear)
+
+    result = _composite(layout, offset_frames)
+    pair = ("f0", "f1")
+
+    assert result.overlap_mad_pregain[pair] > 5 * result.overlap_mad[pair]
+
+    # Geometric-mean anchor: g1/g0 = 1/k and g0*g1 = 1, so the gains bracket
+    # 1 symmetrically per channel.
+    assert np.allclose(result.gains["f0"], np.sqrt(k), rtol=0.02)
+    assert np.allclose(result.gains["f1"], 1.0 / np.sqrt(k), rtol=0.02)
+
+
+def test_frames_without_a_usable_gain_row_stay_at_unity(monkeypatch):
+    import scanny_boy.composite as composite_module
+
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    k = (0.8, 0.9, 1.0)
+    offset_frames = {}
+    for name, frame in uint16_frames.items():
+        linear = decode_to_linear(frame).astype(np.float32)
+        if name == "f1":
+            linear = linear * np.asarray(k, dtype=np.float32)
+        offset_frames[name] = encode_from_linear(linear)
+
+    # A floor above any real overlap drops every gain row: the solve has no
+    # evidence, so the frames must keep gain 1 and the two MAD measurements
+    # must agree exactly.
+    monkeypatch.setattr(composite_module, "MIN_GAIN_OVERLAP_PX", 10**9)
+    result = _composite(layout, offset_frames)
+    pair = ("f0", "f1")
+
+    assert result.gains["f0"] == (1.0, 1.0, 1.0)
+    assert result.gains["f1"] == (1.0, 1.0, 1.0)
+    assert result.overlap_mad[pair] == result.overlap_mad_pregain[pair]
+
+
 def test_no_output_value_is_negative_or_clipped_high():
     _scene, names, _uint16_frames, layout, _cut = _build_two_frame_scene(
         rotations_deg=(0.0, 5.0)
@@ -249,11 +297,13 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     canvas_size = (4000, 3000)
     bbox_size = (1200, 1600)  # (height, width)
 
-    small_frame = estimate_peak_bytes(canvas_size, (2000, 3000), bbox_size)
-    large_frame = estimate_peak_bytes(canvas_size, (4000, 6000), bbox_size)
+    small_frame = estimate_peak_bytes(canvas_size, (2000, 3000), bbox_size, 1)
+    large_frame = estimate_peak_bytes(canvas_size, (4000, 6000), bbox_size, 2)
     # The original (superseded) formula omitted the source frame entirely,
     # so it would not move at all when frame_size grows at a fixed canvas
-    # and bounding box (section 3.8.1).
+    # and bounding box (section 3.8.1); the current formula also charges
+    # every warped frame, which must be resident simultaneously for the
+    # pairwise stats and gain solve.
     assert large_frame > small_frame
 
     canvas_width, canvas_height = canvas_size
@@ -271,8 +321,8 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     warped = bbox_pixels * 3 * 4
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2
 
-    per_frame = max(source, warped + warp_aux)
-    live_bytes = max(accum + weight + per_frame, accum + result)
+    all_warped = 2 * (warped + warp_aux)
+    live_bytes = max(accum + weight + source + all_warped, accum + result)
 
     expected = math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
     assert large_frame == expected

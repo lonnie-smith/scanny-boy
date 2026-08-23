@@ -114,10 +114,14 @@ def _write_intermediate(path: Path, pixels: np.ndarray, source_name: str) -> Non
     )
 
 
-def _negative_frames(*, overlapping: bool, seed: int, count: int = 3) -> list[np.ndarray]:
+def _negative_frames(
+    *, overlapping: bool, seed: int, count: int = 3, frame_gains=None
+) -> list[np.ndarray]:
     """`count` uint16 frames. Overlapping frames come from one scene and
     register; non-overlapping ones come from unrelated scenes and must be
-    refused."""
+    refused. `frame_gains`, when given, scales each frame's linear values
+    per channel (downward only, so nothing clips) — lamp drift between
+    shots."""
     if overlapping:
         scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
         frames, _ = cut_frames(
@@ -132,7 +136,13 @@ def _negative_frames(*, overlapping: bool, seed: int, count: int = 3) -> list[np
         frames = [
             synthetic_scene(*_FRAME_SIZE, seed=seed * 100 + i) for i in range(count)
         ]
-    return [encode_from_linear(np.stack([f, f, f], axis=-1)) for f in frames]
+    stacked = [np.stack([f, f, f], axis=-1) for f in frames]
+    if frame_gains is not None:
+        stacked = [
+            frame * np.asarray(gain, dtype=np.float32)
+            for frame, gain in zip(stacked, frame_gains, strict=True)
+        ]
+    return [encode_from_linear(frame.astype(np.float32)) for frame in stacked]
 
 
 def _make_work_dir(
@@ -144,6 +154,7 @@ def _make_work_dir(
     group_statuses: list[str] | None = None,
     film_date: str = _FILM_DATE,
     shots_per_negative: int = 3,
+    frame_gains: list[tuple[float, float, float]] | None = None,
 ) -> Path:
     """A work directory holding real Phase 1 intermediates and a real
     Phase 1 manifest, built without paying for RAW decoding."""
@@ -156,7 +167,9 @@ def _make_work_dir(
 
     for negative_index in range(negatives):
         frames = _negative_frames(
-            overlapping=overlapping, seed=11 + negative_index * 7
+            overlapping=overlapping,
+            seed=11 + negative_index * 7,
+            frame_gains=frame_gains,
         )
         members: list[str] = []
         outputs: list[OutputRecord] = []
@@ -354,6 +367,64 @@ def test_end_to_end_on_real_samples(tmp_path):
 
     # No staging directory survives a successful run.
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
+
+
+def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
+    """Lamp drift between a negative's frames is reconciled by solved
+    per-frame gains, and the manifest records both the gains and the two
+    overlap-MAD measurements (pre-gain explains why, post-gain is what the
+    gate checks)."""
+    work_dir = _make_work_dir(
+        tmp_path,
+        frame_gains=[(1.0, 1.0, 1.0), (0.85, 0.9, 0.95), (1.0, 1.0, 1.0)],
+    )
+    out_dir = _roll_dir(tmp_path)
+
+    outcome = _stitch(work_dir, out_dir)
+
+    assert outcome.status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    negative = manifest.negatives[0]
+
+    assert all(len(frame.gain) == 3 for frame in negative.frames)
+    # The middle frame is darker than its neighbours; its solved gain must
+    # sit above 1 in the channels that were scaled down.
+    assert all(c > 1.0 for c in negative.frames[1].gain)
+    measured = [
+        (pair.overlap_mad_pregain, pair.overlap_mad)
+        for pair in negative.pairs
+        if pair.overlap_mad is not None and pair.overlap_mad_pregain is not None
+    ]
+    assert measured
+    assert all(pregain > post for pregain, post in measured)
+
+    assert_matches_roll_manifest_schema(
+        json.loads((out_dir / ROLL_MANIFEST_FILENAME).read_text()),
+        load_roll_manifest_schema(),
+    )
+
+
+def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkeypatch):
+    """A solved gain far from unity means something is wrong with the
+    capture: warn, by the same pattern as STITCH_SCALE_DRIFT."""
+    monkeypatch.setattr(stitch_pipeline, "GAIN_DRIFT_WARN", 1e-6)
+    work_dir = _make_work_dir(
+        tmp_path,
+        frame_gains=[(1.0, 1.0, 1.0), (0.85, 0.9, 0.95), (1.0, 1.0, 1.0)],
+    )
+    out_dir = _roll_dir(tmp_path)
+    events: list = []
+
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    drift_warnings = [
+        event
+        for event in events
+        if isinstance(event, WarningEvent) and event.code is Code.STITCH_GAIN_DRIFT
+    ]
+    assert drift_warnings
+    assert any("IMG_01.tif" in event.message for event in drift_warnings)
 
 
 def test_progress_events_carry_the_stitch_stage(tmp_path):

@@ -37,7 +37,9 @@ from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_or
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.composite import (
     FILL_COLOR,
+    GAIN_DRIFT_WARN,
     MAX_OVERLAP_MAD,
+    MIN_GAIN_OVERLAP_PX,
     check_memory_budget,
     check_output_size,
     composite,
@@ -192,6 +194,12 @@ def _stitch_params() -> dict[str, Any]:
         "scale_drift_warn": SCALE_DRIFT_WARN,
         "scale_drift_fail": SCALE_DRIFT_FAIL,
         "max_overlap_mad": MAX_OVERLAP_MAD,
+        # Measured against uncorrected overlaps; now gates the post-gain
+        # residual and is pending re-measurement at a user gate
+        # (composite.py's module docstring, docs/DECISIONS.md).
+        "max_overlap_mad_semantics": "post-gain-residual",
+        "min_gain_overlap_px": MIN_GAIN_OVERLAP_PX,
+        "gain_drift_warn": GAIN_DRIFT_WARN,
         "max_global_rms_px": MAX_GLOBAL_RMS_PX,
         "strip_spread_ratio": STRIP_SPREAD_RATIO,
         "interpolation": "INTER_LANCZOS4",
@@ -508,6 +516,7 @@ def _attempt_solve(
             layout.canvas_size,
             frame_size,
             (layout.canvas_size[1], layout.canvas_size[0]),
+            len(paths),
         )
     )
 
@@ -535,6 +544,7 @@ def _pair_records(pairs: list[PairResult]) -> list[PairRecord]:
             scale_drift=_finite(pair.scale_drift),
             overlap_fraction=pair.overlap_fraction,
             overlap_mad=pair.overlap_mad,
+            overlap_mad_pregain=pair.overlap_mad_pregain,
             accepted=pair.accepted,
         )
         for pair in pairs
@@ -1099,13 +1109,19 @@ def _composite_and_publish(
         progress.advance(source_index, PipelineStep.BLEND)
         cancel.raise_if_cancelled()
 
-        # Fold the measured photometric numbers back into the pairs, then
-        # apply the honest gate (section 3.4).
+        # Fold the measured photometric numbers back into the pairs and the
+        # frames, warn on solved gains far from unity, then apply the honest
+        # gate (section 3.4). `overlap_mad` is now the post-gain residual —
+        # the gate is a registration check, not a lamp-drift check — while
+        # `overlap_mad_pregain` records why a gain was applied. The gate's
+        # threshold was measured against uncorrected overlaps and is pending
+        # re-measurement (composite.py's module docstring).
         merged_pairs = [
             dataclasses.replace(
                 pair,
                 overlap_fraction=result.overlap_fraction.get((pair.a, pair.b)),
                 overlap_mad=result.overlap_mad.get((pair.a, pair.b)),
+                overlap_mad_pregain=result.overlap_mad_pregain.get((pair.a, pair.b)),
             )
             for pair in entry.pairs
         ]
@@ -1115,9 +1131,25 @@ def _composite_and_publish(
                 name=placement.name,
                 rotation_deg=placement.rotation_deg,
                 translation=(placement.translation[0], placement.translation[1]),
+                gain=result.gains[placement.name],
             )
             for placement in layout.placements
         ]
+        for placement in layout.placements:
+            gain = result.gains[placement.name]
+            drift = max(abs(c - 1.0) for c in gain)
+            if drift > GAIN_DRIFT_WARN:
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.STITCH_GAIN_DRIFT,
+                        message=(
+                            f"{record.negative_id}: frame {placement.name} solved "
+                            f"gain ({gain[0]:.4f}, {gain[1]:.4f}, {gain[2]:.4f}) "
+                            f"deviates more than {GAIN_DRIFT_WARN} from unity"
+                        ),
+                    )
+                )
         record.global_rms_px = layout.global_rms_px
         record.canvas = layout.canvas_size
 

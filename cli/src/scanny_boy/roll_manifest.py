@@ -1,14 +1,16 @@
-"""`scanny-boy-roll.json`: one roll's durable record, format version 3.
+"""`scanny-boy-roll.json`: one roll's durable record, format version 4.
 
 A *roll* is a named folder the user returns to, holding the stitched TIFFs of
 one roll of film across many runs. That is the whole reason this file is a
 break rather than a patch: Phase 2's version 1 carried one `run_id`, one
 `input_folder`, and one `film_date`, and refused any rerun that changed them,
-and version 2's supersession tombstones are gone in version 3 — a rerun
-adopts the covered negative in place instead of publishing a replacement.
-See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3 for the shape and
-section 3.4 for the invariants and naming rules this module enforces. There
-is no migration: nothing here reads `manifest_format_version: 1` or `2`.
+version 2's supersession tombstones are gone in version 3 — a rerun
+adopts the covered negative in place instead of publishing a replacement —
+and version 4 adds per-frame solved photometric gains and per-pair
+pre-gain overlap MAD. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
+for the shape and section 3.4 for the invariants and naming rules this
+module enforces. There is no migration: nothing here reads
+`manifest_format_version` 1, 2, or 3.
 
 Structurally still a mirror of `manifest.py` — same temp-file / `fsync` /
 rename discipline, same hand-written structural validation.
@@ -37,7 +39,7 @@ from scanny_boy.manifest import (
 )
 
 ROLL_MANIFEST_FILENAME = "scanny-boy-roll.json"
-ROLL_MANIFEST_FORMAT_VERSION = 3
+ROLL_MANIFEST_FORMAT_VERSION = 4
 ROLL_MANIFEST_KIND = "roll"
 
 STATUSES = {"running", "partial", "cancelled", "complete"}
@@ -51,7 +53,7 @@ SHORT_ID_LENGTHS = (6, 8, 10)
 
 class RollManifestUnsupportedError(Exception):
     """Maps to `ROLL_MANIFEST_UNSUPPORTED` (section 3.12): the file is a roll
-    manifest, but not `manifest_format_version: 3`. Distinct from
+    manifest, but not `manifest_format_version: 4`. Distinct from
     `BadManifestError`, which means unreadable or malformed, so a caller can
     tell "written by an older Scanny Boy" from "corrupt"."""
 
@@ -87,7 +89,11 @@ class PairRecord:
     rms_residual_px: float
     scale_drift: float
     overlap_fraction: float | None
+    # Post-gain residual — the value the MAX_OVERLAP_MAD gate checks.
     overlap_mad: float | None
+    # The same measurement taken before per-frame gain compensation; the
+    # diagnostic that explains why a gain was applied.
+    overlap_mad_pregain: float | None
     accepted: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,12 +105,17 @@ class FrameRecord:
     name: str
     rotation_deg: float
     translation: tuple[float, float]
+    # Solved per-channel (R, G, B) photometric gain; the frame's warped
+    # linear values were multiplied by this before the blend. Geometric
+    # mean of the gains across a negative's frames is 1 by construction.
+    gain: tuple[float, float, float]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "rotation_deg": self.rotation_deg,
             "translation": list(self.translation),
+            "gain": list(self.gain),
         }
 
 
@@ -432,7 +443,7 @@ def _validate_stitched_output_dict(data: Any) -> None:
 
 def _validate_frame_dict(data: Any) -> None:
     _require(isinstance(data, dict), "frame entry is not an object")
-    for key in ("name", "rotation_deg", "translation"):
+    for key in ("name", "rotation_deg", "translation", "gain"):
         _require(key in data, f"frame entry missing {key!r}")
     _require(isinstance(data["name"], str), "frame name is not a string")
     _require(isinstance(data["rotation_deg"], int | float), "frame rotation_deg is invalid")
@@ -442,6 +453,13 @@ def _validate_frame_dict(data: Any) -> None:
         and len(translation) == 2
         and all(isinstance(v, int | float) for v in translation),
         "frame translation is invalid",
+    )
+    gain = data["gain"]
+    _require(
+        isinstance(gain, list)
+        and len(gain) == 3
+        and all(isinstance(v, int | float) and v > 0 for v in gain),
+        "frame gain is invalid",
     )
 
 
@@ -457,6 +475,7 @@ def _validate_pair_dict(data: Any) -> None:
         "scale_drift",
         "overlap_fraction",
         "overlap_mad",
+        "overlap_mad_pregain",
         "accepted",
     ):
         _require(key in data, f"pair entry missing {key!r}")
@@ -470,7 +489,7 @@ def _validate_pair_dict(data: Any) -> None:
     )
     for key in ("inlier_ratio", "rms_residual_px", "scale_drift"):
         _require(isinstance(data[key], int | float), f"pair {key} is invalid")
-    for key in ("overlap_fraction", "overlap_mad"):
+    for key in ("overlap_fraction", "overlap_mad", "overlap_mad_pregain"):
         _require(
             data[key] is None or isinstance(data[key], int | float),
             f"pair {key} is invalid",
@@ -643,7 +662,7 @@ def validate_roll_manifest_dict(data: Any) -> None:
     """Structural checks mirroring `roll-manifest.schema.json`. Raises
     `BadManifestError` on the first problem found, or
     `RollManifestUnsupportedError` for a manifest that is well-formed but not
-    format version 3 — section 0 is explicit that there is no migration."""
+    not format version 4 — section 0 is explicit that there is no migration."""
     _require(isinstance(data, dict), "roll manifest is not a JSON object")
     for key in _TOP_LEVEL_REQUIRED:
         _require(key in data, f"roll manifest missing required field {key!r}")
@@ -713,7 +732,7 @@ def load_roll_manifest(output_dir: Path) -> RollManifest:
     """Read and structurally validate the roll manifest in `output_dir`.
     Raises `BadManifestError` if it is missing, unreadable, not valid JSON,
     fails the structural checks above, or names an output that escapes
-    `output_dir`; `RollManifestUnsupportedError` if it is not version 3."""
+    `output_dir`; `RollManifestUnsupportedError` if it is not version 4."""
     path = current_roll_manifest_path(output_dir)
     try:
         text = path.read_text(encoding="utf-8")
@@ -785,6 +804,7 @@ def _roll_manifest_from_dict(data: dict[str, Any]) -> RollManifest:
                         name=f["name"],
                         rotation_deg=f["rotation_deg"],
                         translation=(f["translation"][0], f["translation"][1]),
+                        gain=(f["gain"][0], f["gain"][1], f["gain"][2]),
                     )
                     for f in n["frames"]
                 ],
@@ -799,6 +819,7 @@ def _roll_manifest_from_dict(data: dict[str, Any]) -> RollManifest:
                         scale_drift=p["scale_drift"],
                         overlap_fraction=p["overlap_fraction"],
                         overlap_mad=p["overlap_mad"],
+                        overlap_mad_pregain=p["overlap_mad_pregain"],
                         accepted=p["accepted"],
                     )
                     for p in n["pairs"]

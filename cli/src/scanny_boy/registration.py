@@ -68,9 +68,14 @@ class PairResult:
     # summary statistics above.
     inlier_points_a: np.ndarray
     inlier_points_b: np.ndarray
-    # Filled in later by composite.py; None here.
+    # Filled in later by composite.py; None here. `overlap_mad` is the
+    # post-gain residual (what the MAX_OVERLAP_MAD gate checks);
+    # `overlap_mad_pregain` is the same measurement taken before per-frame
+    # gain compensation, kept as the diagnostic that explains why a gain
+    # was applied.
     overlap_fraction: float | None
     overlap_mad: float | None
+    overlap_mad_pregain: float | None
 
 
 _IDENTITY_TRANSFORM = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
@@ -190,6 +195,7 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             inlier_points_b=_EMPTY_POINTS,
             overlap_fraction=None,
             overlap_mad=None,
+            overlap_mad_pregain=None,
         )
 
     inlier_bool = inlier_mask.ravel().astype(bool)
@@ -232,6 +238,7 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
+            overlap_mad_pregain=None,
         )
 
     if scale_drift > SCALE_DRIFT_FAIL:
@@ -253,6 +260,7 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
+            overlap_mad_pregain=None,
         )
 
     if rms_residual_px > MAX_PAIR_RMS_PX:
@@ -275,6 +283,7 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
+            overlap_mad_pregain=None,
         )
 
     return PairResult(
@@ -293,4 +302,5 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
         inlier_points_b=src_inliers,
         overlap_fraction=None,
         overlap_mad=None,
+        overlap_mad_pregain=None,
     )
