@@ -251,7 +251,7 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
 
     small_frame = estimate_peak_bytes(canvas_size, (2000, 3000), bbox_size)
     large_frame = estimate_peak_bytes(canvas_size, (4000, 6000), bbox_size)
-    # The original (superseded) formula omitted the source frame entirely,
+    # The original formula omitted the source frame entirely,
     # so it would not move at all when frame_size grows at a fixed canvas
     # and bounding box (section 3.8.1).
     assert large_frame > small_frame

@@ -40,6 +40,8 @@ from scanny_boy.output_folder import (
 from scanny_boy.registration import DETECTOR, StitchError
 from scanny_boy.roll_manifest import (
     ROLL_MANIFEST_FILENAME,
+    CaptureTime,
+    NegativeRecord,
     RollInvariants,
     load_roll_manifest,
     new_roll_manifest,
@@ -50,7 +52,7 @@ from scanny_boy.roll_manifest_schema_test_support import (
     load_roll_manifest_schema,
 )
 from scanny_boy.romm import encode_from_linear
-from scanny_boy.stitch_pipeline import run_stitch
+from scanny_boy.stitch_pipeline import _replace_exact_member_predecessor, run_stitch
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 from scanny_boy.tiff_exif import (
     DATE_TIME_ORIGINAL,
@@ -314,7 +316,6 @@ def test_end_to_end_on_real_samples(tmp_path):
 
     for negative in manifest.negatives:
         assert negative.run_id == "stitch-run"
-        assert negative.superseded_by is None
         # Section 5.4 decision 4: the roll records the capture time the
         # negative's first frame actually carries. The metadata stage's three
         # fields are untouched by a stitch.
@@ -660,11 +661,12 @@ def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     assert seeded.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
 
 
-def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
+def test_second_stitch_overwrites_the_same_group_in_place(tmp_path):
     """Section 3.4, replacing Phase 2's overwrite-conflict test (section 5.4
-    decision 3). A roll is additive: a second run publishes alongside the
-    first under `-2`, and nothing is overwritten in place, ever. Two genuine
-    runs, per section 4 — a hand-edited manifest would prove nothing."""
+    decision 3). A re-stitch of the same group over the same work directory
+    overwrites the first negative's file in place and drops the first's record;
+    the roll keeps both run records. Two genuine runs, per section 4 — a
+    hand-edited manifest would prove nothing."""
     work_dir = _make_work_dir(tmp_path)
     out_dir = _roll_dir(tmp_path)
 
@@ -672,31 +674,56 @@ def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
     second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
 
     assert first.published == ["IMG_00.tif"]
-    assert second.published == ["IMG_00-2.tif"]
+    assert second.published == ["IMG_00.tif"]
     assert second.status == "complete"
     assert (out_dir / "IMG_00.tif").exists()
-    assert (out_dir / "IMG_00-2.tif").exists()
+    assert not (out_dir / "IMG_00-2.tif").exists()
 
     roll = load_roll_manifest(out_dir)
+    # Both run records are retained; only the first negative's record is dropped.
     assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
-    # Section 3.4: `short_id`s are unique, so `negative_id`s are too.
-    assert [n.negative_id for n in roll.negatives] == [
-        "stitch-negative-01",
-        "stitch-r-negative-01",
-    ]
+    assert [n.negative_id for n in roll.negatives] == ["stitch-r-negative-01"]
     assert all(n.status == "completed" for n in roll.negatives)
-    # Nothing is superseded: P3-2 records the rule, and P3-5 executes it.
-    assert all(n.superseded_by is None for n in roll.negatives)
-    assert roll.negative("stitch-r-negative-01").output["name"] == "IMG_00-2.tif"
-    # The first negative's name never moved.
-    assert roll.negative("stitch-negative-01").output["name"] == "IMG_00.tif"
+    # The new negative reuses the first's output path, overwriting it in place.
+    assert roll.negative("stitch-r-negative-01").output["name"] == "IMG_00.tif"
+
+
+def test_replace_exact_member_predecessor_pops_and_returns_applied_time():
+    """Section 3.4's in-place replace rule, in isolation: an exact `members`-set
+    match (order-independent) pops the predecessor and returns its applied
+    capture time for section 3.9's auto-reapply; a non-match leaves the roll
+    untouched and returns None."""
+    roll = new_roll_manifest(roll_id="r", roll_name="Roll", shots_per_negative=2)
+    predecessor = NegativeRecord(
+        negative_id="aaaaaa-negative-01",
+        run_id="run-1",
+        members=["a.NEF", "b.NEF"],
+        expected_output="a.tif",
+        fill_color=(0, 0, 0),
+        capture_time=CaptureTime(
+            source_datetime_original="2026-08-02T12:00:00",
+            applied_datetime_original="2026-01-15T09:30:00",
+        ),
+    )
+    roll.negatives.append(predecessor)
+
+    # Order-independent: the same set in a different order still matches.
+    inherited = _replace_exact_member_predecessor(roll, ["b.NEF", "a.NEF"])
+
+    assert inherited == "2026-01-15T09:30:00"
+    assert roll.negatives == []
+
+    # A non-matching members set leaves the roll untouched.
+    roll.negatives.append(predecessor)
+    assert _replace_exact_member_predecessor(roll, ["a.NEF", "c.NEF"]) is None
+    assert len(roll.negatives) == 1
 
 
 def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     """Section 3.5's `--negatives` re-stitch path: a work directory with two
     negatives, restricted to one already-published `negative_id`, publishes
-    only that one — under a fresh `negative_id` of its own, per section
-    3.4's additive model."""
+    only that one, replacing the target in place under a fresh `negative_id`
+    (section 3.4)."""
     work_dir = _make_work_dir(tmp_path, negatives=2)
     out_dir = _roll_dir(tmp_path)
 

@@ -219,7 +219,6 @@ struct CLIEventTests {
         "ROLL_RENAME_FAILED",
         "ROLL_INVARIANT_MISMATCH", "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY", "METADATA_WRITE_FAILED",
-        "SUPERSEDED_FILE_NOT_REMOVED",
     ])
     func everyStableCodeIsKnown(name: String) {
         let code = CLICode(name: name)

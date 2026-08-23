@@ -252,13 +252,13 @@ def _preview_roll(
     # `manifest.sources` by `sha256`, and reports per prospective group". A
     # prospective group collides with a negative when the two share sources
     # by content, so a renamed rescan still matches — whether that overlap
-    # would supersede the negative (section 3.4's subset rule) is decided at
-    # run time, not here.
+    # would replace the negative in place (section 3.4's exact-member rule) is
+    # decided at run time, not here.
     selected_hashes = {r.filename: r.sha256 for r in hash_sources(input_dir, selected)}
     roll_hashes = {s.filename: s.sha256 for s in roll.sources}
     entries: list[RollOverlapEntry] = []
     for group_index, members in enumerate(groups):
-        for negative in roll.live_negatives():
+        for negative in roll.negatives:
             negative_hashes = {
                 roll_hashes[member]
                 for member in negative.members

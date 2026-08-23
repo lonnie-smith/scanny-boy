@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// State for the Edit tab (section 3.10): the selected roll's negatives in
-/// sequence order, the dirty count Apply acts on, and the superseded-toggle
-/// filter. Apply itself is not driven from here — it goes through the app's
+/// sequence order, and the dirty count Apply acts on. Apply itself is not
+/// driven from here — it goes through the app's
 /// one shared `RunModel`/`CLISession`, exactly like Run and re-stitch
 /// (section 3.10: "There is one `RunModel` and one `CLISession`, as now").
 /// This model only reads the roll back and reports what it sees.
@@ -34,22 +34,18 @@ final class EditModel {
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
 
-    /// Section 3.10: "Superseded negatives are hidden behind a 'Show
-    /// replaced negatives' toggle."
-    var showSupersededNegatives = false
-
     init(runner: CLIRunner) {
         self.runner = runner
     }
 
     // MARK: - Derived state
 
-    /// Negatives to show, filtered by `showSupersededNegatives` and ordered
-    /// by `sequence` (section 3.7) — superseded ones (`sequence == nil`)
-    /// sort after every ranked one, in `negatives`' own append order among
+    /// Negatives to show, ordered by `sequence` (section 3.7) — unranked
+    /// ones (`sequence == nil`, e.g. a `pending` or `failed` negative) sort
+    /// after every ranked one, in `negatives`' own append order among
     /// themselves, since section 3.7 gives them no rank to compare by.
     var visibleNegatives: [RollManifest.Negative] {
-        let source = showSupersededNegatives ? (roll?.negatives ?? []) : (roll?.liveNegatives ?? [])
+        let source = roll?.negatives ?? []
         return source.sorted { lhs, rhs in
             switch (lhs.sequence, rhs.sequence) {
             case let (left?, right?):
@@ -64,11 +60,10 @@ final class EditModel {
         }
     }
 
-    /// Section 3.8: dirty negatives eligible for Apply — completed, not
-    /// superseded, with an intended capture time that differs from what was
-    /// last written.
+    /// Section 3.8: dirty negatives eligible for Apply — completed, with an
+    /// intended capture time that differs from what was last written.
     var dirtyNegatives: [RollManifest.Negative] {
-        (roll?.liveNegatives ?? []).filter { $0.isCompleted && $0.captureTime.isDirty }
+        (roll?.negatives ?? []).filter { $0.isCompleted && $0.captureTime.isDirty }
     }
 
     var dirtyCount: Int { dirtyNegatives.count }

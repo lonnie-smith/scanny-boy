@@ -224,9 +224,9 @@ struct ContentView: View {
         }
     }
 
-    // A run always replaces (supersedes) whatever it overlaps — passing no
-    // `--skip-sources` is exactly that (CONTRACT.md: "replace is expressed
-    // by *not* skipping its sources").
+    // A run overwrites, in place, any existing negative whose source set
+    // exactly matches a new group's — passing no `--skip-sources` is exactly
+    // that (CONTRACT.md: "replace is expressed by *not* skipping its sources").
     private func startRun() {
         guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
         run.start(

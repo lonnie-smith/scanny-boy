@@ -493,15 +493,18 @@ def run_stitch(
     and ends `partial` (section 3.5). A cancelled negative is abandoned,
     not failed, and emits no `NegativeFailed`.
 
-    `overwrite` is accepted and unused: section 3.4 makes a roll additive, so
-    a stitch never replaces a published file.
+    `overwrite` is accepted and unused: a stitch overwrites the file of any
+    existing negative whose source set exactly matches the new group's, in
+    place (section 3.4's exact-member replace — the predecessor's record is
+    dropped and its output path reused); a non-matching group appends a new
+    negative with normal name suffixing.
 
     `negatives`, when given, restricts this stitch to the work manifest
     groups whose members exactly match one of the roll's existing negatives
     named by `negatives` (section 3.5's `--negatives` re-stitch path). Each
     match still publishes under a fresh `negative_id`, per section 3.4's
     additive model — an exact-member match is exactly what section 3.4's
-    supersession rule is for.
+    in-place replace rule is for.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -588,7 +591,7 @@ def run_stitch(
 
     if negatives:
         wanted_members = {
-            frozenset(n.members) for n in roll.live_negatives() if n.negative_id in negatives
+            frozenset(n.members) for n in roll.negatives if n.negative_id in negatives
         }
         groups = [g for g in groups if frozenset(g.members) in wanted_members]
         if not groups:
@@ -725,6 +728,30 @@ def run_stitch(
     return StitchOutcome(status=status, published=published, failed=failed)
 
 
+def _replace_exact_member_predecessor(
+    roll: RollManifest, members: list[str]
+) -> str | None:
+    """Section 3.4's in-place replace rule, manifest-only. If a live negative's
+    `members` set exactly equals `members`, drop it from the roll so its output
+    name is free for the new negative to reuse — the publish's
+    `staged_path.replace(dest)` then overwrites the old TIFF in place, with no
+    `superseded_by` field, no `NegativeSuperseded` event, and no separate
+    delete. Returns the predecessor's applied capture time (if any) for section
+    3.9's auto-reapply; `None` when nothing matched.
+
+    Exact-match, not the old subset rule: a regrouping (different
+    `shots_per_negative`) never matches exactly, so those negatives stay and
+    new ones append with normal name suffixing.
+    """
+    target = frozenset(members)
+    for i, existing in enumerate(roll.negatives):
+        if frozenset(existing.members) == target:
+            applied = existing.capture_time.applied_datetime_original
+            roll.negatives.pop(i)
+            return applied
+    return None
+
+
 def _append_this_run(
     roll: RollManifest,
     work_manifest: Manifest,
@@ -771,6 +798,11 @@ def _append_this_run(
     records: dict[str, NegativeRecord] = {}
     for index, group in enumerate(groups, start=1):
         negative_id = format_negative_id(run_record.short_id, index)
+        # Section 3.4: an exact-member re-stitch replaces the existing negative
+        # in place — drop the predecessor (freeing its output name for
+        # `allocate_output_name` to reuse) before allocating, and carry its
+        # applied capture time onto the new record for 3.9's auto-reapply.
+        inherited = _replace_exact_member_predecessor(roll, group.members)
         record = NegativeRecord(
             negative_id=negative_id,
             run_id=run_id,
@@ -778,6 +810,7 @@ def _append_this_run(
             expected_output=allocate_output_name(roll, group.members[0], negative_id),
             fill_color=FILL_COLOR,
         )
+        record.inherited_applied_datetime = inherited
         roll.negatives.append(record)
         records[group.group_id] = record
     return run_record, records
@@ -827,29 +860,8 @@ def _record_failure(
     )
 
 
-def _covered_applied_source(roll: RollManifest, record: NegativeRecord) -> NegativeRecord | None:
-    """Section 3.9: the existing, non-superseded negative `record` covers
-    (section 3.4's own subset test — the same one `mark_superseded` uses,
-    but read-only here: whether `record` will actually go on to supersede
-    it is section 3.4's replacement rule, executed later by `run`) that
-    already had a capture time applied. `None` when `record` covers
-    nothing, or covers only negatives that were never applied."""
-    covering = set(record.members)
-    for other in roll.negatives:
-        if other.negative_id == record.negative_id:
-            continue
-        if other.superseded_by is not None:
-            continue
-        if not set(other.members) <= covering:
-            continue
-        if other.capture_time.applied_datetime_original is not None:
-            return other
-    return None
-
-
 def _maybe_reapply_metadata(
     out_dir: Path,
-    roll: RollManifest,
     record: NegativeRecord,
     run_id: str,
     emit: EmitFn,
@@ -859,15 +871,18 @@ def _maybe_reapply_metadata(
     the manifest is written — the user is not asked, and nothing is left
     dirty. A failed re-apply leaves `record` `completed` with
     `applied_datetime_original` cleared (dirty, recoverable with Apply) and
-    never fails the stitch."""
-    source = _covered_applied_source(roll, record)
-    if source is None:
+    never fails the stitch.
+
+    The predecessor's applied value is carried on
+    `record.inherited_applied_datetime` (set when the exact-member predecessor
+    was dropped in `_append_this_run`), because the stitch overwrites
+    `record.capture_time` from the NEF at publish — so it cannot ride on
+    `capture_time`."""
+    if record.inherited_applied_datetime is None:
         return
 
     assert record.output is not None
-    record.capture_time.intended_datetime_original = (
-        source.capture_time.applied_datetime_original
-    )
+    record.capture_time.intended_datetime_original = record.inherited_applied_datetime
     intended = datetime.datetime.fromisoformat(record.capture_time.intended_datetime_original)
     tiff_path = out_dir / record.output["name"]
 
@@ -1008,7 +1023,7 @@ def _composite_and_publish(
             "height": height,
         }
         record.status = "completed"
-        _maybe_reapply_metadata(out_dir, roll, record, run_id, emit)
+        _maybe_reapply_metadata(out_dir, record, run_id, emit)
         write_roll_manifest(out_dir, roll)
         emit(
             NegativeDone(

@@ -182,13 +182,14 @@ class NegativeRecord:
     fill_color: tuple[int, int, int]
     status: str = "pending"
     # Section 3.7: the 1-based position in the roll, recomputed by
-    # `roll_sequence.py` (Chunk P3-6). Null while unranked, and null forever
-    # once superseded.
+    # `roll_sequence.py` (Chunk P3-6). Null while unranked.
     sequence: int | None = None
-    # Section 3.4: the `negative_id` that replaced this one. A superseded
-    # negative keeps its record and its output name, but not its file.
-    superseded_by: str | None = None
     capture_time: CaptureTime = dataclasses.field(default_factory=CaptureTime)
+    # Transient (never serialized): the applied capture time carried from an
+    # exact-member predecessor when this negative replaces it in place, so
+    # section 3.9's auto-reapply still fires after publish overwrites
+    # `capture_time` from the NEF. See `_replace_exact_member_predecessor`.
+    inherited_applied_datetime: str | None = None
     # `{name, size, sha256, width, height}`; a plain dict rather than a
     # dataclass because Phase 1's `OutputRecord` has no dimensions and this
     # module's dataclass list is fixed by the plan.
@@ -210,7 +211,6 @@ class NegativeRecord:
             "negative_id": self.negative_id,
             "run_id": self.run_id,
             "sequence": self.sequence,
-            "superseded_by": self.superseded_by,
             "members": self.members,
             "expected_output": self.expected_output,
             "status": self.status,
@@ -285,11 +285,6 @@ class RollManifest:
 
     def all_expected_outputs(self) -> list[str]:
         return [n.expected_output for n in self.negatives]
-
-    def live_negatives(self) -> list[NegativeRecord]:
-        """Every negative still standing: section 3.4's supersession leaves
-        the record in place, so "the roll's negatives" means this."""
-        return [n for n in self.negatives if n.superseded_by is None]
 
     def invariants(self) -> RollInvariants:
         return RollInvariants(
@@ -534,7 +529,6 @@ def _validate_negative_dict(data: Any) -> None:
         "negative_id",
         "run_id",
         "sequence",
-        "superseded_by",
         "members",
         "expected_output",
         "status",
@@ -558,10 +552,6 @@ def _validate_negative_dict(data: Any) -> None:
         data["sequence"] is None
         or (isinstance(data["sequence"], int) and data["sequence"] >= 1),
         "negative sequence is invalid",
-    )
-    _require(
-        data["superseded_by"] is None or isinstance(data["superseded_by"], str),
-        "negative superseded_by is invalid",
     )
     _require(
         isinstance(data["members"], list) and data["members"], "negative members is invalid"
@@ -777,7 +767,6 @@ def _roll_manifest_from_dict(data: dict[str, Any]) -> RollManifest:
                 negative_id=n["negative_id"],
                 run_id=n["run_id"],
                 sequence=n["sequence"],
-                superseded_by=n["superseded_by"],
                 members=list(n["members"]),
                 expected_output=n["expected_output"],
                 fill_color=tuple(n["fill_color"]),
@@ -914,8 +903,7 @@ def format_negative_id(short_id: str, index: int) -> str:
 
 
 def _claimed_output_names(manifest: RollManifest, negative_id: str) -> set[str]:
-    """Every name held by some *other* negative. A superseded negative still
-    holds its name (section 3.4), so it is in here too."""
+    """Every name held by some *other* negative."""
     claimed: set[str] = set()
     for n in manifest.negatives:
         if n.negative_id == negative_id:
@@ -935,8 +923,10 @@ def allocate_output_name(
     Phase 2's rule unchanged — the stem of the group's first member in
     canonical order, plus `.tif` — with one addition: if that name is already
     claimed by a *different* `negative_id`, append `-2`, `-3`, … until free.
-    A superseded negative still holds its name, so a name is never reissued.
-    Re-stitching under the same `negative_id` gets its own name back.
+    A name is never reissued to a second negative; an exact-member re-stitch
+    drops its predecessor before this runs (see
+    `_replace_exact_member_predecessor`), so it reuses the freed name and
+    overwrites the old file in place.
     """
     claimed = _claimed_output_names(manifest, negative_id)
     stem = Path(first_member).stem
@@ -946,34 +936,3 @@ def allocate_output_name(
         suffix += 1
         candidate = f"{stem}-{suffix}.tif"
     return candidate
-
-
-def mark_superseded(
-    manifest: RollManifest, replacement: NegativeRecord
-) -> list[NegativeRecord]:
-    """Section 3.4's replacement rule, applied to the manifest only.
-
-    Every existing non-superseded negative whose members are all covered by
-    `replacement`'s members is superseded by it: `superseded_by` set,
-    `sequence` nulled. Returns those records **without touching the
-    filesystem** — deleting their TIFFs and emitting `negative_superseded` is
-    the pipeline's job (Chunk P3-5), and the manifest is written first so a
-    crash leaves an orphan file rather than a dangling record.
-
-    The subset test means an exact rescan supersedes its predecessor, and so
-    does a regrouping that merges negatives. A regrouping that *splits* one
-    negative into several covers only part of it, so nothing is superseded.
-    """
-    covering = set(replacement.members)
-    superseded: list[NegativeRecord] = []
-    for negative in manifest.negatives:
-        if negative.negative_id == replacement.negative_id:
-            continue
-        if negative.superseded_by is not None:
-            continue
-        if not set(negative.members) <= covering:
-            continue
-        negative.superseded_by = replacement.negative_id
-        negative.sequence = None
-        superseded.append(negative)
-    return superseded

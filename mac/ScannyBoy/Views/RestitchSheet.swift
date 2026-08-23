@@ -15,9 +15,11 @@ import SwiftUI
 /// over intermediates already on disk rather than a fresh input selection.
 /// This sheet asks for one general, explicit agreement instead of an
 /// itemized one, and
-/// passes `--overwrite` unconditionally once it is given — a no-op if the
-/// output folder turns out to hold nothing that conflicts. Real enforcement,
-/// as everywhere else in this app, happens for real, server-side, in
+/// passes `--overwrite` unconditionally once it is given — accepted and
+/// unused by the CLI, since a re-stitch of a group whose source set exactly
+/// matches an existing negative now overwrites that negative's TIFF in place
+/// (section 3.4) rather than appending a suffixed copy. Real enforcement, as
+/// everywhere else in this app, happens for real, server-side, in
 /// `run_stitch`.
 struct RestitchSheet: View {
     let run: RunModel

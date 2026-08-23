@@ -592,7 +592,7 @@ struct RunModelTests {
         // withhold the Run button.
         #expect(model.runEnabled)
 
-        // Every group runs and supersedes whatever it overlaps — no
+        // Every group runs and overwrites whatever it overlaps in place — no
         // `--skip-sources` is ever passed.
         let command = try #require(model.runCommand())
         #expect(!command.arguments.contains("--skip-sources"))
@@ -950,7 +950,7 @@ struct RunModelTests {
             "work_dir":null,"started_at":"2026-08-02T12:00:00","finished_at":null}],\
             "sources":[],\
             "negatives":[{"negative_id":"negative-01","run_id":"\(runID)","sequence":null,\
-            "superseded_by":null,"members":["a.NEF","b.NEF","c.NEF"],"expected_output":"a.tif",\
+            "members":["a.NEF","b.NEF","c.NEF"],"expected_output":"a.tif",\
             "status":"\(negativeStatus)","output":\(output),"frames":[],"pairs":[],\
             "global_rms_px":1.0,"canvas":null,"valid_rect":null,"fill_color":[0,0,0],\
             "rebate_deviation_px":null,"error_code":null,"error_message":null,\

@@ -153,7 +153,7 @@ def scan_library(library: Path) -> list[RollListing]:
     """What `roll list` reports from: every roll `list_rolls` finds, loaded
     and validated. A manifest that fails to load or is not format version 2
     becomes an `"unreadable"` listing carrying its section 3.12 code, rather
-    than raising. `negative_count` excludes superseded negatives."""
+    than raising. `negative_count` is the count of the roll's negatives."""
     listings: list[RollListing] = []
     for roll_dir in list_rolls(library):
         try:
@@ -177,7 +177,7 @@ def scan_library(library: Path) -> list[RollListing]:
                 reason=None,
                 roll_id=manifest.roll_id,
                 roll_name=manifest.roll_name,
-                negative_count=len(manifest.live_negatives()),
+                negative_count=len(manifest.negatives),
             )
         )
     return listings

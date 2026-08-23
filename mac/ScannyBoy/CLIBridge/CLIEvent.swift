@@ -34,7 +34,6 @@ public struct CLIEvent: Sendable, Hashable {
         case rollList
         case rollInfo
         case rollRenamed
-        case negativeSuperseded
         case metadataApplied
         case metadataSkipped
         /// An event type this version of the app does not know. Its fields are
@@ -58,7 +57,6 @@ public struct CLIEvent: Sendable, Hashable {
             case "roll_list": self = .rollList
             case "roll_info": self = .rollInfo
             case "roll_renamed": self = .rollRenamed
-            case "negative_superseded": self = .negativeSuperseded
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
             default: self = .unknown(name)
@@ -82,7 +80,6 @@ public struct CLIEvent: Sendable, Hashable {
             case .rollList: "roll_list"
             case .rollInfo: "roll_info"
             case .rollRenamed: "roll_renamed"
-            case .negativeSuperseded: "negative_superseded"
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
             case .unknown(let name): name
@@ -154,10 +151,6 @@ extension CLIEvent {
 
     // `roll_info`
     public var manifest: [String: JSONValue]? { fields["manifest"]?.objectValue }
-
-    // `negative_superseded`
-    public var oldNegativeID: String? { fields["old_negative_id"]?.stringValue }
-    public var newNegativeID: String? { fields["new_negative_id"]?.stringValue }
 
     // `progress` and `item_done`
     public var sourceIndex: Int? { fields["source_index"]?.intValue }
@@ -289,7 +282,6 @@ public enum CLICode: Sendable, Hashable {
     case perNegativeLocked
     case outputModifiedExternally
     case metadataWriteFailed
-    case supersededFileNotRemoved
     case unknown(String)
 
     public init(name: String) {
@@ -336,7 +328,6 @@ public enum CLICode: Sendable, Hashable {
         case "PER_NEGATIVE_LOCKED": self = .perNegativeLocked
         case "OUTPUT_MODIFIED_EXTERNALLY": self = .outputModifiedExternally
         case "METADATA_WRITE_FAILED": self = .metadataWriteFailed
-        case "SUPERSEDED_FILE_NOT_REMOVED": self = .supersededFileNotRemoved
         default: self = .unknown(name)
         }
     }
@@ -385,7 +376,6 @@ public enum CLICode: Sendable, Hashable {
         case .perNegativeLocked: "PER_NEGATIVE_LOCKED"
         case .outputModifiedExternally: "OUTPUT_MODIFIED_EXTERNALLY"
         case .metadataWriteFailed: "METADATA_WRITE_FAILED"
-        case .supersededFileNotRemoved: "SUPERSEDED_FILE_NOT_REMOVED"
         case .unknown(let name): name
         }
     }

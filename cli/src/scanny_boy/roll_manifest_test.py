@@ -22,7 +22,6 @@ from scanny_boy.roll_manifest import (
     estimate_roll_manifest_size,
     format_negative_id,
     load_roll_manifest,
-    mark_superseded,
     merge_sources,
     new_roll_manifest,
     validate_roll_manifest_dict,
@@ -169,7 +168,6 @@ def test_v2_round_trips(tmp_path):
     assert negative.canvas == (2080, 730)
     assert negative.valid_rect == (10, 10, 2000, 700)
     assert negative.sequence == 1
-    assert negative.superseded_by is None
     assert negative.capture_time.source_datetime_original == "2026-08-02T12:33:41.450000"
     assert negative.capture_time.applied_datetime_original is None
     assert loaded.all_expected_outputs() == ["_DSC4638.tif"]
@@ -502,148 +500,3 @@ def test_allocate_output_name_is_stable_across_reordering():
     assert allocate_output_name(manifest, "_DSC4638.NEF", "run-2-negative-01") == (
         "_DSC4638-2.tif"
     )
-
-
-def test_allocate_output_name_never_reissues_a_superseded_name():
-    """Section 3.4: a superseded negative's record is never removed and its
-    output name stays claimed."""
-    dead = _negative(
-        negative_id="run-1-negative-01",
-        expected_output="_DSC4638.tif",
-        superseded_by="run-2-negative-01",
-        sequence=None,
-    )
-    replacement = _negative(
-        negative_id="run-2-negative-01", expected_output="_DSC4638-2.tif"
-    )
-    manifest = _manifest(negatives=[dead, replacement])
-
-    assert allocate_output_name(manifest, "_DSC4638.NEF", "run-3-negative-01") == (
-        "_DSC4638-3.tif"
-    )
-
-
-# --- section 3.4: supersession ------------------------------------------
-
-
-def _roll_with(members_by_id: dict[str, list[str]]) -> RollManifest:
-    return _manifest(
-        negatives=[
-            _negative(
-                negative_id=nid,
-                members=members,
-                expected_output=f"{members[0].split('.')[0]}.tif",
-                status="completed",
-                sequence=i,
-            )
-            for i, (nid, members) in enumerate(members_by_id.items(), start=1)
-        ]
-    )
-
-
-def test_mark_superseded_covers_an_exact_member_match():
-    manifest = _roll_with({"old-negative-01": ["a.NEF", "b.NEF"]})
-    replacement = _negative(
-        negative_id="new-negative-01",
-        members=["a.NEF", "b.NEF"],
-        expected_output="a-2.tif",
-        status="completed",
-        sequence=1,
-    )
-    manifest.negatives.append(replacement)
-
-    superseded = mark_superseded(manifest, replacement)
-
-    assert [n.negative_id for n in superseded] == ["old-negative-01"]
-    assert manifest.negative("old-negative-01").superseded_by == "new-negative-01"
-    # The record is never removed, and the replacement is untouched.
-    assert len(manifest.negatives) == 2
-    assert replacement.superseded_by is None
-
-
-def test_mark_superseded_covers_a_merging_regroup():
-    """Two negatives merged into one: every member of each old negative is
-    present in the new one, so both are covered."""
-    manifest = _roll_with(
-        {
-            "old-negative-01": ["a.NEF", "b.NEF"],
-            "old-negative-02": ["c.NEF"],
-            "old-negative-03": ["z.NEF"],
-        }
-    )
-    replacement = _negative(
-        negative_id="new-negative-01",
-        members=["a.NEF", "b.NEF", "c.NEF"],
-        expected_output="a-2.tif",
-        status="completed",
-    )
-    manifest.negatives.append(replacement)
-
-    superseded = mark_superseded(manifest, replacement)
-
-    assert [n.negative_id for n in superseded] == ["old-negative-01", "old-negative-02"]
-    # The untouched neighbour keeps its sequence.
-    assert manifest.negative("old-negative-03").superseded_by is None
-    assert manifest.negative("old-negative-03").sequence == 3
-
-
-def test_mark_superseded_ignores_a_splitting_regroup():
-    """Section 3.4: a regrouping that *splits* one negative covers only part
-    of it, so nothing is superseded and both remain. Phase 3 does not clean
-    that up."""
-    manifest = _roll_with({"old-negative-01": ["a.NEF", "b.NEF", "c.NEF"]})
-    replacement = _negative(
-        negative_id="new-negative-01",
-        members=["a.NEF", "b.NEF"],
-        expected_output="a-2.tif",
-        status="completed",
-    )
-    manifest.negatives.append(replacement)
-
-    assert mark_superseded(manifest, replacement) == []
-    assert manifest.negative("old-negative-01").superseded_by is None
-    assert manifest.negative("old-negative-01").sequence == 1
-
-
-def test_mark_superseded_nulls_the_sequence():
-    manifest = _roll_with(
-        {
-            "old-negative-01": ["a.NEF"],
-            "old-negative-02": ["b.NEF"],
-            "old-negative-03": ["c.NEF"],
-        }
-    )
-    replacement = _negative(
-        negative_id="new-negative-01",
-        members=["b.NEF"],
-        expected_output="b-2.tif",
-        status="completed",
-        sequence=2,
-    )
-    manifest.negatives.append(replacement)
-
-    mark_superseded(manifest, replacement)
-
-    assert manifest.negative("old-negative-02").sequence is None
-    # Section 3.7: the replacement takes the position, so the neighbours do
-    # not move.
-    assert manifest.negative("old-negative-01").sequence == 1
-    assert manifest.negative("old-negative-03").sequence == 3
-    assert [n.negative_id for n in manifest.live_negatives()] == [
-        "old-negative-01",
-        "old-negative-03",
-        "new-negative-01",
-    ]
-
-
-def test_mark_superseded_skips_an_already_superseded_negative():
-    manifest = _roll_with({"old-negative-01": ["a.NEF"]})
-    manifest.negative("old-negative-01").superseded_by = "mid-negative-01"
-    manifest.negative("old-negative-01").sequence = None
-    replacement = _negative(
-        negative_id="new-negative-01", members=["a.NEF"], expected_output="a-3.tif"
-    )
-    manifest.negatives.append(replacement)
-
-    assert mark_superseded(manifest, replacement) == []
-    assert manifest.negative("old-negative-01").superseded_by == "mid-negative-01"

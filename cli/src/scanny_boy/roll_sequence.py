@@ -17,12 +17,12 @@ NOON = datetime.time(12, 0, 0)
 
 
 def _sequenceable(manifest: RollManifest) -> list:
-    """Every negative that can hold a position in the roll: not superseded,
-    and actually published -- a `pending` or `failed` negative has no real
-    capture time to rank by and nothing to display."""
+    """Every negative that can hold a position in the roll: actually published
+    -- a `pending` or `failed` negative has no real capture time to rank by and
+    nothing to display."""
     return [
         n
-        for n in manifest.live_negatives()
+        for n in manifest.negatives
         if n.status == "completed" and n.capture_time.source_datetime_original is not None
     ]
 

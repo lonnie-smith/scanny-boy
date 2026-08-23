@@ -336,8 +336,8 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to
-        // withhold the Run command — every group runs and supersedes
-        // whatever it overlaps.
+        // withhold the Run command — every group runs and overwrites
+        // whatever it overlaps in place.
         let command = try #require(model.runCommand())
         #expect(!command.arguments.contains("--skip-sources"))
     }

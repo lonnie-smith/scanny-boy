@@ -143,7 +143,6 @@
         "negative_id",
         "run_id",
         "sequence",
-        "superseded_by",
         "members",
         "expected_output",
         "status",
@@ -163,7 +162,6 @@
         "negative_id": { "type": "string" },
         "run_id": { "type": "string" },
         "sequence": { "type": ["integer", "null"], "minimum": 1 },
-        "superseded_by": { "type": ["string", "null"] },
         "members": {
           "type": "array",
           "items": { "type": "string" },

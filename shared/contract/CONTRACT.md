@@ -15,6 +15,15 @@ overlap detection, and a metadata-apply stage. A client that only understands
 protocol version 2 must reject a version-3 stream rather than guess at the
 new fields.
 
+A re-stitch of a negative whose source set exactly matches an existing
+negative's now overwrites that negative's file in place and drops the old
+record, with no supersession state stored. The `negative_superseded` event and
+the `SUPERSEDED_FILE_NOT_REMOVED` warning code are no longer emitted (an
+unknown event/code from an older stream still decodes via the `unknown`
+fallback rather than failing). The roll manifest's `superseded_by` field is no
+longer written and is optional at manifest format version 2; old manifests
+carrying it still load.
+
 ## Invocation
 
 ```text
@@ -155,7 +164,6 @@ computed default is never rejected this way, only lowered.
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
-| `negative_superseded` | A newly published negative replaced an earlier one. Carries `old_negative_id` and `new_negative_id`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
@@ -198,8 +206,8 @@ cancelled, it emits no `item_done` events for that group's staged files.
 `roll_list` carries `rolls`, an array of `{path, status, reason, roll_id,
 roll_name, negative_count}`. `status` is `"ok"` or `"unreadable"`. `reason`
 is `{code, message}` for an unreadable roll and null otherwise; the
-remaining fields are null when unreadable. `negative_count` excludes
-superseded negatives.
+remaining fields are null when unreadable. `negative_count` is the count of
+the roll's negatives.
 
 ### Cancellation
 
@@ -264,7 +272,6 @@ staging directories, and reruns the incomplete negative.
 | `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
 | `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
-| `SUPERSEDED_FILE_NOT_REMOVED` | Warning: a superseded negative's TIFF could not be deleted |
 
 ## Exit status
 

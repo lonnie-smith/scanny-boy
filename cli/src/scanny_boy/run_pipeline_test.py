@@ -22,7 +22,7 @@ from scanny_boy import raw_decode
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.catalogue import read_capture_timestamp
 from scanny_boy.disk_check import DiskCheckError
-from scanny_boy.events import Code, NegativeSuperseded, Progress, Stage, WarningEvent
+from scanny_boy.events import Code, Progress, Stage
 from scanny_boy.pipeline import STEPS_PER_FRAME
 from scanny_boy.roll_manifest import (
     load_roll_manifest,
@@ -150,17 +150,21 @@ def _run_into_roll(
     )
 
 
-def _publish_and_supersede(tmp_path, monkeypatch):
+def _publish_and_replace(tmp_path, monkeypatch):
     """Two genuine runs of the same roll over the identical selection: the
-    second's negative covers the first's exactly, so it supersedes it
-    (section 3.4). Returns `(roll_dir, old_negative_id, events_from_the_second_run)`."""
+    second's negative covers the first's exactly, so it replaces it in place
+    (section 3.4) -- overwriting the first's TIFF at the same path and dropping
+    the first's record. Returns `(roll_dir, old_negative_id, old_expected_output,
+    events_from_the_second_run)`."""
     roll_dir = _out_dir(tmp_path)
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
-    old_negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    first = load_roll_manifest(roll_dir).negatives[0]
+    old_negative_id = first.negative_id
+    old_expected_output = first.expected_output
 
     events: list = []
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events)
-    return roll_dir, old_negative_id, events
+    return roll_dir, old_negative_id, old_expected_output, events
 
 
 # --- cleanup ---------------------------------------------------------------
@@ -492,43 +496,39 @@ def test_stitched_tiff_carries_real_capture_time(tmp_path, monkeypatch):
 
 
 @requires_real_samples
-def test_unskipped_overlap_supersedes_the_prior_negative(tmp_path, monkeypatch):
-    roll_dir, old_id, events = _publish_and_supersede(tmp_path, monkeypatch)
+def test_rerun_overwrites_the_prior_negative_in_place(tmp_path, monkeypatch):
+    roll_dir, old_id, old_expected, _events = _publish_and_replace(
+        tmp_path, monkeypatch
+    )
 
     roll = load_roll_manifest(roll_dir)
-    old = roll.negative(old_id)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
-
-    assert old.superseded_by == new.negative_id
-    assert old.sequence is None
+    # The predecessor's record is gone, not marked superseded.
+    assert old_id not in {n.negative_id for n in roll.negatives}
+    assert len(roll.negatives) == 1
+    new = roll.negatives[0]
+    # The new negative reuses the predecessor's output path, overwriting it.
+    assert new.expected_output == old_expected
     assert new.status == "completed"
-    assert new.superseded_by is None
-
-    superseded_events = [e for e in events if isinstance(e, NegativeSuperseded)]
-    assert len(superseded_events) == 1
-    assert superseded_events[0].old_negative_id == old_id
-    assert superseded_events[0].new_negative_id == new.negative_id
 
 
 @requires_real_samples
-def test_superseded_tiff_is_deleted_and_its_name_stays_claimed(tmp_path, monkeypatch):
-    roll_dir, old_id, _events = _publish_and_supersede(tmp_path, monkeypatch)
+def test_rerun_overwrites_the_prior_tiff_in_place(tmp_path, monkeypatch):
+    roll_dir, _old_id, old_expected, _events = _publish_and_replace(
+        tmp_path, monkeypatch
+    )
 
     roll = load_roll_manifest(roll_dir)
-    old = roll.negative(old_id)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
-
-    # The predecessor's file is gone, but its name is still on the record
-    # (section 3.4) -- the replacement had to publish under a different one.
-    assert not (roll_dir / old.expected_output).exists()
-    assert new.output["name"] != old.expected_output
-    assert (roll_dir / new.output["name"]).exists()
+    new = roll.negatives[0]
+    # The prior TIFF is overwritten in place at the same path -- no -2 sibling.
+    assert new.output["name"] == old_expected
+    assert (roll_dir / old_expected).exists()
+    assert not (roll_dir / (Path(old_expected).stem + "-2.tif")).exists()
 
 
 @requires_real_samples
-def test_superseded_negative_leaves_neighbours_sequence_unchanged(tmp_path, monkeypatch):
-    """Section 3.4: superseding one negative must not disturb an unrelated
-    neighbour's position in the roll's real sequence (Chunk P3-6's
+def test_rerun_leaves_an_unrelated_neighbours_sequence_unchanged(tmp_path, monkeypatch):
+    """Section 3.4: replacing one negative in place must not disturb an
+    unrelated neighbour's position in the roll's real sequence (Chunk P3-6's
     `roll_sequence.py`, recomputed on every manifest write)."""
     roll_dir = _out_dir(tmp_path)
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
@@ -544,36 +544,3 @@ def test_superseded_negative_leaves_neighbours_sequence_unchanged(tmp_path, monk
     roll = load_roll_manifest(roll_dir)
     unchanged = roll.negative(neighbour.negative_id)
     assert unchanged.sequence == neighbour_sequence_before
-    assert unchanged.superseded_by is None
-
-
-@requires_real_samples
-def test_failed_supersede_delete_warns_but_does_not_fail_the_run(tmp_path, monkeypatch):
-    roll_dir = _out_dir(tmp_path)
-    _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
-    roll = load_roll_manifest(roll_dir)
-    old_path = roll_dir / roll.negatives[0].output["name"]
-
-    real_unlink = Path.unlink
-
-    def _failing_unlink(self, *args, **kwargs):
-        if self == old_path:
-            raise OSError("simulated delete failure")
-        return real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", _failing_unlink)
-
-    events: list = []
-    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events)
-
-    assert outcome.status == "complete"
-    assert old_path.exists()  # the delete failed; the stray file remains
-
-    warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent) and e.code is Code.SUPERSEDED_FILE_NOT_REMOVED
-    ]
-    assert len(warnings) == 1
-    superseded_events = [e for e in events if isinstance(e, NegativeSuperseded)]
-    assert len(superseded_events) == 1

@@ -22,7 +22,7 @@ struct Roll: Identifiable, Sendable, Hashable {
     let reason: Reason?
     let rollID: String?
     let rollName: String?
-    /// Excludes superseded negatives (section 3.5).
+    /// The count of the roll's negatives (section 3.5).
     let negativeCount: Int?
 
     /// `rollID` when the roll loaded; the path otherwise, since an

@@ -14,7 +14,6 @@ from scanny_boy.events import (
     MetadataSkipped,
     NegativeDone,
     NegativeFailed,
-    NegativeSuperseded,
     PipelineStep,
     ProbeResult,
     Progress,
@@ -100,7 +99,6 @@ ALL_EVENTS: list[Event] = [
         ]
     ),
     RollInfo(manifest={"manifest_format_version": 2, "manifest_kind": "roll"}),
-    NegativeSuperseded(old_negative_id="a1b2c3-negative-01", new_negative_id="d4e5f6-negative-02"),
     MetadataApplied(negative_id="a1b2c3-negative-01"),
     MetadataSkipped(
         negative_id="a1b2c3-negative-02",
@@ -198,7 +196,6 @@ def test_new_event_kinds_round_trip():
         RollList(rolls=[]),
         RollInfo(manifest={"manifest_kind": "roll"}),
         RollRenamed(roll_id="id", roll_name="new name", path="/tmp/roll-2"),
-        NegativeSuperseded(old_negative_id="old", new_negative_id="new"),
         MetadataApplied(negative_id="neg-1"),
         MetadataSkipped(
             negative_id="neg-2",
