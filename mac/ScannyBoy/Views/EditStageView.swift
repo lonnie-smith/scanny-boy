@@ -27,9 +27,13 @@ struct EditStageView: View {
         .formStyle(.grouped)
         .padding()
         .disabled(run.isActive)
-        .onChange(of: run.phase) { _, phase in
-            // Apply just finished — the dirty count and applied timestamps
-            // it changed are only known once the roll is re-read.
+        // `initial: true` matters: a run usually finishes while this tab is
+        // not mounted (runs are started from Add Scans), so the phase can
+        // already be `.finished` when the tab first appears — and that is
+        // exactly when the pre-run manifest it would otherwise show is
+        // stale. Apply just finished — the dirty count and applied
+        // timestamps it changed are only known once the roll is re-read.
+        .onChange(of: run.phase, initial: true) { _, phase in
             if phase == .finished { edit.refresh() }
         }
     }

@@ -115,4 +115,52 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n2", "n1"])
     }
+
+    @Test("Refresh re-reads the manifest a run just rewrote")
+    func testRefreshPicksUpNegativesAddedAfterTheFirstFetch() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let empty = Self.rollInfoEvent(negatives: [])
+        let fresh = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(
+                negativeID: "n1", sequence: 1,
+                intended: "2026-08-02T12:00:00", applied: nil
+            ),
+            Self.negativeJSON(
+                negativeID: "n2", sequence: 2,
+                intended: "2026-08-02T12:00:01", applied: nil
+            ),
+        ])
+        // The fake helper's first `roll info` sees the empty roll the
+        // user just created; every later one sees the two negatives a
+        // run has since stitched into it. The marker lives next to the
+        // script itself: the helper's working directory is not writable
+        // (or shared), so a bare relative path would never flip.
+        let marker = directory.appending(path: "second-call").path
+        let script = """
+            if [ -f '\(marker)' ]; then
+              echo '\(fresh)'
+            else
+              : > '\(marker)'
+              echo '\(empty)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = EditModel(runner: CLIRunner(executable: executable))
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        #expect(model.visibleNegatives.isEmpty)
+
+        // `ContentView`'s run-completion tail calls exactly this; the
+        // roll URL itself never changes, so nothing else would refetch.
+        model.refresh()
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives.map(\.negativeID) == ["n1", "n2"])
+        #expect(model.dirtyCount == 2)
+    }
 }

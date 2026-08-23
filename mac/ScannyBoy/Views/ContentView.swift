@@ -263,18 +263,27 @@ struct ContentView: View {
         )
         // The roll's contents, and therefore selection validity, change as
         // soon as this finishes.
-        Task {
-            await run.waitForCompletion()
-            model.refreshValidation()
-        }
+        awaitRunCompletionAndRefresh()
     }
 
     /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
     /// so its contents may have changed too.
     private func handleRestitchStarted() {
+        awaitRunCompletionAndRefresh()
+    }
+
+    /// A run (or re-stitch) rewrites the roll manifest while it works, so
+    /// everything that reads the roll back has to re-read it once the run
+    /// finishes — not just this tab's validation probe. The Edit tab in
+    /// particular may never have been mounted while the run ran, so nothing
+    /// else would ever tell `EditModel` the manifest changed: it keeps
+    /// showing the pre-run negative list and dirty count.
+    private func awaitRunCompletionAndRefresh() {
         Task {
             await run.waitForCompletion()
             model.refreshValidation()
+            edit.refresh()
+            library.scan()
         }
     }
 
