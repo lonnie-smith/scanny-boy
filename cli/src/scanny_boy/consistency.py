@@ -4,11 +4,16 @@ Kept independent of file I/O (operates on `metadata.SourceSettings`) so it
 can be tested without real NEFs or rawpy. See
 `docs/IMPLEMENTATION_PLAN.md` section 3.2.
 
-Exposure time, aperture, ISO, focal length, and source orientation are all
-required per section 3.5's tag table (or, for orientation, per section
-3.2's general comparison list, since orientation is not itself a section
-3.5 output tag): missing anywhere stops with `CAPTURE_METADATA_MISSING`,
-and a present-but-differing value stops with `CAPTURE_SETTINGS_DIFFER`.
+Exposure time is required per section 3.5's tag table: missing anywhere
+stops with `CAPTURE_METADATA_MISSING`, but its value is deliberately not
+compared across the selection — exposure properties may differ across a
+roll (see `docs/ARCHITECTURE.md`'s blending discussion).
+
+Aperture, ISO, focal length, and source orientation are required per
+section 3.5's tag table (or, for orientation, per section 3.2's general
+comparison list, since orientation is not itself a section 3.5 output
+tag): missing anywhere stops with `CAPTURE_METADATA_MISSING`, and a
+present-but-differing value stops with `CAPTURE_SETTINGS_DIFFER`.
 
 Lens model is `optional` per section 3.5: missing is a warning, not a stop.
 But section 3.2 still lists lens among the fields to compare, so among the
@@ -52,7 +57,7 @@ class ConsistencyResult:
     warnings: list[ConsistencyWarning]
 
 
-def _require_equal(
+def _require_present(
     settings_list: list[SourceSettings],
     getter: Callable[[SourceSettings], object],
     field_label: str,
@@ -63,6 +68,14 @@ def _require_equal(
             Code.CAPTURE_METADATA_MISSING,
             f"{field_label} is missing from: {', '.join(missing)}",
         )
+
+
+def _require_equal(
+    settings_list: list[SourceSettings],
+    getter: Callable[[SourceSettings], object],
+    field_label: str,
+) -> None:
+    _require_present(settings_list, getter, field_label)
     values = {getter(s) for s in settings_list}
     if len(values) > 1:
         detail = ", ".join(f"{s.filename}={getter(s)}" for s in settings_list)
@@ -142,7 +155,7 @@ def check_consistency(settings_list: list[SourceSettings]) -> ConsistencyResult:
     """Validate `settings_list` (one entry per selected file, any order).
     Raises `ConsistencyError` on the first problem found; otherwise returns
     warnings for optional tags missing from individual files."""
-    _require_equal(settings_list, lambda s: s.exposure_time, "exposure time")
+    _require_present(settings_list, lambda s: s.exposure_time, "exposure time")
     _require_equal(settings_list, lambda s: s.f_number, "aperture")
     _require_equal(settings_list, lambda s: s.iso, "ISO")
     _require_equal(settings_list, lambda s: s.focal_length, "focal length")

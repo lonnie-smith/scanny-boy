@@ -34,10 +34,22 @@ def test_uniform_settings_pass_with_no_warnings():
     assert result.warnings == []
 
 
+def test_mismatched_exposure_time_passes_with_no_warnings():
+    # Exposure time is required per file but deliberately not compared
+    # across the selection; exposure may differ across a roll.
+    settings_list = [
+        _settings("a.NEF"),
+        _settings("b.NEF", exposure_time=Fraction(1, 60)),
+    ]
+
+    result = check_consistency(settings_list)
+
+    assert result.warnings == []
+
+
 @pytest.mark.parametrize(
     ("field", "differing_value", "field_label"),
     [
-        ("exposure_time", Fraction(1, 60), "exposure time"),
         ("f_number", Fraction(4, 1), "aperture"),
         ("iso", 200, "ISO"),
         ("focal_length", Fraction(85, 1), "focal length"),
