@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
+    @State private var isPresentingNewRollSheet = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -41,15 +42,22 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(library: library, selection: $selection, runIsActive: run.isActive)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             if selection != nil {
                 workspace
             } else {
-                ContentUnavailableView(
-                    "No Roll Selected",
-                    systemImage: "photo.stack",
-                    description: Text("Choose a roll from the sidebar, or create one.")
-                )
+                ContentUnavailableView {
+                    Label("No Roll Selected", systemImage: "photo.stack")
+                } description: {
+                    Text("Choose a roll from the sidebar, or create one.")
+                } actions: {
+                    Button("New Roll…") {
+                        isPresentingNewRollSheet = true
+                    }
+                    .disabled(run.isActive)
+                    .accessibilityIdentifier("newRollButtonEmptyState")
+                }
             }
         }
         .frame(minWidth: 720, minHeight: 480)
@@ -70,6 +78,11 @@ struct ContentView: View {
                 workDirectory: restitchWorkDirectory,
                 outputFolder: restitchOutputFolder
             )
+        }
+        .sheet(isPresented: $isPresentingNewRollSheet) {
+            NewRollSheet(library: library) { roll in
+                selection = roll.id
+            }
         }
     }
 
