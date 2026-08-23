@@ -321,7 +321,6 @@ def test_end_to_end_on_real_samples(tmp_path):
 
     for negative in manifest.negatives:
         assert negative.run_id == "stitch-run"
-        assert negative.superseded_by is None
         # Section 5.4 decision 4: the roll records the capture time the
         # negative's first frame actually carries. The metadata stage's three
         # fields are untouched by a stitch.
@@ -812,11 +811,11 @@ def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     assert seeded.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
 
 
-def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
-    """Section 3.4, replacing Phase 2's overwrite-conflict test (section 5.4
-    decision 3). A roll is additive: a second run publishes alongside the
-    first under `-2`, and nothing is overwritten in place, ever. Two genuine
-    runs, per section 4 — a hand-edited manifest would prove nothing."""
+def test_second_stitch_adopts_the_first_negative(tmp_path):
+    """The replacement rule: re-stitching the same group adopts the covered
+    negative in place — same `negative_id`, same output name, record
+    updated with the new run's data. Two genuine runs, per section 4 — a
+    hand-edited manifest would prove nothing."""
     work_dir = _make_work_dir(tmp_path)
     out_dir = _roll_dir(tmp_path)
 
@@ -824,31 +823,52 @@ def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
     second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
 
     assert first.published == ["IMG_00.tif"]
-    assert second.published == ["IMG_00-2.tif"]
+    assert second.published == ["IMG_00.tif"]
     assert second.status == "complete"
     assert (out_dir / "IMG_00.tif").exists()
-    assert (out_dir / "IMG_00-2.tif").exists()
 
     roll = load_roll_manifest(out_dir)
     assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
-    # Section 3.4: `short_id`s are unique, so `negative_id`s are too.
-    assert [n.negative_id for n in roll.negatives] == [
-        "stitch-negative-01",
-        "stitch-r-negative-01",
-    ]
-    assert all(n.status == "completed" for n in roll.negatives)
-    # Nothing is superseded: P3-2 records the rule, and P3-5 executes it.
-    assert all(n.superseded_by is None for n in roll.negatives)
-    assert roll.negative("stitch-r-negative-01").output["name"] == "IMG_00-2.tif"
-    # The first negative's name never moved.
-    assert roll.negative("stitch-negative-01").output["name"] == "IMG_00.tif"
+    assert len(roll.negatives) == 1
+    # The adopted record keeps its id and name, but the run behind it is
+    # the new one.
+    adopted = roll.negatives[0]
+    assert adopted.negative_id == "stitch-negative-01"
+    assert adopted.run_id == "stitch-run-2"
+    assert adopted.status == "completed"
+    assert adopted.output["name"] == "IMG_00.tif"
+    assert adopted.expected_output == "IMG_00.tif"
+    published = out_dir / "IMG_00.tif"
+    assert hashing.sha256_file(published) == adopted.output["sha256"]
+
+
+def test_second_stitch_keeps_a_suffixed_name_it_adopted(tmp_path):
+    """Adoption keeps whatever `expected_output` the covered negative held,
+    even a `-2` suffix — the name is the negative's, not a re-derivation."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    _stitch(work_dir, out_dir)
+    roll = load_roll_manifest(out_dir)
+    roll.negatives[0].expected_output = "IMG_00-2.tif"
+    roll.negatives[0].output["name"] = "IMG_00-2.tif"
+    write_roll_manifest(out_dir, roll)
+    (out_dir / "IMG_00.tif").replace(out_dir / "IMG_00-2.tif")
+
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
+
+    assert second.published == ["IMG_00-2.tif"]
+    roll = load_roll_manifest(out_dir)
+    assert len(roll.negatives) == 1
+    assert roll.negatives[0].negative_id == "stitch-negative-01"
+    assert roll.negatives[0].output["name"] == "IMG_00-2.tif"
 
 
 def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     """Section 3.5's `--negatives` re-stitch path: a work directory with two
     negatives, restricted to one already-published `negative_id`, publishes
-    only that one — under a fresh `negative_id` of its own, per section
-    3.4's additive model."""
+    only that one — adopting it in place, same `negative_id`, per the
+    replacement rule."""
     work_dir = _make_work_dir(tmp_path, negatives=2)
     out_dir = _roll_dir(tmp_path)
 
@@ -866,7 +886,7 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     republished = [n for n in roll.negatives if n.run_id == "stitch-run-2"]
     assert len(republished) == 1
     assert republished[0].members == target.members
-    assert republished[0].negative_id != target.negative_id
+    assert republished[0].negative_id == target.negative_id
 
 
 # --- P3-8: re-apply after re-stitch (section 3.9) -------------------------
@@ -899,18 +919,21 @@ def test_restitch_reapplies_metadata(tmp_path):
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
-    assert new.capture_time.intended_datetime_original == _REAPPLY_INTENDED
-    assert new.capture_time.applied_datetime_original == _REAPPLY_INTENDED
+    adopted = roll.negative(old_id)
+    assert adopted.run_id == "stitch-run-2"
+    # The adopted negative's applied time carried forward: it stays applied,
+    # not dirty.
+    assert adopted.capture_time.intended_datetime_original == _REAPPLY_INTENDED
+    assert adopted.capture_time.applied_datetime_original == _REAPPLY_INTENDED
 
-    tiff_path = out_dir / new.output["name"]
+    tiff_path = out_dir / adopted.output["name"]
     info = tifftools.read_tiff(str(tiff_path))
     exif = info["ifds"][0]["tags"][Tag.ExifIFD.value]["ifds"][0][0]["tags"]
     assert exif[DATE_TIME_ORIGINAL]["data"] == "2026:01:15 09:30:00"
     assert exif[SUBSEC_TIME_ORIGINAL]["data"] == "25"
 
     applied_events = [e for e in events if isinstance(e, MetadataApplied)]
-    assert [e.negative_id for e in applied_events] == [new.negative_id]
+    assert [e.negative_id for e in applied_events] == [old_id]
 
 
 def test_restitch_of_never_applied_negative_does_not_apply(tmp_path):
@@ -928,9 +951,9 @@ def test_restitch_of_never_applied_negative_does_not_apply(tmp_path):
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
-    assert new.capture_time.intended_datetime_original is None
-    assert new.capture_time.applied_datetime_original is None
+    adopted = roll.negative(old_id)
+    assert adopted.capture_time.intended_datetime_original is None
+    assert adopted.capture_time.applied_datetime_original is None
 
     assert not [e for e in events if isinstance(e, (MetadataApplied, MetadataSkipped))]
 
@@ -958,16 +981,16 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
-    assert new.status == "completed"
+    adopted = roll.negative(old_id)
+    assert adopted.status == "completed"
     # The intent is still recorded -- it is what makes the negative dirty
     # and recoverable with Apply -- but it was never actually applied.
-    assert new.capture_time.intended_datetime_original == _REAPPLY_INTENDED
-    assert new.capture_time.applied_datetime_original is None
+    assert adopted.capture_time.intended_datetime_original == _REAPPLY_INTENDED
+    assert adopted.capture_time.applied_datetime_original is None
 
     skipped_events = [e for e in events if isinstance(e, MetadataSkipped)]
     assert len(skipped_events) == 1
-    assert skipped_events[0].negative_id == new.negative_id
+    assert skipped_events[0].negative_id == adopted.negative_id
     assert skipped_events[0].code is Code.METADATA_WRITE_FAILED
 
 

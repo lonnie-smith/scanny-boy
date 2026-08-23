@@ -143,7 +143,6 @@
         "negative_id",
         "run_id",
         "sequence",
-        "superseded_by",
         "members",
         "expected_output",
         "status",
@@ -163,8 +162,11 @@
       "properties": {
         "negative_id": { "type": "string" },
         "run_id": { "type": "string" },
-        "sequence": { "type": ["integer", "null"], "minimum": 1 },
-        "superseded_by": { "type": ["string", "null"] },
+        "sequence": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Rank among completed negatives; null while unranked (pending/failed)."
+        },
         "members": {
           "type": "array",
           "items": { "type": "string" },
@@ -251,7 +253,7 @@
     "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 2 },
+    "manifest_format_version": { "type": "integer", "const": 3 },
     "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
     "roll_id": { "type": "string" },

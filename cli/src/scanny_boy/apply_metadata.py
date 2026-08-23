@@ -61,11 +61,10 @@ def _now_iso() -> str:
 
 
 def _is_dirty(negative: NegativeRecord) -> bool:
-    """Section 3.8: dirty, `completed`, never superseded, and actually
-    published — exactly the negatives `apply-metadata` processes."""
+    """Section 3.8: dirty, `completed`, and actually published — exactly the
+    negatives `apply-metadata` processes."""
     return (
         negative.status == "completed"
-        and negative.superseded_by is None
         and negative.output is not None
         and negative.capture_time.intended_datetime_original
         != negative.capture_time.applied_datetime_original

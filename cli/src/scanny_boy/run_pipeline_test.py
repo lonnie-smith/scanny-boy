@@ -18,17 +18,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from scanny_boy import raw_decode
+from scanny_boy import hashing, raw_decode
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.catalogue import read_capture_timestamp
 from scanny_boy.disk_check import DiskCheckError
-from scanny_boy.events import Code, NegativeSuperseded, Progress, Stage, WarningEvent
+from scanny_boy.events import Code, Progress, Stage, WarningEvent
 from scanny_boy.pipeline import STEPS_PER_FRAME
 from scanny_boy.roll_manifest import (
     load_roll_manifest,
     new_roll_manifest,
     write_roll_manifest,
 )
+from scanny_boy.roll_manifest_test import _negative
 from scanny_boy.romm import encode_from_linear
 from scanny_boy.run_pipeline import (
     STITCH_UNITS_PER_FRAME,
@@ -122,19 +123,22 @@ def _run(tmp_path, monkeypatch, *, files, events=None, cancel=None, work_dir=Non
 
 
 def _run_into_roll(
-    roll_dir, monkeypatch, files, *, run_id, events=None, decode_files=None, **kwargs
+    roll_dir, monkeypatch, files, *, run_id, events=None, decode_files=None, seed=1, **kwargs
 ):
     """Like `_run`, but into a roll the caller already created -- for tests
-    that run more than once against the same roll (section 3.4's additive
-    model can only be proven by a genuine second run, per section 4).
+    that run more than once against the same roll (the replacement rule can
+    only be proven by a genuine second run, per section 4).
 
     `decode_files` lets a caller install the fake decode for a different
     (typically smaller) set than `files` — the set that will actually
     survive `skip_sources` filtering and reach `raw_decode.decode_raw` —
     so the synthetic scene it is cut from is sized for what really gets
-    registered, not for the pre-skip selection.
-    """
-    _install_fast_registerable_decode(monkeypatch, decode_files if decode_files is not None else files)
+    registered, not for the pre-skip selection. `seed` varies the synthetic
+    content, so a rerun's published bytes genuinely differ from the run it
+    replaces."""
+    _install_fast_registerable_decode(
+        monkeypatch, decode_files if decode_files is not None else files, seed=seed
+    )
     defaults = {"skip_sources": [], "jobs": 1}
     defaults.update(kwargs)
     return run_full(
@@ -150,17 +154,19 @@ def _run_into_roll(
     )
 
 
-def _publish_and_supersede(tmp_path, monkeypatch):
+def _publish_and_rerun(tmp_path, monkeypatch, *, seed=2):
     """Two genuine runs of the same roll over the identical selection: the
-    second's negative covers the first's exactly, so it supersedes it
-    (section 3.4). Returns `(roll_dir, old_negative_id, events_from_the_second_run)`."""
+    second's group covers the first's exactly, so it adopts it in place
+    (the replacement rule). Returns `(roll_dir, adopted_negative_id,
+    first_run_sha, events_from_the_second_run)`."""
     roll_dir = _out_dir(tmp_path)
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
     old_negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    first_run_sha = load_roll_manifest(roll_dir).negatives[0].output["sha256"]
 
     events: list = []
-    _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events)
-    return roll_dir, old_negative_id, events
+    _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events, seed=seed)
+    return roll_dir, old_negative_id, first_run_sha, events
 
 
 # --- cleanup ---------------------------------------------------------------
@@ -492,42 +498,105 @@ def test_stitched_tiff_carries_real_capture_time(tmp_path, monkeypatch):
 
 
 @requires_real_samples
-def test_unskipped_overlap_supersedes_the_prior_negative(tmp_path, monkeypatch):
-    roll_dir, old_id, events = _publish_and_supersede(tmp_path, monkeypatch)
+def test_rerun_adopts_the_prior_negative_in_place(tmp_path, monkeypatch):
+    """The replacement rule, executed: a rerun over the same selection
+    yields one negative with the *same* `negative_id` and the same output
+    name, replaced atomically, with the new run's bytes."""
+    roll_dir, old_id, first_run_sha, _events = _publish_and_rerun(tmp_path, monkeypatch)
 
     roll = load_roll_manifest(roll_dir)
-    old = roll.negative(old_id)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
+    assert len(roll.negatives) == 1
+    adopted = roll.negative(old_id)
 
-    assert old.superseded_by == new.negative_id
-    assert old.sequence is None
-    assert new.status == "completed"
-    assert new.superseded_by is None
+    assert adopted.status == "completed"
+    assert adopted.run_id == "run-2"
+    assert adopted.output["name"] == adopted.expected_output
+    published = roll_dir / adopted.expected_output
+    assert hashing.sha256_file(published) == adopted.output["sha256"]
+    # The bytes genuinely changed between the two runs.
+    assert adopted.output["sha256"] != first_run_sha
+    # No staging directory or temp file survives a completed run (`.work`
+    # holds the run's intermediates and is the roll's own durable folder).
+    assert not [
+        p
+        for p in roll_dir.iterdir()
+        if p.is_dir() and p.name not in (".work",) or p.name.endswith(".tmp")
+    ]
 
-    superseded_events = [e for e in events if isinstance(e, NegativeSuperseded)]
-    assert len(superseded_events) == 1
-    assert superseded_events[0].old_negative_id == old_id
-    assert superseded_events[0].new_negative_id == new.negative_id
+    # The adopted negative is the same negative, not a new one, so no
+    # replacement event exists to assert on: the event type itself is gone.
 
 
 @requires_real_samples
-def test_superseded_tiff_is_deleted_and_its_name_stays_claimed(tmp_path, monkeypatch):
-    roll_dir, old_id, _events = _publish_and_supersede(tmp_path, monkeypatch)
+def test_merged_coverage_removes_the_other_record_and_file(tmp_path, monkeypatch):
+    """A regroup that merges covered negatives adopts one and removes the
+    others outright: record dropped from the manifest, TIFF unlinked."""
+    roll_dir = _out_dir(tmp_path)
+    first, second = NEGATIVE_1[0], NEGATIVE_1[1]
+    covered_members = [first, second]
+    other_covered_id = "hand-negative-02"
+    other_output = f"{Path(first).stem}-2.tif"
 
     roll = load_roll_manifest(roll_dir)
-    old = roll.negative(old_id)
-    new = next(n for n in roll.negatives if n.negative_id != old_id)
+    roll.negatives.append(
+        _negative(
+            negative_id="hand-negative-01",
+            members=covered_members,
+            expected_output=f"{Path(first).stem}.tif",
+            status="completed",
+            output={
+                "name": f"{Path(first).stem}.tif",
+                "size": 20,
+                "sha256": "a" * 64,
+                "width": 100,
+                "height": 100,
+            },
+        )
+    )
+    roll.negatives.append(
+        _negative(
+            negative_id=other_covered_id,
+            members=[first],
+            expected_output=other_output,
+            status="completed",
+            output={
+                "name": other_output,
+                "size": 20,
+                "sha256": "b" * 64,
+                "width": 100,
+                "height": 100,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, roll)
+    # The other covered negative's published file exists and must go with
+    # its record.
+    (roll_dir / other_output).write_bytes(b"stale previous result")
+    # The adopted negative's published file too, so the atomic replace has
+    # something real to replace.
+    (roll_dir / f"{Path(first).stem}.tif").write_bytes(b"stale adopted result")
 
-    # The predecessor's file is gone, but its name is still on the record
-    # (section 3.4) -- the replacement had to publish under a different one.
-    assert not (roll_dir / old.expected_output).exists()
-    assert new.output["name"] != old.expected_output
-    assert (roll_dir / new.output["name"]).exists()
+    events: list = []
+    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events)
+
+    assert outcome.status == "complete"
+    roll = load_roll_manifest(roll_dir)
+    assert len(roll.negatives) == 1
+    # The adopted record keeps the id and name whose `expected_output` is
+    # the group's natural stem name.
+    adopted = roll.negatives[0]
+    assert adopted.negative_id == "hand-negative-01"
+    assert adopted.run_id == "run-1"
+    assert adopted.expected_output == f"{Path(first).stem}.tif"
+    assert adopted.status == "completed"
+    assert (roll_dir / adopted.expected_output).exists()
+    # The other covered record and its file are gone.
+    assert not (roll_dir / other_output).exists()
 
 
 @requires_real_samples
-def test_superseded_negative_leaves_neighbours_sequence_unchanged(tmp_path, monkeypatch):
-    """Section 3.4: superseding one negative must not disturb an unrelated
+def test_rerun_leaves_neighbours_sequence_unchanged(tmp_path, monkeypatch):
+    """Replacing one negative in place must not disturb an unrelated
     neighbour's position in the roll's real sequence (Chunk P3-6's
     `roll_sequence.py`, recomputed on every manifest write)."""
     roll_dir = _out_dir(tmp_path)
@@ -544,36 +613,74 @@ def test_superseded_negative_leaves_neighbours_sequence_unchanged(tmp_path, monk
     roll = load_roll_manifest(roll_dir)
     unchanged = roll.negative(neighbour.negative_id)
     assert unchanged.sequence == neighbour_sequence_before
-    assert unchanged.superseded_by is None
+    assert unchanged.run_id == "run-2"
 
 
 @requires_real_samples
-def test_failed_supersede_delete_warns_but_does_not_fail_the_run(tmp_path, monkeypatch):
+def test_failed_delete_of_removed_covered_tiff_warns_but_does_not_fail_the_run(
+    tmp_path, monkeypatch
+):
     roll_dir = _out_dir(tmp_path)
-    _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
+    first = NEGATIVE_1[0]
+    other_output = f"{Path(first).stem}-2.tif"
+
     roll = load_roll_manifest(roll_dir)
-    old_path = roll_dir / roll.negatives[0].output["name"]
+    roll.negatives.append(
+        _negative(
+            negative_id="hand-negative-01",
+            members=[first],
+            expected_output=f"{Path(first).stem}.tif",
+            status="completed",
+            output={
+                "name": f"{Path(first).stem}.tif",
+                "size": 20,
+                "sha256": "a" * 64,
+                "width": 100,
+                "height": 100,
+            },
+        )
+    )
+    roll.negatives.append(
+        _negative(
+            negative_id="hand-negative-02",
+            members=[first],
+            expected_output=other_output,
+            status="completed",
+            output={
+                "name": other_output,
+                "size": 20,
+                "sha256": "b" * 64,
+                "width": 100,
+                "height": 100,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, roll)
+    (roll_dir / other_output).write_bytes(b"stale previous result")
+    stray_path = roll_dir / other_output
 
     real_unlink = Path.unlink
 
     def _failing_unlink(self, *args, **kwargs):
-        if self == old_path:
+        if self == stray_path:
             raise OSError("simulated delete failure")
         return real_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", _failing_unlink)
 
     events: list = []
-    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events)
+    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events)
 
     assert outcome.status == "complete"
-    assert old_path.exists()  # the delete failed; the stray file remains
+    assert stray_path.exists()  # the delete failed; the stray file remains
 
     warnings = [
         e
         for e in events
-        if isinstance(e, WarningEvent) and e.code is Code.SUPERSEDED_FILE_NOT_REMOVED
+        if isinstance(e, WarningEvent) and e.code is Code.ORPHAN_FILE_NOT_REMOVED
     ]
     assert len(warnings) == 1
-    superseded_events = [e for e in events if isinstance(e, NegativeSuperseded)]
-    assert len(superseded_events) == 1
+
+    # The record is still dropped even though its file could not be.
+    roll = load_roll_manifest(roll_dir)
+    assert [n.negative_id for n in roll.negatives] == ["hand-negative-01"]

@@ -45,10 +45,8 @@ struct RollManifest: Sendable, Hashable {
     struct Negative: Sendable, Hashable {
         let negativeID: String
         let runID: String
-        /// 1-based position in the roll; `nil` when unranked or superseded.
+        /// 1-based position in the roll; `nil` when unranked (pending/failed).
         let sequence: Int?
-        /// The `negative_id` that replaced this one, if any.
-        let supersededBy: String?
         /// The source NEFs this negative was built from, in canonical order
         /// — the Edit tab's "source frames" (section 3.10).
         let members: [String]
@@ -66,7 +64,6 @@ struct RollManifest: Sendable, Hashable {
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
-        var isSuperseded: Bool { supersededBy != nil }
     }
 
     struct Metadata: Sendable, Hashable {
@@ -83,10 +80,6 @@ struct RollManifest: Sendable, Hashable {
     let runs: [Run]
     let negatives: [Negative]
     let metadata: Metadata
-
-    /// Every negative still standing, per section 3.4 — the same notion
-    /// `RollManifest.live_negatives()` names on the Python side.
-    var liveNegatives: [Negative] { negatives.filter { !$0.isSuperseded } }
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -173,7 +166,6 @@ struct RollManifest: Sendable, Hashable {
             negativeID: negativeID,
             runID: runID,
             sequence: fields["sequence"]?.intValue,
-            supersededBy: fields["superseded_by"]?.stringValue,
             members: members,
             expectedOutput: expectedOutput,
             status: status,
@@ -231,7 +223,7 @@ enum RollManifestReport: Sendable, Hashable {
     var summary: String {
         switch self {
         case .final(let manifest):
-            "The roll now holds \(manifest.liveNegatives.count) negative(s)."
+            "The roll now holds \(manifest.negatives.count) negative(s)."
         case .cleanupIncomplete:
             """
             Cleanup did not finish: this run is still marked running in the \

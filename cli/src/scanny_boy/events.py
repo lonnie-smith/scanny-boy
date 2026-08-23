@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 class EventType(enum.StrEnum):
@@ -30,7 +30,6 @@ class EventType(enum.StrEnum):
     ROLL_LIST = "roll_list"
     ROLL_INFO = "roll_info"
     ROLL_RENAMED = "roll_renamed"
-    NEGATIVE_SUPERSEDED = "negative_superseded"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
 
@@ -99,7 +98,7 @@ class Code(enum.StrEnum):
     PER_NEGATIVE_LOCKED = "PER_NEGATIVE_LOCKED"
     OUTPUT_MODIFIED_EXTERNALLY = "OUTPUT_MODIFIED_EXTERNALLY"
     METADATA_WRITE_FAILED = "METADATA_WRITE_FAILED"
-    SUPERSEDED_FILE_NOT_REMOVED = "SUPERSEDED_FILE_NOT_REMOVED"
+    ORPHAN_FILE_NOT_REMOVED = "ORPHAN_FILE_NOT_REMOVED"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -308,14 +307,6 @@ class RollInfo(Event):
     event_type: ClassVar[EventType] = EventType.ROLL_INFO
 
     manifest: dict[str, Any]
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class NegativeSuperseded(Event):
-    event_type: ClassVar[EventType] = EventType.NEGATIVE_SUPERSEDED
-
-    old_negative_id: str
-    new_negative_id: str
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

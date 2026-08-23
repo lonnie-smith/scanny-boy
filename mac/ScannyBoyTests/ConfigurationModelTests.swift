@@ -70,41 +70,41 @@ struct ConfigurationModelTests {
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
 
-    private static let started = #"{"protocol_version":3,"event":"started","command":"probe"}"#
+    private static let started = #"{"protocol_version":4,"event":"started","command":"probe"}"#
     private static let finishedSuccess =
-        #"{"protocol_version":3,"event":"finished","status":"success","exit_status":0}"#
+        #"{"protocol_version":4,"event":"finished","status":"success","exit_status":0}"#
     private static let finishedFailed =
-        #"{"protocol_version":3,"event":"finished","status":"failed","exit_status":1}"#
+        #"{"protocol_version":4,"event":"finished","status":"failed","exit_status":1}"#
 
     private static func errorEvent(code: String) -> String {
-        #"{"protocol_version":3,"event":"error","code":"\#(code)","message":"synthetic failure"}"#
+        #"{"protocol_version":4,"event":"error","code":"\#(code)","message":"synthetic failure"}"#
     }
 
     // Deliberately not alphabetical: proves the model displays `probe`'s
     // order verbatim instead of re-sorting (section 3.3: "Swift always uses
     // the order it is given and never sorts files itself").
     private static let catalogueUnsorted =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#
 
     private static let catalogueABC =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
 
     // Raw string literals do not support backslash line-continuation (that
     // is a plain-string-literal escape only), so each of these stays on one
     // line rather than risk a stray literal backslash inside the JSON.
     private static let threeFileGroupNoRoll =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
 
     private static let threeFileGroupNoOverlap =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
 
     private static let threeFileGroupWithOverlap =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
 
     private static let sixFileNames = ["n1.NEF", "n2.NEF", "n3.NEF", "n4.NEF", "n5.NEF", "n6.NEF"]
 
     private static let sixFileTwoGroups =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
+        #"{"protocol_version":4,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
 
     /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
     /// to be read back by `RollManifest` — the `roll info` CLI response
@@ -113,7 +113,7 @@ struct ConfigurationModelTests {
         rollID: String = "roll-1", rollName: String = "Test Roll", shotsPerNegative: Int = 3
     ) -> String {
         let manifest = """
-            {"manifest_format_version":2,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            {"manifest_format_version":3,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
             "roll_id":"\(rollID)","roll_name":"\(rollName)","shots_per_negative":\(shotsPerNegative),\
             "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
             "processing_params":{},\
@@ -121,7 +121,7 @@ struct ConfigurationModelTests {
             "stitch_params":{},"runs":[],"sources":[],"negatives":[],\
             "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
+        return #"{"protocol_version":4,"event":"roll_info","manifest":\#(manifest)}"#
     }
 
     // MARK: - Model state follows probe results
@@ -157,7 +157,7 @@ struct ConfigurationModelTests {
             in: directory,
             catalogueOnly: [
                 Self.started,
-                #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
+                #"{"protocol_version":4,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
                 Self.finishedSuccess,
             ],
             withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess]
