@@ -1,0 +1,5 @@
+
+* When browsing to select images to convert/merge, I need to be able to see image previews, not just filenames. 
+* When designating an output folder, I should be able to create a new folder (not just choose an existing one)
+* Save the last-opened input folder and use it as the opening point for browsing for a new input folder. If the previous input folder is no longer present, walk up the path until you find a directory that is still present.
+* should we rename the manifest?
