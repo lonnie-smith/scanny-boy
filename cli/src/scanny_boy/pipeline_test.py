@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import hashlib
 import json
 import os
 import shutil
@@ -32,8 +31,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tifffile
-import tifftools
-from tifftools.constants import Tag as ExifIFDTag
 
 from scanny_boy import concurrency, disk_check, pipeline, raw_decode
 from scanny_boy.cancellation import CancellationToken
@@ -53,6 +50,7 @@ from scanny_boy.sample_nef_support import (
     REAL_SAMPLE_FILES,
     requires_real_samples,
 )
+from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
 MANIFEST_SCHEMA = load_manifest_schema()
 FILM_DATE = datetime.date(2026, 8, 2)
@@ -451,36 +449,6 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
 # fixed sleep".
 
 
-CONVERSION_TIME_TAG = 306  # IFD0 DateTime: the one documented changing field
-
-
-def _tiff_fingerprint(path: Path) -> tuple[str, dict]:
-    """A comparable summary of one output TIFF: the SHA-256 of its decoded
-    pixels, plus every IFD0 and nested-EXIF tag value.
-
-    Section 7: "Compare pixel hashes and metadata after documented
-    changing fields are ignored, not entire TIFF bytes, which contain
-    conversion timestamps." The only such field here is IFD0 `DateTime`
-    (306), the moment of conversion. `DateTimeOriginal` is synthetic and
-    derived from the film date, so it must match exactly.
-    """
-    with tifffile.TiffFile(path) as handle:
-        pixels = handle.asarray()
-    pixel_sha256 = hashlib.sha256(pixels.tobytes()).hexdigest()
-
-    ifd0 = tifftools.read_tiff(str(path))["ifds"][0]
-    tags: dict = {}
-    for code, entry in ifd0["tags"].items():
-        if code == CONVERSION_TIME_TAG:
-            continue
-        if code == ExifIFDTag.ExifIFD.value:
-            nested = entry["ifds"][0][0]["tags"]
-            tags[code] = {c: e.get("data") for c, e in nested.items()}
-        else:
-            tags[code] = entry.get("data")
-    return pixel_sha256, tags
-
-
 @requires_real_samples
 def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
     """The headline guarantee of this chunk: turning on threads changes
@@ -519,7 +487,7 @@ def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
 
     for name in REAL_SAMPLE_FILES:
         output = f"{_stem(name)}.tif"
-        assert _tiff_fingerprint(serial_dir / output) == _tiff_fingerprint(
+        assert tiff_fingerprint(serial_dir / output) == tiff_fingerprint(
             threaded_dir / output
         ), f"{output} differs between --jobs 1 and --jobs 4"
 

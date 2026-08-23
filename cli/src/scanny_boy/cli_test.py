@@ -35,6 +35,18 @@ def test_main_with_no_arguments_returns_status_2():
     assert main([]) == 2
 
 
+def test_version_prints_one_plain_text_line_and_exits_0(capsys):
+    """`--version` is a diagnostic outside the event stream (CONTRACT.md);
+    the packaged checks of section 5.2 use it as their smoke test."""
+    import importlib.metadata
+
+    assert main(["--version"]) == 0
+    captured = capsys.readouterr()
+    version = importlib.metadata.version("scanny-boy")
+    assert captured.out == f"scanny-boy {version}\n"
+    assert captured.err == ""
+
+
 def test_probe_with_input_alone_is_accepted(capsys, tmp_path):
     write_fake_nef(tmp_path / "a.NEF", date_time_original="2026:08:02 12:00:00")
     write_fake_nef(tmp_path / "b.NEF", date_time_original="2026:08:02 12:00:05")
