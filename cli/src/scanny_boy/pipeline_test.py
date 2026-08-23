@@ -556,14 +556,24 @@ def test_jobs_1_never_constructs_a_thread_pool(monkeypatch, tmp_path):
 # --- out-of-order completion still reports one result per source ---------
 
 
-def _install_reverse_order_decode(monkeypatch, members: list[str]) -> list[str]:
+def _install_reverse_order_decode(
+    monkeypatch, members: list[str]
+) -> tuple[list[str], pipeline.EmitFn]:
     """Force the frames of one group to finish decoding in exactly reverse
     order, with no sleeps.
 
     A `Barrier` first proves every worker is genuinely running at once.
     Then each worker waits on its own gate; only the last member's gate
-    starts open, and each worker opens its predecessor's gate as it
-    leaves. The resulting order is deterministic, not merely likely.
+    starts open. The caller must feed every emitted event through the
+    returned `release_predecessor`, which opens a frame's predecessor's
+    gate once that frame's own decode-progress event has been emitted —
+    not when `decode_raw` merely returns. `_stage_one_frame` does real
+    work (a `stat` via `_verify_source_unchanged`, a lock acquisition)
+    between the two, so gating on the return of `decode_raw` only orders
+    the decode calls; it leaves the order of the progress events — the
+    thing the test actually asserts on — a genuine race. Gating on the
+    event closes that gap, making the order deterministic rather than
+    merely likely.
     """
     decode_order: list[str] = []
     order_lock = threading.Lock()
@@ -571,28 +581,40 @@ def _install_reverse_order_decode(monkeypatch, members: list[str]) -> list[str]:
     gates = {name: threading.Event() for name in members}
     gates[members[-1]].set()
     predecessor = {members[i]: members[i - 1] for i in range(1, len(members))}
+    name_by_index = dict(enumerate(members))
 
     def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
         barrier.wait(timeout=30)
         assert gates[path.name].wait(timeout=30), f"gate for {path.name} never opened"
         with order_lock:
             decode_order.append(path.name)
-        if path.name in predecessor:
-            gates[predecessor[path.name]].set()
         return _fast_frame()
 
+    def release_predecessor(event: object) -> None:
+        if type(event).__name__ != "Progress" or event.step.value != "decode":
+            return
+        name = name_by_index[event.source_index]
+        if name in predecessor:
+            gates[predecessor[name]].set()
+
     monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
-    return decode_order
+    return decode_order, release_predecessor
 
 
 @requires_real_samples
 def test_every_source_index_reports_one_final_result_despite_out_of_order_completion(
     monkeypatch, tmp_path
 ):
-    decode_order = _install_reverse_order_decode(monkeypatch, list(NEGATIVE_1))
+    decode_order, release_predecessor = _install_reverse_order_decode(
+        monkeypatch, list(NEGATIVE_1)
+    )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     events: list = []
+
+    def emit(event: object) -> None:
+        events.append(event)
+        release_predecessor(event)
 
     outcome = run_convert(
         FIXTURES_DIR,
@@ -602,7 +624,7 @@ def test_every_source_index_reports_one_final_result_despite_out_of_order_comple
         3,
         run_id="r1",
         jobs=3,
-        emit=events.append,
+        emit=emit,
     )
 
     assert outcome.status == "complete"
@@ -611,15 +633,11 @@ def test_every_source_index_reports_one_final_result_despite_out_of_order_comple
 
     progress = [e for e in events if type(e).__name__ == "Progress"]
     decode_progress = [e for e in progress if e.step.value == "decode"]
-    # The last member is the only one whose gate starts open, so it is
-    # deterministically the first to finish decoding. Which of the other
-    # two emits next is a genuine race — each is released from inside its
-    # successor's decode, before that successor's own progress event —
-    # and asserting a total order there would be exactly the race-prone
-    # test the chunk warns against.
-    assert decode_progress[0].source_index == 2
-    assert {e.source_index for e in decode_progress} == {0, 1, 2}
-    assert [e.source_index for e in decode_progress] != [0, 1, 2]
+    # Each predecessor's gate opens only once its successor's own
+    # decode-progress event has been emitted (see release_predecessor),
+    # so the decode-progress events themselves — not just the decode
+    # calls — are ordered strictly in reverse.
+    assert [e.source_index for e in decode_progress] == [2, 1, 0]
 
     # ...and yet every source index reports exactly one final result, in
     # canonical order.
