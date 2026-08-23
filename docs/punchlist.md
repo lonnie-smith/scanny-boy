@@ -10,3 +10,9 @@ Phase 3:
 * extended metadata editing (location, camera, lens, film stock)
 * Crop based on manifest data, maybe lock in an appropriate aspect ratio
 * White balance / base neutralization
+
+Phase 4: 
+Negative inversion
+
+Eventual:
+- would it be easy to convert this to an electron app for better cross-platform compatibility (plus familiarity to me)
