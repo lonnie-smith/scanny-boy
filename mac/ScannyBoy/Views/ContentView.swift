@@ -182,7 +182,7 @@ struct ContentView: View {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
-                        RunResultView(run: run, outputFolder: run.outputFolder)
+                        RunResultView(run: run)
                     }
                 }
             }
