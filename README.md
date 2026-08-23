@@ -152,8 +152,8 @@ moves it to the Trash.
 **Edit** — the roll's negatives in sequence, with a thumbnail, source
 frames, and quality metrics for each; a dirty count and an **Apply** button
 that writes intended capture times into the published TIFFs' EXIF tags (no
-pixel data is touched); the roll's name, folder, and run history; and a
-toggle to show negatives a later run has superseded. The roll capture date,
+pixel data is touched); the roll's name and folder; and a toggle to show
+negatives a later run has superseded. The roll capture date,
 each negative's date override, and shots per negative are shown here but
 are not yet editable from the app — see `docs/punchlist.md`.
 
