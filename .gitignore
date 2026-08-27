@@ -1,0 +1,24 @@
+# Python
+cli/.venv/
+cli/dist/
+cli/build/pyinstaller-work/
+cli/build/*.spec.bak
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Built CLI copied into the app bundle at build time
+mac/ScannyBoy/Resources/cli/*
+!mac/ScannyBoy/Resources/cli/.gitkeep
+
+# Xcode
+mac/*.xcodeproj/xcuserdata/
+mac/*.xcodeproj/project.xcworkspace/xcuserdata/
+mac/DerivedData/
+mac/build/
+*.xcuserstate
+
+# macOS
+.DS_Store
