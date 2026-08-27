@@ -1,771 +1,994 @@
-# Scanny Boy — Implementation Plan (Phase 1)
-
-**Scope:** Workflow steps 1–5 — pick a folder, select a sequential run of `.NEF`
-files, declare shots-per-negative, declare colour/B&W, supply a capture date,
-and produce one 16-bit TIFF per source frame with correct metadata.
-
-Stitching (step 6+) is **out of scope** but the architecture below is built so
-it drops in without rework. Section 9 lists what Phase 1 deliberately leaves
-ready for it.
-
-**Audience:** implementation agents, handed one chunk at a time. Each chunk is
-one branch, one PR, independently verifiable.
-
----
-
-## 0. Setup tasks — Lonnie does these first
-
-These need your credentials or your hardware. Nothing in Chunk 0+ works until
-they're done.
-
-### 0.1 Upgrade the GitHub CLI
-
-Yours is v2.20.2 (November 2022). Modern `gh` subcommands used later in this
-plan won't exist.
-
-```bash
-brew upgrade gh && gh --version
-```
-
-### 0.2 Install XcodeGen
-
-```bash
-brew install xcodegen && xcodegen --version
-```
-
-### 0.3 Confirm the rest of your toolchain
-
-Already verified present and current on your machine — run this only if
-something breaks later:
-
-```bash
-sw_vers && xcodebuild -version && swift --version && uv --version && python3 --version
-```
-
-Baseline recorded 2026-08-27: macOS 14.6.1 (arm64), Xcode 16.2, Swift 6.0.3,
-uv 0.11.7, Python 3.13.3, Homebrew 6.0.19.
-
-### 0.4 Supply test fixtures
-
-Create the directory and drop real files in:
-
-```bash
-mkdir -p /Users/lsmith/dev/scanny-boy/tests/fixtures/nef
-```
-
-Put in **at least 8 real Nikon Z f `.NEF` files**: two complete negatives'
-worth at 4 shots each, shot on your actual copy stand with your actual
-technique. This directory is gitignored — nothing large enters the repo.
-
-Ideally also include one deliberately awkward pair (minimal overlap, or a
-visibly hand-nudged frame) so Phase 2's stitcher has a hard case to fail
-against early rather than late.
-
-### 0.5 Create the GitHub repo
-
-Public, per your decision — unlimited free Actions minutes, and nothing here is
-sensitive. Chunk 0 does the actual push; this just reserves the name.
-
-```bash
-gh repo create scanny-boy --public --description "Film negative scanning pipeline for multi-shot camera scans" --confirm
-```
-
----
-
-## 1. Locked decisions
-
-Agents: these were decided deliberately. **Do not re-litigate them.** If one
-appears to block you, stop and report rather than substituting your own choice.
-
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | **All pixel work in Python.** Swift is UI, orchestration, and progress only. | `rawpy` *is* LibRaw (Cython binding over the real C++ lib), so there is no fidelity cost, and it avoids C++ interop entirely. |
-| D2 | **Always write 16-bit RGB.** The B&W flag is metadata only; it does not change channel count. | The Z f has a Bayer CFA — there is no true grayscale capture. Collapsing to 1 channel bakes in an RGB→gray weighting that can't be undone. Green has 2× the photosites, so the weighting is not neutral. |
-| D3 | **Disk is bounded by streaming, not by dropping channels.** Convert and (later) stitch one negative at a time; delete that negative's intermediates before starting the next. | 24.5MP × 3ch × 16-bit ≈ 146 MB/file. A 36-exposure roll at 4 shots ≈ 21 GB if batched; ≈ 600 MB peak if streamed. |
-| D4 | **ProPhoto (ROMM) primaries, gamma-encoded, `no_auto_bright=True`.** | Gamma at 16-bit is near-losslessly reversible and hugely improves both eyeballing and OpenCV feature detection. `no_auto_bright` is non-negotiable — auto-brightness is per-image and would destroy the roll-consistent exposure the whole workflow depends on. |
-| D5 | **Sort by EXIF `DateTimeOriginal`, filename as tiebreak.** Non-divisible selection is a hard error. | Survives the `DSC_9999→DSC_0001` rollover and card merges. Silent mis-grouping would corrupt a whole roll invisibly. |
-| D6 | **App Sandbox off.** Intermediates in `NSTemporaryDirectory()`. | Local personal tool. A sandboxed parent cannot easily hand security-scoped access to a child process. Re-enabling is a distribution-time task, noted in §9. |
-| D7 | **XcodeGen.** `project.yml` is source of truth; `.xcodeproj` is generated and gitignored. | `.xcodeproj` is a UUID-cross-referenced plist that agents reliably corrupt. YAML + globs makes "add a file" a no-op. |
-| D8 | **Public repo, CI on Linux + macOS.** | Public = free unlimited Actions minutes. |
-| D9 | **Output named for the group's first frame**, e.g. `DSC_0042.NEF → DSC_0042.tif`. | Traceable to source, stable across re-runs, collision-free. |
-| D10 | **Parallel decode** across physical cores, with `--jobs 1` available. | LibRaw decode is CPU-bound; near-linear speedup on Apple silicon. |
-
-### Verified environment facts
-
-Probed on this machine on 2026-08-27 — these are measurements, not assumptions:
-
-- `rawpy` 0.27.0 bundles **LibRaw 0.22.1**; prebuilt arm64 wheel, no compilation.
-- `opencv-python-headless` **5.0.0.93**. ⚠️ `cv2.Stitcher.SCANS` does **not**
-  exist as an attribute in OpenCV 5 — the constant is `cv2.Stitcher_SCANS` at
-  module level. Code written against the old spelling will `AttributeError`.
-- `tifffile` 2026.8.23 writes 16-bit RGB with deflate + arbitrary tags (verified).
-- `exifread` 3.5.1 — pure Python, reads NEF. Preferred over anything needing a
-  compiled exiv2, because it must survive PyInstaller freezing.
-- **`/System/Library/ColorSync/Profiles/ROMM RGB.icc` exists on macOS** (568
-  bytes). Its `rTRC` is ICC parametric funcType 3 with
-  `g=1.8, a=1.0, b=0.0, c=0.0625, d=0.001953125` — i.e. gamma 1.8 with a linear
-  toe of slope 16. **The rawpy call must therefore be `gamma=(1.8, 16)`, not the
-  BT.709 default `(2.222, 4.5)`.** Mismatching the encoding gamma against the
-  embedded profile makes every output file subtly wrong everywhere it is opened.
-
----
-
-## 2. Architecture
-
-```
-┌───────────────────────────────────────────────┐
-│  ScannyBoy.app  (SwiftUI, macOS 14+)          │
-│  folder pick · selection · grouping preview   │
-│  shots-per-negative · colour/B&W · film date  │
-│  output dir · progress · cancel               │
-└───────────────┬───────────────────────────────┘
-                │  spawns, streams NDJSON on stdout
-                ▼
-┌───────────────────────────────────────────────┐
-│  scanny-boy  (Python CLI, PyInstaller-frozen) │
-│  probe   — read EXIF, sort, group, validate   │
-│  convert — rawpy decode → 16-bit ProPhoto TIF │
-│  (phase 2) stitch — OpenCV SCANS/affine       │
-└───────────────────────────────────────────────┘
-```
-
-**Why the CLI is the real product.** Everything testable lives in Python and is
-exercised head-first from a terminal. Swift stays a thin shell that can be
-verified by eye. This is deliberate given you're not an experienced Swift dev —
-when something is wrong, it will almost always be wrong in the layer you can
-`pytest`.
-
-**Dev vs release.** In development the app invokes the CLI from `cli/.venv`
-(fast iteration, no freeze step). Release builds invoke the PyInstaller binary
-bundled in `Resources/cli/`. Chunk 7 implements the switch.
-
----
-
-## 3. The CLI contract
-
-This replaces the placeholder in `shared/contract/`. Chunk 1 writes it.
-
-### 3.1 Transport
-
-- **stdout** — one JSON object per line (NDJSON), UTF-8, flushed per line.
-- **stderr** — human-readable logs only. Never parsed.
-- **exit 0** success · **1** operation failed · **2** bad usage · **130** cancelled.
-
-### 3.2 Events
-
-Every line has `{"event": "...", ...}`.
-
-```jsonc
-{"event":"started","command":"convert","total":8,"run_id":"…"}
-{"event":"progress","index":3,"total":8,"path":"…/DSC_0042.NEF","stage":"decode"}
-{"event":"item_done","index":3,"total":8,"input":"…/DSC_0042.NEF","output":"…/DSC_0042.tif","bytes":146313728,"ms":1840}
-{"event":"item_failed","index":4,"total":8,"input":"…/DSC_0043.NEF","error":"…","recoverable":true}
-{"event":"finished","ok":true,"succeeded":8,"failed":0,"ms":14210}
-{"event":"error","message":"…","code":"NOT_DIVISIBLE"}
-```
-
-`index` is 1-based and **must be attributed correctly under parallelism** — the
-worker returns its own index rather than the parent inferring it from
-completion order.
-
-### 3.3 Commands
-
-```
-scanny-boy probe --input DIR [--files a.NEF b.NEF …] --per-negative N
-scanny-boy convert --files … --out DIR --film-date YYYY-MM-DD
-                   [--mono] [--jobs N] [--per-negative N]
-```
-
-`probe` is read-only: it sorts, groups, validates divisibility, and emits the
-grouping the UI will display. It never writes. The app calls `probe` to
-populate its preview, then `convert` to do the work.
-
-### 3.4 Cancellation
-
-The app sends `SIGTERM`. The CLI must install a handler that stops dispatching
-new work, terminates the pool, deletes partial outputs from the in-flight
-negative, emits `{"event":"finished","ok":false,"cancelled":true}`, and exits
-`130`. Completed negatives are left in place.
-
----
-
-## 4. Chunks
-
-Each chunk: one branch, one PR, merged before the next starts.
-
-Agents must run `pytest` and the chunk's verification block before opening the
-PR, and paste real output into the PR body — not a claim that it passed.
-
----
-
-### Chunk 0 — Repo foundation
-
-**Branch:** `chunk-00-repo-foundation`
-
-**Goal:** A committed, pushed repo with CI green and the scaffold's dead
-placeholder code removed.
-
-**Do:**
-
-1. `git init` is already done but there are **zero commits**. Make the initial
-   commit from the current scaffold.
-2. Extend `.gitignore`: add `tests/fixtures/`, `mac/*.xcodeproj/`,
-   `.venv/`, `docs/.DS_Store`.
-3. Delete the placeholder `scan` command end-to-end — `cli/src/scanny_boy/core/scanner.py`,
-   its test, the `scan` branch in `cli.py`, `mac/ScannyBoy/Models/ScanResult.swift`,
-   and the `scan` section of `shared/contract/CONTRACT.md`. It models nothing
-   this project does and will otherwise be cargo-culted forward.
-4. Rewrite `cli/pyproject.toml` dependencies: `rawpy>=0.27`, `tifffile>=2026.1`,
-   `numpy>=2`, `exifread>=3.5`. Dev extras: `pytest`, `pytest-cov`, `ruff`,
-   `pyinstaller`. Add `opencv-python-headless>=5` as an **optional** `stitch`
-   extra — Phase 1 must not pay OpenCV's 46 MB import cost.
-5. Switch `scripts/bootstrap.sh` from `python3 -m venv` + `pip` to `uv venv` +
-   `uv pip install` (uv is installed and ~10× faster).
-6. Add `.github/workflows/ci.yml`:
-   - job `python` on `ubuntu-latest` — `uv sync`, `ruff check`, `pytest`.
-   - job `swift` on `macos-14` — `brew install xcodegen`, `xcodegen generate`,
-     `xcodebuild build test`. Mark `continue-on-error: true` until Chunk 7
-     lands a real project, then remove that.
-7. Push and set `main` protected, requiring the `python` check.
-
-**Verify:**
-
-```bash
-./scripts/bootstrap.sh && cli/.venv/bin/pytest && gh run list --limit 1
-```
-
-**Done when:** repo is on GitHub, CI `python` job is green, no reference to
-`scan`/`ScanResult` remains (`grep -ri "scanresult\|def scan(" . --exclude-dir=.git`
-returns nothing).
-
----
-
-### Chunk 1 — CLI skeleton and contract
-
-**Branch:** `chunk-01-cli-contract`
-
-**Goal:** The NDJSON event protocol and command surface exist and are tested,
-with no image code yet.
-
-**Do:**
-
-1. Write `shared/contract/CONTRACT.md` from §3 above. Update `schema.json` to
-   define each event type.
-2. `cli/src/scanny_boy/events.py` — dataclasses for each event plus an
-   `EventEmitter` that writes one JSON line to a stream and **flushes every
-   line**. Unflushed output is the single most common cause of a Swift UI that
-   shows no progress until the very end.
-3. `cli/src/scanny_boy/cli.py` — argparse with `probe` and `convert`
-   subcommands, full argument validation, exit codes per §3.1. Commands may
-   emit `started`/`finished` with stub counts.
-4. Structured errors: an exception type carrying a stable `code`
-   (`NOT_DIVISIBLE`, `UNREADABLE_RAW`, `NO_FILES`, `OUTPUT_NOT_WRITABLE`) so
-   Swift can branch on `code`, never on message text.
-
-**Tests** (`events_test.py`, `cli_test.py`, co-located per your convention):
-
-- Each event serialises to exactly one line, and the line round-trips.
-- Emitter flushes per line (assert against an unbuffered spy stream).
-- `probe` with no `--per-negative` exits 2.
-- Bad `--film-date` format exits 2 with `code` set.
-- Unknown subcommand exits 2.
-
-**Verify:**
-
-```bash
-cli/.venv/bin/scanny-boy probe --input /tmp --per-negative 4 | head
-cli/.venv/bin/scanny-boy convert --films-date bogus; echo "exit=$?"   # expect 2
-```
-
-**Done when:** `pytest` green; every event in §3.2 validates against `schema.json`.
-
----
-
-### Chunk 2 — RAW decode core ⭐
-
-**Branch:** `chunk-02-raw-decode`
-
-**This is the pixel heart of the project. Verify it hardest.**
-
-**Goal:** One `.NEF` in, one correct 16-bit ProPhoto TIFF out.
-
-**Do:**
-
-Create `cli/src/scanny_boy/core/decode.py` with a single pure function taking a
-path and returning a numpy array plus metadata. **These parameters are load-bearing —
-use exactly these:**
+# Scanny Boy — Phase 1 implementation plan
+
+**Last reviewed:** 2026-08-27
+
+## 1. Goal
+
+Build a macOS app that:
+
+1. Opens one folder of Nikon Z f `.NEF` files.
+2. Lets the user select one uninterrupted range in capture order.
+3. Groups the range into negatives using 1–12 shots per negative (default: 3).
+4. Requires the date on which the film was exposed.
+5. Writes one 16-bit RGB TIFF for every selected NEF.
+6. Writes a versioned JSON manifest that records grouping, source hashes,
+   conversion settings, outputs, and failures.
+
+The TIFFs are high-quality intermediate files for a later stitching phase.
+Phase 1 does not stitch or invert negatives.
+
+The first release is for one user, on this Apple-silicon Mac, built locally.
+App Store distribution, Developer ID distribution, sandboxing, notarisation,
+and Intel support are not Phase 1 requirements.
+
+## 2. Facts checked before implementation
+
+These facts were checked against current documentation and the local machine:
+
+- Local `main` and `lonnie-smith/scanny-boy` both point to commit
+  `dddfbf6d3985d6a524b23d817d7e1e1ec54e715d`. The local checkout has no
+  `origin` remote.
+- GitHub CLI 2.98.0 is installed and authenticated.
+- XcodeGen 2.46.0 is installed.
+- macOS is 14.6.1 on Apple silicon; Xcode is 16.2; Swift is 6.0.3; Python is 3.13.3;
+  uv is 0.11.7.
+- The local sample-NEF directory exists but is empty.
+- rawpy 0.27.0 uses LibRaw 0.22.1 and supplies a Python 3.13 Apple-silicon package.
+- LibRaw 0.22.1 supports Nikon Z f standard/lossless-compressed NEFs. It does
+  not support Z f High Efficiency or High Efficiency* NEFs. This project
+  requires 14-bit lossless-compressed NEFs.
+- Since rawpy 0.21, separate Python threads can decode RAW files at the same
+  time safely. Thread workers are therefore preferred over process workers.
+- `tifffile` can write RGB16, Deflate compression, horizontal prediction,
+  ordinary TIFF tags, and an embedded colour profile.
+- `tifffile` cannot create the nested EXIF directory needed for
+  `DateTimeOriginal` and related EXIF fields. `tifftools` can read and write
+  nested TIFF directories and is pure Python.
+- Python's `os.cpu_count()` does not report physical cores.
+  `os.process_cpu_count()` reports logical CPUs available to the process.
+- Standard GitHub-hosted runners are free for public repositories. Larger
+  runners and storage are not covered by that statement.
+- GitHub's `macos-14` runner is deprecated and will retire on 2026-11-02.
+  CI must use `macos-15`.
+- A bundled macOS executable belongs in an app's helper area, not in
+  `Contents/Resources`.
+
+## 3. Decisions implementation agents must preserve
+
+Change these only after asking the user.
+
+### 3.1 Product and repository
+
+- The Python command-line program contains all file discovery, validation,
+  sorting, grouping, conversion, manifest, and progress logic.
+- Swift provides the macOS interface and starts the Python program.
+- The repository is public on GitHub, but the project code is **all rights
+  reserved**. Do not use an MIT, Apache, BSD, or other open-source licence.
+- The root `LICENSE` must contain exactly:
+
+  ```text
+  Copyright (c) 2026 Lonnie Smith
+
+  All rights reserved.
+
+  No part of this repository or its contents may be used, copied, modified,
+  merged, published, distributed, sublicensed, or sold without the prior
+  written permission of the copyright holder.
+  ```
+
+  Public visibility does not grant reuse rights. Do not add an SPDX licence
+  identifier or open-source badge.
+- Bundled third-party assets keep their own licences. Record them in
+  `THIRD_PARTY_NOTICES.md` (the CC0 ICC profile is added in Chunk 3). Python
+  dependencies are used under their upstream licences but are not relicensed
+  here.
+- `project.yml` is the source for the Xcode project. Generated
+  `.xcodeproj` files are not committed.
+- `main` requires a pull request and current CI checks. No approval count is
+  required because this is a one-person project. Force-pushes and branch
+  deletion are blocked.
+- Each implementation chunk is one branch and one pull request. Merge chunks
+  in order.
+
+### 3.2 Input rules
+
+- Accept `.nef` case-insensitively from one folder, without recursion.
+- Resolve paths and reject duplicates or files outside the chosen input
+  folder.
+- The selected files must be one uninterrupted range in the folder's official
+  order.
+- Shots per negative accepts 1–12 and defaults to 3.
+- The selected count must be divisible by shots per negative.
+- The camera workflow requires:
+  - 14-bit lossless-compressed NEF;
+  - fixed manual exposure;
+  - fixed manual white balance;
+  - one lens and focal length;
+  - one camera orientation.
+- Open each selected RAW with rawpy before conversion. Map LibRaw's unsupported
+  file error to `UNSUPPORTED_RAW` and explain that Z f HE/HE* files must be
+  recaptured as 14-bit lossless-compressed NEFs.
+- Read `raw.camera_whitebalance` from every selected file. Require four finite,
+  positive multipliers. Normalise each vector by its first green multiplier
+  and compare corresponding values with relative and absolute tolerance
+  `1e-6`; do not rely only on an EXIF Manual/Auto flag.
+- Compare the scaled white-balance values, shutter speed, aperture, ISO,
+  lens, focal length, and source orientation across the selection. Stop and
+  identify missing or differing values.
+
+### 3.3 Sorting
+
+- Normal rule: sort by NEF `DateTimeOriginal`, including
+  `SubSecTimeOriginal` when present. Use natural filename order to break an
+  exact tie.
+- Determine one order for the complete folder catalogue. If any NEF in that
+  catalogue lacks a usable capture timestamp, sort the complete catalogue by
+  natural filename and show a warning, even when the missing timestamp is
+  outside the selected range.
+- Never use a mixed timestamp/filename comparison.
+- After sorting, verify that the selection is an uninterrupted range within
+  the complete folder catalogue.
+- Do not implement the previously proposed "uneven time gap" warning. There is
+  no measured threshold for it.
+
+### 3.4 Pixel output
+
+- Write one TIFF per source frame, named from that frame:
+  `DSC_0042.NEF` becomes `DSC_0042.tif`.
+- Always write three-channel, unsigned 16-bit RGB.
+- Honour the NEF orientation while decoding so pixels display upright. Write
+  TIFF Orientation as `1`.
+- Use source Orientation only for setup-consistency validation and rawpy
+  rotation. Record output dimensions from the final postprocess array shape.
+- Encode in ROMM RGB, commonly called ProPhoto RGB, using the standard
+  transfer curve.
+- Embed a vetted ROMM-compatible ICC colour profile in every TIFF. Never
+  silently write untagged ROMM data.
+- Use lossless Deflate compression with horizontal prediction. File-size
+  savings are measured, not assumed.
+- Set `tifffile`'s compression `maxworkers=1`; outer RAW threads own
+  concurrency.
+- Preserve fixed exposure across the run by disabling both histogram-based
+  brightening and content-dependent maximum adjustment.
+
+Required rawpy settings:
 
 ```python
-import rawpy
-
-RAW_PARAMS = dict(
-    output_bps=16,
-    gamma=(1.8, 16),                              # MUST match ROMM RGB.icc (see §1)
-    no_auto_bright=True,                          # preserves roll-consistent exposure
-    use_camera_wb=True,                           # as-shot WB; consistent across the roll
-    use_auto_wb=False,
-    output_color=rawpy.ColorSpace.ProPhoto,
-    demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD,
-    user_flip=0,                                  # do NOT auto-rotate — stitching needs
-                                                  # sensor-native orientation
-    four_color_rgb=False,
-    median_filter_passes=0,
-    highlight_mode=rawpy.HighlightMode.Clip,
-)
+RAW_PARAMS = {
+    "output_bps": 16,
+    "gamma": (1.8, 16),
+    "no_auto_bright": True,
+    "adjust_maximum_thr": 0.0,
+    "use_camera_wb": True,
+    "use_auto_wb": False,
+    "output_color": rawpy.ColorSpace.ProPhoto,
+    "demosaic_algorithm": rawpy.DemosaicAlgorithm.AHD,
+    "four_color_rgb": False,
+    "median_filter_passes": 0,
+    "highlight_mode": rawpy.HighlightMode.Clip,
+}
 ```
 
-Each of `no_auto_bright`, `user_flip=0`, and the gamma pair has a comment
-because each will look wrong to someone later. Leave the comments in.
+Do not set `user_flip=0`; rawpy should apply the source orientation.
 
-Then `cli/src/scanny_boy/core/tiff.py`:
+`gamma=(1.8, 16)` is the ROMM encoding curve. It is quantised, not perfectly
+reversible. Phase 2 must convert ROMM values to linear floating-point values
+before interpolation or blending.
 
-- `tifffile.imwrite(..., photometric="rgb", compression="deflate")`.
-  Deflate is lossless and typically recovers 30–50% on photographic data.
-- Embed the ICC profile in TIFF tag **34675** (`InterColorProfile`), read from
-  `/System/Library/ColorSync/Profiles/ROMM RGB.icc`. If that path is missing
-  (Linux CI), skip embedding and log a warning — do not fail.
+Use the CC0 `ProPhoto-v4.icc` profile from Compact ICC Profiles unless a test
+finds an interoperability problem:
 
-**Tests:**
+- Source:
+  `https://github.com/saucecontrol/Compact-ICC-Profiles/blob/master/profiles/ProPhoto-v4.icc`
+- Expected SHA-256:
+  `090daf740c136b4a63bf979d64f034b4a65aa5abbb04a0917729222afe2bb5c2`
+- Its inverse transfer curve uses an encoded-domain breakpoint of `0.03125`,
+  which matches the ROMM curve. Do not copy the earlier plan's
+  `0.001953125` ICC breakpoint; that is the linear-domain breakpoint.
 
-- Synthetic: feed a known array through the TIFF writer, read back, assert
-  dtype `uint16`, shape `(h,w,3)`, photometric RGB, ICC tag present on macOS.
-- Fixture-gated (`pytest.mark.skipif` when `tests/fixtures/nef` is empty — CI
-  must stay green without fixtures):
-  - A real NEF decodes without raising.
-  - Output is `uint16`, 3-channel, and matches the Z f's expected ~6048×4032.
-  - **Determinism:** decoding the same file twice is byte-identical.
-  - **Roll consistency:** decode two different frames; assert neither has been
-    independently auto-stretched. Concretely, assert `no_auto_bright` is
-    actually in effect by decoding one file with and without it and asserting
-    the mean differs — this catches a silently-dropped parameter.
+Commit the profile, record its CC0 licence in `THIRD_PARTY_NOTICES.md`, and
+test the profile checksum and transfer-curve parameters.
 
-**Verify — do this by eye, it is the point of the chunk:**
+### 3.5 Metadata
+
+The user supplies a film date but not an original time. For practical sorting,
+create synthetic ordering times:
+
+- With complete source timestamps: assign the first output `12:00:00` on the
+  film date, then add each frame's elapsed scan time.
+- If sorting fell back to filenames: assign `12:00:00`, then add one second
+  per frame.
+- After calculating each time, require it to be at least one second after the
+  previous output. This makes tied source timestamps strictly ordered.
+- If any calculated time would leave the entered film date, stop with
+  `CAPTURE_SPAN_TOO_LONG` and ask the user to split the run.
+
+Write the following exact mapping. IFD0 is the TIFF's main metadata area; EXIF
+is its nested photo-metadata area. "ASCII", "SHORT", and "RATIONAL" are TIFF
+value types.
+
+- IFD0 `DateTime` (306, ASCII): conversion time.
+- IFD0 `Make` (271, ASCII): source `Make`; fail if missing.
+- IFD0 `Model` (272, ASCII): source `Model`; fail if missing.
+- IFD0 `Software` (305, ASCII): `Scanny Boy <version>`.
+- IFD0 `ImageDescription` (270, ASCII): source filename and
+  "unstitched scan frame".
+- IFD0 `Orientation` (274, SHORT): always `1` because pixels are already
+  upright. Never copy the source Orientation value here.
+- IFD0 `InterColorProfile` (34675, bytes): the exact vetted ICC profile.
+- EXIF `DateTimeOriginal` (36867, ASCII): synthetic film date and ordering
+  time.
+- EXIF `SubSecTimeOriginal` (37521, ASCII): fractional synthetic time when
+  present. Omit otherwise.
+- EXIF `DateTimeDigitized` (36868, ASCII): copy the source
+  `DateTimeOriginal`; if it is absent, use source `DateTimeDigitized`; omit if
+  neither exists.
+- EXIF `SubSecTimeDigitized` (37522, ASCII): copy the subsecond tag belonging
+  to the source date chosen above: source `SubSecTimeOriginal` when source
+  `DateTimeOriginal` was used, otherwise source `SubSecTimeDigitized`; omit
+  when absent.
+- EXIF `OffsetTimeDigitized` (36882, ASCII): copy the offset tag belonging to
+  the source date chosen above: source `OffsetTimeOriginal` when source
+  `DateTimeOriginal` was used, otherwise source `OffsetTimeDigitized`; omit
+  when absent. Do not invent an offset for the synthetic film time.
+- EXIF `LensModel` (42036, ASCII): source `LensModel`; fail if missing.
+- EXIF `ExposureTime` (33434, RATIONAL): source exposure time; fail if
+  missing.
+- EXIF `FNumber` (33437, RATIONAL): source aperture; fail if missing.
+- EXIF `PhotographicSensitivity` (34855, SHORT): source ISO; fail if missing.
+- EXIF `FocalLength` (37386, RATIONAL): source focal length; fail if missing.
+- EXIF `ColorSpace` (40961, SHORT): `65535` (uncalibrated), because the
+  embedded ICC profile identifies ROMM.
+
+Do not copy Nikon MakerNotes, serial numbers, thumbnails, or arbitrary unknown
+tags.
+
+Use `tifffile` to write `<name>.base.tif` with pixels, compression, ordinary
+tags, and ICC data. Use `tifftools` to rewrite it as `<name>.final.tif` with
+the nested EXIF directory. Perform both passes inside the group's staging
+directory, verify the final file, and only then remove the base file.
+
+Describe these files as 16-bit TIFFs whose metadata standard readers can read,
+not as strictly EXIF-conforming primary images.
+
+### 3.6 Output folder, overwriting, and grouping
+
+- One output folder contains one run/roll.
+- The output folder must differ from the input folder.
+- An empty folder is valid.
+- A nonempty folder without a valid Scanny Boy manifest is rejected.
+- A valid manifest contains only relative output names without `..`, absolute
+  components, or symlink escapes. Every resolved output must remain inside the
+  chosen output folder.
+- Permitted folder contents are the manifest, outputs listed by it, `.DS_Store`,
+  and staging directories whose run identifier matches that manifest.
+  Anything else makes the folder unrelated and is rejected.
+- A rerun in the same folder must match the previous source filenames and
+  hashes, order, grouping, film date, processing settings, and ICC hash. A
+  different run requires a new empty folder.
+- For a matching rerun, show the exact files that will be replaced and require
+  confirmation.
+- The command-line program rejects conflicts by default. The app passes an
+  explicit `--overwrite` option only after confirmation.
+- Each negative is processed as a group. All new files for a group are staged
+  first.
+- If any frame in a group fails, delete that group's staged files and continue
+  with the next group.
+- For ordinary failures and cooperative cancellation, never publish only part
+  of a group.
+- Completed groups remain after cancellation. The currently processing group
+  is not published.
+- A sudden process or machine failure cannot replace several files as one
+  all-or-nothing operation. The manifest records progress so a rerun can
+  safely replace an incomplete group.
+- Write and safely store the initial `running` manifest before publishing the
+  first TIFF. After a crash, treat every non-final group as incomplete and
+  replace all of that group's expected outputs on rerun, including files that
+  may already have been renamed into place.
+
+### 3.7 Manifest
+
+Write `scanny-boy-manifest.json` to a temporary file, then rename it into place
+so readers never see a half-written manifest. Include:
+
+- manifest-format version and Scanny Boy version;
+- run identifier and status: `running`, `partial`, `cancelled`, or `complete`;
+- input folder and film date;
+- shots per negative;
+- all pixel-processing parameters;
+- ICC profile name and SHA-256;
+- each source filename, absolute path, byte size, modification time, and
+  SHA-256;
+- official source order;
+- negative group identifiers and membership;
+- expected output names;
+- each completed output's byte size and SHA-256;
+- completed, failed, and pending groups;
+- curated source metadata;
+- start and finish times.
+
+Create temporary manifest files in the output directory. Flush each temporary
+file and use `fsync` to ask the operating system to store it, replace the old
+manifest, then sync the directory where the platform permits it. Update after
+every group reaches a final state.
+
+Immediately before and after decoding each source, confirm its byte size and
+modification time still match the values recorded during hashing. Stop that
+group if the source changed.
+
+Phase 2 must reject a manifest that is not `complete`, any missing output, or
+any output whose size or SHA-256 differs.
+
+### 3.8 Concurrency and cancellation
+
+- Implement and verify a serial path first.
+- Use `ThreadPoolExecutor` for parallel RAW work. Each worker opens one RAW,
+  writes its staged TIFF, adds metadata, and returns only status and paths.
+  Do not return full image arrays to the parent.
+- Keep inner TIFF compression at one worker.
+- Default workers:
+  `min(shots_per_negative, os.process_cpu_count() or 1, 4)`.
+- `--jobs 1` uses the serial path. Accept explicit values from 1–12.
+- Budget 2 GiB of memory per requested worker initially. Reject a job count
+  whose budget exceeds half of physical RAM. Chunk 6 measures peak resident
+  memory for jobs 1 and 4; raise the per-worker budget if measured peak plus
+  25% is larger.
+- Performance is measured on sample files. Near-linear speedup is not a
+  requirement.
+- The app requests cancellation with SIGTERM.
+- The Python signal handler sets a cancellation flag. Cleanup occurs through
+  normal control flow; the handler does not perform complex file operations.
+- On cancellation, stop submitting work and cancel queued tasks. A task that
+  has started cannot be cancelled safely; let it finish its current RAW call
+  and check the cancellation flag between decode, TIFF writing, and metadata
+  stages.
+- Wait for every running worker to stop before deleting the current staging
+  directory. Then update the manifest, emit a final event when possible, and
+  exit 130. Never delete a directory while a worker may still write to it.
+- Swift treats a user-requested cancellation as cancelled even if the frozen
+  helper ends because of signal 15 rather than returning 130.
+- After a five-second grace period, Swift may force termination and reports
+  the run as cancelled locally. A forced stop cannot clean files, update the
+  manifest, or emit a final event.
+- The next probe or conversion detects a manifest left as `running` and
+  staging directories owned by that run. It removes those staging directories
+  before rerunning, but does not remove published TIFFs.
+
+### 3.9 Disk checks
+
+Use these conservative values:
+
+```text
+P = height × width × 3 channels × 2 bytes
+B = ceil(P × 1.05)                 # one TIFF plus metadata overhead
+M = number of expected outputs that do not already exist
+G = largest group size
+D = max(1 MiB, estimated manifest size)
+required free bytes = ceil((M × B + 2 × G × B + D) × 1.20)
+```
+
+During validation, derive pixel count from rawpy's processed active
+`sizes.width × sizes.height`, not raw sensor dimensions or an assumed Z f
+crop. Orientation does not change pixel count. After decode, verify and record
+the actual final array shape. `M × B` covers final files not already present.
+`2 × G × B` covers simultaneous base and rewritten TIFFs for one staged
+group. For a pure overwrite, `M` is zero because old files already occupy
+disk, but the staging term still applies. Check free space on the output
+volume.
+
+Report the estimate and available space in an error. Do not claim that
+streaming limits total final output size; it limits temporary working space.
+
+## 4. Command-line contract
+
+`shared/contract/CONTRACT.md` and `schema.json` define the interface. The
+summary here must stay consistent with them.
+
+### 4.1 Commands
+
+```text
+scanny-boy probe \
+  --input DIR --files FILE [FILE ...] --per-negative 3
+
+scanny-boy convert \
+  --input DIR --files FILE [FILE ...] \
+  --out DIR --film-date YYYY-MM-DD --per-negative 3 \
+  [--jobs N] [--overwrite]
+```
+
+`probe` is read-only. It returns the full folder catalogue, official selected
+order, groups, warnings, metadata consistency results, output conflicts, and
+whether conversion may start.
+
+`convert` repeats all important validation. It does not trust an earlier probe
+result.
+
+### 4.2 Output transport
+
+- stdout contains one UTF-8 JSON object per line and flushes after every line.
+- stderr contains human-readable logs and is never parsed.
+- stdout and stderr must both be drained while the process is running.
+- Every event includes `protocol_version`, `event`, and `run_id` when a run
+  exists.
+
+Required event types:
+
+- `started`
+- `probe_result`
+- `progress`
+- `item_done`
+- `group_done`
+- `group_failed`
+- `warning`
+- `error`
+- `finished`
+
+`progress` includes a stable source index, stage, completed work count, and
+total. Parallel completion order need not match source order. The UI derives
+overall progress from counts, never from the largest source index seen.
+
+`progress` may report decoded or staged work. `item_done` means the TIFF has
+been published in the output folder after its whole group completed
+successfully. If a group fails or is cancelled, it emits no `item_done` events
+for that group's staged files. Emit `group_done` after that group's
+`item_done` events.
+
+Stable error and warning codes include:
+
+- `NO_FILES`
+- `NON_CONTIGUOUS_SELECTION`
+- `NOT_DIVISIBLE`
+- `MISSING_CAPTURE_TIME`
+- `FILENAME_SORT_USED`
+- `UNSUPPORTED_RAW`
+- `CAPTURE_METADATA_MISSING`
+- `CAPTURE_SETTINGS_DIFFER`
+- `CAPTURE_SPAN_TOO_LONG`
+- `UNREADABLE_RAW`
+- `OUTPUT_NOT_WRITABLE`
+- `OUTPUT_NOT_EMPTY`
+- `OUTPUT_CONFLICT`
+- `INSUFFICIENT_DISK`
+- `BAD_MANIFEST`
+- `CANCELLED`
+
+Exit status:
+
+- `0`: complete success;
+- `1`: validation, conversion, or partial-run failure;
+- `2`: invalid command usage;
+- `130`: cooperative user cancellation.
+
+The event stream, not message text, is the app's machine-readable interface.
+
+## 5. Dependency and build rules
+
+### 5.1 Python
+
+- Support Python `>=3.13,<3.14` for v0.1.
+- Runtime dependencies:
+  - `rawpy>=0.27,<0.28`
+  - `numpy>=2.5,<3`
+  - `tifffile>=2026.8.23,<2027`
+  - `imagecodecs>=2026.8.16,<2027`
+  - `exifread>=3.5,<4`
+  - `tifftools>=1.7,<2`
+- Development dependencies belong in `[dependency-groups].dev`: pytest,
+  pytest-cov, ruff, and PyInstaller.
+- Commit `cli/uv.lock` and `.python-version`.
+- CI uses `uv sync --locked`.
+- Do not add OpenCV in Phase 1.
+
+### 5.2 Packaged command-line program
+
+Use PyInstaller one-directory mode, not one-file mode. Frequent `probe`
+launches must not extract a large package on every call.
+
+- Build the helper bundle at `cli/dist/ScannyBoyCLI.app`.
+- Run quick packaged checks with `--version`, `probe`, serial conversion,
+  threaded conversion, and cancellation.
+- Inspect PyInstaller warnings and `otool -L` output.
+- PyInstaller already has a NumPy hook. Add a narrow rawpy dynamic-library
+  collection hook only if the packaged checks prove LibRaw is missing.
+- Wrap the one-directory result as a proper nested
+  `ScannyBoyCLI.app` helper bundle. Put its executable and libraries in the
+  standard locations declared by that bundle; do not copy an arbitrary
+  directory of executable files into `Contents/Helpers`.
+- Set a unique helper bundle identifier and make it a background-only helper.
+- Copy `ScannyBoyCLI.app` into
+  `ScannyBoy.app/Contents/Helpers/ScannyBoyCLI.app` with Xcode's
+  **Code Sign On Copy** enabled. Sign the helper before the outer app.
+- Launch the executable declared at
+  `ScannyBoyCLI.app/Contents/MacOS/scanny-boy`.
+- In Debug builds, allow an absolute `SCANNY_BOY_CLI` environment override.
+  Never find the development CLI relative to the app's current directory.
+- Release builds never fall back to the repository.
+
+For this local-only release, ad-hoc signing or Xcode's "Sign to Run Locally" is
+enough. External distribution requires a separate signing and notarisation
+plan.
+
+### 5.3 Swift process runner
+
+- Represent each invocation with an owned session object, not global static
+  mutable state.
+- Isolate process, buffer, and stream state for Swift 6 concurrency.
+- Keep the UI model `@MainActor @Observable`.
+- Stream stdout by line and drain stderr concurrently.
+- Handle JSON split across arbitrary reads.
+- Finish the event stream exactly once after process termination, stdout EOF,
+  and stderr EOF. Do not block the main actor while waiting.
+- Launch failure or Swift task cancellation closes both reader tasks and
+  finishes their continuations exactly once.
+- Report launch, read, and decode errors separately from normal completion.
+- Check both `terminationReason` and `terminationStatus`.
+
+## 6. Implementation chunks
+
+Every chunk:
+
+1. Starts from updated `main`.
+2. Changes only the stated scope.
+3. Adds the listed tests.
+4. Runs all existing tests.
+5. Includes actual command output in the pull-request body.
+6. Does not change a decision in section 3 without user approval.
+
+### Chunk 0 — Repository, licence, Python environment, and CI
+
+**Branch:** `chunk-00-repository`
+
+Do:
+
+- Add `origin` for `git@github.com:lonnie-smith/scanny-boy.git`.
+- Add the root `LICENSE` using the exact all-rights-reserved text in section
+  3.1. Do not create the GitHub repository with `--license` or any other
+  open-source template.
+- Update `.gitignore` for sample NEFs, generated Xcode projects, environments,
+  build output, and staging folders.
+- Remove the placeholder `scan` command and its Swift/Python contract types.
+- Configure Python 3.13 dependencies, dev dependency group, ruff, pytest,
+  `.python-version`, and `uv.lock`.
+- Update `bootstrap.sh` to run uv's project sync from `cli/`.
+- Add a Python CI job on `ubuntu-latest`: checkout, install uv, select Python
+  3.13, `uv sync --locked`, ruff, and pytest.
+- Do not add a failing placeholder Swift job.
+- Protect `main` after the Python check has run successfully: require a PR and
+  the current `python` check; block force-push and deletion; require the branch
+  to be current.
+
+Verify:
 
 ```bash
-cli/.venv/bin/python -c "
-from scanny_boy.core.decode import decode_raw
-from scanny_boy.core.tiff import write_tiff
-import glob
-src = sorted(glob.glob('tests/fixtures/nef/*.NEF'))[0]
-arr, meta = decode_raw(src)
-print('shape', arr.shape, 'dtype', arr.dtype, 'min', arr.min(), 'max', arr.max())
-write_tiff('/tmp/check.tif', arr, meta)
-"
-open /tmp/check.tif      # opens in Preview
+./scripts/bootstrap.sh
+cd cli && uv run ruff check . && uv run pytest
+gh run watch RUN_ID --exit-status
 ```
 
-**What you should see:** a normal-looking *negative* — orange-masked if colour
-film, tonally inverted. It should **not** look near-black (that would mean gamma
-didn't apply) and **not** look contrast-stretched (that would mean
-`no_auto_bright` was dropped). Open it in Lightroom or Affinity too and confirm
-it reports **ProPhoto RGB**, not sRGB or Untagged.
+### User gate A — Supply sample RAW files
 
-**Done when:** the eyeball check passes, all fixture tests pass locally, and CI
-is green with fixtures absent.
+Before Chunk 2, place at least six real Nikon Z f files in
+`tests/fixtures/nef/`: two complete negatives at three frames each.
 
----
+They must use the real copy stand and:
 
-### Chunk 3 — EXIF read and the film-date shift
+- 14-bit lossless-compressed NEF;
+- full intended image area;
+- fixed exposure and white balance;
+- fixed lens, focal length, and orientation.
 
-**Branch:** `chunk-03-exif-datedshift`
+Sample RAW files stay outside Git. Record their filenames, dimensions,
+compression mode, and SHA-256 values in a local inventory that is also ignored.
 
-**Goal:** Read capture metadata from NEF; write correct, semantically-right
-metadata into the TIFF.
+### Chunk 1 — Protocol and command skeleton
 
-**The date rule.** You asked to replace the *date only* and keep time-of-day so
-capture-order stays consistent. Naively swapping the date breaks exactly that
-if a scanning session crosses midnight — two calendar days collapse onto one and
-the order inverts. Verified:
+**Branch:** `chunk-01-protocol`
 
-```
-session: 23:58 (Aug 27), 00:01 (Aug 28), 00:03 (Aug 28)
-naive swap → 1998-07-04 23:58, 1998-07-04 00:01, 1998-07-04 00:03   ✗ out of order
-day-delta  → 1998-07-04 23:58, 1998-07-05 00:01, 1998-07-05 00:03   ✓ ordered
-```
+Do:
 
-So shift by whole days relative to the **first frame in the selection**:
+- Replace the shared contract and JSON format with section 4.
+- Implement typed Python events and a flushing event writer.
+- Add `probe` and `convert` argument parsing and stable usage errors.
+- Add protocol-version handling.
 
-```python
-def shift_capture_date(frame_dt, anchor_dt, film_date):
-    """Replace calendar date with film_date, preserving time-of-day AND ordering."""
-    day_delta = (frame_dt.date() - anchor_dt.date()).days
-    return datetime.combine(film_date + timedelta(days=day_delta), frame_dt.time())
-```
+Tests:
 
-For a normal same-day session this is identical to "just swap the date" —
-`day_delta` is 0 for every frame. It only diverges when it needs to.
+- Every event serialises to one line and validates against the JSON format.
+- Every write flushes.
+- Invalid command, date, range, and job count return status 2 and structured
+  errors where the contract promises them.
+- stderr never contains machine-readable events.
 
-**EXIF semantics — write both fields, they mean different things:**
+### Chunk 2 — Catalogue, sorting, selection, and grouping
 
-| Tag | Value | Why |
-|-----|-------|-----|
-| `DateTimeOriginal` | shifted (film date + original time-of-day) | when the *photograph* was taken — the film exposure |
-| `DateTimeDigitized` | the NEF's real capture time, unmodified | when it was *digitised* — literally your scanning session |
+**Branch:** `chunk-02-catalogue`
 
-This is correct EXIF usage rather than a workaround, and it means you keep both
-facts instead of trading one for the other.
+Do:
 
-**Do:**
+- Read the minimum NEF metadata needed for catalogue and validation.
+- Implement timestamp sorting, whole-catalogue filename fallback, natural
+  filename order, uninterrupted-range validation, divisibility, and grouping.
+- Make `probe` return the official list used by Swift.
+- Implement setting-consistency validation.
 
-1. `core/exif.py` — read `DateTimeOriginal` (with `SubSecTimeOriginal` when
-   present), `Make`, `Model`, `LensModel`, `ExposureTime`, `FNumber`, `ISO` via
-   `exifread`.
-2. Implement `shift_capture_date` exactly as above.
-3. Extend the TIFF writer to emit: baseline `DateTime` (306), `Make` (271),
-   `Model` (272), `Software` (305) = `"Scanny Boy <version>"`,
-   `ImageDescription` (270) noting source filename and that this is an
-   unstitched scan frame, plus an EXIF IFD carrying `DateTimeOriginal` (36867)
-   and `DateTimeDigitized` (36868).
+Tests:
 
-**Tests:**
+- Natural order handles `DSC_9` before `DSC_10`.
+- Valid timestamps survive `9999` to `0001` rollover.
+- One missing timestamp anywhere in the catalogue switches the complete
+  catalogue to filename order and emits a warning, including when that file is
+  outside the selection.
+- Separated selections are rejected.
+- Grouping works for 1–12, with default 3.
+- Non-divisible selections explain the nearest valid counts.
+- Exposure, white balance, lens, focal length, and orientation mismatches name
+  the differing files.
+- Missing, non-finite, or non-positive rawpy camera white-balance multipliers
+  are rejected.
 
-- `shift_capture_date` — same-day case is exactly a date swap.
-- **Cross-midnight case preserves ordering** (use the table above as the fixture).
-- Sub-second precision survives when present.
-- A frame *earlier* in the day than the anchor still orders correctly.
-- Fixture-gated: real NEF → EXIF fields non-empty and `DateTimeOriginal` parses.
-- Round-trip: write a TIFF, read tags back, assert both date fields present and
-  distinct.
+### Chunk 3 — RAW decode and base TIFF
 
-**Verify:**
+**Branch:** `chunk-03-raw-tiff`
 
-```bash
-cli/.venv/bin/python -c "
-import tifffile
-with tifffile.TiffFile('/tmp/check.tif') as t:
-    for k,v in t.pages[0].tags.items(): print(v.name, '=', v.value)
-"
-```
+Do:
 
-**Done when:** both date fields are present, correct, and distinct; ordering
-tests pass.
+- Add RAW decoding with the exact parameters in section 3.4.
+- Add the CC0 ICC profile, its CC0 licence entry in `THIRD_PARTY_NOTICES.md`,
+  checksum test, and curve test.
+- Write RGB16 TIFFs with Deflate, horizontal prediction, ordinary tags, and
+  embedded ICC data, with one compression worker per outer RAW worker.
+- Derive and record output dimensions from rawpy.
+- Fail rather than writing an untagged ROMM TIFF.
 
----
+Tests:
 
-### Chunk 4 — Sorting, grouping, validation
+- Synthetic array round-trip preserves `uint16`, shape, channels, pixels,
+  compression, prediction, orientation, and ICC bytes.
+- Local sample-file decode succeeds and is repeatable at the pixel-array level.
+- Output Orientation is `1`, and dimensions match the final postprocess array.
+- `adjust_maximum_thr=0` and `no_auto_bright=True` are verified against a
+  deliberately changed control decode.
+- The same sample file decoded twice has the same pixel hash.
 
-**Branch:** `chunk-04-grouping`
+Manual gate:
 
-**Goal:** `probe` works fully — turn a file selection into validated negative
-groups.
+- Produce representative TIFFs and a metadata report.
+- The user opens them in Preview and at least one colour-managed editor.
+- The PR does not merge until the user approves orientation, appearance, and
+  reported ROMM profile.
 
-**Do:**
+### Chunk 4 — EXIF metadata and synthetic film dates
 
-`core/grouping.py`:
+**Branch:** `chunk-04-metadata`
 
-1. Sort by `DateTimeOriginal` (sub-second when available), tiebreak on natural
-   filename order. Natural, not lexicographic — `DSC_9.NEF` sorts before
-   `DSC_10.NEF`.
-2. Chunk into groups of `per_negative`.
-3. **Hard-fail** non-divisible selections with code `NOT_DIVISIBLE` and a
-   message naming both numbers: `"14 files selected, 4 per negative — 14 is not
-   divisible by 4 (2 files short of 16, or 2 too many for 12)"`. Say what's
-   wrong *and* what would fix it.
-4. Warn (don't fail) when a group's internal time gaps are wildly uneven — a
-   likely sign a frame was missed. Emit as an event; the UI surfaces it.
-5. Derive each group's output name from its first frame (D9).
+Do:
 
-**Tests:**
+- Implement the date rules and curated metadata list in section 3.5.
+- Add nested EXIF metadata with `tifftools`.
+- Preserve digitisation subseconds and time-zone offset when present.
+- Validate output with both `tifftools` and an independent metadata reader in
+  development tests.
 
-- Divisible selection groups correctly at N=2,3,4,6.
-- Non-divisible raises `NOT_DIVISIBLE` with both counts in the message.
-- Natural sort: `DSC_9` before `DSC_10`.
-- **Filename rollover:** `DSC_9998, DSC_9999, DSC_0001, DSC_0002` with
-  ascending EXIF times stays in capture order — proving EXIF beats filename.
-- Missing EXIF falls back to filename without crashing.
-- Empty selection raises `NO_FILES`.
-- Output names are unique across groups.
+Tests:
 
-**Verify:**
+- Noon-plus-elapsed preserves order across a midnight scanning session without
+  moving frames to the next film date.
+- Filename fallback assigns noon plus one second per frame.
+- Nested EXIF fields round-trip.
+- The `tifftools` rewrite leaves decoded pixel hash, ICC bytes, compression,
+  predictor, dimensions, bit depth, channel count, and Orientation unchanged.
+- Base and final staging paths are separate, and the base file is removed only
+  after final-file verification.
+- Repeated runs compare equal after excluding documented volatile fields such
+  as baseline conversion time.
+- Lens/exposure fields read from the sample file are present in the TIFF.
+- MakerNotes and serial-number tags are absent.
 
-```bash
-cli/.venv/bin/scanny-boy probe --input tests/fixtures/nef --per-negative 4
-# expect: 2 groups, correct membership, sensible output names
-cli/.venv/bin/scanny-boy probe --input tests/fixtures/nef --per-negative 3; echo "exit=$?"
-# expect: exit 1, NOT_DIVISIBLE naming 8 and 3
-```
+### Chunk 5 — Manifest and serial group pipeline
 
-**Done when:** both commands behave as above and `probe` writes nothing to disk
-(assert via a read-only directory test).
+**Branch:** `chunk-05-serial-pipeline`
 
----
+Do:
 
-### Chunk 5 — Batch orchestration, parallelism, cancellation
+- Add source hashing, disk checks, manifest progress records, group staging, and the
+  serial conversion path.
+- Add empty-folder, valid-manifest rerun, and invalid nonempty-folder rules.
+- Make `--overwrite` explicit and safe.
+- Commit a group only after every staged frame is complete.
 
-**Branch:** `chunk-05-orchestration`
+Tests:
 
-**Goal:** `convert` runs a whole selection with real progress, real
-parallelism, real cancellation, and bounded disk.
+- Manifest format and hashes are correct.
+- A `running` manifest is safely stored before the first output appears.
+- Completed output sizes and SHA-256 values match the files.
+- A failed frame removes all new staged files for that group and later groups
+  continue.
+- Missing output space fails before decode.
+- Existing files fail without `--overwrite`.
+- A valid manifest plus `--overwrite` replaces expected files.
+- A rerun with changed sources, hashes, order, grouping, film date, processing
+  settings, or ICC is rejected and requires a new empty folder.
+- An unrelated nonempty folder is rejected.
+- Manifest output paths cannot escape the output folder through absolute paths,
+  `..`, or symlinks.
+- A source changed after hashing is rejected before its group is published.
+- A forced test failure after the first TIFF rename leaves the group
+  incomplete; recovery replaces every expected output in that group.
+- Disk checks fail just below and pass just above the required-free-bytes
+  formula for both a new run and a pure overwrite.
+- No staging directory survives normal success or handled failure.
 
-**Do:**
+### Chunk 6 — Threaded conversion and cancellation
 
-1. `core/pipeline.py` — orchestrate group-at-a-time (D3). Never hold more than
-   one negative's intermediates.
-2. `multiprocessing.Pool` sized to physical cores
-   (`os.cpu_count()`, capped sensibly). **Workers return their own `index`** so
-   progress attribution is correct out of completion order.
-3. `--jobs 1` forces the serial path, bypassing the pool entirely — used by
-   tests for determinism and by you for debugging.
-4. Run directory under `NSTemporaryDirectory()` equivalent
-   (`tempfile.mkdtemp(prefix="scannyboy-")`), removed on success, on failure,
-   and on cancel.
-5. `SIGTERM` handler per §3.4.
-6. **Preflight before any work:** output dir writable, sufficient free disk
-   (estimate ≈ 150 MB × file count and compare against `shutil.disk_usage`),
-   every input readable. Fail fast with a clear code — not 40 minutes in.
-7. A single failed file emits `item_failed` with `recoverable: true` and the run
-   continues; the run reports partial success at the end.
+**Branch:** `chunk-06-concurrency`
 
-**Tests:**
+Do:
 
-- Progress events are monotonic in count and every index 1..N appears exactly
-  once, **under `--jobs 4`** (this is the test that catches mis-attribution).
-- `--jobs 1` and `--jobs 4` produce byte-identical outputs.
-- One unreadable input → `item_failed`, run completes, `finished.ok` reflects
-  partial success, exit 1.
-- SIGTERM mid-run → exit 130, temp dir gone, completed negatives retained.
-- Temp dir is removed on every exit path (success, failure, cancel).
-- Preflight rejects an unwritable output dir before emitting `started`.
+- Add the thread-worker path and conservative default worker count.
+- Keep `--jobs 1` independent of the executor.
+- Add cooperative SIGTERM cancellation and final status handling.
 
-**Verify:**
+Tests:
 
-```bash
-time cli/.venv/bin/scanny-boy convert --files tests/fixtures/nef/*.NEF \
-     --out /tmp/sbout --film-date 1998-07-04 --per-negative 4
-ls -lh /tmp/sbout                       # expect one .tif per source frame
-du -sh /tmp/sbout
+- Jobs 1 and 4 produce equal pixel hashes and metadata after documented
+  changing fields are ignored.
+- Every source index reports one final result despite out-of-order completion.
+- A controlled blocking test cancels only after work has definitely started;
+  do not use a race-prone fixed sleep.
+- Cancellation removes the current group, retains completed groups, updates
+  the manifest, and returns the documented terminal state.
+- Queued work is cancelled, running workers stop, and only then is staging
+  deleted.
+- Forced termination may leave a `running` manifest and staging directory.
+  The next run removes that abandoned staging work and safely reruns the
+  incomplete group.
+- Thread workers never return image arrays to the parent.
+- TIFF compression uses one inner worker.
+- Record peak resident memory (actual RAM in use) for jobs 1 and 4 and verify
+  the runtime memory guard rejects an unsafe explicit job count.
+- Record benchmark results, but do not require a fixed speedup.
 
-# cancellation
-cli/.venv/bin/scanny-boy convert --files tests/fixtures/nef/*.NEF \
-     --out /tmp/sbout2 --film-date 1998-07-04 --per-negative 4 & 
-sleep 2; kill -TERM %1; wait; echo "exit=$?"   # expect 130
-ls /tmp/scannyboy-* 2>/dev/null || echo "temp cleaned ✓"
-```
+### Chunk 7 — Package the command-line program
 
-Also compare `--jobs 1` wall time against default to confirm the speedup is
-real. If it isn't roughly linear in cores, the pool isn't doing what you think.
+**Branch:** `chunk-07-package-cli`
 
-**Done when:** all the above pass, and no `scannyboy-*` temp dir survives any
-exit path.
+Do:
 
----
+- Build a PyInstaller one-directory distribution wrapped in
+  `ScannyBoyCLI.app`.
+- Bundle all runtime libraries and the ICC profile.
+- Update `build-cli.sh` and add quick packaged checks.
+- Inspect macOS library dependencies rather than assuming hooks are missing.
+- Give the helper a unique bundle identifier and background-only setting.
+- Verify the helper's signature before it can be copied into the outer app.
 
-### Chunk 6 — Freeze the CLI
+Tests:
 
-**Branch:** `chunk-06-pyinstaller`
+- Packaged `--version`, `probe`, jobs 1, jobs 4, and cancellation work.
+- Development and packaged runs have equal pixel hashes and metadata after
+  documented changing fields are ignored.
+- No dependency is loaded from `cli/.venv`.
+- `codesign --verify --strict` succeeds for the helper bundle.
 
-**Goal:** A standalone `scanny-boy` binary with no Python dependency.
+### Chunk 8 — XcodeGen project and streaming runner
 
-**Do:**
+**Branch:** `chunk-08-xcode-runner`
 
-1. Rewrite `cli/build/scanny_boy.spec` for the real dependency set. `rawpy`
-   and `numpy` need explicit binary collection; PyInstaller's automatic hook
-   detection misses LibRaw's dylib.
-2. **Exclude OpenCV** from the Phase 1 freeze — it is an optional extra and
-   would add ~46 MB for code nothing calls yet.
-3. Bundle `ROMM RGB.icc` as a datafile so the binary doesn't depend on the
-   system path, with the system path as fallback.
-4. Update `scripts/build-cli.sh`: verify the binary actually runs after
-   building (`--version` smoke test) rather than just checking it exists.
+Do:
 
-**Tests:** a shell test that runs the *frozen* binary through `probe` and
-`convert` against fixtures and diffs the output against the venv build's
-output. Freezing breaking `rawpy` at runtime is a classic, silent failure.
+- Create `mac/project.yml` for macOS 14 deployment and Swift 6.
+- Use Swift Testing for unit tests.
+- Make `build-cli.sh` an explicit prerequisite because `cli/dist/` is ignored
+  by Git and is absent from a clean checkout.
+- Copy `ScannyBoyCLI.app` to `Contents/Helpers/` with **Code Sign On Copy**.
+- Implement debug override and bundled release resolution.
+- Implement the owned streaming session described in section 5.3.
+- Add Swift CI on `macos-15`. In order, it must check out the repository,
+  install uv, select Python 3.13, sync `cli/`, install or verify XcodeGen 2.46,
+  set `DEVELOPER_DIR=/Applications/Xcode_16.2.app/Contents/Developer`, print
+  `xcodebuild -version`, run `build-cli.sh`, generate the project, and test it.
+- Add the `swift` job to required branch checks after it passes.
 
-**Verify:**
+Tests:
+
+- Decode every event and preserve unknown events safely.
+- Reassemble JSON split across reads.
+- Drain large stdout and stderr concurrently without deadlock.
+- Do not finish until the process and both output streams have ended.
+- Drive the runner with a temporary test executable.
+- Test normal success, structured failure, cooperative cancellation, signal
+  termination, and forced-cancel classification.
+- Test recovery from a forced stop that leaves a `running` manifest and
+  abandoned staging directory.
+- A clean XcodeGen generation builds and tests successfully.
+- `codesign --verify --strict` succeeds for both the nested helper and the
+  built Scanny Boy app.
+
+Verify without piping away the exit status:
 
 ```bash
 ./scripts/build-cli.sh
-ls -lh mac/ScannyBoy/Resources/cli/scanny-boy
-./mac/ScannyBoy/Resources/cli/scanny-boy probe --input tests/fixtures/nef --per-negative 4
-# must produce byte-identical output to the venv build
+cd mac
+xcodegen generate
+xcodebuild test \
+  -scheme ScannyBoy \
+  -destination 'platform=macOS' \
+  -resultBundlePath TestResults.xcresult
 ```
 
-**Done when:** frozen and venv builds agree byte-for-byte on the same inputs.
+### Chunk 9 — Folder catalogue and configuration UI
 
----
+**Branch:** `chunk-09-configuration-ui`
 
-### Chunk 7 — XcodeGen project and CLI bridge
+Do:
 
-**Branch:** `chunk-07-xcodegen-bridge`
+- Add input-folder selection and last-folder memory.
+- Ask the CLI for the official folder catalogue.
+- Add one-range selection and reject gaps.
+- Add shots per negative, 1–12, default 3.
+- Add a required film-date field that starts blank.
+- Add output-folder selection and validation.
+- Add grouping preview, setting mismatch errors, missing-time warnings, disk
+  estimate, and overwrite-conflict preview.
 
-**Goal:** A buildable macOS app that can invoke the CLI and parse streaming
-events. No real UI yet.
+Tests:
 
-**Do:**
+- Model state follows probe results; Swift does not reimplement EXIF sorting.
+- Run remains disabled for a gap, non-divisible count, blank date, bad output
+  folder, setting mismatch, or unresolved overwrite confirmation.
+- A valid six-file, three-per-negative selection shows two groups.
 
-1. `mac/project.yml` — target `ScannyBoy`, deployment target macOS 14.0, Swift
-   6, `ScannyBoyTests` using **Swift Testing** (available in Xcode 16). Source
-   globs so new files need no project edit. App Sandbox **off** (D6).
-2. Gitignore `mac/ScannyBoy.xcodeproj`; document `xcodegen generate` in the
-   README as the step after any file addition.
-3. Rewrite `CLIBridge/CLIRunner.swift` completely — the scaffold's version does
-   `readDataToEndOfFile()`, which **blocks until exit and makes streaming
-   progress impossible**. Replace with:
-   - line-buffered async reads off `Pipe.fileHandleForReading`
-   - an `AsyncStream<CLIEvent>` the UI consumes
-   - `Codable` event types mirroring §3.2, decoded by `event` discriminator
-   - `terminate()` sending SIGTERM
-   - **dev/release binary resolution:** bundled `Resources/cli/scanny-boy` when
-     present, else `cli/.venv/bin/scanny-boy` via a debug-only path, so you can
-     iterate without freezing.
-4. Delete `ScanResult.swift` if Chunk 0 somehow left it.
+### Chunk 10 — Run, progress, cancellation, and completion UI
 
-**Tests** (`ScannyBoyTests`):
+**Branch:** `chunk-10-run-ui`
 
-- Event decoding for every event type in §3.2.
-- Unknown event type decodes to a safe `.unknown` case rather than throwing —
-  forward compatibility when Phase 2 adds stitch events.
-- Partial-line buffering: a JSON object split across two reads decodes once
-  reassembled. **This is the highest-value Swift test in the project** — it's
-  the bug that will otherwise appear only under real load.
-- A fake script emitting canned NDJSON drives the runner end-to-end without
-  needing the real CLI.
+Do:
 
-**Verify:**
+- Add Run and overwrite confirmation.
+- Show work stage, current filename, completed count, elapsed time, and
+  estimated remaining time.
+- Add cooperative Cancel with forced termination after the grace period.
+- Show completed and failed groups.
+- Add Reveal in Finder.
+- Read a final manifest for normal completion and cooperative cancellation.
+  After a forced stop, accept a stale `running` manifest, report that cleanup
+  was incomplete, and explain that the next run will recover it.
 
-```bash
-cd mac && xcodegen generate && xcodebuild -scheme ScannyBoy -destination 'platform=macOS' build test 2>&1 | tail -20
-```
+Tests:
 
-**Done when:** app builds, tests pass, `xcodegen generate` from a clean
-checkout produces a working project. Remove `continue-on-error` from the CI
-`swift` job in this PR.
+- Synthetic out-of-order events produce correct progress.
+- Partial group work is not presented as published output.
+- Repeated Cancel requests have no extra effect.
+- Terminal stream errors and CLI errors are distinct.
 
----
+Manual verification:
 
-### Chunk 8 — The UI
+- Six sample files at three per negative produce six TIFFs and one complete
+  manifest.
+- A five-file selection is blocked.
+- A selection with a gap is blocked.
+- Unrelated content in the output folder is blocked.
+- Rerunning a valid output folder requires confirmation.
+- Progress updates during conversion.
+- Cancel retains earlier groups and removes the current group's staged work.
 
-**Branch:** `chunk-08-ui`
+### Chunk 11 — Documentation and v0.1 sign-off
 
-**Goal:** The actual app: workflow steps 1–5 end to end.
+**Branch:** `chunk-11-documentation`
 
-**Do:**
+Do:
 
-Single-window SwiftUI app, top-to-bottom flow:
+- Rewrite root and component READMEs from a clean-clone perspective.
+- State clearly in the root README that the project is all rights reserved and
+  point readers to `LICENSE`.
+- Add `CONTRIBUTING.md` for the one-person workflow. It must not imply that
+  outside contributions are accepted under an open-source licence.
+- Add `docs/DECISIONS.md` based on section 3.
+- Document the sample-file requirement and the required 14-bit
+  lossless-compressed NEF camera setting.
+- Document local-only Apple-silicon scope and deferred distribution work.
+- Verify a fresh clone using only the written instructions.
 
-1. **Folder picker** — `NSOpenPanel`, directories only. Remember last used.
-2. **File list** — all `.NEF` in the folder, sorted by the same rule the CLI
-   uses. Multi-select supporting shift-click ranges (your selection is
-   sequential, so range selection is the primary interaction, not an extra).
-3. **Shots per negative** — stepper, default 4.
-4. **Colour / B&W** — segmented control. Label it so it's clear this is
-   metadata and does not reduce channels (D2), e.g. a footnote: *"Both modes
-   write 16-bit RGB; this records film type for later processing."*
-5. **Capture date** — `DatePicker`, date only, defaulting to today. Label it
-   *"Date the film was shot"* to distinguish from the scan date.
-6. **Output folder** — picker, must differ from input; validate and disable Run
-   otherwise.
-7. **Grouping preview** — call `probe` live on selection change and show
-   "8 files → 2 negatives", or the `NOT_DIVISIBLE` error inline with Run
-   disabled. Catching this before the run is most of the UI's value.
-8. **Run / Cancel** — progress bar driven by `progress` events, current
-   filename, count, elapsed and estimated remaining. Cancel sends SIGTERM.
-9. **Completion** — succeeded/failed counts, any `item_failed` entries listed,
-   and a "Reveal in Finder" button.
+After the documentation PR merges and both required checks pass, create and
+push an annotated `v0.1.0` tag. Do not create the tag from the PR branch.
 
-Keep view state in one `@Observable` model so it's testable without the view.
+## 7. Test rules
 
-**Tests:** model-level — selection→grouping state transitions, Run enablement
-rules (needs: selection non-empty, divisible, output set and distinct from
-input), progress accumulation from a synthetic event stream, cancel state.
+- Python tests live next to Python code as `*_test.py`.
+- Swift tests use Swift Testing.
+- Tests needing local NEFs skip clearly when sample files are absent.
+- A skipped sample-file test must say what was not tested.
+- Do not mock rawpy's decoding. Use a real NEF or test a lower-level synthetic
+  TIFF operation.
+- Compare pixel hashes and metadata after documented changing fields are
+  ignored, not entire TIFF bytes that
+  contain conversion timestamps.
+- Use isolated temporary directories. Do not share filenames between
+  concurrently running Swift tests.
+- Never hide a failing build by piping it through `tail`.
 
-**Verify (manual, in the running app):**
+## 8. Human approval points
 
-- Point at your fixtures, select 8, set 4/negative, set a date, run → 8 TIFFs.
-- Select 7 → inline divisibility error, Run disabled.
-- Set output = input → blocked with a clear reason.
-- Cancel mid-run → stops promptly, no temp dirs, partial outputs cleaned.
-- Confirm progress advances *during* the run, not all at once at the end. If it
-  jumps at the end, line-flushing (Chunk 1) or streaming reads (Chunk 7)
-  regressed.
+Implementation pauses for the user at:
 
-**Done when:** the full 1–5 workflow runs from the GUI against real fixtures.
+1. Sample-file supply before Chunk 2.
+2. Visual RAW/TIFF approval in Chunk 3.
+3. Overwrite and cancellation behaviour in the finished app.
+4. Final clean-clone and end-to-end sign-off before `v0.1.0`.
 
----
+Agents may prepare evidence for these checks but may not approve them on the
+user's behalf.
 
-### Chunk 9 — Docs and end-to-end sign-off
+## 9. Risks
 
-**Branch:** `chunk-09-docs`
+- **Unsupported RAW compression:** reject Z f HE/HE* and document the required
+  lossless-compressed camera setting.
+- **Frame-to-frame scaling changes:** lock camera settings, compare metadata,
+  disable automatic brightness and maximum adjustment, and stop on mismatch.
+- **Wrong colour interpretation:** bundle and verify one matching ICC profile;
+  never emit untagged ROMM.
+- **Metadata incompatibility:** write a real nested EXIF directory and test
+  with more than one reader and the target photo applications.
+- **Unexpected memory or disk use:** stage one negative at a time, cap default
+  threads at four, have workers write files directly, and budget uncompressed
+  size with margin.
+- **Cancellation damage:** stage by group, record progress in the manifest, clean through
+  normal control flow, and make reruns replace incomplete groups.
+- **Packaged helper failure:** test the actual PyInstaller directory with real
+  sample files and place it in the app's helper area.
+- **CI image changes:** use `macos-15` and select the supported Xcode version
+  explicitly.
 
-**Do:**
+## 10. Phase 2 compatibility only
 
-1. Rewrite the root `README.md`: what it does, the 0.x prerequisites, clone →
-   bootstrap → xcodegen → run, the dev-vs-frozen CLI distinction, how to run
-   each test suite, and the fixtures convention (why they're gitignored and
-   what to put there).
-2. `CONTRIBUTING.md` — the chunk workflow, branch naming, the "paste real test
-   output in the PR" rule.
-3. `docs/DECISIONS.md` — lift §1 verbatim so future agents inherit the
-   rationale rather than re-deriving it.
-4. Delete `plan.md` from the repo root (superseded by this document).
-5. Tag `v0.1.0`.
+Phase 1 guarantees:
 
-**Verify:** clone into a fresh directory and follow the README literally, with
-nothing cached. Anything you have to improvise is a README bug.
+- a complete manifest with ordered groups and source hashes;
+- one upright RGB16 ROMM TIFF per source;
+- fixed processing settings recorded in the manifest;
+- no partially published group after handled failures or cancellation.
 
----
+Do not choose an OpenCV registration model in Phase 1. The later stitching
+plan must test translation, rigid, partial-affine, and full-affine models on
+real sample files. It must estimate transforms from derived detection images,
+linearise ROMM masters before interpolation/blending, and define crop and seam
+behaviour separately.
 
-## 5. Testing conventions
+## 11. Primary references
 
-- **Python:** `pytest`, tests co-located as `*_test.py` next to the code under
-  test (your stated preference).
-- **Swift:** Swift Testing (`@Test`), in `ScannyBoyTests/`.
-- **Fixture-gated tests** must `skipif` cleanly so CI passes without fixtures.
-  A test that fails on the CI runner for lack of a NEF is a broken test.
-- **No mocking of rawpy.** Either use a real fixture or use a real synthetic
-  array. Mocked decode proves nothing about the thing most likely to break.
+- [rawpy parameters](https://letmaik.github.io/rawpy/api/rawpy.Params.html)
+- [rawpy thread support](https://github.com/letmaik/rawpy/releases/tag/v0.21.0)
+- [rawpy 0.27.0 / LibRaw 0.22.1](https://github.com/letmaik/rawpy/releases/tag/v0.27.0)
+- [LibRaw processing parameters](https://www.libraw.org/docs/API-datastruct.html)
+- [LibRaw supported cameras](https://www.libraw.org/supported-cameras/)
+- [Nikon Z f dimensions and formats](https://onlinemanual.nikonimglib.com/zf/en/specifications_350.html)
+- [ROMM RGB definition](https://registry.color.org/rgb-registry/rommrgb)
+- [ICC parametric curve definition](https://archive.color.org/files/whitepapers/ICC_White_Paper35-Use_of_the_parametricCurveType.pdf)
+- [Compact ICC Profiles and CC0 licence](https://github.com/saucecontrol/Compact-ICC-Profiles)
+- [tifffile](https://pypi.org/project/tifffile/)
+- [tifffile EXIF-directory limitation](https://github.com/cgohlke/tifffile/issues/1)
+- [tifftools](https://pypi.org/project/tifftools/)
+- [ExifRead](https://pypi.org/project/ExifRead/)
+- [EXIF tag meanings](https://exiftool.org/TagNames/EXIF.html)
+- [Python CPU-count APIs](https://docs.python.org/3/library/os.html)
+- [uv project dependencies](https://docs.astral.sh/uv/concepts/projects/dependencies/)
+- [uv syncing](https://docs.astral.sh/uv/concepts/projects/sync/)
+- [PyInstaller macOS behaviour](https://pyinstaller.org/en/stable/feature-notes.html)
+- [Apple nested-code placement](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)
+- [Apple asynchronous file-handle bytes](https://developer.apple.com/documentation/foundation/filehandle/bytes)
+- [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+- [macOS 14 runner retirement](https://github.com/actions/runner-images/issues/13518)
+- [GitHub branch protection](https://docs.github.com/en/rest/branches/branch-protection)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 
----
+## 12. Agent handoff
 
-## 6. Risk register
+Use this prompt for one chunk at a time:
 
-| Risk | Severity | Mitigation |
-|------|----------|-----------|
-| LibRaw 0.22.1 mis-reads Z f NEFs | **High** — blocks everything | Chunk 2's eyeball check is the gate. If colours or dimensions are wrong, stop and report before building on it. |
-| Gamma/ICC mismatch | Medium — silently wrong files | Pinned to `(1.8, 16)` + ROMM, asserted in Chunk 2. |
-| Progress mis-attribution under parallelism | Medium | Workers return their own index; asserted under `--jobs 4` in Chunk 5. |
-| Swift partial-line JSON parsing | Medium | Explicit split-line test in Chunk 7. |
-| PyInstaller silently breaking rawpy | Medium | Frozen-vs-venv byte-diff in Chunk 6. |
-| Disk exhaustion mid-roll | Low | Preflight estimate + per-negative streaming. |
-
----
-
-## 7. Phase 2 preview — stitching
-
-Not in scope. Recorded so Phase 1 doesn't foreclose it.
-
-You confirmed: **copy stand, camera parallel to film, film moved by hand** — so
-translation-dominant, but with inconsistent overlap and small unintended
-rotations. That means:
-
-- `cv2.Stitcher_create(cv2.Stitcher_SCANS)` is the right mode — its affine
-  model absorbs the small rotations hand-feeding introduces, which a
-  pure-translation model would not.
-- ⚠️ Use `cv2.Stitcher_SCANS`, **not** `cv2.Stitcher.SCANS` — the latter does
-  not exist in OpenCV 5 (verified).
-- **Expect the default Stitcher to fail on negatives.** Low contrast, inverted
-  tonality, and large uniform-density areas (skies) starve feature detection.
-  Film grain is genuinely helpful high-frequency texture here — do not blur or
-  aggressively downscale before feature detection.
-- Plan for a **detection-only preprocessing pass**: invert and contrast-stretch
-  a copy purely to find features, then apply the resulting transforms to the
-  untouched linear-ish originals. Never stitch the stretched copy.
-- Stitcher's default exposure compensation and seam blending will fight your
-  consistent-exposure premise — expect to disable them.
-
-Also deferred: re-enabling App Sandbox with security-scoped bookmarks (D6),
-code signing, and notarisation.
-
----
-
-## 8. Handoff template
-
-When dispatching a chunk:
-
-> Implement **Chunk N — <title>** from `docs/IMPLEMENTATION_PLAN.md`.
-> Read §1 (locked decisions) first and do not re-litigate them.
-> Work on branch `chunk-NN-<slug>`. Write the listed tests, run the
-> verification block, and paste real terminal output into the PR body.
-> If a locked decision appears to block you, stop and report rather than
-> substituting your own choice.
+> Implement Chunk N from `docs/IMPLEMENTATION_PLAN.md`.
+> Read sections 3–5 first. Do not change those decisions without user
+> approval. Work only in the chunk's scope, add its tests, run all existing
+> tests plus the chunk verification, and include actual command output in the
+> pull-request body. Stop and report if a required sample file, human
+> approval, or earlier chunk is missing.
