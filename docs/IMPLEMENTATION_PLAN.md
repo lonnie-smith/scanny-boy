@@ -1,6 +1,6 @@
 # Scanny Boy — Phase 1 implementation plan
 
-**Last reviewed:** 2026-08-27
+**Last reviewed:** 2026-08-28
 
 ## 1. Goal
 
@@ -54,12 +54,16 @@ by building and running the code, not by reading documentation.
   Python 3.13.3; uv 0.11.7; GitHub CLI 2.98.0; XcodeGen 2.46.0.
 - The local checkout **does** have an `origin` remote pointing at
   `git@github.com:lonnie-smith/scanny-boy.git`.
-- Local `main` is one commit **ahead** of `origin/main`. Chunk 0 must push
-  that commit before branch protection is enabled, or it becomes stranded
-  behind a rule it predates.
-- `lonnie-smith/scanny-boy` is public, has no licence detected by GitHub, and
-  `main` is not yet protected.
-- The local sample-NEF directory `tests/fixtures/nef/` exists but is empty.
+- Local `main` and `origin/main` are in sync (re-checked 2026-08-28). Nothing
+  needs pushing before branch protection is enabled.
+- `lonnie-smith/scanny-boy` is public, GitHub reports its licence as "Other"
+  (`NOASSERTION`) from the all-rights-reserved `LICENSE`, and `main` is not
+  yet protected.
+- The local sample-NEF directory `tests/fixtures/nef/` holds the six required
+  sample files. See appendix A; user gate A is satisfied.
+- `.gitignore` already excludes `tests/fixtures/nef/` and
+  `tests/fixtures/INVENTORY.md`. Never remove those rules: the sample files are
+  about 190 MB and the repository is public.
 
 ### 2.2 RAW decoding
 
@@ -79,6 +83,13 @@ by building and running the code, not by reading documentation.
   over process workers.
 - Every parameter name and enumeration value in section 3.4 was checked
   against the installed package. **(prototyped)**
+- All six sample NEFs open and postprocess with the exact `RAW_PARAMS` of
+  section 3.4, producing `(4040, 6064, 3)` `uint16` in about 1.1 s each. They
+  are therefore lossless-compressed, not HE/HE*. **(prototyped 2026-08-28)**
+- Every EXIF tag marked **required** in section 3.5 is present in all six
+  sample files, and every **optional** tag in that mapping is present as well.
+  The Chunk 2 approval gate for a missing required tag is not expected to
+  trigger. **(prototyped 2026-08-28; see appendix A)**
 
 ### 2.3 TIFF writing
 
@@ -766,13 +777,16 @@ Every chunk:
 
 Do:
 
-- Push the existing local commit to `origin/main` first. `origin` is already
-  configured and local `main` is one commit ahead; that commit must land before
-  branch protection is enabled.
+- Confirm `main` and `origin/main` are in sync before enabling branch
+  protection (`git rev-list --left-right --count origin/main...main` prints
+  `0	0`). They were in sync on 2026-08-28; push first if that has changed.
 - Confirm the root `LICENSE` matches the exact all-rights-reserved text in
-  section 3.1.
-- Update `.gitignore` for sample NEFs (`tests/fixtures/nef/`), generated Xcode
-  projects, environments, build output, and staging folders.
+  section 3.1. Do not reword it to satisfy GitHub's licence detector.
+- Check `.gitignore`. Sample NEFs (`tests/fixtures/nef/`),
+  `tests/fixtures/INVENTORY.md`, environments, build output, and staging
+  folders are already excluded and must stay excluded. Add generated Xcode
+  projects (`mac/*.xcodeproj/`) — Chunk 8 introduces XcodeGen and section 3.1
+  says generated projects are not committed.
 - Remove the placeholder `scan` command and its Swift and Python contract
   types.
 - Remove `mac/ScannyBoy/Resources/cli/` and its `.gitkeep`, and the
@@ -796,20 +810,19 @@ cd cli && uv run ruff check . && uv run pytest
 gh run watch RUN_ID --exit-status
 ```
 
-### User gate A — Supply sample RAW files
+### User gate A — Supply sample RAW files — **SATISFIED 2026-08-28**
 
-Before Chunk 2, place at least six real Nikon Z f files in
-`tests/fixtures/nef/`: two complete negatives at three frames each.
+Six real Nikon Z f files are in `tests/fixtures/nef/`: two complete negatives
+at three frames each. Verified lossless-compressed, full image area, and fixed
+exposure, white balance, lens, focal length, and orientation across all six.
 
-They must use the real copy stand and:
+The local inventory is `tests/fixtures/INVENTORY.md` — filenames, byte sizes,
+SHA-256 values, dimensions, timestamps, and settings. It and the NEFs are
+ignored by Git and must stay ignored. Appendix A of this plan repeats the
+values agents need without exposing the files.
 
-- Lossless-compressed NEF, never High Efficiency or High Efficiency\*;
-- full intended image area;
-- fixed exposure and white balance;
-- fixed lens, focal length, and orientation.
-
-Sample RAW files stay outside Git. Record their filenames, dimensions,
-compression mode, and SHA-256 values in a local inventory that is also ignored.
+Agents must not treat this gate as blocking. If a sample file is genuinely
+absent, stop and report rather than substituting a synthetic RAW.
 
 ### Chunk 1 — Protocol and command skeleton
 
@@ -1177,8 +1190,15 @@ push an annotated `v0.1.0` tag. Do not create the tag from the PR branch.
 
 - Python tests live next to Python code as `*_test.py`.
 - Swift tests use Swift Testing.
-- Tests needing local NEFs skip clearly when sample files are absent.
+- Sample NEFs live at `tests/fixtures/nef/`, at the repository root, not under
+  `cli/`. Resolve that directory from the test file's own location, never from
+  the current working directory, so tests pass from any directory.
+- Tests needing local NEFs skip clearly when sample files are absent, using one
+  shared helper rather than a per-file check.
 - A skipped sample-file test must say what was not tested.
+- Expected fixture values (SHA-256, dimensions, timestamps, settings) are in
+  appendix A. Do not hard-code a pixel hash: it depends on the LibRaw build.
+  Compare two decodes of the same file to each other instead.
 - Do not mock rawpy's decoding. Use a real NEF or test a lower-level synthetic
   TIFF operation.
 - Compare pixel hashes and metadata after documented changing fields are
@@ -1194,9 +1214,11 @@ push an annotated `v0.1.0` tag. Do not create the tag from the PR branch.
 
 Implementation pauses for the user at:
 
-1. Sample-file supply before Chunk 2.
+1. Sample-file supply before Chunk 2. **Satisfied 2026-08-28** — see user
+   gate A and appendix A.
 2. The Chunk 2 report on which EXIF tags real Z f files actually contain, if
-   any **required** tag is missing.
+   any **required** tag is missing. All required tags were present on
+   2026-08-28, so this is not expected to trigger.
 3. Visual RAW/TIFF approval in Chunk 3.
 4. Overwrite and cancellation behaviour in the finished app.
 5. Final clean-clone and end-to-end sign-off before `v0.1.0`.
@@ -1274,11 +1296,83 @@ seam behaviour separately.
 
 ## 12. Agent handoff
 
-Use this prompt for one chunk at a time:
+Use the header in `docs/CHUNK_PROMPT.md`, one chunk at a time, in chunk order.
 
-> Implement Chunk N from `docs/IMPLEMENTATION_PLAN.md`.
-> Read sections 3–5 first. Do not change those decisions without user
-> approval. Work only in the chunk's scope, add its tests, run all existing
-> tests plus the chunk verification, and include actual command output in the
-> pull-request body. Stop and report if a required sample file, human
-> approval, or earlier chunk is missing.
+## Appendix A — Sample NEF facts
+
+Recorded 2026-08-28 from `tests/fixtures/nef/`. The files themselves are not in
+Git; `tests/fixtures/INVENTORY.md` holds the same table locally. Use these
+values in tests and comparisons instead of re-deriving them.
+
+Camera: `NIKON CORPORATION` / `NIKON Z f`. All six open and postprocess with
+the section 3.4 `RAW_PARAMS`, confirming lossless compression.
+
+Negatives, at three shots each:
+
+| Negative | Frames |
+| --- | --- |
+| 1 | `_DSC4638.NEF`, `_DSC4639.NEF`, `_DSC4640.NEF` |
+| 2 | `_DSC4644.NEF`, `_DSC4645.NEF`, `_DSC4646.NEF` |
+
+The catalogue is exactly these six files, so all six form one uninterrupted
+range. The break in frame numbers between 4640 and 4644 is **not** a catalogue
+gap, and a six-file selection must not be rejected as non-contiguous. To test
+`NON_CONTIGUOUS_SELECTION` with real files, select frames 1, 2, 4, 5, 6.
+
+Sizes and hashes:
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `_DSC4638.NEF` | 32001076 | `b1be8ed9ec75745d83470270be7941e83f9858ad7e1631323217a2a569f4c166` |
+| `_DSC4639.NEF` | 33256263 | `0a44470b754c3520308551f8939e6aed2a13cb3e174031457678ae73832a8071` |
+| `_DSC4640.NEF` | 34383334 | `968506b90b7ab422aab140cb43b4e3d4d16c43265ffb913d82e3c939741b92b4` |
+| `_DSC4644.NEF` | 31688590 | `87e1e21271c09c445ada78f8206d11154cb6a159eca5c3d085af994f1341ad85` |
+| `_DSC4645.NEF` | 29485555 | `00e3d3b5796ab00a0479e00b0adcb16ac1e68337bf7d58ce294384c3f7f3ae3e` |
+| `_DSC4646.NEF` | 29482374 | `fe7d264ebc167bf6357730a2e946919ac324e287396919052ce64b246e59841a` |
+
+Dimensions, identical for all six: `raw_width` 6064, `raw_height` 4040,
+`width` 6064, `height` 4040, `iwidth` 6064, `iheight` 4040, `flip` 0.
+`postprocess(**RAW_PARAMS)` returns shape `(4040, 6064, 3)`, dtype `uint16`,
+146,991,360 bytes = **140.2 MiB**, in about 1.1 s.
+
+Because `flip` is 0, these files exercise the no-rotation path only. Do not
+conclude from them that orientation handling is untested; keep the
+Orientation-is-always-1 assertions of section 3.4.
+
+Settings, identical across all six, so a six-file selection passes
+consistency validation:
+
+| Field | Value |
+| --- | --- |
+| `ExposureTime` | `1/30` |
+| `FNumber` | `8` |
+| `PhotographicSensitivity` (ISO) | `100` |
+| `FocalLength` | `55` |
+| `LensModel` | `55mm f/2.8` |
+| `Orientation` | `1` (horizontal / normal) |
+| `camera_whitebalance` | `[1.691406, 1.0, 1.378906, 1.0]` |
+| `OffsetTimeOriginal` | `-05:00` |
+
+Every tag in the section 3.5 mapping is present, **required** and **optional**
+alike, including `Make`, `Model`, `LensModel`, `DateTimeDigitized`, and
+`OffsetTimeOriginal`. The Chunk 2 approval gate for a missing required tag
+should not trigger; Chunk 2 must still produce the dump and report it.
+
+Capture timestamps, all with subseconds:
+
+| File | `DateTimeOriginal` | `SubSecTimeOriginal` |
+| --- | --- | --- |
+| `_DSC4638.NEF` | 2026:08:02 12:33:27 | `77` |
+| `_DSC4639.NEF` | 2026:08:02 12:33:41 | `45` |
+| `_DSC4640.NEF` | 2026:08:02 12:33:52 | `02` |
+| `_DSC4644.NEF` | 2026:08:02 12:35:34 | `15` |
+| `_DSC4645.NEF` | 2026:08:02 12:35:48 | `62` |
+| `_DSC4646.NEF` | 2026:08:02 12:36:03 | `93` |
+
+The span is about 2 minutes 36 seconds, so synthetic noon-plus-elapsed times
+stay far inside the film date. `CAPTURE_SPAN_TOO_LONG` cannot be reached with
+these files; test it with synthetic timestamps.
+
+Disk-check sanity: six outputs at `P` = 6064 × 4040 × 3 × 2 = 146,991,360
+bytes each. With `B = ceil(P × 1.05)`, `M` = 6, `G` = 3, and `D` = 1 MiB, the
+section 3.9 requirement is about **1.42 GiB** for a fresh six-file run.

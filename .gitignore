@@ -20,5 +20,13 @@ mac/DerivedData/
 mac/build/
 *.xcuserstate
 
+# Sample RAW files and their local inventory: large, private, never committed
+tests/fixtures/nef/
+tests/fixtures/INVENTORY.md
+
+# Output and staging folders produced by local runs
+out/
+*.scanny-staging/
+
 # macOS
 .DS_Store
