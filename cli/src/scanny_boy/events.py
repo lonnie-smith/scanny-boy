@@ -107,6 +107,7 @@ class ProbeResult(Event):
 
     catalogue: list[str]
     warnings: list[str] = dataclasses.field(default_factory=list)
+    groups: list[list[str]] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

@@ -63,6 +63,13 @@ operating system truncate the argument list.
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
 
+`probe_result` carries `catalogue` (the full input folder's `.nef` filenames
+in canonical order — section 3.3 — regardless of whether `--files` was
+given), `warnings` (the stable codes of any `warning` events emitted during
+this probe, as a convenience rollup), and `groups` (present only when
+`--files` was given and validated: the selection's filenames in canonical
+order, chunked into `shots_per_negative`-sized negatives; empty otherwise).
+
 Parallel completion order need not match source order. The UI derives overall
 progress from counts, never from the largest source index seen.
 

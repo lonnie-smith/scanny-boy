@@ -23,6 +23,11 @@ ALL_EVENTS: list[Event] = [
     Started(command="probe"),
     Started(command="convert", run_id="run-1"),
     ProbeResult(catalogue=["DSC_0001.NEF", "DSC_0002.NEF"], run_id="run-1"),
+    ProbeResult(
+        catalogue=["DSC_0001.NEF", "DSC_0002.NEF"],
+        warnings=["FILENAME_SORT_USED"],
+        groups=[["DSC_0001.NEF"], ["DSC_0002.NEF"]],
+    ),
     Progress(
         source_index=0,
         step=PipelineStep.DECODE,

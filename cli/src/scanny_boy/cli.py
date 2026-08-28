@@ -4,8 +4,18 @@ import argparse
 import datetime
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
-from scanny_boy.events import Code, ErrorEvent, EventWriter, Finished, Started
+from scanny_boy.events import (
+    Code,
+    ErrorEvent,
+    EventWriter,
+    Finished,
+    ProbeResult,
+    Started,
+    WarningEvent,
+)
+from scanny_boy.probe import ProbeFailure, run_probe
 
 MAX_SELECTION_FILES = 5000
 MIN_PER_NEGATIVE = 1
@@ -103,8 +113,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser, f"--jobs must be between {MIN_JOBS} and {MAX_JOBS}, got {jobs}"
         )
 
-    # The catalogue, validation, and conversion pipeline itself belongs to
-    # later chunks. This skeleton only proves the protocol shape.
+    if args.command == "probe":
+        writer.write(Started(command="probe"))
+        emitted_warnings: list[str] = []
+
+        def on_warning(code: Code, message: str) -> None:
+            writer.write(WarningEvent(code=code, message=message))
+            emitted_warnings.append(code.value)
+
+        try:
+            outcome = run_probe(
+                Path(args.input), files, args.per_negative, on_warning=on_warning
+            )
+        except ProbeFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(
+            ProbeResult(
+                catalogue=outcome.catalogue,
+                warnings=emitted_warnings,
+                groups=outcome.groups,
+            )
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    # `convert`'s actual conversion pipeline belongs to later chunks. This
+    # skeleton only proves the protocol shape.
     writer.write(Started(command=args.command))
     writer.write(Finished(status="success", exit_status=0))
     return 0

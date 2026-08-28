@@ -98,6 +98,20 @@
       }
     },
     {
+      "if": { "properties": { "event": { "const": "probe_result" } } },
+      "then": {
+        "required": ["catalogue", "warnings"],
+        "properties": {
+          "catalogue": { "type": "array", "items": { "type": "string" } },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "groups": {
+            "type": "array",
+            "items": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "event": { "const": "started" } } },
       "then": {
         "required": ["command"],
