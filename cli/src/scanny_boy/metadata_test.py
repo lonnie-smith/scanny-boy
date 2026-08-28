@@ -28,6 +28,8 @@ def test_read_exif_settings_reads_expected_values(tmp_path):
         focal_length=(55, 1),
         lens_model="55mm f/2.8",
         orientation=1,
+        make="NIKON CORPORATION",
+        model="NIKON Z f",
     )
 
     settings = read_exif_settings(path)
@@ -38,11 +40,13 @@ def test_read_exif_settings_reads_expected_values(tmp_path):
     assert settings.focal_length == Fraction(55, 1)
     assert settings.lens_model == "55mm f/2.8"
     assert settings.orientation == 1
+    assert settings.make == "NIKON CORPORATION"
+    assert settings.model == "NIKON Z f"
 
 
 @pytest.mark.parametrize(
     "field",
-    ["exposure_time", "f_number", "iso", "focal_length", "orientation", "lens_model"],
+    ["exposure_time", "f_number", "iso", "focal_length", "orientation", "lens_model", "make", "model"],
 )
 def test_read_exif_settings_returns_none_for_missing_tag(tmp_path, field):
     path = write_fake_nef(tmp_path / "a.NEF", **{field: None})
@@ -203,6 +207,8 @@ def test_real_sample_files_have_every_section_3_5_tag():
         assert settings.focal_length == Fraction(55, 1)
         assert settings.lens_model == "55mm f/2.8"
         assert settings.orientation == 1
+        assert settings.make == "NIKON CORPORATION"
+        assert settings.model == "NIKON Z f"
 
 
 @requires_real_samples

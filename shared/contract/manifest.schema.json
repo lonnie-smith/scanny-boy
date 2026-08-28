@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ScannyBoyManifest",
+  "description": "scanny-boy-manifest.json: the authoritative record of one conversion run. See docs/IMPLEMENTATION_PLAN.md section 3.7.",
+  "type": "object",
+  "definitions": {
+    "status": {
+      "type": "string",
+      "enum": ["running", "partial", "cancelled", "complete"]
+    },
+    "groupStatus": {
+      "type": "string",
+      "enum": ["pending", "completed", "failed"]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source": {
+      "type": "object",
+      "required": ["filename", "absolute_path", "size", "mtime", "sha256"],
+      "properties": {
+        "filename": { "type": "string" },
+        "absolute_path": { "type": "string" },
+        "size": { "type": "integer", "minimum": 0 },
+        "mtime": { "type": "number" },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["name", "size", "sha256"],
+      "properties": {
+        "name": { "type": "string" },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["group_id", "members", "expected_outputs", "status", "outputs"],
+      "properties": {
+        "group_id": { "type": "string" },
+        "members": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "expected_outputs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "status": { "$ref": "#/definitions/groupStatus" },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/output" }
+        },
+        "error_code": { "type": ["string", "null"] },
+        "error_message": { "type": ["string", "null"] }
+      }
+    },
+    "curatedMetadata": {
+      "type": "object",
+      "required": [
+        "exposure_time",
+        "f_number",
+        "iso",
+        "focal_length",
+        "lens_model",
+        "orientation",
+        "camera_whitebalance"
+      ],
+      "properties": {
+        "exposure_time": { "type": "string" },
+        "f_number": { "type": "string" },
+        "iso": { "type": "integer" },
+        "focal_length": { "type": "string" },
+        "lens_model": { "type": ["string", "null"] },
+        "orientation": { "type": "integer" },
+        "camera_whitebalance": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      }
+    },
+    "iccProfile": {
+      "type": "object",
+      "required": ["name", "sha256"],
+      "properties": {
+        "name": { "type": "string" },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    }
+  },
+  "required": [
+    "manifest_format_version",
+    "scanny_boy_version",
+    "run_id",
+    "status",
+    "input_folder",
+    "film_date",
+    "shots_per_negative",
+    "processing_params",
+    "icc_profile",
+    "source_order",
+    "sources",
+    "curated_metadata",
+    "groups",
+    "started_at",
+    "finished_at"
+  ],
+  "properties": {
+    "manifest_format_version": { "type": "integer", "const": 1 },
+    "scanny_boy_version": { "type": "string" },
+    "run_id": { "type": "string" },
+    "status": { "$ref": "#/definitions/status" },
+    "input_folder": { "type": "string" },
+    "film_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "shots_per_negative": { "type": "integer", "minimum": 1, "maximum": 12 },
+    "processing_params": { "type": "object" },
+    "icc_profile": { "$ref": "#/definitions/iccProfile" },
+    "source_order": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/source" }
+    },
+    "curated_metadata": { "$ref": "#/definitions/curatedMetadata" },
+    "groups": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/group" }
+    },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": ["string", "null"] }
+  }
+}

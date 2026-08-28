@@ -46,6 +46,8 @@ class ExifSettings:
     focal_length: Fraction | None
     lens_model: str | None
     orientation: int | None
+    make: str | None
+    model: str | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +60,8 @@ class SourceSettings:
     lens_model: str | None
     orientation: int | None
     camera_whitebalance: tuple[float, float, float, float] | None
+    make: str | None
+    model: str | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -119,6 +123,8 @@ def read_exif_settings(path: Path) -> ExifSettings:
         focal_length=_ratio_to_fraction(tags.get("EXIF FocalLength")),
         lens_model=_ascii(tags.get("EXIF LensModel")),
         orientation=_short(tags.get("Image Orientation")),
+        make=_ascii(tags.get("Image Make")),
+        model=_ascii(tags.get("Image Model")),
     )
 
 
@@ -187,4 +193,6 @@ def read_source_settings(path: Path) -> SourceSettings:
         lens_model=exif.lens_model,
         orientation=exif.orientation,
         camera_whitebalance=wb,
+        make=exif.make,
+        model=exif.model,
     )

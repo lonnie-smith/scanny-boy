@@ -39,6 +39,41 @@ class DecodedFrame:
     height: int
 
 
+def jsonable_raw_params() -> dict:
+    """`RAW_PARAMS` as a JSON-serialisable dict, for the manifest's
+    `processing_params` (section 3.7: "all pixel-processing parameters").
+    Enum values become their names (`"ProPhoto"`, `"AHD"`, `"Clip"`) and the
+    `gamma` tuple becomes a list; everything else passes through unchanged.
+    """
+    result: dict = {}
+    for key, value in RAW_PARAMS.items():
+        if hasattr(value, "name"):
+            result[key] = value.name
+        elif isinstance(value, tuple):
+            result[key] = list(value)
+        else:
+            result[key] = value
+    return result
+
+
+def read_active_size(path: Path) -> tuple[int, int]:
+    """`(width, height)` of the processed active area, from `raw.sizes`
+    alone — no `postprocess()` call needed. Section 3.9: disk-check pixel
+    counts must come from this, not raw sensor dimensions or a full decode.
+    """
+    try:
+        with rawpy.imread(str(path)) as raw:
+            sizes = raw.sizes
+    except rawpy.LibRawFileUnsupportedError as exc:
+        raise UnsupportedRawError(str(path)) from exc
+    except rawpy.LibRawError as exc:
+        raise UnreadableRawError(str(path)) from exc
+    except OSError as exc:
+        raise UnreadableRawError(str(path)) from exc
+
+    return sizes.width, sizes.height
+
+
 def decode_raw(path: Path) -> DecodedFrame:
     """Decode `path` with `RAW_PARAMS`.
 

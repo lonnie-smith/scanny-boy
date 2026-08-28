@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import sys
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from scanny_boy.events import (
     Started,
     WarningEvent,
 )
+from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 
 MAX_SELECTION_FILES = 5000
@@ -139,11 +141,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
-    # `convert`'s actual conversion pipeline belongs to later chunks. This
-    # skeleton only proves the protocol shape.
-    writer.write(Started(command=args.command))
-    writer.write(Finished(status="success", exit_status=0))
-    return 0
+    # convert
+    run_id = str(uuid.uuid4())
+    writer.write(Started(command="convert", run_id=run_id))
+
+    try:
+        outcome = run_convert(
+            Path(args.input),
+            files,
+            Path(args.out),
+            datetime.date.fromisoformat(args.film_date),
+            args.per_negative,
+            run_id=run_id,
+            overwrite=args.overwrite,
+            emit=writer.write,
+        )
+    except ConvertFailure as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
+
+    exit_status = 0 if outcome.status == "complete" else 1
+    writer.write(
+        Finished(
+            run_id=run_id,
+            status="success" if exit_status == 0 else "failed",
+            exit_status=exit_status,
+        )
+    )
+    return exit_status
 
 
 if __name__ == "__main__":

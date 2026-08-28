@@ -19,6 +19,8 @@ def _settings(filename: str, **overrides) -> SourceSettings:
         "lens_model": "55mm f/2.8",
         "orientation": 1,
         "camera_whitebalance": GOOD_WB,
+        "make": "NIKON CORPORATION",
+        "model": "NIKON Z f",
     }
     defaults.update(overrides)
     return SourceSettings(**defaults)

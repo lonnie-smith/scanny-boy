@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -228,7 +229,11 @@ def test_stderr_never_contains_machine_readable_events(capsys):
                 json.loads(line)
 
 
-def test_convert_with_valid_arguments_emits_started_and_finished(capsys):
+def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately(capsys):
+    # `--input`/`--files` don't need to exist yet for `started` itself to
+    # carry a run_id — the run "exists" as soon as convert begins, even if
+    # it fails validation a moment later (here: the input folder is
+    # missing, so this fails with NO_FILES before any real work starts).
     status = main(
         [
             "convert",
@@ -246,8 +251,53 @@ def test_convert_with_valid_arguments_emits_started_and_finished(capsys):
             "--overwrite",
         ]
     )
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "convert"
+    run_id = events[0]["run_id"]
+    assert run_id
+    assert all(e["run_id"] == run_id for e in events)
+    assert events[1]["code"] == "NO_FILES"
+    assert events[2]["exit_status"] == 1
+
+
+@requires_real_samples
+def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    status = main(
+        [
+            "convert",
+            "--input",
+            str(FIXTURES_DIR),
+            "--files",
+            *REAL_SAMPLE_FILES,
+            "--out",
+            str(out_dir),
+            "--film-date",
+            "2026-08-02",
+        ]
+    )
+
     assert status == 0
     events, _err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == ["started", "finished"]
-    assert events[0]["command"] == "convert"
-    assert events[1]["exit_status"] == 0
+    assert events[0]["event"] == "started"
+    assert events[-1] == {
+        "protocol_version": 1,
+        "event": "finished",
+        "run_id": events[0]["run_id"],
+        "status": "success",
+        "exit_status": 0,
+    }
+    assert {e["event"] for e in events} >= {
+        "started",
+        "progress",
+        "item_done",
+        "group_done",
+        "finished",
+    }
+    for name in REAL_SAMPLE_FILES:
+        assert (out_dir / f"{Path(name).stem}.tif").exists()
+    assert (out_dir / "scanny-boy-manifest.json").exists()
