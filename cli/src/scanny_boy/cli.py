@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+from scanny_boy.cancellation import sigterm_cancellation
 from scanny_boy.events import (
     Code,
     ErrorEvent,
@@ -24,6 +25,9 @@ MIN_PER_NEGATIVE = 1
 MAX_PER_NEGATIVE = 12
 MIN_JOBS = 1
 MAX_JOBS = 12
+
+# 128 + SIGTERM, per CONTRACT.md's exit-status table.
+CANCELLED_EXIT_STATUS = 143
 
 
 def _film_date(value: str) -> str:
@@ -145,21 +149,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_id = str(uuid.uuid4())
     writer.write(Started(command="convert", run_id=run_id))
 
+    # The SIGTERM handler is installed for the whole conversion and
+    # removed afterwards; it only sets the token's flag, and every
+    # deletion, manifest update, and final event below happens on this
+    # thread through ordinary control flow (section 3.8).
     try:
-        outcome = run_convert(
-            Path(args.input),
-            files,
-            Path(args.out),
-            datetime.date.fromisoformat(args.film_date),
-            args.per_negative,
-            run_id=run_id,
-            overwrite=args.overwrite,
-            emit=writer.write,
-        )
+        with sigterm_cancellation() as cancel:
+            outcome = run_convert(
+                Path(args.input),
+                files,
+                Path(args.out),
+                datetime.date.fromisoformat(args.film_date),
+                args.per_negative,
+                run_id=run_id,
+                overwrite=args.overwrite,
+                jobs=jobs,
+                cancel=cancel,
+                emit=writer.write,
+            )
     except ConvertFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
+
+    if outcome.status == "cancelled":
+        writer.write(
+            ErrorEvent(
+                run_id=run_id,
+                code=Code.CANCELLED,
+                message=(
+                    "cancelled at the user's request; completed negatives were "
+                    "kept and the negative in progress was discarded"
+                ),
+            )
+        )
+        writer.write(
+            Finished(
+                run_id=run_id, status="cancelled", exit_status=CANCELLED_EXIT_STATUS
+            )
+        )
+        return CANCELLED_EXIT_STATUS
 
     exit_status = 0 if outcome.status == "complete" else 1
     writer.write(

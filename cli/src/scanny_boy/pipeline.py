@@ -1,22 +1,36 @@
-"""Serial group-by-group conversion pipeline: decode -> base TIFF -> nested
+"""Group-by-group conversion pipeline: decode -> base TIFF -> nested
 EXIF -> staging -> publish -> manifest.
 
 See `docs/IMPLEMENTATION_PLAN.md` section 3.6 (staging, overwriting, and
-grouping), section 3.7 (manifest), section 3.9 (disk checks), and section
-3.8's "Implement and verify a serial path first" — the threaded executor,
-memory budget, and cancellation are Chunk 6's job; `--jobs` is accepted by
-the argument parser but unused here.
+grouping), section 3.7 (manifest), section 3.8 (concurrency and
+cancellation), and section 3.9 (disk checks).
 
 Per section 3.6, "never publish only part of a group": every frame in a
 group is decoded and written into that group's staging directory first
-(`_process_group_to_staging`, wrapped in a single try/except — an ordinary
-per-frame failure there deletes the whole staging directory and fails the
-group). Publishing — moving each finished file from staging into the
-output folder (`_publish_group`) — happens only after every frame in the
-group has staged successfully, and is deliberately *not* wrapped in that
-same handler: section 3.6 frames this move as the one place a real crash
-can leave a group half-published, and recovery for that is a rerun's job
+(`_stage_group`, wrapped in a single try/except — an ordinary per-frame
+failure there deletes the whole staging directory and fails the group).
+Publishing — moving each finished file from staging into the output folder
+(`_publish_group`) — happens only after every frame in the group has staged
+successfully, and is deliberately *not* wrapped in that same handler:
+section 3.6 frames this move as the one place a real crash can leave a
+group half-published, and recovery for that is a rerun's job
 (`output_folder.plan_rerun` + `apply_recovery_cleanup`), not this run's.
+
+Concurrency (section 3.8) lives entirely inside one group. `_stage_group`
+either runs the frames serially — `--jobs 1`, which never constructs an
+executor at all — or submits them to a `ThreadPoolExecutor`. Workers return
+`_StagedFrame`, which carries a name, an index, and a path: "Do not return
+full image arrays to the parent." Publishing stays on the main thread and
+always walks the group in member order, so `item_done` order is stable even
+though frames finish out of order.
+
+Cancellation is cooperative. Workers check `CancellationToken` at the three
+step boundaries only (never mid-decode), and `_stage_group`'s `finally`
+shuts the pool down with `wait=True, cancel_futures=True` — queued frames
+are dropped, running frames are allowed to finish their current call, and
+only once every worker has stopped does the caller delete the staging
+directory. That ordering is section 3.8's "Never delete a directory while a
+worker may still write to it."
 """
 
 from __future__ import annotations
@@ -25,10 +39,13 @@ import dataclasses
 import datetime
 import os
 import shutil
+import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from scanny_boy import disk_check, hashing, raw_decode
+from scanny_boy import concurrency, disk_check, hashing, raw_decode
+from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.catalogue import (
     CatalogueError,
     compute_canonical_order,
@@ -105,6 +122,16 @@ EmitFn = Callable[[Event], None]
 
 STEPS_PER_FRAME = 3  # decode, write_tiff, add_metadata
 
+# Ordinary per-frame failures: these fail one group and let later groups
+# run. `CancelledError` is deliberately absent — a cancelled group is
+# abandoned, not recorded as `failed`.
+GROUP_FAILURE_EXCEPTIONS = (
+    UnsupportedRawError,
+    UnreadableRawError,
+    TiffFinalizeError,
+    OSError,
+)
+
 
 class ConvertFailure(Exception):
     def __init__(self, code: Code, message: str) -> None:
@@ -134,14 +161,87 @@ def _output_name_for(source_filename: str) -> str:
 @dataclasses.dataclass(frozen=True)
 class ConvertOutcome:
     run_id: str
-    status: str  # "complete" | "partial"
+    status: str  # "complete" | "partial" | "cancelled"
     manifest: Manifest
+    workers: int = 1
 
 
 @dataclasses.dataclass(frozen=True)
 class _ValidatedSelection:
     names: list[str]
     used_filename_fallback: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class _StagedFrame:
+    """Everything a thread worker hands back to the parent.
+
+    Section 3.8: "Each worker opens one RAW, writes its staged TIFF, adds
+    metadata, and returns only status and paths. Do not return full image
+    arrays to the parent." A name, an index, and a path — the decoded
+    array is dropped when `_stage_one_frame` returns.
+    """
+
+    member: str
+    source_index: int
+    final_path: Path
+
+
+class _ProgressReporter:
+    """Counts completed pipeline steps and emits `progress` events.
+
+    Both jobs need a lock once frames run in parallel: the count must not
+    be lost to a read-modify-write race, and `EventWriter.write` must not
+    interleave two JSON lines on stdout. Holding one lock across the
+    increment and the emit gives monotonically increasing `completed`
+    values as a side effect.
+    """
+
+    def __init__(self, *, total_steps: int, emit: EmitFn, run_id: str) -> None:
+        self._total = total_steps
+        self._emit = emit
+        self._run_id = run_id
+        self._lock = threading.Lock()
+        self._completed = 0
+
+    def advance(self, source_index: int, step: PipelineStep) -> None:
+        with self._lock:
+            self._completed += 1
+            self._emit(
+                Progress(
+                    run_id=self._run_id,
+                    source_index=source_index,
+                    step=step,
+                    completed=self._completed,
+                    total=self._total,
+                )
+            )
+
+    @property
+    def completed(self) -> int:
+        with self._lock:
+            return self._completed
+
+
+@dataclasses.dataclass(frozen=True)
+class _GroupContext:
+    """Read-only per-run state a worker needs to stage one frame.
+
+    Frozen and shared by every worker: nothing here is mutated during a
+    group, so no worker needs a lock to read it. The one mutable
+    collaborator, `progress`, does its own locking.
+    """
+
+    input_dir: Path
+    staging_dir: Path
+    source_records_by_name: dict[str, SourceRecord]
+    source_index_by_name: dict[str, int]
+    synthetic_time_by_name: dict[str, datetime.datetime]
+    digitized_fields_by_name: dict[str, DigitizedFields]
+    settings_by_name: dict[str, SourceSettings]
+    icc_profile: bytes
+    progress: _ProgressReporter
+    cancel: CancellationToken
 
 
 def _validate_selection(
@@ -283,104 +383,99 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
 
 
-def _process_group_to_staging(
-    *,
-    input_dir: Path,
-    staging_dir: Path,
-    group_record: GroupRecord,
-    source_records_by_name: dict[str, SourceRecord],
-    source_index_by_name: dict[str, int],
-    synthetic_time_by_name: dict[str, datetime.datetime],
-    digitized_fields_by_name: dict[str, DigitizedFields],
-    settings_by_name: dict[str, SourceSettings],
-    icc_profile: bytes,
-    total_steps: int,
-    steps_done: int,
-    emit: EmitFn,
-    run_id: str,
-) -> tuple[dict[str, Path], int]:
-    """Decode and write every frame of one group into `staging_dir`. Raises
-    on the first frame that fails; the caller deletes `staging_dir` and
-    marks the group failed. Returns `{member: final_tiff_path}` and the
-    updated `steps_done` count on success."""
-    final_paths: dict[str, Path] = {}
+def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
+    """Decode one RAW and write its finished TIFF into the staging
+    directory. Runs on a worker thread when `--jobs` is above 1, and on
+    the calling thread when it is 1.
 
-    for member in group_record.members:
-        source_index = source_index_by_name[member]
-        record = source_records_by_name[member]
-        path = input_dir / member
+    Cancellation is checked at the three step boundaries of section 3.8 —
+    before the decode, and after each of the decode, TIFF-writing, and
+    metadata steps — never inside a LibRaw or tifffile call, which cannot
+    be interrupted safely.
+    """
+    ctx.cancel.raise_if_cancelled()
 
-        _verify_source_unchanged(path, record)
-        pixels = raw_decode.decode_raw(path).pixels
-        _verify_source_unchanged(path, record)
+    source_index = ctx.source_index_by_name[member]
+    record = ctx.source_records_by_name[member]
+    path = ctx.input_dir / member
 
-        steps_done += 1
-        emit(
-            Progress(
-                run_id=run_id,
-                source_index=source_index,
-                step=PipelineStep.DECODE,
-                completed=steps_done,
-                total=total_steps,
-            )
-        )
+    _verify_source_unchanged(path, record)
+    pixels = raw_decode.decode_raw(path).pixels
+    _verify_source_unchanged(path, record)
+    ctx.progress.advance(source_index, PipelineStep.DECODE)
+    ctx.cancel.raise_if_cancelled()
 
-        settings = settings_by_name[member]
-        base_path = staging_dir / f"{Path(member).stem}.base.tif"
-        write_base_tiff(
-            base_path,
-            pixels,
-            BaseTiffTags(
-                description=image_description(member),
-                software=software_tag_value(),
-                conversion_time=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
-                icc_profile=icc_profile,
-                make=settings.make,
-                model=settings.model,
-            ),
-        )
-        steps_done += 1
-        emit(
-            Progress(
-                run_id=run_id,
-                source_index=source_index,
-                step=PipelineStep.WRITE_TIFF,
-                completed=steps_done,
-                total=total_steps,
-            )
-        )
+    settings = ctx.settings_by_name[member]
+    base_path = ctx.staging_dir / f"{Path(member).stem}.base.tif"
+    write_base_tiff(
+        base_path,
+        pixels,
+        BaseTiffTags(
+            description=image_description(member),
+            software=software_tag_value(),
+            conversion_time=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
+            icc_profile=ctx.icc_profile,
+            make=settings.make,
+            model=settings.model,
+        ),
+    )
+    del pixels  # the array never leaves this frame's scope (section 3.8)
+    ctx.progress.advance(source_index, PipelineStep.WRITE_TIFF)
+    ctx.cancel.raise_if_cancelled()
 
-        digitized = digitized_fields_by_name[member]
-        final_path = staging_dir / _output_name_for(member)
-        finalize_tiff(
-            base_path,
-            final_path,
-            NestedExifFields(
-                date_time_original=synthetic_time_by_name[member],
-                exposure_time=settings.exposure_time,
-                f_number=settings.f_number,
-                iso=settings.iso,
-                focal_length=settings.focal_length,
-                lens_model=settings.lens_model,
-                date_time_digitized=digitized.date_time_digitized,
-                subsec_time_digitized=digitized.subsec_time_digitized,
-                offset_time_digitized=digitized.offset_time_digitized,
-            ),
-        )
-        steps_done += 1
-        emit(
-            Progress(
-                run_id=run_id,
-                source_index=source_index,
-                step=PipelineStep.ADD_METADATA,
-                completed=steps_done,
-                total=total_steps,
-            )
-        )
+    digitized = ctx.digitized_fields_by_name[member]
+    final_path = ctx.staging_dir / _output_name_for(member)
+    finalize_tiff(
+        base_path,
+        final_path,
+        NestedExifFields(
+            date_time_original=ctx.synthetic_time_by_name[member],
+            exposure_time=settings.exposure_time,
+            f_number=settings.f_number,
+            iso=settings.iso,
+            focal_length=settings.focal_length,
+            lens_model=settings.lens_model,
+            date_time_digitized=digitized.date_time_digitized,
+            subsec_time_digitized=digitized.subsec_time_digitized,
+            offset_time_digitized=digitized.offset_time_digitized,
+        ),
+    )
+    ctx.progress.advance(source_index, PipelineStep.ADD_METADATA)
 
-        final_paths[member] = final_path
+    return _StagedFrame(member=member, source_index=source_index, final_path=final_path)
 
-    return final_paths, steps_done
+
+def _stage_group(members: list[str], ctx: _GroupContext, workers: int) -> dict[str, Path]:
+    """Stage every frame of one group, serially or across threads.
+
+    Raises on the first frame that fails or on cancellation; either way
+    every worker has stopped by the time this returns, so the caller can
+    safely delete the staging directory.
+    """
+    if workers <= 1:
+        # Section 3.8: "`--jobs 1` uses the serial path." No executor is
+        # constructed at all, so a serial run has no thread-pool
+        # behaviour to go wrong.
+        return {member: _stage_one_frame(member, ctx).final_path for member in members}
+
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scanny-frame")
+    futures: dict[Future[_StagedFrame], str] = {}
+    try:
+        for member in members:
+            futures[pool.submit(_stage_one_frame, member, ctx)] = member
+        staged: dict[str, Path] = {}
+        for future in as_completed(futures):
+            frame = future.result()
+            staged[frame.member] = frame.final_path
+        return staged
+    finally:
+        # `cancel_futures=True` drops frames that never started;
+        # `wait=True` blocks until frames that did start have finished
+        # their current step. Both halves of section 3.8's "Queued work
+        # is cancelled, running workers stop, and only then is the
+        # staging directory deleted" — the deletion is the caller's, and
+        # happens after this `finally`.
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _verify_source_unchanged(path: Path, record: SourceRecord) -> None:
@@ -415,7 +510,12 @@ def _publish_group(
 ) -> None:
     """Move every staged final TIFF into `output_dir`. Deliberately not
     wrapped by the group's ordinary-failure handler — see the module
-    docstring."""
+    docstring.
+
+    Always walks `group_record.members`, never the order the frames
+    finished in, so `item_done` events stay in canonical source order
+    even when threads completed out of order.
+    """
     for member in group_record.members:
         source_path = final_paths[member]
         output_name = _output_name_for(member)
@@ -440,6 +540,8 @@ def run_convert(
     *,
     run_id: str,
     overwrite: bool = False,
+    jobs: int | None = None,
+    cancel: CancellationToken | None = None,
     emit: EmitFn = lambda event: None,
 ) -> ConvertOutcome:
     """Validate the selection and output folder exactly as `probe` does,
@@ -448,7 +550,22 @@ def run_convert(
     during conversion does not raise — it is recorded in the manifest and
     reported through `GroupFailed`, and processing continues with the next
     group.
+
+    `jobs` is `None` for the section 3.8 default worker count, or an
+    explicit 1-12. Cancelling `cancel` abandons the group in flight,
+    leaves already-published groups alone, records the manifest as
+    `cancelled`, and returns an outcome whose status is `"cancelled"`.
     """
+    cancel = cancel if cancel is not None else CancellationToken()
+
+    # Before anything touches the filesystem: an explicit --jobs that
+    # exceeds the memory budget is rejected outright (section 3.8), while
+    # the default is silently reduced to fit.
+    try:
+        workers = concurrency.resolve_worker_count(per_negative, jobs)
+    except concurrency.MemoryBudgetError as exc:
+        raise ConvertFailure(exc.code, exc.message) from exc
+
     validated = _validate_selection(input_dir, files, per_negative, emit, run_id)
     selected = validated.names
 
@@ -520,42 +637,45 @@ def run_convert(
     write_manifest(output_dir, candidate)
 
     source_index_by_name = {name: i for i, name in enumerate(selected)}
-    source_records_by_name = {r.filename: r for r in source_records}
-    settings_by_name = dict(zip(selected, settings_list, strict=True))
-    synthetic_time_by_name = dict(zip(selected, synthetic_times, strict=True))
-    digitized_fields_by_name = dict(zip(selected, digitized_fields, strict=True))
-    total_steps = len(selected) * STEPS_PER_FRAME
-    steps_done = 0
+    progress = _ProgressReporter(
+        total_steps=len(selected) * STEPS_PER_FRAME, emit=emit, run_id=run_id
+    )
+    base_context = {
+        "input_dir": input_dir,
+        "source_records_by_name": {r.filename: r for r in source_records},
+        "source_index_by_name": source_index_by_name,
+        "synthetic_time_by_name": dict(zip(selected, synthetic_times, strict=True)),
+        "digitized_fields_by_name": dict(zip(selected, digitized_fields, strict=True)),
+        "settings_by_name": dict(zip(selected, settings_list, strict=True)),
+        "icc_profile": icc_profile,
+        "progress": progress,
+        "cancel": cancel,
+    }
 
+    cancelled = False
     for group_record in candidate.groups:
+        if cancel.cancelled:
+            cancelled = True
+            break
+
         staging_dir = staging_dir_path(output_dir, run_id, group_record.group_id)
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
 
         try:
-            final_paths, steps_done = _process_group_to_staging(
-                input_dir=input_dir,
-                staging_dir=staging_dir,
-                group_record=group_record,
-                source_records_by_name=source_records_by_name,
-                source_index_by_name=source_index_by_name,
-                synthetic_time_by_name=synthetic_time_by_name,
-                digitized_fields_by_name=digitized_fields_by_name,
-                settings_by_name=settings_by_name,
-                icc_profile=icc_profile,
-                total_steps=total_steps,
-                steps_done=steps_done,
-                emit=emit,
-                run_id=run_id,
+            final_paths = _stage_group(
+                group_record.members,
+                _GroupContext(staging_dir=staging_dir, **base_context),
+                workers,
             )
-        except (
-            UnsupportedRawError,
-            UnreadableRawError,
-            TiffFinalizeError,
-            _SourceChangedError,
-            OSError,
-        ) as exc:
+        except CancelledError:
+            # Every worker has stopped by now (`_stage_group`'s finally),
+            # so deleting the directory cannot race a write.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            cancelled = True
+            break
+        except GROUP_FAILURE_EXCEPTIONS + (_SourceChangedError,) as exc:
             shutil.rmtree(staging_dir, ignore_errors=True)
             code = _code_for_group_failure(exc)
             group_record.status = "failed"
@@ -568,6 +688,15 @@ def run_convert(
                 )
             )
             continue
+
+        if cancel.cancelled:
+            # Cancelled in the window between the last frame staging and
+            # the first publish. Section 3.6: "The group being processed
+            # is not published." A staged-but-unpublished group is still
+            # the group being processed.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            cancelled = True
+            break
 
         _publish_group(
             output_dir=output_dir,
@@ -582,9 +711,16 @@ def run_convert(
         write_manifest(output_dir, candidate)
         emit(GroupDone(run_id=run_id, group_id=group_record.group_id))
 
-    final_status = "complete" if all(g.status == "completed" for g in candidate.groups) else "partial"
+    if cancelled:
+        final_status = "cancelled"
+    elif all(g.status == "completed" for g in candidate.groups):
+        final_status = "complete"
+    else:
+        final_status = "partial"
     candidate.status = final_status
     candidate.finished_at = _now_iso()
     write_manifest(output_dir, candidate)
 
-    return ConvertOutcome(run_id=run_id, status=final_status, manifest=candidate)
+    return ConvertOutcome(
+        run_id=run_id, status=final_status, manifest=candidate, workers=workers
+    )

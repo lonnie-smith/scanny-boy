@@ -38,6 +38,22 @@ probe result.
 selection above 5000 files with a usage error rather than letting the
 operating system truncate the argument list.
 
+### `--jobs`
+
+`--jobs` sets how many frames of one negative are converted at once;
+parallelism never spans negatives, because a negative is published all at
+once or not at all. Omitting it uses
+`min(shots_per_negative, logical CPUs, 4)`, reduced silently if this
+machine's memory budget is smaller. An explicit value is accepted from 1 to
+12; 1 uses the serial path. Values outside that range are a usage error
+(exit 2).
+
+Each worker is budgeted a fixed amount of memory, and the total must not
+exceed half of physical RAM. An explicit `--jobs` above that limit is
+rejected with `INSUFFICIENT_MEMORY` and exit 1 — not a usage error, since
+the command is well formed and only this machine cannot honour it. The
+computed default is never rejected this way, only lowered.
+
 ## Output transport
 
 - stdout contains one UTF-8 JSON object per line and flushes after every
@@ -75,6 +91,23 @@ progress from counts, never from the largest source index seen.
 
 `progress` may report decoded or staged work. If a group fails or is
 cancelled, it emits no `item_done` events for that group's staged files.
+
+### Cancellation
+
+The app requests cancellation with SIGTERM. The CLI stops submitting new
+frames, lets frames already running finish their current step, discards the
+negative in progress along with its staging directory, and leaves every
+already-published negative in place. It then records the manifest as
+`cancelled` and ends the stream with an `error` carrying `CANCELLED`,
+followed by `finished` with status `cancelled` and `exit_status` 143.
+
+A cancelled negative emits no `group_failed`: it was abandoned, not failed,
+and a rerun will convert it normally. Swift treats a user-requested
+cancellation as cancelled whether the helper exits 143 or is reported as
+terminated by signal 15. A forced termination after the grace period cannot
+clean files, update the manifest, or emit a final event; the next `probe`
+or `convert` detects the manifest left as `running`, removes that run's
+staging directories, and reruns the incomplete negative.
 
 ### Stable error and warning codes
 

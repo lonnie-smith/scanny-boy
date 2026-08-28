@@ -1,10 +1,18 @@
 import json
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
+from scanny_boy import concurrency
 from scanny_boy.cli import MAX_SELECTION_FILES, main
 from scanny_boy.fake_nef_support import write_fake_nef
+from scanny_boy.manifest import load_manifest
+from scanny_boy.output_folder import STAGING_SUFFIX
+from scanny_boy.pipeline import ConvertOutcome
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     REAL_SAMPLE_FILES,
@@ -301,3 +309,203 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
     for name in REAL_SAMPLE_FILES:
         assert (out_dir / f"{Path(name).stem}.tif").exists()
     assert (out_dir / "scanny-boy-manifest.json").exists()
+
+
+# =========================================================================
+# Chunk 6: --jobs, cancellation, and exit status 143 (section 3.8)
+# =========================================================================
+
+
+def _convert_argv(input_dir, out_dir, files, **extra) -> list[str]:
+    argv = [
+        "convert",
+        "--input",
+        str(input_dir),
+        "--files",
+        *files,
+        "--out",
+        str(out_dir),
+        "--film-date",
+        "2026-08-02",
+    ]
+    for key, value in extra.items():
+        argv += [f"--{key.replace('_', '-')}", str(value)]
+    return argv
+
+
+@pytest.mark.parametrize("jobs", ["0", "13", "-1"])
+def test_jobs_outside_1_to_12_is_a_usage_error(capsys, jobs, tmp_path):
+    status = main(_convert_argv("/tmp/in", tmp_path, ["a.NEF"], jobs=jobs))
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "--jobs" in err
+
+
+def test_an_explicit_jobs_over_the_memory_budget_reports_insufficient_memory(
+    capsys, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        concurrency,
+        "physical_memory_bytes",
+        lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES,
+    )
+
+    status = main(_convert_argv("/tmp/in", tmp_path, ["a.NEF", "b.NEF"], jobs=12))
+
+    # Not a usage error (exit 2): the command is well formed, this
+    # machine just cannot honour it. Same shape as INSUFFICIENT_DISK.
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INSUFFICIENT_MEMORY"
+    assert events[2]["exit_status"] == 1
+
+
+def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_path):
+    """The exit status and event tail of a cooperative cancellation,
+    without paying for a real conversion. The real signal path is covered
+    by `test_sigterm_during_a_real_conversion_exits_143` below."""
+
+    def _cancelled_run(*args, **kwargs):
+        return ConvertOutcome(
+            run_id=kwargs["run_id"],
+            status="cancelled",
+            manifest=None,
+            workers=1,
+        )
+
+    monkeypatch.setattr("scanny_boy.cli.run_convert", _cancelled_run)
+
+    status = main(_convert_argv("/tmp/in", tmp_path, ["a.NEF", "b.NEF"]))
+
+    assert status == 143  # 128 + SIGTERM
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "CANCELLED"
+    assert events[2]["status"] == "cancelled"
+    assert events[2]["exit_status"] == 143
+
+
+# --- real subprocesses, driven by their own event stream -----------------
+
+
+def _spawn_convert(out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
+    argv = [
+        sys.executable,
+        "-m",
+        "scanny_boy.cli",
+        *_convert_argv(FIXTURES_DIR, out_dir, files, **extra),
+    ]
+    return subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+
+
+def _read_until(proc: subprocess.Popen, predicate, *, timeout: float = 120) -> dict:
+    """Read the child's event stream until `predicate` matches an event.
+
+    This is the "controlled" half of the chunk's "cancels only after work
+    has definitely started; do not use a race-prone fixed sleep": the
+    signal is sent in response to the child telling us where it is, not
+    after an interval we guessed.
+    """
+    deadline = time.monotonic() + timeout
+    for line in proc.stdout:
+        if time.monotonic() > deadline:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        event = json.loads(line)
+        if predicate(event):
+            return event
+    raise AssertionError("the child never emitted a matching event")
+
+
+@requires_real_samples
+def test_sigterm_during_a_real_conversion_exits_143(tmp_path):
+    """End to end: a real child process, a real SIGTERM, exit 143, the
+    first negative kept and the second discarded."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    proc = _spawn_convert(out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=1)
+    try:
+        # Wait until the first negative has been published in full, so
+        # "completed groups remain" is actually being tested.
+        _read_until(proc, lambda e: e["event"] == "group_done")
+        # ...and until the second negative is genuinely under way.
+        _read_until(
+            proc,
+            lambda e: e["event"] == "progress" and e["source_index"] >= 3,
+        )
+        proc.send_signal(signal.SIGTERM)
+        remaining = proc.stdout.read()
+        status = proc.wait(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+        proc.stdout.close()
+
+    assert status == 143
+
+    tail = [json.loads(line) for line in remaining.splitlines() if line.strip()]
+    assert tail, "the child emitted no events after the signal"
+    assert tail[-1]["event"] == "finished"
+    assert tail[-1]["status"] == "cancelled"
+    assert tail[-1]["exit_status"] == 143
+    assert any(e.get("code") == "CANCELLED" for e in tail)
+
+    # The first negative survived; the second was discarded whole.
+    for name in REAL_SAMPLE_FILES[:3]:
+        assert (out_dir / f"{Path(name).stem}.tif").exists()
+    for name in REAL_SAMPLE_FILES[3:]:
+        assert not (out_dir / f"{Path(name).stem}.tif").exists()
+
+    manifest = load_manifest(out_dir)
+    assert manifest.status == "cancelled"
+    assert [g.status for g in manifest.groups] == ["completed", "pending"]
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+
+@requires_real_samples
+def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_path):
+    """Section 3.8: "A forced stop cannot clean files, update the
+    manifest, or emit a final event... The next probe or conversion
+    detects a manifest left as `running` and staging directories owned by
+    that run. It removes those staging directories before rerunning."
+
+    SIGKILL, not SIGTERM: the point is the state a *forced* stop leaves.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    proc = _spawn_convert(out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=2)
+    try:
+        _read_until(proc, lambda e: e["event"] == "progress")
+        proc.kill()
+        status = proc.wait(timeout=120)
+    finally:
+        proc.stdout.close()
+
+    assert status == -signal.SIGKILL
+
+    # The forced stop left exactly the wreckage section 3.8 predicts.
+    abandoned = load_manifest(out_dir)
+    assert abandoned.status == "running"
+    assert abandoned.finished_at is None
+    staging = [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)]
+    assert len(staging) == 1
+    assert staging[0].name.startswith(abandoned.run_id)
+
+    # The next run cleans it up and completes the incomplete group.
+    status = main(_convert_argv(FIXTURES_DIR, out_dir, REAL_SAMPLE_FILES))
+
+    assert status == 0
+    recovered = load_manifest(out_dir)
+    assert recovered.status == "complete"
+    assert recovered.run_id != abandoned.run_id
+    assert all(g.status == "completed" for g in recovered.groups)
+    for name in REAL_SAMPLE_FILES:
+        assert (out_dir / f"{Path(name).stem}.tif").exists()
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []

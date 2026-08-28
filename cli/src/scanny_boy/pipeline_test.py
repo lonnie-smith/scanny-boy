@@ -1,6 +1,9 @@
-"""Chunk 5's own test list: manifest writing/fsync ordering, staging and
+"""The conversion pipeline, in two parts.
+
+Chunk 5's list comes first: manifest writing/fsync ordering, staging and
 publish mechanics, disk checks, overwrite/rerun handling, and crash
-recovery.
+recovery. Chunk 6's list follows, under its own banner: `--jobs`, the
+thread-worker path, the memory budget, and cooperative cancellation.
 
 All of these need real sample NEFs to get past setup-consistency validation
 (`read_camera_whitebalance` opens the file with real `rawpy`, and section 7
@@ -17,16 +20,23 @@ from ~2.5s to well under a second.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
+import hashlib
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
+import tifftools
+from tifftools.constants import Tag as ExifIFDTag
 
-from scanny_boy import disk_check, raw_decode
+from scanny_boy import concurrency, disk_check, pipeline, raw_decode
+from scanny_boy.cancellation import CancellationToken
 from scanny_boy.hashing import sha256_file
 from scanny_boy.manifest import MANIFEST_FILENAME, load_manifest
 from scanny_boy.manifest_schema_test_support import (
@@ -39,6 +49,7 @@ from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_1,
+    NEGATIVE_2,
     REAL_SAMPLE_FILES,
     requires_real_samples,
 )
@@ -426,3 +437,619 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
         published_path = out_dir / f"{_stem(name)}.tif"
         assert published_path.exists()
     assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+
+# =========================================================================
+# Chunk 6: threaded conversion and cancellation (section 3.8)
+# =========================================================================
+#
+# The tests below exercise `--jobs`, the thread-worker path, and
+# cooperative cancellation. None of them sleeps for a fixed interval to
+# "let work start": every one gates on a `threading.Event` or a
+# `threading.Barrier` that only opens once the pipeline has demonstrably
+# reached the point being tested, per the chunk's "do not use a race-prone
+# fixed sleep".
+
+
+CONVERSION_TIME_TAG = 306  # IFD0 DateTime: the one documented changing field
+
+
+def _tiff_fingerprint(path: Path) -> tuple[str, dict]:
+    """A comparable summary of one output TIFF: the SHA-256 of its decoded
+    pixels, plus every IFD0 and nested-EXIF tag value.
+
+    Section 7: "Compare pixel hashes and metadata after documented
+    changing fields are ignored, not entire TIFF bytes, which contain
+    conversion timestamps." The only such field here is IFD0 `DateTime`
+    (306), the moment of conversion. `DateTimeOriginal` is synthetic and
+    derived from the film date, so it must match exactly.
+    """
+    with tifffile.TiffFile(path) as handle:
+        pixels = handle.asarray()
+    pixel_sha256 = hashlib.sha256(pixels.tobytes()).hexdigest()
+
+    ifd0 = tifftools.read_tiff(str(path))["ifds"][0]
+    tags: dict = {}
+    for code, entry in ifd0["tags"].items():
+        if code == CONVERSION_TIME_TAG:
+            continue
+        if code == ExifIFDTag.ExifIFD.value:
+            nested = entry["ifds"][0][0]["tags"]
+            tags[code] = {c: e.get("data") for c, e in nested.items()}
+        else:
+            tags[code] = entry.get("data")
+    return pixel_sha256, tags
+
+
+@requires_real_samples
+def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
+    """The headline guarantee of this chunk: turning on threads changes
+    nothing about the files produced. Real `rawpy` decoding and the real
+    two-pass TIFF write, deliberately unpatched."""
+    serial_dir = tmp_path / "serial"
+    threaded_dir = tmp_path / "threaded"
+    serial_dir.mkdir()
+    threaded_dir.mkdir()
+
+    serial = run_convert(
+        FIXTURES_DIR,
+        list(REAL_SAMPLE_FILES),
+        serial_dir,
+        FILM_DATE,
+        3,
+        run_id="serial",
+        jobs=1,
+        emit=lambda e: None,
+    )
+    threaded = run_convert(
+        FIXTURES_DIR,
+        list(REAL_SAMPLE_FILES),
+        threaded_dir,
+        FILM_DATE,
+        3,
+        run_id="threaded",
+        jobs=4,
+        emit=lambda e: None,
+    )
+
+    assert serial.status == "complete"
+    assert threaded.status == "complete"
+    assert serial.workers == 1
+    assert threaded.workers == 4
+
+    for name in REAL_SAMPLE_FILES:
+        output = f"{_stem(name)}.tif"
+        assert _tiff_fingerprint(serial_dir / output) == _tiff_fingerprint(
+            threaded_dir / output
+        ), f"{output} differs between --jobs 1 and --jobs 4"
+
+
+@requires_real_samples
+def test_jobs_1_never_constructs_a_thread_pool(monkeypatch, tmp_path):
+    """Section 3.8: "`--jobs 1` uses the serial path." Not "a pool of one"
+    — no executor at all, so a serial run cannot inherit a thread-pool
+    bug."""
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("--jobs 1 must not construct a ThreadPoolExecutor")
+
+    monkeypatch.setattr("scanny_boy.pipeline.ThreadPoolExecutor", _forbidden)
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=1,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.workers == 1
+
+
+# --- out-of-order completion still reports one result per source ---------
+
+
+def _install_reverse_order_decode(monkeypatch, members: list[str]) -> list[str]:
+    """Force the frames of one group to finish decoding in exactly reverse
+    order, with no sleeps.
+
+    A `Barrier` first proves every worker is genuinely running at once.
+    Then each worker waits on its own gate; only the last member's gate
+    starts open, and each worker opens its predecessor's gate as it
+    leaves. The resulting order is deterministic, not merely likely.
+    """
+    decode_order: list[str] = []
+    order_lock = threading.Lock()
+    barrier = threading.Barrier(len(members))
+    gates = {name: threading.Event() for name in members}
+    gates[members[-1]].set()
+    predecessor = {members[i]: members[i - 1] for i in range(1, len(members))}
+
+    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+        barrier.wait(timeout=30)
+        assert gates[path.name].wait(timeout=30), f"gate for {path.name} never opened"
+        with order_lock:
+            decode_order.append(path.name)
+        if path.name in predecessor:
+            gates[predecessor[path.name]].set()
+        return _fast_frame()
+
+    monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
+    return decode_order
+
+
+@requires_real_samples
+def test_every_source_index_reports_one_final_result_despite_out_of_order_completion(
+    monkeypatch, tmp_path
+):
+    decode_order = _install_reverse_order_decode(monkeypatch, list(NEGATIVE_1))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    events: list = []
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=3,
+        emit=events.append,
+    )
+
+    assert outcome.status == "complete"
+    # The premise: work really did complete out of source order.
+    assert decode_order == list(reversed(NEGATIVE_1))
+
+    progress = [e for e in events if type(e).__name__ == "Progress"]
+    decode_progress = [e for e in progress if e.step.value == "decode"]
+    # The last member is the only one whose gate starts open, so it is
+    # deterministically the first to finish decoding. Which of the other
+    # two emits next is a genuine race — each is released from inside its
+    # successor's decode, before that successor's own progress event —
+    # and asserting a total order there would be exactly the race-prone
+    # test the chunk warns against.
+    assert decode_progress[0].source_index == 2
+    assert {e.source_index for e in decode_progress} == {0, 1, 2}
+    assert [e.source_index for e in decode_progress] != [0, 1, 2]
+
+    # ...and yet every source index reports exactly one final result, in
+    # canonical order.
+    item_done = [e for e in events if type(e).__name__ == "ItemDone"]
+    assert [e.source_index for e in item_done] == [0, 1, 2]
+    assert [e.output for e in item_done] == [f"{_stem(n)}.tif" for n in NEGATIVE_1]
+
+    # Each source reports each of its three pipeline steps exactly once,
+    # and the shared counter never repeats or skips a value.
+    steps_by_index: dict[int, list[str]] = {}
+    for event in progress:
+        steps_by_index.setdefault(event.source_index, []).append(event.step.value)
+    assert {i: sorted(v) for i, v in steps_by_index.items()} == {
+        i: ["add_metadata", "decode", "write_tiff"] for i in range(3)
+    }
+    assert [e.completed for e in progress] == list(range(1, 10))
+    assert {e.total for e in progress} == {9}
+
+
+# --- workers return status and paths, never pixels ------------------------
+
+
+@requires_real_samples
+def test_thread_workers_never_return_image_arrays_to_the_parent(monkeypatch, tmp_path):
+    """Section 3.8: "returns only status and paths. Do not return full
+    image arrays to the parent." Checked on the values actually handed
+    back by a threaded run, not just on the type's declaration."""
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    returned: list = []
+    real_stage = pipeline._stage_one_frame
+
+    def _capturing_stage(member, ctx):
+        result = real_stage(member, ctx)
+        returned.append(result)
+        return result
+
+    monkeypatch.setattr(pipeline, "_stage_one_frame", _capturing_stage)
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=3,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "complete"
+    assert len(returned) == len(NEGATIVE_1)
+    assert {f.name for f in dataclasses.fields(pipeline._StagedFrame)} == {
+        "member",
+        "source_index",
+        "final_path",
+    }
+    for frame in returned:
+        assert isinstance(frame, pipeline._StagedFrame)
+        for field in dataclasses.fields(frame):
+            value = getattr(frame, field.name)
+            assert not isinstance(value, np.ndarray)
+            assert isinstance(value, (str, int, Path))
+
+
+# --- inner TIFF compression stays at one worker ---------------------------
+
+
+@requires_real_samples
+def test_tiff_compression_uses_one_inner_worker_even_when_outer_threads_run(
+    monkeypatch, tmp_path
+):
+    """Section 3.4/3.8: "Set `tifffile`'s compression `maxworkers=1`; outer
+    RAW threads own concurrency." Asserted during a genuinely threaded run,
+    which is where a regression would matter."""
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    seen_maxworkers: list = []
+    real_imwrite = tifffile.imwrite
+
+    def _recording_imwrite(*args, **kwargs):
+        seen_maxworkers.append(kwargs.get("maxworkers"))
+        return real_imwrite(*args, **kwargs)
+
+    monkeypatch.setattr("scanny_boy.tiff_writer.tifffile.imwrite", _recording_imwrite)
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=3,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "complete"
+    assert len(seen_maxworkers) == len(NEGATIVE_1)
+    assert set(seen_maxworkers) == {1}
+
+
+# --- the memory budget reaches run_convert --------------------------------
+
+
+@requires_real_samples
+def test_an_explicit_jobs_over_the_memory_budget_fails_before_any_work(
+    monkeypatch, tmp_path
+):
+    decode_calls: list[Path] = []
+    monkeypatch.setattr(
+        raw_decode, "decode_raw", lambda p: decode_calls.append(p) or _fast_frame()
+    )
+    monkeypatch.setattr(
+        concurrency, "physical_memory_bytes", lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(ConvertFailure) as excinfo:
+        run_convert(
+            FIXTURES_DIR,
+            list(NEGATIVE_1),
+            out_dir,
+            FILM_DATE,
+            3,
+            run_id="r1",
+            jobs=12,
+            emit=lambda e: None,
+        )
+
+    assert excinfo.value.code.value == "INSUFFICIENT_MEMORY"
+    assert decode_calls == []
+    # Nothing was written: the check happens before the output folder is
+    # even touched.
+    assert list(out_dir.iterdir()) == []
+
+
+@requires_real_samples
+def test_the_default_worker_count_is_reduced_rather_than_rejected(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    # A machine whose half-RAM budget holds exactly one worker.
+    monkeypatch.setattr(
+        concurrency, "physical_memory_bytes", lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=None,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.workers == 1
+
+
+# --- cancellation ---------------------------------------------------------
+
+
+def _install_gated_decode(
+    monkeypatch, gate_on: str | set[str], *, parked_target: int = 1
+) -> tuple[threading.Event, threading.Event, list[str]]:
+    """Block the decode of every frame named in `gate_on` until the test
+    releases it.
+
+    Returns `(started, release, decoded)`: `started` is set once
+    `parked_target` gated frames are simultaneously parked inside decode
+    — the signal a cancellation test waits on instead of sleeping — and
+    `release` lets them all return.
+
+    Waiting for a *count* rather than the first arrival is what makes the
+    threaded tests deterministic. Setting the flag on the first worker
+    would leave every other worker racing the test's `token.cancel()`,
+    and a worker that lost that race would stop at its first step
+    boundary instead of reaching decode at all.
+    """
+    gated = {gate_on} if isinstance(gate_on, str) else set(gate_on)
+    started = threading.Event()
+    release = threading.Event()
+    decoded: list[str] = []
+    state = {"parked": 0}
+    lock = threading.Lock()
+
+    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+        with lock:
+            decoded.append(path.name)
+        if path.name in gated:
+            with lock:
+                state["parked"] += 1
+                if state["parked"] >= parked_target:
+                    started.set()
+            assert release.wait(timeout=30), "the gated decode was never released"
+        return _fast_frame()
+
+    monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
+    return started, release, decoded
+
+
+def _run_convert_in_thread(**kwargs) -> tuple[threading.Thread, dict]:
+    result: dict = {}
+
+    def _target() -> None:
+        try:
+            result["outcome"] = run_convert(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - surfaced by the caller's assertions
+            result["error"] = exc
+
+    thread = threading.Thread(target=_target, name="convert-under-test")
+    thread.start()
+    return thread, result
+
+
+@requires_real_samples
+def test_cancellation_discards_the_current_group_and_keeps_completed_ones(
+    monkeypatch, tmp_path
+):
+    """Section 3.6: "Completed groups remain after cancellation. The group
+    being processed is not published." Cancellation is requested only once
+    the second negative's first frame has demonstrably begun decoding."""
+    started, release, _decoded = _install_gated_decode(monkeypatch, gate_on=NEGATIVE_2[0])
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    events: list = []
+    token = CancellationToken()
+
+    thread, result = _run_convert_in_thread(
+        input_dir=FIXTURES_DIR,
+        files=list(REAL_SAMPLE_FILES),
+        output_dir=out_dir,
+        film_date=FILM_DATE,
+        per_negative=3,
+        run_id="r1",
+        jobs=1,
+        cancel=token,
+        emit=events.append,
+    )
+
+    assert started.wait(timeout=30), "the second negative never started decoding"
+    token.cancel()
+    release.set()
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+
+    outcome = result["outcome"]
+    assert outcome.status == "cancelled"
+
+    # The first negative survives; the second is gone entirely.
+    for name in NEGATIVE_1:
+        assert (out_dir / f"{_stem(name)}.tif").exists()
+    for name in NEGATIVE_2:
+        assert not (out_dir / f"{_stem(name)}.tif").exists()
+
+    # The manifest records the cancellation and no staging work remains.
+    manifest = load_manifest(out_dir)
+    assert manifest.status == "cancelled"
+    assert manifest.finished_at is not None
+    assert manifest.groups[0].status == "completed"
+    assert manifest.groups[1].status == "pending"
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+    # No item_done or group_done for the cancelled negative, and no
+    # group_failed either: a cancelled group is abandoned, not failed.
+    item_done = {e.output for e in events if type(e).__name__ == "ItemDone"}
+    assert item_done == {f"{_stem(n)}.tif" for n in NEGATIVE_1}
+    assert [e.group_id for e in events if type(e).__name__ == "GroupDone"] == [
+        "negative-01"
+    ]
+    assert [e for e in events if type(e).__name__ == "GroupFailed"] == []
+
+
+@requires_real_samples
+def test_a_group_staged_but_not_yet_published_when_cancelled_is_still_discarded(
+    monkeypatch, tmp_path
+):
+    """The narrow window between the last frame staging and the first
+    `os.replace`. Section 3.6 calls a group that has not been published
+    "the group being processed", so it must be dropped."""
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    token = CancellationToken()
+
+    real_replace = os.replace
+
+    def _cancel_on_first_publish(src, dst):
+        if Path(dst).suffix == ".tif":
+            raise AssertionError("nothing may be published after cancellation")
+        real_replace(src, dst)
+
+    # Cancel the instant the group finishes staging, by hooking the last
+    # step every frame performs.
+    real_finalize = pipeline.finalize_tiff
+    staged = {"count": 0}
+
+    def _finalize_then_maybe_cancel(base_path, final_path, fields):
+        real_finalize(base_path, final_path, fields)
+        staged["count"] += 1
+        if staged["count"] == len(NEGATIVE_1):
+            token.cancel()
+
+    monkeypatch.setattr(pipeline, "finalize_tiff", _finalize_then_maybe_cancel)
+    monkeypatch.setattr("scanny_boy.pipeline.os.replace", _cancel_on_first_publish)
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        jobs=1,
+        cancel=token,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "cancelled"
+    for name in NEGATIVE_1:
+        assert not (out_dir / f"{_stem(name)}.tif").exists()
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+
+@requires_real_samples
+def test_queued_work_is_cancelled_and_workers_stop_before_staging_is_deleted(
+    monkeypatch, tmp_path
+):
+    """Section 3.8: "Wait for every running worker to stop before deleting
+    the current staging directory... Never delete a directory while a
+    worker may still write to it."
+
+    One group of six frames with two workers: two frames run, four sit in
+    the queue. Both running frames are blocked in decode until the test
+    cancels, so the queued four can be proven never to have decoded.
+    """
+    started, release, decoded = _install_gated_decode(
+        monkeypatch, gate_on=set(REAL_SAMPLE_FILES), parked_target=2
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    token = CancellationToken()
+
+    active = {"count": 0}
+    active_lock = threading.Lock()
+    active_at_delete: list[int] = []
+    real_stage = pipeline._stage_one_frame
+
+    def _counting_stage(member, ctx):
+        with active_lock:
+            active["count"] += 1
+        try:
+            return real_stage(member, ctx)
+        finally:
+            with active_lock:
+                active["count"] -= 1
+
+    real_rmtree = shutil.rmtree
+
+    def _recording_rmtree(path, *args, **kwargs):
+        with active_lock:
+            active_at_delete.append(active["count"])
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_stage_one_frame", _counting_stage)
+    monkeypatch.setattr("scanny_boy.pipeline.shutil.rmtree", _recording_rmtree)
+
+    thread, result = _run_convert_in_thread(
+        input_dir=FIXTURES_DIR,
+        files=list(REAL_SAMPLE_FILES),
+        output_dir=out_dir,
+        film_date=FILM_DATE,
+        per_negative=6,
+        run_id="r1",
+        jobs=2,
+        cancel=token,
+        emit=lambda e: None,
+    )
+
+    assert started.wait(timeout=30), "both workers never parked inside decode"
+    token.cancel()
+    release.set()
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["outcome"].status == "cancelled"
+
+    # Queued frames were cancelled: only the two the pool was already
+    # running ever reached the decode step, and they are the first two in
+    # submission order. A frame the pool picks up after cancellation
+    # raises at its first step boundary, before decode.
+    assert sorted(decoded) == sorted(REAL_SAMPLE_FILES[:2]), decoded
+
+    # Every worker had stopped before the staging directory was removed.
+    assert active_at_delete, "the staging directory was never deleted"
+    assert set(active_at_delete) == {0}
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+    assert list(out_dir.glob("*.tif")) == []
+
+
+@requires_real_samples
+def test_cancelling_before_the_first_group_publishes_nothing(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    token = CancellationToken()
+    token.cancel()
+
+    outcome = run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        FILM_DATE,
+        3,
+        run_id="r1",
+        cancel=token,
+        emit=lambda e: None,
+    )
+
+    assert outcome.status == "cancelled"
+    assert list(out_dir.glob("*.tif")) == []
+    manifest = load_manifest(out_dir)
+    assert manifest.status == "cancelled"
+    assert all(g.status == "pending" for g in manifest.groups)
