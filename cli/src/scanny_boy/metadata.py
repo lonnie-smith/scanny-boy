@@ -60,6 +60,31 @@ class SourceSettings:
     camera_whitebalance: tuple[float, float, float, float] | None
 
 
+@dataclasses.dataclass(frozen=True)
+class DigitizationSourceFields:
+    """The raw source strings section 3.5's "digitized" curation chooses
+    between. Kept separate from `ExifSettings` because these are read
+    verbatim (never compared across a selection) and a caller needs all
+    six before picking, not a single curated result — see
+    `choose_digitized_fields`."""
+
+    date_time_original: str | None
+    subsec_time_original: str | None
+    offset_time_original: str | None
+    date_time_digitized: str | None
+    subsec_time_digitized: str | None
+    offset_time_digitized: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class DigitizedFields:
+    """The three output "digitized" EXIF tag values, already curated."""
+
+    date_time_digitized: str | None
+    subsec_time_digitized: str | None
+    offset_time_digitized: str | None
+
+
 def _ratio_to_fraction(tag: Any) -> Fraction | None:
     if tag is None or not tag.values:
         return None
@@ -94,6 +119,41 @@ def read_exif_settings(path: Path) -> ExifSettings:
         focal_length=_ratio_to_fraction(tags.get("EXIF FocalLength")),
         lens_model=_ascii(tags.get("EXIF LensModel")),
         orientation=_short(tags.get("Image Orientation")),
+    )
+
+
+def read_digitization_fields(path: Path) -> DigitizationSourceFields:
+    """Read the six raw source strings section 3.5's "digitized" curation
+    (`choose_digitized_fields`) picks between."""
+    with path.open("rb") as f:
+        tags = exifread.process_file(f, details=False)
+
+    return DigitizationSourceFields(
+        date_time_original=_ascii(tags.get("EXIF DateTimeOriginal")),
+        subsec_time_original=_ascii(tags.get("EXIF SubSecTimeOriginal")),
+        offset_time_original=_ascii(tags.get("EXIF OffsetTimeOriginal")),
+        date_time_digitized=_ascii(tags.get("EXIF DateTimeDigitized")),
+        subsec_time_digitized=_ascii(tags.get("EXIF SubSecTimeDigitized")),
+        offset_time_digitized=_ascii(tags.get("EXIF OffsetTimeDigitized")),
+    )
+
+
+def choose_digitized_fields(source: DigitizationSourceFields) -> DigitizedFields:
+    """Section 3.5: the three copied "digitized" fields follow whichever
+    source date was used to fill them — source `DateTimeOriginal` when
+    present, otherwise source `DateTimeDigitized`; `SubSecTime*` and
+    `OffsetTime*` follow the same choice. Never invent an offset for the
+    synthetic film time — an absent source offset stays absent."""
+    if source.date_time_original is not None:
+        return DigitizedFields(
+            date_time_digitized=source.date_time_original,
+            subsec_time_digitized=source.subsec_time_original,
+            offset_time_digitized=source.offset_time_original,
+        )
+    return DigitizedFields(
+        date_time_digitized=source.date_time_digitized,
+        subsec_time_digitized=source.subsec_time_digitized,
+        offset_time_digitized=source.offset_time_digitized,
     )
 
 

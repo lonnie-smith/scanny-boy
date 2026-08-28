@@ -28,6 +28,10 @@ def write_fake_nef(
     *,
     date_time_original: str | None = "2026:08:02 12:33:27",
     subsec_time_original: str | None = "77",
+    offset_time_original: str | None = None,
+    date_time_digitized: str | None = None,
+    subsec_time_digitized: str | None = None,
+    offset_time_digitized: str | None = None,
     exposure_time: tuple[int, int] | None = (1, 30),
     f_number: tuple[int, int] | None = (8, 1),
     iso: int | None = 100,
@@ -57,6 +61,26 @@ def write_fake_nef(
     if subsec_time_original is not None:
         exif_tags[EXIFTag.SubSecTimeOriginal.value] = {
             "data": subsec_time_original,
+            "datatype": tifftools.Datatype.ASCII,
+        }
+    if offset_time_original is not None:
+        exif_tags[EXIFTag.OffsetTimeOriginal.value] = {
+            "data": offset_time_original,
+            "datatype": tifftools.Datatype.ASCII,
+        }
+    if date_time_digitized is not None:
+        exif_tags[EXIFTag.DateTimeDigitized.value] = {
+            "data": date_time_digitized,
+            "datatype": tifftools.Datatype.ASCII,
+        }
+    if subsec_time_digitized is not None:
+        exif_tags[EXIFTag.SubSecTimeDigitized.value] = {
+            "data": subsec_time_digitized,
+            "datatype": tifftools.Datatype.ASCII,
+        }
+    if offset_time_digitized is not None:
+        exif_tags[EXIFTag.OffsetTimeDigitized.value] = {
+            "data": offset_time_digitized,
             "datatype": tifftools.Datatype.ASCII,
         }
     if exposure_time is not None:
