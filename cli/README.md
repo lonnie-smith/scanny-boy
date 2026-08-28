@@ -6,21 +6,20 @@ they test (`*_test.py`), run via pytest.
 ## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync
 ```
 
 ## Run
 
 ```bash
-scanny-boy scan /some/path
+uv run scanny-boy --help
 ```
 
 ## Test
 
 ```bash
-pytest
+uv run ruff check .
+uv run pytest
 ```
 
 ## Freeze for the macOS app

@@ -2,14 +2,26 @@
 name = "scanny-boy"
 version = "0.1.0"
 description = "Scanny Boy CLI"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "rawpy>=0.27,<0.28",
+    "numpy>=2.5,<3",
+    "tifffile>=2026.8.23,<2027",
+    "imagecodecs>=2026.8.16,<2027",
+    "exifread>=3.5,<4",
+    "tifftools>=1.7,<2",
+]
 
 [project.scripts]
 scanny-boy = "scanny_boy.cli:main"
 
-[project.optional-dependencies]
-dev = ["pytest", "pyinstaller"]
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "pyinstaller",
+]
 
 [build-system]
 requires = ["hatchling"]
