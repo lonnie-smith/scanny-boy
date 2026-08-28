@@ -1,10 +1,120 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ScanResult",
+  "title": "ScannyBoyEvent",
+  "description": "One line of stdout emitted by the scanny-boy CLI. See CONTRACT.md.",
   "type": "object",
-  "properties": {
-    "path": { "type": "string" },
-    "ok": { "type": "boolean" }
+  "definitions": {
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "started",
+        "probe_result",
+        "progress",
+        "item_done",
+        "group_done",
+        "group_failed",
+        "warning",
+        "error",
+        "finished"
+      ]
+    },
+    "pipelineStep": {
+      "type": "string",
+      "description": "One pipeline step, per the Vocabulary section of the implementation plan.",
+      "enum": ["decode", "write_tiff", "add_metadata"]
+    },
+    "code": {
+      "type": "string",
+      "description": "A stable error or warning code from CONTRACT.md.",
+      "enum": [
+        "NO_FILES",
+        "NON_CONTIGUOUS_SELECTION",
+        "NOT_DIVISIBLE",
+        "INVALID_PER_NEGATIVE",
+        "MISSING_CAPTURE_TIME",
+        "FILENAME_SORT_USED",
+        "UNSUPPORTED_RAW",
+        "CAPTURE_METADATA_MISSING",
+        "CAPTURE_SETTINGS_DIFFER",
+        "CAPTURE_SPAN_TOO_LONG",
+        "UNREADABLE_RAW",
+        "OUTPUT_SAME_AS_INPUT",
+        "OUTPUT_NOT_WRITABLE",
+        "OUTPUT_NOT_EMPTY",
+        "OUTPUT_CONFLICT",
+        "INSUFFICIENT_DISK",
+        "INSUFFICIENT_MEMORY",
+        "BAD_MANIFEST",
+        "MANIFEST_MISMATCH",
+        "ICC_PROFILE_INVALID",
+        "TIFF_WRITE_FAILED",
+        "CANCELLED"
+      ]
+    }
   },
-  "required": ["path", "ok"]
+  "required": ["protocol_version", "event"],
+  "properties": {
+    "protocol_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event": { "$ref": "#/definitions/eventType" },
+    "run_id": {
+      "type": "string",
+      "description": "Present when the event belongs to a conversion run."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "progress" } } },
+      "then": {
+        "required": ["source_index", "step", "completed", "total"],
+        "properties": {
+          "source_index": { "type": "integer", "minimum": 0 },
+          "step": { "$ref": "#/definitions/pipelineStep" },
+          "completed": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "error" } } },
+      "then": {
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "$ref": "#/definitions/code" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "warning" } } },
+      "then": {
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "$ref": "#/definitions/code" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "started" } } },
+      "then": {
+        "required": ["command"],
+        "properties": {
+          "command": { "type": "string", "enum": ["probe", "convert"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "finished" } } },
+      "then": {
+        "required": ["status", "exit_status"],
+        "properties": {
+          "status": { "type": "string" },
+          "exit_status": { "type": "integer" }
+        }
+      }
+    }
+  ]
 }
