@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.metadata
 import sys
 import uuid
 from collections.abc import Sequence
@@ -42,6 +43,15 @@ def _film_date(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scanny-boy")
+    # A diagnostic, not part of the event stream: it prints one plain-text
+    # line and exits 0. The app never calls it; the packaged checks of
+    # section 5.2 do, as the cheapest proof that the frozen bundle starts
+    # and can read its own package metadata.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"scanny-boy {importlib.metadata.version('scanny-boy')}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     probe = subparsers.add_parser(

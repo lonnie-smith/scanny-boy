@@ -38,6 +38,14 @@ probe result.
 selection above 5000 files with a usage error rather than letting the
 operating system truncate the argument list.
 
+### `--version`
+
+`scanny-boy --version` prints one plain-text line (`scanny-boy 0.1.0`) and
+exits 0. It is a diagnostic, not part of the event stream: the app never
+calls it, and it is the packaged build's cheapest check that the frozen
+program starts and can read its own package metadata. Every other
+invocation emits only JSON event lines on stdout.
+
 ### `--jobs`
 
 `--jobs` sets how many frames of one negative are converted at once;
