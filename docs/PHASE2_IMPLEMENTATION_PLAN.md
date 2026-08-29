@@ -273,11 +273,25 @@ is roughly `Wbbox + (N−1)(1−v)·W` wide. Worked examples at v = 0.25, θ = 5
 | 6 | 32,164 × 4,553 | 879 MB | 4.0 GB |
 | 12 | 68,548 × 4,553 | 1.87 GB | 8.6 GB |
 
+**The "Composite peak RAM" column is arithmetic under the formula this plan
+originally carried, and that formula turned out to be optimistic by about three
+times — see section 3.8.1, which measured a real three-frame stitch at 3.9 GiB
+against the 1.8 GB predicted here.** The column is left as written rather than
+restated, so there is one revised formula in section 3.8 and not two competing
+sets of numbers; multiply it by roughly 3.5 for what a machine actually needs.
+The conclusions below are unaffected, and the twelve-frame one is if anything
+firmer.
+
+Also worth knowing before reading the canvas column: appendix C found the real
+strips run **vertically**, so a canvas is about one frame wide and N frames
+tall rather than the other way round. The arithmetic is symmetric in the two
+axes, so every figure here still holds with the dimensions transposed.
+
 Two consequences the plan must handle rather than discover:
 
-- **A 12-frame negative is 68,548 px wide.** That exceeds the 30,000-pixel
-  limit most consumer editors impose on TIFF, and its peak memory is beyond
-  a 16 GB machine. Section 3.7 defines the guards.
+- **A 12-frame negative is 68,548 px on its long side.** That exceeds the
+  30,000-pixel limit most consumer editors impose on TIFF, and its peak memory
+  is beyond a 16 GB machine. Section 3.7 defines the guards.
 - Everything at the realistic end — three or four frames per negative — is
   comfortable, which is why section 3.6 composites the whole canvas at once
   instead of building a tiling engine nobody needs.
@@ -531,21 +545,99 @@ is enforced exactly as written.
 
 ### 3.8 Disk and memory arithmetic
 
+**Revised 2026-08-29 from Chunk P2-1's measurements. The original formula was
+optimistic by about three times and is superseded; 3.8.1 records what was wrong
+with it, because the reason is not obvious and will otherwise be reintroduced.**
+
 Composite peak memory, checked before allocating anything:
 
 ```text
 C          = canvas_width × canvas_height
-accum      = C × 3 × 4                  # float32 RGB weighted sum
-weight     = C × 4                      # float32 weight sum
-result     = C × 3 × 2                  # uint16 encoded output
-frame      = bbox_width × bbox_height × 3 × 4    # one warped frame
-mask       = bbox_width × bbox_height × 4
-peak_bytes = accum + weight + result + frame + mask
+F          = frame_width × frame_height          # one intermediate, full res
+B          = bbox_width × bbox_height            # one frame's warped bounding box
+
+accum      = C × 3 × 4      # float32 RGB weighted sum, live for the whole composite
+weight     = C × 4          # float32 weight sum, live for the whole composite
+result     = C × 3 × 2      # uint16 encoded output
+source     = F × 3 × 2 + F × 3 × 4    # the intermediate as read, plus its linear decode
+warped     = B × 3 × 4      # one warped frame
+warp_aux   = B × 4 + B × 2  # its feather weight, plus the warped and eroded masks
+
+per_frame  = max(source, warped + warp_aux)
+live_bytes = max(accum + weight + per_frame, accum + result)
+peak_bytes = ceil(live_bytes × MEMORY_SAFETY_FACTOR)
 ```
+
+`MEMORY_SAFETY_FACTOR` is **3.5**, and it is not padding — see 3.8.1.
 
 `peak_bytes` must not exceed **half of physical RAM**, the same ceiling
 Phase 1's section 3.8 applies to its worker budget. Over that, fail with
 `INSUFFICIENT_MEMORY` reporting both numbers.
+
+#### 3.8.1 Why the factor exists, and why it is not padding
+
+The original formula summed `accum + weight + result + frame + mask` and was
+wrong in three ways. Chunk P2-1 measured a real three-frame stitch at
+**4460–5307 MiB against a predicted 1345–1775 MiB**, a ratio of 2.5 to 3.4.
+
+- **It omitted the source frame entirely.** `cv2.warpAffine` needs the whole
+  decoded frame resident — it cannot be banded — so a 6064×4040 intermediate is
+  140 MiB of `uint16` plus 280 MiB of `float32` at once. That is 420 MiB the
+  formula did not count, and on a three-frame negative it is a third of the
+  live total.
+- **It summed two moments that never coexist.** `result` is allocated after the
+  last frame is released, so `result` and `warped` are never live together.
+  Taking the maximum of the two moments, as the formula above now does, is both
+  more accurate and slightly smaller — which is why fixing the omission alone
+  would not have been enough.
+- **It assumed resident memory tracks live bytes. It does not.** This is the
+  large term and the non-obvious one. NumPy does not return freed arenas to the
+  operating system, so resident memory tracks the *sum* of successive phases'
+  allocations rather than the largest. Measured directly: after feature
+  detection has decoded three intermediates and freed them, allocating just the
+  two canvas arrays — 793 MiB of live data — reaches **2041 MiB resident, 2.57
+  times nominal**, before a single frame has been warped. The interpreter with
+  NumPy, OpenCV, rawpy and tifffile imported is only 68 MiB, so this is
+  allocator behaviour and not a fixed baseline; that is why the correction is
+  multiplicative rather than an added constant.
+
+The factor is calibrated against a **deliberately lean** composite — the source
+`uint16` freed the moment it is decoded, an in-place `warped *= weight` with no
+product temporary, a banded encode, and no preview pass — so it measures what a
+careful implementation costs, not what a spike costs. Chunk P2-1's own script,
+which does keep a product temporary and writes a JPEG preview, peaks about a
+third higher again.
+
+| negative | canvas | live_bytes | measured peak RSS | ratio |
+| --- | --- | --- | --- | --- |
+| normal | 6144x8458 | 1224 MiB | 3896 MiB | 3.18x |
+| wonky | 6539x8267 | 1363 MiB | 3851 MiB | 2.82x |
+| order | 6147x7480 | 1129 MiB | 3584 MiB | 3.17x |
+| tight | 6183x10735 | 1443 MiB | 3872 MiB | 2.68x |
+
+3.5 is the worst observed ratio plus about 10%. Being wrong in either direction
+costs something real, which is why it is not simply rounded up to 4: too low and
+a negative is admitted that will swap or be killed, too high and
+`INSUFFICIENT_MEMORY` refuses work the machine could have done.
+
+Against the four measured negatives the revised formula predicts 3952–5052 MiB
+where 3584–3896 MiB was measured: **never under, and over by 10% to 30%.**
+
+Extending it along a vertical strip at the overlap `normal` actually exhibits:
+
+| Frames | Canvas | `live_bytes` | `peak_bytes` | On a 16 GB machine |
+| --- | --- | --- | --- | --- |
+| 3 | 6144 × 8458 | 1.19 GiB | 4.18 GiB | admitted |
+| 6 | 6144 × 14,984 | 1.79 GiB | 6.27 GiB | admitted |
+| 12 | 6144 × 28,038 | 2.99 GiB | 10.46 GiB | refused |
+
+Which is what section 2.4 said all along — and what the original formula, putting
+twelve frames at 3.90 GiB, would have waved straight through.
+
+**Re-measure this factor whenever the composite's allocation pattern changes**,
+with `scripts/measure-registration.py` and the lean-composite method above,
+rather than adjusting it by feel. A safety factor nobody can reproduce is the
+thing this section was already wrong about once.
 
 Free space for the stitch stage, in the style of Phase 1's section 3.9:
 
@@ -1199,10 +1291,11 @@ records why and what Chunk P2-4 does instead. Section 3.12.1 records what each
 value is anchored to, and 3.12.2 the four that are weaker than their table
 suggests. **Chunk P2-2 is unblocked.**
 
-Two findings from Chunk P2-1 remain open and are *not* settled by this gate:
-section 3.8's memory formula underestimates measured peak RSS by 2.5–3.4x
-(appendix B), and the ICC profile in Phase 1's output declares a transfer curve
-its pixels do not use (`punchlist.md`). Neither blocks P2-2.
+Two findings from Chunk P2-1 were not settled by this gate itself. **Section
+3.8's optimistic memory formula has since been revised** — see 3.8.1, which
+records the measurements and the corrections. The ICC profile in Phase 1's
+output still declares a transfer curve its pixels do not use; that is Phase 1
+pixel output and stays on `punchlist.md`. Neither blocks P2-2.
 
 ---
 
@@ -1547,6 +1640,7 @@ FILL_COLOR: tuple[int, int, int] = (0, 0, 0)   # section 3.3: one constant, one 
 MASK_ERODE_PX = 5                              # Lanczos4 support radius 4, plus one
 MAX_CANVAS_DIMENSION = 30_000                  # warn above this
 MAX_STITCHED_BYTES = int(3.5 * 1024**3)        # fail above this
+MEMORY_SAFETY_FACTOR = 3.5                     # section 3.8.1; measured, not padding
 
 @dataclasses.dataclass(frozen=True)
 class CompositeResult:
@@ -1555,8 +1649,13 @@ class CompositeResult:
     overlap_fraction: dict[tuple[str, str], float]
     coverage_fraction: float
 
-def estimate_peak_bytes(canvas_size, frame_bbox_size) -> int:
-    """Section 3.8's formula, exactly."""
+def estimate_peak_bytes(canvas_size, frame_size, frame_bbox_size) -> int:
+    """Section 3.8's revised formula, exactly, including MEMORY_SAFETY_FACTOR.
+
+    `frame_size` is (height, width) at full resolution — the revised formula
+    needs it because the decoded source frame has to be resident for
+    cv2.warpAffine and the original formula omitted it (section 3.8.1).
+    """
 
 def check_memory_budget(peak_bytes: int) -> None:
     """Raises StitchError(INSUFFICIENT_MEMORY, ...) reporting both numbers
@@ -1626,6 +1725,13 @@ there is nothing to reconcile.
   undershoot, caught permanently.
 - `test_uncovered_pixels_are_exactly_fill_color`
 - `test_memory_estimate_rejects_an_impossible_canvas` — before allocating.
+- `test_peak_estimate_counts_the_source_frame_and_the_safety_factor` — the
+  guard on section 3.8.1's two corrections, both of which are invisible in
+  normal operation and would only surface as a swapping machine. Assert that
+  the estimate scales with `frame_size` at a fixed canvas and bounding box,
+  and that it equals `MEMORY_SAFETY_FACTOR` times the unmultiplied live-bytes
+  sum. An implementation that quietly reverts to the original formula must
+  fail this.
 - `test_oversized_canvas_warns` and `test_oversized_file_fails` — both with
   a **stubbed canvas size**; never allocate gigabytes in a test.
 - `stitched_tiff_test.py::test_matches_every_phase_one_tiff_rule` — three
@@ -2075,9 +2181,18 @@ nothing.
   by the pin. Revisit only if Chunk P2-1 chooses SIFT or ORB.
 - **Lanczos undershoot.** Measured at −0.088 (section 2.3). Answered by a
   mandatory clamp and a permanent test.
-- **Memory on a large negative.** Section 2.4's table shows 12 frames needs
-  8.6 GB. Answered by an up-front estimate and `INSUFFICIENT_MEMORY`, not by
-  discovering it during a run.
+- **Memory on a large negative — the estimate itself was the risk, and it
+  materialised.** Section 2.4's arithmetic put twelve frames at 8.6 GB, and
+  Chunk P2-1 measured a *three*-frame stitch at 3.9 GiB against a predicted
+  1.5. The guard was real but the number behind it was optimistic by about
+  three times, so it would have admitted negatives the machine could not hold.
+  Answered by section 3.8's revised formula, which counts the decoded source
+  frame the original omitted and multiplies by a measured
+  `MEMORY_SAFETY_FACTOR` for allocator retention, and by
+  `test_peak_estimate_counts_the_source_frame_and_the_safety_factor` in Chunk
+  P2-5 so neither correction can quietly regress. The lesson worth keeping: an
+  up-front estimate is only a guard if the estimate is calibrated, and this one
+  was arithmetic that had never been checked against a running process.
 - **File-size and dimension limits.** A wide negative produces a TIFF most
   editors will not open. Answered by `OUTPUT_DIMENSIONS_LARGE` and
   `STITCH_OUTPUT_TOO_LARGE` rather than by writing it and hoping.
