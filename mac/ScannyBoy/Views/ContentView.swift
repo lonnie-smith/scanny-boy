@@ -204,6 +204,29 @@ struct ContentView: View {
         model.inputFolder = url
     }
 
+    /// Section 3.2's "the last folder the user opened" persists across
+    /// launches (`ConfigurationModel` stores it in `UserDefaults`), but the
+    /// folder itself can vanish in the meantime — an external drive
+    /// unmounted, a folder renamed or deleted. Rather than open the panel
+    /// somewhere unrelated, walk up the path to the nearest ancestor that
+    /// still exists, since that's still meaningfully "close to" where the
+    /// user was.
+    nonisolated static func closestExistingAncestor(of url: URL?) -> URL? {
+        guard var candidate = url else { return nil }
+        while !isDirectory(candidate) {
+            let parent = candidate.deletingLastPathComponent()
+            guard parent != candidate else { return nil }
+            candidate = parent
+        }
+        return candidate
+    }
+
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+        return exists && isDir.boolValue
+    }
+
     private func chooseOutputFolder() {
         // The output folder for a roll of film usually does not exist yet, so
         // the panel offers "New Folder" and starts inside whichever folder
@@ -231,7 +254,7 @@ struct ContentView: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = canCreateDirectories
-        panel.directoryURL = url
+        panel.directoryURL = closestExistingAncestor(of: url)
         if let message {
             panel.message = message
         }
