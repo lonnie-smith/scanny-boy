@@ -10,6 +10,7 @@ dependencies = [
     "imagecodecs>=2026.8.16,<2027",
     "exifread>=3.5,<4",
     "tifftools>=1.7,<2",
+    "opencv-python-headless>=4.14,<5",
 ]
 
 [project.scripts]

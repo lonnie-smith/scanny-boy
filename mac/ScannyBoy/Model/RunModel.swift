@@ -251,7 +251,9 @@ final class RunModel {
             if let code = event.code, let message = event.message {
                 cliError = Issue(code: code, message: message)
             }
-        case .started, .probeResult, .finished, .unknown:
+        case .started, .probeResult, .finished, .negativeDone, .negativeFailed, .unknown:
+            // negativeDone/negativeFailed handling lands with the stitch-stage UI
+            // in a later Phase 2 chunk; this chunk only reserves the protocol.
             break
         }
     }

@@ -55,6 +55,14 @@ extension JSONValue {
         return nil
     }
 
+    public var doubleValue: Double? {
+        switch self {
+        case .double(let value): value
+        case .int(let value): Double(value)
+        default: nil
+        }
+    }
+
     public var arrayValue: [JSONValue]? {
         if case .array(let value) = self { return value }
         return nil

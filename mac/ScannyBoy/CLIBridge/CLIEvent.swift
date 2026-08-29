@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 1
+    public static let supportedProtocolVersion = 2
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -28,6 +28,8 @@ public struct CLIEvent: Sendable, Hashable {
         case warning
         case error
         case finished
+        case negativeDone
+        case negativeFailed
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -43,6 +45,8 @@ public struct CLIEvent: Sendable, Hashable {
             case "warning": self = .warning
             case "error": self = .error
             case "finished": self = .finished
+            case "negative_done": self = .negativeDone
+            case "negative_failed": self = .negativeFailed
             default: self = .unknown(name)
             }
         }
@@ -58,6 +62,8 @@ public struct CLIEvent: Sendable, Hashable {
             case .warning: "warning"
             case .error: "error"
             case .finished: "finished"
+            case .negativeDone: "negative_done"
+            case .negativeFailed: "negative_failed"
             case .unknown(let name): name
             }
         }
@@ -121,6 +127,8 @@ extension CLIEvent {
     public var completed: Int? { fields["completed"]?.intValue }
     public var total: Int? { fields["total"]?.intValue }
     public var output: String? { fields["output"]?.stringValue }
+    // `progress`
+    public var stage: String? { fields["stage"]?.stringValue }
 
     // `group_done` and `group_failed`
     public var groupID: String? { fields["group_id"]?.stringValue }

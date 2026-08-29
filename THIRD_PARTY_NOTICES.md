@@ -26,6 +26,16 @@ Embedded in every TIFF Scanny Boy writes, at
 - SHA-256: `090daf740c136b4a63bf979d64f034b4a65aa5abbb04a0917729222afe2bb5c2`
   (verified at startup by `scanny_boy.icc_profile`).
 
+## OpenCV
+
+Used at build time and runtime for feature detection, matching, and image
+warping, via the `opencv-python-headless` Python package.
+
+- Project: <https://opencv.org/>
+- Licence: Apache License 2.0.
+- No modifications have been made to OpenCV's source.
+
 Python runtime dependencies (`rawpy`, `numpy`, `tifffile`, `imagecodecs`,
-`exifread`, `tifftools`, and their own dependencies) are used under their
-respective upstream licences and are not relicensed by this project.
+`exifread`, `tifftools`, `opencv-python-headless`, and their own
+dependencies) are used under their respective upstream licences and are not
+relicensed by this project.

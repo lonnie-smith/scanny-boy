@@ -1,6 +1,7 @@
 import json
 
 from scanny_boy.events import (
+    PROTOCOL_VERSION,
     Code,
     ErrorEvent,
     Event,
@@ -9,9 +10,12 @@ from scanny_boy.events import (
     GroupDone,
     GroupFailed,
     ItemDone,
+    NegativeDone,
+    NegativeFailed,
     PipelineStep,
     ProbeResult,
     Progress,
+    Stage,
     Started,
     WarningEvent,
 )
@@ -41,6 +45,21 @@ ALL_EVENTS: list[Event] = [
         group_id="group-0",
         code=Code.TIFF_WRITE_FAILED,
         message="disk full",
+        run_id="run-1",
+    ),
+    NegativeDone(
+        negative_id="negative-0",
+        output="_DSC4638.tif",
+        width=13972,
+        height=4553,
+        global_rms_px=1.12,
+        max_overlap_mad=0.004,
+        run_id="run-1",
+    ),
+    NegativeFailed(
+        negative_id="negative-0",
+        code=Code.STITCH_UNDERCONSTRAINED,
+        message="frame not reachable from any other frame",
         run_id="run-1",
     ),
     WarningEvent(code=Code.FILENAME_SORT_USED, message="fell back to filenames"),
@@ -112,3 +131,60 @@ def test_event_writer_line_is_valid_json_per_write():
     assert len(lines) == 1
     parsed = json.loads(lines[0])
     assert parsed["step"] == "write_tiff"
+
+
+def test_protocol_version_is_two():
+    assert PROTOCOL_VERSION == 2
+
+
+def test_negative_done_round_trips():
+    event = NegativeDone(
+        negative_id="negative-0",
+        output="_DSC4638.tif",
+        width=13972,
+        height=4553,
+        global_rms_px=1.12,
+        max_overlap_mad=0.004,
+        run_id="run-1",
+    )
+    data = event.to_dict()
+    assert data["event"] == "negative_done"
+    assert data["negative_id"] == "negative-0"
+    assert data["output"] == "_DSC4638.tif"
+    assert data["width"] == 13972
+    assert data["height"] == 4553
+    assert data["global_rms_px"] == 1.12
+    assert data["max_overlap_mad"] == 0.004
+    assert json.loads(json.dumps(data)) == data
+
+
+def test_negative_failed_round_trips():
+    event = NegativeFailed(
+        negative_id="negative-0",
+        code=Code.STITCH_UNDERCONSTRAINED,
+        message="frame not reachable from any other frame",
+        run_id="run-1",
+    )
+    data = event.to_dict()
+    assert data["event"] == "negative_failed"
+    assert data["negative_id"] == "negative-0"
+    assert data["code"] == "STITCH_UNDERCONSTRAINED"
+    assert data["message"] == "frame not reachable from any other frame"
+    assert json.loads(json.dumps(data)) == data
+
+
+def test_progress_defaults_to_convert_stage():
+    event = Progress(source_index=0, step=PipelineStep.DECODE, completed=1, total=6)
+    assert event.stage == Stage.CONVERT
+    assert event.to_dict()["stage"] == "convert"
+
+
+def test_progress_carries_stitch_stage():
+    event = Progress(
+        source_index=0,
+        step=PipelineStep.WARP,
+        completed=1,
+        total=6,
+        stage=Stage.STITCH,
+    )
+    assert event.to_dict()["stage"] == "stitch"

@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 class EventType(enum.StrEnum):
@@ -24,12 +24,26 @@ class EventType(enum.StrEnum):
     WARNING = "warning"
     ERROR = "error"
     FINISHED = "finished"
+    NEGATIVE_DONE = "negative_done"
+    NEGATIVE_FAILED = "negative_failed"
+
+
+class Stage(enum.StrEnum):
+    CONVERT = "convert"
+    STITCH = "stitch"
 
 
 class PipelineStep(enum.StrEnum):
     DECODE = "decode"
     WRITE_TIFF = "write_tiff"
     ADD_METADATA = "add_metadata"
+    LOAD = "load"
+    DETECT = "detect"
+    MATCH = "match"
+    SOLVE = "solve"
+    WARP = "warp"
+    BLEND = "blend"
+    WRITE_STITCHED = "write_stitched"
 
 
 class Code(enum.StrEnum):
@@ -57,6 +71,20 @@ class Code(enum.StrEnum):
     ICC_PROFILE_INVALID = "ICC_PROFILE_INVALID"
     TIFF_WRITE_FAILED = "TIFF_WRITE_FAILED"
     CANCELLED = "CANCELLED"
+    WORK_SAME_AS_OUTPUT = "WORK_SAME_AS_OUTPUT"
+    WORK_MANIFEST_UNUSABLE = "WORK_MANIFEST_UNUSABLE"
+    INTERMEDIATE_MISSING = "INTERMEDIATE_MISSING"
+    INTERMEDIATE_CHANGED = "INTERMEDIATE_CHANGED"
+    STITCH_INSUFFICIENT_MATCHES = "STITCH_INSUFFICIENT_MATCHES"
+    STITCH_UNDERCONSTRAINED = "STITCH_UNDERCONSTRAINED"
+    STITCH_RESIDUAL_TOO_HIGH = "STITCH_RESIDUAL_TOO_HIGH"
+    STITCH_OUTPUT_TOO_LARGE = "STITCH_OUTPUT_TOO_LARGE"
+    STITCH_FAILED = "STITCH_FAILED"
+    STITCH_SCALE_DRIFT = "STITCH_SCALE_DRIFT"
+    STITCH_LAYOUT_UNEXPECTED = "STITCH_LAYOUT_UNEXPECTED"
+    STITCH_REBATE_CHECK_FAILED = "STITCH_REBATE_CHECK_FAILED"
+    OUTPUT_DIMENSIONS_LARGE = "OUTPUT_DIMENSIONS_LARGE"
+    INTERMEDIATES_KEPT = "INTERMEDIATES_KEPT"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -123,6 +151,7 @@ class Progress(Event):
     step: PipelineStep
     completed: int
     total: int
+    stage: Stage = Stage.CONVERT
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -145,6 +174,27 @@ class GroupFailed(Event):
     event_type: ClassVar[EventType] = EventType.GROUP_FAILED
 
     group_id: str
+    code: Code
+    message: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativeDone(Event):
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_DONE
+
+    negative_id: str
+    output: str
+    width: int
+    height: int
+    global_rms_px: float
+    max_overlap_mad: float
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativeFailed(Event):
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_FAILED
+
+    negative_id: str
     code: Code
     message: str
 
