@@ -1,7 +1,9 @@
 # Scanny Boy — Phase 2 implementation plan
 
 **Written:** 2026-08-29
-**Status:** awaiting user gate B (sample scans) before Chunk P2-1.
+**Status:** Chunk P2-0 merged. Chunk P2-1 **blocked on user gate B** (sample
+scans); its ROMM gate was discharged early and produced section 2.3.1's
+user-approved amendment to the colour path.
 
 This plan is authoritative for Phase 2 the way
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) is authoritative for
@@ -169,8 +171,88 @@ What this establishes, and what it does not:
   mistake.
 
   This proves the LUT pair is self-consistent. It does **not** prove that
-  rawpy's `gamma=(1.8, 16)` output actually follows this curve — Chunk P2-1
-  must check that against a real intermediate TIFF.
+  rawpy's `gamma=(1.8, 16)` output actually follows this curve — and **it does
+  not**. See section 2.3.1, which supersedes the curve above.
+
+#### 2.3.1 rawpy's curve is LibRaw's, not ROMM's — **user-approved amendment**
+
+Measured on 2026-08-29 against a real intermediate, after the check above was
+found to be incapable of detecting this: a decode/re-encode round trip tests a
+LUT pair against *itself*, and returns 0 LSB for any monotonic invertible
+curve whether or not it is the curve rawpy applied.
+
+Checked directly instead, by decoding one NEF twice with identical
+`RAW_PARAMS` except for `gamma` — once at `(1.8, 16)` and once at `(1, 1)` —
+and comparing rawpy's encoded output against the ROMM formula applied to
+rawpy's own linear output:
+
+```text
+max  |ROMM(linear) - rawpy_romm| : 410 LSB
+mean |ROMM(linear) - rawpy_romm| : 293.872 LSB
+pixels differing by > 1 LSB      : 73495679 of 73495680
+```
+
+**rawpy's `gamma=(1.8, 16)` applies LibRaw's generalised `gamma_curve`, which
+is not the ROMM curve.** That curve reproduces the observed output to within
+rounding — maximum 1 LSB, mean 0.35 LSB over 2,000,000 sampled pixels, against
+406 LSB for ROMM — so the identification is not in doubt. **(measured)**
+
+It differs from ROMM in both breakpoints and carries an offset term ROMM does
+not have at all:
+
+| | LibRaw's actual curve | ROMM |
+| --- | --- | --- |
+| power | 1 / 1.8 | 1 / 1.8 |
+| toe slope | 16 | 16 |
+| linear-domain breakpoint | 0.000528388761 | 0.001953125 |
+| encoded-domain breakpoint | 0.008454220179 | 0.03125 |
+| offset term | 0.006763376143 | none |
+
+The three derived values come from the bisection LibRaw performs on the power
+and slope it is given, which converges in 48 iterations:
+
+```python
+bnd = [0.0, 1.0]                       # because slope >= 1
+for _ in range(48):
+    g2 = (bnd[0] + bnd[1]) / 2
+    high = (pow(g2 / slope, -power) - 1) / power - 1 / g2 > -1
+    bnd[1 if high else 0] = g2
+encoded_breakpoint = g2                        # 0.008454220179
+linear_breakpoint  = g2 / slope                # 0.000528388761
+offset             = g2 * (1 / power - 1)      # 0.006763376143
+```
+
+Consequence, and why this mattered enough to amend a locked section: applying
+the ROMM formula to a real intermediate does **not** produce linear light. Against
+rawpy's own linear decode of the same frame it is off by **12.901% at worst
+and 3.149% on average**, median 3.548%, 99th percentile 6.330%. **(measured)**
+
+**The curve Phase 2 uses is therefore LibRaw's, in both directions.** It keeps
+every guarantee the ROMM pair offered and adds the one it lacked:
+
+```text
+exhaustive round trip over all 65,536 codes : 0 LSB, 0 codes changed
+LUT monotonic non-decreasing                 : True
+lut[0] = 0.0, lut[65535] = 1.0
+max  relative error vs true linear light     : 0.0271 %
+mean relative error vs true linear light     : 0.0039 %
+```
+
+The residual 0.027% is 16-bit quantisation, nothing more. **(measured)**
+
+Two things this does not change. The round trip is still bit-exact, so
+overlapping pixels that agree between two frames survive the blend untouched
+and the stitch itself is barely affected either way. And Phase 1's pixel
+output is **not** touched: `RAW_PARAMS` keeps `gamma=(1.8, 16)`, `convert`
+keeps its exact meaning, and every Phase 1 test keeps passing. Only Phase 2's
+interpretation of those codes changes.
+
+One consequence belongs to a later phase and is recorded here rather than
+fixed: Phase 1 embeds `ProPhoto-v4.icc`, whose transfer curve is true ROMM
+with the 0.03125 encoded breakpoint, in files whose pixels use LibRaw's curve.
+A viewer honouring the profile renders them slightly wrong — around 360 LSB at
+a linear value of 0.05. It is Phase 1 pixel output, it is out of Phase 2's
+scope, and it is on `punchlist.md`.
 
 ### 2.4 Size and memory arithmetic
 
@@ -245,11 +327,14 @@ plan; they are marked as such.
 ### 3.3 Colour, resampling, and blending
 
 - All geometric and photometric work happens in **linear light**. Decode
-  ROMM to linear `float32` before warping, blending, or comparing anything;
-  encode back to 16-bit ROMM once, at the end. Phase 1's section 3.4
-  requires this and section 2.3 above proves the round trip is exact.
-- Use the section 2.3 formulas, implemented as a **65,536-entry `float32`
-  lookup table** for decode. Do not call `numpy.power` per pixel.
+  to linear `float32` before warping, blending, or comparing anything;
+  encode back to 16-bit once, at the end. Phase 1's section 3.4
+  requires this and section 2.3.1 proves the round trip is exact.
+- Use the **section 2.3.1** formulas — LibRaw's curve, not ROMM's —
+  implemented as a **65,536-entry `float32` lookup table** for decode. Do not
+  call `numpy.power` per pixel. **(user-approved amendment; section 2.3's
+  ROMM formulas are superseded and must not be used, because they are off
+  true linear light by 3.1% on average.)**
 - Warp with `INTER_LANCZOS4` on `float32`, `BORDER_CONSTANT`, border value
   0. **Clamp the result to `>= 0` immediately after warping** (section 2.3).
 - Warp each frame into **its own bounding box**, not into the full canvas,
@@ -933,12 +1018,14 @@ perpendicular deviation between frames' rebate lines in canvas pixels.
 `blend_seconds`, `write_seconds`, `total_seconds`, `peak_rss_mib`. Measure
 peak RSS the same way `measure-concurrency.py` does.
 
-**The ROMM check, which is a gate and not a table.** Decode one real
-intermediate with the section 2.3 formulas and re-encode it. Report the
-maximum absolute difference in LSB and the count of changed pixels.
-**If the maximum is not 0, stop the chunk and report.** rawpy's gamma is then
-not the ROMM curve, section 3.3 rests on a false premise, and the user must
-decide before anything downstream is built.
+**The ROMM check, which is a gate and not a table — DISCHARGED 2026-08-29.**
+Done ahead of the rest of the chunk, because it needed no gate-B scans. The
+round trip specified here passed on a real intermediate at 0 LSB and 0 of
+73,495,680 pixels changed, **and that turned out to prove nothing**: a round
+trip tests a LUT pair against itself. Checked properly, rawpy's
+`gamma=(1.8, 16)` is **not** the ROMM curve. The finding, the measurements,
+and the user-approved replacement curve are in **section 2.3.1**; section 3.3
+and Chunk P2-2 are amended accordingly. Nothing further is owed here.
 
 **Also produce:** one stitched negative rendered to a file the user can open,
 using the best settings found. This is what they look at.
@@ -985,13 +1072,16 @@ Branch: `p2-chunk-02-color-detection` · **Model: Sonnet 5**
 **New files:** `cli/src/scanny_boy/romm.py`, `romm_test.py`,
 `detection.py`, `detection_test.py`. Change nothing else.
 
-**`romm.py` — exact contents:**
+**`romm.py` — exact contents.** The module keeps its name and both function
+names; only the curve changed, per section 2.3.1's user-approved amendment.
+`CURVE_OFFSET` is the one constant that amendment added:
 
 ```python
 ROMM_GAMMA = 1.8
 ROMM_SLOPE = 16.0
-ENCODED_BREAKPOINT = 0.03125        # in the ENCODED domain
-LINEAR_BREAKPOINT = 0.001953125     # in the LINEAR domain
+ENCODED_BREAKPOINT = 0.008454220179     # in the ENCODED domain
+LINEAR_BREAKPOINT = 0.000528388761      # in the LINEAR domain
+CURVE_OFFSET = 0.006763376143           # LibRaw's g[4]; ROMM has no such term
 MAX_CODE = 65535
 
 DECODE_LUT: np.ndarray              # (65536,) float32, built once at import
@@ -1001,7 +1091,7 @@ def decode_to_linear(image: np.ndarray) -> np.ndarray:
     Never calls numpy.power per pixel."""
 
 def encode_from_linear(image: np.ndarray) -> np.ndarray:
-    """float32 linear -> uint16 ROMM. Clamps to [0, 1] first, then rounds
+    """float32 linear -> uint16. Clamps to [0, 1] first, then rounds
     with numpy.rint."""
 ```
 
@@ -1009,9 +1099,14 @@ The two curves, each using the breakpoint in its own domain — swapping them
 is the mistake Phase 1's section 3.4 documents:
 
 ```text
-decode:  L = E / 16.0          if E <  0.03125       else E ** 1.8
-encode:  E = L * 16.0          if L <  0.001953125   else L ** (1 / 1.8)
+decode:  L = E / 16.0   if E < 0.008454220179   else ((E + 0.006763376143) / 1.006763376143) ** 1.8
+encode:  E = L * 16.0   if L < 0.000528388761   else L ** (1 / 1.8) * 1.006763376143 - 0.006763376143
 ```
+
+The three literals are the bisection results recorded in section 2.3.1. Write
+them as constants with that section cited, and do **not** substitute ROMM's
+0.03125 and 0.001953125: those are the superseded curve, and section 2.3.1
+measures the resulting error at 3.149% of linear light.
 
 **`detection.py` — exact contents:**
 
@@ -1044,10 +1139,19 @@ def to_full_resolution(points: np.ndarray, scale: float) -> np.ndarray:
 - `romm_test.py::test_round_trip_is_exact_on_a_real_intermediate` — skips
   clearly without sample NEFs.
 - `romm_test.py::test_encoded_breakpoint_is_handled` — codes straddling
-  `0.03125 * 65535` decode on the correct branch.
+  `ENCODED_BREAKPOINT * 65535` decode on the correct branch.
 - `romm_test.py::test_linear_breakpoint_is_handled` — linear values
-  straddling `0.001953125` encode on the correct branch. **These two exist
-  because a test using only mid-tones passes with the breakpoints swapped.**
+  straddling `LINEAR_BREAKPOINT` encode on the correct branch. **These two
+  exist because a test using only mid-tones passes with the breakpoints
+  swapped.**
+- `romm_test.py::test_decode_recovers_rawpy_linear_output` — **the test whose
+  absence let section 2.3's wrong curve stand.** Decode one NEF twice with
+  identical `RAW_PARAMS` except `gamma`, once at `(1.8, 16)` and once at
+  `(1, 1)`; `decode_to_linear` of the first must match the second within
+  0.05% relative error (section 2.3.1 measures 0.0271% worst case, and the
+  superseded ROMM curve would fail this at 12.901%). A round trip cannot
+  catch this, because it tests the LUT pair against itself. Skips clearly
+  without sample NEFs.
 - `romm_test.py::test_decode_is_monotonic_and_maps_endpoints` — 0 → 0.0,
   65535 → 1.0, and `numpy.diff(DECODE_LUT) >= 0` everywhere.
 - `romm_test.py::test_encode_clamps_out_of_range_input` — −0.5 → 0,
@@ -1781,8 +1885,10 @@ stopping costs a rewrite.
 but the reconsideration is broader than approving numbers. Three findings
 would change the plan itself rather than fill in a blank:
 
-- the ROMM round trip is not exact on real rawpy output — section 3.3 rests
-  on a false premise and the whole colour path needs rethinking;
+- ~~the ROMM round trip is not exact on real rawpy output~~ — **settled
+  2026-08-29, ahead of the gate.** The round trip *is* exact, but rawpy's
+  curve is not ROMM's; section 2.3.1 records the measurement and the approved
+  replacement, and sections 3.3 and P2-2 are amended. No longer open;
 - no detector clears the gates on real negatives — the fallbacks in section
   8 (rebate edges, phase correlation) come off the shelf, and sections 3.2
   and 3.4 change with them;
@@ -1834,9 +1940,14 @@ nothing.
 - **File-size and dimension limits.** A wide negative produces a TIFF most
   editors will not open. Answered by `OUTPUT_DIMENSIONS_LARGE` and
   `STITCH_OUTPUT_TOO_LARGE` rather than by writing it and hoping.
-- **rawpy's gamma may not be exactly the ROMM curve.** The LUT round trip is
-  proved exact in the abstract (section 2.3) but not yet against real rawpy
-  output. Chunk P2-1 checks it and **stops** if it differs.
+- **rawpy's gamma is not the ROMM curve — CONFIRMED and RESOLVED 2026-08-29.**
+  It applies LibRaw's generalised `gamma_curve`, which differs in both
+  breakpoints and adds an offset term. Measured, and answered by section
+  2.3.1's replacement curve, which round-trips bit-exactly *and* lands within
+  0.0271% of true linear light. The lesson worth keeping: the round trip this
+  plan originally specified could not have detected it, so
+  `test_decode_recovers_rawpy_linear_output` in Chunk P2-2 is the permanent
+  guard, not the round-trip test.
 - **Thresholds calibrated on too little data.** Five negatives is a small
   sample. The roll manifest records every metric on every run, so the
   thresholds can be revisited against accumulated real evidence rather than
