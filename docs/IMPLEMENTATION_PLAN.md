@@ -1181,7 +1181,10 @@ xcodebuild test \
 
 **Branch:** `chunk-09-configuration-ui`
 
-**Status:** Not started.
+**Status:** Complete on `chunk-09-configuration-ui`, PR #10; add the landing
+commit here when it merges. `probe --out` had no backend behind it before
+this chunk despite section 4.1 describing it — that gap is closed here too
+(see the PR body for detail), since Chunk 9's own Do list needs it.
 
 Do:
 
