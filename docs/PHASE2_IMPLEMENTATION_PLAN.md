@@ -1,10 +1,10 @@
 # Scanny Boy — Phase 2 implementation plan
 
 **Written:** 2026-08-29
-**Status:** Chunk P2-0 merged. User gate B satisfied. Chunk P2-1 complete —
-appendices B and C are written and it proposes section 3.12's constants.
-**Awaiting user gate C.** Along the way P2-1 produced section 2.3.1's
-user-approved amendment to the colour path.
+**Status:** Chunks P2-0 and P2-1 merged. User gates B and C both satisfied, so
+section 3.12 is filled in and locked and **Chunk P2-2 is next**. Along the way
+P2-1 produced section 2.3.1's user-approved amendment to the colour path, and
+left two findings open that section 3.12.2 and the gate C entry name.
 
 This plan is authoritative for Phase 2 the way
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) is authoritative for
@@ -406,12 +406,17 @@ Per negative:
   something that is not a strip. Emits `STITCH_LAYOUT_UNEXPECTED` as a
   **warning**, not a failure.
 
-**Every threshold named above is set in Chunk P2-1 from measurements on real
-scans, and nowhere else.** They live in **section 3.12**, which is empty
-until user gate C fills it, and production code reads them from there and
-from nowhere else. Do not invent a plausible-looking number and move on; a
-threshold calibrated against nothing is worse than no threshold, because it
-looks like a guarantee.
+**Every threshold named above was set in Chunk P2-1 from measurements on real
+scans, and nowhere else.** They live in **section 3.12**, approved at user gate
+C, and production code reads them from there and from nowhere else. Do not
+invent a plausible-looking number and move on; a threshold calibrated against
+nothing is worse than no threshold, because it looks like a guarantee.
+
+One of them could not be set at all. `rebate_deviation_px` is **recorded as
+`null` and never gated in Phase 2**, because Chunk P2-1's assessment found the
+rebate is not cleanly detectable with a generic straight-edge finder — which is
+the assessment this section already made a precondition of ever promoting it.
+Section 3.12.2 has the detail and the consequence for Chunk P2-4.
 
 ### 3.5 Failure, cancellation, and cleanup
 
@@ -646,35 +651,150 @@ arguments, and the two-pass `tifftools` write for the nested EXIF directory.
 
 ### 3.12 Measured constants
 
-**Empty until user gate C.** Chunk P2-1 measures these; the user approves
-them; they are written here and become locked like everything else in
-section 3. Every one of them lives in exactly one Python module constant,
-named exactly as below, and no other module redefines it.
+**Approved at user gate C, 2026-08-29. Locked like everything else in section
+3.** Chunk P2-1 measured these on the gate-B scans; appendix B holds the tables
+and Chunk P2-1's pull request holds the reasoning. Every one of them lives in
+exactly one Python module constant, named exactly as below, and no other module
+redefines it. Production code reads them from there and from nowhere else.
 
 | Constant | Module | Value | Justified by |
 | --- | --- | --- | --- |
-| `DETECTION_LONG_EDGE` | `detection.py` | *unset* | appendix B table 2 |
-| `USE_CLAHE` | `detection.py` | *unset* | appendix B table 2 |
-| `DETECTOR` | `registration.py` | *unset* | appendix B table 1 |
-| `RATIO_TEST` | `registration.py` | *unset* | appendix B table 1 |
-| `RANSAC_REPROJ_PX` | `registration.py` | *unset* | appendix B table 1 |
-| `MIN_PAIR_INLIERS` | `registration.py` | *unset* | appendix B table 1 |
-| `MIN_PAIR_INLIER_RATIO` | `registration.py` | *unset* | appendix B table 1 |
-| `MAX_PAIR_RMS_PX` | `registration.py` | *unset* | appendix B table 1 |
-| `SCALE_DRIFT_WARN` | `registration.py` | *unset* | appendix B table 3 |
-| `SCALE_DRIFT_FAIL` | `registration.py` | *unset* | appendix B table 3 |
-| `MAX_OVERLAP_MAD` | `composite.py` | *unset* | appendix B table 5 |
-| `INTERPOLATION` | `composite.py` | *unset* | appendix B table 4 |
-| `MAX_GLOBAL_RMS_PX` | `layout.py` | *unset* | appendix B table 1 |
-| `STRIP_SPREAD_RATIO` | `layout.py` | *unset* | appendix B table 7 |
-| `REBATE_DEVIATION_WARN` | `layout.py` | *unset* | appendix B table 6 |
-| `STITCH_UNITS_PER_FRAME` | `run_pipeline.py` | *unset* | appendix B table 7 |
-| `STITCH_UNITS_PER_NEGATIVE` | `run_pipeline.py` | *unset* | appendix B table 7 |
+| `DETECTION_LONG_EDGE` | `detection.py` | `2000` | appendix B table 2 |
+| `USE_CLAHE` | `detection.py` | `False` | appendix B table 2 |
+| `DETECTOR` | `registration.py` | `"AKAZE"` | appendix B table 1 |
+| `RATIO_TEST` | `registration.py` | `0.75` | appendix B supplementary sweep |
+| `RANSAC_REPROJ_PX` | `registration.py` | `3.0` | appendix B supplementary sweep |
+| `MIN_PAIR_INLIERS` | `registration.py` | `40` | appendix B tables 1 and 5 |
+| `MIN_PAIR_INLIER_RATIO` | `registration.py` | `0.25` | appendix B table 5 |
+| `MAX_PAIR_RMS_PX` | `registration.py` | `6.0` | appendix B table 5 |
+| `SCALE_DRIFT_WARN` | `registration.py` | `0.005` | appendix B table 3 |
+| `SCALE_DRIFT_FAIL` | `registration.py` | `0.01` | appendix B table 3 |
+| `MAX_OVERLAP_MAD` | `composite.py` | `0.20` | appendix B table 5 |
+| `INTERPOLATION` | `composite.py` | `cv2.INTER_LANCZOS4` | appendix B table 4 |
+| `MAX_GLOBAL_RMS_PX` | `layout.py` | `12.0` | appendix B table 7 |
+| `STRIP_SPREAD_RATIO` | `layout.py` | `0.15` | appendix C |
+| `REBATE_DEVIATION_WARN` | `layout.py` | **not set** — see 3.12.2 | appendix B table 6 |
+| `STITCH_UNITS_PER_FRAME` | `run_pipeline.py` | `2` | appendix B table 7 |
+| `STITCH_UNITS_PER_NEGATIVE` | `run_pipeline.py` | `9` | appendix B table 7 |
 
 `RANSAC_REPROJ_PX` and `MAX_PAIR_RMS_PX` are **full-resolution pixels**, not
 detection-image pixels — Chunk P2-3 converts matched points to full
 resolution before RANSAC precisely so that every number downstream shares
 one unit.
+
+#### 3.12.1 What each value is anchored to
+
+Recorded here rather than only in appendix B, so a later reader tightening or
+loosening one of these knows what it was resting on. "Real pair" means a pair
+appendix C records as genuinely sharing film; "garbage fit" means a pair sharing
+none that the solver nonetheless returned a model for.
+
+- **`DETECTION_LONG_EDGE` and `USE_CLAHE`** are the two cheapest to get wrong.
+  Every one of table 2's six settings recovered all ten real pairs and invented
+  none, and residual was flat across the grid at 1.641–1.784 px. Only inlier
+  count and cost varied. 2000 with CLAHE off gives 2062 median inliers — 52
+  times `MIN_PAIR_INLIERS` — at 0.56 s per frame and the joint-best residual.
+  **CLAHE is the lever to reach for first** if a low-contrast roll ever starves
+  the detector; it roughly doubles inliers for no measurable time.
+- **`DETECTOR`** — AKAZE recovered 10/10 real pairs with no false accept, the
+  lowest median residual, and half SIFT's time. SIFT was the only other
+  eligible detector. ORB is disqualified on recall at 7/10.
+- **`RATIO_TEST`** — the highest separation margin measured (66.0×), and it
+  keeps the median inlier ratio at 0.667 so that `MIN_PAIR_INLIER_RATIO` still
+  discriminates. Loosening to 0.90 collapses that ratio to 0.453 and would
+  hollow the gate out. 0.70 is indistinguishable.
+- **`RANSAC_REPROJ_PX`** — every value from 1.0 to 8.0 recovered all ten real
+  pairs. 3.0 gives the most inliers (198) on the tightest real pair, at a margin
+  already 66×. **1.5 to 2.0 admit zero inliers on any non-overlapping pair and
+  lower the residual**, so that is the direction to tune if residuals ever
+  matter more than marginal-overlap robustness. Note also that `rigid_rms_px`
+  tracks this threshold almost linearly, 0.891 px at 1.0 to 2.400 px at 8.0: the
+  residual is substantially a restatement of what RANSAC was told to tolerate,
+  which is worth remembering before reading any RMS as an absolute measure of
+  alignment quality — including `MAX_PAIR_RMS_PX` below.
+- **`MIN_PAIR_INLIERS`** — 13 times the most inliers any non-overlapping pair
+  produced (3), and 5 times below the fewest a real pair produced (198); the
+  tightest *realistic* pair, at 17% overlap, gave 582, so the working margin is
+  nearer 15×. **This is the gate that does the real work.** ORB on `mismatch`
+  2–3 — two frames sharing no film — returned 3 inliers at an inlier ratio of
+  0.600 and an RMS of 3.217 px, which looks healthy on every metric except the
+  absolute count. A gate built from ratio and residual alone would have taken
+  it.
+- **`MIN_PAIR_INLIER_RATIO`** — 6 times the worst non-overlapping ratio (0.041),
+  2.3 times below the lowest real one (0.583).
+- **`MAX_PAIR_RMS_PX`** — 3.4 times the worst real pair (1.768 px), 11 times
+  below the best garbage fit (64.4 px).
+- **`SCALE_DRIFT_WARN` and `SCALE_DRIFT_FAIL`** — table 3 is strongly bimodal
+  read per pair: every real pair falls between 0.000036 and 0.001834, and the
+  only two above that are 0.087 and 3.88. The warn value is 2.7 times the worst
+  real pair; the fail value is 5.5 times it and 8.7 times below the smallest
+  garbage drift, near the log midpoint of an empty band two orders of magnitude
+  wide. Read the summary row of that table with care: its 99th percentile of
+  3.47 is an artefact of averaging two garbage fits into twelve values.
+- **`MAX_OVERLAP_MAD`** — 2.4 times the worst real pair (0.0826) and 2.6 times
+  below the best bad pair (0.526). See 3.12.2 for what this is *not* calibrated
+  against.
+- **`INTERPOLATION`** — Lanczos4 and Cubic are photometrically
+  indistinguishable on film, 0.15% apart on `overlap_mad`, so section 3.3's
+  existing choice stands on its sharpness argument rather than being overturned.
+  Both undershoot below zero, at −0.0625 and −0.0544, so **section 3.3's
+  mandatory clamp is not Lanczos-specific and must not be skipped if this is
+  ever changed.**
+- **`MAX_GLOBAL_RMS_PX`** — 3.2 times the worst solved negative (3.79 px, which
+  is `wonky`, spanning 7.5°).
+- **`STRIP_SPREAD_RATIO`** — 4 times the worst real strip (0.0370). A warning
+  threshold only, per section 3.4.
+- **`STITCH_UNITS_PER_FRAME` and `STITCH_UNITS_PER_NEGATIVE`** — from table 7:
+  0.57 s detect plus 0.50 s warp is 1.07 s of per-frame work, and 0.5 s match
+  plus 0.00 s solve plus 2.9 s blend plus 0.8 s write is 4.2 s of per-negative
+  work. One conversion unit is about **0.48 s** — 15 frames converted in 21.7 s
+  at `--jobs 4`, at 3 units per frame. So 1.07 / 0.48 ≈ 2 and 4.2 / 0.48 ≈ 9.
+  For a three-frame negative that gives 15 stitch units against conversion's 9,
+  a ratio of 1.67 where the measured wall-clock ratio is 1.91 — coarse and
+  slightly conservative, which is the right direction for a progress bar.
+  Section 3.9 asks for the measured seconds in a comment beside the constants;
+  those are the figures to use.
+
+#### 3.12.2 What these values are **not** anchored to
+
+Four of them are weaker than the table they come from makes them look. Recorded
+so that a later failure is diagnosed rather than mistaken for bad luck.
+
+- **`REBATE_DEVIATION_WARN` is not set, because it cannot be.** Chunk P2-1
+  assessed the rebate check as section 3.4 required, and a generic
+  longest-straight-edge detector does not find *the same physical edge* in each
+  frame: in `normal`, frames 1 and 2 agree at 107.77° and 107.74° while frame 3
+  returns 1.22°, an edge perpendicular to the other two. The resulting
+  "deviations" of 8051 px on an 8458 px canvas are the distance between two
+  unrelated lines, not a misalignment.
+
+  **Consequence for Phase 2, which stays inside section 3.4's existing rule
+  that this is recorded and never gated:** `rebate_deviation_px` is written as
+  `null` in every roll-manifest negative, and `STITCH_REBATE_CHECK_FAILED` is
+  never emitted. The error code and the manifest field both stay in the
+  contract, since section 3.4 already specifies `null` for the not-found case
+  and Chunk P2-0 has already shipped both. Chunk P2-4 therefore implements no
+  rebate detection and `layout.py` defines no `REBATE_DEVIATION_WARN`.
+
+  Promoting the check later needs a purpose-built detector — one constrained to
+  edges near the frame margin and roughly parallel to the solved strip axis,
+  rather than the longest line anywhere in the image — and that is a Phase 3
+  question, not an unfinished Phase 2 one.
+- **`MAX_OVERLAP_MAD` is demonstrated against gross failure only.** Both
+  bad-side samples are pairs sharing no film. The failure this gate most needs
+  to catch — a pair that genuinely overlaps but whose transform is subtly wrong
+  — would land a little above 0.083, nowhere near 0.5, and would pass 0.20. So
+  0.20 is a demonstrated catch for gross misregistration and an untested one for
+  subtle misregistration.
+- **`MAX_GLOBAL_RMS_PX` has no bad-side evidence at all.** The `mismatch`
+  negative fails on connectivity before a global solve exists, so 12.0 is
+  anchored only to the four good negatives' 1.65–3.79 px. It is a plausible
+  ceiling, not a demonstrated separator.
+- **Every value here rests on five negatives.** The bands are wide, but the
+  sample is small and single-roll. Section 3.7 requires the roll manifest to
+  record every section 3.4 metric on every run precisely so these can be
+  revisited against accumulated evidence — which is the intended way to change
+  them, rather than re-deriving them from memory.
 
 ## 4. Dependency and build rules
 
@@ -1066,12 +1186,23 @@ clearly — saying what was not measured — when they are absent.
 
 ---
 
-### User gate C — approve the measured constants — **BLOCKING Chunk P2-2**
+### User gate C — approve the measured constants — **SATISFIED 2026-08-29**
 
 The user reads Chunk P2-1's report, opens the rendered stitch, and approves
 or changes each proposed constant. Approved values are written into a new
 **section 3.12** of this plan, which then becomes locked in the ordinary way.
 Chunks P2-2 onward read them from there and from nowhere else.
+
+**Satisfied 2026-08-29.** All seventeen approved as proposed. Sixteen carry a
+value; `REBATE_DEVIATION_WARN` is deliberately not set, and section 3.12.2
+records why and what Chunk P2-4 does instead. Section 3.12.1 records what each
+value is anchored to, and 3.12.2 the four that are weaker than their table
+suggests. **Chunk P2-2 is unblocked.**
+
+Two findings from Chunk P2-1 remain open and are *not* settled by this gate:
+section 3.8's memory formula underestimates measured peak RSS by 2.5–3.4x
+(appendix B), and the ICC profile in Phase 1's output declares a transfer curve
+its pixels do not use (`punchlist.md`). Neither blocks P2-2.
 
 ---
 
