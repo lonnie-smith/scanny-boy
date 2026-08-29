@@ -45,7 +45,7 @@ struct ContentView: View {
                 )
             } else {
                 List(model.catalogue, id: \.self, selection: $model.selectedFiles) { name in
-                    Text(name)
+                    CatalogueRow(name: name, url: model.fileURL(for: name))
                 }
                 .listStyle(.inset)
             }
@@ -205,16 +205,36 @@ struct ContentView: View {
     }
 
     private func chooseOutputFolder() {
-        guard let url = Self.pickFolder(startingAt: model.outputFolder) else { return }
+        // The output folder for a roll of film usually does not exist yet, so
+        // the panel offers "New Folder" and starts inside whichever folder
+        // was used last (punchlist: "I should be able to create a new folder,
+        // not just choose an existing one").
+        let url = Self.pickFolder(
+            startingAt: model.outputFolder,
+            message: "Choose or create the folder to write the TIFFs into.",
+            canCreateDirectories: true
+        )
+        guard let url else { return }
         model.outputFolder = url
     }
 
-    private static func pickFolder(startingAt url: URL?) -> URL? {
+    /// `canCreateDirectories` is off by default and on only where a new
+    /// folder makes sense: an empty folder the user just made cannot be an
+    /// input folder, since the CLI would find no NEFs in it.
+    private static func pickFolder(
+        startingAt url: URL?,
+        message: String? = nil,
+        canCreateDirectories: Bool = false
+    ) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = canCreateDirectories
         panel.directoryURL = url
+        if let message {
+            panel.message = message
+        }
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

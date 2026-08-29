@@ -180,6 +180,15 @@ final class ConfigurationModel {
         overwriteConfirmed = true
     }
 
+    /// Where one catalogue entry lives on disk, for display only.
+    ///
+    /// `name` must be a catalogue entry: the CLI found it, the CLI named it,
+    /// and this only rejoins it to the folder the CLI was pointed at.
+    /// Nothing here discovers, filters, or orders files (section 3.2).
+    func fileURL(for name: String) -> URL? {
+        inputFolder?.appending(path: name, directoryHint: .notDirectory)
+    }
+
     /// The selection in canonical order. Filters the catalogue rather than
     /// iterating `selectedFiles`, whose `Set` has no meaningful order at all
     /// (section 3.3: Swift never sorts files itself).
