@@ -12,10 +12,18 @@ import Testing
 struct CLIIntegrationTests {
     private static var canRun: Bool { HostBundle.isAvailable && SampleFixtures.areAvailable }
 
-    private static let unavailable: Comment = """
-        \(HostBundle.unavailableComment.rawValue)
-        \(SampleFixtures.unavailableComment.rawValue)
-        """
+    /// Names only the prerequisite that is actually missing, so a CI skip
+    /// does not also claim the app was not built.
+    private static var unavailable: Comment {
+        var reasons: [String] = []
+        if !HostBundle.isAvailable {
+            reasons.append(HostBundle.unavailableComment.rawValue)
+        }
+        if !SampleFixtures.areAvailable {
+            reasons.append(SampleFixtures.unavailableComment.rawValue)
+        }
+        return Comment(rawValue: reasons.joined(separator: "\n"))
+    }
 
     private static func runner() throws -> CLIRunner {
         CLIRunner(executable: try #require(HostBundle.helperExecutableURL))
