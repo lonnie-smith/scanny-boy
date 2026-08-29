@@ -1,8 +1,9 @@
 # Scanny Boy — Phase 2 implementation plan
 
 **Written:** 2026-08-29
-**Status:** Chunk P2-0 merged. Chunk P2-1 **blocked on user gate B** (sample
-scans); its ROMM gate was discharged early and produced section 2.3.1's
+**Status:** Chunk P2-0 merged. User gate B satisfied. Chunk P2-1 complete —
+appendices B and C are written and it proposes section 3.12's constants.
+**Awaiting user gate C.** Along the way P2-1 produced section 2.3.1's
 user-approved amendment to the colour path.
 
 This plan is authoritative for Phase 2 the way
@@ -776,7 +777,7 @@ diagnosing opaque failures rather than writing described code.
 
 ---
 
-### User gate B — sample scans for stitching — **BLOCKING Chunk P2-1**
+### User gate B — sample scans for stitching — **SATISFIED 2026-08-29**
 
 The six NEFs at `tests/fixtures/nef/` were captured to test RAW conversion.
 Nothing is known about whether they overlap usefully, whether they contain
@@ -813,6 +814,15 @@ and settings in `tests/fixtures/INVENTORY.md` locally and in this plan's
 
 **An agent may not proceed past this gate by synthesising substitutes.** If
 the files are absent, stop and say so.
+
+**Satisfied 2026-08-29.** Fifteen files supplied, five negatives of three
+frames, all with identical capture settings; recorded in appendix C. One thing
+turned out different from what this gate anticipated, and it mattered: the
+labelling is **per pair, not per negative**, because `normal` and `tight` each
+contain an end-to-end pair sharing no film. Those two pairs, rather than the
+`mismatch` negative, are what actually calibrated `MAX_OVERLAP_MAD` —
+`mismatch` is refused for want of inliers before any transform exists to
+measure a photometric error with.
 
 ---
 
@@ -1969,9 +1979,497 @@ Use `docs/PHASE2_CHUNK_PROMPT.md`, one chunk at a time, in chunk order.
 
 ## Appendix B — Registration measurements
 
-*Written by Chunk P2-1. Empty until then; user gate C depends on it.*
+Measured 2026-08-29 on the gate-B scans by `scripts/measure-registration.py`,
+macOS arm64, OpenCV 4.14.0. Regenerate with:
+
+```bash
+uv run --project cli scripts/measure-registration.py --out /tmp/scanny-p2-1
+```
+
+Every metric below is deterministic — two full runs agreed exactly on every
+keypoint count, match count, inlier count, ratio, and residual; only the
+`seconds` columns and `peak_rss_mib` vary between runs.
+
+The settings the measurements were taken *at*, which are not themselves
+proposals: `long_edge` 2000, CLAHE off, ratio test 0.75, RANSAC 3.0
+full-resolution px, `INTER_LANCZOS4`. Two provisional gates are used only so a
+layout can be solved at all, since one garbage pair would otherwise corrupt the
+global fit: at least 20 inliers and at most 10 px RMS. They sit inside the
+two-orders-of-magnitude empty band tables 1 and 5 measure, so any value in that
+band gives the same layouts.
+
+### The ROMM gate
+
+Round trip on `normal_1.tif` with the section 2.3.1 curve: **max 0 LSB**, 0 of
+73,495,680 pixels changed. Against a linear decode of the same NEF: **max
+0.1567%**, mean 0.0037% relative error. Gate passes.
+
+The round trip alone could not have detected a wrong curve, which is the whole
+point of section 2.3.1; the linear comparison is what does.
+
+### Table 1 — detector comparison
+
+Detection images at `long_edge=2000`, `clahe=False`; ratio test 0.75; RANSAC 3.0
+full-resolution px. `seconds` covers detection of both frames plus matching and
+fitting. ORB runs at its default 500-keypoint cap, which is what the plan's bare
+`ORB_create` gives.
+
+| negative | pair | detector | keypoints_a | keypoints_b | good_matches | inliers | inlier_ratio | rigid_rms_px | seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| mismatch | 1–2 | AKAZE | 12320 | 1491 | 72 | 0 | 0.000 | — | 1.15 |
+| mismatch | 1–2 | ORB | 500 | 500 | 4 | 0 | 0.000 | — | 0.78 |
+| mismatch | 1–2 | SIFT | 28884 | 3536 | 372 | 4 | 0.011 | 427.886 | 1.25 |
+| mismatch | 1–3 | AKAZE | 12320 | 4457 | 59 | 0 | 0.000 | — | 1.18 |
+| mismatch | 1–3 | ORB | 500 | 500 | 7 | 3 | 0.429 | 1245.101 | 0.80 |
+| mismatch | 1–3 | SIFT | 28884 | 10776 | 234 | 4 | 0.017 | 689.021 | 1.55 |
+| mismatch | 2–3 | AKAZE | 1491 | 4457 | 11 | 0 | 0.000 | — | 1.10 |
+| mismatch | 2–3 | ORB | 500 | 500 | 5 | 3 | 0.600 | 3.217 | 0.77 |
+| mismatch | 2–3 | SIFT | 3536 | 10776 | 17 | 0 | 0.000 | — | 1.04 |
+| normal | 1–2 | AKAZE | 12407 | 16286 | 3907 | 2419 | 0.619 | 1.768 | 1.38 |
+| normal | 1–2 | ORB | 500 | 500 | 84 | 28 | 0.333 | 1.793 | 0.93 |
+| normal | 1–2 | SIFT | 29723 | 36780 | 9260 | 4642 | 0.501 | 1.681 | 3.41 |
+| normal | 1–3 | AKAZE | 12407 | 11797 | 90 | 3 | 0.033 | 117.631 | 1.31 |
+| normal | 1–3 | ORB | 500 | 500 | 4 | 0 | 0.000 | — | 0.93 |
+| normal | 1–3 | SIFT | 29723 | 30604 | 261 | 4 | 0.015 | 64.387 | 2.83 |
+| normal | 2–3 | AKAZE | 16286 | 11797 | 5388 | 4240 | 0.787 | 1.686 | 1.34 |
+| normal | 2–3 | ORB | 500 | 500 | 172 | 88 | 0.512 | 1.895 | 0.81 |
+| normal | 2–3 | SIFT | 36780 | 30604 | 13064 | 9570 | 0.733 | 1.628 | 3.21 |
+| order | 1–2 | AKAZE | 11179 | 14985 | 1218 | 776 | 0.637 | 1.384 | 1.31 |
+| order | 1–2 | ORB | 500 | 500 | 12 | 7 | 0.583 | 2.154 | 0.80 |
+| order | 1–2 | SIFT | 27970 | 30966 | 4242 | 2546 | 0.600 | 1.480 | 2.80 |
+| order | 1–3 | AKAZE | 11179 | 14236 | 7905 | 7381 | 0.934 | 1.753 | 1.30 |
+| order | 1–3 | ORB | 500 | 500 | 271 | 143 | 0.528 | 1.910 | 0.80 |
+| order | 1–3 | SIFT | 27970 | 31913 | 17255 | 16264 | 0.943 | 1.848 | 2.89 |
+| order | 2–3 | AKAZE | 14985 | 14236 | 4210 | 2760 | 0.656 | 1.558 | 1.36 |
+| order | 2–3 | ORB | 500 | 500 | 90 | 42 | 0.467 | 1.717 | 0.81 |
+| order | 2–3 | SIFT | 30966 | 31913 | 9189 | 6047 | 0.658 | 1.733 | 3.14 |
+| tight | 1–2 | AKAZE | 9518 | 3691 | 74 | 3 | 0.041 | 1022.203 | 1.12 |
+| tight | 1–2 | ORB | 500 | 500 | 7 | 0 | 0.000 | — | 0.75 |
+| tight | 1–2 | SIFT | 20640 | 9119 | 214 | 3 | 0.014 | 311.636 | 1.28 |
+| tight | 1–3 | AKAZE | 9518 | 14300 | 939 | 582 | 0.620 | 1.700 | 1.27 |
+| tight | 1–3 | ORB | 500 | 500 | 11 | 6 | 0.545 | 1.350 | 0.79 |
+| tight | 1–3 | SIFT | 20640 | 32088 | 3235 | 1803 | 0.557 | 1.729 | 2.43 |
+| tight | 2–3 | AKAZE | 3691 | 14300 | 957 | 821 | 0.858 | 1.611 | 1.15 |
+| tight | 2–3 | ORB | 500 | 500 | 51 | 34 | 0.667 | 1.721 | 0.76 |
+| tight | 2–3 | SIFT | 9119 | 32088 | 3054 | 2194 | 0.718 | 1.986 | 1.64 |
+| wonky | 1–2 | AKAZE | 12097 | 14274 | 2925 | 1704 | 0.583 | 1.674 | 1.31 |
+| wonky | 1–2 | ORB | 500 | 500 | 69 | 31 | 0.449 | 1.952 | 0.80 |
+| wonky | 1–2 | SIFT | 27961 | 31677 | 7328 | 4065 | 0.555 | 2.057 | 2.84 |
+| wonky | 1–3 | AKAZE | 12097 | 10057 | 292 | 198 | 0.678 | 1.522 | 1.25 |
+| wonky | 1–3 | ORB | 500 | 500 | 7 | 4 | 0.571 | 319.260 | 0.81 |
+| wonky | 1–3 | SIFT | 27961 | 25824 | 1621 | 1201 | 0.741 | 2.265 | 2.37 |
+| wonky | 2–3 | AKAZE | 14274 | 10057 | 6917 | 5835 | 0.844 | 1.457 | 1.28 |
+| wonky | 2–3 | ORB | 500 | 500 | 264 | 114 | 0.432 | 1.835 | 0.82 |
+| wonky | 2–3 | SIFT | 31677 | 25824 | 15700 | 13846 | 0.882 | 1.675 | 2.51 |
+
+Summary. A detector is eligible if it recovers **every genuinely overlapping
+pair** (appendix C) and **falsely accepts none** of the non-overlapping ones;
+among the eligible, lowest median `rigid_rms_px` wins. Refusal counts as much as
+recall, because the global solve can route around a missing pair but not around
+a wrong one.
+
+| detector | overlapping pairs recovered | false accepts | median_inliers | median_inlier_ratio | median_rms_px | median_seconds | eligible |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SIFT | 10/10 | 0 | 4354 | 0.688 | 1.731 | 2.51 | yes |
+| ORB | 7/10 | 0 | 42 | 0.467 | 1.835 | 0.80 | no |
+| AKAZE | 10/10 | 0 | 2062 | 0.667 | 1.643 | 1.28 | yes |
+
+**Best detector: AKAZE** — every real pair, no false accept, the lowest median
+residual, and half SIFT's time.
+
+ORB is disqualified on recall, but its near-misses matter more than the count.
+On `mismatch` 2–3 — two frames sharing no film — ORB returned 5 good matches, 3
+inliers, an inlier *ratio* of 0.600 and an RMS of 3.217 px. Those numbers look
+like a healthy pair on every metric except the absolute inlier count. **That
+single row is why `MIN_PAIR_INLIERS` has to exist and cannot be small**: a gate
+built from `inlier_ratio` and `rms_residual_px` alone would have accepted it.
+
+### Table 2 — detection-image preparation
+
+Detector AKAZE. Medians are over the genuinely overlapping pairs only, so a
+non-overlapping pair's garbage fit can neither flatter nor punish a setting.
+
+| long_edge | clahe | recovered | false accepts | median_inliers | median_inlier_ratio | median_rms_px | seconds_per_frame |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1200 | off | 10/10 | 0 | 630 | 0.672 | 1.715 | 0.42 |
+| 1200 | on | 10/10 | 0 | 1016 | 0.648 | 1.641 | 0.42 |
+| 2000 | off | 10/10 | 0 | 2062 | 0.667 | 1.643 | 0.56 |
+| 2000 | on | 10/10 | 0 | 3522 | 0.683 | 1.784 | 0.58 |
+| 3000 | off | 10/10 | 0 | 4397 | 0.705 | 1.680 | 0.82 |
+| 3000 | on | 10/10 | 0 | 6828 | 0.713 | 1.707 | 0.85 |
+
+Every one of the six settings recovers all ten real pairs and invents none.
+**Residual is flat across the whole grid** — 1.641 to 1.784 px, a spread smaller
+than the difference between two negatives — so accuracy does not choose here.
+Only inlier count and cost vary, and inlier count is already 15 to 170 times any
+plausible gate. That makes this the cheapest of the seventeen decisions to get
+wrong, and CLAHE the obvious lever to reach for if a future low-contrast roll
+ever starves the detector.
+
+### Table 3 — scale drift
+
+From the similarity fit, before the rigid re-fit.
+
+| negative | pair | scale | abs(scale - 1) |
+| --- | --- | --- | --- |
+| normal | 1–2 | 1.000654 | 0.000654 |
+| normal | 1–3 | 1.087459 | 0.087459 |
+| normal | 2–3 | 1.000644 | 0.000644 |
+| wonky | 1–2 | 1.000443 | 0.000443 |
+| wonky | 1–3 | 1.001834 | 0.001834 |
+| wonky | 2–3 | 1.000526 | 0.000526 |
+| order | 1–2 | 0.999139 | 0.000861 |
+| order | 1–3 | 0.999148 | 0.000852 |
+| order | 2–3 | 1.000036 | 0.000036 |
+| tight | 1–2 | 4.883448 | 3.883448 |
+| tight | 1–3 | 1.001054 | 0.001054 |
+| tight | 2–3 | 0.999120 | 0.000880 |
+| mismatch | 1–2 | — | — |
+| mismatch | 1–3 | — | — |
+| mismatch | 2–3 | — | — |
+
+| statistic | abs(scale - 1) |
+| --- | --- |
+| min | 0.000036 |
+| median | 0.000856 |
+| 99th percentile | 3.465889 |
+| max | 3.883448 |
+
+Read by pair rather than in aggregate, this is strongly bimodal. Every one of
+the ten genuinely overlapping pairs lands between 0.000036 and **0.001834**. The
+two non-overlapping pairs that produced a fit at all land at **0.087459** and
+**3.883448**, and the three `mismatch` pairs produced none. The summary
+statistics are the misleading way to read this table: the 99th percentile of
+3.47 is an artefact of averaging two garbage fits into twelve, not a drift any
+real pair exhibits.
+
+**Section 2.2's "scale is 1" holds on real scans**, and more tightly than the
+synthetic benchmark suggested — 0.0018 worst case against the synthetic
+0.0004-to-0.0009 range, on negatives shot up to 7.5° apart.
+
+### Table 4 — interpolation
+
+Negative `normal`, full-resolution warps of its two genuinely overlapping pairs.
+`min_value_after_warp` is measured **before** the mandatory clamp.
+
+| interpolation | overlap_mad | min_value_after_warp | seconds |
+| --- | --- | --- | --- |
+| INTER_LANCZOS4 | 0.07470 | -0.0625 | 2.5 |
+| INTER_CUBIC | 0.07481 | -0.0544 | 2.1 |
+
+The two are photometrically indistinguishable — 0.15% apart on `overlap_mad`,
+far inside the spread between negatives. **Section 2.3's undershoot reproduces
+on real film at −0.0625**, against −0.088 measured synthetically, so the
+mandatory clamp is confirmed necessary on real data and by a similar magnitude.
+`INTER_CUBIC` undershoots too, at −0.0544, so the clamp is not
+Lanczos-specific.
+
+### Table 5 — overlap MAD separation
+
+Computed **pairwise** — frame b warped into frame a's own coordinates — so a
+pair still yields a number when its negative has no solvable global layout,
+which is exactly the case for `mismatch`. Labelled per pair from appendix C's
+ground truth, not per negative.
+
+| negative | pair | label | good_matches | inliers | inlier_ratio | rigid_rms_px | overlap_fraction | overlap_mad | note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| normal | 1–2 | good | 3907 | 2419 | 0.619 | 1.768 | 0.425 | 0.07734 |  |
+| normal | 1–3 | should_fail | 90 | 3 | 0.033 | 117.631 | 0.638 | 0.52621 |  |
+| normal | 2–3 | good | 5388 | 4240 | 0.787 | 1.686 | 0.479 | 0.07206 |  |
+| wonky | 1–2 | good | 2925 | 1704 | 0.583 | 1.674 | 0.344 | 0.07580 |  |
+| wonky | 1–3 | good | 292 | 198 | 0.678 | 1.522 | 0.049 | 0.08261 |  |
+| wonky | 2–3 | good | 6917 | 5835 | 0.844 | 1.457 | 0.669 | 0.06556 |  |
+| order | 1–2 | good | 1218 | 776 | 0.637 | 1.384 | 0.150 | 0.07852 |  |
+| order | 1–3 | good | 7905 | 7381 | 0.934 | 1.753 | 0.740 | 0.05988 |  |
+| order | 2–3 | good | 4210 | 2760 | 0.656 | 1.558 | 0.398 | 0.07054 |  |
+| tight | 1–2 | should_fail | 74 | 3 | 0.041 | 1022.203 | 0.662 | 0.80516 |  |
+| tight | 1–3 | good | 939 | 582 | 0.620 | 1.700 | 0.169 | 0.06916 |  |
+| tight | 2–3 | good | 957 | 821 | 0.858 | 1.611 | 0.174 | 0.07005 |  |
+| mismatch | 1–2 | should_fail | 72 | 0 | 0.000 | — | — | — | RANSAC found no model |
+| mismatch | 1–3 | should_fail | 59 | 0 | 0.000 | — | — | — | RANSAC found no model |
+| mismatch | 2–3 | should_fail | 11 | 0 | 0.000 | — | — | — | RANSAC found no model |
+
+| label | n | min | median | max |
+| --- | --- | --- | --- | --- |
+| good | 10 | 0.05988 | 0.07130 | 0.08261 |
+| should_fail | 2 | 0.52621 | 0.66569 | 0.80516 |
+
+**Worst good pair 0.08261. Best bad pair 0.52621. Gap +0.44360** — the good
+pairs occupy a band 6.4 times narrower than the distance to the nearest bad one.
+`MAX_OVERLAP_MAD` can be set, and comfortably.
+
+One caveat that the numbers cannot show. Both bad-side points are *grossly*
+non-overlapping pairs, and there is no sample of the failure this gate most
+needs to catch: a pair that genuinely overlaps but whose transform is subtly
+wrong. Such a pair would land just above 0.083, not out at 0.5. So this gate is
+demonstrated against gross failure and merely plausible against subtle failure,
+and the roll manifest recording `overlap_mad` on every real run (section 8) is
+how that gets corrected with evidence rather than by guessing now.
+
+### Table 6 — rebate edges
+
+Canny 50/150; `HoughLinesP` at 0.25-degree resolution, threshold 100, minimum
+line length 50% of the detection image's short edge, maximum gap 10. **These
+settings are the script's, not the plan's.**
+
+| negative | frame | long_edge_found | angle_deg | length_px |
+| --- | --- | --- | --- | --- |
+| normal | 1 | yes | 107.77 | 2901 |
+| normal | 2 | yes | 107.74 | 2827 |
+| normal | 3 | yes | 1.22 | 3281 |
+| wonky | 1 | yes | 177.23 | 2756 |
+| wonky | 2 | yes | 113.01 | 2250 |
+| wonky | 3 | yes | 4.74 | 4956 |
+| order | 1 | no | — | — |
+| order | 2 | yes | 106.74 | 2242 |
+| order | 3 | yes | 112.75 | 2203 |
+| tight | 1 | yes | 105.24 | 2652 |
+| tight | 2 | no | — | — |
+| tight | 3 | yes | 113.98 | 2432 |
+| mismatch | 1 | yes | 100.23 | 3244 |
+| mismatch | 2 | no | — | — |
+| mismatch | 3 | no | — | — |
+
+| negative | frames with an edge | max_rebate_deviation_px |
+| --- | --- | --- |
+| normal | 3/3 | 8051.5 |
+| wonky | 3/3 | 7231.5 |
+| order | 2/3 | 955.9 |
+| tight | 2/3 | 1041.1 |
+| mismatch | 1/3 | — |
+
+**This is the one measurement that came back negative, and it is a real
+finding rather than a missing number.** A generic longest-straight-edge detector
+does not find *the same physical edge* in each frame. `normal` shows it plainly:
+frames 1 and 2 agree at 107.77° and 107.74°, and frame 3 returns 1.22° — an
+edge perpendicular to the other two, so almost certainly a building edge or the
+frame border rather than the rebate. Deviations of 8051 px on a canvas 8458 px
+tall are not a misalignment measurement; they are the distance between two
+unrelated lines.
+
+Section 3.4 anticipated exactly this and made the rebate check recorded-and-
+warned rather than gated, pending this assessment. **The assessment is that it
+is not usable in this form.** `REBATE_DEVIATION_WARN` cannot be calibrated, and
+promoting the check would first need a purpose-built detector — one constrained
+to edges near the frame margin and roughly parallel to the solved strip axis,
+rather than the longest line anywhere in the image.
+
+### Supplementary — ratio test and RANSAC threshold sweeps
+
+Tables 1 to 7 are all taken at one ratio test and one RANSAC threshold, so on
+their own they justify no value for either; they show only that the values used
+worked. These two sweeps exist so `RATIO_TEST` and `RANSAC_REPROJ_PX` are not
+the two constants resting on nothing. `margin` is the fewest inliers on a real
+pair divided by the most on a non-overlapping one — the quantity a threshold
+actually has to separate.
+
+| ratio_test | recovered | false accepts | median_inliers | median_inlier_ratio | median_rms_px | fewest inliers, good pair | most inliers, bad pair | margin |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.60 | 10/10 | 0 | 1875 | 0.731 | 1.568 | 162 | 0 | inf |
+| 0.70 | 10/10 | 0 | 2001 | 0.726 | 1.559 | 195 | 3 | 65.0 |
+| 0.75 | 10/10 | 0 | 2062 | 0.667 | 1.643 | 198 | 3 | 66.0 |
+| 0.80 | 10/10 | 0 | 1978 | 0.659 | 1.504 | 184 | 3 | 61.3 |
+| 0.90 | 10/10 | 0 | 2037 | 0.453 | 1.695 | 199 | 4 | 49.8 |
+
+| ransac_reproj_px | recovered | false accepts | median_inliers | median_inlier_ratio | median_rms_px | fewest inliers, good pair | most inliers, bad pair | margin |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1.0 | 10/10 | 0 | 744 | 0.325 | 0.891 | 111 | 0 | inf |
+| 1.5 | 10/10 | 0 | 1196 | 0.473 | 0.983 | 163 | 0 | inf |
+| 2.0 | 10/10 | 0 | 1476 | 0.586 | 1.319 | 182 | 0 | inf |
+| 3.0 | 10/10 | 0 | 2062 | 0.667 | 1.643 | 198 | 3 | 66.0 |
+| 5.0 | 10/10 | 0 | 2684 | 0.856 | 1.961 | 199 | 3 | 66.3 |
+| 8.0 | 10/10 | 0 | 3032 | 0.931 | 2.400 | 199 | 4 | 49.8 |
+
+Both parameters are insensitive across their whole useful range: every value
+recovers all ten real pairs and invents none. Two things do vary and are worth
+recording. Loosening the ratio test past 0.80 collapses the median inlier ratio
+from 0.73 to 0.45, which would hollow out `MIN_PAIR_INLIER_RATIO` as a gate.
+And `rigid_rms_px` tracks the RANSAC threshold almost linearly, from 0.891 px at
+1.0 to 2.400 px at 8.0 — the residual is largely a restatement of what RANSAC
+was told to tolerate, which is worth remembering before reading any RMS figure
+as an absolute measure of alignment quality.
+
+### Table 7 — cost
+
+Each negative is stitched in a child process, so `peak_rss_mib` is that
+negative's own `ru_maxrss` through `os.wait4` rather than a running maximum.
+
+| negative | frames | canvas | detect_s | match_s | solve_s | warp_s | blend_s | write_s | total_s | peak_rss_mib | outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| normal | 3 | 6144x8458 | 1.8 | 0.6 | 0.00 | 1.5 | 2.9 | 0.8 | 8.3 | 4951 | rms 1.72 px, spread 0.0050, covered 0.983, 244 MiB |
+| wonky | 3 | 6539x8267 | 1.7 | 0.5 | 0.00 | 1.5 | 3.1 | 0.9 | 8.4 | 5307 | rms 3.79 px, spread 0.0370, covered 0.895, 232 MiB |
+| order | 3 | 6147x7480 | 1.7 | 0.6 | 0.00 | 1.4 | 2.5 | 0.7 | 7.6 | 4562 | rms 2.38 px, spread 0.0153, covered 0.986, 219 MiB |
+| tight | 3 | 6183x10735 | 1.6 | 0.3 | 0.00 | 1.4 | 3.4 | 1.0 | 8.4 | 4460 | rms 1.65 px, spread 0.0023, covered 0.977, 299 MiB |
+| mismatch | 3 | — | — | — | — | — | — | — | — | 1403 | STITCH_UNDERCONSTRAINED |
+
+The global solve is free — under 10 ms — which retires any worry about the
+two-step least-squares formulation of section 3.2 being too slow to be worth
+its order-independence.
+
+**Section 3.8's memory formula underestimates by about three times.** Computed
+from each solved canvas and its largest frame bounding box:
+
+| negative | canvas | largest frame bbox | section 3.8 `peak_bytes` | measured peak RSS | ratio |
+| --- | --- | --- | --- | --- | --- |
+| normal | 6144x8458 | 6109x4107 | 1473 MiB | 4951 MiB | 3.36x |
+| wonky | 6539x8267 | 6539x4797 | 1613 MiB | 5307 MiB | 3.29x |
+| order | 6147x7480 | 6096x4087 | 1345 MiB | 4562 MiB | 3.39x |
+| tight | 6183x10735 | 6108x4107 | 1775 MiB | 4460 MiB | 2.51x |
+
+Some of the gap is this script's avoidable temporaries — a `weight * rgb`
+product, the source frame held as `uint16` and `float32` at once — which the
+formula omits and P2-5 can largely avoid. Some is not avoidable: the formula
+counts no decoded input frame at all, which is 140 MiB of `uint16` plus 280 MiB
+of `float32` for a 6064x4040 frame, and NumPy does not return freed arenas to
+the OS, so a high-water mark legitimately exceeds live-bytes arithmetic. Either
+way, a guard built on the raw formula is optimistic by roughly 3x on this
+machine: it would predict 4 GiB for a six-frame negative that actually needs
+about 11, and pass it on a 16 GB machine.
 
 ## Appendix C — Stitching sample-scan facts
 
-*Written by Chunk P2-1 from the user gate B files, in the style of Phase 1's
-appendix A. Empty until then.*
+The user gate B scans, recorded 2026-08-29, in the style of Phase 1's appendix
+A. **Not committed** — `tests/fixtures/nef/` is git-ignored and the repository
+is public. `tests/fixtures/INVENTORY.md` carries the same facts locally.
+
+**Camera:** NIKON CORPORATION / NIKON Z f. Decoded with rawpy 0.27.0 /
+LibRaw 0.22.1; all fifteen open and postprocess, so all are
+lossless-compressed NEFs rather than HE/HE*.
+
+### Negatives
+
+Five negatives, three frames each, in canonical order. All fifteen form one
+uninterrupted range at the tail of the catalogue, after Phase 1's original six,
+and **each series is contiguous**, so any one negative is a valid `convert`
+selection on its own.
+
+| Negative | Frames | Role at gate B |
+| --- | --- | --- |
+| `normal` | `normal_1.NEF`, `normal_2.NEF`, `normal_3.NEF` | routine, as a real roll is shot |
+| `wonky` | `wonky_1.NEF`, `wonky_2.NEF`, `wonky_3.NEF` | several degrees of deliberate rotation |
+| `order` | `order_1.NEF`, `order_2.NEF`, `order_3.NEF` | captured out of spatial order |
+| `tight` | `tight_1.NEF`, `tight_2.NEF`, `tight_3.NEF` | overlap at the user's minimum |
+| `mismatch` | `mismatch_1.NEF`, `mismatch_2.NEF`, `mismatch_3.NEF` | must fail |
+
+### Files
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `normal_1.NEF` | 35480231 | `bfaec020217a79e5dd778e955494fd38ff893d2b89511e2b66d6b1bf4fbd6df0` |
+| `normal_2.NEF` | 33941666 | `767ec5b344b30271fb85d798cf729ff1e286e6c52af580dc9e03efdc8b086c57` |
+| `normal_3.NEF` | 33197829 | `c79cda3e57a76c9d6035ffadb436fbf4875a8e44b3598c59977877ca3095acf7` |
+| `wonky_1.NEF` | 36329702 | `d2ef1f48bd4d70cac56a0ee4f03df49c702776eda82b7879c9020767a04ba7ba` |
+| `wonky_2.NEF` | 34906289 | `669113c1aa0fac2e8767c03c41a5e3086a71165781ab2835731a94be023460f6` |
+| `wonky_3.NEF` | 33993505 | `c023c73a9b60621d7ca87d214331a9424af1f9f152c48acf6dfd3b845b48750a` |
+| `order_1.NEF` | 34456069 | `3c3a56574c7043e05ab1aa8a431773e642a78b79599868f3bd0ac2d24858ca50` |
+| `order_2.NEF` | 36482619 | `36f026da596bce6caf462c3b0380477a0185d940fc8d43fcfe363d4c85d67c68` |
+| `order_3.NEF` | 34741450 | `f6ce7a734b24dbd99bc25fe96bb5f82c4bb485ec8ec709b8ca5d7e00155d5118` |
+| `tight_1.NEF` | 34021049 | `4d39c83b10738185b5840a094481c288334e1a090ce14509927e2cfedfd06860` |
+| `tight_2.NEF` | 28990243 | `d03e6ff6264099b64357ff0c9fdf97a6a1599256294b3fc2170096ae2d06e39f` |
+| `tight_3.NEF` | 34651511 | `112f9a1429778876d6efaba5868135805f4e7795d149fa95e0689ffec9f11fda` |
+| `mismatch_1.NEF` | 36320731 | `f05d01eaf6f8be74bbe5db1a0087dfba1319a77d1deb163d46a705fc1cb9ed43` |
+| `mismatch_2.NEF` | 30045340 | `35dd38fb6967f8950b22114ca3586b987243dced71a297ba101484cf7864c387` |
+| `mismatch_3.NEF` | 33479506 | `d046fbfa084cb8b93f47e1a22c50373cdd311cdc67536bc17a9e739830687519` |
+
+### Settings, identical across all fifteen
+
+The camera rules Phase 1 requires were followed, so `CAPTURE_SETTINGS_DIFFER`
+has nothing to complain about and section 3.11's "curated EXIF from the first
+frame" is well defined.
+
+| Field | Value |
+| --- | --- |
+| `ExposureTime` | `1/15` |
+| `FNumber` | `8` |
+| `PhotographicSensitivity` (ISO) | `100` |
+| `FocalLength` | `55` |
+| `LensModel` | `55mm f/2.8` |
+| `Orientation` | `1` (Horizontal / normal) |
+| `camera_whitebalance` | `[1.691406, 1.0, 1.378906, 1.0]` |
+
+Exposure is `1/15` where Phase 1's original six were `1/30`; consistency is only
+required within a selection, and each negative is its own selection.
+
+### Dimensions
+
+Identical for all fifteen, and identical to Phase 1's appendix A: `raw_width`
+6064, `raw_height` 4040, `width` 6064, `height` 4040, `flip` 0.
+`postprocess(**RAW_PARAMS)` returns `(4040, 6064, 3)` `uint16`.
+
+### Which pairs actually overlap
+
+**The fact that most changed how appendix B had to be read.** Gate B labels
+whole negatives, but a three-frame strip has three pairs, and only two of them
+are adjacent unless the strip was shot out of spatial order. So `normal` and
+`tight` each contain one end-to-end pair sharing no film — and those two pairs
+are most of the bad-side evidence for `MAX_OVERLAP_MAD`, which labelling by
+negative alone would have discarded as "good".
+
+Established by consensus of all three detectors rather than assumed: an
+overlapping pair yields 198–7381 AKAZE inliers at 1.38–1.77 px RMS, and a
+non-overlapping one yields 0–3 inliers at 64–1245 px. Nothing lands in between.
+
+| Negative | Overlapping pairs | Sharing no film |
+| --- | --- | --- |
+| `normal` | 1–2, 2–3 | 1–3 |
+| `wonky` | 1–2, 2–3, 1–3 | — |
+| `order` | 1–2, 2–3, 1–3 | — |
+| `tight` | 1–3, 2–3 | 1–2 |
+| `mismatch` | — | 1–2, 1–3, 2–3 |
+
+### Solved geometry
+
+From the AKAZE solve at `long_edge` 2000. **The strips run vertically**: frame
+translations are almost entirely in *y*, so a canvas is roughly one frame wide
+and two to three frames tall, not the horizontal arrangement section 2.4's
+worked examples assume. The arithmetic is unaffected — it is symmetric in the
+two axes — but the shape is worth knowing before reading a canvas size.
+
+| Negative | Frame rotations (deg) | Spatial order | Canvas | Coverage | `global_rms_px` | `strip_spread_ratio` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `normal` | 0.000, +0.349, −0.629 | 1, 2, 3 | 6144x8458 | 0.983 | 1.72 | 0.0050 |
+| `wonky` | 0.000, −3.162, −7.491 | 1, 2, 3 | 6539x8267 | 0.895 | 3.79 | 0.0370 |
+| `order` | 0.000, +0.408, +0.443 | 1, 3, 2 | 6147x7480 | 0.986 | 2.38 | 0.0153 |
+| `tight` | 0.000, −0.628, −0.429 | 2, 3, 1 | 6183x10735 | 0.977 | 1.65 | 0.0023 |
+| `mismatch` | — | — | — | — | — | — |
+
+Three of these carry more weight than their row suggests.
+
+- **`wonky` spans 7.5° between its first and last frame** and solves to 3.79 px.
+  The user's "maybe several degrees" is real and is comfortably handled, which
+  is what justifies section 3.2's refusal to build an integer-shift fast path.
+- **`order` recovers a spatial order of 1, 3, 2** — the middle frame captured
+  last — and **`tight` recovers 2, 3, 1**, a full reversal. Neither was told
+  anything about order. This is section 3.2's order-independence claim
+  demonstrated on real scans rather than on a synthetic shuffle.
+- **`mismatch` fails**, and fails in the designed way: all three pairs are
+  refused for want of inliers, the pair graph is then disconnected, and the
+  negative ends `STITCH_UNDERCONSTRAINED` naming its unplaceable frames.
+
+### Measured overlap fractions
+
+| Negative | Overlapping pair | `overlap_fraction` |
+| --- | --- | --- |
+| `normal` | 1–2 | 0.425 |
+| `normal` | 2–3 | 0.479 |
+| `wonky` | 1–2 | 0.344 |
+| `wonky` | 1–3 | 0.049 |
+| `wonky` | 2–3 | 0.669 |
+| `order` | 1–2 | 0.150 |
+| `order` | 1–3 | 0.740 |
+| `order` | 2–3 | 0.398 |
+| `tight` | 1–3 | 0.169 |
+| `tight` | 2–3 | 0.174 |
+
+`tight` sits at 0.169 and 0.174, so the user's "around 20%" minimum is accurate.
+Two pairs fall below it — `order` 1–2 at 0.150 and `wonky` 1–3 at 0.049 — and
+both still register cleanly, at 776 and 198 inliers. So section 3.2 is right to
+treat 20% as a validation expectation rather than something the solver leans on:
+these scans show it is neither guaranteed in practice nor necessary.
+
+### Rebate edges
+
+At least one frame of most negatives shows a visible film rebate edge, so the
+gate-B requirement was met. What appendix B's table 6 establishes is that a
+generic straight-edge detector cannot reliably pick *that* edge out from
+building edges and frame borders, so the check is recorded but not calibrated.
