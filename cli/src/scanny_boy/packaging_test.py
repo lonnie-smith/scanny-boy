@@ -233,7 +233,9 @@ def test_packaged_probe_returns_the_catalogue_in_canonical_order():
     assert result.returncode == 0, result.stderr
     events = _events(result.stdout)
     probe_result = next(e for e in events if e["event"] == "probe_result")
-    assert probe_result["catalogue"] == REAL_SAMPLE_FILES
+    # A prefix, not the whole catalogue: the fixtures directory also holds
+    # Phase 2's gate-B stitching scans, captured 27 days later.
+    assert probe_result["catalogue"][: len(REAL_SAMPLE_FILES)] == REAL_SAMPLE_FILES
     assert probe_result["warnings"] == []
     assert events[-1]["event"] == "finished"
     assert events[-1]["exit_status"] == 0

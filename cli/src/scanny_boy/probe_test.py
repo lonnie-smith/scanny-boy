@@ -116,7 +116,11 @@ def test_probe_with_files_six_sample_files_groups_by_three():
         FIXTURES_DIR, list(REAL_SAMPLE_FILES), 3
     )
 
-    assert outcome.catalogue == REAL_SAMPLE_FILES
+    # A prefix, not the whole catalogue: the fixtures directory also holds
+    # Phase 2's gate-B stitching scans, captured 27 days later. That makes this
+    # a stronger ordering check than an equality — it proves the canonical sort
+    # orders two capture sessions by timestamp, not just one.
+    assert outcome.catalogue[: len(REAL_SAMPLE_FILES)] == REAL_SAMPLE_FILES
     assert outcome.groups == [
         ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF"],
         ["_DSC4644.NEF", "_DSC4645.NEF", "_DSC4646.NEF"],
