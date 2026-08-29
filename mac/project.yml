@@ -54,6 +54,13 @@ targets:
             destination: wrapper
             subpath: Contents/Helpers
         attributes: [CodeSignOnCopy]
+    dependencies:
+      # Catalogue thumbnails: QuickLook renders them the way the Finder does,
+      # ImageIO reads the NEF's embedded preview when QuickLook declines
+      # (`Model/ThumbnailLoader.swift`). Swift autolinking would find both,
+      # but naming them keeps the app's system dependencies visible here.
+      - sdk: QuickLookThumbnailing.framework
+      - sdk: ImageIO.framework
     info:
       path: ScannyBoy/Info.plist
       properties:
