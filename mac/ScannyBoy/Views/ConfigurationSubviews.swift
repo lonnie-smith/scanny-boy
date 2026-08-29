@@ -55,20 +55,28 @@ struct DiskEstimateView: View {
 
 /// Section 3.6: "show the exact files that will be replaced and require
 /// confirmation" before a matching rerun overwrites them.
+///
+/// This half is the preview. Chunk 10 moved the confirmation itself onto the
+/// Run button, so the agreement is given at the moment it takes effect rather
+/// than as a checkbox that could have been ticked long before.
 struct OverwritePreview: View {
     let conflicts: [String]
-    @Binding var confirmed: Bool
+    let confirmed: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(conflicts.count) file(s) already exist and will be replaced:")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(confirmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
             Text(conflicts.joined(separator: ", "))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
-            Toggle("Replace these files", isOn: $confirmed)
+            if confirmed {
+                Label("Replacement confirmed", systemImage: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

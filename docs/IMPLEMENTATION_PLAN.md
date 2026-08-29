@@ -1211,7 +1211,16 @@ Tests:
 
 **Branch:** `chunk-10-run-ui`
 
-**Status:** Not started.
+**Status:** Complete on `chunk-10-run-ui`, PR #11; add the landing commit here
+when it merges. Two notes. First, the overwrite confirmation moved from
+Chunk 9's inline checkbox to a dialog raised by Run, so the agreement is given
+where it takes effect; `ConfigurationModel.runEnabled` still means exactly
+what Chunk 9 made it mean. Second, `ScannyBoyUITests` is back in the scheme's
+test targets: the runner Chunk 8 could not start now starts, checked over
+three consecutive local runs. The manual-verification list below is automated
+in `mac/ScannyBoyTests/RunIntegrationTests.swift` against the real helper and
+the real sample NEFs — which is evidence for section 8's approval point 4, not
+a substitute for it.
 
 Do:
 

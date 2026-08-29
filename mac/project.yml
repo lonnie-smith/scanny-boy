@@ -105,18 +105,20 @@ schemes:
       targets:
         ScannyBoy: all
         ScannyBoyTests: [test]
-        # Built during the test action but deliberately absent from the test
-        # targets below. `ScannyBoyUITests-Runner` fails to start on this
-        # machine ("Test runner never began executing tests after launching"),
+        # Chunk 8 built this target but left it out of the test targets below,
+        # because `ScannyBoyUITests-Runner` would not start on the development
+        # machine ("Test runner never began executing tests after launching")
         # and a required check that fails at random is worse than no check.
-        # The target still compiles on every test run, so it cannot rot before
-        # Chunk 10 builds the run UI it belongs to.
+        # The runner starts now — checked over three consecutive runs on
+        # macOS 14.6.1 with Xcode 16.2 — so Chunk 10, which the plan gave
+        # ownership of the UI tests, puts it back in the test action.
         ScannyBoyUITests: [test]
     test:
       config: Debug
       gatherCoverageData: false
       targets:
         - ScannyBoyTests
+        - ScannyBoyUITests
     run:
       config: Debug
     profile:

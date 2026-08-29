@@ -145,23 +145,75 @@ final class ConfigurationModel {
 
     var isFilmDateValid: Bool { Self.isValidFilmDate(filmDate) }
 
-    /// Every gate Chunk 9 names: a contiguous, divisible selection with
-    /// consistent settings; a valid, non-conflicting (or confirmed) output
-    /// folder; and a well-formed film date.
-    var runEnabled: Bool {
+    /// Every gate Chunk 9 names except the overwrite confirmation: a
+    /// contiguous, divisible selection with consistent settings; a valid
+    /// output folder; and a well-formed film date.
+    ///
+    /// Separate from `runEnabled` because Chunk 10 asks for the confirmation
+    /// at the moment Run is pressed rather than as a checkbox the user has to
+    /// find first. The Run button is offered from here; `runEnabled` is still
+    /// what decides whether pressing it starts a conversion or raises the
+    /// confirmation dialog.
+    var isReadyPendingOverwriteConfirmation: Bool {
         !selectedFiles.isEmpty
             && selectionError == nil
             && outputError == nil
             && isFilmDateValid
             && outputFolder != nil
+    }
+
+    /// Every gate Chunk 9 names: a contiguous, divisible selection with
+    /// consistent settings; a valid, non-conflicting (or confirmed) output
+    /// folder; and a well-formed film date.
+    var runEnabled: Bool {
+        isReadyPendingOverwriteConfirmation
             && (outputConflicts.isEmpty || overwriteConfirmed)
+    }
+
+    /// True when the only thing left is the user agreeing to replace
+    /// `outputConflicts` (section 3.6).
+    var needsOverwriteConfirmation: Bool {
+        isReadyPendingOverwriteConfirmation && !outputConflicts.isEmpty && !overwriteConfirmed
     }
 
     func confirmOverwrite() {
         overwriteConfirmed = true
     }
 
+    /// The selection in canonical order. Filters the catalogue rather than
+    /// iterating `selectedFiles`, whose `Set` has no meaningful order at all
+    /// (section 3.3: Swift never sorts files itself).
+    var selectedFilesInCanonicalOrder: [String] {
+        catalogue.filter { selectedFiles.contains($0) }
+    }
+
+    /// The `convert` invocation this configuration describes, or `nil` when it
+    /// does not yet describe a runnable one.
+    ///
+    /// `--overwrite` is passed only after the user has confirmed the
+    /// replacements; the CLI rejects conflicts by default (section 3.6).
+    var convertCommand: CLICommand? {
+        guard runEnabled, let inputFolder, let outputFolder else { return nil }
+        return .convert(
+            input: inputFolder,
+            files: selectedFilesInCanonicalOrder,
+            out: outputFolder,
+            filmDate: filmDate,
+            perNegative: perNegative,
+            overwrite: !outputConflicts.isEmpty && overwriteConfirmed
+        )
+    }
+
     // MARK: - Probing
+
+    /// Re-runs selection and output validation. Chunk 10 calls this once a
+    /// conversion has ended: the output folder now holds files it did not
+    /// before, so the conflict preview, the disk estimate, and any previous
+    /// overwrite agreement are all out of date.
+    func refreshValidation() {
+        overwriteConfirmed = false
+        scheduleValidation()
+    }
 
     private func startCatalogueProbe(inputFolder: URL) {
         catalogueTask?.cancel()
@@ -191,11 +243,7 @@ final class ConfigurationModel {
 
         let outputFolder = outputFolder
         let perNegative = perNegative
-        // Canonical order, never a UI-derived one (section 3.3: "Swift
-        // always uses the order it is given and never sorts files itself"):
-        // filter the catalogue rather than iterate `selectedFiles` itself,
-        // whose `Set` has no meaningful order at all.
-        let files = catalogue.filter { selectedFiles.contains($0) }
+        let files = selectedFilesInCanonicalOrder
 
         isProbing = true
         validationTask = Task { [weak self, runner] in

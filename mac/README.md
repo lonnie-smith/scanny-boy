@@ -48,16 +48,20 @@ process's current directory.
 ## Layout
 
 - `ScannyBoy/App/`, `ScannyBoy/Views/` — the SwiftUI app.
+- `ScannyBoy/Model/` — `ConfigurationModel` (what may be run) and `RunModel`
+  (one `convert` invocation: progress, cancellation, and the manifest it left
+  behind), plus `RunManifest`, the read-back half of
+  `../shared/contract/manifest.schema.json`.
 - `ScannyBoy/CLIBridge/` — event decoding (`CLIEvent`), line reassembly
   (`LineAssembler`), the owned streaming session (`CLISession`), helper
   resolution (`CLILocator`), and argument construction (`CLIRunner`).
 - `ScannyBoyTests/` — Swift Testing unit tests, plus end-to-end tests that
   drive the real helper and skip with a reason when the helper or the sample
   NEFs are absent.
-- `ScannyBoyUITests/` — XCTest UI tests. Built on every test run but not in
-  the `ScannyBoy` scheme's test targets: the XCUITest runner fails to start on
-  this machine ("Test runner never began executing tests after launching"), so
-  running it would make CI fail at random. Chunk 10 owns the run UI these
-  belong to.
+- `ScannyBoyUITests/` — an XCTest launch smoke test. Chunk 8 kept this target
+  out of the scheme's test targets because its runner would not start on this
+  machine; it starts now, so Chunk 10 put it back. Everything the run UI
+  decides is tested directly against `RunModel` and `ConfigurationModel`
+  instead of through XCUITest.
 - `Scripts/check-staged-helper.sh` — pre-build check that fails legibly when
   the staged helper has been cleaned away.

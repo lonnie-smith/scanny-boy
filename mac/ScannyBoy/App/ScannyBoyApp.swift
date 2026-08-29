@@ -15,12 +15,13 @@ struct ScannyBoyApp: App {
 /// was never staged.
 struct RootView: View {
     @State private var model: ConfigurationModel?
+    @State private var run: RunModel?
     @State private var unavailableReason: String?
 
     var body: some View {
         Group {
-            if let model {
-                ContentView(model: model)
+            if let model, let run {
+                ContentView(model: model, run: run)
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
             } else {
@@ -33,7 +34,10 @@ struct RootView: View {
     private func resolveRunnerIfNeeded() {
         guard model == nil, unavailableReason == nil else { return }
         do {
-            model = ConfigurationModel(runner: try CLIRunner(locator: .mainBundle()))
+            // One resolved helper, shared by the probes and the conversion.
+            let runner = try CLIRunner(locator: .mainBundle())
+            model = ConfigurationModel(runner: runner)
+            run = RunModel(runner: runner)
         } catch let error as CLILocatorError {
             unavailableReason = error.description
         } catch {
