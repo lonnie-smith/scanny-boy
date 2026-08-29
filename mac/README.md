@@ -59,7 +59,8 @@ process's current directory.
 - `ScannyBoy/Model/` — `ConfigurationModel` (what may be run) and `RunModel`
   (one `convert` invocation: progress, cancellation, and the manifest it left
   behind), plus `RunManifest`, the read-back half of
-  `../shared/contract/manifest.schema.json`.
+  `../shared/contract/manifest.schema.json`, and `ThumbnailLoader`, which
+  renders the catalogue's previews.
 - `ScannyBoy/CLIBridge/` — event decoding (`CLIEvent`), line reassembly
   (`LineAssembler`), the owned streaming session (`CLISession`), helper
   resolution (`CLILocator`), and argument construction (`CLIRunner`).
