@@ -365,7 +365,7 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
     events, _err = _stdout_events(capsys)
     assert events[0]["event"] == "started"
     assert events[-1] == {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "event": "finished",
         "run_id": events[0]["run_id"],
         "status": "success",

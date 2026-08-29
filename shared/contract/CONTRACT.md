@@ -4,8 +4,15 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4. If the two ever
-disagree, the plan is authoritative.
+This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1 and
+`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3 for Phase 2. If this file and
+either plan ever disagree, the plan is authoritative.
+
+Protocol version 2 adds the `stitch` and `run` commands, the `stage` field on
+`progress`, seven new pipeline steps for the stitch stage, the `negative_done`
+and `negative_failed` events, and the stitch-related codes below. A client
+that only understands protocol version 1 must reject a version-2 stream
+rather than guess at the new fields.
 
 ## Invocation
 
@@ -17,7 +24,21 @@ scanny-boy convert \
   --input DIR --files FILE [FILE ...] \
   --out DIR --film-date YYYY-MM-DD --per-negative 3 \
   [--jobs N] [--overwrite]
+
+scanny-boy stitch \
+  --work DIR --out DIR \
+  [--jobs N] [--overwrite] [--allow-partial]
+
+scanny-boy run \
+  --input DIR --files FILE [FILE ...] --out DIR --film-date YYYY-MM-DD \
+  [--per-negative 3] [--jobs N] [--overwrite] \
+  [--work DIR] [--keep-intermediates]
 ```
+
+`stitch` and `run` are Phase 2 additions; see
+`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3.6 for their full behaviour.
+Neither is implemented yet as of protocol version 2 — this chunk only
+reserves their place in the contract.
 
 `probe` is read-only and works at two levels of detail:
 
@@ -72,20 +93,33 @@ computed default is never rejected this way, only lowered.
   when the event belongs to a conversion run.
 
 `schema.json` is the authoritative JSON Schema for one event line.
+`manifest.schema.json` is the authoritative schema for
+`scanny-boy-manifest.json`, the work directory's conversion record.
+`roll-manifest.schema.json` is the authoritative schema for
+`scanny-boy-roll.json`, the output folder's stitched-roll record (Phase 2
+section 3.7). Its writer is a later Phase 2 chunk; this contract only fixes
+its shape.
 
 ### Event types
 
 | Event | Meaning |
 | --- | --- |
-| `started` | The command began. Carries which command (`probe` or `convert`). |
+| `started` | The command began. Carries which command (`probe`, `convert`, `stitch`, or `run`). |
 | `probe_result` | The catalogue or selection validation result of `probe`. |
-| `progress` | Work in progress. Carries a stable source index, the pipeline step, a completed work count, and a total. |
+| `progress` | Work in progress. Carries a stable source index, the pipeline step, a completed work count, a total, and which stage (`convert` or `stitch`) it belongs to. |
 | `item_done` | A TIFF has been published in the output folder after its whole group completed successfully. |
 | `group_done` | A negative's group finished, after that group's `item_done` events. |
 | `group_failed` | A negative's group failed and its staging directory was removed. |
+| `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad`. |
+| `negative_failed` | A negative could not be stitched. Carries `negative_id`, `code`, and `message`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
+
+The pipeline step carried by `progress` is one of `decode`, `write_tiff`,
+`add_metadata` (the conversion stage) or `load`, `detect`, `match`, `solve`,
+`warp`, `blend`, `write_stitched` (the stitch stage). `stage` defaults to
+`convert` and is `stitch` only during the stitch stage of `stitch` or `run`.
 
 `probe_result` carries `catalogue` (the full input folder's `.nef` filenames
 in canonical order — section 3.3 — regardless of whether `--files` was
@@ -156,6 +190,23 @@ staging directories, and reruns the incomplete negative.
 | `ICC_PROFILE_INVALID` | Bundled profile missing or wrong SHA-256 |
 | `TIFF_WRITE_FAILED` | A TIFF or metadata write failed |
 | `CANCELLED` | Cooperative user cancellation |
+| `WORK_SAME_AS_OUTPUT` | `--work` resolves to `--out` |
+| `WORK_MANIFEST_UNUSABLE` | Work manifest is `running`/`cancelled`, or `partial` without `--allow-partial` |
+| `INTERMEDIATE_MISSING` | An intermediate named by the work manifest is absent |
+| `INTERMEDIATE_CHANGED` | An intermediate's size or SHA-256 differs from the work manifest |
+| `STITCH_INSUFFICIENT_MATCHES` | A pair fell below the inlier count or ratio gate |
+| `STITCH_UNDERCONSTRAINED` | The pair graph is disconnected; a frame cannot be placed |
+| `STITCH_RESIDUAL_TOO_HIGH` | A residual or overlap gate was exceeded |
+| `STITCH_OUTPUT_TOO_LARGE` | Estimated stitched file exceeds 3.5 GiB |
+| `STITCH_FAILED` | Any other failure while stitching one negative |
+| `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
+| `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped |
+| `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
+| `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
+| `INTERMEDIATES_KEPT` | Warning: work directory retained; carries its path |
+
+These stitch-related codes are reserved by protocol version 2; the pipeline
+behaviour that raises them is implemented in later Phase 2 chunks.
 
 ## Exit status
 

@@ -10,7 +10,7 @@ struct CLIEventTests {
     @Test("started")
     func startedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":1,"event":"started","command":"probe"}"#
+            line: #"{"protocol_version":2,"event":"started","command":"probe"}"#
         )
         #expect(event.kind == .started)
         #expect(event.command == "probe")
@@ -21,7 +21,7 @@ struct CLIEventTests {
     func probeResultDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"probe_result",\
+                {"protocol_version":2,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF","_DSC4639.NEF"],\
                 "warnings":["FILENAME_SORT_USED"],\
                 "groups":[["_DSC4638.NEF","_DSC4639.NEF"]]}
@@ -37,7 +37,7 @@ struct CLIEventTests {
     func probeResultWithOutDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"probe_result",\
+                {"protocol_version":2,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[["_DSC4638.NEF"]],\
                 "output_conflicts":["_DSC4638.tif"],\
                 "estimated_required_bytes":2223767655,"available_bytes":50000000000}
@@ -52,7 +52,7 @@ struct CLIEventTests {
     func probeResultWithoutOutDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"probe_result",\
+                {"protocol_version":2,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[],\
                 "output_conflicts":[],"estimated_required_bytes":null,"available_bytes":null}
                 """
@@ -66,7 +66,7 @@ struct CLIEventTests {
     func progressDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"progress","run_id":"r1",\
+                {"protocol_version":2,"event":"progress","run_id":"r1",\
                 "source_index":3,"step":"write_tiff","completed":4,"total":6}
                 """
         )
@@ -82,7 +82,7 @@ struct CLIEventTests {
     func itemDoneDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"item_done","run_id":"r1",\
+                {"protocol_version":2,"event":"item_done","run_id":"r1",\
                 "source_index":0,"output":"_DSC4638.tif"}
                 """
         )
@@ -94,7 +94,7 @@ struct CLIEventTests {
     @Test("group_done")
     func groupDoneDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":1,"event":"group_done","run_id":"r1","group_id":"g1"}"#
+            line: #"{"protocol_version":2,"event":"group_done","run_id":"r1","group_id":"g1"}"#
         )
         #expect(event.kind == .groupDone)
         #expect(event.groupID == "g1")
@@ -104,7 +104,7 @@ struct CLIEventTests {
     func groupFailedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"group_failed","run_id":"r1",\
+                {"protocol_version":2,"event":"group_failed","run_id":"r1",\
                 "group_id":"g2","code":"TIFF_WRITE_FAILED","message":"no space"}
                 """
         )
@@ -114,11 +114,56 @@ struct CLIEventTests {
         #expect(event.message == "no space")
     }
 
+    @Test("negative_done")
+    func negativeDoneDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":2,"event":"negative_done","run_id":"r1",\
+                "negative_id":"negative-0","output":"_DSC4638.tif",\
+                "width":13972,"height":4553,\
+                "global_rms_px":1.12,"max_overlap_mad":0.004}
+                """
+        )
+        #expect(event.kind == .negativeDone)
+        #expect(event.fields["negative_id"]?.stringValue == "negative-0")
+        #expect(event.output == "_DSC4638.tif")
+        #expect(event.fields["width"]?.intValue == 13972)
+        #expect(event.fields["height"]?.intValue == 4553)
+        #expect(event.fields["global_rms_px"]?.doubleValue == 1.12)
+        #expect(event.fields["max_overlap_mad"]?.doubleValue == 0.004)
+    }
+
+    @Test("negative_failed")
+    func negativeFailedDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":2,"event":"negative_failed","run_id":"r1",\
+                "negative_id":"negative-0","code":"STITCH_UNDERCONSTRAINED",\
+                "message":"frame not reachable"}
+                """
+        )
+        #expect(event.kind == .negativeFailed)
+        #expect(event.fields["negative_id"]?.stringValue == "negative-0")
+        #expect(event.code == .unknown("STITCH_UNDERCONSTRAINED"))
+        #expect(event.message == "frame not reachable")
+    }
+
+    @Test("progress carries the stitch stage")
+    func progressStitchStageDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":2,"event":"progress","run_id":"r1",\
+                "source_index":0,"step":"warp","completed":1,"total":6,"stage":"stitch"}
+                """
+        )
+        #expect(event.stage == "stitch")
+    }
+
     @Test("warning")
     func warningDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"warning",\
+                {"protocol_version":2,"event":"warning",\
                 "code":"FILENAME_SORT_USED","message":"fell back"}
                 """
         )
@@ -131,7 +176,7 @@ struct CLIEventTests {
     func errorDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"error",\
+                {"protocol_version":2,"event":"error",\
                 "code":"NON_CONTIGUOUS_SELECTION","message":"gap"}
                 """
         )
@@ -143,7 +188,7 @@ struct CLIEventTests {
     func finishedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"finished","run_id":"r1",\
+                {"protocol_version":2,"event":"finished","run_id":"r1",\
                 "status":"cancelled","exit_status":143}
                 """
         )
@@ -185,7 +230,7 @@ struct CLIEventTests {
     func unknownEventTypeIsPreserved() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"negative_previewed","run_id":"r1",\
+                {"protocol_version":2,"event":"negative_previewed","run_id":"r1",\
                 "group_id":"g1","preview":{"width":800,"height":600}}
                 """
         )
@@ -203,7 +248,7 @@ struct CLIEventTests {
     func unknownCodeIsPreserved() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"error",\
+                {"protocol_version":2,"event":"error",\
                 "code":"SENSOR_DUST_DETECTED","message":"speck"}
                 """
         )
@@ -216,7 +261,7 @@ struct CLIEventTests {
     func unknownFieldsSurvive() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":1,"event":"item_done","source_index":1,\
+                {"protocol_version":2,"event":"item_done","source_index":1,\
                 "output":"a.tif","bytes":154340928,"verified":true}
                 """
         )
@@ -250,15 +295,15 @@ struct CLIEventTests {
 
     @Test("a different protocol version is rejected rather than guessed at")
     func unsupportedProtocolVersionIsRejected() {
-        #expect(throws: CLIEventDecodingError.unsupportedProtocolVersion(2)) {
-            try CLIEvent(line: #"{"protocol_version":2,"event":"started","command":"probe"}"#)
+        #expect(throws: CLIEventDecodingError.unsupportedProtocolVersion(1)) {
+            try CLIEvent(line: #"{"protocol_version":1,"event":"started","command":"probe"}"#)
         }
     }
 
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":1,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":2,"command":"probe"}"#)
         }
     }
 }

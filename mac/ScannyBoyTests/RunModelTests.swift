@@ -39,32 +39,32 @@ struct RunModelTests {
     private static let runID = "run-0001"
 
     private static let started =
-        #"{"protocol_version":1,"event":"started","command":"convert","run_id":"run-0001"}"#
+        #"{"protocol_version":2,"event":"started","command":"convert","run_id":"run-0001"}"#
 
     private static func finished(status: String, exitStatus: Int) -> String {
-        #"{"protocol_version":1,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
+        #"{"protocol_version":2,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
     }
 
     private static func progress(
         sourceIndex: Int, step: String, completed: Int, total: Int
     ) -> String {
-        #"{"protocol_version":1,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
+        #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
     }
 
     private static func itemDone(sourceIndex: Int, output: String) -> String {
-        #"{"protocol_version":1,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
+        #"{"protocol_version":2,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
     }
 
     private static func groupDone(_ groupID: String) -> String {
-        #"{"protocol_version":1,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
+        #"{"protocol_version":2,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
     }
 
     private static func groupFailed(_ groupID: String, code: String, message: String) -> String {
-        #"{"protocol_version":1,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":2,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func errorEvent(code: String, message: String) -> String {
-        #"{"protocol_version":1,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":2,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static let sixFiles = [
@@ -522,9 +522,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":1,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let withConflicts =
-            #"{"protocol_version":1,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
+            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
         let script = """
             case "$*" in
               *--out*)
@@ -573,9 +573,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":1,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let clean =
-            #"{"protocol_version":1,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
+            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
         let script = """
             case "$*" in
               *--out*)
