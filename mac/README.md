@@ -5,7 +5,15 @@ subprocess and reads its JSON event stream. The interface between them is
 [`../shared/contract/CONTRACT.md`](../shared/contract/CONTRACT.md); the Swift
 side of it lives in [`ScannyBoy/CLIBridge/`](ScannyBoy/CLIBridge).
 
+Local-only Apple-silicon build: ad-hoc signing, no sandboxing, no
+notarisation, no Intel support. See
+[`../docs/DECISIONS.md`](../docs/DECISIONS.md) for why.
+
 ## Building
+
+Requires Xcode 16.2 and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+2.46 or newer (`brew install xcodegen`), plus a working Python setup in
+`../cli` (see the root README's "Building the app from a clean clone").
 
 `ScannyBoy.xcodeproj` is generated from `project.yml` and is not committed.
 Generating it requires the CLI helper to exist first, because `project.yml`
