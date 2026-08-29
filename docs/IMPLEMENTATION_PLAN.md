@@ -1219,8 +1219,9 @@ what Chunk 9 made it mean. Second, `ScannyBoyUITests` is back in the scheme's
 test targets: the runner Chunk 8 could not start now starts, checked over
 three consecutive local runs. The manual-verification list below is automated
 in `mac/ScannyBoyTests/RunIntegrationTests.swift` against the real helper and
-the real sample NEFs — which is evidence for section 8's approval point 4, not
-a substitute for it.
+the real sample NEFs. Section 8's approval point 4 — overwrite and
+cancellation behaviour in the finished app — was approved by the user on
+2026-08-29.
 
 Do:
 
@@ -1330,6 +1331,7 @@ Implementation pauses for the user at:
    2026-08-28, so this is not expected to trigger.
 3. Visual RAW/TIFF approval in Chunk 3.
 4. Overwrite and cancellation behaviour in the finished app.
+   **Approved 2026-08-29** by the user, on Chunk 10's run UI.
 5. Final clean-clone and end-to-end sign-off before `v0.1.0`.
 
 Agents may prepare evidence for these checks but may not approve them on the
