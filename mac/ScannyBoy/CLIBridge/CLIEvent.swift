@@ -1,0 +1,277 @@
+import Foundation
+
+/// One line of the CLI's stdout event stream.
+///
+/// `shared/contract/CONTRACT.md` and `shared/contract/schema.json` define the
+/// format; this type must stay consistent with them. Every known field is
+/// exposed through a typed accessor, and the complete decoded line is kept in
+/// `fields` so an event type or a field this version has never seen still
+/// reaches the app intact rather than failing the stream.
+public struct CLIEvent: Sendable, Hashable {
+    /// The only protocol version this app understands. A stream announcing
+    /// anything else is rejected rather than guessed at.
+    public static let supportedProtocolVersion = 1
+
+    public let protocolVersion: Int
+    public let kind: Kind
+    public let runID: String?
+    /// The whole decoded line, including fields with no typed accessor.
+    public let fields: [String: JSONValue]
+
+    public enum Kind: Sendable, Hashable {
+        case started
+        case probeResult
+        case progress
+        case itemDone
+        case groupDone
+        case groupFailed
+        case warning
+        case error
+        case finished
+        /// An event type this version of the app does not know. Its fields are
+        /// still preserved.
+        case unknown(String)
+
+        public init(name: String) {
+            switch name {
+            case "started": self = .started
+            case "probe_result": self = .probeResult
+            case "progress": self = .progress
+            case "item_done": self = .itemDone
+            case "group_done": self = .groupDone
+            case "group_failed": self = .groupFailed
+            case "warning": self = .warning
+            case "error": self = .error
+            case "finished": self = .finished
+            default: self = .unknown(name)
+            }
+        }
+
+        public var name: String {
+            switch self {
+            case .started: "started"
+            case .probeResult: "probe_result"
+            case .progress: "progress"
+            case .itemDone: "item_done"
+            case .groupDone: "group_done"
+            case .groupFailed: "group_failed"
+            case .warning: "warning"
+            case .error: "error"
+            case .finished: "finished"
+            case .unknown(let name): name
+            }
+        }
+
+        public var isKnown: Bool {
+            if case .unknown = self { return false }
+            return true
+        }
+    }
+
+    public init(line: String) throws {
+        guard let data = line.data(using: .utf8) else {
+            throw CLIEventDecodingError.notUTF8
+        }
+        let decoded: JSONValue
+        do {
+            decoded = try JSONDecoder().decode(JSONValue.self, from: data)
+        } catch {
+            throw CLIEventDecodingError.malformedJSON(String(describing: error))
+        }
+        guard let object = decoded.objectValue else {
+            throw CLIEventDecodingError.notAnObject
+        }
+        guard let version = object["protocol_version"]?.intValue else {
+            throw CLIEventDecodingError.missingProtocolVersion
+        }
+        guard version == Self.supportedProtocolVersion else {
+            throw CLIEventDecodingError.unsupportedProtocolVersion(version)
+        }
+        guard let name = object["event"]?.stringValue else {
+            throw CLIEventDecodingError.missingEventType
+        }
+
+        self.protocolVersion = version
+        self.kind = Kind(name: name)
+        self.runID = object["run_id"]?.stringValue
+        self.fields = object
+    }
+}
+
+extension CLIEvent {
+    // `started`
+    public var command: String? { fields["command"]?.stringValue }
+
+    // `probe_result`
+    public var catalogue: [String]? { fields["catalogue"]?.stringArrayValue }
+    public var warnings: [String]? { fields["warnings"]?.stringArrayValue }
+    public var groups: [[String]]? { fields["groups"]?.nestedStringArrayValue }
+
+    // `progress` and `item_done`
+    public var sourceIndex: Int? { fields["source_index"]?.intValue }
+    public var step: CLIPipelineStep? {
+        fields["step"]?.stringValue.map(CLIPipelineStep.init(name:))
+    }
+    public var completed: Int? { fields["completed"]?.intValue }
+    public var total: Int? { fields["total"]?.intValue }
+    public var output: String? { fields["output"]?.stringValue }
+
+    // `group_done` and `group_failed`
+    public var groupID: String? { fields["group_id"]?.stringValue }
+
+    // `warning`, `error`, and `group_failed`
+    public var code: CLICode? {
+        fields["code"]?.stringValue.map(CLICode.init(name:))
+    }
+    public var message: String? { fields["message"]?.stringValue }
+
+    // `finished`
+    public var status: String? { fields["status"]?.stringValue }
+    public var exitStatus: Int? { fields["exit_status"]?.intValue }
+}
+
+/// One pipeline step, from the plan's Vocabulary section.
+public enum CLIPipelineStep: Sendable, Hashable {
+    case decode
+    case writeTIFF
+    case addMetadata
+    case unknown(String)
+
+    public init(name: String) {
+        switch name {
+        case "decode": self = .decode
+        case "write_tiff": self = .writeTIFF
+        case "add_metadata": self = .addMetadata
+        default: self = .unknown(name)
+        }
+    }
+
+    public var name: String {
+        switch self {
+        case .decode: "decode"
+        case .writeTIFF: "write_tiff"
+        case .addMetadata: "add_metadata"
+        case .unknown(let name): name
+        }
+    }
+}
+
+/// A stable error or warning code from CONTRACT.md.
+///
+/// `unknown` exists for the same reason `CLIEvent.Kind.unknown` does: a newer
+/// CLI may report a code this app predates, and dropping the event would be
+/// worse than showing an unfamiliar code.
+public enum CLICode: Sendable, Hashable {
+    case noFiles
+    case nonContiguousSelection
+    case notDivisible
+    case invalidPerNegative
+    case missingCaptureTime
+    case filenameSortUsed
+    case unsupportedRAW
+    case captureMetadataMissing
+    case captureSettingsDiffer
+    case captureSpanTooLong
+    case unreadableRAW
+    case outputSameAsInput
+    case outputNotWritable
+    case outputNotEmpty
+    case outputConflict
+    case insufficientDisk
+    case insufficientMemory
+    case badManifest
+    case manifestMismatch
+    case iccProfileInvalid
+    case tiffWriteFailed
+    case cancelled
+    case unknown(String)
+
+    public init(name: String) {
+        switch name {
+        case "NO_FILES": self = .noFiles
+        case "NON_CONTIGUOUS_SELECTION": self = .nonContiguousSelection
+        case "NOT_DIVISIBLE": self = .notDivisible
+        case "INVALID_PER_NEGATIVE": self = .invalidPerNegative
+        case "MISSING_CAPTURE_TIME": self = .missingCaptureTime
+        case "FILENAME_SORT_USED": self = .filenameSortUsed
+        case "UNSUPPORTED_RAW": self = .unsupportedRAW
+        case "CAPTURE_METADATA_MISSING": self = .captureMetadataMissing
+        case "CAPTURE_SETTINGS_DIFFER": self = .captureSettingsDiffer
+        case "CAPTURE_SPAN_TOO_LONG": self = .captureSpanTooLong
+        case "UNREADABLE_RAW": self = .unreadableRAW
+        case "OUTPUT_SAME_AS_INPUT": self = .outputSameAsInput
+        case "OUTPUT_NOT_WRITABLE": self = .outputNotWritable
+        case "OUTPUT_NOT_EMPTY": self = .outputNotEmpty
+        case "OUTPUT_CONFLICT": self = .outputConflict
+        case "INSUFFICIENT_DISK": self = .insufficientDisk
+        case "INSUFFICIENT_MEMORY": self = .insufficientMemory
+        case "BAD_MANIFEST": self = .badManifest
+        case "MANIFEST_MISMATCH": self = .manifestMismatch
+        case "ICC_PROFILE_INVALID": self = .iccProfileInvalid
+        case "TIFF_WRITE_FAILED": self = .tiffWriteFailed
+        case "CANCELLED": self = .cancelled
+        default: self = .unknown(name)
+        }
+    }
+
+    public var name: String {
+        switch self {
+        case .noFiles: "NO_FILES"
+        case .nonContiguousSelection: "NON_CONTIGUOUS_SELECTION"
+        case .notDivisible: "NOT_DIVISIBLE"
+        case .invalidPerNegative: "INVALID_PER_NEGATIVE"
+        case .missingCaptureTime: "MISSING_CAPTURE_TIME"
+        case .filenameSortUsed: "FILENAME_SORT_USED"
+        case .unsupportedRAW: "UNSUPPORTED_RAW"
+        case .captureMetadataMissing: "CAPTURE_METADATA_MISSING"
+        case .captureSettingsDiffer: "CAPTURE_SETTINGS_DIFFER"
+        case .captureSpanTooLong: "CAPTURE_SPAN_TOO_LONG"
+        case .unreadableRAW: "UNREADABLE_RAW"
+        case .outputSameAsInput: "OUTPUT_SAME_AS_INPUT"
+        case .outputNotWritable: "OUTPUT_NOT_WRITABLE"
+        case .outputNotEmpty: "OUTPUT_NOT_EMPTY"
+        case .outputConflict: "OUTPUT_CONFLICT"
+        case .insufficientDisk: "INSUFFICIENT_DISK"
+        case .insufficientMemory: "INSUFFICIENT_MEMORY"
+        case .badManifest: "BAD_MANIFEST"
+        case .manifestMismatch: "MANIFEST_MISMATCH"
+        case .iccProfileInvalid: "ICC_PROFILE_INVALID"
+        case .tiffWriteFailed: "TIFF_WRITE_FAILED"
+        case .cancelled: "CANCELLED"
+        case .unknown(let name): name
+        }
+    }
+}
+
+/// Why one stdout line could not be read as an event. An unknown *event type*
+/// is not one of these: that decodes successfully as `Kind.unknown`.
+public enum CLIEventDecodingError: Error, Sendable, Hashable {
+    case notUTF8
+    case malformedJSON(String)
+    case notAnObject
+    case missingProtocolVersion
+    case unsupportedProtocolVersion(Int)
+    case missingEventType
+}
+
+extension CLIEventDecodingError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .notUTF8:
+            "the line was not valid UTF-8"
+        case .malformedJSON(let detail):
+            "the line was not valid JSON: \(detail)"
+        case .notAnObject:
+            "the line was valid JSON but not an object"
+        case .missingProtocolVersion:
+            "the line has no integer `protocol_version`"
+        case .unsupportedProtocolVersion(let version):
+            """
+            the line announces protocol version \(version); this app \
+            understands version \(CLIEvent.supportedProtocolVersion)
+            """
+        case .missingEventType:
+            "the line has no string `event`"
+        }
+    }
+}

@@ -1,0 +1,127 @@
+# XcodeGen definition for the macOS app. `mac/ScannyBoy.xcodeproj` is
+# generated from this file and is never committed
+# (docs/IMPLEMENTATION_PLAN.md section 3.1).
+#
+# `./scripts/build-cli.sh` is a prerequisite of `xcodegen generate`, not an
+# optional convenience: the copy-files phase below references
+# `ScannyBoy/Helpers/ScannyBoyCLI.app`, which is build output, is ignored by
+# Git, and is absent from a clean checkout. Generation fails outright without
+# it, and the pre-build check in the app target catches a helper deleted after
+# generation.
+name: ScannyBoy
+
+options:
+  bundleIdPrefix: com.lonniesmith
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  minimumXcodeGenVersion: "2.46.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # For this local-only release ad-hoc signing is enough; external
+    # distribution needs a separate signing and notarisation plan
+    # (section 5.2).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    # Phase 1 is explicitly not sandboxed (section 1).
+    ENABLE_APP_SANDBOX: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: YES
+
+targets:
+  ScannyBoy:
+    type: application
+    platform: macOS
+    sources:
+      - path: ScannyBoy
+        excludes:
+          - "Helpers/**"
+      # The frozen Python program, copied into `Contents/Helpers` — a
+      # permitted nested-code location, never `Contents/Resources` — and
+      # signed on copy so the helper is signed before the outer app
+      # (section 5.2).
+      - path: ScannyBoy/Helpers/ScannyBoyCLI.app
+        type: file
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Helpers
+        attributes: [CodeSignOnCopy]
+    info:
+      path: ScannyBoy/Info.plist
+      properties:
+        CFBundleName: Scanny Boy
+        CFBundleDisplayName: Scanny Boy
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "0.1.0"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.photography
+        NSHumanReadableCopyright: Copyright (c) 2026 Lonnie Smith. All rights reserved.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lonniesmith.scanny-boy
+        PRODUCT_NAME: ScannyBoy
+        COMBINE_HIDPI_IMAGES: YES
+    preBuildScripts:
+      - name: Check staged CLI helper
+        basedOnDependencyAnalysis: false
+        script: |
+          "$SRCROOT/Scripts/check-staged-helper.sh"
+
+  ScannyBoyTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - ScannyBoyTests
+    dependencies:
+      - target: ScannyBoy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lonniesmith.scanny-boy.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  ScannyBoyUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - ScannyBoyUITests
+    dependencies:
+      - target: ScannyBoy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lonniesmith.scanny-boy.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ScannyBoy:
+    build:
+      targets:
+        ScannyBoy: all
+        ScannyBoyTests: [test]
+        # Built during the test action but deliberately absent from the test
+        # targets below. `ScannyBoyUITests-Runner` fails to start on this
+        # machine ("Test runner never began executing tests after launching"),
+        # and a required check that fails at random is worse than no check.
+        # The target still compiles on every test run, so it cannot rot before
+        # Chunk 10 builds the run UI it belongs to.
+        ScannyBoyUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - ScannyBoyTests
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

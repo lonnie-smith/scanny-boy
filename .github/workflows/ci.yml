@@ -30,3 +30,62 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  swift:
+    name: swift
+    runs-on: macos-15
+    env:
+      # Xcode 16.2, build 16C5032a — the same build as the development
+      # machine. `macos-14` is deprecated and unsupported after 2026-11-02,
+      # so this job must stay on `macos-15`. If a future image drops Xcode
+      # 16.2, move to the newest Xcode 16 present rather than pinning a
+      # path that no longer exists.
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Select Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        working-directory: cli
+        run: uv sync --locked
+
+      - name: Install or verify XcodeGen 2.46
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          installed="$(xcodegen --version | awk '{ print $2 }')"
+          echo "XcodeGen $installed"
+          required=2.46.0
+          if [ "$(printf '%s\n%s\n' "$required" "$installed" | sort -V | head -n 1)" != "$required" ]; then
+            echo "XcodeGen $required or newer is required; found $installed" >&2
+            exit 1
+          fi
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # `cli/dist/` is ignored by Git and absent from a clean checkout, and
+      # project.yml names the staged helper in a copy-files phase, so this
+      # has to run before the project can even be generated.
+      - name: Build and stage the CLI helper
+        run: ./scripts/build-cli.sh
+
+      - name: Generate the Xcode project
+        working-directory: mac
+        run: xcodegen generate
+
+      - name: Test
+        working-directory: mac
+        run: |
+          xcodebuild test \
+            -scheme ScannyBoy \
+            -destination 'platform=macOS' \
+            -resultBundlePath TestResults.xcresult

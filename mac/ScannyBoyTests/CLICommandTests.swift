@@ -1,0 +1,100 @@
+import Foundation
+import Testing
+
+@testable import ScannyBoy
+
+/// The argument lists must match `shared/contract/CONTRACT.md` exactly; the
+/// CLI rejects anything else as a usage error.
+@Suite("CLI command construction")
+struct CLICommandTests {
+    private static let input = URL(filePath: "/Volumes/Scans/roll-12")
+    private static let out = URL(filePath: "/Volumes/Scans/roll-12-tif")
+
+    @Test("probe with an input folder alone asks only for the catalogue")
+    func probeWithInputAlone() {
+        let command = CLICommand.probe(input: Self.input)
+        #expect(command.arguments == ["probe", "--input", "/Volumes/Scans/roll-12"])
+    }
+
+    @Test("probe with a selection passes relative filenames, never paths")
+    func probeWithSelection() {
+        let command = CLICommand.probe(
+            input: Self.input,
+            files: ["_DSC4638.NEF", "_DSC4639.NEF"],
+            perNegative: 3
+        )
+        #expect(
+            command.arguments == [
+                "probe", "--input", "/Volumes/Scans/roll-12",
+                "--files", "_DSC4638.NEF", "_DSC4639.NEF",
+                "--per-negative", "3",
+            ]
+        )
+        #expect(!command.arguments.contains { $0.hasPrefix("/Volumes/Scans/roll-12/_DSC") })
+    }
+
+    @Test("probe can include the output folder for the conflict preview")
+    func probeWithOutputFolder() {
+        let command = CLICommand.probe(input: Self.input, files: ["a.NEF"], out: Self.out)
+        #expect(
+            command.arguments == [
+                "probe", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF",
+                "--out", "/Volumes/Scans/roll-12-tif",
+            ]
+        )
+    }
+
+    @Test("convert carries every required flag")
+    func convertRequiredFlags() {
+        let command = CLICommand.convert(
+            input: Self.input,
+            files: ["a.NEF", "b.NEF", "c.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02"
+        )
+        #expect(
+            command.arguments == [
+                "convert", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF", "b.NEF", "c.NEF",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--film-date", "2026-08-02",
+            ]
+        )
+    }
+
+    @Test("convert adds the optional flags only when asked")
+    func convertOptionalFlags() {
+        let command = CLICommand.convert(
+            input: Self.input,
+            files: ["a.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02",
+            perNegative: 1,
+            jobs: 4,
+            overwrite: true
+        )
+        #expect(
+            command.arguments == [
+                "convert", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--film-date", "2026-08-02",
+                "--per-negative", "1",
+                "--jobs", "4",
+                "--overwrite",
+            ]
+        )
+    }
+
+    @Test("--overwrite is absent unless the user confirmed the replacements")
+    func overwriteIsOptIn() {
+        let command = CLICommand.convert(
+            input: Self.input,
+            files: ["a.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02"
+        )
+        #expect(!command.arguments.contains("--overwrite"))
+    }
+}
