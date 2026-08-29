@@ -94,6 +94,19 @@ this probe, as a convenience rollup), and `groups` (present only when
 `--files` was given and validated: the selection's filenames in canonical
 order, chunked into `shots_per_negative`-sized negatives; empty otherwise).
 
+When `--out` is also given alongside a validated `--files` selection,
+`probe_result` additionally carries `output_conflicts` (output filenames
+that already exist and would be replaced by a matching rerun — the
+confirmation list section 3.6 requires before `convert --overwrite`),
+`estimated_required_bytes` (the section 3.9 disk estimate for this run), and
+`available_bytes` (free space on the output volume at probe time). All three
+are absent (`output_conflicts` empty, the byte fields `null`) when `--out`
+was not given. A bad output folder, a manifest that does not match this
+selection, an invalid ICC profile, or insufficient disk space fails the
+whole `probe` the same way it would fail `convert` — `output_conflicts` on
+its own is never a failure; it is only ever a preview the app shows the user
+before asking them to confirm `--overwrite`.
+
 Parallel completion order need not match source order. The UI derives overall
 progress from counts, never from the largest source index seen.
 

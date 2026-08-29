@@ -15,6 +15,7 @@ from scanny_boy.output_folder import (
     apply_recovery_cleanup,
     list_non_dot_entries,
     plan_rerun,
+    plan_rerun_preview,
     staging_dir_path,
     validate_not_same_as_input,
     validate_writable,
@@ -192,6 +193,70 @@ def test_plan_rerun_treats_non_completed_groups_outputs_as_stale_not_conflicting
     assert plan.conflicting_outputs == []
     assert plan.stale_outputs == ["a.tif"]
     assert plan.stale_staging_dirs == [staging]
+
+
+# --- plan_rerun_preview (probe --out, before a film date is known) --------
+
+
+def _known_fields(manifest: Manifest) -> dict:
+    return {
+        "source_order": manifest.source_order,
+        "source_hashes": {s.filename: s.sha256 for s in manifest.sources},
+        "shots_per_negative": manifest.shots_per_negative,
+        "groups": [(g.group_id, g.members) for g in manifest.groups],
+        "icc_sha256": manifest.icc_profile.get("sha256"),
+    }
+
+
+def test_plan_rerun_preview_empty_folder_has_no_prior_manifest(tmp_path):
+    plan = plan_rerun_preview(tmp_path, **_known_fields(_manifest()))
+    assert plan.existing_manifest is None
+    assert plan.conflicting_outputs == []
+
+
+def test_plan_rerun_preview_nonempty_folder_without_manifest_is_output_not_empty(tmp_path):
+    (tmp_path / "some-other-file.tif").touch()
+
+    with pytest.raises(OutputFolderError) as excinfo:
+        plan_rerun_preview(tmp_path, **_known_fields(_manifest()))
+    assert excinfo.value.code.value == "OUTPUT_NOT_EMPTY"
+
+
+def test_plan_rerun_preview_reports_conflicts_for_completed_groups_whose_outputs_exist(tmp_path):
+    existing = _manifest()
+    write_manifest(tmp_path, existing)
+    (tmp_path / "a.tif").touch()
+    (tmp_path / "b.tif").touch()
+    (tmp_path / "c.tif").touch()
+
+    plan = plan_rerun_preview(tmp_path, **_known_fields(_manifest()))
+
+    assert sorted(plan.conflicting_outputs) == ["a.tif", "b.tif", "c.tif"]
+
+
+def test_plan_rerun_preview_mismatch_on_source_order_propagates(tmp_path):
+    write_manifest(tmp_path, _manifest())
+
+    different = _manifest(source_order=["a.NEF", "b.NEF"])
+    with pytest.raises(ManifestMismatchError):
+        plan_rerun_preview(tmp_path, **_known_fields(different))
+
+
+def test_plan_rerun_preview_accepts_a_different_film_date(tmp_path):
+    """The reason this function exists separately from `plan_rerun`: at
+    probe time the film date is not known yet (section 4.1's preview runs
+    before `convert`), so a difference there must not be treated as a
+    mismatch — only `convert`'s full `plan_rerun` call does that, once the
+    film date is entered."""
+    write_manifest(tmp_path, _manifest(film_date="2026-08-02"))
+    (tmp_path / "a.tif").touch()
+
+    different_date = _manifest(film_date="2026-09-01")
+    plan = plan_rerun_preview(tmp_path, **_known_fields(different_date))  # must not raise
+
+    assert plan.conflicting_outputs == ["a.tif"]
+    with pytest.raises(ManifestMismatchError):
+        plan_rerun(tmp_path, different_date)
 
 
 def test_apply_recovery_cleanup_deletes_stale_outputs_and_staging_dirs(tmp_path):

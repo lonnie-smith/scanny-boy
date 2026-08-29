@@ -139,7 +139,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         try:
             outcome = run_probe(
-                Path(args.input), files, args.per_negative, on_warning=on_warning
+                Path(args.input),
+                files,
+                args.per_negative,
+                out_dir=Path(args.out) if args.out else None,
+                on_warning=on_warning,
             )
         except ProbeFailure as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
@@ -150,6 +154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 catalogue=outcome.catalogue,
                 warnings=emitted_warnings,
                 groups=outcome.groups,
+                output_conflicts=outcome.output_conflicts,
+                estimated_required_bytes=outcome.estimated_required_bytes,
+                available_bytes=outcome.available_bytes,
             )
         )
         writer.write(Finished(status="success", exit_status=0))

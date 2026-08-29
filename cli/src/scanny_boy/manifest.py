@@ -412,36 +412,65 @@ def _manifest_from_dict(data: dict[str, Any]) -> Manifest:
 # --- Rerun-mismatch comparison -------------------------------------------
 
 
+def _source_hash_map(sources: list[SourceRecord]) -> dict[str, str]:
+    return {s.filename: s.sha256 for s in sources}
+
+
+def check_rerun_compatible(
+    existing: Manifest,
+    *,
+    source_order: list[str],
+    source_hashes: dict[str, str],
+    shots_per_negative: int,
+    groups: list[tuple[str, list[str]]],
+    icc_sha256: str | None,
+) -> None:
+    """The subset of `check_rerun_matches`'s comparison available before a
+    film date is known: source order and hashes, grouping, and the ICC
+    profile. `probe --out` uses this for its overwrite-conflict preview
+    (section 4.1); `convert` still runs the complete `check_rerun_matches`
+    below before it writes anything, so a film date entered differently from
+    what was previewed is still caught."""
+    if existing.source_order != source_order:
+        raise ManifestMismatchError(
+            "the selection's source order differs from the previous run "
+            f"recorded in {MANIFEST_FILENAME}"
+        )
+
+    if _source_hash_map(existing.sources) != source_hashes:
+        raise ManifestMismatchError(
+            "one or more source files' hashes differ from the previous run "
+            f"recorded in {MANIFEST_FILENAME}"
+        )
+
+    if existing.shots_per_negative != shots_per_negative:
+        raise ManifestMismatchError(
+            f"shots per negative changed from {existing.shots_per_negative} "
+            f"to {shots_per_negative} since the previous run"
+        )
+
+    existing_groups = [(g.group_id, g.members) for g in existing.groups]
+    if existing_groups != groups:
+        raise ManifestMismatchError("negative grouping differs from the previous run")
+
+    if existing.icc_profile.get("sha256") != icc_sha256:
+        raise ManifestMismatchError("the ICC profile differs from the previous run")
+
+
 def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
     """Section 3.6: "A rerun in the same folder must match the previous
     source filenames and hashes, order, grouping, film date, processing
     settings, and ICC hash." Raises `ManifestMismatchError` naming the first
     field that differs; `run_id`, `status`, and timing fields are expected
     to differ and are not compared."""
-    if existing.source_order != candidate.source_order:
-        raise ManifestMismatchError(
-            "the selection's source order differs from the previous run "
-            f"recorded in {MANIFEST_FILENAME}"
-        )
-
-    existing_hashes = {s.filename: s.sha256 for s in existing.sources}
-    candidate_hashes = {s.filename: s.sha256 for s in candidate.sources}
-    if existing_hashes != candidate_hashes:
-        raise ManifestMismatchError(
-            "one or more source files' hashes differ from the previous run "
-            f"recorded in {MANIFEST_FILENAME}"
-        )
-
-    if existing.shots_per_negative != candidate.shots_per_negative:
-        raise ManifestMismatchError(
-            f"shots per negative changed from {existing.shots_per_negative} "
-            f"to {candidate.shots_per_negative} since the previous run"
-        )
-
-    existing_groups = [(g.group_id, g.members) for g in existing.groups]
-    candidate_groups = [(g.group_id, g.members) for g in candidate.groups]
-    if existing_groups != candidate_groups:
-        raise ManifestMismatchError("negative grouping differs from the previous run")
+    check_rerun_compatible(
+        existing,
+        source_order=candidate.source_order,
+        source_hashes=_source_hash_map(candidate.sources),
+        shots_per_negative=candidate.shots_per_negative,
+        groups=[(g.group_id, g.members) for g in candidate.groups],
+        icc_sha256=candidate.icc_profile.get("sha256"),
+    )
 
     if existing.film_date != candidate.film_date:
         raise ManifestMismatchError(
@@ -451,6 +480,3 @@ def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
 
     if existing.processing_params != candidate.processing_params:
         raise ManifestMismatchError("processing settings differ from the previous run")
-
-    if existing.icc_profile.get("sha256") != candidate.icc_profile.get("sha256"):
-        raise ManifestMismatchError("the ICC profile differs from the previous run")

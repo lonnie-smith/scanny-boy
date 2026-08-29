@@ -33,6 +33,35 @@ struct CLIEventTests {
         #expect(event.groups == [["_DSC4638.NEF", "_DSC4639.NEF"]])
     }
 
+    @Test("probe_result with --out carries the disk estimate and conflict preview")
+    func probeResultWithOutDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":1,"event":"probe_result",\
+                "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[["_DSC4638.NEF"]],\
+                "output_conflicts":["_DSC4638.tif"],\
+                "estimated_required_bytes":2223767655,"available_bytes":50000000000}
+                """
+        )
+        #expect(event.outputConflicts == ["_DSC4638.tif"])
+        #expect(event.estimatedRequiredBytes == 2_223_767_655)
+        #expect(event.availableBytes == 50_000_000_000)
+    }
+
+    @Test("probe_result without --out leaves the disk fields null")
+    func probeResultWithoutOutDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":1,"event":"probe_result",\
+                "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[],\
+                "output_conflicts":[],"estimated_required_bytes":null,"available_bytes":null}
+                """
+        )
+        #expect(event.outputConflicts == [])
+        #expect(event.estimatedRequiredBytes == nil)
+        #expect(event.availableBytes == nil)
+    }
+
     @Test("progress")
     func progressDecodes() throws {
         let event = try CLIEvent(

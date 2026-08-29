@@ -1,6 +1,8 @@
-"""Orchestrates `probe`'s two levels of detail: whole-catalogue canonical
-ordering, and (with `--files`) selection, grouping, and setup-consistency
-validation. See `docs/IMPLEMENTATION_PLAN.md` section 4.1.
+"""Orchestrates `probe`'s levels of detail: whole-catalogue canonical
+ordering, (with `--files`) selection, grouping, and setup-consistency
+validation, and (with `--files` and `--out`) output-folder validation, disk
+estimate, and overwrite-conflict preview. See
+`docs/IMPLEMENTATION_PLAN.md` section 4.1.
 
 Every problem this module detects is reported through `ProbeFailure`,
 carrying one of the stable `CONTRACT.md` codes. Some structural problems —
@@ -19,6 +21,7 @@ event stream `CONTRACT.md` describes.
 from __future__ import annotations
 
 import dataclasses
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -28,12 +31,35 @@ from scanny_boy.catalogue import (
     discover_catalogue,
 )
 from scanny_boy.consistency import ConsistencyError, check_consistency
+from scanny_boy.disk_check import required_free_bytes
 from scanny_boy.events import Code
+from scanny_boy.icc_profile import (
+    PROFILE_FILENAME,
+    PROFILE_SHA256,
+    IccProfileError,
+    load_icc_profile,
+)
+from scanny_boy.manifest import (
+    BadManifestError,
+    Manifest,
+    ManifestMismatchError,
+    current_scanny_boy_version,
+    estimate_manifest_size,
+)
 from scanny_boy.metadata import (
+    SourceSettings,
     UnreadableRawError,
     UnsupportedRawError,
     read_source_settings,
 )
+from scanny_boy.output_folder import (
+    OutputFolderError,
+    plan_rerun_preview,
+    validate_not_same_as_input,
+    validate_writable,
+)
+from scanny_boy.pipeline import build_curated_metadata, build_groups, hash_sources
+from scanny_boy.raw_decode import jsonable_raw_params, read_active_size
 from scanny_boy.selection import (
     SelectionUsageError,
     group,
@@ -43,6 +69,14 @@ from scanny_boy.selection import (
 )
 
 OnWarning = Callable[[Code, str], None]
+
+# `probe --out` never writes a manifest and does not yet know the film date
+# (section 4.1: the preview happens before `convert`, which is what supplies
+# it). These placeholders only affect the byte length `estimate_manifest_size`
+# measures, not any field a rerun's `MANIFEST_MISMATCH` check compares.
+_PREVIEW_RUN_ID = "preview"
+_PREVIEW_FILM_DATE = "0001-01-01"
+_PREVIEW_TIMESTAMP = "0001-01-01T00:00:00+00:00"
 
 
 class ProbeFailure(Exception):
@@ -56,6 +90,100 @@ class ProbeFailure(Exception):
 class ProbeOutcome:
     catalogue: list[str]
     groups: list[list[str]]
+    output_conflicts: list[str] = dataclasses.field(default_factory=list)
+    estimated_required_bytes: int | None = None
+    available_bytes: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _OutputPreview:
+    output_conflicts: list[str]
+    estimated_required_bytes: int
+    available_bytes: int
+
+
+def _preview_output_folder(
+    input_dir: Path,
+    selected: list[str],
+    per_negative: int,
+    settings_list: list[SourceSettings],
+    out_dir: Path,
+) -> _OutputPreview:
+    """`probe --out`'s output-folder validation and overwrite-conflict
+    preview (section 4.1). Raises `ProbeFailure` for anything that would
+    also stop `convert`: a bad output folder, a manifest that does not match
+    this selection, an invalid ICC profile, or insufficient disk space.
+    Existing outputs that a matching rerun would replace are not a failure
+    here — they are reported in the returned conflict list, exactly like
+    section 3.6's "show the exact files that will be replaced and require
+    confirmation.\""""
+    try:
+        validate_not_same_as_input(input_dir, out_dir)
+        validate_writable(out_dir)
+    except OutputFolderError as exc:
+        raise ProbeFailure(exc.code, exc.message) from exc
+
+    source_records = hash_sources(input_dir, selected)
+    group_records = build_groups(selected, per_negative)
+
+    try:
+        load_icc_profile()
+    except IccProfileError as exc:
+        raise ProbeFailure(exc.code, exc.message) from exc
+
+    try:
+        plan = plan_rerun_preview(
+            out_dir,
+            source_order=selected,
+            source_hashes={r.filename: r.sha256 for r in source_records},
+            shots_per_negative=per_negative,
+            groups=[(g.group_id, g.members) for g in group_records],
+            icc_sha256=PROFILE_SHA256,
+        )
+    except (OutputFolderError, BadManifestError, ManifestMismatchError) as exc:
+        raise ProbeFailure(exc.code, exc.message) from exc
+
+    width, height = read_active_size(input_dir / selected[0])
+    placeholder = Manifest(
+        scanny_boy_version=current_scanny_boy_version(),
+        run_id=_PREVIEW_RUN_ID,
+        status="running",
+        input_folder=str(input_dir.resolve()),
+        film_date=_PREVIEW_FILM_DATE,
+        shots_per_negative=per_negative,
+        processing_params=jsonable_raw_params(),
+        icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+        source_order=selected,
+        sources=source_records,
+        curated_metadata=build_curated_metadata(settings_list),
+        groups=group_records,
+        started_at=_PREVIEW_TIMESTAMP,
+        finished_at=None,
+    )
+
+    missing_output_count = sum(
+        1 for name in placeholder.all_expected_outputs() if not (out_dir / name).exists()
+    )
+    required_bytes = required_free_bytes(
+        width=width,
+        height=height,
+        missing_output_count=missing_output_count,
+        largest_group_size=per_negative,
+        manifest_size_estimate=estimate_manifest_size(placeholder),
+    )
+    available_bytes = shutil.disk_usage(out_dir).free
+    if available_bytes < required_bytes:
+        raise ProbeFailure(
+            Code.INSUFFICIENT_DISK,
+            f"required {required_bytes} bytes free, but only "
+            f"{available_bytes} bytes are available on the output volume",
+        )
+
+    return _OutputPreview(
+        output_conflicts=sorted(set(plan.conflicting_outputs)),
+        estimated_required_bytes=required_bytes,
+        available_bytes=available_bytes,
+    )
 
 
 def run_probe(
@@ -63,6 +191,7 @@ def run_probe(
     files: list[str] | None,
     per_negative: int,
     *,
+    out_dir: Path | None = None,
     on_warning: OnWarning = lambda code, message: None,
 ) -> ProbeOutcome:
     try:
@@ -138,4 +267,16 @@ def run_probe(
     for warning in result.warnings:
         on_warning(warning.code, warning.message)
 
-    return ProbeOutcome(catalogue=order.order, groups=groups)
+    preview = None
+    if out_dir is not None:
+        preview = _preview_output_folder(
+            input_dir, selection.names, per_negative, settings_list, out_dir
+        )
+
+    return ProbeOutcome(
+        catalogue=order.order,
+        groups=groups,
+        output_conflicts=preview.output_conflicts if preview else [],
+        estimated_required_bytes=preview.estimated_required_bytes if preview else None,
+        available_bytes=preview.available_bytes if preview else None,
+    )

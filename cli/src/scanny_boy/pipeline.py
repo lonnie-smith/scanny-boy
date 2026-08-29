@@ -321,7 +321,7 @@ def _read_settings_and_check_consistency(
     return settings_list
 
 
-def _hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
+def hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
     records = []
     for name in selected:
         path = input_dir / name
@@ -338,7 +338,7 @@ def _hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
     return records
 
 
-def _build_groups(selected: list[str], per_negative: int) -> list[GroupRecord]:
+def build_groups(selected: list[str], per_negative: int) -> list[GroupRecord]:
     groups = []
     for i, members in enumerate(group_names(selected, per_negative)):
         groups.append(
@@ -351,7 +351,7 @@ def _build_groups(selected: list[str], per_negative: int) -> list[GroupRecord]:
     return groups
 
 
-def _build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetadata:
+def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetadata:
     first = settings_list[0]
     return CuratedMetadata(
         exposure_time=str(first.exposure_time),
@@ -576,7 +576,7 @@ def run_convert(
         raise ConvertFailure(exc.code, exc.message) from exc
 
     settings_list = _read_settings_and_check_consistency(input_dir, selected)
-    source_records = _hash_sources(input_dir, selected)
+    source_records = hash_sources(input_dir, selected)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
     synthetic_times = _compute_synthetic_times(
         input_dir, selected, film_date, validated.used_filename_fallback
@@ -587,7 +587,7 @@ def run_convert(
     except IccProfileError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
-    groups = _build_groups(selected, per_negative)
+    groups = build_groups(selected, per_negative)
     candidate = Manifest(
         scanny_boy_version=current_scanny_boy_version(),
         run_id=run_id,
@@ -599,7 +599,7 @@ def run_convert(
         icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
         source_order=selected,
         sources=source_records,
-        curated_metadata=_build_curated_metadata(settings_list),
+        curated_metadata=build_curated_metadata(settings_list),
         groups=groups,
         started_at=_now_iso(),
         finished_at=None,

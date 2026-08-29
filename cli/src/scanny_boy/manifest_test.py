@@ -11,6 +11,7 @@ from scanny_boy.manifest import (
     ManifestMismatchError,
     OutputRecord,
     SourceRecord,
+    check_rerun_compatible,
     check_rerun_matches,
     estimate_manifest_size,
     load_manifest,
@@ -249,6 +250,66 @@ def test_check_rerun_matches_ignores_run_id_status_and_timing():
     existing = _manifest(run_id="old", status="complete", started_at="t1", finished_at="t2")
     candidate = _manifest(run_id="new", status="running", started_at="t3", finished_at=None)
     check_rerun_matches(existing, candidate)  # must not raise
+
+
+# --- check_rerun_compatible (probe --out's preview, before a film date is
+# known) ---------------------------------------------------------------
+
+
+def _known_fields(manifest: Manifest) -> dict:
+    return {
+        "source_order": manifest.source_order,
+        "source_hashes": {s.filename: s.sha256 for s in manifest.sources},
+        "shots_per_negative": manifest.shots_per_negative,
+        "groups": [(g.group_id, g.members) for g in manifest.groups],
+        "icc_sha256": manifest.icc_profile.get("sha256"),
+    }
+
+
+def test_check_rerun_compatible_accepts_an_identical_candidate():
+    existing = _manifest(run_id="old-run")
+    check_rerun_compatible(existing, **_known_fields(_manifest(run_id="new-run")))  # no raise
+
+
+@pytest.mark.parametrize(
+    ("field", "override"),
+    [
+        ("source_order", {"source_order": ["_DSC4639.NEF"], "sources": [_source("_DSC4639.NEF")]}),
+        ("sources", {"sources": [SourceRecord("_DSC4638.NEF", "/input/x", 1, 1.0, "b" * 64)]}),
+        ("shots_per_negative", {"shots_per_negative": 4}),
+        ("icc_profile", {"icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "b" * 64}}),
+    ],
+)
+def test_check_rerun_compatible_rejects_each_known_field(field, override):
+    existing = _manifest()
+    candidate = _manifest(**override)
+
+    with pytest.raises(ManifestMismatchError):
+        check_rerun_compatible(existing, **_known_fields(candidate))
+
+
+def test_check_rerun_compatible_rejects_different_grouping():
+    existing = _manifest(groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"])])
+    candidate = _manifest(
+        groups=[_group(group_id="negative-01", members=["_DSC4639.NEF"], expected_outputs=["x.tif"])]
+    )
+
+    with pytest.raises(ManifestMismatchError):
+        check_rerun_compatible(existing, **_known_fields(candidate))
+
+
+def test_check_rerun_compatible_ignores_a_different_film_date_or_processing_params():
+    """The whole reason this check exists separately from
+    `check_rerun_matches`: at probe time neither field is known yet
+    (section 4.1), so a preview must not treat a difference in either as a
+    mismatch — even though `check_rerun_matches` (used by `convert`, once
+    the film date is known) still does."""
+    existing = _manifest(film_date="2026-08-02", processing_params={"output_bps": 16})
+    candidate = _manifest(film_date="2026-08-09", processing_params={"output_bps": 8})
+
+    check_rerun_compatible(existing, **_known_fields(candidate))  # must not raise
+    with pytest.raises(ManifestMismatchError):
+        check_rerun_matches(existing, candidate)
 
 
 # --- manifest size estimate -------------------------------------------------

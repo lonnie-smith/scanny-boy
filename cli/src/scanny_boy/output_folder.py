@@ -15,12 +15,14 @@ from __future__ import annotations
 import dataclasses
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from scanny_boy.events import Code
 from scanny_boy.manifest import (
     MANIFEST_FILENAME,
     Manifest,
+    check_rerun_compatible,
     check_rerun_matches,
     load_manifest,
 )
@@ -83,11 +85,13 @@ class RerunPlan:
     stale_staging_dirs: list[Path]
 
 
-def plan_rerun(output_dir: Path, candidate: Manifest) -> RerunPlan:
-    """Raises `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated
-    nonempty folder, `manifest.BadManifestError` for an unreadable or
-    schema-invalid manifest, and `manifest.ManifestMismatchError` when a
-    valid manifest describes a different run."""
+def _plan_rerun(output_dir: Path, check: Callable[[Manifest], None]) -> RerunPlan:
+    """Shared by `plan_rerun` and `plan_rerun_preview`: folder-relatedness
+    and conflict-listing rules are the same either way, so only the
+    rerun-comparison itself is a parameter. Raises
+    `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated nonempty folder,
+    `manifest.BadManifestError` for an unreadable or schema-invalid
+    manifest, and whatever `check` raises for a mismatched run."""
     entries = list_non_dot_entries(output_dir)
     if not entries:
         return RerunPlan(None, [], [], [])
@@ -111,7 +115,7 @@ def plan_rerun(output_dir: Path, candidate: Manifest) -> RerunPlan:
             f"{output_dir} contains content unrelated to its manifest: {entry.name}",
         )
 
-    check_rerun_matches(existing, candidate)
+    check(existing)
 
     conflicting: list[str] = []
     stale: list[str] = []
@@ -130,6 +134,41 @@ def plan_rerun(output_dir: Path, candidate: Manifest) -> RerunPlan:
                 stale_staging.append(group_dir)
 
     return RerunPlan(existing, conflicting, stale, stale_staging)
+
+
+def plan_rerun(output_dir: Path, candidate: Manifest) -> RerunPlan:
+    """Raises `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated
+    nonempty folder, `manifest.BadManifestError` for an unreadable or
+    schema-invalid manifest, and `manifest.ManifestMismatchError` when a
+    valid manifest describes a different run."""
+    return _plan_rerun(output_dir, lambda existing: check_rerun_matches(existing, candidate))
+
+
+def plan_rerun_preview(
+    output_dir: Path,
+    *,
+    source_order: list[str],
+    source_hashes: dict[str, str],
+    shots_per_negative: int,
+    groups: list[tuple[str, list[str]]],
+    icc_sha256: str | None,
+) -> RerunPlan:
+    """The `probe --out` counterpart to `plan_rerun` (section 4.1:
+    "output-folder validation and the overwrite-conflict preview"). Compares
+    only the fields known before a film date has been entered; `convert`
+    still calls `plan_rerun` with a complete candidate manifest and repeats
+    the full comparison before it writes anything."""
+    return _plan_rerun(
+        output_dir,
+        lambda existing: check_rerun_compatible(
+            existing,
+            source_order=source_order,
+            source_hashes=source_hashes,
+            shots_per_negative=shots_per_negative,
+            groups=groups,
+            icc_sha256=icc_sha256,
+        ),
+    )
 
 
 def apply_recovery_cleanup(output_dir: Path, plan: RerunPlan) -> None:

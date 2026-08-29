@@ -108,6 +108,11 @@ class ProbeResult(Event):
     catalogue: list[str]
     warnings: list[str] = dataclasses.field(default_factory=list)
     groups: list[list[str]] = dataclasses.field(default_factory=list)
+    # Present (non-empty/non-null) only when `--out` was given alongside
+    # `--files` and validation reached the disk estimate (section 4.1).
+    output_conflicts: list[str] = dataclasses.field(default_factory=list)
+    estimated_required_bytes: int | None = None
+    available_bytes: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

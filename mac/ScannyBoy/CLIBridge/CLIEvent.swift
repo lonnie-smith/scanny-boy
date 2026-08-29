@@ -106,6 +106,12 @@ extension CLIEvent {
     public var catalogue: [String]? { fields["catalogue"]?.stringArrayValue }
     public var warnings: [String]? { fields["warnings"]?.stringArrayValue }
     public var groups: [[String]]? { fields["groups"]?.nestedStringArrayValue }
+    // `probe_result`, present only when `--out` was given alongside `--files`
+    // (CONTRACT.md: output-folder validation, disk estimate, and
+    // overwrite-conflict preview).
+    public var outputConflicts: [String]? { fields["output_conflicts"]?.stringArrayValue }
+    public var estimatedRequiredBytes: Int? { fields["estimated_required_bytes"]?.intValue }
+    public var availableBytes: Int? { fields["available_bytes"]?.intValue }
 
     // `progress` and `item_done`
     public var sourceIndex: Int? { fields["source_index"]?.intValue }

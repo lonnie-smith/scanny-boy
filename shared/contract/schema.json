@@ -107,7 +107,10 @@
           "groups": {
             "type": "array",
             "items": { "type": "array", "items": { "type": "string" } }
-          }
+          },
+          "output_conflicts": { "type": "array", "items": { "type": "string" } },
+          "estimated_required_bytes": { "type": ["integer", "null"] },
+          "available_bytes": { "type": ["integer", "null"] }
         }
       }
     },

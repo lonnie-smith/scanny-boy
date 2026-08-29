@@ -101,6 +101,66 @@ def test_probe_with_files_real_samples_emits_groups(capsys):
 
 
 @requires_real_samples
+def test_probe_with_out_emits_disk_estimate_and_empty_conflicts(capsys, tmp_path):
+    negative_1 = ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF"]
+    status = main(
+        [
+            "probe",
+            "--input",
+            str(FIXTURES_DIR),
+            "--files",
+            *negative_1,
+            "--out",
+            str(tmp_path),
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "probe_result", "finished"]
+    result = events[1]
+    assert result["output_conflicts"] == []
+    assert isinstance(result["estimated_required_bytes"], int)
+    assert result["estimated_required_bytes"] > 0
+    assert isinstance(result["available_bytes"], int)
+    assert result["available_bytes"] > 0
+
+
+def test_probe_without_out_leaves_disk_fields_null(capsys, tmp_path):
+    write_fake_nef(tmp_path / "a.NEF", date_time_original="2026:08:02 12:00:00")
+
+    status = main(["probe", "--input", str(tmp_path)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    result = events[1]
+    assert result["output_conflicts"] == []
+    assert result["estimated_required_bytes"] is None
+    assert result["available_bytes"] is None
+
+
+@requires_real_samples
+def test_probe_with_out_same_as_input_reports_structured_error(capsys):
+    negative_1 = ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF"]
+    status = main(
+        [
+            "probe",
+            "--input",
+            str(FIXTURES_DIR),
+            "--files",
+            *negative_1,
+            "--out",
+            str(FIXTURES_DIR),
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "OUTPUT_SAME_AS_INPUT"
+
+
+@requires_real_samples
 def test_probe_with_files_non_contiguous_selection_reports_structured_error(capsys):
     files = [
         "_DSC4638.NEF",

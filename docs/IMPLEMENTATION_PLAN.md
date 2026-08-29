@@ -1128,8 +1128,8 @@ Tests:
 
 **Branch:** `chunk-08-xcode-runner`
 
-**Status:** Complete on `chunk-08-xcode-runner`, PR #9; add the landing commit
-here when it merges. `ScannyBoyUITests` is built but not run: its XCUITest
+**Status:** Merged 2026-08-29, PR #9, `54c5ab7`.
+`ScannyBoyUITests` is built but not run: its XCUITest
 runner fails to start on this machine, so it is absent from the scheme's test
 targets rather than making a required check flaky. Chunk 10 owns the UI tests.
 
