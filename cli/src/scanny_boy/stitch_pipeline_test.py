@@ -26,8 +26,14 @@ from scanny_boy.output_folder import (
     OutputFolderError,
     plan_rerun,
 )
-from scanny_boy.registration import StitchError
-from scanny_boy.roll_manifest import ROLL_MANIFEST_FILENAME, load_roll_manifest
+from scanny_boy.registration import DETECTOR, StitchError
+from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FILENAME,
+    RollInvariants,
+    load_roll_manifest,
+    new_roll_manifest,
+    write_roll_manifest,
+)
 from scanny_boy.roll_manifest_schema_test_support import (
     assert_matches_roll_manifest_schema,
     load_roll_manifest_schema,
@@ -114,6 +120,7 @@ def _make_work_dir(
     status: str = "complete",
     group_statuses: list[str] | None = None,
     film_date: str = _FILM_DATE,
+    shots_per_negative: int = 3,
 ) -> Path:
     """A work directory holding real Phase 1 intermediates and a real
     Phase 1 manifest, built without paying for RAW decoding."""
@@ -175,7 +182,7 @@ def _make_work_dir(
             status=status,
             input_folder="/tmp/in",
             film_date=film_date,
-            shots_per_negative=3,
+            shots_per_negative=shots_per_negative,
             processing_params={"gamma": [1.8, 16]},
             icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
             source_order=source_order,
@@ -201,6 +208,37 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
     out = tmp_path / name
     out.mkdir()
     return out
+
+
+def _roll_dir(tmp_path: Path, name: str = "out", *, shots_per_negative: int = 3) -> Path:
+    """A real, empty roll, written through P3-2's own writer.
+
+    Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
+    test needs one to exist first. `roll init` does not arrive until P3-4, so
+    this is `new_roll_manifest` — the same constructor `roll init` will call —
+    and not hand-authored JSON."""
+    roll = _out_dir(tmp_path, name)
+    write_roll_manifest(
+        roll,
+        new_roll_manifest(
+            roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
+            roll_name=name,
+            shots_per_negative=shots_per_negative,
+        ),
+    )
+    return roll
+
+
+def _roll_invariants(work_dir: Path) -> RollInvariants:
+    """The invariants a stitch of `work_dir` would present, for the tests
+    that drive `plan_rerun` directly."""
+    work = load_manifest(work_dir)
+    return RollInvariants(
+        shots_per_negative=work.shots_per_negative,
+        processing_params=work.processing_params,
+        icc_profile_sha256=work.icc_profile["sha256"],
+        stitch_params={},
+    )
 
 
 def _stitch(work_dir, out_dir, *, events=None, cancel=None, **kwargs):
@@ -229,7 +267,7 @@ def test_end_to_end_on_real_samples(tmp_path):
     with a roll manifest that validates against its published schema and
     records a hash matching the file actually on disk."""
     work_dir = _make_work_dir(tmp_path, negatives=2)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     events: list = []
 
     outcome = _stitch(work_dir, out_dir, events=events)
@@ -242,11 +280,32 @@ def test_end_to_end_on_real_samples(tmp_path):
     assert produced == ["IMG_00.tif", "IMG_10.tif", ROLL_MANIFEST_FILENAME]
 
     manifest = load_roll_manifest(out_dir)
-    assert manifest.status == "complete"
-    assert manifest.convert_run_id == "convert-run"
-    assert manifest.film_date == _FILM_DATE
+    # Section 3.3: the roll is additive and has no single status; the status
+    # belongs to the run that just finished.
+    run = manifest.run("stitch-run")
+    assert run.status == "complete"
+    assert run.kind == "stitch"
+    assert run.convert_run_id == "convert-run"
+    assert run.short_id == "stitch"
+    assert run.work_dir == str(work_dir)
+    assert [n.negative_id for n in manifest.negatives] == [
+        "stitch-negative-01",
+        "stitch-negative-02",
+    ]
+    # Section 3.3: sources are keyed by hash and carry the run that first
+    # contributed them.
+    assert {s.run_id for s in manifest.sources} == {"stitch-run"}
 
     for negative in manifest.negatives:
+        assert negative.run_id == "stitch-run"
+        assert negative.superseded_by is None
+        # Section 5.4 decision 4: the roll records the capture time the
+        # negative's first frame actually carries. The metadata stage's three
+        # fields are untouched by a stitch.
+        assert negative.capture_time.source_datetime_original is not None
+        assert negative.capture_time.intended_datetime_original is None
+        assert negative.capture_time.applied_datetime_original is None
+        assert negative.capture_time.date_override is None
         assert negative.status == "completed"
         assert negative.output is not None
         # Named after the group's first frame, per section 3.7.
@@ -277,7 +336,7 @@ def test_end_to_end_on_real_samples(tmp_path):
 
 def test_progress_events_carry_the_stitch_stage(tmp_path):
     work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     events: list = []
 
     _stitch(work_dir, out_dir, events=events)
@@ -295,7 +354,7 @@ def test_progress_events_carry_the_stitch_stage(tmp_path):
 
 def test_running_work_manifest_is_rejected(tmp_path):
     work_dir = _make_work_dir(tmp_path, status="running")
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
         _stitch(work_dir, out_dir)
@@ -306,7 +365,7 @@ def test_partial_work_manifest_needs_allow_partial(tmp_path):
     work_dir = _make_work_dir(
         tmp_path, negatives=2, status="partial", group_statuses=["completed", "failed"]
     )
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
         _stitch(work_dir, out_dir)
@@ -317,19 +376,19 @@ def test_partial_work_manifest_stitches_completed_groups_only(tmp_path):
     work_dir = _make_work_dir(
         tmp_path, negatives=2, status="partial", group_statuses=["completed", "failed"]
     )
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
 
     outcome = _stitch(work_dir, out_dir, allow_partial=True)
 
     assert outcome.status == "complete"
     assert outcome.published == ["IMG_00.tif"]
     manifest = load_roll_manifest(out_dir)
-    assert [n.negative_id for n in manifest.negatives] == ["negative-01"]
+    assert [n.negative_id for n in manifest.negatives] == ["stitch-negative-01"]
 
 
 def test_cancelled_work_manifest_is_rejected(tmp_path):
     work_dir = _make_work_dir(tmp_path, status="cancelled")
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
         _stitch(work_dir, out_dir)
@@ -341,7 +400,7 @@ def test_cancelled_work_manifest_is_rejected(tmp_path):
 
 def test_missing_intermediate_is_caught(tmp_path):
     work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     (work_dir / "IMG_01.tif").unlink()
 
     with pytest.raises(StitchError) as exc_info:
@@ -352,7 +411,7 @@ def test_missing_intermediate_is_caught(tmp_path):
 
 def test_changed_intermediate_is_caught(tmp_path):
     work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
 
     # Same byte count, different content: only the SHA-256 can catch this,
     # which is why section 3.7 requires both checks and not just the size.
@@ -411,7 +470,7 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     manifest.source_order.extend(members)
     write_manifest(good, manifest)
 
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     events: list = []
     outcome = _stitch(good, out_dir, events=events)
 
@@ -425,13 +484,15 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
 
     failures = [e for e in events if isinstance(e, NegativeFailed)]
-    assert [e.negative_id for e in failures] == ["negative-99"]
+    # The event carries the roll's `negative_id` (section 3.4), not the work
+    # manifest's group id, which is what `outcome.failed` still reports.
+    assert [e.negative_id for e in failures] == ["stitch-negative-02"]
     assert failures[0].code is Code.STITCH_UNDERCONSTRAINED
 
     roll = load_roll_manifest(out_dir)
-    assert roll.status == "partial"
-    assert roll.negative("negative-01").status == "completed"
-    failed_record = roll.negative("negative-99")
+    assert roll.run("stitch-run").status == "partial"
+    assert roll.negative("stitch-negative-01").status == "completed"
+    failed_record = roll.negative("stitch-negative-02")
     assert failed_record.status == "failed"
     assert failed_record.error_code == Code.STITCH_UNDERCONSTRAINED.value
     assert failed_record.output is None
@@ -450,7 +511,7 @@ def test_cancellation_keeps_completed_negatives(tmp_path):
     """Section 3.5: a cancelled negative is abandoned, not failed — no
     `negative_failed` event, and the manifest ends `cancelled`."""
     work_dir = _make_work_dir(tmp_path, negatives=2)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     cancel = CancellationToken()
     events: list = []
 
@@ -484,9 +545,9 @@ def test_cancellation_keeps_completed_negatives(tmp_path):
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
 
     roll = load_roll_manifest(out_dir)
-    assert roll.status == "cancelled"
-    assert roll.negative("negative-01").status == "completed"
-    assert roll.negative("negative-02").status == "pending"
+    assert roll.run("stitch-run").status == "cancelled"
+    assert roll.negative("stitch-negative-01").status == "completed"
+    assert roll.negative("stitch-negative-02").status == "pending"
 
 
 def test_work_equal_to_out_is_rejected(tmp_path):
@@ -499,7 +560,7 @@ def test_work_equal_to_out_is_rejected(tmp_path):
 
 def test_unrelated_nonempty_output_folder_is_rejected(tmp_path):
     work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
     (out_dir / "holiday-snap.jpg").write_bytes(b"not ours")
 
     with pytest.raises(StitchError) as exc_info:
@@ -507,32 +568,101 @@ def test_unrelated_nonempty_output_folder_is_rejected(tmp_path):
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
 
-def test_mismatched_roll_manifest_is_rejected(tmp_path):
+def test_stitch_without_a_roll_manifest_is_rejected(tmp_path):
+    """Section 5.4 decision 1: `stitch` never creates a roll. An empty
+    directory is not one."""
     work_dir = _make_work_dir(tmp_path)
     out_dir = _out_dir(tmp_path)
-    _stitch(work_dir, out_dir)
-
-    # Same output folder, a run describing a different film date.
-    (tmp_path / "second").mkdir()
-    other = _make_work_dir(tmp_path / "second", film_date="2026-09-09")
-
-    with pytest.raises(StitchError) as exc_info:
-        _stitch(other, out_dir, overwrite=True)
-    assert exc_info.value.code is Code.MANIFEST_MISMATCH
-
-
-def test_conflicting_rerun_needs_overwrite(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
-    _stitch(work_dir, out_dir)
 
     with pytest.raises(StitchError) as exc_info:
         _stitch(work_dir, out_dir)
-    assert exc_info.value.code is Code.OUTPUT_CONFLICT
+    assert exc_info.value.code is Code.ROLL_NOT_FOUND
+    assert ROLL_MANIFEST_FILENAME in exc_info.value.message
+    assert not [p for p in out_dir.iterdir()]
 
-    # The same rerun succeeds once consent is given.
-    outcome = _stitch(work_dir, out_dir, overwrite=True)
-    assert outcome.status == "complete"
+
+def test_roll_manifest_of_the_wrong_version_is_rejected(tmp_path):
+    """Section 0: there is no migration. A Phase 2 folder is not importable."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+    path = out_dir / ROLL_MANIFEST_FILENAME
+    data = json.loads(path.read_text())
+    data["manifest_format_version"] = 1
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(StitchError) as exc_info:
+        _stitch(work_dir, out_dir)
+    assert exc_info.value.code is Code.ROLL_MANIFEST_UNSUPPORTED
+
+
+def test_roll_invariant_mismatch_is_rejected(tmp_path):
+    """Section 3.4, replacing Phase 2's film-date mismatch test (section 5.4
+    decision 3): a run whose parameters differ from the roll's invariants is
+    refused, and it is `ROLL_INVARIANT_MISMATCH`, not `MANIFEST_MISMATCH` —
+    that code stays with the Phase 1 work manifest."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path, shots_per_negative=3)
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    (tmp_path / "second").mkdir()
+    other = _make_work_dir(tmp_path / "second", shots_per_negative=2)
+
+    with pytest.raises(StitchError) as exc_info:
+        _stitch(other, out_dir, run_id="stitch-run-2")
+    assert exc_info.value.code is Code.ROLL_INVARIANT_MISMATCH
+
+    # Refused before anything was published or recorded.
+    roll = load_roll_manifest(out_dir)
+    assert [r.run_id for r in roll.runs] == ["stitch-run"]
+
+
+def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
+    """Section 5.4 decision 1: an empty roll cannot know its
+    `processing_params` or `stitch_params`, so the first run establishes
+    them and every later run is compared against them."""
+    out_dir = _roll_dir(tmp_path)
+    empty = load_roll_manifest(out_dir)
+    assert empty.processing_params == {}
+    assert empty.stitch_params == {}
+
+    _stitch(_make_work_dir(tmp_path), out_dir)
+
+    seeded = load_roll_manifest(out_dir)
+    assert seeded.processing_params == {"gamma": [1.8, 16]}
+    assert seeded.stitch_params["detector"] == DETECTOR
+    assert seeded.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
+
+
+def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
+    """Section 3.4, replacing Phase 2's overwrite-conflict test (section 5.4
+    decision 3). A roll is additive: a second run publishes alongside the
+    first under `-2`, and nothing is overwritten in place, ever. Two genuine
+    runs, per section 4 — a hand-edited manifest would prove nothing."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    first = _stitch(work_dir, out_dir)
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
+
+    assert first.published == ["IMG_00.tif"]
+    assert second.published == ["IMG_00-2.tif"]
+    assert second.status == "complete"
+    assert (out_dir / "IMG_00.tif").exists()
+    assert (out_dir / "IMG_00-2.tif").exists()
+
+    roll = load_roll_manifest(out_dir)
+    assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
+    # Section 3.4: `short_id`s are unique, so `negative_id`s are too.
+    assert [n.negative_id for n in roll.negatives] == [
+        "stitch-negative-01",
+        "stitch-r-negative-01",
+    ]
+    assert all(n.status == "completed" for n in roll.negatives)
+    # Nothing is superseded: P3-2 records the rule, and P3-5 executes it.
+    assert all(n.superseded_by is None for n in roll.negatives)
+    assert roll.negative("stitch-r-negative-01").output["name"] == "IMG_00-2.tif"
+    # The first negative's name never moved.
+    assert roll.negative("stitch-negative-01").output["name"] == "IMG_00.tif"
 
 
 # --- the regression guard on the output_folder.py refactor ---------------
@@ -569,10 +699,10 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
     # The roll rules do not recognise a Phase 1 folder: there is no
     # scanny-boy-roll.json in it, so it reads as unrelated content rather
     # than as a rerun.
-    roll_out = _out_dir(tmp_path, "roll-out")
+    roll_out = _roll_dir(tmp_path, "roll-out")
     _stitch(work_dir, roll_out)
     with pytest.raises(OutputFolderError) as exc_info:
-        plan_rerun(convert_out, load_roll_manifest(roll_out), rules=ROLL_RULES)
+        plan_rerun(convert_out, _roll_invariants(work_dir), rules=ROLL_RULES)
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
     # And a stitched folder is likewise not a Phase 1 folder.

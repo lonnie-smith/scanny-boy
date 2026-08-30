@@ -68,8 +68,6 @@ from scanny_boy.manifest import (
     BadManifestError,
     GroupRecord,
     Manifest,
-    ManifestMismatchError,
-    current_scanny_boy_version,
     load_manifest,
 )
 from scanny_boy.output_folder import (
@@ -95,11 +93,22 @@ from scanny_boy.registration import (
     register_pair,
 )
 from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FILENAME,
+    CaptureTime,
     FrameRecord,
     NegativeRecord,
     PairRecord,
+    RollInvariantMismatchError,
+    RollInvariants,
     RollManifest,
+    RollManifestUnsupportedError,
+    RunRecord,
+    allocate_output_name,
+    append_run,
+    current_roll_manifest_path,
     estimate_roll_manifest_size,
+    format_negative_id,
+    merge_sources,
     write_roll_manifest,
 )
 from scanny_boy.stitched_tiff import stitched_image_description, write_stitched_tiff
@@ -145,10 +154,14 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
 
-def _stitched_output_name(first_member: str) -> str:
-    """Section 3.7: each negative's TIFF is named after the first frame of
-    its group, by canonical order."""
-    return f"{Path(first_member).stem}.tif"
+def _intermediate_name(member: str) -> str:
+    """Phase 1 names each intermediate after its source frame, so this maps a
+    group member back to the file `convert` wrote for it.
+
+    Not the published name: section 3.4 moved that to
+    `roll_manifest.allocate_output_name`, which is now the only place a
+    published name is chosen."""
+    return f"{Path(member).stem}.tif"
 
 
 def _stitch_params() -> dict[str, Any]:
@@ -305,7 +318,7 @@ def _intermediate_paths(work_dir: Path, group: GroupRecord) -> list[Path]:
     each output after its source frame, so this is `group.members` mapped
     through the same rule."""
     by_name = {output.name: work_dir / output.name for output in group.outputs}
-    return [by_name[_stitched_output_name(member)] for member in group.members]
+    return [by_name[_intermediate_name(member)] for member in group.members]
 
 
 def _detect_all(
@@ -475,6 +488,10 @@ def run_stitch(
     roll manifest, reported through `NegativeFailed`, and the run continues
     and ends `partial` (section 3.5). A cancelled negative is abandoned,
     not failed, and emits no `NegativeFailed`.
+
+    `overwrite` is accepted and unused: section 3.4 makes a roll additive, so
+    a stitch never replaces a published file. Section 3.5 reserves the flag
+    for the `--negatives` re-stitch path, which arrives in Chunk P3-5.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -526,20 +543,41 @@ def run_stitch(
     for group in groups:
         _verify_intermediates(work_dir, group)
 
-    # 5. Output-folder rules, applied to the roll manifest.
-    candidate = _build_candidate(work_manifest, groups, run_id)
+    # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
+    #    creates one) and this run's parameters must match its invariants.
+    if not current_roll_manifest_path(out_dir).exists():
+        raise StitchError(
+            Code.ROLL_NOT_FOUND,
+            f"{out_dir} has no {ROLL_MANIFEST_FILENAME}; create the roll first",
+        )
+    invariants = RollInvariants(
+        shots_per_negative=work_manifest.shots_per_negative,
+        processing_params=work_manifest.processing_params,
+        icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
+        stitch_params=_stitch_params(),
+    )
     try:
-        plan = plan_rerun(out_dir, candidate, rules=ROLL_RULES)
-    except (OutputFolderError, BadManifestError, ManifestMismatchError) as exc:
+        plan = plan_rerun(out_dir, invariants, rules=ROLL_RULES)
+    except (
+        OutputFolderError,
+        BadManifestError,
+        RollManifestUnsupportedError,
+        RollInvariantMismatchError,
+    ) as exc:
         raise StitchError(exc.code, exc.message) from exc
 
-    if plan.conflicting_outputs and not overwrite:
-        raise StitchError(
-            Code.OUTPUT_CONFLICT,
-            "these outputs already exist and would be replaced; pass --overwrite "
-            "to confirm: " + ", ".join(sorted(set(plan.conflicting_outputs))),
-        )
+    # Section 5.4 decision 3: there is no `OUTPUT_CONFLICT` here. Section
+    # 3.4's naming rule makes one impossible — `allocate_output_name` cannot
+    # return a name another negative already claims — so the only outputs
+    # `plan.conflicting_outputs` can name are earlier runs' files this run
+    # does not touch. Recovery cleanup of never-finished negatives stays.
     apply_recovery_cleanup(out_dir, plan)
+
+    roll = plan.existing_manifest
+    assert roll is not None
+    run_record, records_by_group = _append_this_run(
+        roll, work_manifest, groups, run_id, invariants, work_dir
+    )
 
     try:
         workers = concurrency.resolve_worker_count(
@@ -561,7 +599,7 @@ def run_stitch(
     solved: list[_SolvedNegative] = []
     cancelled = False
     for group in groups:
-        record = candidate.negative(group.group_id)
+        record = records_by_group[group.group_id]
         if cancel.cancelled:
             cancelled = True
             break
@@ -595,7 +633,7 @@ def run_stitch(
         # 6. Disk check on the output volume, now that canvases are known.
         canvases = [e.layout.canvas_size for e in solved if e.layout is not None]
         required = _required_free_bytes(
-            canvases, estimate_roll_manifest_size(candidate)
+            canvases, estimate_roll_manifest_size(roll)
         )
         try:
             disk_check.check_disk_space(out_dir, required)
@@ -603,7 +641,7 @@ def run_stitch(
             raise StitchError(exc.code, exc.message) from exc
 
     # 7. Write the `running` roll manifest before publishing anything.
-    write_roll_manifest(out_dir, candidate)
+    write_roll_manifest(out_dir, roll)
 
     published: list[str] = []
     failed: list[str] = []
@@ -615,7 +653,7 @@ def run_stitch(
             break
         if entry.failure is not None:
             code, message = entry.failure
-            _record_failure(out_dir, candidate, entry.record, code, message, emit, run_id)
+            _record_failure(out_dir, roll, entry.record, code, message, emit, run_id)
             failed.append(entry.group.group_id)
             continue
 
@@ -624,7 +662,7 @@ def run_stitch(
                 work_dir=work_dir,
                 out_dir=out_dir,
                 entry=entry,
-                candidate=candidate,
+                roll=roll,
                 run_id=run_id,
                 cancel=cancel,
                 emit=emit,
@@ -636,13 +674,13 @@ def run_stitch(
             break
         except StitchError as exc:
             _record_failure(
-                out_dir, candidate, entry.record, exc.code, exc.message, emit, run_id
+                out_dir, roll, entry.record, exc.code, exc.message, emit, run_id
             )
             failed.append(entry.group.group_id)
             continue
         except Exception as exc:  # noqa: BLE001
             _record_failure(
-                out_dir, candidate, entry.record, Code.STITCH_FAILED, str(exc), emit, run_id
+                out_dir, roll, entry.record, Code.STITCH_FAILED, str(exc), emit, run_id
             )
             failed.append(entry.group.group_id)
             continue
@@ -651,51 +689,81 @@ def run_stitch(
 
     if cancelled:
         status = "cancelled"
-    elif all(n.status == "completed" for n in candidate.negatives):
+    elif all(r.status == "completed" for r in records_by_group.values()):
         status = "complete"
     else:
         status = "partial"
 
-    candidate.status = status
-    candidate.finished_at = _now_iso()
-    write_roll_manifest(out_dir, candidate)
+    # The status belongs to *this run*, not to the roll: a roll is additive
+    # and has no single status (section 3.3).
+    run_record.status = status
+    run_record.finished_at = _now_iso()
+    write_roll_manifest(out_dir, roll)
 
     return StitchOutcome(status=status, published=published, failed=failed)
 
 
-def _build_candidate(
-    work_manifest: Manifest, groups: list[GroupRecord], run_id: str
-) -> RollManifest:
-    return RollManifest(
-        scanny_boy_version=current_scanny_boy_version(),
+def _append_this_run(
+    roll: RollManifest,
+    work_manifest: Manifest,
+    groups: list[GroupRecord],
+    run_id: str,
+    invariants: RollInvariants,
+    work_dir: Path,
+) -> tuple[RunRecord, dict[str, NegativeRecord]]:
+    """Add this stitch to the roll: its run record, its sources, and one
+    `pending` negative per group, all per sections 3.3 and 3.4.
+
+    Section 5.4 decision 1: the first run establishes the three invariants an
+    empty roll cannot know. `check_roll_invariants` has already passed, so
+    assigning them here is a seeding, never an overwrite.
+
+    Returns the run record and this run's negatives keyed by work-manifest
+    group id, because the group id is what the solving loop carries and
+    `negative_id` is now the roll's name for the same thing, not Phase 1's.
+    """
+    if not roll.runs:
+        roll.processing_params = invariants.processing_params
+        roll.stitch_params = invariants.stitch_params
+        roll.icc_profile = work_manifest.icc_profile
+
+    run_record = RunRecord(
         run_id=run_id,
+        kind="stitch",
         status="running",
-        input_folder=work_manifest.input_folder,
-        film_date=work_manifest.film_date,
-        shots_per_negative=work_manifest.shots_per_negative,
-        convert_run_id=work_manifest.run_id,
-        processing_params=work_manifest.processing_params,
-        icc_profile=work_manifest.icc_profile,
-        stitch_params=_stitch_params(),
-        source_order=work_manifest.source_order,
-        sources=work_manifest.sources,
-        negatives=[
-            NegativeRecord(
-                negative_id=group.group_id,
-                members=list(group.members),
-                expected_output=_stitched_output_name(group.members[0]),
-                fill_color=FILL_COLOR,
-            )
-            for group in groups
-        ],
         started_at=_now_iso(),
+        convert_run_id=work_manifest.run_id,
+        # Section 3.3: a `stitch` has no input folder of its own — it reads a
+        # work directory someone else's `convert` produced.
+        input_folder=None,
+        source_order=list(work_manifest.source_order),
+        # Section 3.6: `stitch` never deletes the work directory it was
+        # given, so the intermediates are kept by definition and the roll
+        # records where, which is what makes a re-stitch target discoverable.
+        work_dir=str(work_dir),
         finished_at=None,
     )
+    append_run(roll, run_record)
+    merge_sources(roll, work_manifest.sources, run_id)
+
+    records: dict[str, NegativeRecord] = {}
+    for index, group in enumerate(groups, start=1):
+        negative_id = format_negative_id(run_record.short_id, index)
+        record = NegativeRecord(
+            negative_id=negative_id,
+            run_id=run_id,
+            members=list(group.members),
+            expected_output=allocate_output_name(roll, group.members[0], negative_id),
+            fill_color=FILL_COLOR,
+        )
+        roll.negatives.append(record)
+        records[group.group_id] = record
+    return run_record, records
 
 
 def _record_failure(
     out_dir: Path,
-    candidate: RollManifest,
+    roll: RollManifest,
     record: NegativeRecord,
     code: Code,
     message: str,
@@ -707,7 +775,7 @@ def _record_failure(
     record.status = "failed"
     record.error_code = code.value
     record.error_message = message
-    write_roll_manifest(out_dir, candidate)
+    write_roll_manifest(out_dir, roll)
     emit(
         NegativeFailed(
             run_id=run_id, negative_id=record.negative_id, code=code, message=message
@@ -720,7 +788,7 @@ def _composite_and_publish(
     work_dir: Path,
     out_dir: Path,
     entry: _SolvedNegative,
-    candidate: RollManifest,
+    roll: RollManifest,
     run_id: str,
     cancel: CancellationToken,
     emit: EmitFn,
@@ -790,6 +858,15 @@ def _composite_and_publish(
         record.valid_rect = largest_valid_rect(layout, entry.frame_size)
 
         exif, make, model = _read_curated_exif(paths[0])
+
+        # Section 5.4 decision 4: the roll records the capture time the
+        # negative's first frame actually carries, which is exactly the value
+        # just read. `intended_`, `applied_`, and `date_override` stay null —
+        # they are the metadata stage's, not the stitch stage's (section 3.8).
+        record.capture_time = CaptureTime(
+            source_datetime_original=exif.date_time_original.isoformat()
+        )
+
         staged_path = staging_dir / record.expected_output
         write_stitched_tiff(
             staged_path,
@@ -826,7 +903,7 @@ def _composite_and_publish(
             "height": height,
         }
         record.status = "completed"
-        write_roll_manifest(out_dir, candidate)
+        write_roll_manifest(out_dir, roll)
         emit(
             NegativeDone(
                 run_id=run_id,

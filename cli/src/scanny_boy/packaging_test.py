@@ -39,6 +39,7 @@ from scanny_boy.packaged_app_support import (
     run_packaged,
 )
 from scanny_boy.pipeline import run_convert
+from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_schema_test_support import (
     assert_matches_roll_manifest_schema,
     load_roll_manifest_schema,
@@ -296,6 +297,17 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     out_dir = tmp_path / "out"
     work_dir.mkdir()
     out_dir.mkdir()
+    # Section 5.4 decision 1: `run` publishes into a roll, and never creates
+    # one. `roll init` arrives in P3-4; until then the roll is written through
+    # the same constructor it will call.
+    write_roll_manifest(
+        out_dir,
+        new_roll_manifest(
+            roll_id="00000000-0000-4000-8000-00000000000b",
+            roll_name="packaged",
+            shots_per_negative=3,
+        ),
+    )
 
     result = run_packaged(
         "run",
@@ -340,7 +352,8 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     assert roll_manifest.exists()
     data = json.loads(roll_manifest.read_text())
     assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
-    assert data["status"] == "complete"
+    # Section 3.3: a roll is additive, so the status belongs to the run.
+    assert data["runs"][0]["status"] == "complete"
     assert data["negatives"][0]["status"] == "completed"
 
     # `--work` was supplied explicitly, so it survives a complete run

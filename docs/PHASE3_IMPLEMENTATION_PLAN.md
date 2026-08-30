@@ -677,6 +677,14 @@ is a compile-time constant), and `processing_params` and `stitch_params`
 empty. This is the **only** constructor of an empty roll; P3-4's
 `create_roll` calls it rather than repeating it.
 
+`run` calls `stitch`, so `run_pipeline_test.py` and `packaging_test.py` need
+the same roll in their output-folder fixtures. Those are the two further
+files P3-2 touches, and only their fixtures plus one v1→v2 shape update
+(`data["status"]` becomes `data["runs"][0]["status"]`). No assertion's
+meaning changes. `packaging_test.py` runs the frozen bundle, which P3-9
+rebuilds; it is skipped in CI, which packages nothing on the Python job and
+runs no Python tests on the macOS one.
+
 **The roll invariants are seeded by the first run, not by creation.** An
 empty roll's `processing_params` and `stitch_params` are `{}` because no run
 has established them yet. Therefore:
@@ -866,6 +874,8 @@ Branch: `p3-chunk-02-roll-manifest` · **Model: Opus 5** · **Auto-advance: yes*
 | `cli/src/scanny_boy/stitch_pipeline_test.py` | update |
 | `cli/src/scanny_boy/output_folder.py` | `ROLL_RULES` compiles against v2; see §5.4 decision 2 |
 | `cli/src/scanny_boy/roll_manifest_schema_test_support.py` | drop the v1 branch |
+| `cli/src/scanny_boy/run_pipeline_test.py` | fixture only: `run` publishes into a real roll |
+| `cli/src/scanny_boy/packaging_test.py` | same fixture, plus the v1→v2 status shape |
 
 Add `RunRecord` (with `short_id`); extend `NegativeRecord` with `run_id`,
 `sequence`, `superseded_by`, `capture_time`; add `CaptureTime`. Replace
