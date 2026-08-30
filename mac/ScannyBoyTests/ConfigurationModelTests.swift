@@ -275,6 +275,115 @@ struct ConfigurationModelTests {
         #expect(model.runEnabled == true)
     }
 
+    // MARK: - Chunk P2-9's additions
+
+    @Test("keepIntermediates is off by default and flows into the run command")
+    func keepIntermediatesFlag() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
+            withFilesAndOut: [Self.started, Self.threeFileGroupNoConflicts, Self.finishedSuccess]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.outputFolder = outputDir
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.filmDate = "2026-08-02"
+        await model.waitForPendingProbes()
+
+        #expect(model.keepIntermediates == false)
+        let withoutFlag = try #require(model.runCommand)
+        #expect(!withoutFlag.arguments.contains("--keep-intermediates"))
+
+        model.keepIntermediates = true
+        let withFlag = try #require(model.runCommand)
+        #expect(withFlag.arguments.contains("--keep-intermediates"))
+    }
+
+    /// `probe --out` only understands `scanny-boy-manifest.json`, so a
+    /// folder holding only `scanny-boy-roll.json` is reported as
+    /// `OUTPUT_NOT_EMPTY` — the fake executable below reproduces that real
+    /// behaviour exactly. `existingRoll` is what stops the model from
+    /// surfacing that as a blocking error.
+    @Test("A folder already holding a roll is recognised, not reported as unrelated content")
+    func existingRollFolderIsRecognised() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        try Self.writeRollManifest(status: "complete", in: outputDir)
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
+            withFilesAndOut: [
+                Self.started, Self.errorEvent(code: "OUTPUT_NOT_EMPTY"), Self.finishedFailed,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.outputFolder = outputDir
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.filmDate = "2026-08-02"
+        await model.waitForPendingProbes()
+
+        #expect(model.existingRoll?.status == "complete")
+        #expect(model.outputError == nil)
+        #expect(model.outputConflicts.isEmpty)
+        #expect(model.runEnabled)
+    }
+
+    @Test("An output folder with unrelated content (no roll) is still blocked")
+    func unrelatedOutputFolderStillBlockedWithoutARoll() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        try "not ours".write(
+            to: outputDir.appending(path: "holiday-snap.jpg"), atomically: true, encoding: .utf8
+        )
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
+            withFilesAndOut: [
+                Self.started, Self.errorEvent(code: "OUTPUT_NOT_EMPTY"), Self.finishedFailed,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.outputFolder = outputDir
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.filmDate = "2026-08-02"
+        await model.waitForPendingProbes()
+
+        #expect(model.existingRoll == nil)
+        #expect(model.outputError?.code == .outputNotEmpty)
+        #expect(model.runEnabled == false)
+    }
+
     // MARK: - Last-folder memory
 
     @Test("The input and output folders are remembered across model instances")
@@ -301,5 +410,57 @@ struct ConfigurationModelTests {
         #expect(second.inputFolder?.standardizedFileURL == directory.standardizedFileURL)
         #expect(second.outputFolder?.standardizedFileURL == outputDir.standardizedFileURL)
         #expect(second.catalogue == ["a.NEF", "b.NEF", "c.NEF"])
+    }
+
+    // MARK: - Helpers
+
+    /// A roll manifest with just enough of `roll-manifest.schema.json` to be
+    /// read back by `RollManifest`.
+    private static func writeRollManifest(status: String, in folder: URL) throws {
+        let json = """
+            {
+              "manifest_format_version": 1,
+              "manifest_kind": "stitch",
+              "scanny_boy_version": "0.1.0",
+              "run_id": "run-0001",
+              "status": "\(status)",
+              "input_folder": "/tmp/in",
+              "film_date": "2026-08-02",
+              "shots_per_negative": 3,
+              "convert_run_id": "convert-0001",
+              "processing_params": {},
+              "icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "\(String(repeating: "b", count: 64))"},
+              "stitch_params": {},
+              "source_order": ["a.NEF", "b.NEF", "c.NEF"],
+              "sources": [],
+              "negatives": [
+                {
+                  "negative_id": "negative-01",
+                  "members": ["a.NEF", "b.NEF", "c.NEF"],
+                  "expected_output": "a.tif",
+                  "status": "completed",
+                  "output": {
+                    "name": "a.tif", "size": 123,
+                    "sha256": "\(String(repeating: "a", count: 64))",
+                    "width": 100, "height": 100
+                  },
+                  "frames": [], "pairs": [],
+                  "global_rms_px": 1.0,
+                  "canvas": {"width": 100, "height": 100},
+                  "valid_rect": [0, 0, 100, 100],
+                  "fill_color": [0, 0, 0],
+                  "rebate_deviation_px": null,
+                  "error_code": null, "error_message": null
+                }
+              ],
+              "started_at": "2026-08-02T12:00:00",
+              "finished_at": "2026-08-02T12:05:00"
+            }
+            """
+        try json.write(
+            to: folder.appending(path: RollManifest.filename, directoryHint: .notDirectory),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 }

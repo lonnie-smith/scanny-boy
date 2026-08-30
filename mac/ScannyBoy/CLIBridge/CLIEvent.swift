@@ -133,7 +133,7 @@ extension CLIEvent {
     // `group_done` and `group_failed`
     public var groupID: String? { fields["group_id"]?.stringValue }
 
-    // `warning`, `error`, and `group_failed`
+    // `warning`, `error`, `group_failed`, and `negative_failed`
     public var code: CLICode? {
         fields["code"]?.stringValue.map(CLICode.init(name:))
     }
@@ -142,13 +142,29 @@ extension CLIEvent {
     // `finished`
     public var status: String? { fields["status"]?.stringValue }
     public var exitStatus: Int? { fields["exit_status"]?.intValue }
+
+    // `negative_done` and `negative_failed`
+    public var negativeID: String? { fields["negative_id"]?.stringValue }
+    // `negative_done`
+    public var width: Int? { fields["width"]?.intValue }
+    public var height: Int? { fields["height"]?.intValue }
+    public var globalRMS: Double? { fields["global_rms_px"]?.doubleValue }
+    public var maxOverlapMAD: Double? { fields["max_overlap_mad"]?.doubleValue }
 }
 
-/// One pipeline step, from the plan's Vocabulary section.
+/// One pipeline step, from the plan's Vocabulary section. The last seven
+/// cases are the stitch stage's steps, added by Phase 2 section 3.9.
 public enum CLIPipelineStep: Sendable, Hashable {
     case decode
     case writeTIFF
     case addMetadata
+    case load
+    case detect
+    case match
+    case solve
+    case warp
+    case blend
+    case writeStitched
     case unknown(String)
 
     public init(name: String) {
@@ -156,6 +172,13 @@ public enum CLIPipelineStep: Sendable, Hashable {
         case "decode": self = .decode
         case "write_tiff": self = .writeTIFF
         case "add_metadata": self = .addMetadata
+        case "load": self = .load
+        case "detect": self = .detect
+        case "match": self = .match
+        case "solve": self = .solve
+        case "warp": self = .warp
+        case "blend": self = .blend
+        case "write_stitched": self = .writeStitched
         default: self = .unknown(name)
         }
     }
@@ -165,6 +188,13 @@ public enum CLIPipelineStep: Sendable, Hashable {
         case .decode: "decode"
         case .writeTIFF: "write_tiff"
         case .addMetadata: "add_metadata"
+        case .load: "load"
+        case .detect: "detect"
+        case .match: "match"
+        case .solve: "solve"
+        case .warp: "warp"
+        case .blend: "blend"
+        case .writeStitched: "write_stitched"
         case .unknown(let name): name
         }
     }
@@ -198,6 +228,21 @@ public enum CLICode: Sendable, Hashable {
     case iccProfileInvalid
     case tiffWriteFailed
     case cancelled
+    // Phase 2 section 3.10.
+    case workSameAsOutput
+    case workManifestUnusable
+    case intermediateMissing
+    case intermediateChanged
+    case stitchInsufficientMatches
+    case stitchUnderconstrained
+    case stitchResidualTooHigh
+    case stitchOutputTooLarge
+    case stitchFailed
+    case stitchScaleDrift
+    case stitchLayoutUnexpected
+    case stitchRebateCheckFailed
+    case outputDimensionsLarge
+    case intermediatesKept
     case unknown(String)
 
     public init(name: String) {
@@ -224,6 +269,20 @@ public enum CLICode: Sendable, Hashable {
         case "ICC_PROFILE_INVALID": self = .iccProfileInvalid
         case "TIFF_WRITE_FAILED": self = .tiffWriteFailed
         case "CANCELLED": self = .cancelled
+        case "WORK_SAME_AS_OUTPUT": self = .workSameAsOutput
+        case "WORK_MANIFEST_UNUSABLE": self = .workManifestUnusable
+        case "INTERMEDIATE_MISSING": self = .intermediateMissing
+        case "INTERMEDIATE_CHANGED": self = .intermediateChanged
+        case "STITCH_INSUFFICIENT_MATCHES": self = .stitchInsufficientMatches
+        case "STITCH_UNDERCONSTRAINED": self = .stitchUnderconstrained
+        case "STITCH_RESIDUAL_TOO_HIGH": self = .stitchResidualTooHigh
+        case "STITCH_OUTPUT_TOO_LARGE": self = .stitchOutputTooLarge
+        case "STITCH_FAILED": self = .stitchFailed
+        case "STITCH_SCALE_DRIFT": self = .stitchScaleDrift
+        case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
+        case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
+        case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
+        case "INTERMEDIATES_KEPT": self = .intermediatesKept
         default: self = .unknown(name)
         }
     }
@@ -252,6 +311,20 @@ public enum CLICode: Sendable, Hashable {
         case .iccProfileInvalid: "ICC_PROFILE_INVALID"
         case .tiffWriteFailed: "TIFF_WRITE_FAILED"
         case .cancelled: "CANCELLED"
+        case .workSameAsOutput: "WORK_SAME_AS_OUTPUT"
+        case .workManifestUnusable: "WORK_MANIFEST_UNUSABLE"
+        case .intermediateMissing: "INTERMEDIATE_MISSING"
+        case .intermediateChanged: "INTERMEDIATE_CHANGED"
+        case .stitchInsufficientMatches: "STITCH_INSUFFICIENT_MATCHES"
+        case .stitchUnderconstrained: "STITCH_UNDERCONSTRAINED"
+        case .stitchResidualTooHigh: "STITCH_RESIDUAL_TOO_HIGH"
+        case .stitchOutputTooLarge: "STITCH_OUTPUT_TOO_LARGE"
+        case .stitchFailed: "STITCH_FAILED"
+        case .stitchScaleDrift: "STITCH_SCALE_DRIFT"
+        case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
+        case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
+        case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
+        case .intermediatesKept: "INTERMEDIATES_KEPT"
         case .unknown(let name): name
         }
     }

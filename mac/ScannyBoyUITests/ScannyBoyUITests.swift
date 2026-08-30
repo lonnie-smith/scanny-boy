@@ -30,4 +30,22 @@ final class ScannyBoyUITests: XCTestCase {
         XCTAssertFalse(run.isEnabled)
         XCTAssertFalse(app.staticTexts["Scanny Boy's CLI helper is unavailable"].exists)
     }
+
+    /// Chunk P2-9: the Run button now drives `run` (convert and stitch), and
+    /// the configuration form offers a way to keep the intermediates a
+    /// successful run would otherwise remove. Whether toggling it actually
+    /// changes what gets passed to the CLI is `ConfigurationModelTests`'
+    /// job, not this smoke test's.
+    @MainActor
+    func testKeepIntermediatesToggleExists() {
+        let app = XCUIApplication()
+        app.launch()
+
+        // macOS renders a SwiftUI `Toggle` in a grouped `Form` as an unlabelled
+        // `Switch` accessibility element (its text sits in a sibling static
+        // text instead), so this looks it up by an explicit identifier rather
+        // than the label.
+        let toggle = app.switches["keepIntermediatesToggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 30))
+    }
 }
