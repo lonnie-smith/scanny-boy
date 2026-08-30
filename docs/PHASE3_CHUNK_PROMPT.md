@@ -9,20 +9,24 @@ for Phase 2, [`PHASE2_CHUNK_PROMPT.md`](PHASE2_CHUNK_PROMPT.md).
 | Chunk | Model | Auto-advance | Why |
 | --- | --- | --- | --- |
 | P3-0 Contract and protocol v3 | **Sonnet 5** | yes | Wide but shallow; every edit written out |
-| P3-1 Library, slugs, roll commands | **Sonnet 5** | **no** — next is Opus | New modules with given signatures |
+| P3-1 ICC profile matching LibRaw's curve | **Sonnet 5** | **no** — next is Opus | Self-contained; every parameter and byte rule given in plan §3.13 |
 | P3-2 Roll manifest v2 | **Opus 5** | yes | Rewrites a module Phase 2's tests cover; the highest regression risk in Phase 3 |
 | P3-3 Roll-aware output folder and `probe --roll` | **Opus 5** | **no** — next is Sonnet | Refactors shared Phase 1/2 code that must keep passing |
-| P3-4 `run`/`stitch` against a roll | **Sonnet 5** | yes | Orchestration; every flag and removal enumerated |
-| P3-5 Sequencing and capture times | **Sonnet 5** | yes | One small pure module, formula given |
-| P3-6 `apply-metadata` | **Sonnet 5** | yes | Follows `tiff_exif.py`'s existing two-pass write |
-| P3-7 Re-apply after re-stitch | **Sonnet 5** | yes | Small; P3-6 built the machinery |
-| P3-8 Package and verify | **Sonnet 5**, escalate to **Opus 5** on failure | **no** — possible model change | Ordinary until PyInstaller emits an opaque error |
-| P3-9 App: library sidebar and roll CRUD | **Sonnet 5** | **no** — approval point 6.1 | New IA; look at it before building on it |
-| P3-10 App: Add Scans and overlap sheet | **Sonnet 5** | yes | Reworks existing views |
-| P3-11 App: Edit stage | **Sonnet 5** | yes | Largest Swift chunk; every control specified |
-| P3-12 Documentation and v0.3 sign-off | **Sonnet 5** | — | Prose |
+| P3-4 Library, slugs, roll commands | **Sonnet 5** | yes | New modules with given signatures |
+| P3-5 `run`/`stitch` against a roll | **Sonnet 5** | yes | Orchestration; every flag and removal enumerated |
+| P3-6 Sequencing and capture times | **Sonnet 5** | yes | One small pure module, formula given |
+| P3-7 `apply-metadata` | **Sonnet 5** | yes | Follows `tiff_exif.py`'s existing two-pass write |
+| P3-8 Re-apply after re-stitch | **Sonnet 5** | yes | Small; P3-7 built the machinery |
+| P3-9 Package and verify | **Sonnet 5**, escalate to **Opus 5** on failure | **no** — possible model change | Ordinary until PyInstaller emits an opaque error |
+| P3-10 App: library sidebar and roll CRUD | **Sonnet 5** | **no** — approval point 6.1 | New IA; look at it before building on it |
+| P3-11 App: Add Scans and overlap sheet | **Sonnet 5** | yes | Reworks existing views |
+| P3-12 App: Edit stage | **Sonnet 5** | yes | Largest Swift chunk; every control specified |
+| P3-13 Documentation and v0.3 sign-off | **Sonnet 5** | — | Prose |
 
 **Haiku 4.5 is not recommended for any Phase 3 chunk.**
+
+This table duplicates the plan's §5.3. If the two ever disagree, **§5.3
+wins** and the disagreement is itself a stop-and-report.
 
 ---
 
@@ -77,6 +81,9 @@ Never merge a red PR, never force-push, never push straight to `main`.
 - **Phase 2's registration, colour, gate, and memory work is settled.** Do
   not re-benchmark OpenCV, re-derive the ROMM curve, re-litigate the rigid
   model, or touch the section 3.12 constants.
+- **P3-1 changes no pixel value.** It replaces the embedded ICC profile,
+  not the encoding. A failing pixel-data assertion means the chunk has gone
+  wrong — stop and report rather than updating the expectation.
 - **There is no migration.** Never write code that reads
   `manifest_format_version: 1` of the roll manifest, and never add a
   compatibility shim for protocol version 2.
@@ -100,9 +107,16 @@ Never merge a red PR, never force-push, never push straight to `main`.
   temporary base directory. A test reaching for
   `FileManager.default.urls(for: .picturesDirectory, …)` has gone wrong.
 - **Cross-run behaviour needs two real runs.** Overlap detection,
-  sequencing, and output-name collisions are cross-run properties; a
-  hand-edited manifest that merely looks like a second run happened proves
-  nothing.
+  sequencing, output-name collisions, and supersession are cross-run
+  properties; a hand-edited manifest that merely looks like a second run
+  happened proves nothing. The manifest must come from the real writing
+  path — before P3-4 that means a second `stitch`, since `run --roll` does
+  not exist yet.
+- **Replace really deletes.** An unskipped overlap supersedes the negative
+  it covers and removes that TIFF (plan §3.4). Assert the whole rule: the
+  replacement publishes under its own name, the predecessor is marked and
+  desequenced, its file is gone, its name stays claimed, and its neighbours
+  keep their sequence positions.
 - **Apply tests assert the round trip and the non-changes**: the tag reads
   back, and the ICC profile, the other curated tags, and the pixel data are
   all unchanged. An apply that quietly rewrites pixels is exactly what this
