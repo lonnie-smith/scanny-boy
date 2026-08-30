@@ -79,6 +79,10 @@ enum RunTimeFormat {
 struct RunResultView: View {
     let run: RunModel
     let outputFolder: URL?
+    /// Called with the kept work directory's path when the user asks to
+    /// re-stitch it (Chunk P2-10's "button"). `ContentView` owns actually
+    /// presenting the sheet.
+    let onRestitch: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -182,8 +186,11 @@ struct RunResultView: View {
             // be kept — this is how the app finds it again, most usefully
             // for Chunk P2-10's re-stitch.
             if let keptWorkDirectory = run.keptWorkDirectory {
-                Button("Open Kept Work Directory") {
-                    NSWorkspace.shared.open(URL(filePath: keptWorkDirectory))
+                HStack {
+                    Button("Open Kept Work Directory") {
+                        NSWorkspace.shared.open(URL(filePath: keptWorkDirectory))
+                    }
+                    Button("Re-stitch…") { onRestitch(keptWorkDirectory) }
                 }
             }
         }

@@ -156,4 +156,40 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--work"))
         #expect(!command.arguments.contains("--keep-intermediates"))
     }
+
+    // MARK: - Chunk P2-10's additions
+
+    private static let work = URL(filePath: "/Volumes/Scans/roll-12-work")
+
+    @Test("stitch carries every required flag, and defaults to --allow-partial")
+    func stitchRequiredFlags() {
+        let command = CLICommand.stitch(work: Self.work, out: Self.out)
+        #expect(
+            command.arguments == [
+                "stitch", "--work", "/Volumes/Scans/roll-12-work",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--allow-partial",
+            ]
+        )
+    }
+
+    @Test("stitch adds --jobs and --overwrite only when asked")
+    func stitchOptionalFlags() {
+        let command = CLICommand.stitch(work: Self.work, out: Self.out, jobs: 4, overwrite: true)
+        #expect(
+            command.arguments == [
+                "stitch", "--work", "/Volumes/Scans/roll-12-work",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--jobs", "4",
+                "--overwrite",
+                "--allow-partial",
+            ]
+        )
+    }
+
+    @Test("stitch omits --allow-partial when explicitly turned off")
+    func stitchAllowPartialOptOut() {
+        let command = CLICommand.stitch(work: Self.work, out: Self.out, allowPartial: false)
+        #expect(!command.arguments.contains("--allow-partial"))
+    }
 }

@@ -384,4 +384,109 @@ struct RunIntegrationTests {
         }
         #expect(manifest.status == "cancelled")
     }
+
+    // MARK: - Chunk P2-10's additions: re-stitch
+
+    /// The whole point of a kept work directory: re-stitching it costs no
+    /// RAW decoding at all. `--keep-intermediates` keeps the work directory
+    /// from `run` even though every negative succeeds, so this test does not
+    /// have to rely on a failure to get one to re-stitch.
+    @Test(
+        "re-stitching a kept work directory reuses its intermediates and stitches again",
+        .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .timeLimit(.minutes(5))
+    )
+    func restitchReusesAKeptWorkDirectory() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstOut = directory.appending(path: "out-1", directoryHint: .isDirectory)
+        let secondOut = directory.appending(path: "out-2", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: firstOut, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondOut, withIntermediateDirectories: true)
+        let negativeOne = Array(SampleFixtures.files.prefix(3))
+
+        let model = try await Self.configuredModel(outputFolder: firstOut, select: negativeOne)
+        model.keepIntermediates = true
+        await model.waitForPendingProbes()
+
+        let firstRun = RunModel(runner: try Self.runner())
+        firstRun.start(
+            command: try #require(model.runCommand),
+            files: model.selectedFilesInCanonicalOrder,
+            outputFolder: firstOut
+        )
+        await firstRun.waitForCompletion()
+        #expect(firstRun.outcome == .success)
+        #expect(firstRun.stitchedNegatives.count == 1)
+        // Section 3.5: `--keep-intermediates` keeps the work directory even
+        // on complete success.
+        let workDirectory = try #require(firstRun.keptWorkDirectory)
+        #expect(FileManager.default.fileExists(atPath: workDirectory))
+
+        let restitch = RunModel(runner: try Self.runner())
+        restitch.start(
+            command: .stitch(work: URL(filePath: workDirectory), out: secondOut),
+            files: [],
+            outputFolder: secondOut
+        )
+        await restitch.waitForCompletion()
+
+        #expect(restitch.streamFailures.isEmpty)
+        #expect(restitch.cliError == nil)
+        #expect(restitch.outcome == .success)
+        #expect(restitch.stitchedNegatives.count == 1)
+        let stitched = try #require(restitch.stitchedNegatives.first)
+        #expect(stitched.negativeID == "negative-01")
+        #expect(stitched.output == Self.tiffNames(negativeOne)[0])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: secondOut.appending(path: Self.tiffNames(negativeOne)[0]).path
+            ),
+            "the re-stitched negative was not published into the second output folder"
+        )
+
+        let report = try #require(restitch.rollManifestReport)
+        guard case .final(let manifest) = report else {
+            Issue.record("expected a final roll manifest, got \(report)")
+            return
+        }
+        #expect(manifest.status == "complete")
+        // A plain `stitch` did not create the work directory, so it is never
+        // this run's to remove — it must still be there afterwards.
+        #expect(FileManager.default.fileExists(atPath: workDirectory))
+    }
+
+    /// The error path Chunk P2-10 asks for: a folder that never held a work
+    /// manifest at all. `WORK_MANIFEST_UNUSABLE` is for a manifest that
+    /// exists but is in the wrong state (`running`/`cancelled`, or `partial`
+    /// without `--allow-partial`); a folder with no manifest file fails the
+    /// same way any other missing/unreadable manifest does, `BAD_MANIFEST`.
+    @Test(
+        "re-stitching a folder with no work manifest fails safely",
+        .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .timeLimit(.minutes(1))
+    )
+    func restitchWithNoWorkManifestFails() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notAWorkDirectory = directory.appending(path: "empty", directoryHint: .isDirectory)
+        let out = directory.appending(path: "out", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: notAWorkDirectory, withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let restitch = RunModel(runner: try Self.runner())
+        restitch.start(
+            command: .stitch(work: notAWorkDirectory, out: out),
+            files: [],
+            outputFolder: out
+        )
+        await restitch.waitForCompletion()
+
+        #expect(restitch.streamFailures.isEmpty)
+        #expect(restitch.outcome == .failure)
+        #expect(restitch.cliError?.code == .badManifest)
+        #expect(restitch.stitchedNegatives.isEmpty)
+    }
 }

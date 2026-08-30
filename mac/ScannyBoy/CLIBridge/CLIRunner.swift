@@ -109,6 +109,35 @@ public struct CLICommand: Sendable, Hashable {
         }
         return CLICommand(arguments: arguments)
     }
+
+    /// `scanny-boy stitch --work DIR --out DIR [--jobs N] [--overwrite] [--allow-partial]`
+    ///
+    /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in
+    /// `work`, verifies every intermediate, and stitches — without paying for
+    /// RAW decoding again. `allowPartial` defaults to `true` because a kept
+    /// work directory is exactly as likely to be `partial` (kept because one
+    /// negative failed) as `complete`, and passing it is a no-op when the
+    /// manifest is already `complete`. `overwrite` is only ever set after the
+    /// user has explicitly agreed (section 3.6).
+    public static func stitch(
+        work: URL,
+        out: URL,
+        jobs: Int? = nil,
+        overwrite: Bool = false,
+        allowPartial: Bool = true
+    ) -> CLICommand {
+        var arguments = ["stitch", "--work", work.path, "--out", out.path]
+        if let jobs {
+            arguments.append(contentsOf: ["--jobs", String(jobs)])
+        }
+        if overwrite {
+            arguments.append("--overwrite")
+        }
+        if allowPartial {
+            arguments.append("--allow-partial")
+        }
+        return CLICommand(arguments: arguments)
+    }
 }
 
 /// Starts CLI sessions against one resolved executable.

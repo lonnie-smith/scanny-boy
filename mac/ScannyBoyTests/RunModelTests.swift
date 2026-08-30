@@ -794,6 +794,83 @@ struct RunModelTests {
         #expect(run.manifestReport != nil)
     }
 
+    // MARK: - Chunk P2-10's additions
+
+    @Test("A plain stitch also reads the roll manifest and counts negatives")
+    func stitchReadsTheRollManifest() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try Self.writeRollManifest(status: "complete", negativeStatus: "completed", in: directory)
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeDone(
+                    negativeID: "negative-01", output: "a.tif",
+                    width: 100, height: 100, globalRMS: 1.0, maxOverlapMAD: 0.05
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, files: [], commandName: "stitch"
+        )
+
+        #expect(run.manifestReport == nil)
+        #expect(run.rollManifestReport != nil)
+        #expect(run.completionSummary == "Stitched 1 negative(s).")
+    }
+
+    /// A re-stitch has no selection of files to turn a `source_index` back
+    /// into a filename with (`RestitchSheet` starts it with `files: []`), so
+    /// the worst it should do is leave `currentFilename` unset — never crash
+    /// on an out-of-range index the way `outOfRangeSourceIndexIsIgnored`
+    /// already checks for `convert`.
+    @Test("A re-stitch with no file selection never names a current file")
+    func restitchProgressNamesNoFile() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.progress(sourceIndex: 0, step: "load", completed: 1, total: 4),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, files: [], commandName: "stitch"
+        )
+
+        #expect(run.currentFilename == nil)
+        #expect(run.completedSteps == 1)
+    }
+
+    /// `RunResultView`'s Reveal in Finder must point at wherever the
+    /// invocation that actually ran wrote its output — not
+    /// `ConfigurationModel.outputFolder`, which a re-stitch can legitimately
+    /// disagree with (Chunk P2-10 lets it target its own output folder).
+    @Test("The run's own output folder is exposed for Reveal in Finder, not assumed")
+    func outputFolderReflectsTheInvocation() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [Self.started, Self.finished(status: "success", exitStatus: 0)],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, files: [], commandName: "stitch"
+        )
+
+        #expect(run.outputFolder == directory)
+    }
+
     // MARK: - Helpers
 
     /// Polls `condition` until it holds. Used only where the thing being
