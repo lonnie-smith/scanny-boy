@@ -1,12 +1,16 @@
 # Decisions
 
 This is a readable summary of the locked decisions in
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) section 3. **The plan is
-authoritative.** If this file and the plan ever disagree, the plan wins —
-that mismatch is a bug in this file, not a licence to follow whichever one is
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) section 3 (Phase 1: RAW
+conversion) and [`PHASE2_IMPLEMENTATION_PLAN.md`](PHASE2_IMPLEMENTATION_PLAN.md)
+section 3 (Phase 2: registration and stitching). **The relevant plan is
+authoritative.** If this file and a plan ever disagree, the plan wins — that
+mismatch is a bug in this file, not a licence to follow whichever one is
 convenient. Changing any decision below means updating the plan first, and
-only after asking the user (plan section 3's own rule); this file just makes
-those decisions easier to find without reading the whole plan.
+only after asking the user (each plan's own section 3 rule); this file just
+makes those decisions easier to find without reading the whole plan.
+
+# Phase 1 decisions
 
 ## Product and repository
 
@@ -144,3 +148,228 @@ those decisions easier to find without reading the whole plan.
   it does not register, stitch, crop, or invert negatives. That's Phase 2,
   which Phase 1's manifest is deliberately built to support (plan section
   10) without committing to a registration model yet.
+
+---
+
+# Phase 2 decisions
+
+This mirrors [`PHASE2_IMPLEMENTATION_PLAN.md`](PHASE2_IMPLEMENTATION_PLAN.md)
+section 3 the same way the section above mirrors Phase 1's — readable, not
+authoritative. **The Phase 2 plan wins on any disagreement.** Phase 1's
+decisions above are still in force; Phase 2 amends exactly two of them, both
+called out below.
+
+## Amendments to the Phase 1 plan
+
+Two Phase 1 decisions are explicitly, user-approvedly changed by Phase 2 —
+everything else above stands unmodified:
+
+- **The colour decode curve (amends Phase 1 section 3.4).** rawpy's
+  `gamma=(1.8, 16)` does not decode to true ROMM/ProPhoto linear light, as
+  Phase 1 assumed — it decodes to LibRaw's own generalised curve, off true
+  linear by 3.1% on average. Phase 2 measured LibRaw's actual curve (plan
+  section 2.3.1) and uses it — as a 65,536-entry `float32` lookup table — for
+  every linear-light decode a stitch performs. Phase 1's own pixel output is
+  **not** touched: `RAW_PARAMS` is unchanged, `convert` keeps its exact
+  meaning, and the resulting mismatch between Phase 1's embedded ICC profile
+  (true ROMM) and Phase 1's actual pixel curve (LibRaw's) is a known,
+  recorded Phase 1 imperfection — see `punchlist.md` — that Phase 2 reads
+  around rather than fixes.
+- **Manifest completeness for stitching (amends Phase 1 section 3.7).** Phase
+  1 says a later phase must reject a manifest that is not `complete`. Taken
+  literally, one failed negative in the conversion stage would throw away
+  every negative that succeeded. `stitch` therefore accepts a `complete`
+  manifest by default, and a `partial` one under `--allow-partial`,
+  stitching only the groups the manifest marks `completed`. A `running` or
+  `cancelled` manifest is still rejected outright; every other Phase 1
+  manifest guarantee — missing output, wrong size, wrong SHA-256 — is
+  enforced exactly as written.
+
+Phase 1 section 3.6's output-folder rules (empty is valid, nonempty needs a
+valid manifest, a rerun must match or is rejected, conflicts need explicit
+confirmation) are not amended — they are **generalised** to apply to the new
+roll manifest as well as the conversion manifest, by parameterising
+`output_folder.py` over which manifest it reads rather than duplicating it.
+
+## Registration model
+
+- A negative's frames are a **one-dimensional strip**, but capture order is
+  never assumed to be spatial order. Every pair of a negative's frames is
+  matched; a global layout is solved from whichever pairs actually overlap.
+  Neighbour-chaining and order-detection are both explicitly rejected —
+  the global solve makes order irrelevant for free.
+- The geometric model is **rigid: rotation plus translation, scale fixed at
+  exactly 1**. `estimateAffinePartial2D` may find RANSAC inliers, but the
+  transform actually used is always re-fitted rigidly from those inliers
+  (closed-form Umeyama, scale forced to 1) — never an affine or a homography.
+- Rotation between frames may run to several degrees; resampling is not
+  optional. Overlap is guaranteed at least 20% on every overlapping edge by
+  the capture workflow, treated as a validation expectation rather than
+  something the solver assumes.
+
+## Colour, resampling, and blending
+
+- All geometric and photometric work happens in **linear light** — decode to
+  linear `float32` before warping or blending, encode back to 16-bit once at
+  the end.
+- Warp with `INTER_LANCZOS4` on `float32`, clamp to `>= 0` immediately after.
+  Each frame warps into its own bounding box, not the full canvas. The
+  validity mask warps with `INTER_NEAREST` and is eroded by 5 pixels (Lanczos4's
+  support radius, plus one pixel of insurance).
+- **Blending is a linear feather in linear light**: per-frame weight is a
+  distance transform of the eroded mask, and the output is the weighted
+  average wherever any frame contributes weight. This is deliberate and
+  provisional — see the README's "How frames are registered and blended" for
+  the reasoning and the alternatives (a hard seam, a multi-band Laplacian
+  blend) that were set aside for now, worth revisiting with real rolls in
+  hand.
+- Pixels covered by no frame are `FILL_COLOR`, one named constant, initially
+  black — recorded in the roll manifest so a file can be interpreted without
+  knowing which build wrote it. `punchlist.md` already contemplates a
+  contrasting fill colour for Phase 3.
+
+## Quality gates
+
+Every stitched negative is proved correct, not merely finished: per-pair
+inlier count, inlier ratio, RMS reprojection residual, and scale drift; per
+pair and per negative, overlap MAD — the honest gate, since it is the only
+metric that measures whether pixels actually line up rather than whether the
+solver was pleased with itself. A disconnected pair graph fails a negative
+outright as `STITCH_UNDERCONSTRAINED`. Every threshold was measured from real
+scans at user gate C and lives in exactly one place — plan section 3.12 —
+that production code reads from and nowhere else.
+
+`rebate_deviation_px` (checking that the film rebate's edges stay collinear
+across a negative) is specified in the contract and recorded, but **never
+gated in Phase 2 and not implemented at all**: Chunk P2-1 found the rebate is
+not cleanly detectable with a generic straight-edge finder, so the field is
+always written `null`. A purpose-built detector is a Phase 3 question,
+recorded on `punchlist.md`.
+
+## Failure, cancellation, and cleanup
+
+- A negative that cannot be stitched fails alone: the run continues with the
+  next negative and ends `partial`, mirroring Phase 1's group-failure rule.
+- A cancelled negative is abandoned, not failed — no `negative_failed`
+  event, exactly as Phase 1 treats a cancelled group.
+- The work directory is removed only on complete success. It is kept, with
+  its path reported through an `INTERMEDIATES_KEPT` warning, when any
+  negative failed, the run was cancelled, or `--keep-intermediates` was
+  given — and a directory the user named with `--work` is never deleted by
+  cleanup, whatever happens.
+
+## Command surface
+
+- `stitch --work DIR --out DIR` is the re-stitch path: it reads the work
+  directory's Phase 1 manifest, verifies every intermediate's size and
+  SHA-256, and stitches — without paying for RAW decoding again.
+- `run --input DIR --files ... --out DIR --film-date ...` is the app's normal
+  path: one process, one event stream, one cancellation, from a selection of
+  NEFs to finished stitched negatives. It calls Phase 1's conversion
+  in-process, then stitches into `--out`, and cleans up. It never spawns a
+  subprocess of itself.
+- `--work` without a value is a fresh temporary directory, discarded per the
+  cleanup rules above; given a value, that directory is used and never
+  deleted by cleanup. `--work` and `--out` must differ
+  (`WORK_SAME_AS_OUTPUT`).
+- `--jobs` bounds RAW conversion workers as in Phase 1; in the stitch stage
+  it bounds feature detection only — compositing is always one negative at a
+  time, single-threaded through the accumulator.
+
+## Output folder and the roll manifest
+
+- One output folder holds one stitched roll. Each negative's TIFF is named
+  after the first frame of its group, by canonical order.
+- The output folder's record is **`scanny-boy-roll.json`**
+  (`shared/contract/roll-manifest.schema.json`) — a new file. Phase 1's
+  `scanny-boy-manifest.json` is not renamed; it simply now lives in the work
+  directory rather than the output folder.
+- The roll manifest is self-describing without the work directory: sources
+  and hashes, film date, conversion and stitch parameters, every threshold
+  in force, and per negative its members, solved layout, every quality
+  metric, canvas size, valid rectangle, fill colour, and output hash.
+- The canvas is the full union bounding box; nothing captured is discarded.
+  The valid rectangle is computed and recorded but never applied — it exists
+  for Phase 3's crop tool.
+- A canvas dimension above 30,000 px warns (`OUTPUT_DIMENSIONS_LARGE`); an
+  estimated file above 3.5 GiB fails the negative
+  (`STITCH_OUTPUT_TOO_LARGE`) rather than silently switching to BigTIFF.
+  Composite peak memory is estimated before any allocation and checked
+  against the section 3.8 budget.
+
+## Disk and memory arithmetic
+
+Composite peak memory is checked before allocating anything, using a formula
+that accounts for the live source frame, the warped bounding box and its
+mask, and the accumulator — then multiplied by a **3.5 safety factor**. That
+factor is not padding: measured directly, allocator behaviour (NumPy does
+not return freed arenas to the OS) makes resident memory track the *sum* of
+successive allocation phases rather than their peak, and real three-frame
+stitches measured 2.5–3.4× a naive nominal estimate. `peak_bytes` must not
+exceed half of physical RAM, or the run fails with `INSUFFICIENT_MEMORY`
+reporting both numbers. Re-measure the factor with
+`scripts/measure-registration.py` whenever the composite's allocation
+pattern changes — plan section 3.8.1 has the full reasoning and the
+measurements it rests on.
+
+For `run`, the work directory and the output folder may be on different
+volumes; each is checked separately against its own required-space formula,
+never summed and checked once.
+
+## Event protocol and stable codes
+
+`PROTOCOL_VERSION` is **2**. `progress` gained `stage` (`"convert"` or
+`"stitch"`); `PipelineStep` gained the stitch steps (`load`, `detect`,
+`match`, `solve`, `warp`, `blend`, `write_stitched`); and two new events,
+`negative_done` and `negative_failed`, describe the stitch stage's per-
+negative results the way `group_done`/`group_failed` describe the
+conversion stage's. New stable codes: `WORK_SAME_AS_OUTPUT`,
+`WORK_MANIFEST_UNUSABLE`, `INTERMEDIATE_MISSING`, `INTERMEDIATE_CHANGED`,
+`STITCH_INSUFFICIENT_MATCHES`, `STITCH_UNDERCONSTRAINED`,
+`STITCH_RESIDUAL_TOO_HIGH`, `STITCH_OUTPUT_TOO_LARGE`, `STITCH_FAILED`, and
+the warnings `STITCH_SCALE_DRIFT`, `STITCH_LAYOUT_UNEXPECTED`,
+`STITCH_REBATE_CHECK_FAILED`, `OUTPUT_DIMENSIONS_LARGE`,
+`INTERMEDIATES_KEPT`. Full table: plan section 3.10.
+
+## Stitched TIFF format
+
+Identical to Phase 1's TIFF rules (three-channel `uint16`, ROMM with the
+embedded checksum-verified ICC profile, `Orientation` always 1, Deflate with
+horizontal prediction, the two-pass `tifftools` EXIF write) with three
+differences: dimensions are the canvas, not one frame; `ImageDescription`
+names the negative's sources and says it is stitched
+(`"_DSC4638.NEF+2: stitched scan"`); and curated EXIF comes from the
+negative's first frame in canonical order, since Phase 1 already proves every
+frame of a negative shares identical exposure, aperture, ISO, focal length,
+lens, and white balance.
+
+## The app (Swift)
+
+- Swift never sorts files, groups negatives, or judges an output folder
+  itself — every one of those decisions comes back from a `probe` call, the
+  same rule Phase 1 locked for `convert`.
+- `run` is what the app's Run button drives — convert and stitch in one
+  invocation. Re-stitch drives `stitch` directly against a kept work
+  directory, reusing the identical `RunModel`, progress view, and results
+  view.
+- **Known, deliberate limitation:** `probe --out` was never extended to
+  understand `scanny-boy-roll.json`, so it cannot compute an itemized list of
+  what a rerun or re-stitch into an already-published output folder would
+  replace. The app works around the resulting false `OUTPUT_NOT_EMPTY` for a
+  folder that legitimately holds a prior roll, and asks for one general,
+  explicit acknowledgement before passing `--overwrite` rather than an
+  itemized one. Real conflict enforcement, as everywhere else in this app,
+  happens for real, server-side, in `run_stitch`. Extending `probe --out` to
+  the roll manifest — which would let the app show an itemized preview here,
+  the same way it already does for a plain `convert`/`run` — is recorded on
+  `punchlist.md`.
+
+## Scope Phase 2 does not cover
+
+- **The rebate-deviation check** is specified in the contract but not
+  implemented; see "Quality gates" above.
+- **Itemized overwrite/rerun previews for the roll manifest** are not
+  implemented in the app; see "The app (Swift)" above.
+- Everything Phase 1's "Scope this project does not cover" already says
+  still applies unchanged — no App Store, no Developer ID signing, no
+  notarisation, no Intel build.

@@ -55,15 +55,22 @@ process's current directory.
 
 ## Layout
 
-- `ScannyBoy/App/`, `ScannyBoy/Views/` — the SwiftUI app.
-- `ScannyBoy/Model/` — `ConfigurationModel` (what may be run) and `RunModel`
-  (one `convert` invocation: progress, cancellation, and the manifest it left
-  behind), plus `RunManifest`, the read-back half of
-  `../shared/contract/manifest.schema.json`, and `ThumbnailLoader`, which
-  renders the catalogue's previews.
+- `ScannyBoy/App/` — `ScannyBoyApp`, including the Re-stitch menu command.
+  `ScannyBoy/Views/` — the SwiftUI app: folder selection, the grouping
+  preview, Run's progress and results, and `RestitchSheet` for re-stitching a
+  kept work directory.
+- `ScannyBoy/Model/` — `ConfigurationModel` (what a `run` may do) and
+  `RunModel` (one `convert`/`run`/`stitch` invocation: progress,
+  cancellation, and the manifest it left behind), plus `RunManifest` (the
+  read-back half of `../shared/contract/manifest.schema.json`, for a plain
+  `convert`'s work directory) and `RollManifest` (the read-back half of
+  `../shared/contract/roll-manifest.schema.json`, for a `run`/`stitch`'s
+  output folder), and `ThumbnailLoader`, which renders the catalogue's
+  previews.
 - `ScannyBoy/CLIBridge/` — event decoding (`CLIEvent`), line reassembly
   (`LineAssembler`), the owned streaming session (`CLISession`), helper
-  resolution (`CLILocator`), and argument construction (`CLIRunner`).
+  resolution (`CLILocator`), and argument construction (`CLIRunner`), which
+  builds all four command invocations: `probe`, `convert`, `run`, `stitch`.
 - `ScannyBoyTests/` — Swift Testing unit tests, plus end-to-end tests that
   drive the real helper and skip with a reason when the helper or the sample
   NEFs are absent.
@@ -71,6 +78,19 @@ process's current directory.
   out of the scheme's test targets because its runner would not start on this
   machine; it starts now, so Chunk 10 put it back. Everything the run UI
   decides is tested directly against `RunModel` and `ConfigurationModel`
-  instead of through XCUITest.
+  instead of through XCUITest — this target has proven intermittently flaky
+  at actually launching the app under `xcodebuild test` on this development
+  machine, independent of app changes; a failure here that isn't an assertion
+  failure (`Failed to activate application ... Running Background`) is that,
+  not a regression.
 - `Scripts/check-staged-helper.sh` — pre-build check that fails legibly when
   the staged helper has been cleaned away.
+
+**Known, deliberate limitation:** `probe --out` has no notion of
+`scanny-boy-roll.json`, so `ConfigurationModel` and `RestitchSheet` cannot
+show an itemized preview of what a rerun or re-stitch into an
+already-published output folder would replace, the way they do for a plain
+`convert`/`run`. Both ask for one general, explicit acknowledgement instead
+and pass `--overwrite` unconditionally once it's given; real conflict
+enforcement happens for real, server-side, in `run_stitch`. See
+`docs/DECISIONS.md`'s Phase 2 section.

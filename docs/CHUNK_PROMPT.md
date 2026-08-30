@@ -1,7 +1,10 @@
 # Chunk prompt header
 
-Paste this in front of every implementation request, replacing `N` with the
-chunk number. Run one chunk per session, in order.
+Paste this in front of every Phase 1 implementation request, replacing `N`
+with the chunk number. Run one chunk per session, in order.
+
+For Phase 2 chunks (registration and stitching), use
+[`PHASE2_CHUNK_PROMPT.md`](PHASE2_CHUNK_PROMPT.md) instead.
 
 ---
 
