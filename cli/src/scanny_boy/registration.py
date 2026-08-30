@@ -62,12 +62,19 @@ class PairResult:
     accepted: bool
     reject_code: Code | None
     reject_message: str | None
+    # RANSAC inlier correspondences, full-resolution px, (inliers, 2) each,
+    # row-aligned: inlier_points_a[i] <-> inlier_points_b[i]. Chunk P2-4's
+    # global_rms needs the actual point-level correspondences, not just the
+    # summary statistics above.
+    inlier_points_a: np.ndarray
+    inlier_points_b: np.ndarray
     # Filled in later by composite.py; None here.
     overlap_fraction: float | None
     overlap_mad: float | None
 
 
 _IDENTITY_TRANSFORM = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+_EMPTY_POINTS = np.zeros((0, 2))
 
 
 def _make_detector() -> cv2.Feature2D:
@@ -179,6 +186,8 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             reject_message=(
                 f"too few good matches to fit a transform ({good_matches})"
             ),
+            inlier_points_a=_EMPTY_POINTS,
+            inlier_points_b=_EMPTY_POINTS,
             overlap_fraction=None,
             overlap_mad=None,
         )
@@ -219,6 +228,8 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
                 f"(need >= {MIN_PAIR_INLIERS} at ratio "
                 f">= {MIN_PAIR_INLIER_RATIO})"
             ),
+            inlier_points_a=dst_inliers,
+            inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
         )
@@ -238,6 +249,8 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
             reject_message=(
                 f"scale drift {scale_drift:.4f} exceeds {SCALE_DRIFT_FAIL}"
             ),
+            inlier_points_a=dst_inliers,
+            inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
         )
@@ -258,6 +271,8 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
                 f"rms residual {rms_residual_px:.2f}px exceeds "
                 f"{MAX_PAIR_RMS_PX}px"
             ),
+            inlier_points_a=dst_inliers,
+            inlier_points_b=src_inliers,
             overlap_fraction=None,
             overlap_mad=None,
         )
@@ -274,6 +289,8 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
         accepted=True,
         reject_code=None,
         reject_message=None,
+        inlier_points_a=dst_inliers,
+        inlier_points_b=src_inliers,
         overlap_fraction=None,
         overlap_mad=None,
     )
