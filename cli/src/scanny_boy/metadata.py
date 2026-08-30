@@ -149,7 +149,7 @@ def choose_digitized_fields(source: DigitizationSourceFields) -> DigitizedFields
     source date was used to fill them — source `DateTimeOriginal` when
     present, otherwise source `DateTimeDigitized`; `SubSecTime*` and
     `OffsetTime*` follow the same choice. Never invent an offset for the
-    synthetic film time — an absent source offset stays absent."""
+    written `DateTimeOriginal` — an absent source offset stays absent."""
     if source.date_time_original is not None:
         return DigitizedFields(
             date_time_digitized=source.date_time_original,

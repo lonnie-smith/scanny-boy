@@ -186,8 +186,6 @@ def test_convert_without_files_is_rejected(capsys):
             "/tmp/in",
             "--out",
             "/tmp/out",
-            "--film-date",
-            "2026-08-02",
         ]
     )
     assert status == 2
@@ -306,7 +304,9 @@ def test_invalid_command_returns_status_2_with_no_stdout_events(capsys):
     assert err != ""
 
 
-def test_invalid_film_date_returns_status_2(capsys):
+def test_film_date_argument_is_rejected(capsys):
+    """Phase 3 section 3.5: `--film-date` is removed from every command,
+    so `convert` (and `run`) no longer recognize it at all."""
     status = main(
         [
             "convert",
@@ -317,7 +317,7 @@ def test_invalid_film_date_returns_status_2(capsys):
             "--out",
             "/tmp/out",
             "--film-date",
-            "not-a-date",
+            "2026-08-02",
         ]
     )
     assert status == 2
@@ -352,8 +352,6 @@ def test_job_count_out_of_range_returns_status_2(capsys, jobs):
             "a.NEF",
             "--out",
             "/tmp/out",
-            "--film-date",
-            "2026-08-02",
             "--jobs",
             jobs,
         ]
@@ -398,8 +396,8 @@ def test_stderr_never_contains_machine_readable_events(capsys):
             "a.NEF",
             "--out",
             "/tmp/out",
-            "--film-date",
-            "bad",
+            "--per-negative",
+            "not-a-number",
         ],
     ]
     for argv in scenarios:
@@ -427,8 +425,6 @@ def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately
             "b.NEF",
             "--out",
             "/tmp/out",
-            "--film-date",
-            "2026-08-02",
             "--jobs",
             "2",
             "--overwrite",
@@ -459,8 +455,6 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
             *REAL_SAMPLE_FILES,
             "--out",
             str(out_dir),
-            "--film-date",
-            "2026-08-02",
         ]
     )
 
@@ -500,8 +494,6 @@ def _convert_argv(input_dir, out_dir, files, **extra) -> list[str]:
         *files,
         "--out",
         str(out_dir),
-        "--film-date",
-        "2026-08-02",
     ]
     for key, value in extra.items():
         argv += [f"--{key.replace('_', '-')}", str(value)]

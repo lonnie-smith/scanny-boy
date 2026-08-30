@@ -47,6 +47,7 @@ from pathlib import Path
 from scanny_boy import concurrency, disk_check, hashing, raw_decode
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.catalogue import (
+    CaptureTimestamp,
     CatalogueError,
     compute_canonical_order,
     discover_catalogue,
@@ -62,11 +63,6 @@ from scanny_boy.events import (
     PipelineStep,
     Progress,
     WarningEvent,
-)
-from scanny_boy.film_date import (
-    FilmDateError,
-    synthetic_times_from_capture,
-    synthetic_times_from_filename_fallback,
 )
 from scanny_boy.icc_profile import (
     PROFILE_FILENAME,
@@ -249,7 +245,7 @@ class _GroupContext:
     staging_dir: Path
     source_records_by_name: dict[str, SourceRecord]
     source_index_by_name: dict[str, int]
-    synthetic_time_by_name: dict[str, datetime.datetime]
+    real_time_by_name: dict[str, datetime.datetime]
     digitized_fields_by_name: dict[str, DigitizedFields]
     settings_by_name: dict[str, SourceSettings]
     icc_profile: bytes
@@ -377,19 +373,29 @@ def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetada
     )
 
 
-def _compute_synthetic_times(
-    input_dir: Path,
-    selected: list[str],
-    film_date: datetime.date,
-    used_filename_fallback: bool,
-) -> list[datetime.datetime]:
-    try:
-        if used_filename_fallback:
-            return synthetic_times_from_filename_fallback(film_date, len(selected))
-        timestamps = [read_capture_timestamp(input_dir / name) for name in selected]
-        return synthetic_times_from_capture(film_date, timestamps)
-    except FilmDateError as exc:
-        raise ConvertFailure(exc.code, exc.message) from exc
+def _as_datetime(ts: CaptureTimestamp) -> datetime.datetime:
+    """`ts.when` plus its subsecond fraction folded into `microsecond`."""
+    microsecond = min(round(ts.subsec_fraction * 1_000_000), 999_999)
+    return ts.when.replace(microsecond=microsecond)
+
+
+def _read_real_times(input_dir: Path, selected: list[str]) -> list[datetime.datetime]:
+    """Section 0/§2: Phase 3 has no film date, so every intermediate carries
+    the real `DateTimeOriginal` its own source frame already has — read the
+    same way canonical ordering already trusts (`catalogue.read_capture_timestamp`).
+    A selected file with no usable capture timestamp fails the run with
+    `MISSING_CAPTURE_TIME`: Phase 1's noon-plus-elapsed fallback for this
+    case no longer exists, so it can no longer be papered over."""
+    times: list[datetime.datetime] = []
+    for name in selected:
+        ts = read_capture_timestamp(input_dir / name)
+        if ts is None:
+            raise ConvertFailure(
+                Code.MISSING_CAPTURE_TIME,
+                f"{name} has no usable capture timestamp",
+            )
+        times.append(_as_datetime(ts))
+    return times
 
 
 def _now_iso() -> str:
@@ -442,7 +448,7 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
         base_path,
         final_path,
         NestedExifFields(
-            date_time_original=ctx.synthetic_time_by_name[member],
+            date_time_original=ctx.real_time_by_name[member],
             exposure_time=settings.exposure_time,
             f_number=settings.f_number,
             iso=settings.iso,
@@ -548,7 +554,6 @@ def run_convert(
     input_dir: Path,
     files: list[str],
     output_dir: Path,
-    film_date: datetime.date,
     per_negative: int,
     *,
     run_id: str,
@@ -593,9 +598,7 @@ def run_convert(
     settings_list = _read_settings_and_check_consistency(input_dir, selected)
     source_records = hash_sources(input_dir, selected)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
-    synthetic_times = _compute_synthetic_times(
-        input_dir, selected, film_date, validated.used_filename_fallback
-    )
+    real_times = _read_real_times(input_dir, selected)
     digitized_fields = [choose_digitized_fields(read_digitization_fields(input_dir / n)) for n in selected]
     try:
         icc_profile = load_icc_profile()
@@ -608,7 +611,11 @@ def run_convert(
         run_id=run_id,
         status="running",
         input_folder=str(input_dir.resolve()),
-        film_date=film_date.isoformat(),
+        # No film date at convert (Phase 3 section 0): `film_date` is now
+        # just the calendar date of the selection's first real capture
+        # time, kept only because the work manifest's schema still has the
+        # field and a rerun still compares it.
+        film_date=real_times[0].date().isoformat(),
         shots_per_negative=per_negative,
         processing_params=raw_decode.jsonable_raw_params(),
         icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
@@ -663,7 +670,7 @@ def run_convert(
         "input_dir": input_dir,
         "source_records_by_name": {r.filename: r for r in source_records},
         "source_index_by_name": source_index_by_name,
-        "synthetic_time_by_name": dict(zip(selected, synthetic_times, strict=True)),
+        "real_time_by_name": dict(zip(selected, real_times, strict=True)),
         "digitized_fields_by_name": dict(zip(selected, digitized_fields, strict=True)),
         "settings_by_name": dict(zip(selected, settings_list, strict=True)),
         "icc_profile": icc_profile,

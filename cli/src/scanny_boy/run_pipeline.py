@@ -13,13 +13,11 @@ disk-check code here to add or to accidentally add together.
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import shutil
-import tempfile
 from pathlib import Path
 
 from scanny_boy.cancellation import CancellationToken
-from scanny_boy.events import Code, Event, Progress, WarningEvent
+from scanny_boy.events import Code, Event, NegativeSuperseded, Progress, WarningEvent
 from scanny_boy.pipeline import (
     STEPS_PER_FRAME,
     ConvertFailure,
@@ -27,6 +25,11 @@ from scanny_boy.pipeline import (
     run_convert,
 )
 from scanny_boy.registration import StitchError
+from scanny_boy.roll_manifest import (
+    load_roll_manifest,
+    mark_superseded,
+    write_roll_manifest,
+)
 from scanny_boy.stitch_pipeline import EmitFn, StitchOutcome, run_stitch
 
 # Section 3.12.1's table 7: 0.57s detect + 0.50s warp is 1.07s of per-frame
@@ -88,22 +91,72 @@ def _wrap_emit_for_stitch(base_emit: EmitFn, *, completed_offset: int, weighted_
     return wrapped
 
 
+def _supersede_this_run(out_dir: Path, *, run_id: str, emit: EmitFn) -> None:
+    """Section 3.4's replacement rule, executed: for every negative this run
+    just published, mark whatever it covers as superseded, then delete each
+    superseded negative's file and report it. Manifest first, file second —
+    every supersession `mark_superseded` finds is written once, before any
+    file is touched, so a crash between the two leaves an orphan file rather
+    than a dangling record (section 3.4).
+
+    A failed delete never fails the run: it emits
+    `SUPERSEDED_FILE_NOT_REMOVED` and moves on (section 3.4).
+    """
+    roll = load_roll_manifest(out_dir)
+    published_this_run = [
+        n for n in roll.negatives if n.run_id == run_id and n.status == "completed"
+    ]
+
+    superseded = []
+    for negative in published_this_run:
+        superseded.extend(mark_superseded(roll, negative))
+    if not superseded:
+        return
+
+    write_roll_manifest(out_dir, roll)
+
+    for old in superseded:
+        emit(
+            NegativeSuperseded(
+                run_id=run_id,
+                old_negative_id=old.negative_id,
+                new_negative_id=old.superseded_by,
+            )
+        )
+        # A superseded record that never published (still `pending` or
+        # `failed` from an earlier, crashed run — section 3.4's subset test
+        # does not require `completed`) has no file to remove.
+        if old.output is None:
+            continue
+        old_path = out_dir / old.output["name"]
+        try:
+            old_path.unlink()
+        except OSError as exc:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.SUPERSEDED_FILE_NOT_REMOVED,
+                    message=f"{old_path} could not be removed: {exc}",
+                )
+            )
+
+
 def run_full(
     input_dir: Path,
     files: list[str],
     out_dir: Path,
-    film_date: datetime.date,
     per_negative: int,
     *,
     run_id: str,
     work_dir: Path | None,
     keep_intermediates: bool,
-    overwrite: bool,
+    skip_sources: list[str],
     jobs: int | None,
     cancel: CancellationToken,
     emit: EmitFn,
 ) -> RunOutcome:
-    """Convert `files` into a work directory, then stitch it into `out_dir`.
+    """Convert `files` into a work directory, then stitch it into `out_dir`
+    (a roll).
 
     Raises `RunFailure` for any validation-level problem from either stage
     (mirroring `ConvertFailure`/`StitchError`). A group or negative failure
@@ -112,9 +165,26 @@ def run_full(
     skips the stitch stage entirely (section 3.5's "the group being
     processed is not published" extends naturally to "no stitching starts
     on a run that never finished converting").
+
+    `skip_sources` (section 3.5) names filenames, relative to `input_dir`,
+    to exclude from `files` before validation and grouping — so excluding
+    anything but a whole group at a selection edge fails
+    `NON_CONTIGUOUS_SELECTION` exactly as it would otherwise, with no
+    special-cased check needed here.
+
+    Section 3.6: the default work directory is `<roll>/.work/<run_id>/`,
+    created here rather than a scattered temp directory, so a kept one
+    (failure, cancellation, or `keep_intermediates`) is discoverable from
+    inside the roll.
     """
     created_work_dir = work_dir is None
-    resolved_work_dir = Path(work_dir) if work_dir is not None else Path(tempfile.mkdtemp())
+    if created_work_dir:
+        resolved_work_dir = out_dir / ".work" / run_id
+        resolved_work_dir.mkdir(parents=True)
+    else:
+        resolved_work_dir = Path(work_dir)
+
+    files = [f for f in files if f not in skip_sources]
 
     frame_count = len(files)
     negative_count = frame_count // per_negative if per_negative else 0
@@ -129,10 +199,9 @@ def run_full(
             input_dir,
             files,
             resolved_work_dir,
-            film_date,
             per_negative,
             run_id=run_id,
-            overwrite=overwrite,
+            overwrite=False,
             jobs=jobs,
             cancel=cancel,
             emit=emit,
@@ -155,7 +224,7 @@ def run_full(
                 resolved_work_dir,
                 out_dir,
                 run_id=run_id,
-                overwrite=overwrite,
+                overwrite=False,
                 allow_partial=True,
                 jobs=jobs,
                 cancel=cancel,
@@ -163,6 +232,8 @@ def run_full(
             )
         except StitchError as exc:
             raise RunFailure(exc.code, exc.message) from exc
+
+        _supersede_this_run(out_dir, run_id=run_id, emit=emit)
 
     if convert_outcome.status == "cancelled" or (
         stitch_outcome is not None and stitch_outcome.status == "cancelled"

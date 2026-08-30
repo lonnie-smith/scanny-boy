@@ -15,7 +15,6 @@ for no extra coverage.
 
 from __future__ import annotations
 
-import datetime
 import hashlib
 import importlib.metadata
 import json
@@ -61,7 +60,6 @@ pytestmark = [
     ),
 ]
 
-FILM_DATE = "2026-08-02"
 VERSION = importlib.metadata.version("scanny-boy")
 DEFLATE_COMPRESSION = 32946  # Adobe Deflate, per section 3.4
 HORIZONTAL_PREDICTOR = 2
@@ -94,8 +92,6 @@ def _convert_packaged(
         *NEGATIVE_1,
         "--out",
         str(out_dir),
-        "--film-date",
-        FILM_DATE,
         "--per-negative",
         "3",
         "--jobs",
@@ -138,7 +134,6 @@ def development_run(tmp_path_factory) -> Path:
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        datetime.date.fromisoformat(FILM_DATE),
         3,
         run_id="development",
         jobs=1,
@@ -315,10 +310,8 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         str(FIXTURES_DIR),
         "--files",
         *NEGATIVE_1,
-        "--out",
+        "--roll",
         str(out_dir),
-        "--film-date",
-        FILM_DATE,
         "--per-negative",
         "3",
         "--jobs",
@@ -395,8 +388,6 @@ def test_packaged_cancellation_keeps_completed_groups_and_exits_143(tmp_path):
             *REAL_SAMPLE_FILES,
             "--out",
             str(out_dir),
-            "--film-date",
-            FILM_DATE,
             "--per-negative",
             "3",
             "--jobs",

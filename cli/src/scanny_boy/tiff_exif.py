@@ -30,7 +30,6 @@ from tifftools.constants import Tag
 
 from scanny_boy import tiff_writer
 from scanny_boy.events import Code
-from scanny_boy.film_date import format_date_time, format_subsec
 
 # EXIF tag codes for the nested IFD (section 3.5's mapping table).
 DATE_TIME_ORIGINAL = 36867
@@ -54,6 +53,21 @@ UNCALIBRATED_COLOR_SPACE = 65535
 IMAGE_DESCRIPTION_TAG_CODE = 270
 
 
+def format_date_time(dt: datetime.datetime) -> str:
+    """EXIF ASCII date/time format: `YYYY:MM:DD HH:MM:SS`."""
+    return dt.strftime("%Y:%m:%d %H:%M:%S")
+
+
+def format_subsec(dt: datetime.datetime) -> str | None:
+    """The fractional part of `dt`, formatted like source `SubSecTime*`
+    tags. `None` when `dt` falls exactly on the second, matching "omit when
+    absent"."""
+    if dt.microsecond == 0:
+        return None
+    digits = f"{dt.microsecond:06d}".rstrip("0")
+    return digits or None
+
+
 class TiffFinalizeError(Exception):
     """Maps to `TIFF_WRITE_FAILED`: the nested-EXIF rewrite could not be
     verified. The base file is left in place so nothing is lost."""
@@ -75,7 +89,7 @@ class NestedExifFields:
     **optional**: `None` omits the corresponding tag.
     """
 
-    date_time_original: datetime.datetime  # synthetic; see film_date.py
+    date_time_original: datetime.datetime  # the source frame's real capture time
     exposure_time: Fraction
     f_number: Fraction
     iso: int

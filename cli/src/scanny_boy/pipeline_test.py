@@ -21,7 +21,6 @@ from ~2.5s to well under a second.
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import json
 import os
 import shutil
@@ -53,7 +52,6 @@ from scanny_boy.sample_nef_support import (
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
 MANIFEST_SCHEMA = load_manifest_schema()
-FILM_DATE = datetime.date(2026, 8, 2)
 
 
 def _fast_frame() -> raw_decode.DecodedFrame:
@@ -118,7 +116,7 @@ def test_running_manifest_is_written_before_the_first_output_appears(monkeypatch
     monkeypatch.setattr("scanny_boy.pipeline.os.replace", _checking_replace)
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
     )
 
     assert outcome.status == "complete"
@@ -136,7 +134,7 @@ def test_manifest_validates_against_schema_and_records_correct_hashes(monkeypatc
     out_dir.mkdir()
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
     )
 
     assert outcome.status == "complete"
@@ -176,7 +174,6 @@ def test_a_failed_frame_removes_only_its_own_group_staging_and_later_groups_cont
         FIXTURES_DIR,
         list(REAL_SAMPLE_FILES),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         emit=events.append,
@@ -214,7 +211,6 @@ def test_no_staging_directory_survives_success_or_handled_failure(monkeypatch, t
         FIXTURES_DIR,
         list(REAL_SAMPLE_FILES),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         emit=lambda e: None,
@@ -242,7 +238,7 @@ def test_insufficient_disk_space_fails_before_any_decode(monkeypatch, tmp_path):
 
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
         )
 
     assert excinfo.value.code.value == "INSUFFICIENT_DISK"
@@ -259,13 +255,13 @@ def test_existing_outputs_fail_without_overwrite_and_succeed_with_it(monkeypatch
     out_dir.mkdir()
 
     first = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
     )
     assert first.status == "complete"
 
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r2", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r2", emit=lambda e: None
         )
     assert excinfo.value.code.value == "OUTPUT_CONFLICT"
     for name in NEGATIVE_1:
@@ -275,7 +271,6 @@ def test_existing_outputs_fail_without_overwrite_and_succeed_with_it(monkeypatch
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r3",
         overwrite=True,
@@ -290,26 +285,14 @@ def test_existing_outputs_fail_without_overwrite_and_succeed_with_it(monkeypatch
 
 
 # --- MANIFEST_MISMATCH / BAD_MANIFEST --------------------------------------
-
-
-@requires_real_samples
-def test_rerun_with_a_different_film_date_is_manifest_mismatch(monkeypatch, tmp_path):
-    _install_fast_decode(monkeypatch)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None)
-
-    with pytest.raises(ConvertFailure) as excinfo:
-        run_convert(
-            FIXTURES_DIR,
-            list(NEGATIVE_1),
-            out_dir,
-            datetime.date(2026, 9, 1),
-            3,
-            run_id="r2",
-            emit=lambda e: None,
-        )
-    assert excinfo.value.code.value == "MANIFEST_MISMATCH"
+#
+# Phase 3 section 3.5: `--film-date` no longer exists, and `film_date` is now
+# derived from the selection's own real capture times rather than supplied
+# by the caller, so two runs of the *same* selection always derive the same
+# value — there is no longer a way to construct "a rerun with a different
+# film date" independent of also changing the selection itself (which fails
+# earlier, on the source-hash comparison). The dimension this used to prove
+# is retired along with the CLI argument that made it constructible.
 
 
 @requires_real_samples
@@ -317,13 +300,13 @@ def test_unreadable_manifest_is_bad_manifest(monkeypatch, tmp_path):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None)
+    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None)
 
     (out_dir / MANIFEST_FILENAME).write_text("not valid json")
 
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r2", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r2", emit=lambda e: None
         )
     assert excinfo.value.code.value == "BAD_MANIFEST"
 
@@ -337,7 +320,7 @@ def test_unrelated_nonempty_output_folder_is_rejected(monkeypatch, tmp_path):
 
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
         )
     assert excinfo.value.code.value == "OUTPUT_NOT_EMPTY"
 
@@ -347,7 +330,7 @@ def test_output_folder_equal_to_input_folder_is_rejected(monkeypatch, tmp_path):
     _install_fast_decode(monkeypatch)
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), FIXTURES_DIR, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), FIXTURES_DIR, 3, run_id="r1", emit=lambda e: None
         )
     assert excinfo.value.code.value == "OUTPUT_SAME_AS_INPUT"
 
@@ -374,7 +357,7 @@ def test_source_changed_after_hashing_stops_its_group(monkeypatch, tmp_path):
     out_dir.mkdir()
 
     outcome = run_convert(
-        input_dir, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="r1", emit=lambda e: None
+        input_dir, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
     )
 
     assert outcome.status == "partial"
@@ -407,7 +390,7 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
 
     with pytest.raises(RuntimeError, match="simulated crash"):
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="run-a", emit=lambda e: None
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="run-a", emit=lambda e: None
         )
 
     # Exactly one file was published before the crash; the manifest was
@@ -424,7 +407,7 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
     monkeypatch.setattr("scanny_boy.pipeline.os.replace", real_replace)
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, FILM_DATE, 3, run_id="run-b", emit=lambda e: None
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="run-b", emit=lambda e: None
     )
 
     assert outcome.status == "complete"
@@ -463,7 +446,6 @@ def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
         FIXTURES_DIR,
         list(REAL_SAMPLE_FILES),
         serial_dir,
-        FILM_DATE,
         3,
         run_id="serial",
         jobs=1,
@@ -473,7 +455,6 @@ def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
         FIXTURES_DIR,
         list(REAL_SAMPLE_FILES),
         threaded_dir,
-        FILM_DATE,
         3,
         run_id="threaded",
         jobs=4,
@@ -510,7 +491,6 @@ def test_jobs_1_never_constructs_a_thread_pool(monkeypatch, tmp_path):
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=1,
@@ -588,7 +568,6 @@ def test_every_source_index_reports_one_final_result_despite_out_of_order_comple
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=3,
@@ -651,7 +630,6 @@ def test_thread_workers_never_return_image_arrays_to_the_parent(monkeypatch, tmp
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=3,
@@ -700,7 +678,6 @@ def test_tiff_compression_uses_one_inner_worker_even_when_outer_threads_run(
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=3,
@@ -734,7 +711,6 @@ def test_an_explicit_jobs_over_the_memory_budget_fails_before_any_work(
             FIXTURES_DIR,
             list(NEGATIVE_1),
             out_dir,
-            FILM_DATE,
             3,
             run_id="r1",
             jobs=12,
@@ -762,7 +738,6 @@ def test_the_default_worker_count_is_reduced_rather_than_rejected(monkeypatch, t
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=None,
@@ -846,7 +821,6 @@ def test_cancellation_discards_the_current_group_and_keeps_completed_ones(
         input_dir=FIXTURES_DIR,
         files=list(REAL_SAMPLE_FILES),
         output_dir=out_dir,
-        film_date=FILM_DATE,
         per_negative=3,
         run_id="r1",
         jobs=1,
@@ -925,7 +899,6 @@ def test_a_group_staged_but_not_yet_published_when_cancelled_is_still_discarded(
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         jobs=1,
@@ -986,7 +959,6 @@ def test_queued_work_is_cancelled_and_workers_stop_before_staging_is_deleted(
         input_dir=FIXTURES_DIR,
         files=list(REAL_SAMPLE_FILES),
         output_dir=out_dir,
-        film_date=FILM_DATE,
         per_negative=6,
         run_id="r1",
         jobs=2,
@@ -1027,7 +999,6 @@ def test_cancelling_before_the_first_group_publishes_nothing(monkeypatch, tmp_pa
         FIXTURES_DIR,
         list(NEGATIVE_1),
         out_dir,
-        FILM_DATE,
         3,
         run_id="r1",
         cancel=token,
