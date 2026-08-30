@@ -5,10 +5,21 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifftools
+from tifftools.constants import Tag
 
 from scanny_boy import hashing
+from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import CancellationToken
-from scanny_boy.events import Code, NegativeDone, NegativeFailed, Progress, Stage
+from scanny_boy.events import (
+    Code,
+    MetadataApplied,
+    MetadataSkipped,
+    NegativeDone,
+    NegativeFailed,
+    Progress,
+    Stage,
+)
 from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256, load_icc_profile
 from scanny_boy.manifest import (
     CuratedMetadata,
@@ -41,7 +52,12 @@ from scanny_boy.roll_manifest_schema_test_support import (
 from scanny_boy.romm import encode_from_linear
 from scanny_boy.stitch_pipeline import run_stitch
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
-from scanny_boy.tiff_exif import NestedExifFields, finalize_tiff
+from scanny_boy.tiff_exif import (
+    DATE_TIME_ORIGINAL,
+    SUBSEC_TIME_ORIGINAL,
+    NestedExifFields,
+    finalize_tiff,
+)
 from scanny_boy.tiff_writer import (
     BaseTiffTags,
     image_description,
@@ -688,6 +704,108 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     assert len(republished) == 1
     assert republished[0].members == target.members
     assert republished[0].negative_id != target.negative_id
+
+
+# --- P3-8: re-apply after re-stitch (section 3.9) -------------------------
+
+_REAPPLY_INTENDED = "2026-01-15T09:30:00.250000"
+
+
+def _apply_manually(out_dir: Path, negative_id: str, intended: str = _REAPPLY_INTENDED) -> None:
+    """Sets `intended_datetime_original` and drives it through the real
+    `apply-metadata` path, so `applied_datetime_original` is genuinely
+    non-null before a re-stitch, per section 4."""
+    roll = load_roll_manifest(out_dir)
+    roll.negative(negative_id).capture_time.intended_datetime_original = intended
+    write_roll_manifest(out_dir, roll)
+    outcome = run_apply_metadata(out_dir, emit=lambda e: None)
+    assert outcome.applied == [negative_id]
+
+
+def test_restitch_reapplies_metadata(tmp_path):
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    first = _stitch(work_dir, out_dir)
+    assert first.status == "complete"
+    old_id = load_roll_manifest(out_dir).negatives[0].negative_id
+    _apply_manually(out_dir, old_id)
+
+    events: list = []
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    assert second.status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    new = next(n for n in roll.negatives if n.negative_id != old_id)
+    assert new.capture_time.intended_datetime_original == _REAPPLY_INTENDED
+    assert new.capture_time.applied_datetime_original == _REAPPLY_INTENDED
+
+    tiff_path = out_dir / new.output["name"]
+    info = tifftools.read_tiff(str(tiff_path))
+    exif = info["ifds"][0]["tags"][Tag.ExifIFD.value]["ifds"][0][0]["tags"]
+    assert exif[DATE_TIME_ORIGINAL]["data"] == "2026:01:15 09:30:00"
+    assert exif[SUBSEC_TIME_ORIGINAL]["data"] == "25"
+
+    applied_events = [e for e in events if isinstance(e, MetadataApplied)]
+    assert [e.negative_id for e in applied_events] == [new.negative_id]
+
+
+def test_restitch_of_never_applied_negative_does_not_apply(tmp_path):
+    """No prior applied capture time to inherit -- the re-stitch is a
+    no-op for metadata, and nothing dirty appears out of nowhere."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    first = _stitch(work_dir, out_dir)
+    assert first.status == "complete"
+    old_id = load_roll_manifest(out_dir).negatives[0].negative_id
+
+    events: list = []
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    assert second.status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    new = next(n for n in roll.negatives if n.negative_id != old_id)
+    assert new.capture_time.intended_datetime_original is None
+    assert new.capture_time.applied_datetime_original is None
+
+    assert not [e for e in events if isinstance(e, (MetadataApplied, MetadataSkipped))]
+
+
+def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    first = _stitch(work_dir, out_dir)
+    assert first.status == "complete"
+    old_id = load_roll_manifest(out_dir).negatives[0].negative_id
+    _apply_manually(out_dir, old_id)
+
+    def _failing_rewrite(tiff_path, intended):
+        raise ApplyMetadataFailure(Code.METADATA_WRITE_FAILED, "simulated rewrite failure")
+
+    monkeypatch.setattr(
+        "scanny_boy.stitch_pipeline.rewrite_date_time_original", _failing_rewrite
+    )
+
+    events: list = []
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+
+    # A stitch is never failed by a metadata problem (section 3.9).
+    assert second.status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    new = next(n for n in roll.negatives if n.negative_id != old_id)
+    assert new.status == "completed"
+    # The intent is still recorded -- it is what makes the negative dirty
+    # and recoverable with Apply -- but it was never actually applied.
+    assert new.capture_time.intended_datetime_original == _REAPPLY_INTENDED
+    assert new.capture_time.applied_datetime_original is None
+
+    skipped_events = [e for e in events if isinstance(e, MetadataSkipped)]
+    assert len(skipped_events) == 1
+    assert skipped_events[0].negative_id == new.negative_id
+    assert skipped_events[0].code is Code.METADATA_WRITE_FAILED
 
 
 # --- the regression guard on the output_folder.py refactor ---------------

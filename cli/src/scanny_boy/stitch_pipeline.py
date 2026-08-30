@@ -33,6 +33,7 @@ from tifftools.constants import Tag
 
 from scanny_boy import composite as composite_module
 from scanny_boy import concurrency, disk_check, hashing, registration, tiff_exif
+from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.composite import (
     FILL_COLOR,
@@ -49,6 +50,8 @@ from scanny_boy.detection import (
 )
 from scanny_boy.events import (
     Code,
+    MetadataApplied,
+    MetadataSkipped,
     NegativeDone,
     NegativeFailed,
     PipelineStep,
@@ -802,6 +805,67 @@ def _record_failure(
     )
 
 
+def _covered_applied_source(roll: RollManifest, record: NegativeRecord) -> NegativeRecord | None:
+    """Section 3.9: the existing, non-superseded negative `record` covers
+    (section 3.4's own subset test — the same one `mark_superseded` uses,
+    but read-only here: whether `record` will actually go on to supersede
+    it is section 3.4's replacement rule, executed later by `run`) that
+    already had a capture time applied. `None` when `record` covers
+    nothing, or covers only negatives that were never applied."""
+    covering = set(record.members)
+    for other in roll.negatives:
+        if other.negative_id == record.negative_id:
+            continue
+        if other.superseded_by is not None:
+            continue
+        if not set(other.members) <= covering:
+            continue
+        if other.capture_time.applied_datetime_original is not None:
+            return other
+    return None
+
+
+def _maybe_reapply_metadata(
+    out_dir: Path,
+    roll: RollManifest,
+    record: NegativeRecord,
+    run_id: str,
+    emit: EmitFn,
+) -> None:
+    """Section 3.9: a negative that republishes one whose capture time was
+    already applied re-applies it automatically, as the final step before
+    the manifest is written — the user is not asked, and nothing is left
+    dirty. A failed re-apply leaves `record` `completed` with
+    `applied_datetime_original` cleared (dirty, recoverable with Apply) and
+    never fails the stitch."""
+    source = _covered_applied_source(roll, record)
+    if source is None:
+        return
+
+    assert record.output is not None
+    record.capture_time.intended_datetime_original = (
+        source.capture_time.applied_datetime_original
+    )
+    intended = datetime.datetime.fromisoformat(record.capture_time.intended_datetime_original)
+    tiff_path = out_dir / record.output["name"]
+
+    try:
+        rewrite_date_time_original(tiff_path, intended)
+    except ApplyMetadataFailure as exc:
+        record.capture_time.applied_datetime_original = None
+        emit(
+            MetadataSkipped(
+                run_id=run_id, negative_id=record.negative_id, code=exc.code, message=exc.message
+            )
+        )
+        return
+
+    record.output["size"] = tiff_path.stat().st_size
+    record.output["sha256"] = hashing.sha256_file(tiff_path)
+    record.capture_time.applied_datetime_original = record.capture_time.intended_datetime_original
+    emit(MetadataApplied(run_id=run_id, negative_id=record.negative_id))
+
+
 def _composite_and_publish(
     *,
     work_dir: Path,
@@ -922,6 +986,7 @@ def _composite_and_publish(
             "height": height,
         }
         record.status = "completed"
+        _maybe_reapply_metadata(out_dir, roll, record, run_id, emit)
         write_roll_manifest(out_dir, roll)
         emit(
             NegativeDone(
