@@ -242,7 +242,7 @@ def _write_matching_manifest(
         film_date=film_date,
         shots_per_negative=len(members),
         processing_params={"output_bps": 16},
-        icc_profile={"name": "ProPhoto-v4.icc", "sha256": PROFILE_SHA256},
+        icc_profile={"name": "ScannyBoy-ROMM-LibRaw-v4.icc", "sha256": PROFILE_SHA256},
         source_order=members,
         sources=records,
         curated_metadata=_curated_placeholder(),

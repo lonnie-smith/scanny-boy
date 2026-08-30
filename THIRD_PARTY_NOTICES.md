@@ -16,14 +16,20 @@ Bundled inside the packaged `scanny-boy` program as a shared library
   satisfies the redistribution terms of both licences.
 - No modifications have been made to LibRaw's source.
 
-## ProPhoto-v4.icc (ROMM RGB / ProPhoto RGB ICC colour profile)
+## ScannyBoy-ROMM-LibRaw-v4.icc (ROMM RGB ICC colour profile)
 
 Embedded in every TIFF Scanny Boy writes, at
-`cli/src/scanny_boy/resources/ProPhoto-v4.icc`.
+`cli/src/scanny_boy/resources/ScannyBoy-ROMM-LibRaw-v4.icc`.
 
-- Source: <https://github.com/saucecontrol/Compact-ICC-Profiles/blob/master/profiles/ProPhoto-v4.icc>
-- Licence: CC0 1.0 Universal (public domain dedication).
-- SHA-256: `090daf740c136b4a63bf979d64f034b4a65aa5abbb04a0917729222afe2bb5c2`
+- Derived from the CC0 `ProPhoto-v4.icc` profile in Compact ICC Profiles
+  (<https://github.com/saucecontrol/Compact-ICC-Profiles/blob/master/profiles/ProPhoto-v4.icc>):
+  primaries, white point, and `chad` are copied byte for byte; only the
+  transfer curve (`rTRC`/`gTRC`/`bTRC`) is replaced with LibRaw's generalised
+  curve so the profile matches the pixels rawpy writes. Generated deterministically
+  by `cli/tools/generate_icc_profile.py`.
+- Licence: CC0 1.0 Universal for the upstream profile; Scanny Boy's derivation
+  is all rights reserved (see [`LICENSE`](LICENSE)).
+- SHA-256: `18760274dbf58e150f5d3d391a762b51ad7799b26dac5acc4d74289d70998575`
   (verified at startup by `scanny_boy.icc_profile`).
 
 ## OpenCV

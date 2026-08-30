@@ -1,29 +1,13 @@
 
-* The embedded ICC profile does not match the pixels' actual transfer curve.
+* ~~The embedded ICC profile does not match the pixels' actual transfer curve.
   `ProPhoto-v4.icc` declares true ROMM (encoded breakpoint 0.03125), but
   rawpy's `gamma=(1.8, 16)` writes LibRaw's generalised curve instead — a
   different breakpoint plus an offset term (measured 2026-08-29; see Phase 2
   plan section 2.3.1). A viewer honouring the profile renders every Phase 1
   TIFF too dark in the shadows: about 360 LSB at a linear value of 0.05
   (−5.2%), rising to −20.8% at 0.005 and falling to nothing at white. Phase 2
-  reads the pixels correctly and is unaffected.
-
-  There are two possible fixes, and they are **not** equally expensive:
-
-  - **Write a profile whose transfer curve is LibRaw's.** This does *not*
-    change any pixel — only the embedded profile bytes, the file hashes the
-    manifests record, and the SHA-256 that `ICC_PROFILE_INVALID` gates on.
-    LibRaw's curve is exactly expressible as an ICC v4 `parametricCurveType`
-    function type 4, so this is authoring a correct profile rather than
-    approximating one.
-  - **Decode linear and encode true ROMM ourselves.** This genuinely rewrites
-    every pixel and every Phase 1 test that asserts anything about output
-    values.
-
-  The first is **scheduled as Phase 3 chunk P3-1**; see
-  `PHASE3_IMPLEMENTATION_PLAN.md` section 3.13. The second remains unscheduled
-  and would only be worth doing if true ROMM encoding became a requirement in
-  its own right.
+  reads the pixels correctly and is unaffected.~~ **Fixed in Phase 3 P3-1:**
+  `ScannyBoy-ROMM-LibRaw-v4.icc` embeds LibRaw's curve; no pixel values change.
 * `probe --out` has no notion of `scanny-boy-roll.json` (Phase 2's stitched
   roll manifest) — only `scanny-boy-manifest.json`. It reports a folder
   holding only a roll manifest as `OUTPUT_NOT_EMPTY` rather than recognising
