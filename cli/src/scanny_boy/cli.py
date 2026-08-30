@@ -21,6 +21,7 @@ from scanny_boy.events import (
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
+from scanny_boy.run_pipeline import RunFailure, run_full
 from scanny_boy.stitch_pipeline import run_stitch
 
 MAX_SELECTION_FILES = 5000
@@ -91,6 +92,25 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--overwrite", action="store_true")
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
 
+    run = subparsers.add_parser(
+        "run", help="Convert and stitch a selection of NEFs in one run."
+    )
+    run.add_argument("--input", required=True, metavar="DIR")
+    run.add_argument("--files", nargs="+", required=True, metavar="FILE")
+    run.add_argument("--out", required=True, metavar="DIR")
+    run.add_argument(
+        "--film-date", required=True, type=_film_date, metavar="YYYY-MM-DD"
+    )
+    run.add_argument(
+        "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
+    )
+    run.add_argument("--jobs", type=int, metavar="N")
+    run.add_argument("--overwrite", action="store_true")
+    run.add_argument("--work", metavar="DIR")
+    run.add_argument(
+        "--keep-intermediates", action="store_true", dest="keep_intermediates"
+    )
+
     return parser
 
 
@@ -125,6 +145,65 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 emit=writer.write,
             )
     except StitchError as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
+
+    if outcome.status == "cancelled":
+        writer.write(
+            ErrorEvent(
+                run_id=run_id,
+                code=Code.CANCELLED,
+                message=(
+                    "cancelled at the user's request; completed negatives were "
+                    "kept and the negative in progress was discarded"
+                ),
+            )
+        )
+        writer.write(
+            Finished(
+                run_id=run_id, status="cancelled", exit_status=CANCELLED_EXIT_STATUS
+            )
+        )
+        return CANCELLED_EXIT_STATUS
+
+    exit_status = 0 if outcome.status == "complete" else 1
+    writer.write(
+        Finished(
+            run_id=run_id,
+            status="success" if exit_status == 0 else "failed",
+            exit_status=exit_status,
+        )
+    )
+    return exit_status
+
+
+def _run_run_command(
+    args, writer: EventWriter, files: list[str] | None, jobs: int | None
+) -> int:
+    """The `run` subcommand: mirrors `convert`'s and `stitch`'s event and
+    exit-status shape exactly, over `run_full` instead of `run_convert` or
+    `run_stitch`."""
+    run_id = str(uuid.uuid4())
+    writer.write(Started(command="run", run_id=run_id))
+
+    try:
+        with sigterm_cancellation() as cancel:
+            outcome = run_full(
+                Path(args.input),
+                files,
+                Path(args.out),
+                datetime.date.fromisoformat(args.film_date),
+                args.per_negative,
+                run_id=run_id,
+                work_dir=Path(args.work) if args.work else None,
+                keep_intermediates=args.keep_intermediates,
+                overwrite=args.overwrite,
+                jobs=jobs,
+                cancel=cancel,
+                emit=writer.write,
+            )
+    except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
@@ -233,6 +312,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "stitch":
         return _run_stitch_command(args, writer, jobs)
+
+    if args.command == "run":
+        return _run_run_command(args, writer, files, jobs)
 
     # convert
     run_id = str(uuid.uuid4())

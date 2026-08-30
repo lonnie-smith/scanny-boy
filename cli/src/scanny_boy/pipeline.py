@@ -197,12 +197,25 @@ class _ProgressReporter:
     values as a side effect.
     """
 
-    def __init__(self, *, total_steps: int, emit: EmitFn, run_id: str) -> None:
-        self._total = total_steps
+    def __init__(
+        self,
+        *,
+        total_steps: int,
+        emit: EmitFn,
+        run_id: str,
+        completed_offset: int = 0,
+        total_override: int | None = None,
+    ) -> None:
+        # `completed_offset`/`total_override` let `run` (Chunk P2-7) report
+        # one progress span across both the convert and stitch stages,
+        # without changing a single number `convert` emits on its own:
+        # both default to a no-op (offset 0, no override), which is what
+        # `pipeline_test.py` passing unmodified proves.
+        self._total = total_steps if total_override is None else total_override
         self._emit = emit
         self._run_id = run_id
         self._lock = threading.Lock()
-        self._completed = 0
+        self._completed = completed_offset
 
     def advance(self, source_index: int, step: PipelineStep) -> None:
         with self._lock:
@@ -543,6 +556,8 @@ def run_convert(
     jobs: int | None = None,
     cancel: CancellationToken | None = None,
     emit: EmitFn = lambda event: None,
+    completed_offset: int = 0,
+    total_override: int | None = None,
 ) -> ConvertOutcome:
     """Validate the selection and output folder exactly as `probe` does,
     then convert every selected frame group by group. Raises
@@ -638,7 +653,11 @@ def run_convert(
 
     source_index_by_name = {name: i for i, name in enumerate(selected)}
     progress = _ProgressReporter(
-        total_steps=len(selected) * STEPS_PER_FRAME, emit=emit, run_id=run_id
+        total_steps=len(selected) * STEPS_PER_FRAME,
+        emit=emit,
+        run_id=run_id,
+        completed_offset=completed_offset,
+        total_override=total_override,
     )
     base_context = {
         "input_dir": input_dir,
