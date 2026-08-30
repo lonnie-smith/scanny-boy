@@ -20,6 +20,8 @@ from scanny_boy.events import (
 )
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
+from scanny_boy.registration import StitchError
+from scanny_boy.stitch_pipeline import run_stitch
 
 MAX_SELECTION_FILES = 5000
 MIN_PER_NEGATIVE = 1
@@ -79,6 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--jobs", type=int, metavar="N")
     convert.add_argument("--overwrite", action="store_true")
 
+    stitch = subparsers.add_parser(
+        "stitch",
+        help="Stitch a work directory's intermediates into one TIFF per negative.",
+    )
+    stitch.add_argument("--work", required=True, metavar="DIR")
+    stitch.add_argument("--out", required=True, metavar="DIR")
+    stitch.add_argument("--jobs", type=int, metavar="N")
+    stitch.add_argument("--overwrite", action="store_true")
+    stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
+
     return parser
 
 
@@ -92,6 +104,58 @@ def _usage_error(parser: argparse.ArgumentParser, message: str) -> int:
     except SystemExit as exc:
         return _exit_code(exc)
     raise AssertionError("argparse.ArgumentParser.error() always raises SystemExit")
+
+
+def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
+    """The `stitch` subcommand: mirrors `convert`'s event and exit-status
+    shape exactly, over `run_stitch` instead of `run_convert`."""
+    run_id = str(uuid.uuid4())
+    writer.write(Started(command="stitch", run_id=run_id))
+
+    try:
+        with sigterm_cancellation() as cancel:
+            outcome = run_stitch(
+                Path(args.work),
+                Path(args.out),
+                run_id=run_id,
+                overwrite=args.overwrite,
+                allow_partial=args.allow_partial,
+                jobs=jobs,
+                cancel=cancel,
+                emit=writer.write,
+            )
+    except StitchError as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
+
+    if outcome.status == "cancelled":
+        writer.write(
+            ErrorEvent(
+                run_id=run_id,
+                code=Code.CANCELLED,
+                message=(
+                    "cancelled at the user's request; completed negatives were "
+                    "kept and the negative in progress was discarded"
+                ),
+            )
+        )
+        writer.write(
+            Finished(
+                run_id=run_id, status="cancelled", exit_status=CANCELLED_EXIT_STATUS
+            )
+        )
+        return CANCELLED_EXIT_STATUS
+
+    exit_status = 0 if outcome.status == "complete" else 1
+    writer.write(
+        Finished(
+            run_id=run_id,
+            status="success" if exit_status == 0 else "failed",
+            exit_status=exit_status,
+        )
+    )
+    return exit_status
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -111,13 +175,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{MAX_SELECTION_FILES}",
         )
 
-    if not (MIN_PER_NEGATIVE <= args.per_negative <= MAX_PER_NEGATIVE):
+    # `stitch` takes no --per-negative: it reads the grouping from the work
+    # manifest, which already recorded it.
+    per_negative = getattr(args, "per_negative", None)
+    if per_negative is not None and not (
+        MIN_PER_NEGATIVE <= per_negative <= MAX_PER_NEGATIVE
+    ):
         writer.write(
             ErrorEvent(
                 code=Code.INVALID_PER_NEGATIVE,
                 message=(
                     f"--per-negative must be between {MIN_PER_NEGATIVE} and "
-                    f"{MAX_PER_NEGATIVE}, got {args.per_negative}"
+                    f"{MAX_PER_NEGATIVE}, got {per_negative}"
                 ),
             )
         )
@@ -161,6 +230,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         writer.write(Finished(status="success", exit_status=0))
         return 0
+
+    if args.command == "stitch":
+        return _run_stitch_command(args, writer, jobs)
 
     # convert
     run_id = str(uuid.uuid4())
