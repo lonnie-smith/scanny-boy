@@ -17,17 +17,77 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from scanny_boy.events import Code
 from scanny_boy.manifest import (
     MANIFEST_FILENAME,
-    Manifest,
     check_rerun_compatible,
     check_rerun_matches,
     load_manifest,
 )
+from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FILENAME,
+    check_roll_rerun_matches,
+    load_roll_manifest,
+)
 
 STAGING_SUFFIX = ".scanny-staging"
+
+
+@dataclasses.dataclass(frozen=True)
+class UnitView:
+    """One publishable unit of a manifest, seen through `FolderRules`: a
+    Phase 1 *group* or a Phase 2 *negative*. `_plan_rerun` cares only about
+    the three things below, which is why one function serves both."""
+
+    unit_id: str
+    expected_outputs: list[str]
+    is_completed: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class FolderRules:
+    """Everything `_plan_rerun` needs to know about *which* manifest kind an
+    output folder holds. Section 3.7: generalise this module over the
+    manifest it is reading rather than copying it."""
+
+    manifest_filename: str
+    load: Callable[[Path], Any]
+    run_id_of: Callable[[Any], str]
+    units_of: Callable[[Any], list[UnitView]]
+    all_expected_outputs_of: Callable[[Any], list[str]]
+
+
+CONVERT_RULES = FolderRules(
+    manifest_filename=MANIFEST_FILENAME,
+    load=load_manifest,
+    run_id_of=lambda manifest: manifest.run_id,
+    units_of=lambda manifest: [
+        UnitView(
+            unit_id=group.group_id,
+            expected_outputs=group.expected_outputs,
+            is_completed=group.status == "completed",
+        )
+        for group in manifest.groups
+    ],
+    all_expected_outputs_of=lambda manifest: manifest.all_expected_outputs(),
+)
+
+ROLL_RULES = FolderRules(
+    manifest_filename=ROLL_MANIFEST_FILENAME,
+    load=load_roll_manifest,
+    run_id_of=lambda manifest: manifest.run_id,
+    units_of=lambda manifest: [
+        UnitView(
+            unit_id=negative.negative_id,
+            expected_outputs=[negative.expected_output],
+            is_completed=negative.status == "completed",
+        )
+        for negative in manifest.negatives
+    ],
+    all_expected_outputs_of=lambda manifest: manifest.all_expected_outputs(),
+)
 
 
 class OutputFolderError(Exception):
@@ -79,36 +139,46 @@ def _is_staging_dir_for_run(entry: Path, run_id: str) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class RerunPlan:
-    existing_manifest: Manifest | None
+    existing_manifest: Any | None
     conflicting_outputs: list[str]
     stale_outputs: list[str]
     stale_staging_dirs: list[Path]
 
 
-def _plan_rerun(output_dir: Path, check: Callable[[Manifest], None]) -> RerunPlan:
+def _plan_rerun(
+    output_dir: Path,
+    check: Callable[[Any], None],
+    *,
+    rules: FolderRules = CONVERT_RULES,
+) -> RerunPlan:
     """Shared by `plan_rerun` and `plan_rerun_preview`: folder-relatedness
     and conflict-listing rules are the same either way, so only the
     rerun-comparison itself is a parameter. Raises
     `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated nonempty folder,
     `manifest.BadManifestError` for an unreadable or schema-invalid
-    manifest, and whatever `check` raises for a mismatched run."""
+    manifest, and whatever `check` raises for a mismatched run.
+
+    `rules` supplies the manifest filename, loader, run id, and units, so
+    the identical logic serves Phase 1's per-frame manifest and Phase 2's
+    roll manifest."""
     entries = list_non_dot_entries(output_dir)
     if not entries:
         return RerunPlan(None, [], [], [])
 
-    if not (output_dir / MANIFEST_FILENAME).exists():
+    if not (output_dir / rules.manifest_filename).exists():
         raise OutputFolderError(
             Code.OUTPUT_NOT_EMPTY,
-            f"{output_dir} is not empty and has no {MANIFEST_FILENAME}",
+            f"{output_dir} is not empty and has no {rules.manifest_filename}",
         )
 
-    existing = load_manifest(output_dir)
+    existing = rules.load(output_dir)
 
-    known_names = {MANIFEST_FILENAME, *existing.all_expected_outputs()}
+    run_id = rules.run_id_of(existing)
+    known_names = {rules.manifest_filename, *rules.all_expected_outputs_of(existing)}
     for entry in entries:
         if entry.name in known_names:
             continue
-        if _is_staging_dir_for_run(entry, existing.run_id):
+        if _is_staging_dir_for_run(entry, run_id):
             continue
         raise OutputFolderError(
             Code.OUTPUT_NOT_EMPTY,
@@ -120,33 +190,47 @@ def _plan_rerun(output_dir: Path, check: Callable[[Manifest], None]) -> RerunPla
     conflicting: list[str] = []
     stale: list[str] = []
     stale_staging: list[Path] = []
-    for group in existing.groups:
-        group_dir = staging_dir_path(output_dir, existing.run_id, group.group_id)
-        if group.status == "completed":
+    for unit in rules.units_of(existing):
+        unit_dir = staging_dir_path(output_dir, run_id, unit.unit_id)
+        if unit.is_completed:
             conflicting.extend(
-                name for name in group.expected_outputs if (output_dir / name).exists()
+                name for name in unit.expected_outputs if (output_dir / name).exists()
             )
         else:
             stale.extend(
-                name for name in group.expected_outputs if (output_dir / name).exists()
+                name for name in unit.expected_outputs if (output_dir / name).exists()
             )
-            if group_dir.exists():
-                stale_staging.append(group_dir)
+            if unit_dir.exists():
+                stale_staging.append(unit_dir)
 
     return RerunPlan(existing, conflicting, stale, stale_staging)
 
 
-def plan_rerun(output_dir: Path, candidate: Manifest) -> RerunPlan:
+def plan_rerun(
+    output_dir: Path, candidate: Any, *, rules: FolderRules = CONVERT_RULES
+) -> RerunPlan:
     """Raises `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated
     nonempty folder, `manifest.BadManifestError` for an unreadable or
     schema-invalid manifest, and `manifest.ManifestMismatchError` when a
-    valid manifest describes a different run."""
-    return _plan_rerun(output_dir, lambda existing: check_rerun_matches(existing, candidate))
+    valid manifest describes a different run.
+
+    The rerun comparison itself is manifest-kind-specific — Phase 1's
+    `check_rerun_matches` compares a `Manifest`, Phase 2's
+    `check_roll_rerun_matches` a `RollManifest` — so it is selected from
+    `rules` here rather than carried as a sixth `FolderRules` field."""
+    if rules is ROLL_RULES:
+        check: Callable[[Any], None] = lambda existing: check_roll_rerun_matches(
+            existing, candidate
+        )
+    else:
+        check = lambda existing: check_rerun_matches(existing, candidate)
+    return _plan_rerun(output_dir, check, rules=rules)
 
 
 def plan_rerun_preview(
     output_dir: Path,
     *,
+    rules: FolderRules = CONVERT_RULES,
     source_order: list[str],
     source_hashes: dict[str, str],
     shots_per_negative: int,
@@ -168,6 +252,7 @@ def plan_rerun_preview(
             groups=groups,
             icc_sha256=icc_sha256,
         ),
+        rules=rules,
     )
 
 
