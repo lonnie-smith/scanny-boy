@@ -23,6 +23,7 @@ from scanny_boy.cancellation import CancellationToken
 from scanny_boy.disk_check import DiskCheckError
 from scanny_boy.events import Code, Progress, Stage, WarningEvent
 from scanny_boy.pipeline import STEPS_PER_FRAME
+from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 from scanny_boy.romm import encode_from_linear
 from scanny_boy.run_pipeline import (
     STITCH_UNITS_PER_FRAME,
@@ -77,8 +78,22 @@ def _install_fast_registerable_decode(monkeypatch, files: list[str], *, seed: in
 
 
 def _out_dir(tmp_path: Path, name: str = "out") -> Path:
+    """A real, empty roll to publish into.
+
+    Section 5.4 decision 1: `stitch` -- and therefore `run`, which calls it --
+    never creates a roll, so one has to exist first. `roll init` arrives in
+    P3-4; until then this is `new_roll_manifest`, the same constructor it will
+    call, rather than hand-authored JSON."""
     out = tmp_path / name
     out.mkdir()
+    write_roll_manifest(
+        out,
+        new_roll_manifest(
+            roll_id="00000000-0000-4000-8000-00000000000a",
+            roll_name=name,
+            shots_per_negative=_PER_NEGATIVE,
+        ),
+    )
     return out
 
 

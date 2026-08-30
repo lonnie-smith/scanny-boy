@@ -28,7 +28,7 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.roll_manifest import (
     ROLL_MANIFEST_FILENAME,
-    check_roll_rerun_matches,
+    check_roll_invariants,
     load_roll_manifest,
 )
 
@@ -77,7 +77,10 @@ CONVERT_RULES = FolderRules(
 ROLL_RULES = FolderRules(
     manifest_filename=ROLL_MANIFEST_FILENAME,
     load=load_roll_manifest,
-    run_id_of=lambda manifest: manifest.run_id,
+    # Phase 3 section 5.4 decision 2: the v2 roll manifest has no top-level
+    # `run_id`. Staging directories belong to the run in flight, which is
+    # always the last appended one; a roll with no runs yet has none.
+    run_id_of=lambda manifest: manifest.runs[-1].run_id if manifest.runs else "",
     units_of=lambda manifest: [
         UnitView(
             unit_id=negative.negative_id,
@@ -214,12 +217,14 @@ def plan_rerun(
     schema-invalid manifest, and `manifest.ManifestMismatchError` when a
     valid manifest describes a different run.
 
-    The rerun comparison itself is manifest-kind-specific — Phase 1's
-    `check_rerun_matches` compares a `Manifest`, Phase 2's
-    `check_roll_rerun_matches` a `RollManifest` — so it is selected from
-    `rules` here rather than carried as a sixth `FolderRules` field."""
+    The comparison itself is manifest-kind-specific — Phase 1's
+    `check_rerun_matches` compares a `Manifest`, Phase 3's
+    `check_roll_invariants` a `RollInvariants` (section 3.4) — so it is
+    selected from `rules` here rather than carried as a sixth `FolderRules`
+    field. Under `ROLL_RULES`, `candidate` is therefore a `RollInvariants`,
+    not a manifest."""
     if rules is ROLL_RULES:
-        check: Callable[[Any], None] = lambda existing: check_roll_rerun_matches(
+        check: Callable[[Any], None] = lambda existing: check_roll_invariants(
             existing, candidate
         )
     else:

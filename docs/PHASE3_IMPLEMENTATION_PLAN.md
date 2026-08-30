@@ -651,6 +651,111 @@ chunk names, or if section 5.1 applies.
 
 **Haiku 4.5 is not recommended for any Phase 3 chunk.**
 
+### 5.4 Decisions taken during P3-2
+
+P3-2 stopped and reported four gaps between §3 and the code it had to
+rewrite. These are the answers, and they are as binding as §3. They amend
+nothing in §3; they fill holes in it.
+
+**1. `stitch --roll DIR` fails `ROLL_NOT_FOUND` when the roll is missing.**
+`stitch` never creates a roll. A directory with no readable
+`scanny-boy-roll.json` raises `StitchError(ROLL_NOT_FOUND)`; one whose
+manifest is not `manifest_format_version: 2` raises
+`ROLL_MANIFEST_UNSUPPORTED`. So that this is testable before `roll init`
+exists in P3-4, P3-2 adds one function to `roll_manifest.py`:
+
+```python
+def new_roll_manifest(
+    *, roll_id: str, roll_name: str, shots_per_negative: int
+) -> RollManifest: ...
+```
+
+It returns an empty roll — no runs, no sources, no negatives,
+`metadata` both-null — with `icc_profile` seeded from `icc_profile.py`'s
+`PROFILE_FILENAME` and `PROFILE_SHA256` (there is exactly one profile and it
+is a compile-time constant), and `processing_params` and `stitch_params`
+empty. This is the **only** constructor of an empty roll; P3-4's
+`create_roll` calls it rather than repeating it.
+
+`run` calls `stitch`, so `run_pipeline_test.py` and `packaging_test.py` need
+the same roll in their output-folder fixtures. Those are the two further
+files P3-2 touches, and only their fixtures plus one v1→v2 shape update
+(`data["status"]` becomes `data["runs"][0]["status"]`). No assertion's
+meaning changes. `packaging_test.py` runs the frozen bundle, which P3-9
+rebuilds; it is skipped in CI, which packages nothing on the Python job and
+runs no Python tests on the macOS one.
+
+**The roll invariants are seeded by the first run, not by creation.** An
+empty roll's `processing_params` and `stitch_params` are `{}` because no run
+has established them yet. Therefore:
+
+```python
+@dataclasses.dataclass(frozen=True)
+class RollInvariants:
+    shots_per_negative: int
+    processing_params: dict[str, Any]
+    icc_profile_sha256: str
+    stitch_params: dict[str, Any]
+```
+
+`check_roll_invariants` compares `shots_per_negative` always — §3.4 sets it
+at creation — and compares the other three only when `manifest.runs` is
+non-empty. On an unseeded roll it returns, and the caller assigns the three
+fields onto the manifest before `append_run`. `check_roll_invariants` never
+mutates.
+
+**2. `output_folder.py` joins P3-2's file table, minimally.** It cannot
+survive the removal of `check_roll_rerun_matches`, and the v2 manifest has
+no top-level `run_id`. Two changes and no others; P3-3 still owns the
+additive-semantics rework:
+
+- `ROLL_RULES.run_id_of` becomes
+  `lambda m: m.runs[-1].run_id if m.runs else ""`.
+- `plan_rerun`'s `rules is ROLL_RULES` branch calls
+  `check_roll_invariants(existing, candidate)`, so a roll `candidate` is a
+  `RollInvariants` rather than a `RollManifest`. `plan_rerun` is already
+  `Any`-typed in that parameter.
+
+**3. The two Phase 2 stitch tests §6.1 names are replaced.**
+
+- `test_mismatched_roll_manifest_is_rejected` asserted `MANIFEST_MISMATCH` on
+  a differing `film_date`. §3.3 removes `film_date` and §3.4 says sources,
+  order, and grouping are expected to differ. It becomes
+  `test_roll_invariant_mismatch_is_rejected`, stitching two work directories
+  with different `shots_per_negative` into one roll and asserting
+  `ROLL_INVARIANT_MISMATCH`.
+- `test_conflicting_rerun_needs_overwrite` asserted `OUTPUT_CONFLICT` on a
+  second stitch of the same work directory. §3.4 makes that impossible:
+  the second run gets its own `short_id`, its own `negative_id`s, and
+  `allocate_output_name` suffixes its outputs, so nothing is ever
+  overwritten. It becomes `test_second_stitch_publishes_under_a_suffixed_name`
+  — a genuine second run per §4 — asserting both TIFFs exist and both
+  negatives are `completed`.
+- Consequently **`stitch` no longer raises `OUTPUT_CONFLICT`.** The check was
+  vacuous: `allocate_output_name` cannot return a claimed name, so
+  `RerunPlan.conflicting_outputs` can only ever list prior-run files this run
+  does not touch. `apply_recovery_cleanup` and `stale_outputs` are kept
+  unchanged. `--overwrite` remains on `stitch`'s command line, accepted and
+  unused, until P3-5 gives it the `--negatives` re-stitch path §3.5 reserves
+  it for.
+
+**4. P3-2 populates `capture_time`.** `stitch` writes
+`source_datetime_original` from the value `_read_curated_exif` already reads
+out of the negative's first intermediate, ISO 8601, no timezone suffix. The
+other three fields are null. Until P3-5 rewires `metadata.py` and
+`tiff_exif.py` this is still Phase 1's synthetic time; P3-5 makes it the real
+one without changing where it is written from.
+
+`sequence` stays a plain nullable field at P3-2. Nothing computes it — that
+is P3-6's `roll_sequence.py` — and `mark_superseded` nulls it.
+
+**One more name P3-2 needs.** §3.3's `source` is "as Phase 2, plus `run_id`",
+but Phase 1's `SourceRecord` is shared with the work manifest and must not
+grow a field. The roll's own record is `RollSourceRecord` in
+`roll_manifest.py`, with `SourceRecord`'s five fields plus `run_id`.
+`merge_sources` takes Phase 1 `SourceRecord`s as its signature says and
+stores `RollSourceRecord`s.
+
 ---
 
 ### Chunk P3-0 — Contract, protocol v3, and the v2 roll schema
@@ -767,6 +872,10 @@ Branch: `p3-chunk-02-roll-manifest` · **Model: Opus 5** · **Auto-advance: yes*
 | `cli/src/scanny_boy/roll_manifest_test.py` | rewrite |
 | `cli/src/scanny_boy/stitch_pipeline.py` | write v2 records; `negative_id` and output-name rules of §3.4 |
 | `cli/src/scanny_boy/stitch_pipeline_test.py` | update |
+| `cli/src/scanny_boy/output_folder.py` | `ROLL_RULES` compiles against v2; see §5.4 decision 2 |
+| `cli/src/scanny_boy/roll_manifest_schema_test_support.py` | drop the v1 branch |
+| `cli/src/scanny_boy/run_pipeline_test.py` | fixture only: `run` publishes into a real roll |
+| `cli/src/scanny_boy/packaging_test.py` | same fixture, plus the v1→v2 status shape |
 
 Add `RunRecord` (with `short_id`); extend `NegativeRecord` with `run_id`,
 `sequence`, `superseded_by`, `capture_time`; add `CaptureTime`. Replace
@@ -795,6 +904,12 @@ must keep proving what they proved; where a test asserts a v1 manifest shape
 it is updated to the v2 shape and nothing else. A test whose *meaning* has
 to change is a stop-and-report.
 
+The four decisions §5.4 records were taken at this point, on a
+stop-and-report from the implementing agent. Read §5.4 before starting: it
+names `new_roll_manifest`, `RollInvariants`, and `RollSourceRecord`, settles
+what `stitch` does with a missing roll, and replaces the two Phase 2 stitch
+tests whose meaning §6.1 would otherwise have put to the user.
+
 **Tests:** `test_v2_round_trips`, `test_rejects_format_version_one`,
 `test_merge_sources_deduplicates_by_hash`,
 `test_append_run_preserves_earlier_negatives`,
@@ -808,7 +923,14 @@ to change is a stop-and-report.
 `test_mark_superseded_covers_an_exact_member_match`,
 `test_mark_superseded_covers_a_merging_regroup`,
 `test_mark_superseded_ignores_a_splitting_regroup`,
-`test_mark_superseded_nulls_the_sequence`.
+`test_mark_superseded_nulls_the_sequence`,
+`test_new_roll_manifest_is_empty_and_schema_valid`,
+`test_check_roll_invariants_seeds_on_an_unseeded_roll`.
+
+In `stitch_pipeline_test.py`, replacing the two Phase 2 tests §5.4 decision 3
+retires: `test_stitch_without_a_roll_manifest_is_rejected`,
+`test_roll_invariant_mismatch_is_rejected`,
+`test_second_stitch_publishes_under_a_suffixed_name`.
 
 ---
 
@@ -825,6 +947,8 @@ Branch: `p3-chunk-03-probe-roll` · **Model: Opus 5** · **Auto-advance: no** (P
 | `cli/src/scanny_boy/cli.py` | `probe --roll` |
 
 `FolderRules` already generalises this module; **extend it, do not fork it.**
+P3-2 already made it compile against the v2 manifest (§5.4 decision 2); the
+additive semantics below are still this chunk's work.
 Additive rolls change one thing: a nonempty roll folder holding published
 outputs from earlier runs is **normal**, not `OUTPUT_NOT_EMPTY`. Also closes
 `punchlist.md`'s `probe --out` false positive.
@@ -879,8 +1003,9 @@ def list_rolls(library: Path) -> list[Path]: ...
 def scan_library(library: Path) -> list[RollListing]: ...
 ```
 
-`create_roll` writes an empty v2 manifest through P3-2's writer — no
-negatives, no runs, no sources — and returns the roll directory.
+`create_roll` calls P3-2's `new_roll_manifest` (§5.4 decision 1) and writes
+it through P3-2's writer — no negatives, no runs, no sources — and returns
+the roll directory. It does not build the empty manifest itself.
 `rename_roll` moves the folder first, then writes `roll_name`, and raises
 without changing either on failure. `list_rolls` scans one level deep and
 returns directories holding a `scanny-boy-roll.json`, unsorted; it does not
@@ -1129,7 +1254,8 @@ Branch: `p3-chunk-13-documentation` · **Model: Sonnet 5**
   sidebar, creates a roll, renames it, deletes it. The IA is cheap to change
   here and expensive to change after P3-11 and P3-12.
 - **Before P3-2 merges**, if any Phase 2 stitch test's *meaning* would have
-  to change rather than its manifest fixture shape.
+  to change rather than its manifest fixture shape. **Reached and resolved:**
+  two did, and §5.4 decision 3 records what replaced them.
 
 ### 6.2 Pause points
 
