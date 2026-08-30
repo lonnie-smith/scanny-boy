@@ -38,10 +38,10 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"probe"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"probe"}'
                 printf '%s\n' 'reading /tmp/input' 1>&2
-                printf '%s\n' '{"protocol_version":2,"event":"probe_result","catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[]}'
-                printf '%s\n' '{"protocol_version":2,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '{"protocol_version":3,"event":"probe_result","catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[]}'
+                printf '%s\n' '{"protocol_version":3,"event":"finished","status":"complete","exit_status":0}'
                 exit 0
                 """#,
                 in: directory
@@ -66,9 +66,9 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert","run_id":"r1"}'
-                printf '%s\n' '{"protocol_version":2,"event":"error","run_id":"r1","code":"OUTPUT_CONFLICT","message":"3 outputs already exist"}'
-                printf '%s\n' '{"protocol_version":2,"event":"finished","run_id":"r1","status":"failed","exit_status":1}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '{"protocol_version":3,"event":"error","run_id":"r1","code":"OUTPUT_CONFLICT","message":"3 outputs already exist"}'
+                printf '%s\n' '{"protocol_version":3,"event":"finished","run_id":"r1","status":"failed","exit_status":1}'
                 exit 1
                 """#,
                 in: directory
@@ -107,12 +107,12 @@ struct CLISessionTests {
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
-                  printf '%s\n' '{"protocol_version":2,"event":"error","run_id":"r1","code":"CANCELLED","message":"cancelled by the user"}'
-                  printf '%s\n' '{"protocol_version":2,"event":"finished","run_id":"r1","status":"cancelled","exit_status":143}'
+                  printf '%s\n' '{"protocol_version":3,"event":"error","run_id":"r1","code":"CANCELLED","message":"cancelled by the user"}'
+                  printf '%s\n' '{"protocol_version":3,"event":"finished","run_id":"r1","status":"cancelled","exit_status":143}'
                   exit 143
                 }
                 trap on_term TERM
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert","run_id":"r1"}'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -152,7 +152,7 @@ struct CLISessionTests {
             // is reported as terminated by signal 15 rather than exiting 143.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert","run_id":"r1"}'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -187,7 +187,7 @@ struct CLISessionTests {
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 trap '' TERM
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert","run_id":"r1"}'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -220,11 +220,11 @@ struct CLISessionTests {
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
-                  printf '%s\n' '{"protocol_version":2,"event":"finished","status":"cancelled","exit_status":143}'
+                  printf '%s\n' '{"protocol_version":3,"event":"finished","status":"cancelled","exit_status":143}'
                   exit 143
                 }
                 trap on_term TERM
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert"}'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 """#,
@@ -262,11 +262,11 @@ struct CLISessionTests {
                 PAD=$(head -c 2000 /dev/zero | tr '\0' 'x')
                 i=0
                 while [ $i -lt 800 ]; do
-                  printf '{"protocol_version":2,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
+                  printf '{"protocol_version":3,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
                   printf 'log %s\n' "$PAD" 1>&2
                   i=$((i + 1))
                 done
-                printf '%s\n' '{"protocol_version":2,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '{"protocol_version":3,"event":"finished","status":"complete","exit_status":0}'
                 exit 0
                 """#,
                 in: directory
@@ -290,7 +290,7 @@ struct CLISessionTests {
             // the stream finished at an earlier point than it should.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"probe"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"probe"}'
                 exec 1>&-
                 i=0
                 while [ $i -lt 10 ]; do
@@ -328,9 +328,9 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert"}'
                 sleep 2
-                printf '%s\n' '{"protocol_version":2,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '{"protocol_version":3,"event":"finished","status":"complete","exit_status":0}'
                 exit 0
                 """#,
                 in: directory
@@ -363,12 +363,12 @@ struct CLISessionTests {
             // splits a line and one that straddles a newline.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":2,"event":"started",'
+                printf '%s' '{"protocol_version":3,"event":"started",'
                 sleep 0.2
                 printf '%s' '"command":"convert","run_id":"r1"}'
                 sleep 0.2
                 printf '%s' '
-                {"protocol_version":2,"event":"finis'
+                {"protocol_version":3,"event":"finis'
                 sleep 0.2
                 printf '%s\n' 'hed","run_id":"r1","status":"complete","exit_status":0}'
                 exit 0
@@ -390,7 +390,7 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":2,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s' '{"protocol_version":3,"event":"finished","status":"complete","exit_status":0}'
                 exit 0
                 """#,
                 in: directory
@@ -408,9 +408,9 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"probe"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"probe"}'
                 printf '%s\n' 'Traceback (most recent call last):'
-                printf '%s\n' '{"protocol_version":2,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '{"protocol_version":3,"event":"finished","status":"complete","exit_status":0}'
                 exit 0
                 """#,
                 in: directory
@@ -459,7 +459,7 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":2,"event":"started","command":"convert"}'
+                printf '%s\n' '{"protocol_version":3,"event":"started","command":"convert"}'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0

@@ -60,41 +60,41 @@ struct ConfigurationModelTests {
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
 
-    private static let started = #"{"protocol_version":2,"event":"started","command":"probe"}"#
+    private static let started = #"{"protocol_version":3,"event":"started","command":"probe"}"#
     private static let finishedSuccess =
-        #"{"protocol_version":2,"event":"finished","status":"success","exit_status":0}"#
+        #"{"protocol_version":3,"event":"finished","status":"success","exit_status":0}"#
     private static let finishedFailed =
-        #"{"protocol_version":2,"event":"finished","status":"failed","exit_status":1}"#
+        #"{"protocol_version":3,"event":"finished","status":"failed","exit_status":1}"#
 
     private static func errorEvent(code: String) -> String {
-        #"{"protocol_version":2,"event":"error","code":"\#(code)","message":"synthetic failure"}"#
+        #"{"protocol_version":3,"event":"error","code":"\#(code)","message":"synthetic failure"}"#
     }
 
     // Deliberately not alphabetical: proves the model displays `probe`'s
     // order verbatim instead of re-sorting (section 3.3: "Swift always uses
     // the order it is given and never sorts files itself").
     private static let catalogueUnsorted =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#
 
     private static let catalogueABC =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
 
     // Raw string literals do not support backslash line-continuation (that
     // is a plain-string-literal escape only), so each of these stays on one
     // line rather than risk a stray literal backslash inside the JSON.
     private static let threeFileGroupNoOut =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
 
     private static let threeFileGroupNoConflicts =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
 
     private static let threeFileGroupWithConflicts =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
 
     private static let sixFileNames = ["n1.NEF", "n2.NEF", "n3.NEF", "n4.NEF", "n5.NEF", "n6.NEF"]
 
     private static let sixFileTwoGroups =
-        #"{"protocol_version":2,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
 
     // MARK: - Model state follows probe results
 
@@ -129,7 +129,7 @@ struct ConfigurationModelTests {
             in: directory,
             catalogueOnly: [
                 Self.started,
-                #"{"protocol_version":2,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
+                #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
                 Self.finishedSuccess,
             ],
             withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess]

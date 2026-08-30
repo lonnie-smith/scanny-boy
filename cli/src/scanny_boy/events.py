@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 class EventType(enum.StrEnum):
@@ -26,6 +26,12 @@ class EventType(enum.StrEnum):
     FINISHED = "finished"
     NEGATIVE_DONE = "negative_done"
     NEGATIVE_FAILED = "negative_failed"
+    ROLL_CREATED = "roll_created"
+    ROLL_LIST = "roll_list"
+    ROLL_INFO = "roll_info"
+    NEGATIVE_SUPERSEDED = "negative_superseded"
+    METADATA_APPLIED = "metadata_applied"
+    METADATA_SKIPPED = "metadata_skipped"
 
 
 class Stage(enum.StrEnum):
@@ -58,7 +64,6 @@ class Code(enum.StrEnum):
     UNSUPPORTED_RAW = "UNSUPPORTED_RAW"
     CAPTURE_METADATA_MISSING = "CAPTURE_METADATA_MISSING"
     CAPTURE_SETTINGS_DIFFER = "CAPTURE_SETTINGS_DIFFER"
-    CAPTURE_SPAN_TOO_LONG = "CAPTURE_SPAN_TOO_LONG"
     UNREADABLE_RAW = "UNREADABLE_RAW"
     OUTPUT_SAME_AS_INPUT = "OUTPUT_SAME_AS_INPUT"
     OUTPUT_NOT_WRITABLE = "OUTPUT_NOT_WRITABLE"
@@ -85,6 +90,14 @@ class Code(enum.StrEnum):
     STITCH_REBATE_CHECK_FAILED = "STITCH_REBATE_CHECK_FAILED"
     OUTPUT_DIMENSIONS_LARGE = "OUTPUT_DIMENSIONS_LARGE"
     INTERMEDIATES_KEPT = "INTERMEDIATES_KEPT"
+    ROLL_NOT_FOUND = "ROLL_NOT_FOUND"
+    ROLL_MANIFEST_UNSUPPORTED = "ROLL_MANIFEST_UNSUPPORTED"
+    ROLL_EXISTS = "ROLL_EXISTS"
+    ROLL_INVARIANT_MISMATCH = "ROLL_INVARIANT_MISMATCH"
+    PER_NEGATIVE_LOCKED = "PER_NEGATIVE_LOCKED"
+    OUTPUT_MODIFIED_EXTERNALLY = "OUTPUT_MODIFIED_EXTERNALLY"
+    METADATA_WRITE_FAILED = "METADATA_WRITE_FAILED"
+    SUPERSEDED_FILE_NOT_REMOVED = "SUPERSEDED_FILE_NOT_REMOVED"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -119,6 +132,15 @@ class Event:
 def _jsonable(value: Any) -> Any:
     if isinstance(value, enum.Enum):
         return value.value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _jsonable(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        }
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
     return value
 
 
@@ -127,6 +149,15 @@ class Started(Event):
     event_type: ClassVar[EventType] = EventType.STARTED
 
     command: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollOverlapEntry:
+    negative_id: str
+    expected_output: str
+    run_id: str
+    overlapping_sources: list[str]
+    group_index: int
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -141,6 +172,9 @@ class ProbeResult(Event):
     output_conflicts: list[str] = dataclasses.field(default_factory=list)
     estimated_required_bytes: int | None = None
     available_bytes: int | None = None
+    # Present only when `--roll` was given alongside a validated `--files`
+    # selection (Phase 3 section 3.5).
+    roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -221,6 +255,69 @@ class Finished(Event):
 
     status: str
     exit_status: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollCreated(Event):
+    event_type: ClassVar[EventType] = EventType.ROLL_CREATED
+
+    roll_id: str
+    roll_name: str
+    path: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollListingReason:
+    code: str
+    message: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollListingEntry:
+    path: str
+    status: str
+    reason: RollListingReason | None = None
+    roll_id: str | None = None
+    roll_name: str | None = None
+    negative_count: int | None = None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollList(Event):
+    event_type: ClassVar[EventType] = EventType.ROLL_LIST
+
+    rolls: list[RollListingEntry]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollInfo(Event):
+    event_type: ClassVar[EventType] = EventType.ROLL_INFO
+
+    manifest: dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativeSuperseded(Event):
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_SUPERSEDED
+
+    old_negative_id: str
+    new_negative_id: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataApplied(Event):
+    event_type: ClassVar[EventType] = EventType.METADATA_APPLIED
+
+    negative_id: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataSkipped(Event):
+    event_type: ClassVar[EventType] = EventType.METADATA_SKIPPED
+
+    negative_id: str
+    code: Code
+    message: str
 
 
 class EventWriter:

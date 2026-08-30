@@ -1,10 +1,10 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ScannyBoyRollManifest",
-  "description": "scanny-boy-roll.json: the output folder's record of one stitched roll. See docs/PHASE2_IMPLEMENTATION_PLAN.md section 3.7.",
+  "description": "scanny-boy-roll.json: one roll's durable record. See docs/PHASE3_IMPLEMENTATION_PLAN.md section 3.3.",
   "type": "object",
   "definitions": {
-    "status": {
+    "runStatus": {
       "type": "string",
       "enum": ["running", "partial", "cancelled", "complete"]
     },
@@ -12,19 +12,24 @@
       "type": "string",
       "enum": ["pending", "completed", "failed"]
     },
+    "runKind": {
+      "type": "string",
+      "enum": ["run", "stitch"]
+    },
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
     "source": {
       "type": "object",
-      "required": ["filename", "absolute_path", "size", "mtime", "sha256"],
+      "required": ["filename", "absolute_path", "size", "mtime", "sha256", "run_id"],
       "properties": {
         "filename": { "type": "string" },
         "absolute_path": { "type": "string" },
         "size": { "type": "integer", "minimum": 0 },
         "mtime": { "type": "number" },
-        "sha256": { "$ref": "#/definitions/sha256" }
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "run_id": { "type": "string" }
       }
     },
     "iccProfile": {
@@ -87,10 +92,58 @@
         "accepted": { "type": "boolean" }
       }
     },
+    "captureTime": {
+      "type": "object",
+      "required": [
+        "source_datetime_original",
+        "intended_datetime_original",
+        "applied_datetime_original",
+        "date_override"
+      ],
+      "properties": {
+        "source_datetime_original": { "type": ["string", "null"] },
+        "intended_datetime_original": { "type": ["string", "null"] },
+        "applied_datetime_original": { "type": ["string", "null"] },
+        "date_override": { "type": ["string", "null"] }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "short_id",
+        "kind",
+        "status",
+        "convert_run_id",
+        "input_folder",
+        "source_order",
+        "work_dir",
+        "started_at",
+        "finished_at"
+      ],
+      "properties": {
+        "run_id": { "type": "string" },
+        "short_id": { "type": "string" },
+        "kind": { "$ref": "#/definitions/runKind" },
+        "status": { "$ref": "#/definitions/runStatus" },
+        "convert_run_id": { "type": ["string", "null"] },
+        "input_folder": { "type": ["string", "null"] },
+        "source_order": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "work_dir": { "type": ["string", "null"] },
+        "started_at": { "type": "string" },
+        "finished_at": { "type": ["string", "null"] }
+      }
+    },
     "negative": {
       "type": "object",
       "required": [
         "negative_id",
+        "run_id",
+        "sequence",
+        "superseded_by",
         "members",
         "expected_output",
         "status",
@@ -103,10 +156,14 @@
         "fill_color",
         "rebate_deviation_px",
         "error_code",
-        "error_message"
+        "error_message",
+        "capture_time"
       ],
       "properties": {
         "negative_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "sequence": { "type": ["integer", "null"], "minimum": 1 },
+        "superseded_by": { "type": ["string", "null"] },
         "members": {
           "type": "array",
           "items": { "type": "string" },
@@ -158,7 +215,19 @@
         },
         "rebate_deviation_px": { "type": ["number", "null"] },
         "error_code": { "type": ["string", "null"] },
-        "error_message": { "type": ["string", "null"] }
+        "error_message": { "type": ["string", "null"] },
+        "capture_time": { "$ref": "#/definitions/captureTime" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["roll_capture_date", "last_applied_at"],
+      "properties": {
+        "roll_capture_date": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "last_applied_at": { "type": ["string", "null"] }
       }
     }
   },
@@ -166,37 +235,34 @@
     "manifest_format_version",
     "manifest_kind",
     "scanny_boy_version",
-    "run_id",
-    "status",
-    "input_folder",
-    "film_date",
+    "roll_id",
+    "roll_name",
     "shots_per_negative",
-    "convert_run_id",
+    "created_at",
+    "updated_at",
     "processing_params",
     "icc_profile",
     "stitch_params",
-    "source_order",
+    "runs",
     "sources",
     "negatives",
-    "started_at",
-    "finished_at"
+    "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 1 },
-    "manifest_kind": { "type": "string", "const": "stitch" },
+    "manifest_format_version": { "type": "integer", "const": 2 },
+    "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
-    "run_id": { "type": "string" },
-    "status": { "$ref": "#/definitions/status" },
-    "input_folder": { "type": "string" },
-    "film_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "roll_id": { "type": "string" },
+    "roll_name": { "type": "string" },
     "shots_per_negative": { "type": "integer", "minimum": 1, "maximum": 12 },
-    "convert_run_id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
     "processing_params": { "type": "object" },
     "icc_profile": { "$ref": "#/definitions/iccProfile" },
     "stitch_params": { "type": "object" },
-    "source_order": {
+    "runs": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": { "$ref": "#/definitions/run" }
     },
     "sources": {
       "type": "array",
@@ -206,7 +272,6 @@
       "type": "array",
       "items": { "$ref": "#/definitions/negative" }
     },
-    "started_at": { "type": "string" },
-    "finished_at": { "type": ["string", "null"] }
+    "metadata": { "$ref": "#/definitions/metadata" }
   }
 }

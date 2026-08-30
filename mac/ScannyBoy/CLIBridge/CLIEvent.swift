@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 2
+    public static let supportedProtocolVersion = 3
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -30,6 +30,12 @@ public struct CLIEvent: Sendable, Hashable {
         case finished
         case negativeDone
         case negativeFailed
+        case rollCreated
+        case rollList
+        case rollInfo
+        case negativeSuperseded
+        case metadataApplied
+        case metadataSkipped
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -47,6 +53,12 @@ public struct CLIEvent: Sendable, Hashable {
             case "finished": self = .finished
             case "negative_done": self = .negativeDone
             case "negative_failed": self = .negativeFailed
+            case "roll_created": self = .rollCreated
+            case "roll_list": self = .rollList
+            case "roll_info": self = .rollInfo
+            case "negative_superseded": self = .negativeSuperseded
+            case "metadata_applied": self = .metadataApplied
+            case "metadata_skipped": self = .metadataSkipped
             default: self = .unknown(name)
             }
         }
@@ -64,6 +76,12 @@ public struct CLIEvent: Sendable, Hashable {
             case .finished: "finished"
             case .negativeDone: "negative_done"
             case .negativeFailed: "negative_failed"
+            case .rollCreated: "roll_created"
+            case .rollList: "roll_list"
+            case .rollInfo: "roll_info"
+            case .negativeSuperseded: "negative_superseded"
+            case .metadataApplied: "metadata_applied"
+            case .metadataSkipped: "metadata_skipped"
             case .unknown(let name): name
             }
         }
@@ -118,6 +136,30 @@ extension CLIEvent {
     public var outputConflicts: [String]? { fields["output_conflicts"]?.stringArrayValue }
     public var estimatedRequiredBytes: Int? { fields["estimated_required_bytes"]?.intValue }
     public var availableBytes: Int? { fields["available_bytes"]?.intValue }
+    public var rollOverlap: [[String: JSONValue]]? {
+        fields["roll_overlap"]?.arrayValue?.compactMap { entry in
+            entry.objectValue
+        }
+    }
+
+    // `roll_created`
+    public var rollID: String? { fields["roll_id"]?.stringValue }
+    public var rollName: String? { fields["roll_name"]?.stringValue }
+    public var rollPath: String? { fields["path"]?.stringValue }
+
+    // `roll_list`
+    public var rolls: [[String: JSONValue]]? {
+        fields["rolls"]?.arrayValue?.compactMap { entry in
+            entry.objectValue
+        }
+    }
+
+    // `roll_info`
+    public var manifest: [String: JSONValue]? { fields["manifest"]?.objectValue }
+
+    // `negative_superseded`
+    public var oldNegativeID: String? { fields["old_negative_id"]?.stringValue }
+    public var newNegativeID: String? { fields["new_negative_id"]?.stringValue }
 
     // `progress` and `item_done`
     public var sourceIndex: Int? { fields["source_index"]?.intValue }
@@ -215,7 +257,6 @@ public enum CLICode: Sendable, Hashable {
     case unsupportedRAW
     case captureMetadataMissing
     case captureSettingsDiffer
-    case captureSpanTooLong
     case unreadableRAW
     case outputSameAsInput
     case outputNotWritable
@@ -243,6 +284,14 @@ public enum CLICode: Sendable, Hashable {
     case stitchRebateCheckFailed
     case outputDimensionsLarge
     case intermediatesKept
+    case rollNotFound
+    case rollManifestUnsupported
+    case rollExists
+    case rollInvariantMismatch
+    case perNegativeLocked
+    case outputModifiedExternally
+    case metadataWriteFailed
+    case supersededFileNotRemoved
     case unknown(String)
 
     public init(name: String) {
@@ -256,7 +305,6 @@ public enum CLICode: Sendable, Hashable {
         case "UNSUPPORTED_RAW": self = .unsupportedRAW
         case "CAPTURE_METADATA_MISSING": self = .captureMetadataMissing
         case "CAPTURE_SETTINGS_DIFFER": self = .captureSettingsDiffer
-        case "CAPTURE_SPAN_TOO_LONG": self = .captureSpanTooLong
         case "UNREADABLE_RAW": self = .unreadableRAW
         case "OUTPUT_SAME_AS_INPUT": self = .outputSameAsInput
         case "OUTPUT_NOT_WRITABLE": self = .outputNotWritable
@@ -283,6 +331,14 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
         case "INTERMEDIATES_KEPT": self = .intermediatesKept
+        case "ROLL_NOT_FOUND": self = .rollNotFound
+        case "ROLL_MANIFEST_UNSUPPORTED": self = .rollManifestUnsupported
+        case "ROLL_EXISTS": self = .rollExists
+        case "ROLL_INVARIANT_MISMATCH": self = .rollInvariantMismatch
+        case "PER_NEGATIVE_LOCKED": self = .perNegativeLocked
+        case "OUTPUT_MODIFIED_EXTERNALLY": self = .outputModifiedExternally
+        case "METADATA_WRITE_FAILED": self = .metadataWriteFailed
+        case "SUPERSEDED_FILE_NOT_REMOVED": self = .supersededFileNotRemoved
         default: self = .unknown(name)
         }
     }
@@ -298,7 +354,6 @@ public enum CLICode: Sendable, Hashable {
         case .unsupportedRAW: "UNSUPPORTED_RAW"
         case .captureMetadataMissing: "CAPTURE_METADATA_MISSING"
         case .captureSettingsDiffer: "CAPTURE_SETTINGS_DIFFER"
-        case .captureSpanTooLong: "CAPTURE_SPAN_TOO_LONG"
         case .unreadableRAW: "UNREADABLE_RAW"
         case .outputSameAsInput: "OUTPUT_SAME_AS_INPUT"
         case .outputNotWritable: "OUTPUT_NOT_WRITABLE"
@@ -325,6 +380,14 @@ public enum CLICode: Sendable, Hashable {
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
         case .intermediatesKept: "INTERMEDIATES_KEPT"
+        case .rollNotFound: "ROLL_NOT_FOUND"
+        case .rollManifestUnsupported: "ROLL_MANIFEST_UNSUPPORTED"
+        case .rollExists: "ROLL_EXISTS"
+        case .rollInvariantMismatch: "ROLL_INVARIANT_MISMATCH"
+        case .perNegativeLocked: "PER_NEGATIVE_LOCKED"
+        case .outputModifiedExternally: "OUTPUT_MODIFIED_EXTERNALLY"
+        case .metadataWriteFailed: "METADATA_WRITE_FAILED"
+        case .supersededFileNotRemoved: "SUPERSEDED_FILE_NOT_REMOVED"
         case .unknown(let name): name
         }
     }

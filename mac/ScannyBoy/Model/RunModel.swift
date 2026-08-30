@@ -355,7 +355,9 @@ final class RunModel {
                     FailedGroup(groupID: negativeID, code: code, message: message)
                 )
             }
-        case .started, .probeResult, .finished, .unknown:
+        case .started, .probeResult, .finished, .unknown,
+             .rollCreated, .rollList, .rollInfo, .negativeSuperseded,
+             .metadataApplied, .metadataSkipped:
             break
         }
     }

@@ -10,11 +10,20 @@ from scanny_boy.events import (
     GroupDone,
     GroupFailed,
     ItemDone,
+    MetadataApplied,
+    MetadataSkipped,
     NegativeDone,
     NegativeFailed,
+    NegativeSuperseded,
     PipelineStep,
     ProbeResult,
     Progress,
+    RollCreated,
+    RollInfo,
+    RollList,
+    RollListingEntry,
+    RollListingReason,
+    RollOverlapEntry,
     Stage,
     Started,
     WarningEvent,
@@ -65,6 +74,51 @@ ALL_EVENTS: list[Event] = [
     WarningEvent(code=Code.FILENAME_SORT_USED, message="fell back to filenames"),
     ErrorEvent(code=Code.INVALID_PER_NEGATIVE, message="out of range"),
     Finished(status="success", exit_status=0, run_id="run-1"),
+    RollCreated(
+        roll_id="00000000-0000-4000-8000-000000000001",
+        roll_name="Tri-X, Portland 1998",
+        path="/Users/me/Pictures/Scanny Boy/Tri-X-Portland-1998",
+    ),
+    RollList(
+        rolls=[
+            RollListingEntry(
+                path="/Users/me/Pictures/Scanny Boy/Tri-X-Portland-1998",
+                status="ok",
+                roll_id="00000000-0000-4000-8000-000000000001",
+                roll_name="Tri-X, Portland 1998",
+                negative_count=12,
+            ),
+            RollListingEntry(
+                path="/Users/me/Pictures/Scanny Boy/broken-roll",
+                status="unreadable",
+                reason=RollListingReason(
+                    code="ROLL_MANIFEST_UNSUPPORTED",
+                    message="manifest_format_version must be 2",
+                ),
+            ),
+        ]
+    ),
+    RollInfo(manifest={"manifest_format_version": 2, "manifest_kind": "roll"}),
+    NegativeSuperseded(old_negative_id="a1b2c3-negative-01", new_negative_id="d4e5f6-negative-02"),
+    MetadataApplied(negative_id="a1b2c3-negative-01"),
+    MetadataSkipped(
+        negative_id="a1b2c3-negative-02",
+        code=Code.OUTPUT_MODIFIED_EXTERNALLY,
+        message="published TIFF hash differs from manifest",
+    ),
+    ProbeResult(
+        catalogue=["DSC_0001.NEF"],
+        groups=[["DSC_0001.NEF"]],
+        roll_overlap=[
+            RollOverlapEntry(
+                negative_id="a1b2c3-negative-01",
+                expected_output="_DSC4638.tif",
+                run_id="run-1",
+                overlapping_sources=["DSC_0001.NEF"],
+                group_index=0,
+            )
+        ],
+    ),
 ]
 
 
@@ -133,8 +187,32 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_two():
-    assert PROTOCOL_VERSION == 2
+def test_protocol_version_is_three():
+    assert PROTOCOL_VERSION == 3
+
+
+def test_new_event_kinds_round_trip():
+    events = [
+        RollCreated(roll_id="id", roll_name="name", path="/tmp/roll"),
+        RollList(rolls=[]),
+        RollInfo(manifest={"manifest_kind": "roll"}),
+        NegativeSuperseded(old_negative_id="old", new_negative_id="new"),
+        MetadataApplied(negative_id="neg-1"),
+        MetadataSkipped(
+            negative_id="neg-2",
+            code=Code.METADATA_WRITE_FAILED,
+            message="verify failed",
+        ),
+    ]
+    for event in events:
+        data = event.to_dict()
+        assert data["protocol_version"] == 3
+        assert json.loads(json.dumps(data)) == data
+
+
+def test_retired_code_absent():
+    assert not hasattr(Code, "CAPTURE_SPAN_TOO_LONG")
+    assert "CAPTURE_SPAN_TOO_LONG" not in {member.value for member in Code}
 
 
 def test_negative_done_round_trips():

@@ -22,14 +22,16 @@ from __future__ import annotations
 import datetime
 
 from scanny_boy.catalogue import CaptureTimestamp
-from scanny_boy.events import Code
 
 NOON = datetime.time(12, 0, 0)
 MIN_GAP = datetime.timedelta(seconds=1)
 
+# Retired with Phase 3; kept as a string until `film_date.py` is deleted in P3-5.
+CAPTURE_SPAN_TOO_LONG = "CAPTURE_SPAN_TOO_LONG"
+
 
 class FilmDateError(Exception):
-    def __init__(self, code: Code, message: str) -> None:
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -52,7 +54,7 @@ def _finalize(
     for t in times:
         if t.date() != film_date:
             raise FilmDateError(
-                Code.CAPTURE_SPAN_TOO_LONG,
+                CAPTURE_SPAN_TOO_LONG,
                 f"a synthetic ordering time ({t.isoformat()}) would leave "
                 f"the film date {film_date.isoformat()}; split the run",
             )

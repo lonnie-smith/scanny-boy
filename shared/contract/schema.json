@@ -17,7 +17,13 @@
         "error",
         "finished",
         "negative_done",
-        "negative_failed"
+        "negative_failed",
+        "roll_created",
+        "roll_list",
+        "roll_info",
+        "negative_superseded",
+        "metadata_applied",
+        "metadata_skipped"
       ]
     },
     "stage": {
@@ -54,7 +60,6 @@
         "UNSUPPORTED_RAW",
         "CAPTURE_METADATA_MISSING",
         "CAPTURE_SETTINGS_DIFFER",
-        "CAPTURE_SPAN_TOO_LONG",
         "UNREADABLE_RAW",
         "OUTPUT_SAME_AS_INPUT",
         "OUTPUT_NOT_WRITABLE",
@@ -80,15 +85,65 @@
         "STITCH_LAYOUT_UNEXPECTED",
         "STITCH_REBATE_CHECK_FAILED",
         "OUTPUT_DIMENSIONS_LARGE",
-        "INTERMEDIATES_KEPT"
+        "INTERMEDIATES_KEPT",
+        "ROLL_NOT_FOUND",
+        "ROLL_MANIFEST_UNSUPPORTED",
+        "ROLL_EXISTS",
+        "ROLL_INVARIANT_MISMATCH",
+        "PER_NEGATIVE_LOCKED",
+        "OUTPUT_MODIFIED_EXTERNALLY",
+        "METADATA_WRITE_FAILED",
+        "SUPERSEDED_FILE_NOT_REMOVED"
       ]
+    },
+    "rollOverlapEntry": {
+      "type": "object",
+      "required": [
+        "negative_id",
+        "expected_output",
+        "run_id",
+        "overlapping_sources",
+        "group_index"
+      ],
+      "properties": {
+        "negative_id": { "type": "string" },
+        "expected_output": { "type": "string" },
+        "run_id": { "type": "string" },
+        "overlapping_sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "group_index": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rollListingReason": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "rollListingEntry": {
+      "type": "object",
+      "required": ["path", "status", "reason", "roll_id", "roll_name", "negative_count"],
+      "properties": {
+        "path": { "type": "string" },
+        "status": { "type": "string", "enum": ["ok", "unreadable"] },
+        "reason": {
+          "oneOf": [{ "$ref": "#/definitions/rollListingReason" }, { "type": "null" }]
+        },
+        "roll_id": { "type": ["string", "null"] },
+        "roll_name": { "type": ["string", "null"] },
+        "negative_count": { "type": ["integer", "null"], "minimum": 0 }
+      }
     }
   },
   "required": ["protocol_version", "event"],
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -175,7 +230,11 @@
           },
           "output_conflicts": { "type": "array", "items": { "type": "string" } },
           "estimated_required_bytes": { "type": ["integer", "null"] },
-          "available_bytes": { "type": ["integer", "null"] }
+          "available_bytes": { "type": ["integer", "null"] },
+          "roll_overlap": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/rollOverlapEntry" }
+          }
         }
       }
     },
@@ -184,7 +243,19 @@
       "then": {
         "required": ["command"],
         "properties": {
-          "command": { "type": "string", "enum": ["probe", "convert", "stitch", "run"] }
+          "command": {
+            "type": "string",
+            "enum": [
+              "probe",
+              "convert",
+              "stitch",
+              "run",
+              "roll init",
+              "roll list",
+              "roll info",
+              "apply-metadata"
+            ]
+          }
         }
       }
     },
@@ -195,6 +266,68 @@
         "properties": {
           "status": { "type": "string" },
           "exit_status": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_created" } } },
+      "then": {
+        "required": ["roll_id", "roll_name", "path"],
+        "properties": {
+          "roll_id": { "type": "string" },
+          "roll_name": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_list" } } },
+      "then": {
+        "required": ["rolls"],
+        "properties": {
+          "rolls": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/rollListingEntry" }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_info" } } },
+      "then": {
+        "required": ["manifest"],
+        "properties": {
+          "manifest": { "type": "object" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "negative_superseded" } } },
+      "then": {
+        "required": ["old_negative_id", "new_negative_id"],
+        "properties": {
+          "old_negative_id": { "type": "string" },
+          "new_negative_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "metadata_applied" } } },
+      "then": {
+        "required": ["negative_id"],
+        "properties": {
+          "negative_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "metadata_skipped" } } },
+      "then": {
+        "required": ["negative_id", "code", "message"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "code": { "$ref": "#/definitions/code" },
+          "message": { "type": "string" }
         }
       }
     }
