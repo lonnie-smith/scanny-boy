@@ -104,12 +104,21 @@ struct RunIntegrationTests {
 
     // MARK: - Six sample files at three per negative
 
+    /// Chunk P2-9: the model's Run command is now `run` (convert *and*
+    /// stitch), not `convert` alone. `SampleFixtures.files` are Phase 1's
+    /// original conversion fixtures (appendix A) — real NEFs, but never shot
+    /// to actually overlap, unlike the gate-B stitching scans of appendix C.
+    /// `negative-01` (`_DSC4638`-`_DSC4640`) does overlap and stitches
+    /// cleanly; `negative-02` (`_DSC4644`-`_DSC4646`) genuinely does not
+    /// share film and is refused with `STITCH_UNDERCONSTRAINED` — exactly
+    /// the real, already-observed behaviour this test asserts, rather than a
+    /// six-for-six result these fixtures were never meant to produce.
     @Test(
-        "six sample files at three per negative produce six TIFFs and a complete manifest",
+        "six sample files at three per negative stitch one negative and refuse the other",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(5))
     )
-    func sixFilesProduceSixTIFFsAndACompleteManifest() async throws {
+    func sixFilesStitchOneNegativeAndRefuseTheOther() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let out = directory.appending(path: "out", directoryHint: .isDirectory)
@@ -124,7 +133,7 @@ struct RunIntegrationTests {
 
         let run = RunModel(runner: try Self.runner())
         run.start(
-            command: try #require(model.convertCommand),
+            command: try #require(model.runCommand),
             files: model.selectedFilesInCanonicalOrder,
             outputFolder: out
         )
@@ -132,33 +141,42 @@ struct RunIntegrationTests {
 
         #expect(run.streamFailures.isEmpty)
         #expect(run.cliError == nil)
-        #expect(run.outcome == .success)
+        // A negative failed, so the run as a whole is not a success — the
+        // CLI's own `partial` status maps to exit 1 (section 3.5).
+        #expect(run.outcome == .failure)
+        // The convert stage itself succeeds for every frame; only the
+        // stitch stage's registration fails, and only for one negative.
         #expect(run.failedGroups.isEmpty)
         #expect(run.completedGroups == ["negative-01", "negative-02"])
-        #expect(run.publishedOutputs == Self.tiffNames(SampleFixtures.files))
-        // Progress reached its own total, and the total is three steps a frame.
-        #expect(run.totalSteps == SampleFixtures.files.count * 3)
-        #expect(run.completedSteps == run.totalSteps)
 
-        let report = try #require(run.manifestReport)
+        #expect(run.stitchedNegatives.count == 1)
+        let stitched = try #require(run.stitchedNegatives.first)
+        #expect(stitched.negativeID == "negative-01")
+        #expect(stitched.output == Self.tiffNames(SampleFixtures.files)[0])
+
+        #expect(run.failedNegatives.count == 1)
+        let failed = try #require(run.failedNegatives.first)
+        #expect(failed.groupID == "negative-02")
+        #expect(failed.code == .stitchUnderconstrained)
+
+        let report = try #require(run.rollManifestReport)
         guard case .final(let manifest) = report else {
-            Issue.record("expected a final manifest, got \(report)")
+            Issue.record("expected a final roll manifest, got \(report)")
             return
         }
-        #expect(manifest.status == "complete")
-        #expect(manifest.shotsPerNegative == 3)
+        #expect(manifest.status == "partial")
         #expect(manifest.filmDate == "2026-08-02")
-        #expect(manifest.publishedOutputs == Self.tiffNames(SampleFixtures.files))
+        #expect(manifest.publishedOutputs == [Self.tiffNames(SampleFixtures.files)[0]])
 
-        for name in Self.tiffNames(SampleFixtures.files) {
-            #expect(
-                FileManager.default.fileExists(
-                    atPath: out.appending(path: name).path
-                ),
-                "\(name) was not published"
-            )
-        }
+        #expect(
+            FileManager.default.fileExists(
+                atPath: out.appending(path: Self.tiffNames(SampleFixtures.files)[0]).path
+            ),
+            "the stitched negative was not published"
+        )
         #expect(try Self.stagingDirectories(in: out).isEmpty)
+        // A negative failed, so the work directory is kept (section 3.5).
+        #expect(run.keptWorkDirectory != nil)
     }
 
     // MARK: - Blocked selections
@@ -180,7 +198,7 @@ struct RunIntegrationTests {
 
         #expect(model.selectionError?.code == .notDivisible)
         #expect(!model.runEnabled)
-        #expect(model.convertCommand == nil)
+        #expect(model.runCommand == nil)
     }
 
     /// Appendix A: the break between frames 4640 and 4644 is *not* a catalogue
@@ -202,7 +220,7 @@ struct RunIntegrationTests {
 
         #expect(model.selectionError?.code == .nonContiguousSelection)
         #expect(!model.runEnabled)
-        #expect(model.convertCommand == nil)
+        #expect(model.runCommand == nil)
     }
 
     @Test(
@@ -225,47 +243,59 @@ struct RunIntegrationTests {
 
         #expect(model.outputError?.code == .outputNotEmpty)
         #expect(!model.runEnabled)
-        #expect(model.convertCommand == nil)
+        #expect(model.runCommand == nil)
     }
 
-    // MARK: - Rerunning a valid output folder requires confirmation
+    // MARK: - Rerunning a folder that already holds a roll
 
+    /// Chunk P2-9's known limitation, exercised directly rather than left
+    /// implicit: `probe --out` only understands `scanny-boy-manifest.json`
+    /// (Phase 1's convert manifest), so it has no way to compute *which*
+    /// stitched TIFFs a rerun would replace in a folder holding
+    /// `scanny-boy-roll.json`. `ConfigurationModel.existingRoll` stops that
+    /// folder from being misreported as unrelated content and lets Run
+    /// proceed — but real conflict detection, and the `--overwrite` gate
+    /// itself, only happen for real, server-side, when `run_stitch` calls
+    /// `plan_rerun(rules: ROLL_RULES)`. So a rerun the app never asked the
+    /// user to confirm still fails safely with `OUTPUT_CONFLICT`, rather
+    /// than silently overwriting the first run's negative. A full client-side
+    /// overwrite-confirmation flow for roll reruns is left for a later
+    /// chunk; this test is the proof that nothing unsafe happens without it.
     @Test(
-        "rerunning a completed output folder requires confirmation and then passes --overwrite",
+        "a folder already holding a roll is recognised, and an unconfirmed rerun fails safely",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(10))
     )
-    func rerunRequiresConfirmation() async throws {
+    func rerunOfAnExistingRollFailsSafelyWithoutConfirmation() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let out = directory.appending(path: "out", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let negativeOne = Array(SampleFixtures.files.prefix(3))
 
-        let first = try await Self.configuredModel(
-            outputFolder: out, select: SampleFixtures.files
-        )
+        let first = try await Self.configuredModel(outputFolder: out, select: negativeOne)
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(first.convertCommand),
+            command: try #require(first.runCommand),
             files: first.selectedFilesInCanonicalOrder,
             outputFolder: out
         )
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
+        #expect(firstRun.stitchedNegatives.count == 1)
 
-        // A second configuration over the same folder now sees the previous
-        // run's outputs as the exact files a rerun would replace.
-        let second = try await Self.configuredModel(
-            outputFolder: out, select: SampleFixtures.files
-        )
-        #expect(second.outputConflicts == Self.tiffNames(SampleFixtures.files))
-        #expect(second.needsOverwriteConfirmation)
-        #expect(!second.runEnabled)
-        #expect(second.convertCommand == nil)
+        // A second configuration over the same folder recognises the prior
+        // roll rather than reporting OUTPUT_NOT_EMPTY, and offers Run — but
+        // without a real conflict list, since the app cannot compute one.
+        let second = try await Self.configuredModel(outputFolder: out, select: negativeOne)
+        #expect(second.existingRoll?.status == "complete")
+        #expect(second.outputError == nil)
+        #expect(second.outputConflicts.isEmpty)
+        #expect(!second.needsOverwriteConfirmation)
+        #expect(second.runEnabled)
 
-        second.confirmOverwrite()
-        let command = try #require(second.convertCommand)
-        #expect(command.arguments.contains("--overwrite"))
+        let command = try #require(second.runCommand)
+        #expect(!command.arguments.contains("--overwrite"))
 
         let secondRun = RunModel(runner: try Self.runner())
         secondRun.start(
@@ -275,9 +305,10 @@ struct RunIntegrationTests {
         )
         await secondRun.waitForCompletion()
 
-        #expect(secondRun.outcome == .success)
-        #expect(secondRun.publishedOutputs == Self.tiffNames(SampleFixtures.files))
-        #expect(secondRun.manifestReport?.manifest?.status == "complete")
+        // The CLI's own real, server-side check refuses the rerun.
+        #expect(secondRun.outcome == .failure)
+        #expect(secondRun.cliError?.code == .outputConflict)
+        #expect(secondRun.stitchedNegatives.isEmpty)
     }
 
     // MARK: - Cancel retains earlier groups and discards the current one

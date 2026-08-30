@@ -97,4 +97,63 @@ struct CLICommandTests {
         )
         #expect(!command.arguments.contains("--overwrite"))
     }
+
+    @Test("run carries every required flag")
+    func runRequiredFlags() {
+        let command = CLICommand.run(
+            input: Self.input,
+            files: ["a.NEF", "b.NEF", "c.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02"
+        )
+        #expect(
+            command.arguments == [
+                "run", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF", "b.NEF", "c.NEF",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--film-date", "2026-08-02",
+            ]
+        )
+    }
+
+    @Test("run adds the optional flags only when asked")
+    func runOptionalFlags() {
+        let work = URL(filePath: "/Volumes/Scans/roll-12-work")
+        let command = CLICommand.run(
+            input: Self.input,
+            files: ["a.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02",
+            perNegative: 1,
+            jobs: 4,
+            overwrite: true,
+            work: work,
+            keepIntermediates: true
+        )
+        #expect(
+            command.arguments == [
+                "run", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF",
+                "--out", "/Volumes/Scans/roll-12-tif",
+                "--film-date", "2026-08-02",
+                "--per-negative", "1",
+                "--jobs", "4",
+                "--overwrite",
+                "--work", "/Volumes/Scans/roll-12-work",
+                "--keep-intermediates",
+            ]
+        )
+    }
+
+    @Test("run omits --work and --keep-intermediates unless given")
+    func runWithoutWorkOrKeepIntermediates() {
+        let command = CLICommand.run(
+            input: Self.input,
+            files: ["a.NEF"],
+            out: Self.out,
+            filmDate: "2026-08-02"
+        )
+        #expect(!command.arguments.contains("--work"))
+        #expect(!command.arguments.contains("--keep-intermediates"))
+    }
 }

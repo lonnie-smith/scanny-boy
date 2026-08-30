@@ -53,6 +53,13 @@ enum RunStepName {
         case .decode: "Decoding"
         case .writeTIFF: "Writing TIFF"
         case .addMetadata: "Adding metadata"
+        case .load: "Loading intermediates"
+        case .detect: "Detecting features"
+        case .match: "Registering frames"
+        case .solve: "Solving layout"
+        case .warp: "Warping frames"
+        case .blend: "Blending"
+        case .writeStitched: "Writing stitched TIFF"
         case .unknown(let name): name
         }
     }
@@ -97,6 +104,28 @@ struct RunResultView: View {
                 .foregroundStyle(.red)
             }
 
+            // One row per stitched negative, with the section 3.4 quality
+            // numbers it was published with.
+            ForEach(run.stitchedNegatives, id: \.self) { negative in
+                Label(
+                    "\(negative.output) — \(negative.width)×\(negative.height), "
+                        + "RMS \(String(format: "%.2f", negative.globalRMS))px, "
+                        + "overlap MAD \(String(format: "%.3f", negative.maxOverlapMAD))",
+                    systemImage: "checkmark.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            }
+
+            ForEach(run.failedNegatives, id: \.self) { negative in
+                Label(
+                    "\(negative.groupID) failed — \(negative.code.name): \(negative.message)",
+                    systemImage: "xmark.octagon"
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+
             ForEach(run.warnings, id: \.self) { warning in
                 Label(warning.message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -119,8 +148,20 @@ struct RunResultView: View {
                     .font(.caption)
                     .foregroundStyle(isCleanupIncomplete(report) ? .orange : .secondary)
             }
+            if let report = run.rollManifestReport {
+                Text(report.summary)
+                    .font(.caption)
+                    .foregroundStyle(isRollCleanupIncomplete(report) ? .orange : .secondary)
+            }
 
-            if !run.publishedOutputs.isEmpty {
+            // `run`/`stitch` published stitched negatives; a plain `convert`
+            // published per-frame TIFFs. Never both, so this is unambiguous.
+            if !run.stitchedNegatives.isEmpty {
+                Text("Published: " + run.stitchedNegatives.map(\.output).joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            } else if !run.publishedOutputs.isEmpty {
                 Text("Published: \(run.publishedOutputs.joined(separator: ", "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -129,15 +170,31 @@ struct RunResultView: View {
 
             if let outputFolder {
                 Button("Reveal in Finder") {
-                    RunFinderReveal.reveal(
-                        outputFolder: outputFolder, published: run.publishedOutputs
-                    )
+                    let published = run.stitchedNegatives.isEmpty
+                        ? run.publishedOutputs
+                        : run.stitchedNegatives.map(\.output)
+                    RunFinderReveal.reveal(outputFolder: outputFolder, published: published)
+                }
+            }
+
+            // Section 3.5: the work directory survives whenever a negative
+            // failed, the run was cancelled, or intermediates were asked to
+            // be kept — this is how the app finds it again, most usefully
+            // for Chunk P2-10's re-stitch.
+            if let keptWorkDirectory = run.keptWorkDirectory {
+                Button("Open Kept Work Directory") {
+                    NSWorkspace.shared.open(URL(filePath: keptWorkDirectory))
                 }
             }
         }
     }
 
     private func isCleanupIncomplete(_ report: ManifestReport) -> Bool {
+        if case .cleanupIncomplete = report { return true }
+        return false
+    }
+
+    private func isRollCleanupIncomplete(_ report: RollManifestReport) -> Bool {
         if case .cleanupIncomplete = report { return true }
         return false
     }

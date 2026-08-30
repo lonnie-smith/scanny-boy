@@ -31,7 +31,8 @@ struct RunModelTests {
         exitStatus: Int = 0,
         in directory: URL
     ) throws -> URL {
-        let script = lines.map { "echo '\($0)'" }.joined(separator: "\n")
+        let script = lines.map { "echo '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
+            .joined(separator: "\n")
             + "\nexit \(exitStatus)\n"
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
@@ -67,6 +68,21 @@ struct RunModelTests {
         #"{"protocol_version":2,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
+    private static func negativeDone(
+        negativeID: String, output: String, width: Int, height: Int,
+        globalRMS: Double, maxOverlapMAD: Double
+    ) -> String {
+        #"{"protocol_version":2,"event":"negative_done","run_id":"run-0001","negative_id":"\#(negativeID)","output":"\#(output)","width":\#(width),"height":\#(height),"global_rms_px":\#(globalRMS),"max_overlap_mad":\#(maxOverlapMAD)}"#
+    }
+
+    private static func negativeFailed(_ negativeID: String, code: String, message: String) -> String {
+        #"{"protocol_version":2,"event":"negative_failed","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
+    }
+
+    private static func warningEvent(code: String, message: String) -> String {
+        #"{"protocol_version":2,"event":"warning","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+    }
+
     private static let sixFiles = [
         "a.NEF", "b.NEF", "c.NEF", "d.NEF", "e.NEF", "f.NEF",
     ]
@@ -75,11 +91,12 @@ struct RunModelTests {
     private static func runToCompletion(
         executable: URL,
         outputFolder: URL,
-        files: [String] = RunModelTests.sixFiles
+        files: [String] = RunModelTests.sixFiles,
+        commandName: String = "convert"
     ) async -> RunModel {
         let run = RunModel(runner: CLIRunner(executable: executable))
         run.start(
-            command: CLICommand(arguments: ["convert"]),
+            command: CLICommand(arguments: [commandName]),
             files: files,
             outputFolder: outputFolder
         )
@@ -552,13 +569,13 @@ struct RunModelTests {
         #expect(model.isReadyPendingOverwriteConfirmation)
         #expect(model.needsOverwriteConfirmation)
         #expect(!model.runEnabled)
-        #expect(model.convertCommand == nil)
+        #expect(model.runCommand == nil)
 
         model.confirmOverwrite()
 
         #expect(!model.needsOverwriteConfirmation)
         #expect(model.runEnabled)
-        let command = try #require(model.convertCommand)
+        let command = try #require(model.runCommand)
         #expect(command.arguments.contains("--overwrite"))
         #expect(command.arguments.contains("--film-date"))
         #expect(command.arguments.contains("2026-08-02"))
@@ -600,10 +617,181 @@ struct RunModelTests {
         await model.waitForPendingProbes()
 
         #expect(!model.needsOverwriteConfirmation)
-        let command = try #require(model.convertCommand)
+        let command = try #require(model.runCommand)
         #expect(!command.arguments.contains("--overwrite"))
         // Canonical order, straight from the catalogue.
         #expect(model.selectedFilesInCanonicalOrder == ["a.NEF", "b.NEF", "c.NEF"])
+    }
+
+    // MARK: - Chunk P2-9's additions: negative_done, negative_failed, stage,
+    // INTERMEDIATES_KEPT, and negative-counting summaries
+
+    @Test("negative_done events populate stitchedNegatives with the section 3.4 numbers")
+    func negativeDoneIsCollected() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeDone(
+                    negativeID: "negative-01", output: "_DSC4638.tif",
+                    width: 6140, height: 7917, globalRMS: 1.57, maxOverlapMAD: 0.072
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        #expect(run.stitchedNegatives.count == 1)
+        let negative = try #require(run.stitchedNegatives.first)
+        #expect(negative.negativeID == "negative-01")
+        #expect(negative.output == "_DSC4638.tif")
+        #expect(negative.width == 6140)
+        #expect(negative.height == 7917)
+        #expect(abs(negative.globalRMS - 1.57) < 1e-9)
+        #expect(abs(negative.maxOverlapMAD - 0.072) < 1e-9)
+        #expect(run.completionSummary == "Stitched 1 negative(s).")
+    }
+
+    @Test("negative_failed events populate failedNegatives, not failedGroups")
+    func negativeFailedIsCollected() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeFailed(
+                    "negative-02", code: "STITCH_UNDERCONSTRAINED",
+                    message: "frames not reachable from 'a.tif'"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        #expect(run.failedGroups.isEmpty)
+        #expect(run.failedNegatives.count == 1)
+        let negative = try #require(run.failedNegatives.first)
+        #expect(negative.groupID == "negative-02")
+        #expect(negative.code == .stitchUnderconstrained)
+        #expect(negative.message == "frames not reachable from 'a.tif'")
+        #expect(run.completionSummary == "The run finished with 1 failed negative(s).")
+    }
+
+    @Test("progress carries the stitch stage's name")
+    func progressCarriesTheStage() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#,
+                #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#,
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = RunModel(runner: CLIRunner(executable: executable))
+        run.start(command: CLICommand(arguments: ["run"]), files: ["a.NEF"], outputFolder: directory)
+        await run.waitForCompletion()
+
+        #expect(run.stage == "stitch")
+        #expect(run.currentStep == .warp)
+    }
+
+    @Test("INTERMEDIATES_KEPT's path is parsed out of the warning message")
+    func intermediatesKeptPathIsParsed() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.warningEvent(
+                    code: "INTERMEDIATES_KEPT",
+                    message: "intermediates kept at /tmp/scanny-boy-work-abc123"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        #expect(run.keptWorkDirectory == "/tmp/scanny-boy-work-abc123")
+        #expect(run.warnings.first?.code == .intermediatesKept)
+    }
+
+    @Test("A run reads the roll manifest, not the convert manifest, from the output folder")
+    func runReadsTheRollManifest() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try Self.writeRollManifest(status: "complete", negativeStatus: "completed", in: directory)
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeDone(
+                    negativeID: "negative-01", output: "a.tif",
+                    width: 100, height: 100, globalRMS: 1.0, maxOverlapMAD: 0.05
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        #expect(run.manifestReport == nil)
+        let report = try #require(run.rollManifestReport)
+        guard case .final(let manifest) = report else {
+            Issue.record("expected a final roll manifest, got \(report)")
+            return
+        }
+        #expect(manifest.status == "complete")
+        #expect(manifest.runID == Self.runID)
+        #expect(manifest.publishedOutputs == ["a.tif"])
+        #expect(manifest.negatives.first?.isCompleted == true)
+    }
+
+    @Test("A plain convert still reads RunManifest, unaffected by the roll-reading path")
+    func convertStillReadsRunManifest() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try Self.writeManifest(status: "complete", groupStatus: "completed", in: directory)
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.itemDone(sourceIndex: 0, output: "a.tif"),
+                Self.groupDone("negative-01"),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(executable: executable, outputFolder: directory)
+
+        #expect(run.rollManifestReport == nil)
+        #expect(run.manifestReport != nil)
     }
 
     // MARK: - Helpers
@@ -662,6 +850,60 @@ struct RunModelTests {
             """
         try json.write(
             to: folder.appending(path: RunManifest.filename, directoryHint: .notDirectory),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    /// A roll manifest with just enough of `roll-manifest.schema.json` to be
+    /// read back. The `RunManifest` counterpart to `writeManifest` above.
+    private static func writeRollManifest(
+        status: String,
+        negativeStatus: String,
+        in folder: URL
+    ) throws {
+        let output = negativeStatus == "completed"
+            ? #"{"name":"a.tif","size":123,"sha256":"\#(String(repeating: "a", count: 64))","width":100,"height":100}"#
+            : "null"
+        let json = """
+            {
+              "manifest_format_version": 1,
+              "manifest_kind": "stitch",
+              "scanny_boy_version": "0.1.0",
+              "run_id": "\(runID)",
+              "status": "\(status)",
+              "input_folder": "/tmp/in",
+              "film_date": "2026-08-02",
+              "shots_per_negative": 3,
+              "convert_run_id": "convert-0001",
+              "processing_params": {},
+              "icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "\(String(repeating: "b", count: 64))"},
+              "stitch_params": {},
+              "source_order": ["a.NEF", "b.NEF", "c.NEF"],
+              "sources": [],
+              "negatives": [
+                {
+                  "negative_id": "negative-01",
+                  "members": ["a.NEF", "b.NEF", "c.NEF"],
+                  "expected_output": "a.tif",
+                  "status": "\(negativeStatus)",
+                  "output": \(output),
+                  "frames": [], "pairs": [],
+                  "global_rms_px": 1.0,
+                  "canvas": {"width": 100, "height": 100},
+                  "valid_rect": [0, 0, 100, 100],
+                  "fill_color": [0, 0, 0],
+                  "rebate_deviation_px": null,
+                  "error_code": null,
+                  "error_message": null
+                }
+              ],
+              "started_at": "2026-08-02T12:00:00",
+              "finished_at": \(status == "running" ? "null" : "\"2026-08-02T12:05:00\"")
+            }
+            """
+        try json.write(
+            to: folder.appending(path: RollManifest.filename, directoryHint: .notDirectory),
             atomically: true,
             encoding: .utf8
         )

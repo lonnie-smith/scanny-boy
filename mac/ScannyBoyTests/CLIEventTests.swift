@@ -125,12 +125,12 @@ struct CLIEventTests {
                 """
         )
         #expect(event.kind == .negativeDone)
-        #expect(event.fields["negative_id"]?.stringValue == "negative-0")
+        #expect(event.negativeID == "negative-0")
         #expect(event.output == "_DSC4638.tif")
-        #expect(event.fields["width"]?.intValue == 13972)
-        #expect(event.fields["height"]?.intValue == 4553)
-        #expect(event.fields["global_rms_px"]?.doubleValue == 1.12)
-        #expect(event.fields["max_overlap_mad"]?.doubleValue == 0.004)
+        #expect(event.width == 13972)
+        #expect(event.height == 4553)
+        #expect(event.globalRMS == 1.12)
+        #expect(event.maxOverlapMAD == 0.004)
     }
 
     @Test("negative_failed")
@@ -143,8 +143,8 @@ struct CLIEventTests {
                 """
         )
         #expect(event.kind == .negativeFailed)
-        #expect(event.fields["negative_id"]?.stringValue == "negative-0")
-        #expect(event.code == .unknown("STITCH_UNDERCONSTRAINED"))
+        #expect(event.negativeID == "negative-0")
+        #expect(event.code == .stitchUnderconstrained)
         #expect(event.message == "frame not reachable")
     }
 
@@ -208,6 +208,13 @@ struct CLIEventTests {
         "INSUFFICIENT_DISK", "INSUFFICIENT_MEMORY", "BAD_MANIFEST",
         "MANIFEST_MISMATCH", "ICC_PROFILE_INVALID", "TIFF_WRITE_FAILED",
         "CANCELLED",
+        // Phase 2 section 3.10.
+        "WORK_SAME_AS_OUTPUT", "WORK_MANIFEST_UNUSABLE", "INTERMEDIATE_MISSING",
+        "INTERMEDIATE_CHANGED", "STITCH_INSUFFICIENT_MATCHES",
+        "STITCH_UNDERCONSTRAINED", "STITCH_RESIDUAL_TOO_HIGH",
+        "STITCH_OUTPUT_TOO_LARGE", "STITCH_FAILED", "STITCH_SCALE_DRIFT",
+        "STITCH_LAYOUT_UNEXPECTED", "STITCH_REBATE_CHECK_FAILED",
+        "OUTPUT_DIMENSIONS_LARGE", "INTERMEDIATES_KEPT",
     ])
     func everyStableCodeIsKnown(name: String) {
         let code = CLICode(name: name)
@@ -217,6 +224,8 @@ struct CLIEventTests {
 
     @Test("every pipeline step maps to a known case", arguments: [
         "decode", "write_tiff", "add_metadata",
+        // Phase 2 section 3.9's stitch-stage steps.
+        "load", "detect", "match", "solve", "warp", "blend", "write_stitched",
     ])
     func everyPipelineStepIsKnown(name: String) {
         let step = CLIPipelineStep(name: name)

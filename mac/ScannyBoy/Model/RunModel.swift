@@ -28,10 +28,25 @@ final class RunModel {
     /// One `group_failed` event. A cancelled group is deliberately not one of
     /// these: `CONTRACT.md` says a cancelled negative emits no `group_failed`,
     /// because it was abandoned rather than failed.
+    ///
+    /// Also holds `negative_failed` events (Chunk P2-9): the two events carry
+    /// the identical `(id, code, message)` shape, so one type serves both
+    /// rather than a near-duplicate `FailedNegative`.
     struct FailedGroup: Sendable, Hashable {
         let groupID: String
         let code: CLICode
         let message: String
+    }
+
+    /// One `negative_done` event: a stitched TIFF was published, with the
+    /// section 3.4 quality numbers it was published with.
+    struct StitchedNegative: Sendable, Hashable {
+        let negativeID: String
+        let output: String
+        let width: Int
+        let height: Int
+        let globalRMS: Double
+        let maxOverlapMAD: Double
     }
 
     enum Phase: Sendable, Hashable {
@@ -52,6 +67,8 @@ final class RunModel {
     private(set) var runID: String?
 
     /// Pipeline steps completed and expected, straight from `progress`.
+    /// `run_pipeline.py` reports one span across both stages (section 3.9),
+    /// so this needs no special handling to cover a `run`'s stitch stage too.
     private(set) var completedSteps = 0
     private(set) var totalSteps = 0
     private(set) var currentStep: CLIPipelineStep?
@@ -59,11 +76,29 @@ final class RunModel {
     /// one worker this is "one of the frames in flight", not "the frame the
     /// run has reached".
     private(set) var currentFilename: String?
+    /// `"convert"` or `"stitch"`, straight from `progress.stage`. `nil` until
+    /// the first `progress` event arrives.
+    private(set) var stage: String?
 
-    /// Files published into the output folder, in `item_done` order.
+    /// Files published into the output folder, in `item_done` order. For
+    /// `convert`, these are the final TIFFs. For `run`, these are the
+    /// per-frame *intermediates* the convert stage writes into the work
+    /// directory — not what ends up in the output folder, which is
+    /// `stitchedNegatives` below.
     private(set) var publishedOutputs: [String] = []
     private(set) var completedGroups: [String] = []
     private(set) var failedGroups: [FailedGroup] = []
+    /// One stitched TIFF per `negative_done`, in the order the CLI published
+    /// them.
+    private(set) var stitchedNegatives: [StitchedNegative] = []
+    /// One `negative_failed` per negative the stitch stage could not
+    /// publish. A cancelled negative is deliberately not one of these, for
+    /// the same reason a cancelled group is not in `failedGroups`.
+    private(set) var failedNegatives: [FailedGroup] = []
+    /// The work directory's path, when `run` reported `INTERMEDIATES_KEPT`.
+    /// `nil` means either the run has not ended, or the work directory was
+    /// removed.
+    private(set) var keptWorkDirectory: String?
 
     private(set) var warnings: [Issue] = []
     /// The CLI's own fatal `error` event, if it sent one.
@@ -72,7 +107,12 @@ final class RunModel {
     private(set) var streamFailures: [CLISessionFailure] = []
 
     private(set) var outcome: CLIOutcome?
+    /// Read back after `convert`. `nil` for `run` and `stitch`, which write
+    /// `scanny-boy-roll.json` into the output folder instead — see
+    /// `rollManifestReport`.
     private(set) var manifestReport: ManifestReport?
+    /// Read back after `run` or `stitch`. `nil` for `convert`.
+    private(set) var rollManifestReport: RollManifestReport?
 
     private(set) var startedAt: Date?
     /// Refreshed on a timer while running, and frozen when the run ends.
@@ -85,6 +125,12 @@ final class RunModel {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var forceTask: Task<Void, Never>?
     @ObservationIgnored private var cancelRequested = false
+    /// The subcommand this invocation started (`"convert"`, `"run"`, or
+    /// `"stitch"`) — `command.arguments.first`, captured at `start()`. Decides
+    /// which manifest `finish()` reads back: `RunManifest` for a plain
+    /// `convert`, `RollManifest` for anything that can reach the stitch
+    /// stage.
+    @ObservationIgnored private var invokedCommandName: String?
     /// The selection in canonical order, so a `source_index` can be named.
     @ObservationIgnored private var sourceNames: [String] = []
     @ObservationIgnored private var outputFolder: URL?
@@ -128,9 +174,22 @@ final class RunModel {
         return elapsed / Double(completed) * Double(total - completed)
     }
 
+    /// `run` and `stitch` can reach the stitch stage; `convert` cannot. This
+    /// decides both which manifest `finish()` reads back and how
+    /// `completionSummary` counts what happened — by stitched negative
+    /// (`stitchedNegatives`/`failedNegatives`), never by intermediate frame.
+    private var isStitchInvocation: Bool {
+        invokedCommandName == "run" || invokedCommandName == "stitch"
+    }
+
     /// What to tell the user once the run has ended. Deliberately built from
     /// `outcome` rather than from message text, which section 4.2 says is not
     /// the machine-readable interface.
+    ///
+    /// Counts **negatives**, not frames (Chunk P2-9): for `run` and `stitch`,
+    /// `publishedOutputs` names per-frame intermediates that may not even
+    /// survive the run, so the summary is built from `stitchedNegatives` and
+    /// `failedNegatives` instead.
     var completionSummary: String? {
         guard phase == .finished, let outcome else {
             // A run that ended without ever producing a completion: the helper
@@ -139,10 +198,14 @@ final class RunModel {
         }
         switch outcome {
         case .success:
+            if isStitchInvocation {
+                return "Stitched \(stitchedNegatives.count) negative(s)."
+            }
             return "Converted \(publishedOutputs.count) file(s) in "
                 + "\(completedGroups.count) negative(s)."
         case .cancelled(let forced):
-            let kept = "\(completedGroups.count) completed negative(s) were kept; "
+            let keptCount = isStitchInvocation ? stitchedNegatives.count : completedGroups.count
+            let kept = "\(keptCount) completed negative(s) were kept; "
                 + "the negative in progress was discarded."
             return forced
                 ? "Cancelled by force after the grace period. \(kept)"
@@ -153,9 +216,12 @@ final class RunModel {
             if let cliError {
                 return "The run failed: \(cliError.message)"
             }
-            return failedGroups.isEmpty
+            let failedCount = isStitchInvocation
+                ? failedGroups.count + failedNegatives.count
+                : failedGroups.count
+            return failedCount == 0
                 ? "The run failed."
-                : "The run finished with \(failedGroups.count) failed negative(s)."
+                : "The run finished with \(failedCount) failed negative(s)."
         case .terminatedBySignal(let signal):
             return "The helper was terminated by signal \(signal)."
         }
@@ -171,6 +237,7 @@ final class RunModel {
         reset()
         sourceNames = files
         self.outputFolder = outputFolder
+        invokedCommandName = command.arguments.first
         phase = .running
         startedAt = now()
 
@@ -225,6 +292,7 @@ final class RunModel {
                 totalSteps = total
             }
             currentStep = event.step
+            stage = event.stage
             if let index = event.sourceIndex, sourceNames.indices.contains(index) {
                 currentFilename = sourceNames[index]
             }
@@ -246,14 +314,44 @@ final class RunModel {
         case .warning:
             if let code = event.code, let message = event.message {
                 warnings.append(Issue(code: code, message: message))
+                // Section 3.5: the one place the kept work directory's path is
+                // reported. No dedicated field exists for it — `WarningEvent`
+                // carries only `code` and `message` — so this is the CLI's own
+                // fixed message text (`run_pipeline.py`), parsed the one way it
+                // is ever produced.
+                if code == .intermediatesKept,
+                    let path = message.range(of: "intermediates kept at ")
+                {
+                    keptWorkDirectory = String(message[path.upperBound...])
+                }
             }
         case .error:
             if let code = event.code, let message = event.message {
                 cliError = Issue(code: code, message: message)
             }
-        case .started, .probeResult, .finished, .negativeDone, .negativeFailed, .unknown:
-            // negativeDone/negativeFailed handling lands with the stitch-stage UI
-            // in a later Phase 2 chunk; this chunk only reserves the protocol.
+        case .negativeDone:
+            if let negativeID = event.negativeID, let output = event.output,
+                let width = event.width, let height = event.height,
+                let globalRMS = event.globalRMS, let maxOverlapMAD = event.maxOverlapMAD
+            {
+                stitchedNegatives.append(
+                    StitchedNegative(
+                        negativeID: negativeID,
+                        output: output,
+                        width: width,
+                        height: height,
+                        globalRMS: globalRMS,
+                        maxOverlapMAD: maxOverlapMAD
+                    )
+                )
+            }
+        case .negativeFailed:
+            if let negativeID = event.negativeID, let code = event.code, let message = event.message {
+                failedNegatives.append(
+                    FailedGroup(groupID: negativeID, code: code, message: message)
+                )
+            }
+        case .started, .probeResult, .finished, .unknown:
             break
         }
     }
@@ -264,7 +362,15 @@ final class RunModel {
         forceTask?.cancel()
         forceTask = nil
         refreshElapsed()
-        manifestReport = await Self.readManifest(in: outputFolder)
+        // `convert` writes `scanny-boy-manifest.json` into the output folder;
+        // `run` and `stitch` write `scanny-boy-roll.json` there instead — the
+        // work directory `scanny-boy-manifest.json` still lives in may
+        // already be gone by the time this runs (section 3.5's cleanup).
+        if isStitchInvocation {
+            rollManifestReport = await Self.readRollManifest(in: outputFolder)
+        } else {
+            manifestReport = await Self.readManifest(in: outputFolder)
+        }
         session = nil
         phase = .finished
     }
@@ -300,20 +406,26 @@ final class RunModel {
         forceTask = nil
         session = nil
         cancelRequested = false
+        invokedCommandName = nil
         phase = .idle
         runID = nil
         completedSteps = 0
         totalSteps = 0
         currentStep = nil
         currentFilename = nil
+        stage = nil
         publishedOutputs = []
         completedGroups = []
         failedGroups = []
+        stitchedNegatives = []
+        failedNegatives = []
+        keptWorkDirectory = nil
         warnings = []
         cliError = nil
         streamFailures = []
         outcome = nil
         manifestReport = nil
+        rollManifestReport = nil
         startedAt = nil
         elapsed = 0
     }
@@ -330,6 +442,19 @@ final class RunModel {
         return await Task.detached {
             do {
                 return ManifestReport(manifest: try RunManifest.read(inOutputFolder: folder))
+            } catch {
+                return .unavailable(error.localizedDescription)
+            }
+        }.value
+    }
+
+    /// Reads the roll manifest off the main actor, for the same reason
+    /// `readManifest` does.
+    private static func readRollManifest(in folder: URL?) async -> RollManifestReport? {
+        guard let folder else { return nil }
+        return await Task.detached {
+            do {
+                return RollManifestReport(manifest: try RollManifest.read(inOutputFolder: folder))
             } catch {
                 return .unavailable(error.localizedDescription)
             }

@@ -135,6 +135,19 @@ struct ContentView: View {
                     confirmed: model.overwriteConfirmed
                 )
             }
+            if let existingRoll = model.existingRoll {
+                Text(
+                    "This folder already holds a roll (\(existingRoll.status)) "
+                        + "from \(existingRoll.filmDate)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+
+        Section("Intermediates") {
+            Toggle("Keep intermediates after a complete run", isOn: $model.keepIntermediates)
+                .accessibilityIdentifier("keepIntermediatesToggle")
         }
     }
 
@@ -162,7 +175,7 @@ struct ContentView: View {
             ) {
                 Button("Replace", role: .destructive) {
                     model.confirmOverwrite()
-                    beginConversion()
+                    beginRun()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -178,12 +191,12 @@ struct ContentView: View {
         if model.needsOverwriteConfirmation {
             isConfirmingOverwrite = true
         } else {
-            beginConversion()
+            beginRun()
         }
     }
 
-    private func beginConversion() {
-        guard let command = model.convertCommand, let outputFolder = model.outputFolder else {
+    private func beginRun() {
+        guard let command = model.runCommand, let outputFolder = model.outputFolder else {
             return
         }
         run.start(

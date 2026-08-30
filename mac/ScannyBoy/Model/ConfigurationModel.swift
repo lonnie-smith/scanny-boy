@@ -68,6 +68,11 @@ final class ConfigurationModel {
     /// Required, and starts blank (section 6, Chunk 9).
     var filmDate: String = ""
 
+    /// Section 3.5: kept, with an `INTERMEDIATES_KEPT` warning, when true —
+    /// even on an otherwise complete success. Off by default, matching the
+    /// CLI's own default.
+    var keepIntermediates = false
+
     private(set) var groups: [[String]] = []
     private(set) var selectionWarnings: [Issue] = []
     private(set) var selectionError: Issue?
@@ -78,6 +83,7 @@ final class ConfigurationModel {
         didSet {
             guard outputFolder != oldValue else { return }
             overwriteConfirmed = false
+            existingRoll = outputFolder.flatMap { try? RollManifest.read(inOutputFolder: $0) }
             if let outputFolder {
                 Self.save(outputFolder, forKey: Self.lastOutputFolderKey, in: defaults)
             }
@@ -89,6 +95,20 @@ final class ConfigurationModel {
     private(set) var estimatedRequiredBytes: Int?
     private(set) var availableBytes: Int?
     private(set) var outputError: Issue?
+
+    /// A completed roll from a prior `run`/`stitch`, when the chosen output
+    /// folder holds one.
+    ///
+    /// `probe --out` validates only against `scanny-boy-manifest.json`
+    /// (Phase 1's convert manifest); it has no notion of
+    /// `scanny-boy-roll.json` at all, so it reports a folder holding only a
+    /// roll manifest as `OUTPUT_NOT_EMPTY` — unrelated content, not a rerun.
+    /// This is read directly, client-side, so `apply(_:outputFolderWasGiven:)`
+    /// can recognise that specific case rather than surface a raw,
+    /// misleading error. Real conflict detection for a rerun into this
+    /// folder still happens for real, server-side, in `run_stitch`'s own
+    /// `plan_rerun(rules: ROLL_RULES)` when the run is actually started.
+    private(set) var existingRoll: RollManifest?
 
     /// Set once the user has agreed to replace `outputConflicts`. Reset
     /// whenever the output folder changes, so a stale confirmation from a
@@ -196,20 +216,25 @@ final class ConfigurationModel {
         catalogue.filter { selectedFiles.contains($0) }
     }
 
-    /// The `convert` invocation this configuration describes, or `nil` when it
+    /// The `run` invocation this configuration describes, or `nil` when it
     /// does not yet describe a runnable one.
     ///
-    /// `--overwrite` is passed only after the user has confirmed the
-    /// replacements; the CLI rejects conflicts by default (section 3.6).
-    var convertCommand: CLICommand? {
+    /// Chunk P2-9: the app's Run button drives `run` — convert and stitch in
+    /// one process — not `convert` alone. `--work` is left unset, so the CLI
+    /// uses a fresh temporary directory (section 3.6); choosing a specific
+    /// work directory belongs to Chunk P2-10's re-stitch flow. `--overwrite`
+    /// is passed only after the user has confirmed the replacements; the CLI
+    /// rejects conflicts by default (section 3.6).
+    var runCommand: CLICommand? {
         guard runEnabled, let inputFolder, let outputFolder else { return nil }
-        return .convert(
+        return .run(
             input: inputFolder,
             files: selectedFilesInCanonicalOrder,
             out: outputFolder,
             filmDate: filmDate,
             perNegative: perNegative,
-            overwrite: !outputConflicts.isEmpty && overwriteConfirmed
+            overwrite: !outputConflicts.isEmpty && overwriteConfirmed,
+            keepIntermediates: keepIntermediates
         )
     }
 
@@ -280,7 +305,14 @@ final class ConfigurationModel {
             outputConflicts = []
             estimatedRequiredBytes = nil
             availableBytes = nil
-            if Self.outputRelatedCodes.contains(error.code) {
+            // A folder holding only a roll manifest is a legitimate rerun
+            // target, not unrelated content — `probe` has no way to know
+            // that, so this is the one output error `existingRoll`
+            // overrides. Every other output error still blocks Run.
+            if error.code == .outputNotEmpty, existingRoll != nil {
+                selectionError = nil
+                outputError = nil
+            } else if Self.outputRelatedCodes.contains(error.code) {
                 selectionError = nil
                 outputError = error
             } else {

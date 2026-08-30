@@ -67,6 +67,48 @@ public struct CLICommand: Sendable, Hashable {
         }
         return CLICommand(arguments: arguments)
     }
+
+    /// `scanny-boy run --input DIR --files ... --out DIR --film-date YYYY-MM-DD ... [--work DIR] [--keep-intermediates]`
+    ///
+    /// One process, one event stream, one cancellation, from a selection of
+    /// NEFs all the way to finished, stitched negatives
+    /// (`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3.6). This is the app's
+    /// normal path — `Run` builds this, not `.convert`. `work` is left `nil`
+    /// here: a chosen work directory is Chunk P2-10's re-stitch feature, not
+    /// this one's.
+    public static func run(
+        input: URL,
+        files: [String],
+        out: URL,
+        filmDate: String,
+        perNegative: Int? = nil,
+        jobs: Int? = nil,
+        overwrite: Bool = false,
+        work: URL? = nil,
+        keepIntermediates: Bool = false
+    ) -> CLICommand {
+        var arguments = ["run", "--input", input.path]
+        arguments.append("--files")
+        arguments.append(contentsOf: files)
+        arguments.append(contentsOf: ["--out", out.path])
+        arguments.append(contentsOf: ["--film-date", filmDate])
+        if let perNegative {
+            arguments.append(contentsOf: ["--per-negative", String(perNegative)])
+        }
+        if let jobs {
+            arguments.append(contentsOf: ["--jobs", String(jobs)])
+        }
+        if overwrite {
+            arguments.append("--overwrite")
+        }
+        if let work {
+            arguments.append(contentsOf: ["--work", work.path])
+        }
+        if keepIntermediates {
+            arguments.append("--keep-intermediates")
+        }
+        return CLICommand(arguments: arguments)
+    }
 }
 
 /// Starts CLI sessions against one resolved executable.
