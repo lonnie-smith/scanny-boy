@@ -13,10 +13,20 @@ import importlib.resources
 
 from scanny_boy.events import Code
 
-PROFILE_FILENAME = "ProPhoto-v4.icc"
+PROFILE_FILENAME = "ScannyBoy-ROMM-LibRaw-v4.icc"
 
-# Verified against the upstream file per section 3.4.
-PROFILE_SHA256 = "090daf740c136b4a63bf979d64f034b4a65aa5abbb04a0917729222afe2bb5c2"
+# Verified against the generated file per section 3.13.
+PROFILE_SHA256 = "18760274dbf58e150f5d3d391a762b51ad7799b26dac5acc4d74289d70998575"
+
+# Section 3.13. ICC parametricCurveType function type 4, decoding direction.
+TRC_FUNCTION_TYPE = 4
+TRC_G = 117965
+TRC_A = 65096
+TRC_B = 440
+TRC_C = 0
+TRC_D = 554
+TRC_E = 4096
+TRC_F = 0
 
 
 class IccProfileError(Exception):

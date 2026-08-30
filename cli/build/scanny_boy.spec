@@ -21,7 +21,7 @@ SRC_DIR = CLI_DIR / "src"
 datas = [
     # The vetted ICC profile, loaded through `importlib.resources` so the
     # same code works in a checkout and in the bundle (section 3.4).
-    (str(SRC_DIR / "scanny_boy" / "resources" / "ProPhoto-v4.icc"), "scanny_boy/resources"),
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-ROMM-LibRaw-v4.icc"), "scanny_boy/resources"),
 ]
 
 # `tifftools` reads its own package metadata at import; without this the
