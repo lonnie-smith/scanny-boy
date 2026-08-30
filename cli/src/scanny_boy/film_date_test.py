@@ -3,8 +3,8 @@ import datetime
 import pytest
 
 from scanny_boy.catalogue import CaptureTimestamp
-from scanny_boy.events import Code
 from scanny_boy.film_date import (
+    CAPTURE_SPAN_TOO_LONG,
     FilmDateError,
     format_date_time,
     format_subsec,
@@ -86,13 +86,13 @@ def test_span_too_long_from_capture_fails_with_capture_span_too_long():
 
     with pytest.raises(FilmDateError) as exc_info:
         synthetic_times_from_capture(FILM_DATE, captures)
-    assert exc_info.value.code == Code.CAPTURE_SPAN_TOO_LONG
+    assert exc_info.value.code == CAPTURE_SPAN_TOO_LONG
 
 
 def test_span_too_long_from_filename_fallback_fails_with_capture_span_too_long():
     with pytest.raises(FilmDateError) as exc_info:
         synthetic_times_from_filename_fallback(FILM_DATE, count=13 * 60 * 60)
-    assert exc_info.value.code == Code.CAPTURE_SPAN_TOO_LONG
+    assert exc_info.value.code == CAPTURE_SPAN_TOO_LONG
 
 
 def test_format_date_time_matches_exif_ascii_format():

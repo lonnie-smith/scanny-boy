@@ -40,47 +40,47 @@ struct RunModelTests {
     private static let runID = "run-0001"
 
     private static let started =
-        #"{"protocol_version":2,"event":"started","command":"convert","run_id":"run-0001"}"#
+        #"{"protocol_version":3,"event":"started","command":"convert","run_id":"run-0001"}"#
 
     private static func finished(status: String, exitStatus: Int) -> String {
-        #"{"protocol_version":2,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
+        #"{"protocol_version":3,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
     }
 
     private static func progress(
         sourceIndex: Int, step: String, completed: Int, total: Int
     ) -> String {
-        #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
+        #"{"protocol_version":3,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
     }
 
     private static func itemDone(sourceIndex: Int, output: String) -> String {
-        #"{"protocol_version":2,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
+        #"{"protocol_version":3,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
     }
 
     private static func groupDone(_ groupID: String) -> String {
-        #"{"protocol_version":2,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
+        #"{"protocol_version":3,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
     }
 
     private static func groupFailed(_ groupID: String, code: String, message: String) -> String {
-        #"{"protocol_version":2,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":3,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func errorEvent(code: String, message: String) -> String {
-        #"{"protocol_version":2,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":3,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func negativeDone(
         negativeID: String, output: String, width: Int, height: Int,
         globalRMS: Double, maxOverlapMAD: Double
     ) -> String {
-        #"{"protocol_version":2,"event":"negative_done","run_id":"run-0001","negative_id":"\#(negativeID)","output":"\#(output)","width":\#(width),"height":\#(height),"global_rms_px":\#(globalRMS),"max_overlap_mad":\#(maxOverlapMAD)}"#
+        #"{"protocol_version":3,"event":"negative_done","run_id":"run-0001","negative_id":"\#(negativeID)","output":"\#(output)","width":\#(width),"height":\#(height),"global_rms_px":\#(globalRMS),"max_overlap_mad":\#(maxOverlapMAD)}"#
     }
 
     private static func negativeFailed(_ negativeID: String, code: String, message: String) -> String {
-        #"{"protocol_version":2,"event":"negative_failed","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":3,"event":"negative_failed","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func warningEvent(code: String, message: String) -> String {
-        #"{"protocol_version":2,"event":"warning","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":3,"event":"warning","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static let sixFiles = [
@@ -539,9 +539,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let withConflicts =
-            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
         let script = """
             case "$*" in
               *--out*)
@@ -590,9 +590,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let clean =
-            #"{"protocol_version":2,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
         let script = """
             case "$*" in
               *--out*)
@@ -697,8 +697,8 @@ struct RunModelTests {
         let executable = try Self.fakeConvertExecutable(
             emitting: [
                 Self.started,
-                #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#,
-                #"{"protocol_version":2,"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#,
+                #"{"protocol_version":3,"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#,
+                #"{"protocol_version":3,"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#,
                 Self.finished(status: "success", exitStatus: 0),
             ],
             in: directory

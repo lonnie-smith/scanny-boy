@@ -4,41 +4,47 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1 and
-`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3 for Phase 2. If this file and
-either plan ever disagree, the plan is authoritative.
+This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
+`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3 for Phase 2, and
+`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
+and any plan ever disagree, the plan is authoritative.
 
-Protocol version 2 adds the `stitch` and `run` commands, the `stage` field on
-`progress`, seven new pipeline steps for the stitch stage, the `negative_done`
-and `negative_failed` events, and the stitch-related codes below. A client
-that only understands protocol version 1 must reject a version-2 stream
-rather than guess at the new fields.
+Protocol version 3 replaces the single-run output folder with a durable
+**roll** — a named folder holding many runs — and adds library management,
+overlap detection, and a metadata-apply stage. A client that only understands
+protocol version 2 must reject a version-3 stream rather than guess at the
+new fields.
 
 ## Invocation
 
 ```text
-scanny-boy probe \
-  --input DIR [--files FILE [FILE ...]] [--per-negative 3]
+scanny-boy roll init  --library DIR --name NAME --per-negative N
+scanny-boy roll list  --library DIR
+scanny-boy roll info  --roll DIR
 
-scanny-boy convert \
-  --input DIR --files FILE [FILE ...] \
-  --out DIR --film-date YYYY-MM-DD --per-negative 3 \
-  [--jobs N] [--overwrite]
+scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
 
-scanny-boy stitch \
-  --work DIR --out DIR \
-  [--jobs N] [--overwrite] [--allow-partial]
+scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR [--per-negative N]
+                      [--jobs N] [--overwrite]
 
-scanny-boy run \
-  --input DIR --files FILE [FILE ...] --out DIR --film-date YYYY-MM-DD \
-  [--per-negative 3] [--jobs N] [--overwrite] \
-  [--work DIR] [--keep-intermediates]
+scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
+                      [--negatives ID ...]
+
+scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
+                      [--skip-sources FILE ...] [--work DIR] [--keep-intermediates]
+
+scanny-boy apply-metadata --roll DIR
 ```
 
-`stitch` and `run` are Phase 2 additions; see
-`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3.6 for their full behaviour.
-Neither is implemented yet as of protocol version 2 — this chunk only
-reserves their place in the contract.
+`--roll` replaces `--out` on `stitch` and `run`. `convert` keeps `--out`,
+because it still writes a work directory rather than a roll.
+
+`--film-date` is removed from every command. Synthetic capture times are
+assigned in the metadata stage, not at convert time.
+
+`--overwrite` is removed from `run`. In a roll, replacing an existing negative
+is expressed by *not* skipping its sources (`--skip-sources`), which the app
+derives from the overlap sheet.
 
 `probe` is read-only and works at two levels of detail:
 
@@ -46,11 +52,15 @@ reserves their place in the contract.
   sorting warnings. Swift calls this first, because it cannot name a
   selection before it knows the order. Swift never sorts files itself.
 - **`--input` with `--files`** additionally validates the selection: the
-  uninterrupted-range check, grouping, metadata consistency, output
-  conflicts, and whether conversion may start.
+  uninterrupted-range check, grouping, metadata consistency, and whether
+  conversion may start.
 
 `--out` may be given to `probe` alongside `--files` to include output-folder
-validation and the overwrite-conflict preview.
+validation and the overwrite-conflict preview (Phase 1/2 convert path).
+
+`--roll` may be given to `probe` alongside `--files` to include roll-aware
+validation: roll-invariant checks and an overlap preview for sources already
+present in the roll.
 
 `convert` repeats all important validation. It does not trust an earlier
 probe result.
@@ -58,6 +68,28 @@ probe result.
 `--files` takes filenames relative to `--input`, not absolute paths. Reject a
 selection above 5000 files with a usage error rather than letting the
 operating system truncate the argument list.
+
+`--skip-sources` names filenames, relative to `--input`, to exclude from a
+`run`. Excluded files are removed from the selection **before** grouping, so
+a skip must remove a whole group's worth or the run fails
+`NON_CONTIGUOUS_SELECTION`.
+
+`--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
+
+`roll init` creates a folder under `--library` (slug + collision rule) and
+writes an empty v2 roll manifest. It emits `roll_created` carrying `roll_id`,
+`roll_name`, and `path`.
+
+`roll list` performs a one-level scan of `--library` and emits a single
+`roll_list` event.
+
+`roll info` loads and validates one roll manifest and emits it as a
+`roll_info` event. Swift never parses `scanny-boy-roll.json` itself and never
+enumerates the library itself — `roll list` and `roll info` are the only two
+ways in.
+
+`apply-metadata` writes intended capture times from the roll manifest into
+published TIFFs. See Phase 3 section 3.8.
 
 ### `--version`
 
@@ -96,15 +128,14 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for
-`scanny-boy-roll.json`, the output folder's stitched-roll record (Phase 2
-section 3.7). Its writer is a later Phase 2 chunk; this contract only fixes
-its shape.
+`scanny-boy-roll.json`, the roll folder's durable record (Phase 3 section
+3.3, format version 2).
 
 ### Event types
 
 | Event | Meaning |
 | --- | --- |
-| `started` | The command began. Carries which command (`probe`, `convert`, `stitch`, or `run`). |
+| `started` | The command began. Carries which command. |
 | `probe_result` | The catalogue or selection validation result of `probe`. |
 | `progress` | Work in progress. Carries a stable source index, the pipeline step, a completed work count, a total, and which stage (`convert` or `stitch`) it belongs to. |
 | `item_done` | A TIFF has been published in the output folder after its whole group completed successfully. |
@@ -112,6 +143,12 @@ its shape.
 | `group_failed` | A negative's group failed and its staging directory was removed. |
 | `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad`. |
 | `negative_failed` | A negative could not be stitched. Carries `negative_id`, `code`, and `message`. |
+| `roll_created` | A new roll folder was created. Carries `roll_id`, `roll_name`, and `path`. |
+| `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
+| `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
+| `negative_superseded` | A newly published negative replaced an earlier one. Carries `old_negative_id` and `new_negative_id`. |
+| `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
+| `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
@@ -135,17 +172,25 @@ confirmation list section 3.6 requires before `convert --overwrite`),
 `estimated_required_bytes` (the section 3.9 disk estimate for this run), and
 `available_bytes` (free space on the output volume at probe time). All three
 are absent (`output_conflicts` empty, the byte fields `null`) when `--out`
-was not given. A bad output folder, a manifest that does not match this
-selection, an invalid ICC profile, or insufficient disk space fails the
-whole `probe` the same way it would fail `convert` — `output_conflicts` on
-its own is never a failure; it is only ever a preview the app shows the user
-before asking them to confirm `--overwrite`.
+was not given.
+
+When `--roll` is also given alongside a validated `--files` selection,
+`probe_result` additionally carries `roll_overlap` — an array of
+`{negative_id, expected_output, run_id, overlapping_sources, group_index}`
+describing which of *this* selection's prospective groups collide with
+negatives already in the roll.
 
 Parallel completion order need not match source order. The UI derives overall
 progress from counts, never from the largest source index seen.
 
 `progress` may report decoded or staged work. If a group fails or is
 cancelled, it emits no `item_done` events for that group's staged files.
+
+`roll_list` carries `rolls`, an array of `{path, status, reason, roll_id,
+roll_name, negative_count}`. `status` is `"ok"` or `"unreadable"`. `reason`
+is `{code, message}` for an unreadable roll and null otherwise; the
+remaining fields are null when unreadable. `negative_count` excludes
+superseded negatives.
 
 ### Cancellation
 
@@ -177,7 +222,6 @@ staging directories, and reruns the incomplete negative.
 | `UNSUPPORTED_RAW` | LibRaw cannot read the file, typically HE/HE\* |
 | `CAPTURE_METADATA_MISSING` | A required EXIF tag is absent |
 | `CAPTURE_SETTINGS_DIFFER` | Exposure, white balance, lens, or orientation varies |
-| `CAPTURE_SPAN_TOO_LONG` | Synthetic times would leave the film date |
 | `UNREADABLE_RAW` | File exists but could not be decoded |
 | `OUTPUT_SAME_AS_INPUT` | Output folder resolves to the input folder |
 | `OUTPUT_NOT_WRITABLE` | Cannot write to the output folder |
@@ -186,11 +230,11 @@ staging directories, and reruns the incomplete negative.
 | `INSUFFICIENT_DISK` | Free space below the section 3.9 estimate |
 | `INSUFFICIENT_MEMORY` | Explicit `--jobs` exceeds the memory budget |
 | `BAD_MANIFEST` | Manifest unreadable or fails its schema |
-| `MANIFEST_MISMATCH` | Manifest valid but its run parameters differ |
+| `MANIFEST_MISMATCH` | Work manifest valid but its run parameters differ |
 | `ICC_PROFILE_INVALID` | Bundled profile missing or wrong SHA-256 |
 | `TIFF_WRITE_FAILED` | A TIFF or metadata write failed |
 | `CANCELLED` | Cooperative user cancellation |
-| `WORK_SAME_AS_OUTPUT` | `--work` resolves to `--out` |
+| `WORK_SAME_AS_OUTPUT` | `--work` resolves to `--out` or `--roll` |
 | `WORK_MANIFEST_UNUSABLE` | Work manifest is `running`/`cancelled`, or `partial` without `--allow-partial` |
 | `INTERMEDIATE_MISSING` | An intermediate named by the work manifest is absent |
 | `INTERMEDIATE_CHANGED` | An intermediate's size or SHA-256 differs from the work manifest |
@@ -204,9 +248,14 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `INTERMEDIATES_KEPT` | Warning: work directory retained; carries its path |
-
-These stitch-related codes are reserved by protocol version 2; the pipeline
-behaviour that raises them is implemented in later Phase 2 chunks.
+| `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 2` |
+| `ROLL_EXISTS` | `roll init` could not find a free folder name |
+| `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
+| `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
+| `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
+| `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
+| `SUPERSEDED_FILE_NOT_REMOVED` | Warning: a superseded negative's TIFF could not be deleted |
 
 ## Exit status
 
