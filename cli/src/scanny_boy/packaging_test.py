@@ -39,6 +39,10 @@ from scanny_boy.packaged_app_support import (
     run_packaged,
 )
 from scanny_boy.pipeline import run_convert
+from scanny_boy.roll_manifest_schema_test_support import (
+    assert_matches_roll_manifest_schema,
+    load_roll_manifest_schema,
+)
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_1,
@@ -274,6 +278,76 @@ def test_packaged_conversion_writes_real_tiffs(fixture_name, request):
             assert page.tags["InterColorProfile"].value is not None
 
     assert (run.out_dir / "scanny-boy-manifest.json").exists()
+
+
+@requires_real_samples
+def test_packaged_program_runs_a_real_stitch(tmp_path):
+    """Chunk P2-8: the frozen binary performs a complete `run` on the
+    sample NEFs and the resulting stitched TIFF is opened and checked.
+
+    An import check, a `--version` check, or a conversion-only check does
+    not discharge this (section 4.2) — OpenCV, like `imagecodecs` before
+    it, can fail only in the frozen bundle. This is the packaged
+    equivalent of `run_pipeline_test.py`'s real-sample coverage: full
+    RAW decode, registration, compositing, and the two-pass TIFF write,
+    all inside the bundle.
+    """
+    work_dir = tmp_path / "work"
+    out_dir = tmp_path / "out"
+    work_dir.mkdir()
+    out_dir.mkdir()
+
+    result = run_packaged(
+        "run",
+        "--input",
+        str(FIXTURES_DIR),
+        "--files",
+        *NEGATIVE_1,
+        "--out",
+        str(out_dir),
+        "--film-date",
+        FILM_DATE,
+        "--per-negative",
+        "3",
+        "--jobs",
+        "3",
+        "--work",
+        str(work_dir),
+        timeout=600,
+    )
+
+    assert result.returncode == 0, result.stderr[-4000:]
+    events = _events(result.stdout)
+    assert events[-1]["event"] == "finished"
+    assert events[-1]["status"] == "success"
+    negative_done = [e for e in events if e["event"] == "negative_done"]
+    assert len(negative_done) == 1
+    assert negative_done[0]["output"] == "_DSC4638.tif"
+
+    output = out_dir / "_DSC4638.tif"
+    assert output.exists()
+    with tifffile.TiffFile(output) as handle:
+        page = handle.pages[0]
+        assert page.shape[-1] == 3
+        assert page.dtype == "uint16"
+        assert page.tags["Compression"].value == DEFLATE_COMPRESSION
+        assert page.tags["Predictor"].value == HORIZONTAL_PREDICTOR
+        assert page.tags["Orientation"].value == 1
+        assert page.tags["InterColorProfile"].value is not None
+        assert page.tags["ImageDescription"].value == "_DSC4638.NEF+2: stitched scan"
+
+    roll_manifest = out_dir / "scanny-boy-roll.json"
+    assert roll_manifest.exists()
+    data = json.loads(roll_manifest.read_text())
+    assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
+    assert data["status"] == "complete"
+    assert data["negatives"][0]["status"] == "completed"
+
+    # `--work` was supplied explicitly, so it survives a complete run
+    # (section 3.5) — proving the packaged program's cleanup logic, not
+    # just its pixel output.
+    assert work_dir.exists()
+    assert (work_dir / "scanny-boy-manifest.json").exists()
 
 
 @requires_real_samples
