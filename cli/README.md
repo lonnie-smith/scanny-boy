@@ -1,10 +1,19 @@
 # Scanny Boy CLI
 
 The Python command-line program, packaged as `scanny-boy`. It contains all
-file discovery, validation, sorting, grouping, RAW conversion, TIFF and
-manifest writing, and progress reporting; the macOS app has none of this
-logic and only runs this program and reads its JSON event stream. The
-interface is defined in [`../shared/contract/`](../shared/contract/).
+file discovery, validation, sorting, grouping, RAW conversion, registration,
+compositing, TIFF and manifest writing, and progress reporting; the macOS app
+has none of this logic and only runs this program and reads its JSON event
+stream. The interface is defined in
+[`../shared/contract/`](../shared/contract/).
+
+Four commands: `probe` (validate without writing), `convert` (RAW to
+per-frame TIFFs), `stitch` (register and composite an existing conversion's
+intermediates into one TIFF per negative — the re-stitch path, since it pays
+for no RAW decoding), and `run` (convert and stitch in one invocation — the
+app's normal path). See
+[`../shared/contract/CONTRACT.md`](../shared/contract/CONTRACT.md) for the
+full command reference.
 
 Uses the `src/` layout. Tests live next to the code they test (`*_test.py`)
 and run via pytest.
@@ -29,10 +38,10 @@ uv run scanny-boy probe --input /path/to/nef/folder
 uv run scanny-boy --help
 ```
 
-See [`../shared/contract/CONTRACT.md`](../shared/contract/CONTRACT.md) for
-the full command reference, and
-[`../docs/IMPLEMENTATION_PLAN.md`](../docs/IMPLEMENTATION_PLAN.md) section 4
-for the authoritative contract.
+See [`../docs/IMPLEMENTATION_PLAN.md`](../docs/IMPLEMENTATION_PLAN.md)
+section 4 and
+[`../docs/PHASE2_IMPLEMENTATION_PLAN.md`](../docs/PHASE2_IMPLEMENTATION_PLAN.md)
+section 3.6 for the authoritative contract behind `CONTRACT.md`.
 
 ## Test
 
@@ -42,7 +51,9 @@ uv run pytest
 ```
 
 Some tests need the real sample NEFs at `../tests/fixtures/nef/`, which are
-not committed (see the root README). Those tests skip clearly and say what
+not committed (see the root README): Phase 1's original six frames for
+conversion tests, and Phase 2's gate-B stitching scans (appendix C of the
+Phase 2 plan) for registration tests. Those tests skip clearly and say what
 they didn't test when the files are absent.
 
 ## Freeze for the macOS app
