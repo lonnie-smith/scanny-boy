@@ -15,12 +15,24 @@ from scanny_boy.events import (
     EventWriter,
     Finished,
     ProbeResult,
+    RollCreated,
+    RollInfo,
+    RollList,
+    RollListingEntry,
+    RollListingReason,
     Started,
     WarningEvent,
 )
+from scanny_boy.manifest import BadManifestError
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
+from scanny_boy.roll_folder import RollFolderError, create_roll, scan_library
+from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FILENAME,
+    RollManifestUnsupportedError,
+    load_roll_manifest,
+)
 from scanny_boy.run_pipeline import RunFailure, run_full
 from scanny_boy.stitch_pipeline import run_stitch
 
@@ -56,6 +68,26 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"scanny-boy {importlib.metadata.version('scanny-boy')}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    roll = subparsers.add_parser("roll", help="Manage rolls in the library.")
+    roll_subparsers = roll.add_subparsers(dest="roll_command", required=True)
+
+    roll_init = roll_subparsers.add_parser("init", help="Create a new roll.")
+    roll_init.add_argument("--library", required=True, metavar="DIR")
+    roll_init.add_argument("--name", required=True, metavar="NAME")
+    roll_init.add_argument(
+        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
+    )
+
+    roll_list = roll_subparsers.add_parser(
+        "list", help="Scan the library and list its rolls."
+    )
+    roll_list.add_argument("--library", required=True, metavar="DIR")
+
+    roll_info = roll_subparsers.add_parser(
+        "info", help="Load and validate one roll's manifest."
+    )
+    roll_info.add_argument("--roll", required=True, metavar="DIR")
 
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
@@ -179,6 +211,77 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
     return exit_status
 
 
+def _roll_listing_entry(listing) -> RollListingEntry:
+    reason = (
+        RollListingReason(code=listing.reason[0], message=listing.reason[1])
+        if listing.reason is not None
+        else None
+    )
+    return RollListingEntry(
+        path=str(listing.path),
+        status=listing.status,
+        reason=reason,
+        roll_id=listing.roll_id,
+        roll_name=listing.roll_name,
+        negative_count=listing.negative_count,
+    )
+
+
+def _run_roll_command(args, writer: EventWriter) -> int:
+    """The `roll init` / `roll list` / `roll info` subcommands (section
+    3.5). Each mirrors the other commands' started/finished bracketing;
+    none carries a `run_id`, since none is a pipeline run."""
+    if args.roll_command == "init":
+        writer.write(Started(command="roll init"))
+        try:
+            roll_dir = create_roll(Path(args.library), args.name, args.per_negative)
+        except RollFolderError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        manifest = load_roll_manifest(roll_dir)
+        writer.write(
+            RollCreated(
+                roll_id=manifest.roll_id,
+                roll_name=manifest.roll_name,
+                path=str(roll_dir),
+            )
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.roll_command == "list":
+        writer.write(Started(command="roll list"))
+        listings = scan_library(Path(args.library))
+        writer.write(
+            RollList(rolls=[_roll_listing_entry(listing) for listing in listings])
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    # info
+    writer.write(Started(command="roll info"))
+    roll_dir = Path(args.roll)
+    if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    try:
+        manifest = load_roll_manifest(roll_dir)
+    except (BadManifestError, RollManifestUnsupportedError) as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    writer.write(RollInfo(manifest=manifest.to_dict()))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_run_command(
     args, writer: EventWriter, files: list[str] | None, jobs: int | None
 ) -> int:
@@ -277,6 +380,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _usage_error(
             parser, f"--jobs must be between {MIN_JOBS} and {MAX_JOBS}, got {jobs}"
         )
+
+    if args.command == "roll":
+        return _run_roll_command(args, writer)
 
     if args.command == "probe":
         writer.write(Started(command="probe"))

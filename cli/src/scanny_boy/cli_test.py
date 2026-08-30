@@ -195,6 +195,109 @@ def test_convert_without_files_is_rejected(capsys):
     assert events == []
 
 
+def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
+    status = main(
+        ["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_created", "finished"]
+    assert events[0]["command"] == "roll init"
+    assert events[1]["roll_name"] == "Roll A"
+    assert events[1]["path"] == str(tmp_path / "Roll-A")
+    assert err == ""
+
+
+def test_roll_init_per_negative_out_of_range_returns_structured_error(capsys, tmp_path):
+    status = main(
+        ["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "0"]
+    )
+
+    assert status == 2
+    events, _err = _stdout_events(capsys)
+    assert len(events) == 1
+    assert events[0]["code"] == "INVALID_PER_NEGATIVE"
+
+
+def test_roll_init_collision_reports_roll_exists(capsys, tmp_path):
+    (tmp_path / "roll-a").mkdir()
+    status = main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "roll-a",
+            "--per-negative",
+            "3",
+        ]
+    )
+    assert status == 0
+
+    events, _err = _stdout_events(capsys)
+    assert events[1]["event"] == "roll_created"
+    assert events[1]["path"] == str(tmp_path / "roll-a-2")
+
+
+def test_roll_list_emits_roll_list_with_every_roll(capsys, tmp_path):
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll B", "--per-negative", "3"])
+    capsys.readouterr()
+
+    status = main(["roll", "list", "--library", str(tmp_path)])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_list", "finished"]
+    assert events[0]["command"] == "roll list"
+    names = {r["roll_name"] for r in events[1]["rolls"]}
+    assert names == {"Roll A", "Roll B"}
+    assert all(r["status"] == "ok" for r in events[1]["rolls"])
+    assert err == ""
+
+
+def test_roll_list_on_empty_library_reports_no_rolls(capsys, tmp_path):
+    status = main(["roll", "list", "--library", str(tmp_path)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert events[1]["rolls"] == []
+
+
+def test_roll_info_emits_the_manifest(capsys, tmp_path):
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_info", "finished"]
+    assert events[0]["command"] == "roll info"
+    assert events[1]["manifest"]["roll_name"] == "Roll A"
+    assert err == ""
+
+
+def test_roll_info_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["roll", "info", "--roll", str(tmp_path / "nope")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
+def test_roll_without_subcommand_returns_status_2(capsys):
+    status = main(["roll"])
+
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert err != ""
+
+
 def test_invalid_command_returns_status_2_with_no_stdout_events(capsys):
     status = main(["frobnicate"])
     assert status == 2
