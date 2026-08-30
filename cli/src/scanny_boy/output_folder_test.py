@@ -11,6 +11,7 @@ from scanny_boy.manifest import (
     write_manifest,
 )
 from scanny_boy.output_folder import (
+    ROLL_RULES,
     OutputFolderError,
     apply_recovery_cleanup,
     list_non_dot_entries,
@@ -20,6 +21,11 @@ from scanny_boy.output_folder import (
     validate_not_same_as_input,
     validate_writable,
 )
+from scanny_boy.roll_manifest import RollInvariants, load_roll_manifest
+
+# The roll tests below need a folder a genuine `stitch` produced (section 4);
+# the stitch fixtures are the one place that machinery lives.
+from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
 
 GOOD_SHA = "a" * 64
 
@@ -193,6 +199,53 @@ def test_plan_rerun_treats_non_completed_groups_outputs_as_stale_not_conflicting
     assert plan.conflicting_outputs == []
     assert plan.stale_outputs == ["a.tif"]
     assert plan.stale_staging_dirs == [staging]
+
+
+# --- rolls (Phase 3 section 3.4: additive semantics) ----------------------
+
+
+def _candidate_from(manifest) -> RollInvariants:
+    """The invariants of a rerun with the same parameters the roll already
+    established, read back from the roll itself rather than restated."""
+    return RollInvariants(
+        shots_per_negative=manifest.shots_per_negative,
+        processing_params=manifest.processing_params,
+        icc_profile_sha256=manifest.icc_profile.get("sha256", ""),
+        stitch_params=manifest.stitch_params,
+    )
+
+
+def test_roll_folder_with_prior_outputs_is_valid(tmp_path):
+    """Section 3.4: a nonempty roll folder holding published outputs from
+    earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and under `ROLL_RULES`
+    those outputs are neither conflicts nor stale. The roll is built by a
+    genuine `stitch` through P3-2's writer (section 4) — a hand-authored
+    manifest proves nothing about what the folder really holds. The dot-dir
+    skip covers `.work`, which `run --roll` will use for scratch."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    _stitch(work_dir, out_dir)
+
+    manifest = load_roll_manifest(out_dir)
+    [negative] = manifest.negatives
+    assert negative.status == "completed"
+    published = out_dir / negative.expected_output
+    assert published.exists()
+
+    # The scratch and metadata dot-directories a run may leave behind.
+    (out_dir / ".work").mkdir()
+    (out_dir / ".work" / "scratch").write_text("scratch")
+    (out_dir / ".DS_Store").write_bytes(b"")
+
+    plan = plan_rerun(out_dir, _candidate_from(manifest), rules=ROLL_RULES)
+
+    assert plan.conflicting_outputs == []
+    assert plan.stale_outputs == []
+    assert plan.stale_staging_dirs == []
+    assert plan.existing_manifest is not None
+    assert [n.negative_id for n in plan.existing_manifest.negatives] == [
+        negative.negative_id
+    ]
 
 
 # --- plan_rerun_preview (probe --out, before a film date is known) --------

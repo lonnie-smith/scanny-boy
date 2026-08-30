@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--input", required=True, metavar="DIR")
     probe.add_argument("--files", nargs="+", metavar="FILE")
     probe.add_argument("--out", metavar="DIR")
+    probe.add_argument("--roll", metavar="DIR")
     probe.add_argument(
         "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
     )
@@ -291,6 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 files,
                 args.per_negative,
                 out_dir=Path(args.out) if args.out else None,
+                roll_dir=Path(args.roll) if args.roll else None,
                 on_warning=on_warning,
             )
         except ProbeFailure as exc:
@@ -305,6 +307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_conflicts=outcome.output_conflicts,
                 estimated_required_bytes=outcome.estimated_required_bytes,
                 available_bytes=outcome.available_bytes,
+                roll_overlap=outcome.roll_overlap,
             )
         )
         writer.write(Finished(status="success", exit_status=0))

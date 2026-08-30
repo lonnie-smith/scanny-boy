@@ -1,8 +1,10 @@
 """Orchestrates `probe`'s levels of detail: whole-catalogue canonical
 ordering, (with `--files`) selection, grouping, and setup-consistency
-validation, and (with `--files` and `--out`) output-folder validation, disk
-estimate, and overwrite-conflict preview. See
-`docs/IMPLEMENTATION_PLAN.md` section 4.1.
+validation, (with `--files` and `--out`) output-folder validation, disk
+estimate, and overwrite-conflict preview, and (with `--roll`) the roll
+folder's invariant validation plus the selection's overlap with prior runs
+(Phase 3 section 3.5). See `docs/IMPLEMENTATION_PLAN.md` section 4.1 and
+`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5.
 
 Every problem this module detects is reported through `ProbeFailure`,
 carrying one of the stable `CONTRACT.md` codes. Some structural problems —
@@ -32,7 +34,7 @@ from scanny_boy.catalogue import (
 )
 from scanny_boy.consistency import ConsistencyError, check_consistency
 from scanny_boy.disk_check import required_free_bytes
-from scanny_boy.events import Code
+from scanny_boy.events import Code, RollOverlapEntry
 from scanny_boy.icc_profile import (
     PROFILE_FILENAME,
     PROFILE_SHA256,
@@ -53,13 +55,21 @@ from scanny_boy.metadata import (
     read_source_settings,
 )
 from scanny_boy.output_folder import (
+    ROLL_RULES,
     OutputFolderError,
+    plan_rerun,
     plan_rerun_preview,
     validate_not_same_as_input,
     validate_writable,
 )
 from scanny_boy.pipeline import build_curated_metadata, build_groups, hash_sources
 from scanny_boy.raw_decode import jsonable_raw_params, read_active_size
+from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FILENAME,
+    RollInvariantMismatchError,
+    RollInvariants,
+    RollManifestUnsupportedError,
+)
 from scanny_boy.selection import (
     SelectionUsageError,
     group,
@@ -67,6 +77,11 @@ from scanny_boy.selection import (
     nearest_valid_counts,
     order_selection,
 )
+
+# The candidate's stitch params must be exactly what `run --roll` will
+# present (section 3.4), so they come from stitch_pipeline itself — one
+# source of truth, not a copy that can drift.
+from scanny_boy.stitch_pipeline import _stitch_params
 
 OnWarning = Callable[[Code, str], None]
 
@@ -93,6 +108,7 @@ class ProbeOutcome:
     output_conflicts: list[str] = dataclasses.field(default_factory=list)
     estimated_required_bytes: int | None = None
     available_bytes: int | None = None
+    roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -186,12 +202,91 @@ def _preview_output_folder(
     )
 
 
+def _preview_roll(
+    input_dir: Path,
+    selected: list[str],
+    per_negative: int,
+    groups: list[list[str]],
+    roll_dir: Path,
+) -> list[RollOverlapEntry]:
+    """`probe --roll`'s roll-folder validation and overlap report (section
+    3.5). Raises `ProbeFailure` for anything that would also stop `run
+    --roll`: no roll manifest in the folder, an unreadable or unsupported
+    one, content unrelated to the roll, or invariants that differ from this
+    run's parameters.
+
+    Overlap is reported, not rejected: section 3.4's supersession decides at
+    `run` time which overlapped negatives are replaced, so the report names
+    what each prospective group shares with the roll and lets the caller
+    decide."""
+    if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+        raise ProbeFailure(
+            Code.ROLL_NOT_FOUND,
+            f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}; create the roll first",
+        )
+
+    # The same invariants `run --roll` will present (section 3.4), so a
+    # probe that passes here cannot fail there on parameters.
+    candidate = RollInvariants(
+        shots_per_negative=per_negative,
+        processing_params=jsonable_raw_params(),
+        icc_profile_sha256=PROFILE_SHA256,
+        stitch_params=_stitch_params(),
+    )
+    try:
+        plan = plan_rerun(roll_dir, candidate, rules=ROLL_RULES)
+    except (
+        OutputFolderError,
+        BadManifestError,
+        RollManifestUnsupportedError,
+        RollInvariantMismatchError,
+    ) as exc:
+        raise ProbeFailure(exc.code, exc.message) from exc
+    roll = plan.existing_manifest
+    assert roll is not None
+
+    if not groups:
+        return []
+
+    # Section 3.5: overlap detection "hashes the selection, compares against
+    # `manifest.sources` by `sha256`, and reports per prospective group". A
+    # prospective group collides with a negative when the two share sources
+    # by content, so a renamed rescan still matches — whether that overlap
+    # would supersede the negative (section 3.4's subset rule) is decided at
+    # run time, not here.
+    selected_hashes = {r.filename: r.sha256 for r in hash_sources(input_dir, selected)}
+    roll_hashes = {s.filename: s.sha256 for s in roll.sources}
+    entries: list[RollOverlapEntry] = []
+    for group_index, members in enumerate(groups):
+        for negative in roll.live_negatives():
+            negative_hashes = {
+                roll_hashes[member]
+                for member in negative.members
+                if member in roll_hashes
+            }
+            overlapping = [
+                name for name in members if selected_hashes[name] in negative_hashes
+            ]
+            if overlapping:
+                entries.append(
+                    RollOverlapEntry(
+                        negative_id=negative.negative_id,
+                        expected_output=negative.expected_output,
+                        run_id=negative.run_id,
+                        overlapping_sources=overlapping,
+                        group_index=group_index,
+                    )
+                )
+    return entries
+
+
 def run_probe(
     input_dir: Path,
     files: list[str] | None,
     per_negative: int,
     *,
     out_dir: Path | None = None,
+    roll_dir: Path | None = None,
     on_warning: OnWarning = lambda code, message: None,
 ) -> ProbeOutcome:
     try:
@@ -217,6 +312,11 @@ def run_probe(
         )
 
     if files is None:
+        # Section 3.5: `--roll` without `--files` still validates the roll
+        # folder and its invariants; without a selection there is no overlap
+        # to report.
+        if roll_dir is not None:
+            _preview_roll(input_dir, [], per_negative, [], roll_dir)
         return ProbeOutcome(catalogue=order.order, groups=[])
 
     if not files:
@@ -273,10 +373,17 @@ def run_probe(
             input_dir, selection.names, per_negative, settings_list, out_dir
         )
 
+    roll_overlap: list[RollOverlapEntry] = []
+    if roll_dir is not None:
+        roll_overlap = _preview_roll(
+            input_dir, selection.names, per_negative, groups, roll_dir
+        )
+
     return ProbeOutcome(
         catalogue=order.order,
         groups=groups,
         output_conflicts=preview.output_conflicts if preview else [],
         estimated_required_bytes=preview.estimated_required_bytes if preview else None,
         available_bytes=preview.available_bytes if preview else None,
+        roll_overlap=roll_overlap,
     )
