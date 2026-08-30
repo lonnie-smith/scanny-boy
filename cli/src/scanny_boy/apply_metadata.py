@@ -6,7 +6,7 @@ capture time into its published TIFF. See
 *dirty* when `capture_time.intended_datetime_original` differs from
 `capture_time.applied_datetime_original`; this module is the only thing
 that ever writes the latter. No pixel data is read, decoded, or rewritten —
-`_rewrite_date_time_original` reuses `tifftools`, the same numeric-tag
+`rewrite_date_time_original` reuses `tifftools`, the same numeric-tag
 library `tiff_exif.py` uses to build a TIFF's nested EXIF directory in the
 first place, so only that directory's `DateTimeOriginal`/`SubSecTimeOriginal`
 entries are ever touched.
@@ -75,7 +75,7 @@ def _is_dirty(negative: NegativeRecord) -> bool:
 def _verify_rewrite(tmp_path: Path, intended: datetime.datetime) -> None:
     """"Verify it reads back with the expected tags" (section 3.8):
     both `DateTimeOriginal` and `SubSecTimeOriginal`, the only two tags
-    `_rewrite_date_time_original` touched."""
+    `rewrite_date_time_original` touched."""
     info = tifftools.read_tiff(str(tmp_path))
     exif_tags = info["ifds"][0]["tags"][Tag.ExifIFD.value]["ifds"][0][0]["tags"]
 
@@ -96,7 +96,7 @@ def _verify_rewrite(tmp_path: Path, intended: datetime.datetime) -> None:
         )
 
 
-def _rewrite_date_time_original(tiff_path: Path, intended: datetime.datetime) -> None:
+def rewrite_date_time_original(tiff_path: Path, intended: datetime.datetime) -> None:
     """Section 3.8 point 2: rewrite `DateTimeOriginal`/`SubSecTimeOriginal`
     in `tiff_path`'s nested EXIF directory. Writes a sibling temp file,
     verifies it, then renames over `tiff_path` — `tiff_path` is untouched
@@ -178,7 +178,7 @@ def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
             negative.capture_time.intended_datetime_original
         )
         try:
-            _rewrite_date_time_original(tiff_path, intended)
+            rewrite_date_time_original(tiff_path, intended)
         except ApplyMetadataFailure as exc:
             emit(
                 MetadataSkipped(
