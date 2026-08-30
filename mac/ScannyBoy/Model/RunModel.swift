@@ -133,7 +133,11 @@ final class RunModel {
     @ObservationIgnored private var invokedCommandName: String?
     /// The selection in canonical order, so a `source_index` can be named.
     @ObservationIgnored private var sourceNames: [String] = []
-    @ObservationIgnored private var outputFolder: URL?
+    /// The output folder the running or most recently finished invocation
+    /// used — not necessarily `ConfigurationModel.outputFolder`, since
+    /// re-stitch (Chunk P2-10) can target a folder of its own. Views read
+    /// this back for Reveal in Finder rather than assuming the two coincide.
+    private(set) var outputFolder: URL?
 
     init(
         runner: CLIRunner,

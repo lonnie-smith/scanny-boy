@@ -5,12 +5,17 @@ import SwiftUI
 /// date, output-folder validation, disk estimate, and overwrite-conflict
 /// preview. Chunk 10 adds Run with its overwrite confirmation, live progress,
 /// cooperative Cancel, the completed/failed negatives, Reveal in Finder, and
-/// the manifest the run left behind.
+/// the manifest the run left behind. Chunk P2-10 adds re-stitch: the same
+/// `run` driving `scanny-boy stitch` over a kept work directory instead of
+/// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     @Bindable var model: ConfigurationModel
     let run: RunModel
 
     @State private var isConfirmingOverwrite = false
+    @State private var isPresentingRestitch = false
+    @State private var restitchWorkDirectory: URL?
+    @State private var restitchOutputFolder: URL?
 
     var body: some View {
         HSplitView {
@@ -20,6 +25,19 @@ struct ContentView: View {
                 .frame(minWidth: 380, idealWidth: 460)
         }
         .frame(minWidth: 720, minHeight: 480)
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
+            restitchWorkDirectory = nil
+            restitchOutputFolder = model.outputFolder
+            isPresentingRestitch = true
+        }
+        .sheet(isPresented: $isPresentingRestitch) {
+            RestitchSheet(
+                run: run,
+                onStarted: handleRestitchStarted,
+                workDirectory: restitchWorkDirectory,
+                outputFolder: restitchOutputFolder
+            )
+        }
     }
 
     private var catalogueColumn: some View {
@@ -73,7 +91,10 @@ struct ContentView: View {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
-                        RunResultView(run: run, outputFolder: model.outputFolder)
+                        RunResultView(
+                            run: run, outputFolder: run.outputFolder,
+                            onRestitch: presentRestitch
+                        )
                     }
                 }
             }
@@ -212,6 +233,25 @@ struct ContentView: View {
         }
     }
 
+    /// Opens the re-stitch sheet, pre-filled with a kept work directory (the
+    /// "button" of Chunk P2-10's "a menu command and a button") — `nil` from
+    /// the menu command, which has no run to pre-fill from.
+    private func presentRestitch(workDirectory: String) {
+        restitchWorkDirectory = URL(filePath: workDirectory)
+        restitchOutputFolder = model.outputFolder
+        isPresentingRestitch = true
+    }
+
+    /// Mirrors `beginRun`'s tail: a re-stitch can target `model.outputFolder`
+    /// (most often, since the button pre-fills it), so its contents may have
+    /// changed too.
+    private func handleRestitchStarted() {
+        Task {
+            await run.waitForCompletion()
+            model.refreshValidation()
+        }
+    }
+
     private func chooseInputFolder() {
         guard let url = Self.pickFolder(startingAt: model.inputFolder) else { return }
         model.inputFolder = url
@@ -257,7 +297,10 @@ struct ContentView: View {
     /// `canCreateDirectories` is off by default and on only where a new
     /// folder makes sense: an empty folder the user just made cannot be an
     /// input folder, since the CLI would find no NEFs in it.
-    private static func pickFolder(
+    ///
+    /// Internal, not `private`: `RestitchSheet` reuses this rather than
+    /// re-implementing folder picking.
+    static func pickFolder(
         startingAt url: URL?,
         message: String? = nil,
         canCreateDirectories: Bool = false

@@ -6,7 +6,24 @@ struct ScannyBoyApp: App {
         WindowGroup {
             RootView()
         }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Re-stitch…") {
+                    NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+        }
     }
+}
+
+extension Notification.Name {
+    /// Chunk P2-10's menu command for re-stitch. A notification, rather than
+    /// a focused binding, because this is a single-window app: there is only
+    /// ever one `ContentView` that could possibly want to hear it.
+    static let scannyBoyRequestRestitch = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestRestitch"
+    )
 }
 
 /// Resolves the CLI helper exactly once and shows either the configuration
