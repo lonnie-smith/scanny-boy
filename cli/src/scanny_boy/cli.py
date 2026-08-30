@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime
 import importlib.metadata
 import sys
 import uuid
@@ -44,16 +43,6 @@ MAX_JOBS = 12
 
 # 128 + SIGTERM, per CONTRACT.md's exit-status table.
 CANCELLED_EXIT_STATUS = 143
-
-
-def _film_date(value: str) -> str:
-    try:
-        datetime.date.fromisoformat(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"--film-date must be YYYY-MM-DD, got {value!r}"
-        ) from exc
-    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -107,9 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--files", nargs="+", required=True, metavar="FILE")
     convert.add_argument("--out", required=True, metavar="DIR")
     convert.add_argument(
-        "--film-date", required=True, type=_film_date, metavar="YYYY-MM-DD"
-    )
-    convert.add_argument(
         "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
     )
     convert.add_argument("--jobs", type=int, metavar="N")
@@ -120,28 +106,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stitch a work directory's intermediates into one TIFF per negative.",
     )
     stitch.add_argument("--work", required=True, metavar="DIR")
-    stitch.add_argument("--out", required=True, metavar="DIR")
+    stitch.add_argument("--roll", required=True, metavar="DIR")
     stitch.add_argument("--jobs", type=int, metavar="N")
     stitch.add_argument("--overwrite", action="store_true")
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
+    stitch.add_argument("--negatives", nargs="+", metavar="ID")
 
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
     )
     run.add_argument("--input", required=True, metavar="DIR")
     run.add_argument("--files", nargs="+", required=True, metavar="FILE")
-    run.add_argument("--out", required=True, metavar="DIR")
-    run.add_argument(
-        "--film-date", required=True, type=_film_date, metavar="YYYY-MM-DD"
-    )
+    run.add_argument("--roll", required=True, metavar="DIR")
     run.add_argument(
         "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
     )
     run.add_argument("--jobs", type=int, metavar="N")
-    run.add_argument("--overwrite", action="store_true")
     run.add_argument("--work", metavar="DIR")
     run.add_argument(
         "--keep-intermediates", action="store_true", dest="keep_intermediates"
+    )
+    run.add_argument(
+        "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
 
     return parser
@@ -169,13 +155,14 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
         with sigterm_cancellation() as cancel:
             outcome = run_stitch(
                 Path(args.work),
-                Path(args.out),
+                Path(args.roll),
                 run_id=run_id,
                 overwrite=args.overwrite,
                 allow_partial=args.allow_partial,
                 jobs=jobs,
                 cancel=cancel,
                 emit=writer.write,
+                negatives=args.negatives,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -296,13 +283,12 @@ def _run_run_command(
             outcome = run_full(
                 Path(args.input),
                 files,
-                Path(args.out),
-                datetime.date.fromisoformat(args.film_date),
+                Path(args.roll),
                 args.per_negative,
                 run_id=run_id,
                 work_dir=Path(args.work) if args.work else None,
                 keep_intermediates=args.keep_intermediates,
-                overwrite=args.overwrite,
+                skip_sources=args.skip_sources,
                 jobs=jobs,
                 cancel=cancel,
                 emit=writer.write,
@@ -439,7 +425,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.input),
                 files,
                 Path(args.out),
-                datetime.date.fromisoformat(args.film_date),
                 args.per_negative,
                 run_id=run_id,
                 overwrite=args.overwrite,

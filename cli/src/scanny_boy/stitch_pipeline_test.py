@@ -665,6 +665,31 @@ def test_second_stitch_publishes_under_a_suffixed_name(tmp_path):
     assert roll.negative("stitch-negative-01").output["name"] == "IMG_00.tif"
 
 
+def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
+    """Section 3.5's `--negatives` re-stitch path: a work directory with two
+    negatives, restricted to one already-published `negative_id`, publishes
+    only that one — under a fresh `negative_id` of its own, per section
+    3.4's additive model."""
+    work_dir = _make_work_dir(tmp_path, negatives=2)
+    out_dir = _roll_dir(tmp_path)
+
+    first = _stitch(work_dir, out_dir)
+    assert first.status == "complete"
+    roll = load_roll_manifest(out_dir)
+    target = roll.negatives[0]
+
+    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", negatives=[target.negative_id])
+
+    assert second.status == "complete"
+    assert len(second.published) == 1
+
+    roll = load_roll_manifest(out_dir)
+    republished = [n for n in roll.negatives if n.run_id == "stitch-run-2"]
+    assert len(republished) == 1
+    assert republished[0].members == target.members
+    assert republished[0].negative_id != target.negative_id
+
+
 # --- the regression guard on the output_folder.py refactor ---------------
 
 

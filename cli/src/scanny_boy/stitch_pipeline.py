@@ -479,6 +479,7 @@ def run_stitch(
     jobs: int | None,
     cancel: CancellationToken,
     emit: EmitFn,
+    negatives: list[str] | None = None,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -490,8 +491,14 @@ def run_stitch(
     not failed, and emits no `NegativeFailed`.
 
     `overwrite` is accepted and unused: section 3.4 makes a roll additive, so
-    a stitch never replaces a published file. Section 3.5 reserves the flag
-    for the `--negatives` re-stitch path, which arrives in Chunk P3-5.
+    a stitch never replaces a published file.
+
+    `negatives`, when given, restricts this stitch to the work manifest
+    groups whose members exactly match one of the roll's existing negatives
+    named by `negatives` (section 3.5's `--negatives` re-stitch path). Each
+    match still publishes under a fresh `negative_id`, per section 3.4's
+    additive model — an exact-member match is exactly what section 3.4's
+    supersession rule is for.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -575,6 +582,18 @@ def run_stitch(
 
     roll = plan.existing_manifest
     assert roll is not None
+
+    if negatives:
+        wanted_members = {
+            frozenset(n.members) for n in roll.live_negatives() if n.negative_id in negatives
+        }
+        groups = [g for g in groups if frozenset(g.members) in wanted_members]
+        if not groups:
+            raise StitchError(
+                Code.WORK_MANIFEST_UNUSABLE,
+                "none of the requested --negatives match a group in this work manifest",
+            )
+
     run_record, records_by_group = _append_this_run(
         roll, work_manifest, groups, run_id, invariants, work_dir
     )
