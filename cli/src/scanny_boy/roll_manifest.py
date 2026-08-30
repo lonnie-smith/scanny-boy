@@ -357,9 +357,19 @@ def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
     afterward where the platform permits it. Identical discipline to
     `manifest.write_manifest`.
 
-    Section 3.3: `updated_at` is rewritten on every write, so this mutates
-    the manifest it is given."""
+    Section 3.3/3.7: `updated_at` is rewritten and every negative's
+    `sequence` is recomputed on every write, so this mutates the manifest
+    it is given. The import is local to avoid a circular import: this
+    module builds `RollManifest`, and `roll_sequence` reads it."""
+    from scanny_boy.roll_sequence import sequence_negatives
+
     manifest.updated_at = _now_iso()
+    rank_by_id = {
+        negative_id: rank for rank, negative_id in enumerate(sequence_negatives(manifest), start=1)
+    }
+    for negative in manifest.negatives:
+        negative.sequence = rank_by_id.get(negative.negative_id)
+
     final_path = current_roll_manifest_path(output_dir)
     tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
     data = json.dumps(manifest.to_dict(), indent=2, sort_keys=True)
