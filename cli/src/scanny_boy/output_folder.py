@@ -8,6 +8,14 @@ prior manifest marked `completed`) versus which can be cleaned up
 automatically (`stale_outputs`/`stale_staging_dirs`, from groups that never
 reached a final state — recovery per section 3.6's crash-safety rules, not
 an overwrite decision).
+
+Phase 3 section 3.4 makes rolls additive: a nonempty roll folder holding
+published outputs from earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and
+under `ROLL_RULES` a completed negative's published output is neither a
+conflict needing consent nor a stale output — section 5.4 decision 3, no
+roll content is ever re-rendered or replaced in place. Only the conflict
+classification changes: an unrelated nonempty folder is still rejected, and
+never-finished negatives still get recovery cleanup.
 """
 
 from __future__ import annotations
@@ -196,9 +204,15 @@ def _plan_rerun(
     for unit in rules.units_of(existing):
         unit_dir = staging_dir_path(output_dir, run_id, unit.unit_id)
         if unit.is_completed:
-            conflicting.extend(
-                name for name in unit.expected_outputs if (output_dir / name).exists()
-            )
+            # Section 3.4: rolls are additive. A completed negative's
+            # published output belongs to an earlier run and is never
+            # re-rendered or replaced, so under ROLL_RULES it is neither a
+            # conflict needing consent nor a stale output (section 5.4
+            # decision 3: nothing in a roll is ever overwritten in place).
+            if rules is not ROLL_RULES:
+                conflicting.extend(
+                    name for name in unit.expected_outputs if (output_dir / name).exists()
+                )
         else:
             stale.extend(
                 name for name in unit.expected_outputs if (output_dir / name).exists()
@@ -222,7 +236,8 @@ def plan_rerun(
     `check_roll_invariants` a `RollInvariants` (section 3.4) — so it is
     selected from `rules` here rather than carried as a sixth `FolderRules`
     field. Under `ROLL_RULES`, `candidate` is therefore a `RollInvariants`,
-    not a manifest."""
+    not a manifest, and the folder is additive: completed negatives'
+    published outputs are never reported as conflicts."""
     if rules is ROLL_RULES:
         check: Callable[[Any], None] = lambda existing: check_roll_invariants(
             existing, candidate

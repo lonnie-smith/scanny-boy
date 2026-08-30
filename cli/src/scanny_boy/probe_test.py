@@ -1,24 +1,39 @@
+import shutil
+
 import pytest
 
+from scanny_boy import hashing
 from scanny_boy.disk_check import one_frame_bytes
 from scanny_boy.events import Code
 from scanny_boy.fake_nef_support import write_fake_nef
-from scanny_boy.icc_profile import PROFILE_SHA256
+from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256
 from scanny_boy.manifest import (
     CuratedMetadata,
     GroupRecord,
     Manifest,
     OutputRecord,
+    current_scanny_boy_version,
     write_manifest,
 )
 from scanny_boy.pipeline import hash_sources
 from scanny_boy.probe import ProbeFailure, run_probe
+from scanny_boy.raw_decode import jsonable_raw_params
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_1,
     NEGATIVE_2,
     REAL_SAMPLE_FILES,
     requires_real_samples,
+)
+
+# The rolls the --roll tests probe are built by a genuine `stitch` through
+# P3-2's writer (section 4); the stitch fixtures are the one place that
+# machinery lives.
+from scanny_boy.stitch_pipeline_test import (
+    _negative_frames,
+    _roll_dir,
+    _stitch,
+    _write_intermediate,
 )
 
 
@@ -310,3 +325,155 @@ def test_probe_with_out_dir_insufficient_disk_is_rejected(tmp_path, monkeypatch)
 
     assert excinfo.value.code == Code.INSUFFICIENT_DISK
     assert "1 bytes are available" in excinfo.value.message
+
+
+# --- probe --roll (Phase 3 section 3.5) -----------------------------------
+
+
+def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-run"):
+    """A real roll built by a genuine `stitch` through P3-2's writer
+    (section 4: a hand-authored manifest proves nothing about overlap). The
+    work manifest's sources carry the real sample files' names and sha256
+    hashes — that is what overlap detection compares — while the
+    intermediates are synthetic Phase 1 TIFFs, so only RAW decoding is
+    skipped. `processing_params` is the real decode parameter set, matching
+    what a `run` would present as its invariants."""
+    members = [name for group in groups for name in group]
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    group_records = []
+    for index, group_members in enumerate(groups):
+        frames = _negative_frames(
+            overlapping=True, seed=11 + index * 7, count=len(group_members)
+        )
+        outputs = []
+        for member, pixels in zip(group_members, frames):
+            output_name = f"{member[:-4]}.tif"
+            _write_intermediate(work_dir / output_name, pixels, member)
+            outputs.append(
+                OutputRecord(
+                    name=output_name,
+                    size=(work_dir / output_name).stat().st_size,
+                    sha256=hashing.sha256_file(work_dir / output_name),
+                )
+            )
+        group_records.append(
+            GroupRecord(
+                group_id=f"negative-{index + 1:02d}",
+                members=list(group_members),
+                expected_outputs=[f"{m[:-4]}.tif" for m in group_members],
+                status="completed",
+                outputs=outputs,
+            )
+        )
+
+    write_manifest(
+        work_dir,
+        Manifest(
+            scanny_boy_version=current_scanny_boy_version(),
+            run_id="convert-run",
+            status="complete",
+            input_folder=str(FIXTURES_DIR),
+            film_date="2026-08-02",
+            shots_per_negative=len(groups[0]),
+            processing_params=jsonable_raw_params(),
+            icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+            source_order=members,
+            sources=hash_sources(FIXTURES_DIR, members),
+            curated_metadata=_curated_placeholder(),
+            groups=group_records,
+            started_at="2026-08-02T00:00:00Z",
+            finished_at="2026-08-02T00:01:00Z",
+        ),
+    )
+
+    roll = _roll_dir(tmp_path, "roll", shots_per_negative=len(groups[0]))
+    outcome = _stitch(work_dir, roll, run_id=run_id)
+    assert outcome.status == "complete"
+    assert outcome.failed == []
+    return roll
+
+
+@requires_real_samples
+def test_roll_overlap_empty_for_fresh_sources(tmp_path):
+    """Section 3.5: a selection the roll has never seen reports no overlap —
+    the normal additive case."""
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1])
+
+    outcome = run_probe(FIXTURES_DIR, list(NEGATIVE_2), 3, roll_dir=roll)
+
+    assert outcome.roll_overlap == []
+
+
+@requires_real_samples
+def test_roll_overlap_names_the_prior_negative(tmp_path):
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1])
+
+    outcome = run_probe(FIXTURES_DIR, list(NEGATIVE_1), 3, roll_dir=roll)
+
+    [entry] = outcome.roll_overlap
+    assert entry.negative_id == "stitch-negative-01"
+    assert entry.expected_output == "_DSC4638.tif"
+    assert entry.run_id == "stitch-run"
+    assert entry.overlapping_sources == list(NEGATIVE_1)
+    assert entry.group_index == 0
+
+
+@requires_real_samples
+def test_roll_overlap_detects_renamed_file_by_hash(tmp_path):
+    """Section 3.5: overlap is a comparison by sha256, so a rescanned frame
+    under a new name still matches the negative it came from."""
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1])
+    rescan = tmp_path / "rescan"
+    rescan.mkdir()
+    shutil.copy(FIXTURES_DIR / "_DSC4638.NEF", rescan / "RESCAN-0001.NEF")
+    for name in ("_DSC4639.NEF", "_DSC4640.NEF"):
+        shutil.copy(FIXTURES_DIR / name, rescan / name)
+
+    outcome = run_probe(
+        rescan, ["RESCAN-0001.NEF", "_DSC4639.NEF", "_DSC4640.NEF"], 3, roll_dir=roll
+    )
+
+    [entry] = outcome.roll_overlap
+    assert entry.negative_id == "stitch-negative-01"
+    assert entry.overlapping_sources == [
+        "RESCAN-0001.NEF",
+        "_DSC4639.NEF",
+        "_DSC4640.NEF",
+    ]
+
+
+@requires_real_samples
+def test_roll_overlap_detects_regrouped_sources(tmp_path):
+    """Section 3.5: a selection whose grouping straddles the roll's negative
+    boundaries — here the tail of negative 1 plus the head of negative 2 in
+    one prospective group — collides with both, and each entry names only
+    the sources the two actually share. `shots_per_negative` cannot change
+    (section 3.4), so this straddle is how a regroup reaches the roll."""
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
+
+    outcome = run_probe(
+        FIXTURES_DIR, ["_DSC4639.NEF", "_DSC4640.NEF", "_DSC4644.NEF"], 3, roll_dir=roll
+    )
+
+    assert [entry.group_index for entry in outcome.roll_overlap] == [0, 0]
+    by_id = {entry.negative_id: entry for entry in outcome.roll_overlap}
+    assert sorted(by_id) == ["stitch-negative-01", "stitch-negative-02"]
+    assert by_id["stitch-negative-01"].overlapping_sources == ["_DSC4639.NEF", "_DSC4640.NEF"]
+    assert by_id["stitch-negative-01"].expected_output == "_DSC4638.tif"
+    assert by_id["stitch-negative-02"].overlapping_sources == ["_DSC4644.NEF"]
+    assert by_id["stitch-negative-02"].expected_output == "_DSC4644.tif"
+    assert {entry.run_id for entry in outcome.roll_overlap} == {"stitch-run"}
+
+
+@requires_real_samples
+def test_probe_rejects_changed_shots_per_negative(tmp_path):
+    """Section 3.5: `--roll` validates the roll invariants of section 3.4 —
+    `shots_per_negative` was fixed at roll creation and cannot change."""
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
+
+    with pytest.raises(ProbeFailure) as excinfo:
+        run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
+
+    assert excinfo.value.code == Code.ROLL_INVARIANT_MISMATCH
