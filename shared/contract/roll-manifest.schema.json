@@ -155,6 +155,7 @@
         "valid_rect",
         "fill_color",
         "rebate_deviation_px",
+        "used_clahe_fallback",
         "error_code",
         "error_message",
         "capture_time"
@@ -214,6 +215,7 @@
           "maxItems": 3
         },
         "rebate_deviation_px": { "type": ["number", "null"] },
+        "used_clahe_fallback": { "type": "boolean" },
         "error_code": { "type": ["string", "null"] },
         "error_message": { "type": ["string", "null"] },
         "capture_time": { "$ref": "#/definitions/captureTime" }

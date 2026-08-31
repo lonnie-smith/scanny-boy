@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import json
 from fractions import Fraction
@@ -8,7 +9,7 @@ import pytest
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import hashing
+from scanny_boy import hashing, stitch_pipeline
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.events import (
@@ -19,6 +20,7 @@ from scanny_boy.events import (
     NegativeFailed,
     Progress,
     Stage,
+    WarningEvent,
 )
 from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256, load_icc_profile
 from scanny_boy.manifest import (
@@ -37,7 +39,7 @@ from scanny_boy.output_folder import (
     OutputFolderError,
     plan_rerun,
 )
-from scanny_boy.registration import DETECTOR, StitchError
+from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
     ROLL_MANIFEST_FILENAME,
     RollInvariants,
@@ -50,6 +52,11 @@ from scanny_boy.roll_manifest_schema_test_support import (
     load_roll_manifest_schema,
 )
 from scanny_boy.romm import encode_from_linear
+from scanny_boy.sample_nef_support import (
+    FIXTURES_DIR,
+    NEGATIVE_2,
+    requires_real_samples,
+)
 from scanny_boy.stitch_pipeline import run_stitch
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 from scanny_boy.tiff_exif import (
@@ -532,6 +539,151 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     assert all(p.inliers < 40 for p in failed_record.pairs)
     assert failed_record.frames == []
     assert failed_record.canvas is None
+
+
+# --- the CLAHE fallback ---------------------------------------------------
+
+
+def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypatch):
+    """A negative whose plain-pass registration disconnects the pair graph
+    is retried once with CLAHE; a graph that connects on that pass still
+    stitches, and the manifest says the fallback was needed."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    clahe_by_call: list[bool] = []
+    real_detect_all = stitch_pipeline._detect_all
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+        clahe_by_call.append(use_clahe)
+        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+
+    def fake_register_pair(a, b):
+        result = register_pair(a, b)
+        if not clahe_by_call[-1]:
+            # Force the plain pass to look disconnected regardless of what
+            # the synthetic frames actually matched, so the retry is
+            # exercised without needing frames tuned to fail only without
+            # CLAHE.
+            return dataclasses.replace(
+                result, accepted=False, reject_code=Code.STITCH_INSUFFICIENT_MATCHES
+            )
+        return result
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    assert clahe_by_call == [False, True]
+
+    fallback_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.STITCH_CLAHE_FALLBACK_USED
+    ]
+    assert len(fallback_warnings) == 1
+    assert "STITCH_UNDERCONSTRAINED" in fallback_warnings[0].message
+
+    roll = load_roll_manifest(out_dir)
+    negative = roll.negative("stitch-negative-01")
+    assert negative.status == "completed"
+    assert negative.used_clahe_fallback is True
+
+    # The retry spends no further progress budget: `completed` never passes
+    # the `total` declared before any negative was solved.
+    progress_events = [e for e in events if isinstance(e, Progress)]
+    total = progress_events[0].total
+    assert all(e.total == total for e in progress_events)
+    assert max(e.completed for e in progress_events) <= total
+
+
+def test_clahe_fallback_is_not_used_for_an_oversized_canvas(tmp_path, monkeypatch):
+    """`STITCH_OUTPUT_TOO_LARGE` is not in `_CLAHE_RETRY_CODES`: a canvas
+    that is already too big to write stays too big under CLAHE too, so the
+    negative fails on the first pass with no retry."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    clahe_by_call: list[bool] = []
+    real_detect_all = stitch_pipeline._detect_all
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+        clahe_by_call.append(use_clahe)
+        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+
+    def fake_check_output_size(canvas_size, *, on_warning):
+        raise StitchError(Code.STITCH_OUTPUT_TOO_LARGE, "too large for this test")
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "check_output_size", fake_check_output_size)
+
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "partial"
+    assert clahe_by_call == [False]
+
+    failures = [e for e in events if isinstance(e, NegativeFailed)]
+    assert failures[0].code is Code.STITCH_OUTPUT_TOO_LARGE
+
+    fallback_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.STITCH_CLAHE_FALLBACK_USED
+    ]
+    assert fallback_warnings == []
+
+    roll = load_roll_manifest(out_dir)
+    assert roll.negative("stitch-negative-01").used_clahe_fallback is False
+
+
+@requires_real_samples
+def test_real_underconstrained_negative_recovers_with_clahe(tmp_path):
+    """`NEGATIVE_2` (`_DSC4644/45/46.NEF`) is a real low-texture scan: its
+    plain-pass registration leaves the pair graph disconnected
+    (`STITCH_UNDERCONSTRAINED`), and only the CLAHE retry finds enough
+    correspondences to connect it. Regression test for the bug that
+    motivated the fallback."""
+    from scanny_boy.pipeline import run_convert
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    for name in NEGATIVE_2:
+        (input_dir / name).write_bytes((FIXTURES_DIR / name).read_bytes())
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    run_convert(
+        input_dir,
+        NEGATIVE_2,
+        work_dir,
+        3,
+        run_id="convert-run",
+        jobs=1,
+        cancel=CancellationToken(),
+        emit=lambda event: None,
+    )
+
+    out_dir = _roll_dir(tmp_path)
+    events = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+
+    fallback_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.STITCH_CLAHE_FALLBACK_USED
+    ]
+    assert len(fallback_warnings) == 1
+
+    roll = load_roll_manifest(out_dir)
+    negative = roll.negatives[0]
+    assert negative.status == "completed"
+    assert negative.used_clahe_fallback is True
 
 
 def test_cancellation_keeps_completed_negatives(tmp_path):

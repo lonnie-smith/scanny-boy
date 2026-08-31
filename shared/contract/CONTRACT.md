@@ -255,6 +255,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
+| `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 2` |

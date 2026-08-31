@@ -175,6 +175,11 @@ def _stitch_params() -> dict[str, Any]:
     return {
         "detection_long_edge": DETECTION_LONG_EDGE,
         "use_clahe": USE_CLAHE,
+        # `_CLAHE_RETRY_CODES`: whether to fall back to CLAHE for a negative
+        # a same-parameters run would otherwise fail (a fixed policy, so it
+        # belongs beside `use_clahe` here; which negatives actually needed it
+        # is recorded per-negative as `used_clahe_fallback`, not here).
+        "clahe_fallback_enabled": not USE_CLAHE,
         "detector": DETECTOR,
         "ratio_test": RATIO_TEST,
         "ransac_reproj_px": RANSAC_REPROJ_PX,
@@ -325,7 +330,7 @@ def _intermediate_paths(work_dir: Path, group: GroupRecord) -> list[Path]:
 
 
 def _detect_all(
-    paths: list[Path], workers: int, cancel: CancellationToken
+    paths: list[Path], workers: int, cancel: CancellationToken, *, use_clahe: bool
 ) -> list[registration.FrameFeatures]:
     """Build every frame's detection image and detect its features.
 
@@ -339,7 +344,7 @@ def _detect_all(
         cancel.raise_if_cancelled()
         pixels = _read_intermediate(path)
         detection = build_detection_image(
-            pixels, long_edge=DETECTION_LONG_EDGE, clahe=USE_CLAHE
+            pixels, long_edge=DETECTION_LONG_EDGE, clahe=use_clahe
         )
         del pixels
         return detect_features(detection, name=path.name)
@@ -354,6 +359,16 @@ def _detect_all(
         pool.shutdown(wait=True, cancel_futures=True)
 
 
+# Failures caused by too few or too poorly-distributed feature matches —
+# exactly what a second pass with more local contrast can fix. Canvas-size
+# and memory failures (`STITCH_OUTPUT_TOO_LARGE`, `INSUFFICIENT_MEMORY`) are
+# not in this set: a sharper detection image does not change a canvas that
+# is already too big to write.
+_CLAHE_RETRY_CODES = frozenset(
+    {Code.STITCH_UNDERCONSTRAINED, Code.STITCH_RESIDUAL_TOO_HIGH}
+)
+
+
 def _solve_negative(
     work_dir: Path,
     entry: _SolvedNegative,
@@ -364,23 +379,85 @@ def _solve_negative(
     source_index: int,
     on_warning,
 ) -> tuple[Layout, tuple[int, int]]:
-    """Detection, registration, and the global solve for one negative.
-    Raises `StitchError` for anything that fails the negative.
+    """Detection, registration, and the global solve for one negative,
+    retried once with CLAHE if the plain pass leaves the pair graph
+    disconnected or too far off (`_CLAHE_RETRY_CODES`). Raises `StitchError`
+    for anything that still fails after that.
 
-    Writes the pairs it computes onto `entry` before any gate can raise, so
-    a negative that fails still records its per-pair section 3.4 metrics:
-    those numbers are exactly what a reader needs to see *why* it failed.
+    Every progress step this negative is budgeted for
+    (`_STEPS_PER_FRAME`/`_STEPS_PER_NEGATIVE`) is spent on the first attempt;
+    a retry solves again silently, with no further `Progress` events, so a
+    negative needing it does not overrun the run's declared step total.
     """
     group = entry.group
     paths = _intermediate_paths(work_dir, group)
     frame_size = _read_intermediate_size(paths[0])
 
-    for _ in paths:
-        progress.advance(source_index, PipelineStep.LOAD)
+    try:
+        return _attempt_solve(
+            group,
+            entry,
+            paths,
+            frame_size,
+            use_clahe=USE_CLAHE,
+            workers=workers,
+            cancel=cancel,
+            progress=progress,
+            source_index=source_index,
+            on_warning=on_warning,
+        )
+    except StitchError as exc:
+        if exc.code not in _CLAHE_RETRY_CODES or USE_CLAHE:
+            raise
+        entry.record.used_clahe_fallback = True
+        on_warning(
+            Code.STITCH_CLAHE_FALLBACK_USED,
+            f"{group.group_id}: {exc.code.value} on the first pass; retrying "
+            f"registration with CLAHE contrast enhancement",
+        )
+        return _attempt_solve(
+            group,
+            entry,
+            paths,
+            frame_size,
+            use_clahe=True,
+            workers=workers,
+            cancel=cancel,
+            progress=None,
+            source_index=source_index,
+            on_warning=on_warning,
+        )
 
-    features = _detect_all(paths, workers, cancel)
-    for _ in paths:
-        progress.advance(source_index, PipelineStep.DETECT)
+
+def _attempt_solve(
+    group: GroupRecord,
+    entry: _SolvedNegative,
+    paths: list[Path],
+    frame_size: tuple[int, int],
+    *,
+    use_clahe: bool,
+    workers: int,
+    cancel: CancellationToken,
+    progress: _StitchProgress | None,
+    source_index: int,
+    on_warning,
+) -> tuple[Layout, tuple[int, int]]:
+    """One pass of detection, registration, and the global solve, at a fixed
+    `use_clahe`. Raises `StitchError` for anything that fails the negative.
+
+    Writes the pairs it computes onto `entry` before any gate can raise, so
+    a negative that fails still records its per-pair section 3.4 metrics:
+    those numbers are exactly what a reader needs to see *why* it failed.
+    `progress` is `None` on a CLAHE retry, which spends no further budget.
+    """
+    if progress is not None:
+        for _ in paths:
+            progress.advance(source_index, PipelineStep.LOAD)
+
+    features = _detect_all(paths, workers, cancel, use_clahe=use_clahe)
+    if progress is not None:
+        for _ in paths:
+            progress.advance(source_index, PipelineStep.DETECT)
     cancel.raise_if_cancelled()
 
     pairs: list[PairResult] = []
@@ -390,7 +467,8 @@ def _solve_negative(
             pairs.append(register_pair(features[i], features[j]))
     entry.pairs = pairs
     entry.record.pairs = _pair_records(pairs)
-    progress.advance(source_index, PipelineStep.MATCH)
+    if progress is not None:
+        progress.advance(source_index, PipelineStep.MATCH)
 
     for pair in pairs:
         if pair.accepted and pair.scale_drift > SCALE_DRIFT_WARN:
@@ -402,7 +480,8 @@ def _solve_negative(
 
     names = [path.name for path in paths]
     layout = solve_layout(names, frame_size, pairs)
-    progress.advance(source_index, PipelineStep.SOLVE)
+    if progress is not None:
+        progress.advance(source_index, PipelineStep.SOLVE)
     cancel.raise_if_cancelled()
 
     if layout.global_rms_px > MAX_GLOBAL_RMS_PX:
