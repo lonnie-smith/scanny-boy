@@ -13,8 +13,10 @@ sandboxing, no notarisation, and no Intel support. See
 [docs/DECISIONS.md](docs/DECISIONS.md) for the reasoning behind this and
 every other locked decision, and
 [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) (Phase 1: RAW
-conversion) and [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
-(Phase 2: registration and stitching) for the full plans.
+conversion), [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
+(Phase 2: registration and stitching), and
+[docs/PHASE3_IMPLEMENTATION_PLAN.md](docs/PHASE3_IMPLEMENTATION_PLAN.md)
+(Phase 3: rolls, staged workflow, and metadata editing) for the full plans.
 
 ## Licence
 
@@ -113,29 +115,54 @@ There is no notarisation or Developer ID step.
 
 ## Using the app
 
+Everything in the app happens inside a **roll** — a durable, named folder
+you return to and add to over time, not a one-shot conversion. The window
+has a sidebar of rolls and, once one is selected, a workspace with two
+tabs: **Add Scans** and **Edit**.
+
+**The library.** The sidebar lists every roll under the library base
+(`~/Pictures/Scanny Boy` by default, relocatable from **Settings**), each
+showing its name and how many negatives it holds. **+** creates a roll —
+asking only for a name and shots per negative — and the sidebar's context
+menu renames or deletes one. Renaming moves the roll's folder; deleting
+moves it to the Trash.
+
+**Add Scans** — adding negatives to the selected roll:
+
 1. **Choose an input folder** of `.NEF` files. The app lists them in
    canonical order (capture time, falling back to filename) and shows a
    thumbnail for each.
-2. **Select one contiguous range** and set shots per negative (default 3);
-   the selected count must divide evenly by it. The grouping preview shows
-   how the selection splits into negatives.
-3. **Set the film date** and **choose an output folder**.
-4. **Run.** One process converts every RAW frame, registers each negative's
+2. **Select one contiguous range.** Shots per negative is the roll's own,
+   fixed when it was created; the selected count must divide evenly by it.
+   The grouping preview shows how the selection splits into negatives.
+3. **Run.** One process converts every RAW frame, registers each negative's
    frames against each other, solves a shared layout, and composites one
-   stitched TIFF per negative into the output folder — reporting live
-   progress, and each negative's result (published, or why it failed) when
-   it ends.
-5. **Re-stitch, if a negative needs tuning.** A run that keeps its
+   stitched TIFF per negative into the roll — reporting live progress, and
+   each negative's result (published, or why it failed) when it ends. A
+   selection that overlaps sources already in the roll shows a sheet first,
+   one row per overlapping prospective negative, defaulting to **Skip**;
+   choosing **Replace** supersedes the existing negative and deletes its
+   TIFF.
+4. **Re-stitch, if a negative needs tuning.** A run that keeps its
    intermediates (because a negative failed, the run was cancelled, or
    "Keep intermediates" was checked) leaves a work directory behind. **File
    > Re-stitch…**, or the **Re-stitch…** button next to a kept work
    directory, re-runs just the stitch stage against it — no RAW decoding
    paid for twice.
 
-Two files a stitched roll's output folder holds: the stitched TIFFs
-themselves, and `scanny-boy-roll.json`, which records everything about how
-they were produced — sources, layout, every quality metric, thresholds in
-force — so the folder is self-describing without the work directory.
+**Edit** — the roll's negatives in sequence, with a thumbnail, source
+frames, and quality metrics for each; a dirty count and an **Apply** button
+that writes intended capture times into the published TIFFs' EXIF tags (no
+pixel data is touched); the roll's name, folder, and run history; and a
+toggle to show negatives a later run has superseded. The roll capture date,
+each negative's date override, and shots per negative are shown here but
+are not yet editable from the app — see `docs/punchlist.md`.
+
+A roll's folder holds the stitched TIFFs themselves, plus
+`scanny-boy-roll.json`, which records everything about how they were
+produced — sources, every run, per-negative layout and quality metrics,
+thresholds in force — so the folder is self-describing without any work
+directory.
 
 ## How frames are registered and blended
 
