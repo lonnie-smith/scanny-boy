@@ -73,16 +73,16 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy convert --input DIR --files ... --out DIR --film-date YYYY-MM-DD ...`
+    /// `scanny-boy convert --input DIR --files ... --out DIR [--per-negative N] ...`
     ///
-    /// `filmDate` is passed through as written; the CLI validates its format
-    /// and rejects a bad one as a usage error. `overwrite` is only ever set
-    /// after the user has confirmed the replacements (section 3.6).
+    /// There is no `--film-date`: Phase 3 removed it from every command, and
+    /// the CLI derives `film_date` from the scans' own capture times
+    /// (CONTRACT.md). `overwrite` is only ever set after the user has
+    /// confirmed the replacements (section 3.6).
     public static func convert(
         input: URL,
         files: [String],
         out: URL,
-        filmDate: String,
         perNegative: Int? = nil,
         jobs: Int? = nil,
         overwrite: Bool = false
@@ -91,7 +91,6 @@ public struct CLICommand: Sendable, Hashable {
         arguments.append("--files")
         arguments.append(contentsOf: files)
         arguments.append(contentsOf: ["--out", out.path])
-        arguments.append(contentsOf: ["--film-date", filmDate])
         if let perNegative {
             arguments.append(contentsOf: ["--per-negative", String(perNegative)])
         }

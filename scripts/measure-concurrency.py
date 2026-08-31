@@ -44,7 +44,6 @@ SAMPLE_FILES = [
     "_DSC4645.NEF",
     "_DSC4646.NEF",
 ]
-FILM_DATE = "2026-08-02"
 MIB = 1024 * 1024
 
 # `ru_maxrss` is bytes on macOS and kilobytes on Linux.
@@ -65,8 +64,6 @@ def _run_once(jobs: int, per_negative: int) -> tuple[float, int, int]:
         *SAMPLE_FILES,
         "--out",
         str(out_dir),
-        "--film-date",
-        FILM_DATE,
         "--per-negative",
         str(per_negative),
         "--jobs",
