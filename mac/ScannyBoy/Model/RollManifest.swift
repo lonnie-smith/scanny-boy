@@ -6,24 +6,21 @@ import Foundation
 /// and `roll info` are the only two ways in."
 ///
 /// `shared/contract/roll-manifest.schema.json` is the authoritative
-/// definition; this type deliberately decodes only the fields the app's
-/// planned UI (section 3.10) actually shows — the roll's own identity, its
-/// runs, and each negative's identity, sequence, output, and capture-time
-/// state — and ignores the rest (`sources`, `processing_params`,
-/// `icc_profile`, `stitch_params`, and every per-negative registration
-/// detail: `frames`, `pairs`, `global_rms_px`, `canvas`, `valid_rect`,
-/// `fill_color`, `rebate_deviation_px`). A manifest that grows a field must
-/// not stop the app reading the ones it needs.
+/// definition; this type deliberately decodes only the fields the app
+/// actually uses — the roll's own identity, each run's `run_id`/`status`
+/// (read by `RollManifestReport` for cleanup-incomplete detection), and each
+/// negative's identity, sequence, output, and capture-time state — and
+/// ignores the rest (`sources`, `processing_params`, `icc_profile`,
+/// `stitch_params`, and every per-negative registration detail: `frames`,
+/// `pairs`, `global_rms_px`, `canvas`, `valid_rect`, `fill_color`,
+/// `rebate_deviation_px`). A manifest that grows a field must not stop the
+/// app reading the ones it needs.
 struct RollManifest: Sendable, Hashable {
     struct Run: Sendable, Hashable {
         let runID: String
-        let shortID: String
-        /// `"run"` or `"stitch"`.
-        let kind: String
-        /// `running`, `partial`, `cancelled`, or `complete`.
+        /// `running`, `partial`, `cancelled`, or `complete`. Read by
+        /// `RollManifestReport` to decide cleanup-incomplete vs. final.
         let status: String
-        let startedAt: String
-        let finishedAt: String?
     }
 
     struct Output: Sendable, Hashable {
@@ -135,19 +132,9 @@ struct RollManifest: Sendable, Hashable {
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {
         guard
             let runID = fields["run_id"]?.stringValue,
-            let shortID = fields["short_id"]?.stringValue,
-            let kind = fields["kind"]?.stringValue,
-            let status = fields["status"]?.stringValue,
-            let startedAt = fields["started_at"]?.stringValue
+            let status = fields["status"]?.stringValue
         else { return nil }
-        return Run(
-            runID: runID,
-            shortID: shortID,
-            kind: kind,
-            status: status,
-            startedAt: startedAt,
-            finishedAt: fields["finished_at"]?.stringValue
-        )
+        return Run(runID: runID, status: status)
     }
 
     private static func decodeOutput(_ fields: [String: JSONValue]) -> Output? {
