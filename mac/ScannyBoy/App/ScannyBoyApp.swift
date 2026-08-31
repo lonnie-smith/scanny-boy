@@ -48,13 +48,14 @@ extension Notification.Name {
 struct RootView: View {
     @Binding var library: RollLibrary?
     @State private var model: ConfigurationModel?
+    @State private var edit: EditModel?
     @State private var run: RunModel?
     @State private var unavailableReason: String?
 
     var body: some View {
         Group {
-            if let library, let model, let run {
-                ContentView(library: library, model: model, run: run)
+            if let library, let model, let edit, let run {
+                ContentView(library: library, model: model, edit: edit, run: run)
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
             } else {
@@ -72,6 +73,7 @@ struct RootView: View {
             let runner = try CLIRunner(locator: .mainBundle())
             library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
             model = ConfigurationModel(runner: runner)
+            edit = EditModel(runner: runner)
             run = RunModel(runner: runner)
         } catch let error as CLILocatorError {
             unavailableReason = error.description

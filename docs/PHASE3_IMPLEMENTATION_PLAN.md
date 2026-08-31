@@ -814,6 +814,55 @@ does.
 
 ---
 
+### 5.6 Decisions taken during P3-12
+
+P3-12 stopped and reported a gap between §3.7/§3.8's description of what
+the roll capture date and a per-negative date override *mean* and §3.5's
+command surface, which gives the app no way to *set* either one.
+
+**Setting a capture date or override needs a CLI command, and none exists
+yet — not even a library-level helper.** §3.8 says "setting a roll capture
+date or a per-negative override writes `capture_time.intended_datetime_
+original`," and §3.7 describes the rank-based algorithm that turns
+`metadata.roll_capture_date` and a negative's `capture_time.date_override`
+into `intended_datetime_original` for every negative. But nothing in
+`roll_manifest.py` writes either field from outside — `write_roll_manifest`
+is a generic writer, and there is no `set_roll_capture_date` or
+`set_negative_date_override` counterpart to `rename_roll` for P3-10's gap
+to reuse as a template. Unlike that gap, this one has no existing library
+function at all waiting for a CLI wrapper.
+
+Given the choice between stopping for a plan amendment (mirroring §5.5:
+add the library functions, a new CLI command, and the contract updates
+before continuing) or shipping P3-12's other content with the date-setting
+UI left read-only, the user chose the latter. **Chunk P3-12 ships with the
+roll capture date, every per-negative date override, and
+`shots_per_negative` (which has the identical problem — nothing updates an
+existing roll's value once written by `roll init`) all shown read-only in
+the Edit tab.** `EditModel`/`EditStageView` read `roll.metadata
+.rollCaptureDate`, each negative's `captureTime`, and `roll.shotsPerNegative`
+straight from `roll info` and display them; nothing in the app writes any
+of the three. `PER_NEGATIVE_LOCKED` is consequently never reachable this
+chunk — no command exists that could return it — so the plan's "surfaced
+when it is not [unlocked]" is deferred along with the write path itself.
+
+Everything else P3-12 asked for — thumbnails, source frames, quality
+metrics, the dirty count, Apply through the existing `RunModel`/
+`CLISession` path, the superseded-negatives toggle, the roll's name and
+folder path, and run history — is unaffected by this gap and is built as
+specified. Apply and the dirty count remain fully real: `intended_
+datetime_original` and `applied_datetime_original` already exist in every
+roll manifest (Chunk P3-6 populates them once a capture date is set by
+whatever eventually fills this gap), so a roll that already has a mismatch
+between them — from a future write path, or from a hand-edited manifest in
+a test — applies correctly today.
+
+A later chunk that adds the CLI write path (`roll set-date`, most likely,
+by direct analogy with `roll rename`) turns the three read-only fields
+into live controls without changing anything else P3-12 built.
+
+---
+
 ### Chunk P3-0 — Contract, protocol v3, and the v2 roll schema
 
 Branch: `p3-chunk-00-contract` · **Model: Sonnet 5** · **Auto-advance: yes**
@@ -1267,12 +1316,13 @@ Branch: `p3-chunk-12-app-edit` · **Model: Sonnet 5** · **Auto-advance: yes**
 | `mac/ScannyBoyTests/EditModelTests.swift`, `ThumbnailLoaderTests.swift` | extend |
 
 Contents: negatives in `sequence` order with thumbnails, source frames, and
-quality metrics; roll capture date picker; per-negative date override; dirty
-count; **Apply**, which invokes `apply-metadata` through the existing
-`RunModel`/`CLISession` path and reports applied and skipped negatives;
-roll name field; folder path; run history; `shots_per_negative` while
-unlocked, with `PER_NEGATIVE_LOCKED` surfaced when it is not. Superseded
+quality metrics; dirty count; **Apply**, which invokes `apply-metadata`
+through the existing `RunModel`/`CLISession` path and reports applied and
+skipped negatives; roll name field; folder path; run history. Superseded
 negatives are hidden behind a "Show replaced negatives" toggle, per §3.10.
+**Per §5.6:** the roll capture date, each negative's date override, and
+`shots_per_negative` are read-only this chunk — no CLI command exists to
+write any of the three, so `PER_NEGATIVE_LOCKED` is never reachable either.
 
 **Tests:** `testDirtyCountReflectsIntendedVersusApplied`,
 `testApplyIsDisabledWhenNothingIsDirty`,

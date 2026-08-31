@@ -100,6 +100,15 @@ final class RunModel {
     /// removed.
     private(set) var keptWorkDirectory: String?
 
+    /// One `negative_id` per `metadata_applied` event (section 3.8): `apply-
+    /// metadata`'s own progress, distinct from `stitchedNegatives`, which is
+    /// about publishing rather than metadata.
+    private(set) var appliedNegativeIDs: [String] = []
+    /// One entry per `metadata_skipped` event — `OUTPUT_MODIFIED_EXTERNALLY`
+    /// is the only code section 3.8 defines for this, but the message is
+    /// carried through unparsed regardless.
+    private(set) var skippedMetadata: [FailedGroup] = []
+
     private(set) var warnings: [Issue] = []
     /// The CLI's own fatal `error` event, if it sent one.
     private(set) var cliError: Issue?
@@ -179,11 +188,19 @@ final class RunModel {
     }
 
     /// `run` and `stitch` can reach the stitch stage; `convert` cannot. This
-    /// decides both which manifest `finish()` reads back and how
-    /// `completionSummary` counts what happened — by stitched negative
-    /// (`stitchedNegatives`/`failedNegatives`), never by intermediate frame.
+    /// decides how `completionSummary` counts what happened — by stitched
+    /// negative (`stitchedNegatives`/`failedNegatives`), never by
+    /// intermediate frame.
     private var isStitchInvocation: Bool {
         invokedCommandName == "run" || invokedCommandName == "stitch"
+    }
+
+    /// `run`, `stitch`, and `apply-metadata` all end by touching
+    /// `scanny-boy-roll.json`; only a plain `convert` writes
+    /// `scanny-boy-manifest.json` instead. Decides which manifest
+    /// `finish()` reads back.
+    private var touchesRollManifest: Bool {
+        isStitchInvocation || invokedCommandName == "apply-metadata"
     }
 
     /// What to tell the user once the run has ended. Deliberately built from
@@ -199,6 +216,17 @@ final class RunModel {
             // A run that ended without ever producing a completion: the helper
             // could not be launched at all.
             return streamFailures.isEmpty ? nil : "The command-line helper could not be run."
+        }
+        if invokedCommandName == "apply-metadata" {
+            switch outcome {
+            case .success:
+                return "Applied \(appliedNegativeIDs.count) negative(s)."
+            case .failure:
+                return "Applied \(appliedNegativeIDs.count) negative(s); "
+                    + "\(skippedMetadata.count) skipped."
+            case .cancelled, .usageError, .terminatedBySignal:
+                break
+            }
         }
         switch outcome {
         case .success:
@@ -355,9 +383,18 @@ final class RunModel {
                     FailedGroup(groupID: negativeID, code: code, message: message)
                 )
             }
+        case .metadataApplied:
+            if let negativeID = event.negativeID {
+                appliedNegativeIDs.append(negativeID)
+            }
+        case .metadataSkipped:
+            if let negativeID = event.negativeID, let code = event.code, let message = event.message {
+                skippedMetadata.append(
+                    FailedGroup(groupID: negativeID, code: code, message: message)
+                )
+            }
         case .started, .probeResult, .finished, .unknown,
-             .rollCreated, .rollList, .rollInfo, .rollRenamed, .negativeSuperseded,
-             .metadataApplied, .metadataSkipped:
+             .rollCreated, .rollList, .rollInfo, .rollRenamed, .negativeSuperseded:
             break
         }
     }
@@ -372,7 +409,7 @@ final class RunModel {
         // `run` and `stitch` write `scanny-boy-roll.json` there instead — the
         // work directory `scanny-boy-manifest.json` still lives in may
         // already be gone by the time this runs (section 3.5's cleanup).
-        if isStitchInvocation {
+        if touchesRollManifest {
             rollManifestReport = await Self.readRollManifest(
                 runner: runner, roll: outputFolder, runID: runID
             )
@@ -428,6 +465,8 @@ final class RunModel {
         stitchedNegatives = []
         failedNegatives = []
         keptWorkDirectory = nil
+        appliedNegativeIDs = []
+        skippedMetadata = []
         warnings = []
         cliError = nil
         streamFailures = []

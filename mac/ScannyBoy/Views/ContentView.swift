@@ -7,8 +7,8 @@ import SwiftUI
 /// the workspace's Add Scans tab onto the selected roll: no output-folder
 /// picker, no film date, the shots-per-negative stepper replaced by the
 /// roll's own (read-only here), and the overwrite-confirmation dialog
-/// replaced by the overlap sheet (section 3.4/3.5). "Edit" is a placeholder
-/// until Chunk P3-12.
+/// replaced by the overlap sheet (section 3.4/3.5). Chunk P3-12 adds the
+/// Edit tab: negatives, thumbnails, the dirty count, and Apply.
 ///
 /// Chunk 9: folder selection, one-range selection, grouping preview.
 /// Chunk 10 adds Run with live progress, cooperative Cancel, the
@@ -19,6 +19,7 @@ import SwiftUI
 struct ContentView: View {
     let library: RollLibrary
     @Bindable var model: ConfigurationModel
+    let edit: EditModel
     let run: RunModel
 
     private enum WorkspaceTab {
@@ -86,11 +87,7 @@ struct ContentView: View {
             case .addScans:
                 addScansStage
             case .edit:
-                ContentUnavailableView(
-                    "Edit",
-                    systemImage: "slider.horizontal.3",
-                    description: Text("Coming in a later chunk.")
-                )
+                EditStageView(edit: edit, run: run)
             }
         }
     }
@@ -104,11 +101,13 @@ struct ContentView: View {
         }
     }
 
-    /// Keeps `model.rollURL` following the sidebar selection (section 3.10):
-    /// `ConfigurationModel` has no folder picker of its own any more, so
-    /// this is the only thing that ever sets it.
+    /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
+    /// selection (section 3.10): neither model has a folder picker of its
+    /// own, so this is the only thing that ever sets them.
     private func resolveSelectedRoll() {
-        model.rollURL = library.rolls.first { $0.id == selection }?.path
+        let rollURL = library.rolls.first { $0.id == selection }?.path
+        model.rollURL = rollURL
+        edit.rollURL = rollURL
     }
 
     private var catalogueColumn: some View {

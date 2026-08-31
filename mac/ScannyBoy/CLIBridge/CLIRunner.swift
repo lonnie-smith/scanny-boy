@@ -147,6 +147,14 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy apply-metadata --roll DIR`
+    ///
+    /// Section 3.8: writes every dirty negative's intended capture time into
+    /// its published TIFF's EXIF tags. No pixel data is touched.
+    public static func applyMetadata(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["apply-metadata", "--roll", roll.path])
+    }
+
     /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in

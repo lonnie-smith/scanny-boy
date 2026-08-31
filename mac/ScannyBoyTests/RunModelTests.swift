@@ -991,6 +991,48 @@ struct RunModelTests {
             """
         return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
     }
+
+    // MARK: - Chunk P3-12's additions: apply-metadata
+
+    private static func metadataApplied(_ negativeID: String) -> String {
+        #"{"protocol_version":3,"event":"metadata_applied","run_id":"run-0001","negative_id":"\#(negativeID)"}"#
+    }
+
+    private static func metadataSkipped(_ negativeID: String, code: String, message: String) -> String {
+        #"{"protocol_version":3,"event":"metadata_skipped","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
+    }
+
+    @Test("Skipped negatives are reported by name, separately from what was applied")
+    func testSkippedNegativesAreReportedByName() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.metadataApplied("negative-01"),
+                Self.metadataSkipped(
+                    "negative-02", code: "OUTPUT_MODIFIED_EXTERNALLY",
+                    message: "a.tif no longer matches the roll"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, files: [], commandName: "apply-metadata"
+        )
+
+        #expect(run.appliedNegativeIDs == ["negative-01"])
+        #expect(run.skippedMetadata.count == 1)
+        let skipped = try #require(run.skippedMetadata.first)
+        #expect(skipped.groupID == "negative-02")
+        #expect(skipped.code == .outputModifiedExternally)
+        #expect(skipped.message == "a.tif no longer matches the roll")
+        #expect(run.completionSummary == "Applied 1 negative(s); 1 skipped.")
+    }
 }
 
 /// A clock that advances by a fixed step every time it is read. Deterministic
