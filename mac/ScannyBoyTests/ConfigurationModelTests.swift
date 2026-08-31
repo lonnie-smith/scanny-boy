@@ -4,11 +4,12 @@ import Testing
 @testable import ScannyBoy
 
 /// Drives `ConfigurationModel` against a fake CLI executable that answers
-/// `probe` from canned JSON, matching the pattern `CLISessionTests` and
-/// `CLIIntegrationTests` already use for a synthetic helper. No test here
-/// touches the real sample NEFs or the bundled helper — those are exercised
-/// by the CLI's own test suite and by `CLIIntegrationTests`.
-@Suite("Configuration model (Chunk 9)")
+/// `probe` and `roll info` from canned JSON, matching the pattern
+/// `CLISessionTests` and `CLIIntegrationTests` already use for a synthetic
+/// helper. No test here touches the real sample NEFs or the bundled helper —
+/// those are exercised by the CLI's own test suite and by
+/// `RunIntegrationTests`.
+@Suite("Configuration model (Chunk 9, reworked onto rolls by Chunk P3-11)")
 @MainActor
 struct ConfigurationModelTests {
     private static func isolatedDefaults() -> UserDefaults {
@@ -31,32 +32,32 @@ struct ConfigurationModelTests {
         return directory
     }
 
-    /// A `probe` stand-in that answers from `$*`: `--out` present routes to
-    /// `withFilesAndOut`, `--files` alone (no `--out`) routes to
+    /// A `probe` stand-in that answers from `$*`: `--roll` present routes to
+    /// `withFilesAndRoll`, `--files` alone (no `--roll`) routes to
     /// `withFiles`, and a bare `--input` routes to `catalogueOnly` — the same
-    /// three call shapes `ConfigurationModel` actually makes.
+    /// three call shapes `ConfigurationModel` actually makes. `roll info`
+    /// (section 3.1: `roll` is read back through the CLI, never from disk)
+    /// is distinguished by its own leading subcommand, `$1`, rather than
+    /// folded into the `$*` routing below, which only ever sees `probe`
+    /// invocations.
     private static func fakeProbeExecutable(
         in directory: URL,
         catalogueOnly: [String],
         withFiles: [String] = [],
-        withFilesAndOut: [String] = [],
+        withFilesAndRoll: [String] = [],
         rollInfo: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
         }
-        // `roll info` (section 3.1: `existingRoll` is read back through the
-        // CLI, never from disk) is distinguished by its own leading
-        // subcommand, `$1`, rather than folded into the `$*` routing below,
-        // which only ever sees `probe` invocations.
         let script = """
             if [ "$1" = "roll" ]; then
             \(echoLines(rollInfo))
             exit 0
             fi
             case "$*" in
-              *--out*)
-            \(echoLines(withFilesAndOut))
+              *--roll*)
+            \(echoLines(withFilesAndRoll))
                 ;;
               *--files*)
             \(echoLines(withFiles))
@@ -91,19 +92,42 @@ struct ConfigurationModelTests {
     // Raw string literals do not support backslash line-continuation (that
     // is a plain-string-literal escape only), so each of these stays on one
     // line rather than risk a stray literal backslash inside the JSON.
-    private static let threeFileGroupNoOut =
+    private static let threeFileGroupNoRoll =
         #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
 
-    private static let threeFileGroupNoConflicts =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
+    private static let threeFileGroupNoOverlap =
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
 
-    private static let threeFileGroupWithConflicts =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
+    private static let threeFileGroupWithOverlap =
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
 
     private static let sixFileNames = ["n1.NEF", "n2.NEF", "n3.NEF", "n4.NEF", "n5.NEF", "n6.NEF"]
 
     private static let sixFileTwoGroups =
         #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
+
+    /// Two groups; only the first overlaps a negative already in the roll —
+    /// `n4`-`n6` never appear in `roll_overlap` at all.
+    private static let sixFileTwoGroupsOneOverlapping =
+        #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"n1.tif","run_id":"r","overlapping_sources":["n1.NEF","n2.NEF","n3.NEF"],"group_index":0}]}"#
+
+    /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
+    /// to be read back by `RollManifest` — the `roll info` CLI response
+    /// `roll` is now built from, rather than a file on disk (section 3.1).
+    private static func rollInfoEvent(
+        rollID: String = "roll-1", rollName: String = "Test Roll", shotsPerNegative: Int = 3
+    ) -> String {
+        let manifest = """
+            {"manifest_format_version":2,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            "roll_id":"\(rollID)","roll_name":"\(rollName)","shots_per_negative":\(shotsPerNegative),\
+            "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
+            "processing_params":{},\
+            "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
+            "stitch_params":{},"runs":[],"sources":[],"negatives":[],\
+            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
+            """
+        return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
+    }
 
     // MARK: - Model state follows probe results
 
@@ -188,22 +212,23 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
 
         #expect(model.selectionError?.code == scenario.expected)
-        #expect(model.outputError == nil)
+        #expect(model.rollError == nil)
         #expect(model.runEnabled == false)
     }
 
-    @Test("Run is disabled while the film date is blank, and enables once it is well formed")
-    func runDisabledForBlankFilmDate() async throws {
+    @Test("Run is disabled until a roll is selected, and enables once probe succeeds against it")
+    func runDisabledUntilRollSelected() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [Self.started, Self.threeFileGroupNoConflicts, Self.finishedSuccess]
+            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess],
+            rollInfo: [Self.rollInfoEvent()]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -211,31 +236,32 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
-        #expect(model.filmDate.isEmpty)
+        #expect(model.rollURL == nil)
         #expect(model.runEnabled == false)
 
-        model.filmDate = "2026-08-02"
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+
         #expect(model.runEnabled == true)
-
-        model.filmDate = "not-a-date"
-        #expect(model.runEnabled == false)
+        #expect(model.roll?.rollID == "roll-1")
     }
 
-    @Test("Choosing an output folder equal to the input folder is blocked")
-    func runDisabledForOutputFolderSameAsInput() async throws {
+    @Test("A roll-related probe failure blocks Run without touching the selection error")
+    func runDisabledForRollError() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
+        let rollDir = directory.appending(path: "not-a-roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [
-                Self.started, Self.errorEvent(code: "OUTPUT_SAME_AS_INPUT"), Self.finishedFailed,
+            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
+            withFilesAndRoll: [
+                Self.started, Self.errorEvent(code: "ROLL_NOT_FOUND"), Self.finishedFailed,
             ]
         )
         let model = ConfigurationModel(
@@ -244,44 +270,13 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = directory
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
-        #expect(model.outputError?.code == .outputSameAsInput)
+        #expect(model.rollError?.code == .rollNotFound)
         #expect(model.selectionError == nil)
         #expect(model.runEnabled == false)
-    }
-
-    @Test("Run is disabled until an overwrite conflict is confirmed")
-    func runDisabledUntilOverwriteConfirmed() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let executable = try Self.fakeProbeExecutable(
-            in: directory,
-            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [Self.started, Self.threeFileGroupWithConflicts, Self.finishedSuccess]
-        )
-        let model = ConfigurationModel(
-            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
-        )
-
-        model.inputFolder = directory
-        await model.waitForPendingProbes()
-        model.outputFolder = outputDir
-        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
-        await model.waitForPendingProbes()
-
-        #expect(model.outputConflicts == ["a.tif"])
-        #expect(model.runEnabled == false)
-
-        model.confirmOverwrite()
-        #expect(model.runEnabled == true)
     }
 
     // MARK: - Chunk P2-9's additions
@@ -291,13 +286,14 @@ struct ConfigurationModelTests {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [Self.started, Self.threeFileGroupNoConflicts, Self.finishedSuccess]
+            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess],
+            rollInfo: [Self.rollInfoEvent()]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -305,42 +301,34 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
         #expect(model.keepIntermediates == false)
-        let withoutFlag = try #require(model.runCommand)
+        let withoutFlag = try #require(model.runCommand())
         #expect(!withoutFlag.arguments.contains("--keep-intermediates"))
 
         model.keepIntermediates = true
-        let withFlag = try #require(model.runCommand)
+        let withFlag = try #require(model.runCommand())
         #expect(withFlag.arguments.contains("--keep-intermediates"))
     }
 
-    /// `probe --out` only understands `scanny-boy-manifest.json`, so a
-    /// folder holding only `scanny-boy-roll.json` is reported as
-    /// `OUTPUT_NOT_EMPTY` — the fake executable below reproduces that real
-    /// behaviour exactly. `existingRoll` (now read back through `roll info`,
-    /// section 3.1) is what stops the model from surfacing that as a
-    /// blocking error.
-    @Test("A folder already holding a roll is recognised, not reported as unrelated content")
-    func existingRollFolderIsRecognised() async throws {
+    // MARK: - Chunk P3-11's additions: rolls and the overlap sheet
+
+    @Test("The run command targets --roll, at the roll's own shots per negative, never --film-date or --out")
+    func testRunCommandOmitsFilmDateAndOutputFolder() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [
-                Self.started, Self.errorEvent(code: "OUTPUT_NOT_EMPTY"), Self.finishedFailed,
-            ],
-            rollInfo: [Self.rollInfoEvent(rollID: "roll-1", rollName: "Existing Roll")]
+            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess],
+            rollInfo: [Self.rollInfoEvent(shotsPerNegative: 3)]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -348,36 +336,34 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
-        #expect(model.existingRoll?.rollID == "roll-1")
-        #expect(model.existingRoll?.rollName == "Existing Roll")
-        #expect(model.outputError == nil)
-        #expect(model.outputConflicts.isEmpty)
-        #expect(model.runEnabled)
+        let command = try #require(model.runCommand())
+        #expect(command.arguments.contains("--roll"))
+        #expect(command.arguments.contains(rollDir.path))
+        #expect(!command.arguments.contains("--film-date"))
+        #expect(!command.arguments.contains("--out"))
+        #expect(!command.arguments.contains("--overwrite"))
+        #expect(command.arguments.contains("--per-negative"))
+        let perNegativeIndex = try #require(command.arguments.firstIndex(of: "--per-negative"))
+        #expect(command.arguments[perNegativeIndex + 1] == "3")
     }
 
-    @Test("An output folder with unrelated content (no roll) is still blocked")
-    func unrelatedOutputFolderStillBlockedWithoutARoll() async throws {
+    @Test("An overlapping selection needs review, and the sheet's Skip default becomes --skip-sources")
+    func overlapReviewFlowsIntoTheRunCommand() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        try "not ours".write(
-            to: outputDir.appending(path: "holiday-snap.jpg"), atomically: true, encoding: .utf8
-        )
-
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
-            withFilesAndOut: [
-                Self.started, Self.errorEvent(code: "OUTPUT_NOT_EMPTY"), Self.finishedFailed,
-            ]
+            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.threeFileGroupWithOverlap, Self.finishedSuccess],
+            rollInfo: [Self.rollInfoEvent()]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -385,25 +371,70 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
-        #expect(model.existingRoll == nil)
-        #expect(model.outputError?.code == .outputNotEmpty)
-        #expect(model.runEnabled == false)
+        #expect(model.rollOverlap.count == 1)
+        #expect(model.needsOverlapReview)
+
+        let review = OverlapReview(entries: model.rollOverlap)
+        let command = try #require(model.runCommand(skipSources: review.skipSources))
+        let skipIndex = try #require(command.arguments.firstIndex(of: "--skip-sources"))
+        #expect(Set(command.arguments[(skipIndex + 1)...]) == Set(["a.NEF", "b.NEF", "c.NEF"]))
+    }
+
+    @Test("Non-overlapping groups are never named in the overlap sheet and always run")
+    func testNonOverlappingGroupsAlwaysRun() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [
+                Self.started,
+                #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
+                Self.finishedSuccess,
+            ],
+            withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess],
+            withFilesAndRoll: [
+                Self.started, Self.sixFileTwoGroupsOneOverlapping, Self.finishedSuccess,
+            ],
+            rollInfo: [Self.rollInfoEvent()]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        model.selectedFiles = Set(Self.sixFileNames)
+        await model.waitForPendingProbes()
+
+        // Both groups are still offered — overlap never removes a group from
+        // the preview, only from the eventual `--skip-sources`.
+        #expect(model.groups.count == 2)
+        #expect(model.rollOverlap.count == 1)
+
+        let review = OverlapReview(entries: model.rollOverlap)
+        // Left at the sheet's own Skip default, only the overlapping group's
+        // members are ever named — the second group's are never skippable.
+        #expect(Set(review.skipSources) == Set(["n1.NEF", "n2.NEF", "n3.NEF"]))
+        #expect(!review.skipSources.contains("n4.NEF"))
+        #expect(!review.skipSources.contains("n5.NEF"))
+        #expect(!review.skipSources.contains("n6.NEF"))
     }
 
     // MARK: - Last-folder memory
 
-    @Test("The input and output folders are remembered across model instances")
-    func foldersArePersisted() async throws {
+    @Test("The input folder is remembered across model instances")
+    func inputFolderIsPersisted() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess]
@@ -412,33 +443,12 @@ struct ConfigurationModelTests {
 
         let first = ConfigurationModel(runner: CLIRunner(executable: executable), defaults: defaults)
         first.inputFolder = directory
-        first.outputFolder = outputDir
         await first.waitForPendingProbes()
 
         let second = ConfigurationModel(runner: CLIRunner(executable: executable), defaults: defaults)
         await second.waitForPendingProbes()
 
         #expect(second.inputFolder?.standardizedFileURL == directory.standardizedFileURL)
-        #expect(second.outputFolder?.standardizedFileURL == outputDir.standardizedFileURL)
         #expect(second.catalogue == ["a.NEF", "b.NEF", "c.NEF"])
-    }
-
-    // MARK: - Helpers
-
-    /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
-    /// to be read back by `RollManifest` — the `roll info` CLI response
-    /// `existingRoll` is now built from, rather than a file on disk (section
-    /// 3.1).
-    private static func rollInfoEvent(rollID: String = "roll-1", rollName: String = "Test Roll") -> String {
-        let manifest = """
-            {"manifest_format_version":2,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
-            "roll_id":"\(rollID)","roll_name":"\(rollName)","shots_per_negative":3,\
-            "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
-            "processing_params":{},\
-            "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
-            "stitch_params":{},"runs":[],"sources":[],"negatives":[],\
-            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
-            """
-        return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
     }
 }

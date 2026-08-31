@@ -9,11 +9,11 @@ import SwiftUI
 ///
 /// Section 3.6 asks for "the exact files that will be replaced, and an
 /// explicit agreement, before `--overwrite` is ever passed" — the rule
-/// `ContentView`'s own overwrite-confirmation dialog follows for `run`. That
-/// exact list comes from `probe --out`, which (per Chunk P2-9's
-/// `ConfigurationModel.existingRoll`) has no notion of `scanny-boy-roll.json`
-/// at all, so it cannot enumerate what a re-stitch would replace. This sheet
-/// asks for one general, explicit agreement instead of an itemized one, and
+/// `run`'s own overlap sheet follows (section 3.4/3.5). A re-stitch has no
+/// selection to probe for overlap at all, since it re-runs the stitch stage
+/// over intermediates already on disk rather than a fresh input selection.
+/// This sheet asks for one general, explicit agreement instead of an
+/// itemized one, and
 /// passes `--overwrite` unconditionally once it is given — a no-op if the
 /// output folder turns out to hold nothing that conflicts. Real enforcement,
 /// as everywhere else in this app, happens for real, server-side, in
@@ -106,7 +106,7 @@ struct RestitchSheet: View {
     private func startRestitch() {
         guard let workDirectory, let outputFolder else { return }
         run.start(
-            command: .stitch(work: workDirectory, out: outputFolder, overwrite: true),
+            command: .stitch(work: workDirectory, roll: outputFolder, overwrite: true),
             files: [],
             outputFolder: outputFolder
         )
