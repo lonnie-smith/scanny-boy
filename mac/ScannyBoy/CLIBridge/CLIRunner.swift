@@ -11,6 +11,36 @@ public struct CLICommand: Sendable, Hashable {
         self.arguments = arguments
     }
 
+    /// `scanny-boy roll init --library DIR --name NAME --per-negative N`
+    public static func rollInit(library: URL, name: String, perNegative: Int) -> CLICommand {
+        CLICommand(arguments: [
+            "roll", "init",
+            "--library", library.path,
+            "--name", name,
+            "--per-negative", String(perNegative),
+        ])
+    }
+
+    /// `scanny-boy roll list --library DIR`
+    public static func rollList(library: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "list", "--library", library.path])
+    }
+
+    /// `scanny-boy roll info --roll DIR`
+    public static func rollInfo(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "info", "--roll", roll.path])
+    }
+
+    /// `scanny-boy roll rename --roll DIR --name NAME`
+    ///
+    /// Section 5.5: the CLI moves the folder and writes the new `roll_name`;
+    /// it does not enforce "refused while any run is active" itself, since
+    /// it is stateless between invocations — the app checks that before
+    /// ever building this command.
+    public static func rollRename(roll: URL, name: String) -> CLICommand {
+        CLICommand(arguments: ["roll", "rename", "--roll", roll.path, "--name", name])
+    }
+
     /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--per-negative N]`
     ///
     /// With `--input` alone this returns the catalogue in canonical order.

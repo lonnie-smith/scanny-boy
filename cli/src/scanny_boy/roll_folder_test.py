@@ -132,8 +132,12 @@ def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypat
 
     monkeypatch.setattr(os, "rename", _failing_rename)
 
-    with pytest.raises(OSError):
+    # Section 5.5: wrapped in RollFolderError(ROLL_RENAME_FAILED) rather
+    # than left as a raw OSError, so `roll rename` has one exception type
+    # to catch — the move-failure guarantee itself is unchanged.
+    with pytest.raises(RollFolderError) as exc_info:
         rename_roll(roll_dir, "New Name")
+    assert exc_info.value.code == "ROLL_RENAME_FAILED"
 
     assert roll_dir.exists()
     assert not (tmp_path / "New-Name").exists()

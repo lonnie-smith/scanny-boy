@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Section 3.10: `NavigationSplitView` shell — the library sidebar
+/// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
+/// picker. Chunk P3-10 adds the shell and the sidebar; the workspace's own
+/// tabs are still Phase 2's configuration UI for now, unmodified, and
+/// reworked into "Add Scans" proper by Chunk P3-11. "Edit" is a placeholder
+/// until Chunk P3-12.
+///
 /// Chunk 9: folder selection, one-range selection, grouping preview, film
 /// date, output-folder validation, disk estimate, and overwrite-conflict
 /// preview. Chunk 10 adds Run with its overwrite confirmation, live progress,
@@ -9,20 +16,35 @@ import SwiftUI
 /// `run` driving `scanny-boy stitch` over a kept work directory instead of
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
+    let library: RollLibrary
     @Bindable var model: ConfigurationModel
     let run: RunModel
 
+    private enum WorkspaceTab {
+        case addScans
+        case edit
+    }
+
+    @State private var selection: Roll.ID?
+    @State private var workspaceTab: WorkspaceTab = .addScans
     @State private var isConfirmingOverwrite = false
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
 
     var body: some View {
-        HSplitView {
-            catalogueColumn
-                .frame(minWidth: 280, idealWidth: 340)
-            detailColumn
-                .frame(minWidth: 380, idealWidth: 460)
+        NavigationSplitView {
+            RollSidebar(library: library, selection: $selection, runIsActive: run.isActive)
+        } detail: {
+            if selection != nil {
+                workspace
+            } else {
+                ContentUnavailableView(
+                    "No Roll Selected",
+                    systemImage: "photo.stack",
+                    description: Text("Choose a roll from the sidebar, or create one.")
+                )
+            }
         }
         .frame(minWidth: 720, minHeight: 480)
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
@@ -37,6 +59,38 @@ struct ContentView: View {
                 workDirectory: restitchWorkDirectory,
                 outputFolder: restitchOutputFolder
             )
+        }
+    }
+
+    private var workspace: some View {
+        VStack(spacing: 0) {
+            Picker("Stage", selection: $workspaceTab) {
+                Text("Add Scans").tag(WorkspaceTab.addScans)
+                Text("Edit").tag(WorkspaceTab.edit)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding()
+
+            switch workspaceTab {
+            case .addScans:
+                addScansStage
+            case .edit:
+                ContentUnavailableView(
+                    "Edit",
+                    systemImage: "slider.horizontal.3",
+                    description: Text("Coming in a later chunk.")
+                )
+            }
+        }
+    }
+
+    private var addScansStage: some View {
+        HSplitView {
+            catalogueColumn
+                .frame(minWidth: 280, idealWidth: 340)
+            detailColumn
+                .frame(minWidth: 380, idealWidth: 460)
         }
     }
 
@@ -158,8 +212,8 @@ struct ContentView: View {
             }
             if let existingRoll = model.existingRoll {
                 Text(
-                    "This folder already holds a roll (\(existingRoll.status)) "
-                        + "from \(existingRoll.filmDate)."
+                    "This folder already holds the roll \"\(existingRoll.rollName)\", "
+                        + "with \(existingRoll.liveNegatives.count) negative(s)."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

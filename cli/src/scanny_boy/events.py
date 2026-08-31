@@ -29,6 +29,7 @@ class EventType(enum.StrEnum):
     ROLL_CREATED = "roll_created"
     ROLL_LIST = "roll_list"
     ROLL_INFO = "roll_info"
+    ROLL_RENAMED = "roll_renamed"
     NEGATIVE_SUPERSEDED = "negative_superseded"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
@@ -93,6 +94,7 @@ class Code(enum.StrEnum):
     ROLL_NOT_FOUND = "ROLL_NOT_FOUND"
     ROLL_MANIFEST_UNSUPPORTED = "ROLL_MANIFEST_UNSUPPORTED"
     ROLL_EXISTS = "ROLL_EXISTS"
+    ROLL_RENAME_FAILED = "ROLL_RENAME_FAILED"
     ROLL_INVARIANT_MISMATCH = "ROLL_INVARIANT_MISMATCH"
     PER_NEGATIVE_LOCKED = "PER_NEGATIVE_LOCKED"
     OUTPUT_MODIFIED_EXTERNALLY = "OUTPUT_MODIFIED_EXTERNALLY"
@@ -260,6 +262,18 @@ class Finished(Event):
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class RollCreated(Event):
     event_type: ClassVar[EventType] = EventType.ROLL_CREATED
+
+    roll_id: str
+    roll_name: str
+    path: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollRenamed(Event):
+    """Section 5.5: `roll rename`'s counterpart to `RollCreated`, carrying
+    the roll's new location."""
+
+    event_type: ClassVar[EventType] = EventType.ROLL_RENAMED
 
     roll_id: str
     roll_name: str

@@ -18,9 +18,10 @@ new fields.
 ## Invocation
 
 ```text
-scanny-boy roll init  --library DIR --name NAME --per-negative N
-scanny-boy roll list  --library DIR
-scanny-boy roll info  --roll DIR
+scanny-boy roll init   --library DIR --name NAME --per-negative N
+scanny-boy roll list   --library DIR
+scanny-boy roll info   --roll DIR
+scanny-boy roll rename --roll DIR --name NAME
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
 
@@ -88,6 +89,13 @@ writes an empty v2 roll manifest. It emits `roll_created` carrying `roll_id`,
 enumerates the library itself — `roll list` and `roll info` are the only two
 ways in.
 
+`roll rename` moves the roll's folder to a slug of `--name` and, only after a
+successful move, writes the new `roll_name` into the manifest. It emits
+`roll_renamed` carrying `roll_id`, `roll_name`, and `path` (the roll's new
+location). It does not enforce "refused while any run is active" — the CLI
+is stateless between invocations, so the app checks that itself before
+issuing the command.
+
 `apply-metadata` writes intended capture times from the roll manifest into
 published TIFFs. See Phase 3 section 3.8.
 
@@ -146,6 +154,7 @@ computed default is never rejected this way, only lowered.
 | `roll_created` | A new roll folder was created. Carries `roll_id`, `roll_name`, and `path`. |
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
+| `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
 | `negative_superseded` | A newly published negative replaced an earlier one. Carries `old_negative_id` and `new_negative_id`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
@@ -250,7 +259,8 @@ staging directories, and reruns the incomplete negative.
 | `INTERMEDIATES_KEPT` | Warning: work directory retained; carries its path |
 | `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 2` |
-| `ROLL_EXISTS` | `roll init` could not find a free folder name |
+| `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
+| `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
 | `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |

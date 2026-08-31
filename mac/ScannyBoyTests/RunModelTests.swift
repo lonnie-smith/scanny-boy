@@ -26,14 +26,34 @@ struct RunModelTests {
         return directory
     }
 
+    /// `rollInfoLines` answers a follow-up `roll info` invocation
+    /// (`finish()`'s roll-reading path, section 3.1) separately from the
+    /// main pipeline invocation — distinguished by `$1`, the same
+    /// discriminator the real CLI's own subcommands use. Left empty, `roll
+    /// info` just replays `lines` again, which is harmless for tests that
+    /// never inspect `rollManifestReport`.
     private static func fakeConvertExecutable(
         emitting lines: [String],
         exitStatus: Int = 0,
+        rollInfoLines: [String] = [],
+        rollInfoExitStatus: Int = 0,
         in directory: URL
     ) throws -> URL {
-        let script = lines.map { "echo '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
-            .joined(separator: "\n")
-            + "\nexit \(exitStatus)\n"
+        func echoLines(_ lines: [String]) -> String {
+            lines.map { "echo '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
+                .joined(separator: "\n")
+        }
+        var script = ""
+        if !rollInfoLines.isEmpty {
+            script += """
+                if [ "$1" = "roll" ]; then
+                \(echoLines(rollInfoLines))
+                exit \(rollInfoExitStatus)
+                fi
+
+                """
+        }
+        script += echoLines(lines) + "\nexit \(exitStatus)\n"
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
 
@@ -743,7 +763,6 @@ struct RunModelTests {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        try Self.writeRollManifest(status: "complete", negativeStatus: "completed", in: directory)
         let executable = try Self.fakeConvertExecutable(
             emitting: [
                 Self.started,
@@ -752,6 +771,9 @@ struct RunModelTests {
                     width: 100, height: 100, globalRMS: 1.0, maxOverlapMAD: 0.05
                 ),
                 Self.finished(status: "success", exitStatus: 0),
+            ],
+            rollInfoLines: [
+                Self.rollInfoEvent(runStatus: "complete", negativeStatus: "completed")
             ],
             in: directory
         )
@@ -766,8 +788,8 @@ struct RunModelTests {
             Issue.record("expected a final roll manifest, got \(report)")
             return
         }
-        #expect(manifest.status == "complete")
-        #expect(manifest.runID == Self.runID)
+        #expect(manifest.runs.first?.runID == Self.runID)
+        #expect(manifest.runs.first?.status == "complete")
         #expect(manifest.publishedOutputs == ["a.tif"])
         #expect(manifest.negatives.first?.isCompleted == true)
     }
@@ -801,7 +823,6 @@ struct RunModelTests {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        try Self.writeRollManifest(status: "complete", negativeStatus: "completed", in: directory)
         let executable = try Self.fakeConvertExecutable(
             emitting: [
                 Self.started,
@@ -810,6 +831,9 @@ struct RunModelTests {
                     width: 100, height: 100, globalRMS: 1.0, maxOverlapMAD: 0.05
                 ),
                 Self.finished(status: "success", exitStatus: 0),
+            ],
+            rollInfoLines: [
+                Self.rollInfoEvent(runStatus: "complete", negativeStatus: "completed")
             ],
             in: directory
         )
@@ -932,58 +956,35 @@ struct RunModelTests {
         )
     }
 
-    /// A roll manifest with just enough of `roll-manifest.schema.json` to be
-    /// read back. The `RunManifest` counterpart to `writeManifest` above.
-    private static func writeRollManifest(
-        status: String,
-        negativeStatus: String,
-        in folder: URL
-    ) throws {
+    /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
+    /// to be read back by `RollManifest` — what `finish()`'s follow-up `roll
+    /// info` call (section 3.1) now answers with, in place of a file on
+    /// disk. The `writeManifest` counterpart, above, for the roll manifest.
+    private static func rollInfoEvent(runStatus: String, negativeStatus: String) -> String {
         let output = negativeStatus == "completed"
             ? #"{"name":"a.tif","size":123,"sha256":"\#(String(repeating: "a", count: 64))","width":100,"height":100}"#
             : "null"
-        let json = """
-            {
-              "manifest_format_version": 1,
-              "manifest_kind": "stitch",
-              "scanny_boy_version": "0.1.0",
-              "run_id": "\(runID)",
-              "status": "\(status)",
-              "input_folder": "/tmp/in",
-              "film_date": "2026-08-02",
-              "shots_per_negative": 3,
-              "convert_run_id": "convert-0001",
-              "processing_params": {},
-              "icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "\(String(repeating: "b", count: 64))"},
-              "stitch_params": {},
-              "source_order": ["a.NEF", "b.NEF", "c.NEF"],
-              "sources": [],
-              "negatives": [
-                {
-                  "negative_id": "negative-01",
-                  "members": ["a.NEF", "b.NEF", "c.NEF"],
-                  "expected_output": "a.tif",
-                  "status": "\(negativeStatus)",
-                  "output": \(output),
-                  "frames": [], "pairs": [],
-                  "global_rms_px": 1.0,
-                  "canvas": {"width": 100, "height": 100},
-                  "valid_rect": [0, 0, 100, 100],
-                  "fill_color": [0, 0, 0],
-                  "rebate_deviation_px": null,
-                  "error_code": null,
-                  "error_message": null
-                }
-              ],
-              "started_at": "2026-08-02T12:00:00",
-              "finished_at": \(status == "running" ? "null" : "\"2026-08-02T12:05:00\"")
-            }
+        let manifest = """
+            {"manifest_format_version":2,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            "roll_id":"roll-1","roll_name":"Test Roll","shots_per_negative":3,\
+            "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
+            "processing_params":{},\
+            "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
+            "stitch_params":{},\
+            "runs":[{"run_id":"\(runID)","short_id":"run000","kind":"stitch","status":"\(runStatus)",\
+            "convert_run_id":null,"input_folder":null,"source_order":["a.NEF","b.NEF","c.NEF"],\
+            "work_dir":null,"started_at":"2026-08-02T12:00:00","finished_at":null}],\
+            "sources":[],\
+            "negatives":[{"negative_id":"negative-01","run_id":"\(runID)","sequence":null,\
+            "superseded_by":null,"members":["a.NEF","b.NEF","c.NEF"],"expected_output":"a.tif",\
+            "status":"\(negativeStatus)","output":\(output),"frames":[],"pairs":[],\
+            "global_rms_px":1.0,"canvas":null,"valid_rect":null,"fill_color":[0,0,0],\
+            "rebate_deviation_px":null,"error_code":null,"error_message":null,\
+            "capture_time":{"source_datetime_original":null,"intended_datetime_original":null,\
+            "applied_datetime_original":null,"date_override":null}}],\
+            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        try json.write(
-            to: folder.appending(path: RollManifest.filename, directoryHint: .notDirectory),
-            atomically: true,
-            encoding: .utf8
-        )
+        return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
     }
 }
 

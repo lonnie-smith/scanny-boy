@@ -33,6 +33,7 @@ public struct CLIEvent: Sendable, Hashable {
         case rollCreated
         case rollList
         case rollInfo
+        case rollRenamed
         case negativeSuperseded
         case metadataApplied
         case metadataSkipped
@@ -56,6 +57,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "roll_created": self = .rollCreated
             case "roll_list": self = .rollList
             case "roll_info": self = .rollInfo
+            case "roll_renamed": self = .rollRenamed
             case "negative_superseded": self = .negativeSuperseded
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
@@ -79,6 +81,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .rollCreated: "roll_created"
             case .rollList: "roll_list"
             case .rollInfo: "roll_info"
+            case .rollRenamed: "roll_renamed"
             case .negativeSuperseded: "negative_superseded"
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
@@ -287,6 +290,7 @@ public enum CLICode: Sendable, Hashable {
     case rollNotFound
     case rollManifestUnsupported
     case rollExists
+    case rollRenameFailed
     case rollInvariantMismatch
     case perNegativeLocked
     case outputModifiedExternally
@@ -334,6 +338,7 @@ public enum CLICode: Sendable, Hashable {
         case "ROLL_NOT_FOUND": self = .rollNotFound
         case "ROLL_MANIFEST_UNSUPPORTED": self = .rollManifestUnsupported
         case "ROLL_EXISTS": self = .rollExists
+        case "ROLL_RENAME_FAILED": self = .rollRenameFailed
         case "ROLL_INVARIANT_MISMATCH": self = .rollInvariantMismatch
         case "PER_NEGATIVE_LOCKED": self = .perNegativeLocked
         case "OUTPUT_MODIFIED_EXTERNALLY": self = .outputModifiedExternally
@@ -383,6 +388,7 @@ public enum CLICode: Sendable, Hashable {
         case .rollNotFound: "ROLL_NOT_FOUND"
         case .rollManifestUnsupported: "ROLL_MANIFEST_UNSUPPORTED"
         case .rollExists: "ROLL_EXISTS"
+        case .rollRenameFailed: "ROLL_RENAME_FAILED"
         case .rollInvariantMismatch: "ROLL_INVARIANT_MISMATCH"
         case .perNegativeLocked: "PER_NEGATIVE_LOCKED"
         case .outputModifiedExternally: "OUTPUT_MODIFIED_EXTERNALLY"

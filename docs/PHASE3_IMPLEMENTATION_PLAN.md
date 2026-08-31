@@ -301,9 +301,10 @@ of the following rule, which is what actually makes Replace replace something.
 ### 3.5 Command surface and protocol version 3
 
 ```text
-scanny-boy roll init  --library DIR --name NAME --per-negative N
-scanny-boy roll list  --library DIR
-scanny-boy roll info  --roll DIR
+scanny-boy roll init   --library DIR --name NAME --per-negative N
+scanny-boy roll list   --library DIR
+scanny-boy roll info   --roll DIR
+scanny-boy roll rename --roll DIR --name NAME
 
 scanny-boy probe      --input DIR [--files FILE ...] [--per-negative N] [--roll DIR]
 
@@ -345,6 +346,21 @@ scanny-boy apply-metadata --roll DIR
   `roll_info` event. This is how Swift reads a roll: **Swift never parses
   `scanny-boy-roll.json` itself, and never enumerates the library itself
   either** — `roll list` and `roll info` are the only two ways in.
+- `roll rename` moves the roll's folder to a slug of `--name` (§3.2's rule
+  and collision handling) and, only after a successful move, writes the new
+  `roll_name` into the manifest — the same `roll_folder.rename_roll` Chunk
+  P3-4 already built, now reachable from the app. It emits `roll_renamed`
+  carrying `roll_id`, `roll_name`, and `path` (the roll's new location). It
+  fails with `ROLL_NOT_FOUND` for a roll that does not exist, `ROLL_EXISTS`
+  if it cannot find a free destination folder name after 99 suffix attempts,
+  and `ROLL_RENAME_FAILED` if the move itself fails (§3.12) — in which case
+  neither the folder nor the manifest changed. `roll rename` does not enforce
+  "refused while any run is active" (§3.2): the CLI is stateless between
+  invocations and has no notion of an in-progress run, so the app checks that
+  itself before ever issuing the command, exactly as it already tracks the
+  one active run app-wide (§3.10). Deleting a roll has no CLI command at all:
+  `NSWorkspace.recycle` needs no server-side cooperation, so it stays pure
+  Swift, per §3.10.
 - `probe --roll DIR` adds roll-aware validation: the selection is hashed and
   compared against the roll's `sources`, and `probe_result` gains
   `roll_overlap` — an array of `{negative_id, expected_output, run_id,
@@ -361,8 +377,9 @@ scanny-boy apply-metadata --roll DIR
 - `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 - `apply-metadata` is §3.8.
 - **Protocol version 3.** The app rejects a version-2 stream. New events:
-  `roll_created`, `roll_list`, `roll_info`, `negative_superseded`,
-  `metadata_applied`, `metadata_skipped`. Removed: nothing.
+  `roll_created`, `roll_list`, `roll_info`, `roll_renamed`,
+  `negative_superseded`, `metadata_applied`, `metadata_skipped`. Removed:
+  nothing.
 
 ### 3.6 Work directories
 
@@ -497,7 +514,8 @@ recoverable with Apply. A stitch is never failed by a metadata problem.
 | --- | --- |
 | `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
 | `ROLL_MANIFEST_UNSUPPORTED` | Manifest is not `manifest_format_version: 2` |
-| `ROLL_EXISTS` | `roll init` could not find a free folder name |
+| `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
+| `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed (added at Chunk P3-10, §5.5) |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants (§3.4) |
 | `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
@@ -755,6 +773,44 @@ grow a field. The roll's own record is `RollSourceRecord` in
 `roll_manifest.py`, with `SourceRecord`'s five fields plus `run_id`.
 `merge_sources` takes Phase 1 `SourceRecord`s as its signature says and
 stores `RollSourceRecord`s.
+
+### 5.5 Decisions taken during P3-10
+
+P3-10 stopped and reported one gap between §3 and the command surface §3.5
+had actually locked. This is the answer, and it is as binding as §3.
+
+**Renaming a roll needs a CLI command, which §3.5 never gave it.** §3.2 says
+a rename moves the folder, then writes the manifest's `roll_name` — and
+`roll_folder.rename_roll` (built at Chunk P3-4) already does exactly that,
+end to end. But §3.5's original command surface named only `roll init`,
+`roll list`, and `roll info`, and §3.1 separately says "Swift never parses
+`scanny-boy-roll.json` itself." Chunk P3-10's own file table said rename
+"stays in Swift (`Foundation` move...)" regardless — those two instructions
+cannot both be followed for the manifest-write half of a rename, and P3-10
+stopped rather than have Swift patch the JSON file directly to invent its
+way past the contradiction.
+
+The fix is `roll rename --roll DIR --name NAME` (§3.5), wiring
+`rename_roll` up to the CLI exactly as `roll init` wires `create_roll` up
+to it, emitting `roll_renamed`. This is now retroactively part of §3.5 and
+§3.12 (`ROLL_RENAME_FAILED`, for a failed move) — both sections already
+read as if it had always been there. The one thing the CLI command does
+**not** do is enforce "refused while any run is active" (§3.2): the CLI is
+stateless between invocations, so that check stays exactly where §3.10
+already puts the app's one-active-run-at-a-time state — the app, not the
+server. Deleting a roll needed no equivalent fix: `NSWorkspace.recycle`
+needs no server-side cooperation at all, so §3.10's "stays in Swift" for
+delete was correct as written and is unchanged.
+
+`roll_folder.rename_roll` gains one behavioural fix as part of this: it now
+catches the folder move's `OSError` and raises
+`RollFolderError(ROLL_RENAME_FAILED)` instead of letting it propagate
+raw, so `cli.py` has one exception type to catch for every `roll rename`
+failure, matching every other subcommand's pattern. Chunk P3-4's
+`test_rename_roll_leaves_everything_alone_on_move_failure` is updated for
+this — its meaning does not change (a failed move still leaves both the
+folder and the manifest untouched); only the exception type it asserts on
+does.
 
 ---
 
@@ -1145,7 +1201,7 @@ Branch: `p3-chunk-10-app-library` · **Model: Sonnet 5** · **Auto-advance: no**
 
 | File | Change |
 | --- | --- |
-| `mac/ScannyBoy/Model/RollLibrary.swift` | **new** — list via `roll list`; create, rename, delete |
+| `mac/ScannyBoy/Model/RollLibrary.swift` | **new** — list via `roll list`; create via `roll init`; rename via `roll rename` (§5.5); delete via `NSWorkspace.recycle` |
 | `mac/ScannyBoy/Model/Roll.swift` | **new** — decoded `roll_list` and `roll_info` payloads |
 | `mac/ScannyBoy/Views/RollSidebar.swift` | **new** |
 | `mac/ScannyBoy/Views/NewRollSheet.swift` | **new** |
@@ -1154,13 +1210,17 @@ Branch: `p3-chunk-10-app-library` · **Model: Sonnet 5** · **Auto-advance: no**
 | `mac/ScannyBoy/Views/ContentView.swift` | `NavigationSplitView` shell with the tab picker |
 | `mac/ScannyBoy/Model/RollManifest.swift` | becomes the `roll_info` decoder |
 | `mac/ScannyBoyTests/RollLibraryTests.swift` | **new** |
+| `cli/src/scanny_boy/roll_folder.py`, `cli.py`, `events.py`, and their tests | §5.5: `roll rename` |
+| `shared/contract/CONTRACT.md`, `schema.json` | §5.5: `roll rename`, `roll_renamed`, `ROLL_RENAME_FAILED` |
 
 `RollLibrary.swift` builds the sidebar from one `roll list` invocation and
 **does no directory enumeration of its own** — no `contentsOfDirectory`, no
-manifest parsing. Rename and delete stay in Swift (`Foundation` move,
-`NSWorkspace.recycle`); reading does not. The library base is injected, never
-read from `.picturesDirectory` in tests. Delete confirms first, naming the
-folder and the TIFF count.
+manifest parsing. Rename now goes through the CLI's `roll rename` (§5.5);
+the app still enforces "refused while any run is active" itself, since the
+CLI has no notion of that. Delete stays in Swift
+(`NSWorkspace.recycle`) — reading does not, and neither of those two things
+changed. The library base is injected, never read from `.picturesDirectory`
+in tests. Delete confirms first, naming the folder and the TIFF count.
 
 **Tests:** `testScanFindsOnlyDirectoriesWithAManifest`,
 `testUnreadableRollIsListedWithItsReason`,
