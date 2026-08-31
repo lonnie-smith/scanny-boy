@@ -106,11 +106,6 @@ struct ConfigurationModelTests {
     private static let sixFileTwoGroups =
         #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
 
-    /// Two groups; only the first overlaps a negative already in the roll —
-    /// `n4`-`n6` never appear in `roll_overlap` at all.
-    private static let sixFileTwoGroupsOneOverlapping =
-        #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"n1.tif","run_id":"r","overlapping_sources":["n1.NEF","n2.NEF","n3.NEF"],"group_index":0}]}"#
-
     /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
     /// to be read back by `RollManifest` — the `roll info` CLI response
     /// `roll` is now built from, rather than a file on disk (section 3.1).
@@ -351,8 +346,8 @@ struct ConfigurationModelTests {
         #expect(command.arguments[perNegativeIndex + 1] == "3")
     }
 
-    @Test("An overlapping selection needs review, and the sheet's Skip default becomes --skip-sources")
-    func overlapReviewFlowsIntoTheRunCommand() async throws {
+    @Test("An overlapping selection still runs, and names no --skip-sources")
+    func overlappingSelectionRunsWithoutSkipSources() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -375,57 +370,11 @@ struct ConfigurationModelTests {
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
-        #expect(model.rollOverlap.count == 1)
-        #expect(model.needsOverlapReview)
-
-        let review = OverlapReview(entries: model.rollOverlap)
-        let command = try #require(model.runCommand(skipSources: review.skipSources))
-        let skipIndex = try #require(command.arguments.firstIndex(of: "--skip-sources"))
-        #expect(Set(command.arguments[(skipIndex + 1)...]) == Set(["a.NEF", "b.NEF", "c.NEF"]))
-    }
-
-    @Test("Non-overlapping groups are never named in the overlap sheet and always run")
-    func testNonOverlappingGroupsAlwaysRun() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
-        let executable = try Self.fakeProbeExecutable(
-            in: directory,
-            catalogueOnly: [
-                Self.started,
-                #"{"protocol_version":3,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
-                Self.finishedSuccess,
-            ],
-            withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess],
-            withFilesAndRoll: [
-                Self.started, Self.sixFileTwoGroupsOneOverlapping, Self.finishedSuccess,
-            ],
-            rollInfo: [Self.rollInfoEvent()]
-        )
-        let model = ConfigurationModel(
-            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
-        )
-
-        model.inputFolder = directory
-        await model.waitForPendingProbes()
-        model.rollURL = rollDir
-        model.selectedFiles = Set(Self.sixFileNames)
-        await model.waitForPendingProbes()
-
-        // Both groups are still offered — overlap never removes a group from
-        // the preview, only from the eventual `--skip-sources`.
-        #expect(model.groups.count == 2)
-        #expect(model.rollOverlap.count == 1)
-
-        let review = OverlapReview(entries: model.rollOverlap)
-        // Left at the sheet's own Skip default, only the overlapping group's
-        // members are ever named — the second group's are never skippable.
-        #expect(Set(review.skipSources) == Set(["n1.NEF", "n2.NEF", "n3.NEF"]))
-        #expect(!review.skipSources.contains("n4.NEF"))
-        #expect(!review.skipSources.contains("n5.NEF"))
-        #expect(!review.skipSources.contains("n6.NEF"))
+        // Overlapping a negative already in the roll is never a reason to
+        // withhold the Run command — every group runs and supersedes
+        // whatever it overlaps.
+        let command = try #require(model.runCommand())
+        #expect(!command.arguments.contains("--skip-sources"))
     }
 
     // MARK: - Last-folder memory

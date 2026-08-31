@@ -144,7 +144,6 @@ struct RunIntegrationTests {
         let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files)
         #expect(model.groups.count == 2)
         #expect(model.runEnabled)
-        #expect(!model.needsOverlapReview)
 
         let run = RunModel(runner: try Self.runner())
         run.start(
@@ -249,16 +248,14 @@ struct RunIntegrationTests {
     // MARK: - Rerunning against a roll that already holds the negative
 
     /// Section 3.4: a selection that overlaps a negative already in the roll
-    /// is never rejected outright — the overlap sheet decides, defaulting to
-    /// Skip. Left at that default, every overlapping source is skipped, so a
-    /// rerun with nothing left to convert fails safely with `NO_FILES`
-    /// rather than silently touching the first run's negative.
+    /// is never rejected outright, and the app no longer asks — it always
+    /// replaces (supersedes) whatever it overlaps.
     @Test(
-        "a rerun left at the overlap sheet's Skip default touches nothing",
+        "a rerun over the same selection supersedes the earlier negative",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(10))
     )
-    func rerunLeftAtSkipDefaultTouchesNothing() async throws {
+    func rerunSupersedesTheEarlierNegative() async throws {
         let roll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
@@ -272,20 +269,14 @@ struct RunIntegrationTests {
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
         #expect(firstRun.stitchedNegatives.count == 1)
+        let firstNegativeID = try #require(firstRun.stitchedNegatives.first?.negativeID)
 
-        // A second configuration over the same roll and selection reports
-        // the overlap rather than rejecting it outright.
+        // A second configuration over the same roll and selection overlaps
+        // the negative the first run just published.
         let second = try await Self.configuredModel(roll: roll, select: negativeOne)
         #expect(second.rollError == nil)
-        #expect(second.needsOverlapReview)
-        #expect(second.rollOverlap.count == 1)
-        #expect(second.rollOverlap.first?.overlappingSources.sorted() == negativeOne.sorted())
-
-        // Left at the sheet's own Skip default (`OverlapReview`), every
-        // overlapping source is skipped.
-        let review = OverlapReview(entries: second.rollOverlap)
-        let command = try #require(second.runCommand(skipSources: review.skipSources))
-        #expect(!command.arguments.contains("--overwrite"))
+        let command = try #require(second.runCommand())
+        #expect(!command.arguments.contains("--skip-sources"))
 
         let secondRun = RunModel(runner: try Self.runner())
         secondRun.start(
@@ -295,10 +286,19 @@ struct RunIntegrationTests {
         )
         await secondRun.waitForCompletion()
 
-        // Nothing was left to convert once every source was skipped.
-        #expect(secondRun.outcome == .failure)
-        #expect(secondRun.cliError?.code == .noFiles)
-        #expect(secondRun.stitchedNegatives.isEmpty)
+        #expect(secondRun.outcome == .success)
+        #expect(secondRun.stitchedNegatives.count == 1)
+
+        let report = try #require(secondRun.rollManifestReport)
+        guard case .final(let manifest) = report else {
+            Issue.record("expected a final roll manifest, got \(report)")
+            return
+        }
+        let firstNegative = try #require(
+            manifest.negatives.first { $0.negativeID == firstNegativeID }
+        )
+        #expect(firstNegative.isSuperseded)
+        #expect(manifest.liveNegatives.count == 1)
     }
 
     // MARK: - Cancel retains earlier groups and discards the current one

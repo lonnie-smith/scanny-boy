@@ -29,10 +29,10 @@ struct ContentView: View {
 
     @State private var selection: Roll.ID?
     @State private var workspaceTab: WorkspaceTab = .addScans
-    @State private var isPresentingOverlapSheet = false
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
+    @State private var isPresentingNewRollSheet = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -41,15 +41,22 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(library: library, selection: $selection, runIsActive: run.isActive)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             if selection != nil {
                 workspace
             } else {
-                ContentUnavailableView(
-                    "No Roll Selected",
-                    systemImage: "photo.stack",
-                    description: Text("Choose a roll from the sidebar, or create one.")
-                )
+                ContentUnavailableView {
+                    Label("No Roll Selected", systemImage: "photo.stack")
+                } description: {
+                    Text("Choose a roll from the sidebar, or create one.")
+                } actions: {
+                    Button("New Roll…") {
+                        isPresentingNewRollSheet = true
+                    }
+                    .disabled(run.isActive)
+                    .accessibilityIdentifier("newRollButtonEmptyState")
+                }
             }
         }
         .frame(minWidth: 720, minHeight: 480)
@@ -70,6 +77,11 @@ struct ContentView: View {
                 workDirectory: restitchWorkDirectory,
                 outputFolder: restitchOutputFolder
             )
+        }
+        .sheet(isPresented: $isPresentingNewRollSheet) {
+            NewRollSheet(library: library) { roll in
+                selection = roll.id
+            }
         }
     }
 
@@ -214,37 +226,24 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Run") { startRun() }
-                    .disabled(!model.isReadyPendingOverlapReview || run.isActive)
+                    .disabled(!model.runEnabled || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }
-            // Section 3.4/3.5: the overlap sheet replaces the old
-            // overwrite-confirmation dialog — one row per overlapping
-            // prospective negative, Skip or Replace, before the run starts.
-            .sheet(isPresented: $isPresentingOverlapSheet) {
-                OverlapSheet(entries: model.rollOverlap) { skipSources in
-                    beginRun(skipSources: skipSources)
-                }
-            }
         }
     }
 
+    // A run always replaces (supersedes) whatever it overlaps — passing no
+    // `--skip-sources` is exactly that (CONTRACT.md: "replace is expressed
+    // by *not* skipping its sources").
     private func startRun() {
-        if model.needsOverlapReview {
-            isPresentingOverlapSheet = true
-        } else {
-            beginRun(skipSources: [])
-        }
-    }
-
-    private func beginRun(skipSources: [String]) {
-        guard let command = model.runCommand(skipSources: skipSources), let rollURL = model.rollURL
-        else { return }
+        guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
         run.start(
             command: command,
             files: model.selectedFilesInCanonicalOrder,
-            outputFolder: rollURL
+            outputFolder: rollURL,
+            totalNegatives: model.groups.count
         )
-        // The roll's contents, and therefore the overlap preview, change as
+        // The roll's contents, and therefore selection validity, change as
         // soon as this finishes.
         Task {
             await run.waitForCompletion()
@@ -261,7 +260,7 @@ struct ContentView: View {
         isPresentingRestitch = true
     }
 
-    /// Mirrors `beginRun`'s tail: a re-stitch can target `model.rollURL`
+    /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`
     /// (most often, since the button pre-fills it), so its contents may have
     /// changed too.
     private func handleRestitchStarted() {
