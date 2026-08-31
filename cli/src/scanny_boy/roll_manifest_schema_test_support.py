@@ -6,9 +6,9 @@ driving the test from the schema file itself, independent of any hand-written
 structural checks a production module may add, so a drift between the two
 would still be caught here.
 
-Phase 3 section 0: there is no migration, so this validates format version 2
-and nothing else. The v1 rules P3-0 carried through the contract chunk are
-gone with P3-2's writer.
+Phase 3 section 0: there is no migration, so this validates format version 3
+and nothing else. The v2 rules P3-2 carried through the contract chunk are
+gone with the supersession-tombstone removal.
 """
 
 from __future__ import annotations
@@ -27,17 +27,17 @@ def load_roll_manifest_schema() -> dict[str, Any]:
     return json.loads(_SCHEMA_PATH.read_text())
 
 
-def empty_v2_manifest(
+def empty_v3_manifest(
     *,
     roll_id: str = "00000000-0000-4000-8000-000000000001",
     roll_name: str = "Test Roll",
     shots_per_negative: int = 3,
 ) -> dict[str, Any]:
-    """Minimal empty v2 manifest matching §3.3."""
+    """Minimal empty v3 manifest matching §3.3."""
     now = "2026-08-30T12:00:00+00:00"
     sha = "a" * 64
     return {
-        "manifest_format_version": 2,
+        "manifest_format_version": 3,
         "manifest_kind": "roll",
         "scanny_boy_version": "0.3.0",
         "roll_id": roll_id,
@@ -60,7 +60,7 @@ def _require_keys(data: dict[str, Any], keys: list[str]) -> None:
     assert not missing, f"missing required fields: {missing}"
 
 
-def _assert_matches_v2_roll_manifest_schema(
+def _assert_matches_v3_roll_manifest_schema(
     data: dict[str, Any], schema: dict[str, Any]
 ) -> None:
     defs = schema["definitions"]
@@ -104,4 +104,4 @@ def _assert_matches_v2_roll_manifest_schema(
 
 
 def assert_matches_roll_manifest_schema(data: dict[str, Any], schema: dict[str, Any]) -> None:
-    _assert_matches_v2_roll_manifest_schema(data, schema)
+    _assert_matches_v3_roll_manifest_schema(data, schema)

@@ -148,6 +148,9 @@ class _SolvedNegative:
     group: GroupRecord
     record: NegativeRecord
     pairs: list[PairResult]
+    # Covered negatives this run removes when this group publishes: records
+    # dropped from the manifest, TIFFs unlinked best-effort.
+    covered_to_remove: list[NegativeRecord] = dataclasses.field(default_factory=list)
     layout: Layout | None = None
     frame_size: tuple[int, int] | None = None  # (height, width)
     failure: tuple[Code, str] | None = None
@@ -572,15 +575,14 @@ def run_stitch(
     and ends `partial` (section 3.5). A cancelled negative is abandoned,
     not failed, and emits no `NegativeFailed`.
 
-    `overwrite` is accepted and unused: section 3.4 makes a roll additive, so
-    a stitch never replaces a published file.
+    `overwrite` is accepted and unused: a stitch replaces a published file
+    only by adopting the covered negative in place, which needs no flag.
 
     `negatives`, when given, restricts this stitch to the work manifest
     groups whose members exactly match one of the roll's existing negatives
     named by `negatives` (section 3.5's `--negatives` re-stitch path). Each
-    match still publishes under a fresh `negative_id`, per section 3.4's
-    additive model — an exact-member match is exactly what section 3.4's
-    supersession rule is for.
+    match adopts the existing negative in place — same `negative_id`, same
+    output name — per the replacement rule.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -667,7 +669,7 @@ def run_stitch(
 
     if negatives:
         wanted_members = {
-            frozenset(n.members) for n in roll.live_negatives() if n.negative_id in negatives
+            frozenset(n.members) for n in roll.negatives if n.negative_id in negatives
         }
         groups = [g for g in groups if frozenset(g.members) in wanted_members]
         if not groups:
@@ -676,7 +678,7 @@ def run_stitch(
                 "none of the requested --negatives match a group in this work manifest",
             )
 
-    run_record, records_by_group = _append_this_run(
+    run_record, records_by_group, removals_by_group = _append_this_run(
         roll, work_manifest, groups, run_id, invariants, work_dir
     )
 
@@ -704,7 +706,12 @@ def run_stitch(
         if cancel.cancelled:
             cancelled = True
             break
-        entry = _SolvedNegative(group=group, record=record, pairs=[])
+        entry = _SolvedNegative(
+            group=group,
+            record=record,
+            pairs=[],
+            covered_to_remove=removals_by_group.get(group.group_id, []),
+        )
         try:
             layout, frame_size = _solve_negative(
                 work_dir,
@@ -804,6 +811,26 @@ def run_stitch(
     return StitchOutcome(status=status, published=published, failed=failed)
 
 
+def _covered_negatives(roll: RollManifest, members: list[str]) -> list[NegativeRecord]:
+    """Every existing negative whose members are all covered by `members` —
+    the replacement rule's subset test. The status is irrelevant: a covered
+    negative that never published (`pending`/`failed`, no file) is still
+    adopted or removed."""
+    covering = set(members)
+    return [n for n in roll.negatives if set(n.members) <= covering]
+
+
+def _pick_adopted(covered: list[NegativeRecord], first_member: str) -> NegativeRecord:
+    """Which covered negative a group adopts, deterministically: the one
+    whose `expected_output` is the group's natural stem name when one does,
+    otherwise the first in manifest order."""
+    stem = f"{Path(first_member).stem}.tif"
+    for negative in covered:
+        if negative.expected_output == stem:
+            return negative
+    return covered[0]
+
+
 def _append_this_run(
     roll: RollManifest,
     work_manifest: Manifest,
@@ -811,17 +838,28 @@ def _append_this_run(
     run_id: str,
     invariants: RollInvariants,
     work_dir: Path,
-) -> tuple[RunRecord, dict[str, NegativeRecord]]:
+) -> tuple[RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]]]:
     """Add this stitch to the roll: its run record, its sources, and one
-    `pending` negative per group, all per sections 3.3 and 3.4.
+    negative per group, all per sections 3.3 and 3.4.
+
+    The replacement rule: a group that covers existing negatives adopts one
+    of them — its `negative_id` and `expected_output` are kept, and the
+    record is updated in place with this run's identity (`run_id`, members;
+    frames, pairs, output, and status follow at publish). Any other covered
+    negative is marked for removal, executed when this group publishes. A
+    group that covers nothing gets a fresh id and name exactly as before.
+
+    The adopted record's existing output, capture time, and rank data stay
+    in place until publish replaces them, so a crash before the staged
+    `os.replace` leaves the roll describing exactly what was there before.
 
     Section 5.4 decision 1: the first run establishes the three invariants an
     empty roll cannot know. `check_roll_invariants` has already passed, so
     assigning them here is a seeding, never an overwrite.
 
-    Returns the run record and this run's negatives keyed by work-manifest
-    group id, because the group id is what the solving loop carries and
-    `negative_id` is now the roll's name for the same thing, not Phase 1's.
+    Returns the run record, this run's negatives keyed by work-manifest
+    group id (because the group id is what the solving loop carries), and
+    per group the covered records to remove at publish.
     """
     if not roll.runs:
         roll.processing_params = invariants.processing_params
@@ -848,18 +886,33 @@ def _append_this_run(
     merge_sources(roll, work_manifest.sources, run_id)
 
     records: dict[str, NegativeRecord] = {}
-    for index, group in enumerate(groups, start=1):
-        negative_id = format_negative_id(run_record.short_id, index)
-        record = NegativeRecord(
-            negative_id=negative_id,
-            run_id=run_id,
-            members=list(group.members),
-            expected_output=allocate_output_name(roll, group.members[0], negative_id),
-            fill_color=FILL_COLOR,
-        )
-        roll.negatives.append(record)
-        records[group.group_id] = record
-    return run_record, records
+    removals: dict[str, list[NegativeRecord]] = {}
+    next_index = 1
+    for group in groups:
+        covered = _covered_negatives(roll, group.members)
+        if covered:
+            adopted = _pick_adopted(covered, group.members[0])
+            adopted.run_id = run_id
+            adopted.members = list(group.members)
+            adopted.status = "pending"
+            adopted.used_clahe_fallback = False
+            adopted.error_code = None
+            adopted.error_message = None
+            records[group.group_id] = adopted
+            removals[group.group_id] = [n for n in covered if n is not adopted]
+        else:
+            negative_id = format_negative_id(run_record.short_id, next_index)
+            next_index += 1
+            record = NegativeRecord(
+                negative_id=negative_id,
+                run_id=run_id,
+                members=list(group.members),
+                expected_output=allocate_output_name(roll, group.members[0], negative_id),
+                fill_color=FILL_COLOR,
+            )
+            roll.negatives.append(record)
+            records[group.group_id] = record
+    return run_record, records, removals
 
 
 def _friendly_failure_message(
@@ -906,23 +959,26 @@ def _record_failure(
     )
 
 
-def _covered_applied_source(roll: RollManifest, record: NegativeRecord) -> NegativeRecord | None:
-    """Section 3.9: the existing, non-superseded negative `record` covers
-    (section 3.4's own subset test — the same one `mark_superseded` uses,
-    but read-only here: whether `record` will actually go on to supersede
-    it is section 3.4's replacement rule, executed later by `run`) that
-    already had a capture time applied. `None` when `record` covers
-    nothing, or covers only negatives that were never applied."""
+def _covered_applied_source(
+    roll: RollManifest, record: NegativeRecord, previous: CaptureTime
+) -> CaptureTime | None:
+    """Section 3.9: the capture time to re-apply when `record` republishes
+    an existing negative's result — the adopted record's own previous
+    applied time when it had one, otherwise an applied capture time held by
+    another negative `record` covers (the replacement rule's subset test).
+
+    Returns the `CaptureTime` whose `applied_datetime_original` should be
+    carried forward, or `None` when there is nothing to re-apply."""
+    if previous.applied_datetime_original is not None:
+        return previous
     covering = set(record.members)
     for other in roll.negatives:
         if other.negative_id == record.negative_id:
             continue
-        if other.superseded_by is not None:
-            continue
         if not set(other.members) <= covering:
             continue
         if other.capture_time.applied_datetime_original is not None:
-            return other
+            return other.capture_time
     return None
 
 
@@ -930,6 +986,7 @@ def _maybe_reapply_metadata(
     out_dir: Path,
     roll: RollManifest,
     record: NegativeRecord,
+    previous: CaptureTime,
     run_id: str,
     emit: EmitFn,
 ) -> None:
@@ -939,13 +996,13 @@ def _maybe_reapply_metadata(
     dirty. A failed re-apply leaves `record` `completed` with
     `applied_datetime_original` cleared (dirty, recoverable with Apply) and
     never fails the stitch."""
-    source = _covered_applied_source(roll, record)
+    source = _covered_applied_source(roll, record, previous)
     if source is None:
         return
 
     assert record.output is not None
     record.capture_time.intended_datetime_original = (
-        source.capture_time.applied_datetime_original
+        source.applied_datetime_original
     )
     intended = datetime.datetime.fromisoformat(record.capture_time.intended_datetime_original)
     tiff_path = out_dir / record.output["name"]
@@ -967,6 +1024,36 @@ def _maybe_reapply_metadata(
     emit(MetadataApplied(run_id=run_id, negative_id=record.negative_id))
 
 
+def _remove_covered_negatives(
+    out_dir: Path,
+    roll: RollManifest,
+    covered: list[NegativeRecord],
+    run_id: str,
+    emit: EmitFn,
+) -> None:
+    """The replacement rule's removal half: the covered negatives a publish
+    did not adopt are dropped from the manifest outright, and their TIFFs
+    are unlinked best-effort — a failed delete emits
+    `ORPHAN_FILE_NOT_REMOVED` and never fails the run. Records go first and
+    the manifest is written after, so a crash here leaves an orphan file
+    rather than a dangling record."""
+    for old in covered:
+        roll.negatives.remove(old)
+        if old.output is None:
+            continue
+        old_path = out_dir / old.output["name"]
+        try:
+            old_path.unlink()
+        except OSError as exc:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.ORPHAN_FILE_NOT_REMOVED,
+                    message=f"{old_path} could not be removed: {exc}",
+                )
+            )
+
+
 def _composite_and_publish(
     *,
     work_dir: Path,
@@ -984,6 +1071,10 @@ def _composite_and_publish(
     layout = entry.layout
     assert layout is not None
     record = entry.record
+    # The adopted record's previous capture time, kept aside before this
+    # publish overwrites it: its applied time is what section 3.9 carries
+    # forward onto the new file.
+    previous_capture_time = record.capture_time
     paths = _intermediate_paths(work_dir, entry.group)
     by_name = {path.name: path for path in paths}
 
@@ -1087,7 +1178,8 @@ def _composite_and_publish(
             "height": height,
         }
         record.status = "completed"
-        _maybe_reapply_metadata(out_dir, roll, record, run_id, emit)
+        _maybe_reapply_metadata(out_dir, roll, record, previous_capture_time, run_id, emit)
+        _remove_covered_negatives(out_dir, roll, entry.covered_to_remove, run_id, emit)
         write_roll_manifest(out_dir, roll)
         emit(
             NegativeDone(

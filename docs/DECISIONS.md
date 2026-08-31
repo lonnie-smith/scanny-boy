@@ -427,16 +427,41 @@ pixel value does (`punchlist.md`).
   first six hex characters of the run's UUID and lengthens on collision.
   Output names keep Phase 2's first-member-stem rule, with a `-2`, `-3`, …
   suffix on collision across runs.
-- **Replacement is additive, never in-place.** A run may include sources
-  already in the roll; the new negative publishes under its own identity,
-  and once it completes, every existing negative whose members are a
-  subset of the new one's is superseded: `superseded_by` set,
-  `sequence` cleared, its TIFF deleted (manifest write first, so a crash
-  leaves an orphan file rather than a dangling record). Superseded
-  negatives are never removed from the manifest and their output names
-  stay claimed.
 
-## Command surface (protocol version 3)
+## Replacement is in-place and invisible
+
+- **A rerun adopts the covered negative in place.** A run's group that
+  covers existing negatives (the same subset test the supersession rule
+  used) adopts one of them — keeping its `negative_id` and
+  `expected_output` — and updates that record in place with the new run's
+  data. Any other covered negatives are removed outright: record dropped
+  from the manifest, TIFF unlinked best-effort (`ORPHAN_FILE_NOT_REMOVED`
+  on failure, never fatal). A group that covers nothing gets a fresh id
+  and name as before; a splitting regroup covers only part of an existing
+  negative, so it coexists under `-2` suffixes as it always did.
+- **There is no tombstone.** `superseded_by`, the
+  `negative_superseded` event, and the "Show replaced negatives" toggle
+  are all gone. A replaced negative is indistinguishable from any other
+  negative: same record, same name, file replaced atomically by the
+  staged-then-`os.replace` publish. The names a removed covered negative
+  held are freed for future allocation — no never-reissue rule.
+- **Adopted ids keep the old run's `short_id`** while `run_id` points at
+  the new run. Ids are opaque; the schema's comment says so and does not
+  claim otherwise.
+- **Adoption happens at publish.** The adopt-or-remove decision is made
+  when the run's groups are appended, but the record's old output,
+  capture time, and rank data stay in place until the new publish
+  replaces them, so a crash before the staged `os.replace` leaves the roll
+  describing exactly what was there before; a crash after it leaves the
+  same "new file, stale record" story any publish has always had.
+- **History, reversed.** The rule this replaces — "replacement is
+  additive, never in-place", with `superseded_by` tombstones above — is
+  the previous, and now discarded, design. Sequence ranking and
+  `apply-metadata` simply treat every negative: a completed negative
+  ranks by capture time whether it was adopted or fresh, and every dirty
+  completed negative is eligible for Apply.
+
+## Command surface (protocol version 4)
 
 - `roll init/list/info/rename` manage the library; `roll rename` is a
   P3-10 addition to the original plan (§5.5) — the plan named only
@@ -447,17 +472,19 @@ pixel value does (`punchlist.md`).
   negative that shares sources with a negative already in the roll —
   without rejecting the overlap outright; the app's overlap sheet decides.
 - `run` and `stitch` take `--roll` in place of `--out`; `--film-date` and
-  `run --overwrite` are both gone. Replacing a negative is expressed by
-  *not* skipping its sources (`run --skip-sources`), which the app derives
-  from the overlap sheet, never by an overwrite flag.
+  `run --overwrite` are both gone. Replacement is expressed by *not*
+  skipping its sources (`run --skip-sources` remains the way to redo a
+  scan without touching an existing negative), and the replacement itself
+  is the adopt-in-place rule.
 - `apply-metadata --roll DIR` is new: section "Metadata and Apply" below.
 
 ## Sequence and metadata
 
 - A roll's negatives are ordered by real capture time of each negative's
-  first member, across every run, ascending; a superseded negative is
-  excluded from the order entirely (`sequence: null`), so a replacement
-  takes its predecessor's position rather than shifting later negatives.
+  first member, across every run, ascending; a negative that never
+  published (`pending`/`failed`) is excluded from the order
+  (`sequence: null`), so a rerun's adopted negative keeps its predecessor's
+  position rather than shifting later negatives.
 - The applied timestamp is **rank-based**: `12:00:00 + (rank − 1)` seconds
   on the roll's capture date, or on a negative's own date override when it
   has one, ranked within that date's negatives. One computation,
@@ -465,7 +492,7 @@ pixel value does (`punchlist.md`).
 - **Intent lives in the manifest; the TIFF is the artefact.** A negative is
   dirty when `intended_datetime_original` differs from
   `applied_datetime_original`. `apply-metadata` processes every dirty,
-  completed, non-superseded negative: verifies the published TIFF against
+  completed negative: verifies the published TIFF against
   the manifest's recorded size/hash (skips with `OUTPUT_MODIFIED_
   EXTERNALLY` rather than rewriting a file the roll no longer recognises),
   rewrites the nested EXIF `DateTimeOriginal`/`SubSecTimeOriginal` with

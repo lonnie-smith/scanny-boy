@@ -134,16 +134,20 @@ def test_sequence_is_stable_when_nothing_changed():
     assert sequence_negatives(manifest) == sequence_negatives(manifest)
 
 
-def test_superseded_negatives_are_excluded_from_the_order():
+def test_pending_and_failed_negatives_are_excluded_from_the_order():
     manifest = _manifest(
         negatives=[
-            _completed_negative(negative_id="a", superseded_by="b"),
+            _completed_negative(negative_id="a"),
             _completed_negative(
                 negative_id="b",
                 members=["x.NEF"],
                 capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:05"),
             ),
-        ],
+        ]
     )
+    manifest.negative("a").status = "pending"
+    manifest.negative("a").output = None
 
+    # Section 3.7: only published negatives rank — a `pending` or `failed`
+    # one has no capture time to rank by and nothing to display.
     assert sequence_negatives(manifest) == ["b"]

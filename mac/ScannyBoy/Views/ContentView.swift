@@ -233,9 +233,9 @@ struct ContentView: View {
         }
     }
 
-    // A run always replaces (supersedes) whatever it overlaps — passing no
-    // `--skip-sources` is exactly that (CONTRACT.md: "replace is expressed
-    // by *not* skipping its sources").
+    // A run always adopts whatever it overlaps in place — passing no
+    // `--skip-sources` is exactly that: the covered negative keeps its id
+    // and filename, and its TIFF is replaced atomically.
     private func startRun() {
         guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
         run.start(

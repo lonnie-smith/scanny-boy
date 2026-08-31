@@ -155,8 +155,8 @@ final class ConfigurationModel {
 
     /// The `run` invocation this configuration describes, or `nil` when it
     /// does not yet describe a runnable one. `skipSources` is always empty:
-    /// every group in the selection runs and, per section 3.4, supersedes
-    /// whatever it overlaps in the roll.
+    /// every group in the selection runs and adopts whatever it overlaps in
+    /// the roll (the replacement rule).
     func runCommand() -> CLICommand? {
         guard runEnabled, let inputFolder, let rollURL else { return nil }
         return .run(

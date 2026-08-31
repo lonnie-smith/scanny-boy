@@ -141,8 +141,9 @@ moves it to the Trash.
    each negative's result (published, or why it failed) when it ends. A
    selection that overlaps sources already in the roll shows a sheet first,
    one row per overlapping prospective negative, defaulting to **Skip**;
-   choosing **Replace** supersedes the existing negative and deletes its
-   TIFF.
+   choosing **Replace** adopts the existing negative in place — same
+   negative and same filename, its stitched TIFF replaced with the new
+   result.
 4. **Re-stitch, if a negative needs tuning.** A run never keeps the work
    directory it creates — it is removed on every outcome — so to re-stitch
    you point the app at one you kept yourself (a run started with `--work`,
@@ -152,8 +153,9 @@ moves it to the Trash.
 **Edit** — the roll's negatives in sequence, with a thumbnail, source
 frames, and quality metrics for each; a dirty count and an **Apply** button
 that writes intended capture times into the published TIFFs' EXIF tags (no
-pixel data is touched); the roll's name and folder; and a toggle to show
-negatives a later run has superseded. The roll capture date,
+pixel data is touched); the roll's name and folder. A rerun that replaced
+a negative does not leave anything behind to show: the negative simply
+holds the new result. The roll capture date,
 each negative's date override, and shots per negative are shown here but
 are not yet editable from the app — see `docs/punchlist.md`.
 
