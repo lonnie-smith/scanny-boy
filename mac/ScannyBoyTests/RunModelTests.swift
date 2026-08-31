@@ -732,32 +732,6 @@ struct RunModelTests {
         #expect(run.currentStep == .warp)
     }
 
-    @Test("INTERMEDIATES_KEPT's path is parsed out of the warning message")
-    func intermediatesKeptPathIsParsed() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let executable = try Self.fakeConvertExecutable(
-            emitting: [
-                Self.started,
-                Self.warningEvent(
-                    code: "INTERMEDIATES_KEPT",
-                    message: "intermediates kept at /tmp/scanny-boy-work-abc123"
-                ),
-                Self.finished(status: "failed", exitStatus: 1),
-            ],
-            exitStatus: 1,
-            in: directory
-        )
-
-        let run = await Self.runToCompletion(
-            executable: executable, outputFolder: directory, commandName: "run"
-        )
-
-        #expect(run.keptWorkDirectory == "/tmp/scanny-boy-work-abc123")
-        #expect(run.warnings.first?.code == .intermediatesKept)
-    }
-
     @Test("A run reads the roll manifest, not the convert manifest, from the output folder")
     func runReadsTheRollManifest() async throws {
         let directory = try Self.makeTemporaryDirectory()

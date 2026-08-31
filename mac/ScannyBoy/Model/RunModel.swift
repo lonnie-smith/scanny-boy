@@ -100,10 +100,6 @@ final class RunModel {
     /// publish. A cancelled negative is deliberately not one of these, for
     /// the same reason a cancelled group is not in `failedGroups`.
     private(set) var failedNegatives: [FailedGroup] = []
-    /// The work directory's path, when `run` reported `INTERMEDIATES_KEPT`.
-    /// `nil` means either the run has not ended, or the work directory was
-    /// removed.
-    private(set) var keptWorkDirectory: String?
 
     /// One `negative_id` per `metadata_applied` event (section 3.8): `apply-
     /// metadata`'s own progress, distinct from `stitchedNegatives`, which is
@@ -368,16 +364,6 @@ final class RunModel {
         case .warning:
             if let code = event.code, let message = event.message {
                 warnings.append(Issue(code: code, message: message))
-                // Section 3.5: the one place the kept work directory's path is
-                // reported. No dedicated field exists for it — `WarningEvent`
-                // carries only `code` and `message` — so this is the CLI's own
-                // fixed message text (`run_pipeline.py`), parsed the one way it
-                // is ever produced.
-                if code == .intermediatesKept,
-                    let path = message.range(of: "intermediates kept at ")
-                {
-                    keptWorkDirectory = String(message[path.upperBound...])
-                }
             }
         case .error:
             if let code = event.code, let message = event.message {
@@ -487,7 +473,6 @@ final class RunModel {
         failedGroups = []
         stitchedNegatives = []
         failedNegatives = []
-        keptWorkDirectory = nil
         appliedNegativeIDs = []
         skippedMetadata = []
         warnings = []

@@ -14,8 +14,8 @@ import SwiftUI
 /// Chunk 10 adds Run with live progress, cooperative Cancel, the
 /// completed/failed negatives, Reveal in Finder, and the manifest the run
 /// left behind. Chunk P2-10 adds re-stitch: the same `run` driving
-/// `scanny-boy stitch` over a kept work directory instead of `scanny-boy
-/// run` over a fresh selection.
+/// `scanny-boy stitch` over a work directory you point at instead of
+/// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
     @Bindable var model: ConfigurationModel
@@ -173,10 +173,7 @@ struct ContentView: View {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
-                        RunResultView(
-                            run: run, outputFolder: run.outputFolder,
-                            onRestitch: presentRestitch
-                        )
+                        RunResultView(run: run, outputFolder: run.outputFolder)
                     }
                 }
             }
@@ -205,11 +202,6 @@ struct ContentView: View {
             if let error = model.rollError {
                 IssueLabel(issue: error, style: .error)
             }
-        }
-
-        Section("Intermediates") {
-            Toggle("Keep intermediates after a complete run", isOn: $model.keepIntermediates)
-                .accessibilityIdentifier("keepIntermediatesToggle")
         }
     }
 
@@ -251,18 +243,8 @@ struct ContentView: View {
         }
     }
 
-    /// Opens the re-stitch sheet, pre-filled with a kept work directory (the
-    /// "button" of Chunk P2-10's "a menu command and a button") — `nil` from
-    /// the menu command, which has no run to pre-fill from.
-    private func presentRestitch(workDirectory: String) {
-        restitchWorkDirectory = URL(filePath: workDirectory)
-        restitchOutputFolder = model.rollURL
-        isPresentingRestitch = true
-    }
-
-    /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`
-    /// (most often, since the button pre-fills it), so its contents may have
-    /// changed too.
+    /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
+    /// so its contents may have changed too.
     private func handleRestitchStarted() {
         Task {
             await run.waitForCompletion()

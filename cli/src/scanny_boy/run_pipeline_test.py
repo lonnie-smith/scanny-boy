@@ -105,7 +105,6 @@ def _run(tmp_path, monkeypatch, *, files, events=None, cancel=None, work_dir=Non
     _install_fast_registerable_decode(monkeypatch, files)
     defaults = {
         "run_id": "run-run",
-        "keep_intermediates": False,
         "skip_sources": [],
         "jobs": 1,
     }
@@ -136,7 +135,7 @@ def _run_into_roll(
     registered, not for the pre-skip selection.
     """
     _install_fast_registerable_decode(monkeypatch, decode_files if decode_files is not None else files)
-    defaults = {"keep_intermediates": False, "skip_sources": [], "jobs": 1}
+    defaults = {"skip_sources": [], "jobs": 1}
     defaults.update(kwargs)
     return run_full(
         FIXTURES_DIR,
@@ -169,53 +168,27 @@ def _publish_and_supersede(tmp_path, monkeypatch):
 
 @requires_real_samples
 def test_full_run_leaves_no_work_directory(tmp_path, monkeypatch):
-    events: list = []
-    outcome = _run(tmp_path, monkeypatch, files=NEGATIVE_1, events=events)
+    outcome = _run(tmp_path, monkeypatch, files=NEGATIVE_1)
 
     assert outcome.status == "complete"
     assert outcome.work_dir_kept is False
     assert not outcome.work_dir.exists()
-    assert not [
-        e for e in events if isinstance(e, WarningEvent) and e.code is Code.INTERMEDIATES_KEPT
-    ]
 
 
 @requires_real_samples
 def test_user_supplied_work_directory_is_never_deleted(tmp_path, monkeypatch):
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    events: list = []
-    outcome = _run(tmp_path, monkeypatch, files=NEGATIVE_1, work_dir=work_dir, events=events)
+    outcome = _run(tmp_path, monkeypatch, files=NEGATIVE_1, work_dir=work_dir)
 
     assert outcome.status == "complete"
     assert outcome.work_dir == work_dir
     assert outcome.work_dir_kept is True
     assert work_dir.exists()
-    # Section 3.5: complete success with a user-supplied --work is kept
-    # silently -- no INTERMEDIATES_KEPT warning, since the user already
-    # knows where it is.
-    assert not [
-        e for e in events if isinstance(e, WarningEvent) and e.code is Code.INTERMEDIATES_KEPT
-    ]
 
 
 @requires_real_samples
-def test_keep_intermediates_keeps_it(tmp_path, monkeypatch):
-    events: list = []
-    outcome = _run(
-        tmp_path, monkeypatch, files=NEGATIVE_1, events=events, keep_intermediates=True
-    )
-
-    assert outcome.status == "complete"
-    assert outcome.work_dir_kept is True
-    assert outcome.work_dir.exists()
-    assert [
-        e for e in events if isinstance(e, WarningEvent) and e.code is Code.INTERMEDIATES_KEPT
-    ]
-
-
-@requires_real_samples
-def test_work_directory_survives_a_failed_negative(tmp_path, monkeypatch):
+def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch):
     """`NEGATIVE_1` and `NEGATIVE_2` are cut from one shared scene as six
     consecutive, overlapping frames, so both groups of three register and
     stitch cleanly here -- unlike `stitch_pipeline_test.py`'s dedicated
@@ -262,7 +235,6 @@ def test_work_directory_survives_a_failed_negative(tmp_path, monkeypatch):
         _PER_NEGATIVE,
         run_id="run-run",
         work_dir=None,
-        keep_intermediates=False,
         skip_sources=[],
         jobs=1,
         cancel=CancellationToken(),
@@ -270,17 +242,14 @@ def test_work_directory_survives_a_failed_negative(tmp_path, monkeypatch):
     )
 
     assert outcome.status == "partial"
-    assert outcome.work_dir_kept is True
-    assert outcome.work_dir.exists()
+    assert outcome.work_dir_kept is False
+    assert not outcome.work_dir.exists()
     assert outcome.stitch is not None
     assert outcome.stitch.failed == ["negative-02"]
-    assert [
-        e for e in events if isinstance(e, WarningEvent) and e.code is Code.INTERMEDIATES_KEPT
-    ]
 
 
 @requires_real_samples
-def test_work_directory_survives_cancellation(tmp_path, monkeypatch):
+def test_work_directory_is_removed_after_cancellation(tmp_path, monkeypatch):
     _install_fast_registerable_decode(monkeypatch, NEGATIVE_1)
     cancel = CancellationToken()
     events: list = []
@@ -297,7 +266,6 @@ def test_work_directory_survives_cancellation(tmp_path, monkeypatch):
         _PER_NEGATIVE,
         run_id="run-run",
         work_dir=None,
-        keep_intermediates=False,
         skip_sources=[],
         jobs=1,
         cancel=cancel,
@@ -305,12 +273,9 @@ def test_work_directory_survives_cancellation(tmp_path, monkeypatch):
     )
 
     assert outcome.status == "cancelled"
-    assert outcome.work_dir_kept is True
-    assert outcome.work_dir.exists()
+    assert outcome.work_dir_kept is False
+    assert not outcome.work_dir.exists()
     assert outcome.stitch is None
-    assert [
-        e for e in events if isinstance(e, WarningEvent) and e.code is Code.INTERMEDIATES_KEPT
-    ]
 
 
 # --- the combined progress span --------------------------------------------
@@ -334,7 +299,6 @@ def test_cancellation_during_convert_skips_stitch_entirely(tmp_path, monkeypatch
         _PER_NEGATIVE,
         run_id="run-run",
         work_dir=None,
-        keep_intermediates=False,
         skip_sources=[],
         jobs=1,
         cancel=cancel,
@@ -464,12 +428,9 @@ def test_run_appends_to_an_existing_roll(tmp_path, monkeypatch):
 def test_run_default_work_dir_is_inside_the_roll(tmp_path, monkeypatch):
     roll_dir = _out_dir(tmp_path)
 
-    outcome = _run_into_roll(
-        roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", keep_intermediates=True
-    )
+    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
 
     assert outcome.work_dir == roll_dir / ".work" / "run-1"
-    assert outcome.work_dir.exists()
 
 
 @requires_real_samples

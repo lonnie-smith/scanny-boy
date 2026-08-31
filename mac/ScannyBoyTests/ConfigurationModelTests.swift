@@ -274,41 +274,6 @@ struct ConfigurationModelTests {
         #expect(model.runEnabled == false)
     }
 
-    // MARK: - Chunk P2-9's additions
-
-    @Test("keepIntermediates is off by default and flows into the run command")
-    func keepIntermediatesFlag() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
-        let executable = try Self.fakeProbeExecutable(
-            in: directory,
-            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
-            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess],
-            rollInfo: [Self.rollInfoEvent()]
-        )
-        let model = ConfigurationModel(
-            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
-        )
-
-        model.inputFolder = directory
-        await model.waitForPendingProbes()
-        model.rollURL = rollDir
-        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
-
-        #expect(model.keepIntermediates == false)
-        let withoutFlag = try #require(model.runCommand())
-        #expect(!withoutFlag.arguments.contains("--keep-intermediates"))
-
-        model.keepIntermediates = true
-        let withFlag = try #require(model.runCommand())
-        #expect(withFlag.arguments.contains("--keep-intermediates"))
-    }
-
     // MARK: - Chunk P3-11's additions: rolls and the overlap sheet
 
     @Test("The run command targets --roll, at the roll's own shots per negative, never --film-date or --out")
