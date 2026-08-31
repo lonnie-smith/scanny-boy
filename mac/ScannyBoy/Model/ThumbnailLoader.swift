@@ -68,6 +68,28 @@ actor ThumbnailLoader {
     /// "there isn't one" — is produced once and then served from the cache,
     /// so a file without a preview is not retried on every scroll.
     func thumbnail(for url: URL, pointSize: CGSize, scale: CGFloat) async -> Thumbnail? {
+        await cachedThumbnail(url: url, pointSize: pointSize, scale: scale, generate: Self.generate)
+    }
+
+    /// The thumbnail for one negative's published TIFF (section 3.10's Edit
+    /// tab), skipping QuickLook.
+    ///
+    /// QuickLook is tuned for a RAW or JPEG preview; against a full-resolution,
+    /// multi-megapixel stitched TIFF it is both slower and less predictable
+    /// (it may fall back to its own decode of the whole file). Going straight
+    /// to `embeddedPreview`'s `CGImageSourceCreateThumbnailAtIndex` call, with
+    /// `kCGImageSourceThumbnailMaxPixelSize` bounding the decode, is what
+    /// keeps this from paying for the full frame just to draw a small one.
+    func thumbnail(forStitchedTIFF url: URL, pointSize: CGSize, scale: CGFloat) async -> Thumbnail? {
+        await cachedThumbnail(url: url, pointSize: pointSize, scale: scale) { url, pointSize, scale in
+            Self.embeddedPreview(url: url, pointSize: pointSize, scale: scale)
+        }
+    }
+
+    private func cachedThumbnail(
+        url: URL, pointSize: CGSize, scale: CGFloat,
+        generate: @escaping @Sendable (URL, CGSize, CGFloat) async -> Thumbnail?
+    ) async -> Thumbnail? {
         let key = Self.cacheKey(url: url, pointSize: pointSize, scale: scale) as NSString
         if let cached = cache.object(forKey: key) {
             return cached.thumbnail
@@ -80,7 +102,7 @@ actor ThumbnailLoader {
         let task = Task.detached(priority: .userInitiated) { () -> Thumbnail? in
             await throttle.acquire()
             defer { throttle.release() }
-            return await Self.generate(url: url, pointSize: pointSize, scale: scale)
+            return await generate(url, pointSize, scale)
         }
         inFlight[key as String] = task
         let thumbnail = await task.value

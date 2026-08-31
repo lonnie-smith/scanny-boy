@@ -131,6 +131,74 @@ struct ThumbnailLoaderTests {
             #expect(await loader.thumbnail(for: url, pointSize: Self.size, scale: 2) == nil)
         }
     }
+
+    // MARK: - Chunk P3-12's addition: the Edit tab's stitched-TIFF thumbnails
+
+    /// A real TIFF, synthesized rather than a sample fixture: unlike the RAW
+    /// cases above, nothing here depends on a real Nikon file — any TIFF
+    /// ImageIO can open proves the point, and a small one keeps the test
+    /// fast and independent of `tests/fixtures/nef/` (section 7).
+    private static func writeSyntheticTIFF(width: Int, height: Int, to url: URL) throws {
+        let representation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        guard let representation, let data = representation.tiffRepresentation else {
+            struct TIFFGenerationFailed: Error {}
+            throw TIFFGenerationFailed()
+        }
+        try data.write(to: url)
+    }
+
+    /// `thumbnail(forStitchedTIFF:)` skips QuickLook and goes straight to
+    /// `embeddedPreview`'s `CGImageSourceCreateThumbnailAtIndex` call, which
+    /// never decodes the source at full resolution — this is what a stitched
+    /// negative's TIFF, potentially tens of megapixels, needs to stay cheap
+    /// to preview (section 3.10's Edit tab).
+    @Test func testThumbnailLoadsFromAStitchedTIFFWithoutDecodingFullResolution() async throws {
+        try await TestSupport.withTemporaryDirectory { directory in
+            let url = directory.appending(path: "negative-01.tif", directoryHint: .notDirectory)
+            try Self.writeSyntheticTIFF(width: 4000, height: 3000, to: url)
+
+            let loader = ThumbnailLoader()
+            let thumbnail = try #require(
+                await loader.thumbnail(forStitchedTIFF: url, pointSize: Self.size, scale: 2)
+            )
+
+            // Downsampled to the requested box, not anywhere near the
+            // source's 4000x3000 — proof the full frame was never decoded.
+            #expect(thumbnail.image.size.width > 0)
+            #expect(thumbnail.image.size.height > 0)
+            #expect(max(thumbnail.image.size.width, thumbnail.image.size.height) <= 80.5)
+            // Aspect ratio preserved: 4000x3000 is 4:3, not square.
+            #expect(thumbnail.image.size.width != thumbnail.image.size.height)
+        }
+    }
+
+    @Test func stitchedTIFFThumbnailsAreServedFromTheCache() async throws {
+        try await TestSupport.withTemporaryDirectory { directory in
+            let url = directory.appending(path: "negative-01.tif", directoryHint: .notDirectory)
+            try Self.writeSyntheticTIFF(width: 800, height: 600, to: url)
+
+            let loader = ThumbnailLoader()
+            let first = try #require(
+                await loader.thumbnail(forStitchedTIFF: url, pointSize: Self.size, scale: 2)
+            )
+            let second = try #require(
+                await loader.thumbnail(forStitchedTIFF: url, pointSize: Self.size, scale: 2)
+            )
+
+            #expect(first.image === second.image)
+        }
+    }
 }
 
 struct ThumbnailThrottleTests {

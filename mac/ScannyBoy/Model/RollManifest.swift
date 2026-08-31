@@ -52,12 +52,20 @@ struct RollManifest: Sendable, Hashable {
         let sequence: Int?
         /// The `negative_id` that replaced this one, if any.
         let supersededBy: String?
+        /// The source NEFs this negative was built from, in canonical order
+        /// — the Edit tab's "source frames" (section 3.10).
         let members: [String]
         let expectedOutput: String
         /// `pending`, `completed`, or `failed`.
         let status: String
         let output: Output?
         let captureTime: CaptureTime
+        /// The registration quality numbers Chunk P2-9 already reports on
+        /// `negative_done` (section 3.4), read back here for the Edit tab's
+        /// display: RMS pixel error across every accepted pair, and the
+        /// deviation `nil` unless a rebate check ran.
+        let globalRMSPixels: Double?
+        let rebateDeviationPixels: Double?
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -183,7 +191,9 @@ struct RollManifest: Sendable, Hashable {
             expectedOutput: expectedOutput,
             status: status,
             output: output,
-            captureTime: Self.decodeCaptureTime(captureTimeFields)
+            captureTime: Self.decodeCaptureTime(captureTimeFields),
+            globalRMSPixels: fields["global_rms_px"]?.doubleValue,
+            rebateDeviationPixels: fields["rebate_deviation_px"]?.doubleValue
         )
     }
 
