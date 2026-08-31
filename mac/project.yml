@@ -134,7 +134,8 @@ schemes:
       gatherCoverageData: false
       targets:
         - ScannyBoyTests
-        - ScannyBoyUITests
+        # See the `build.targets` comment above: ScannyBoyUITests is
+        # excluded from the test action again.
     run:
       config: Debug
     profile:
