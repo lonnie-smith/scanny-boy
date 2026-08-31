@@ -202,6 +202,12 @@ class NegativeRecord:
     # is not cleanly detectable with a generic straight-edge finder. The
     # field stays in the contract; its value is always null.
     rebate_deviation_px: float | None = None
+    # Whether registration needed the CLAHE retry (stitch_pipeline.py's
+    # `_solve_negative`) to solve this negative's layout — section 3.7's
+    # "every threshold in force" promise extended to a per-negative choice,
+    # since the roll-level `stitch_params` records the fallback as a fixed
+    # policy, not which negatives actually used it.
+    used_clahe_fallback: bool = False
     error_code: str | None = None
     error_message: str | None = None
 
@@ -226,6 +232,7 @@ class NegativeRecord:
             "valid_rect": None if self.valid_rect is None else list(self.valid_rect),
             "fill_color": list(self.fill_color),
             "rebate_deviation_px": self.rebate_deviation_px,
+            "used_clahe_fallback": self.used_clahe_fallback,
             "error_code": self.error_code,
             "error_message": self.error_message,
             "capture_time": self.capture_time.to_dict(),
@@ -546,6 +553,7 @@ def _validate_negative_dict(data: Any) -> None:
         "valid_rect",
         "fill_color",
         "rebate_deviation_px",
+        "used_clahe_fallback",
         "error_code",
         "error_message",
         "capture_time",
@@ -617,6 +625,10 @@ def _validate_negative_dict(data: Any) -> None:
         data["rebate_deviation_px"] is None
         or isinstance(data["rebate_deviation_px"], int | float),
         "rebate_deviation_px is invalid",
+    )
+
+    _require(
+        isinstance(data["used_clahe_fallback"], bool), "used_clahe_fallback is invalid"
     )
 
     _validate_capture_time_dict(data["capture_time"])
@@ -816,6 +828,7 @@ def _roll_manifest_from_dict(data: dict[str, Any]) -> RollManifest:
                     None if n["valid_rect"] is None else tuple(n["valid_rect"])
                 ),
                 rebate_deviation_px=n["rebate_deviation_px"],
+                used_clahe_fallback=n["used_clahe_fallback"],
                 error_code=n["error_code"],
                 error_message=n["error_message"],
                 capture_time=CaptureTime(**n["capture_time"]),

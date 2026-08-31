@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Chunk P3-12's Edit tab (section 3.10): the selected roll's negatives in
@@ -41,8 +42,18 @@ struct EditStageView: View {
                 LabeledContent("Capture date", value: roll.metadata.rollCaptureDate ?? "Not set")
             }
             if let rollURL = edit.rollURL {
-                LabeledContent("Folder", value: rollURL.path)
-                    .font(.caption)
+                LabeledContent("Folder") {
+                    HStack {
+                        Text(rollURL.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Open") {
+                            NSWorkspace.shared.activateFileViewerSelecting([rollURL])
+                        }
+                    }
+                }
             }
         }
     }
