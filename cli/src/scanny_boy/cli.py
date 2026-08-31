@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import sigterm_cancellation
 from scanny_boy.events import (
     Code,
@@ -129,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
+
+    apply_metadata = subparsers.add_parser(
+        "apply-metadata", help="Write dirty negatives' intended capture times into their TIFFs."
+    )
+    apply_metadata.add_argument("--roll", required=True, metavar="DIR")
 
     return parser
 
@@ -369,6 +375,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "roll":
         return _run_roll_command(args, writer)
+
+    if args.command == "apply-metadata":
+        writer.write(Started(command="apply-metadata"))
+        try:
+            outcome = run_apply_metadata(Path(args.roll), emit=writer.write)
+        except ApplyMetadataFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        exit_status = 0 if not outcome.skipped else 1
+        writer.write(
+            Finished(
+                status="success" if exit_status == 0 else "failed",
+                exit_status=exit_status,
+            )
+        )
+        return exit_status
 
     if args.command == "probe":
         writer.write(Started(command="probe"))

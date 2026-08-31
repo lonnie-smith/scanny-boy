@@ -566,24 +566,23 @@ def test_superseded_tiff_is_deleted_and_its_name_stays_claimed(tmp_path, monkeyp
 
 @requires_real_samples
 def test_superseded_negative_leaves_neighbours_sequence_unchanged(tmp_path, monkeypatch):
-    """Nothing computes real `sequence` values until Chunk P3-6's
-    `roll_sequence.py` -- this proves the supersede step itself only nulls
-    the sequence of the negative it actually covers, leaving an unrelated
-    neighbour's untouched, whatever it already held."""
+    """Section 3.4: superseding one negative must not disturb an unrelated
+    neighbour's position in the roll's real sequence (Chunk P3-6's
+    `roll_sequence.py`, recomputed on every manifest write)."""
     roll_dir = _out_dir(tmp_path)
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1")
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_2, run_id="run-2")
 
     roll = load_roll_manifest(roll_dir)
     neighbour = next(n for n in roll.negatives if n.members == list(NEGATIVE_2))
-    neighbour.sequence = 7
-    write_roll_manifest(roll_dir, roll)
+    neighbour_sequence_before = neighbour.sequence
+    assert neighbour_sequence_before is not None
 
     _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-3")
 
     roll = load_roll_manifest(roll_dir)
     unchanged = roll.negative(neighbour.negative_id)
-    assert unchanged.sequence == 7
+    assert unchanged.sequence == neighbour_sequence_before
     assert unchanged.superseded_by is None
 
 

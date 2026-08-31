@@ -13,12 +13,14 @@ from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.manifest import load_manifest
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.pipeline import ConvertOutcome
+from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     REAL_SAMPLE_FILES,
     requires_real_samples,
 )
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
+from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
 
 SCHEMA = load_schema()
 
@@ -294,6 +296,55 @@ def test_roll_without_subcommand_returns_status_2(capsys):
     events, err = _stdout_events(capsys)
     assert events == []
     assert err != ""
+
+
+def test_apply_metadata_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["apply-metadata", "--roll", str(tmp_path / "nope")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "apply-metadata"
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
+def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    status = main(["apply-metadata", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "finished"]
+    assert events[1]["status"] == "success"
+    assert err == ""
+
+
+def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+
+    roll = load_roll_manifest(roll_dir)
+    negative = roll.negatives[0]
+    negative.capture_time.intended_datetime_original = "2026-01-15T09:30:00"
+    write_roll_manifest(roll_dir, roll)
+
+    # An externally-modified TIFF is skipped rather than rewritten.
+    tiff_path = roll_dir / negative.output["name"]
+    tiff_path.write_bytes(tiff_path.read_bytes() + b"\x00")
+
+    capsys.readouterr()
+    status = main(["apply-metadata", "--roll", str(roll_dir)])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "metadata_skipped", "finished"]
+    assert events[1]["code"] == "OUTPUT_MODIFIED_EXTERNALLY"
+    assert events[2]["status"] == "failed"
+    assert events[2]["exit_status"] == 1
 
 
 def test_invalid_command_returns_status_2_with_no_stdout_events(capsys):
