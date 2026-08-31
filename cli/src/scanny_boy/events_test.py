@@ -24,6 +24,7 @@ from scanny_boy.events import (
     RollListingEntry,
     RollListingReason,
     RollOverlapEntry,
+    RollRenamed,
     Stage,
     Started,
     WarningEvent,
@@ -196,6 +197,7 @@ def test_new_event_kinds_round_trip():
         RollCreated(roll_id="id", roll_name="name", path="/tmp/roll"),
         RollList(rolls=[]),
         RollInfo(manifest={"manifest_kind": "roll"}),
+        RollRenamed(roll_id="id", roll_name="new name", path="/tmp/roll-2"),
         NegativeSuperseded(old_negative_id="old", new_negative_id="new"),
         MetadataApplied(negative_id="neg-1"),
         MetadataSkipped(

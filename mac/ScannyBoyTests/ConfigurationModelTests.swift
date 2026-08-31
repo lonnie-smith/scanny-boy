@@ -39,12 +39,21 @@ struct ConfigurationModelTests {
         in directory: URL,
         catalogueOnly: [String],
         withFiles: [String] = [],
-        withFilesAndOut: [String] = []
+        withFilesAndOut: [String] = [],
+        rollInfo: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
         }
+        // `roll info` (section 3.1: `existingRoll` is read back through the
+        // CLI, never from disk) is distinguished by its own leading
+        // subcommand, `$1`, rather than folded into the `$*` routing below,
+        // which only ever sees `probe` invocations.
         let script = """
+            if [ "$1" = "roll" ]; then
+            \(echoLines(rollInfo))
+            exit 0
+            fi
             case "$*" in
               *--out*)
             \(echoLines(withFilesAndOut))
@@ -313,8 +322,9 @@ struct ConfigurationModelTests {
     /// `probe --out` only understands `scanny-boy-manifest.json`, so a
     /// folder holding only `scanny-boy-roll.json` is reported as
     /// `OUTPUT_NOT_EMPTY` — the fake executable below reproduces that real
-    /// behaviour exactly. `existingRoll` is what stops the model from
-    /// surfacing that as a blocking error.
+    /// behaviour exactly. `existingRoll` (now read back through `roll info`,
+    /// section 3.1) is what stops the model from surfacing that as a
+    /// blocking error.
     @Test("A folder already holding a roll is recognised, not reported as unrelated content")
     func existingRollFolderIsRecognised() async throws {
         let directory = try Self.makeTemporaryDirectory()
@@ -322,7 +332,6 @@ struct ConfigurationModelTests {
 
         let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        try Self.writeRollManifest(status: "complete", in: outputDir)
 
         let executable = try Self.fakeProbeExecutable(
             in: directory,
@@ -330,7 +339,8 @@ struct ConfigurationModelTests {
             withFiles: [Self.started, Self.threeFileGroupNoOut, Self.finishedSuccess],
             withFilesAndOut: [
                 Self.started, Self.errorEvent(code: "OUTPUT_NOT_EMPTY"), Self.finishedFailed,
-            ]
+            ],
+            rollInfo: [Self.rollInfoEvent(rollID: "roll-1", rollName: "Existing Roll")]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -343,7 +353,8 @@ struct ConfigurationModelTests {
         model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
-        #expect(model.existingRoll?.status == "complete")
+        #expect(model.existingRoll?.rollID == "roll-1")
+        #expect(model.existingRoll?.rollName == "Existing Roll")
         #expect(model.outputError == nil)
         #expect(model.outputConflicts.isEmpty)
         #expect(model.runEnabled)
@@ -414,53 +425,20 @@ struct ConfigurationModelTests {
 
     // MARK: - Helpers
 
-    /// A roll manifest with just enough of `roll-manifest.schema.json` to be
-    /// read back by `RollManifest`.
-    private static func writeRollManifest(status: String, in folder: URL) throws {
-        let json = """
-            {
-              "manifest_format_version": 1,
-              "manifest_kind": "stitch",
-              "scanny_boy_version": "0.1.0",
-              "run_id": "run-0001",
-              "status": "\(status)",
-              "input_folder": "/tmp/in",
-              "film_date": "2026-08-02",
-              "shots_per_negative": 3,
-              "convert_run_id": "convert-0001",
-              "processing_params": {},
-              "icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "\(String(repeating: "b", count: 64))"},
-              "stitch_params": {},
-              "source_order": ["a.NEF", "b.NEF", "c.NEF"],
-              "sources": [],
-              "negatives": [
-                {
-                  "negative_id": "negative-01",
-                  "members": ["a.NEF", "b.NEF", "c.NEF"],
-                  "expected_output": "a.tif",
-                  "status": "completed",
-                  "output": {
-                    "name": "a.tif", "size": 123,
-                    "sha256": "\(String(repeating: "a", count: 64))",
-                    "width": 100, "height": 100
-                  },
-                  "frames": [], "pairs": [],
-                  "global_rms_px": 1.0,
-                  "canvas": {"width": 100, "height": 100},
-                  "valid_rect": [0, 0, 100, 100],
-                  "fill_color": [0, 0, 0],
-                  "rebate_deviation_px": null,
-                  "error_code": null, "error_message": null
-                }
-              ],
-              "started_at": "2026-08-02T12:00:00",
-              "finished_at": "2026-08-02T12:05:00"
-            }
+    /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
+    /// to be read back by `RollManifest` — the `roll info` CLI response
+    /// `existingRoll` is now built from, rather than a file on disk (section
+    /// 3.1).
+    private static func rollInfoEvent(rollID: String = "roll-1", rollName: String = "Test Roll") -> String {
+        let manifest = """
+            {"manifest_format_version":2,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            "roll_id":"\(rollID)","roll_name":"\(rollName)","shots_per_negative":3,\
+            "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
+            "processing_params":{},\
+            "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
+            "stitch_params":{},"runs":[],"sources":[],"negatives":[],\
+            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        try json.write(
-            to: folder.appending(path: RollManifest.filename, directoryHint: .notDirectory),
-            atomically: true,
-            encoding: .utf8
-        )
+        return #"{"protocol_version":3,"event":"roll_info","manifest":\#(manifest)}"#
     }
 }

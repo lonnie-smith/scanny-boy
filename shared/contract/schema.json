@@ -21,6 +21,7 @@
         "roll_created",
         "roll_list",
         "roll_info",
+        "roll_renamed",
         "negative_superseded",
         "metadata_applied",
         "metadata_skipped"
@@ -89,6 +90,7 @@
         "ROLL_NOT_FOUND",
         "ROLL_MANIFEST_UNSUPPORTED",
         "ROLL_EXISTS",
+        "ROLL_RENAME_FAILED",
         "ROLL_INVARIANT_MISMATCH",
         "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY",
@@ -253,6 +255,7 @@
               "roll init",
               "roll list",
               "roll info",
+              "roll rename",
               "apply-metadata"
             ]
           }
@@ -298,6 +301,17 @@
         "required": ["manifest"],
         "properties": {
           "manifest": { "type": "object" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_renamed" } } },
+      "then": {
+        "required": ["roll_id", "roll_name", "path"],
+        "properties": {
+          "roll_id": { "type": "string" },
+          "roll_name": { "type": "string" },
+          "path": { "type": "string" }
         }
       }
     },

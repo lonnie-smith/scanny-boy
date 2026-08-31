@@ -356,7 +356,7 @@ final class RunModel {
                 )
             }
         case .started, .probeResult, .finished, .unknown,
-             .rollCreated, .rollList, .rollInfo, .negativeSuperseded,
+             .rollCreated, .rollList, .rollInfo, .rollRenamed, .negativeSuperseded,
              .metadataApplied, .metadataSkipped:
             break
         }
@@ -373,7 +373,9 @@ final class RunModel {
         // work directory `scanny-boy-manifest.json` still lives in may
         // already be gone by the time this runs (section 3.5's cleanup).
         if isStitchInvocation {
-            rollManifestReport = await Self.readRollManifest(in: outputFolder)
+            rollManifestReport = await Self.readRollManifest(
+                runner: runner, roll: outputFolder, runID: runID
+            )
         } else {
             manifestReport = await Self.readManifest(in: outputFolder)
         }
@@ -454,17 +456,38 @@ final class RunModel {
         }.value
     }
 
-    /// Reads the roll manifest off the main actor, for the same reason
-    /// `readManifest` does.
-    private static func readRollManifest(in folder: URL?) async -> RollManifestReport? {
-        guard let folder else { return nil }
-        return await Task.detached {
-            do {
-                return RollManifestReport(manifest: try RollManifest.read(inOutputFolder: folder))
-            } catch {
-                return .unavailable(error.localizedDescription)
+    /// Reads the roll manifest back through `roll info` (section 3.1: Swift
+    /// never parses `scanny-boy-roll.json` itself) rather than from disk —
+    /// unlike `readManifest`, this is a real CLI round trip, since a roll
+    /// manifest has no `Decodable`-from-file counterpart any more.
+    private static func readRollManifest(
+        runner: CLIRunner, roll: URL?, runID: String?
+    ) async -> RollManifestReport? {
+        guard let roll else { return nil }
+        let session = runner.session(for: .rollInfo(roll: roll))
+        var result: RollManifestReport = .unavailable("roll info produced no result")
+        do {
+            for await output in try await session.start() {
+                guard case .event(let event) = output else { continue }
+                switch event.kind {
+                case .rollInfo:
+                    if let fields = event.manifest, let manifest = RollManifest(fields: fields) {
+                        result = RollManifestReport(manifest: manifest, runID: runID)
+                    } else {
+                        result = .unavailable("the roll manifest could not be decoded")
+                    }
+                case .error:
+                    if let message = event.message {
+                        result = .unavailable(message)
+                    }
+                default:
+                    continue
+                }
             }
-        }.value
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+        return result
     }
 
     // MARK: - Testing

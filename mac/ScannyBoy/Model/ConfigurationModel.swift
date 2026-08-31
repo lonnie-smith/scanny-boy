@@ -83,7 +83,7 @@ final class ConfigurationModel {
         didSet {
             guard outputFolder != oldValue else { return }
             overwriteConfirmed = false
-            existingRoll = outputFolder.flatMap { try? RollManifest.read(inOutputFolder: $0) }
+            startExistingRollFetch(outputFolder: outputFolder)
             if let outputFolder {
                 Self.save(outputFolder, forKey: Self.lastOutputFolderKey, in: defaults)
             }
@@ -103,12 +103,14 @@ final class ConfigurationModel {
     /// (Phase 1's convert manifest); it has no notion of
     /// `scanny-boy-roll.json` at all, so it reports a folder holding only a
     /// roll manifest as `OUTPUT_NOT_EMPTY` — unrelated content, not a rerun.
-    /// This is read directly, client-side, so `apply(_:outputFolderWasGiven:)`
+    /// This is read back through `roll info` (section 3.1: Swift never
+    /// parses `scanny-boy-roll.json` itself), so `apply(_:outputFolderWasGiven:)`
     /// can recognise that specific case rather than surface a raw,
     /// misleading error. Real conflict detection for a rerun into this
     /// folder still happens for real, server-side, in `run_stitch`'s own
     /// `plan_rerun(rules: ROLL_RULES)` when the run is actually started.
     private(set) var existingRoll: RollManifest?
+    @ObservationIgnored private var existingRollTask: Task<Void, Never>?
 
     /// Set once the user has agreed to replace `outputConflicts`. Reset
     /// whenever the output folder changes, so a stale confirmation from a
@@ -262,6 +264,35 @@ final class ConfigurationModel {
         }
     }
 
+    /// `roll info` for the chosen output folder — a real CLI round trip
+    /// (section 3.1: Swift never parses `scanny-boy-roll.json` itself), so
+    /// `existingRoll` is only known once this finishes.
+    private func startExistingRollFetch(outputFolder: URL?) {
+        existingRollTask?.cancel()
+        existingRoll = nil
+        guard let outputFolder else { return }
+        existingRollTask = Task { [weak self, runner] in
+            let manifest = await Self.fetchRollManifest(runner: runner, roll: outputFolder)
+            guard let self, !Task.isCancelled else { return }
+            self.existingRoll = manifest
+        }
+    }
+
+    private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                if case .event(let event) = output, event.kind == .rollInfo,
+                    let fields = event.manifest
+                {
+                    return RollManifest(fields: fields)
+                }
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
     private func scheduleValidation() {
         validationTask?.cancel()
         guard let inputFolder, !selectedFiles.isEmpty else {
@@ -287,6 +318,10 @@ final class ConfigurationModel {
                     input: inputFolder, files: files, out: outputFolder, perNegative: perNegative
                 )
             )
+            // `apply` reads `existingRoll` to recognise `OUTPUT_NOT_EMPTY`
+            // against a roll folder — wait for that concurrent fetch (started
+            // in the same `outputFolder` change) so the two never race.
+            await self?.existingRollTask?.value
             guard let self, !Task.isCancelled else { return }
             self.apply(result, outputFolderWasGiven: outputFolder != nil)
             self.isProbing = false
@@ -401,6 +436,7 @@ final class ConfigurationModel {
     /// everything from `@Observable`'s change notifications instead.
     func waitForPendingProbes() async {
         await catalogueTask?.value
+        await existingRollTask?.value
         await validationTask?.value
     }
 }

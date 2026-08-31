@@ -2,9 +2,13 @@ import SwiftUI
 
 @main
 struct ScannyBoyApp: App {
+    /// Shared with the `Settings` scene below, which needs the same
+    /// `RollLibrary` — created once `RootView` resolves the CLI helper.
+    @State private var library: RollLibrary?
+
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(library: $library)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -12,6 +16,17 @@ struct ScannyBoyApp: App {
                     NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+        }
+
+        // Section 3.1: the library base is relocatable through a Settings
+        // window.
+        Settings {
+            if let library {
+                SettingsView(library: library)
+            } else {
+                Text("Scanny Boy's CLI helper is unavailable.")
+                    .padding(40)
             }
         }
     }
@@ -31,14 +46,15 @@ extension Notification.Name {
 /// crashing at launch over a Debug-only override mistake or a helper that
 /// was never staged.
 struct RootView: View {
+    @Binding var library: RollLibrary?
     @State private var model: ConfigurationModel?
     @State private var run: RunModel?
     @State private var unavailableReason: String?
 
     var body: some View {
         Group {
-            if let model, let run {
-                ContentView(model: model, run: run)
+            if let library, let model, let run {
+                ContentView(library: library, model: model, run: run)
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
             } else {
@@ -49,10 +65,12 @@ struct RootView: View {
     }
 
     private func resolveRunnerIfNeeded() {
-        guard model == nil, unavailableReason == nil else { return }
+        guard library == nil, unavailableReason == nil else { return }
         do {
-            // One resolved helper, shared by the probes and the conversion.
+            // One resolved helper, shared by the probes, the conversion, and
+            // the library.
             let runner = try CLIRunner(locator: .mainBundle())
+            library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
             model = ConfigurationModel(runner: runner)
             run = RunModel(runner: runner)
         } catch let error as CLILocatorError {
@@ -60,6 +78,25 @@ struct RootView: View {
         } catch {
             unavailableReason = error.localizedDescription
         }
+    }
+
+    /// Section 4: "Never test the library against the real `~/Pictures`."
+    /// `CLILocator`'s `SCANNY_BOY_CLI` override is the precedent for this —
+    /// a Debug-only, absolute-path environment override so
+    /// `ScannyBoyUITests` can point the real running app at a temporary
+    /// library base instead of `RollLibrary`'s own `.picturesDirectory`
+    /// default. Release builds never honour it.
+    static let libraryBaseOverrideEnvironmentKey = "SCANNY_BOY_LIBRARY_BASE"
+
+    private static func debugLibraryBaseOverride() -> URL? {
+        #if DEBUG
+        guard let override = ProcessInfo.processInfo.environment[libraryBaseOverrideEnvironmentKey],
+            !override.isEmpty
+        else { return nil }
+        return URL(filePath: override, directoryHint: .isDirectory)
+        #else
+        return nil
+        #endif
     }
 }
 

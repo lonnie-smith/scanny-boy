@@ -289,6 +289,32 @@ def test_roll_info_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    status = main(["roll", "rename", "--roll", str(tmp_path / "Roll-A"), "--name", "Roll B"])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_renamed", "finished"]
+    assert events[0]["command"] == "roll rename"
+    assert events[1]["roll_name"] == "Roll B"
+    assert events[1]["path"] == str(tmp_path / "Roll-B")
+    assert not (tmp_path / "Roll-A").exists()
+    assert (tmp_path / "Roll-B").exists()
+    assert err == ""
+
+
+def test_roll_rename_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["roll", "rename", "--roll", str(tmp_path / "nope"), "--name", "New Name"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
 def test_roll_without_subcommand_returns_status_2(capsys):
     status = main(["roll"])
 

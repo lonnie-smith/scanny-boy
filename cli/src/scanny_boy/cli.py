@@ -20,6 +20,7 @@ from scanny_boy.events import (
     RollList,
     RollListingEntry,
     RollListingReason,
+    RollRenamed,
     Started,
     WarningEvent,
 )
@@ -27,7 +28,12 @@ from scanny_boy.manifest import BadManifestError
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
-from scanny_boy.roll_folder import RollFolderError, create_roll, scan_library
+from scanny_boy.roll_folder import (
+    RollFolderError,
+    create_roll,
+    rename_roll,
+    scan_library,
+)
 from scanny_boy.roll_manifest import (
     ROLL_MANIFEST_FILENAME,
     RollManifestUnsupportedError,
@@ -78,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
         "info", help="Load and validate one roll's manifest."
     )
     roll_info.add_argument("--roll", required=True, metavar="DIR")
+
+    roll_rename = roll_subparsers.add_parser("rename", help="Rename a roll.")
+    roll_rename.add_argument("--roll", required=True, metavar="DIR")
+    roll_rename.add_argument("--name", required=True, metavar="NAME")
 
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
@@ -221,9 +231,10 @@ def _roll_listing_entry(listing) -> RollListingEntry:
 
 
 def _run_roll_command(args, writer: EventWriter) -> int:
-    """The `roll init` / `roll list` / `roll info` subcommands (section
-    3.5). Each mirrors the other commands' started/finished bracketing;
-    none carries a `run_id`, since none is a pipeline run."""
+    """The `roll init` / `roll list` / `roll info` / `roll rename`
+    subcommands (section 3.5; `rename` added at section 5.5). Each mirrors
+    the other commands' started/finished bracketing; none carries a
+    `run_id`, since none is a pipeline run."""
     if args.roll_command == "init":
         writer.write(Started(command="roll init"))
         try:
@@ -248,6 +259,35 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         listings = scan_library(Path(args.library))
         writer.write(
             RollList(rolls=[_roll_listing_entry(listing) for listing in listings])
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.roll_command == "rename":
+        writer.write(Started(command="roll rename"))
+        roll_dir = Path(args.roll)
+        if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            new_dir = rename_roll(roll_dir, args.name)
+        except RollFolderError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        manifest = load_roll_manifest(new_dir)
+        writer.write(
+            RollRenamed(
+                roll_id=manifest.roll_id,
+                roll_name=manifest.roll_name,
+                path=str(new_dir),
+            )
         )
         writer.write(Finished(status="success", exit_status=0))
         return 0

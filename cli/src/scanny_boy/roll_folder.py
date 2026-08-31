@@ -111,14 +111,25 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
     """Section 3.2: move the folder first, then write `roll_name` — so a
     failed move leaves both the folder and the manifest untouched. Renaming
     to a name that slugs to the folder's current name (case-insensitively)
-    is a no-op move."""
+    is a no-op move.
+
+    Section 5.5: a failed move raises `RollFolderError(ROLL_RENAME_FAILED)`
+    rather than a raw `OSError`, so `roll rename` (the CLI command Chunk
+    P3-10 added) has one exception type to catch, matching every other
+    subcommand's pattern.
+    """
     library = roll_dir.parent
     slug = slugify(new_name)
     if slug.lower() == roll_dir.name.lower():
         new_path = roll_dir
     else:
         new_path = library / unique_folder_name(library, slug)
-        os.rename(roll_dir, new_path)
+        try:
+            os.rename(roll_dir, new_path)
+        except OSError as exc:
+            raise RollFolderError(
+                Code.ROLL_RENAME_FAILED, f"could not rename {roll_dir} to {new_path}: {exc}"
+            ) from exc
 
     manifest = load_roll_manifest(new_path)
     manifest.roll_name = new_name
