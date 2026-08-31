@@ -31,9 +31,13 @@ struct ContentView: View {
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
+    // Left explicit: `.automatic`'s default can collapse to no visible
+    // columns at all before the window has a settled size, which leaves
+    // both the sidebar and its toolbar absent from the view hierarchy.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(library: library, selection: $selection, runIsActive: run.isActive)
         } detail: {
             if selection != nil {
