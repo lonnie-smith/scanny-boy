@@ -249,15 +249,15 @@ struct RunIntegrationTests {
 
     // MARK: - Rerunning against a roll that already holds the negative
 
-    /// Section 3.4: a selection that overlaps a negative already in the roll
-    /// is never rejected outright, and the app no longer asks — it always
-    /// replaces (supersedes) whatever it overlaps.
+    /// The replacement rule: a selection that overlaps a negative already in
+    /// the roll is never rejected outright, and the rerun adopts it in
+    /// place — same `negative_id`, same output name.
     @Test(
-        "a rerun over the same selection supersedes the earlier negative",
+        "a rerun over the same selection adopts the earlier negative in place",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(10))
     )
-    func rerunSupersedesTheEarlierNegative() async throws {
+    func rerunAdoptsTheEarlierNegative() async throws {
         let roll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
@@ -296,11 +296,14 @@ struct RunIntegrationTests {
             Issue.record("expected a final roll manifest, got \(report)")
             return
         }
-        let firstNegative = try #require(
+        // The same negative survives the rerun: same id, updated by the new
+        // run, no tombstone sibling beside it.
+        let adopted = try #require(
             manifest.negatives.first { $0.negativeID == firstNegativeID }
         )
-        #expect(firstNegative.isSuperseded)
-        #expect(manifest.liveNegatives.count == 1)
+        #expect(adopted.status == "completed")
+        #expect(adopted.runID == secondRun.runID ?? "")
+        #expect(manifest.negatives.count == 1)
     }
 
     // MARK: - Cancel retains earlier groups and discards the current one

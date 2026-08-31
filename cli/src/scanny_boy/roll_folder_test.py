@@ -17,7 +17,6 @@ from scanny_boy.roll_folder import (
 from scanny_boy.roll_manifest import (
     ROLL_MANIFEST_FILENAME,
     load_roll_manifest,
-    mark_superseded,
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_test import _negative
@@ -94,7 +93,7 @@ def test_unique_folder_name_raises_roll_exists_after_exhaustion(tmp_path):
 # --- create_roll -------------------------------------------------------------
 
 
-def test_create_roll_writes_empty_v2_manifest(tmp_path):
+def test_create_roll_writes_empty_v3_manifest(tmp_path):
     roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998", 3)
 
     assert roll_dir == tmp_path / "Tri-X-Portland-1998"
@@ -174,24 +173,23 @@ def test_scan_library_reports_ok_and_unreadable_side_by_side(tmp_path):
     assert by_path[bad_dir].negative_count is None
 
 
-def test_scan_library_negative_count_excludes_superseded(tmp_path):
+def test_scan_library_negative_count_is_every_negative(tmp_path):
     roll_dir = create_roll(tmp_path, "Roll A", 3)
     manifest = load_roll_manifest(roll_dir)
-    old = _negative(negative_id="aaaaaa-negative-01")
-    new = _negative(
-        negative_id="aaaaaa-negative-02",
-        members=old.members,
-        expected_output="_DSC4638-2.tif",
+    manifest.negatives.append(_negative(negative_id="aaaaaa-negative-01"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="aaaaaa-negative-02",
+            members=manifest.negatives[0].members,
+            expected_output="_DSC4638-2.tif",
+        )
     )
-    manifest.negatives.append(old)
-    manifest.negatives.append(new)
-    mark_superseded(manifest, new)
     write_roll_manifest(roll_dir, manifest)
 
     listings = scan_library(tmp_path)
 
     assert len(listings) == 1
-    assert listings[0].negative_count == 1
+    assert listings[0].negative_count == 2
 
 
 def test_roll_list_emits_one_event_for_the_whole_library(tmp_path):

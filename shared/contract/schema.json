@@ -22,7 +22,6 @@
         "roll_list",
         "roll_info",
         "roll_renamed",
-        "negative_superseded",
         "metadata_applied",
         "metadata_skipped"
       ]
@@ -96,7 +95,7 @@
         "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY",
         "METADATA_WRITE_FAILED",
-        "SUPERSEDED_FILE_NOT_REMOVED"
+        "ORPHAN_FILE_NOT_REMOVED"
       ]
     },
     "rollOverlapEntry": {
@@ -146,7 +145,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -313,16 +312,6 @@
           "roll_id": { "type": "string" },
           "roll_name": { "type": "string" },
           "path": { "type": "string" }
-        }
-      }
-    },
-    {
-      "if": { "properties": { "event": { "const": "negative_superseded" } } },
-      "then": {
-        "required": ["old_negative_id", "new_negative_id"],
-        "properties": {
-          "old_negative_id": { "type": "string" },
-          "new_negative_id": { "type": "string" }
         }
       }
     },

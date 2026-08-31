@@ -9,11 +9,13 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 3 replaces the single-run output folder with a durable
+Protocol version 4 replaces the single-run output folder with a durable
 **roll** — a named folder holding many runs — and adds library management,
-overlap detection, and a metadata-apply stage. A client that only understands
-protocol version 2 must reject a version-3 stream rather than guess at the
-new fields.
+overlap detection, and a metadata-apply stage. It also makes replacement
+in-place: a rerun adopts the covered negative (same `negative_id` and output
+name) instead of publishing a replacement and leaving a tombstone behind. A
+client that only understands an earlier protocol version must reject a newer
+stream rather than guess at the new fields.
 
 ## Invocation
 
@@ -43,9 +45,11 @@ because it still writes a work directory rather than a roll.
 `--film-date` is removed from every command. Synthetic capture times are
 assigned in the metadata stage, not at convert time.
 
-`--overwrite` is removed from `run`. In a roll, replacing an existing negative
-is expressed by *not* skipping its sources (`--skip-sources`), which the app
-derives from the overlap sheet.
+`--overwrite` is removed from `run`. Re-running over sources already in the
+roll adopts the covered negative in place: its `negative_id` and output name
+are kept, its record is updated with the new run's data, and its TIFF is
+replaced atomically. `--skip-sources` remains the way to redo a scan without
+touching an existing negative.
 
 `probe` is read-only and works at two levels of detail:
 
@@ -78,7 +82,7 @@ a skip must remove a whole group's worth or the run fails
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
-writes an empty v2 roll manifest. It emits `roll_created` carrying `roll_id`,
+writes an empty v3 roll manifest. It emits `roll_created` carrying `roll_id`,
 `roll_name`, and `path`.
 
 `roll list` performs a one-level scan of `--library` and emits a single
@@ -137,7 +141,7 @@ computed default is never rejected this way, only lowered.
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for
 `scanny-boy-roll.json`, the roll folder's durable record (Phase 3 section
-3.3, format version 2).
+3.3, format version 3).
 
 ### Event types
 
@@ -155,7 +159,6 @@ computed default is never rejected this way, only lowered.
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
-| `negative_superseded` | A newly published negative replaced an earlier one. Carries `old_negative_id` and `new_negative_id`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
@@ -198,8 +201,8 @@ cancelled, it emits no `item_done` events for that group's staged files.
 `roll_list` carries `rolls`, an array of `{path, status, reason, roll_id,
 roll_name, negative_count}`. `status` is `"ok"` or `"unreadable"`. `reason`
 is `{code, message}` for an unreadable roll and null otherwise; the
-remaining fields are null when unreadable. `negative_count` excludes
-superseded negatives.
+remaining fields are null when unreadable. `negative_count` is the number of
+negatives in the roll.
 
 ### Cancellation
 
@@ -258,14 +261,14 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 2` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 3` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
 | `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
 | `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
-| `SUPERSEDED_FILE_NOT_REMOVED` | Warning: a superseded negative's TIFF could not be deleted |
+| `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 
 ## Exit status
 

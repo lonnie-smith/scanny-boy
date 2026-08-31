@@ -92,7 +92,7 @@ def unique_folder_name(library: Path, slug: str) -> str:
 
 def create_roll(library: Path, name: str, shots_per_negative: int) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
-    write an empty v2 manifest into it via `new_roll_manifest`. Returns the
+    write an empty v3 manifest into it via `new_roll_manifest`. Returns the
     roll's directory."""
     library.mkdir(parents=True, exist_ok=True)
     folder_name = unique_folder_name(library, slugify(name))
@@ -151,9 +151,9 @@ def list_rolls(library: Path) -> list[Path]:
 
 def scan_library(library: Path) -> list[RollListing]:
     """What `roll list` reports from: every roll `list_rolls` finds, loaded
-    and validated. A manifest that fails to load or is not format version 2
+    and validated. A manifest that fails to load or is not format version 3
     becomes an `"unreadable"` listing carrying its section 3.12 code, rather
-    than raising. `negative_count` excludes superseded negatives."""
+    than raising. `negative_count` is the number of negatives."""
     listings: list[RollListing] = []
     for roll_dir in list_rolls(library):
         try:
@@ -177,7 +177,7 @@ def scan_library(library: Path) -> list[RollListing]:
                 reason=None,
                 roll_id=manifest.roll_id,
                 roll_name=manifest.roll_name,
-                negative_count=len(manifest.live_negatives()),
+                negative_count=len(manifest.negatives),
             )
         )
     return listings

@@ -60,7 +60,6 @@ struct EditStageView: View {
 
     private var negativesSection: some View {
         Section("Negatives") {
-            Toggle("Show replaced negatives", isOn: $edit.showSupersededNegatives)
             if edit.visibleNegatives.isEmpty {
                 Text("No negatives yet.").foregroundStyle(.secondary)
             } else {
@@ -136,19 +135,11 @@ private struct NegativeRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let supersededBy = negative.supersededBy {
-                    Text("Replaced by \(supersededBy)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Status: \(negative.status)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Status: \(negative.status)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-        .opacity(negative.isSuperseded ? 0.5 : 1)
-        .disabled(negative.isSuperseded)
         .task(id: outputURL) {
             guard let outputURL else { return }
             thumbnail = await ThumbnailLoader.shared.thumbnail(

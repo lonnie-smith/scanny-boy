@@ -215,10 +215,10 @@ def _preview_roll(
     one, content unrelated to the roll, or invariants that differ from this
     run's parameters.
 
-    Overlap is reported, not rejected: section 3.4's supersession decides at
-    `run` time which overlapped negatives are replaced, so the report names
-    what each prospective group shares with the roll and lets the caller
-    decide."""
+    Overlap is reported, not rejected: whether a prospective group adopts the
+    overlapped negative is decided at `run` time (the replacement rule), so
+    the report names what each prospective group shares with the roll and
+    lets the caller decide."""
     if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
         raise ProbeFailure(
             Code.ROLL_NOT_FOUND,
@@ -252,13 +252,13 @@ def _preview_roll(
     # `manifest.sources` by `sha256`, and reports per prospective group". A
     # prospective group collides with a negative when the two share sources
     # by content, so a renamed rescan still matches — whether that overlap
-    # would supersede the negative (section 3.4's subset rule) is decided at
+    # adopts the negative (the replacement rule's subset test) is decided at
     # run time, not here.
     selected_hashes = {r.filename: r.sha256 for r in hash_sources(input_dir, selected)}
     roll_hashes = {s.filename: s.sha256 for s in roll.sources}
     entries: list[RollOverlapEntry] = []
     for group_index, members in enumerate(groups):
-        for negative in roll.live_negatives():
+        for negative in roll.negatives:
             negative_hashes = {
                 roll_hashes[member]
                 for member in negative.members

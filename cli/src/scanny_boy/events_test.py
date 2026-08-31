@@ -14,7 +14,6 @@ from scanny_boy.events import (
     MetadataSkipped,
     NegativeDone,
     NegativeFailed,
-    NegativeSuperseded,
     PipelineStep,
     ProbeResult,
     Progress,
@@ -94,13 +93,12 @@ ALL_EVENTS: list[Event] = [
                 status="unreadable",
                 reason=RollListingReason(
                     code="ROLL_MANIFEST_UNSUPPORTED",
-                    message="manifest_format_version must be 2",
+                    message="manifest_format_version must be 3",
                 ),
             ),
         ]
     ),
-    RollInfo(manifest={"manifest_format_version": 2, "manifest_kind": "roll"}),
-    NegativeSuperseded(old_negative_id="a1b2c3-negative-01", new_negative_id="d4e5f6-negative-02"),
+    RollInfo(manifest={"manifest_format_version": 3, "manifest_kind": "roll"}),
     MetadataApplied(negative_id="a1b2c3-negative-01"),
     MetadataSkipped(
         negative_id="a1b2c3-negative-02",
@@ -188,8 +186,8 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_three():
-    assert PROTOCOL_VERSION == 3
+def test_protocol_version_is_four():
+    assert PROTOCOL_VERSION == 4
 
 
 def test_new_event_kinds_round_trip():
@@ -198,7 +196,6 @@ def test_new_event_kinds_round_trip():
         RollList(rolls=[]),
         RollInfo(manifest={"manifest_kind": "roll"}),
         RollRenamed(roll_id="id", roll_name="new name", path="/tmp/roll-2"),
-        NegativeSuperseded(old_negative_id="old", new_negative_id="new"),
         MetadataApplied(negative_id="neg-1"),
         MetadataSkipped(
             negative_id="neg-2",
@@ -208,13 +205,16 @@ def test_new_event_kinds_round_trip():
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 3
+        assert data["protocol_version"] == 4
         assert json.loads(json.dumps(data)) == data
 
 
 def test_retired_code_absent():
     assert not hasattr(Code, "CAPTURE_SPAN_TOO_LONG")
     assert "CAPTURE_SPAN_TOO_LONG" not in {member.value for member in Code}
+    assert not hasattr(Code, "SUPERSEDED_FILE_NOT_REMOVED")
+    assert "SUPERSEDED_FILE_NOT_REMOVED" not in {member.value for member in Code}
+    assert Code.ORPHAN_FILE_NOT_REMOVED.value == "ORPHAN_FILE_NOT_REMOVED"
 
 
 def test_negative_done_round_trips():

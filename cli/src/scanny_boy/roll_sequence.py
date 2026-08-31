@@ -17,12 +17,12 @@ NOON = datetime.time(12, 0, 0)
 
 
 def _sequenceable(manifest: RollManifest) -> list:
-    """Every negative that can hold a position in the roll: not superseded,
-    and actually published -- a `pending` or `failed` negative has no real
-    capture time to rank by and nothing to display."""
+    """Every negative that can hold a position in the roll: actually
+    published -- a `pending` or `failed` negative has no real capture time to
+    rank by and nothing to display."""
     return [
         n
-        for n in manifest.live_negatives()
+        for n in manifest.negatives
         if n.status == "completed" and n.capture_time.source_datetime_original is not None
     ]
 
@@ -33,10 +33,10 @@ def _rank_key(run_index: dict[str, int], negative) -> tuple:
 
 
 def sequence_negatives(manifest: RollManifest) -> list[str]:
-    """Section 3.7: every live, published negative's `negative_id`, ordered
-    by the real capture time of its first member across every run,
-    ascending. Ties break by run index (the order runs were appended in,
-    i.e. `manifest.runs`' own order), then by first member's filename."""
+    """Section 3.7: every published negative's `negative_id`, ordered by the
+    real capture time of its first member across every run, ascending. Ties
+    break by run index (the order runs were appended in, i.e.
+    `manifest.runs`' own order), then by first member's filename."""
     run_index = {run.run_id: i for i, run in enumerate(manifest.runs)}
     ordered = sorted(_sequenceable(manifest), key=lambda n: _rank_key(run_index, n))
     return [n.negative_id for n in ordered]

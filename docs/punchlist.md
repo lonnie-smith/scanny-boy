@@ -41,8 +41,10 @@ Phase n:
   time alone (§3.7); an optional `sequence_override` on `negative`, consumed
   by `roll_sequence.py` ahead of capture time, is where a manual order would
   attach.
-* Deleting a negative outright. The Edit tab, reusing §3.4's supersede
-  mechanism with a null replacement, is where this attaches.
+* Deleting a negative outright. With replacement now in-place
+  (no tombstone, no supersede-with-null-replacement to reuse), this needs
+  its own real delete mechanism — a `roll delete-negative` command is the
+  likely shape; the Edit tab is where it would attach.
 * Setting a roll's capture date or a per-negative date override, and editing
   an unlocked roll's `shots_per_negative`, from the app. Phase 3's Edit tab
   (P3-12) shows all three read-only: no CLI command writes
