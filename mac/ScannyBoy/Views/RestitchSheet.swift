@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// Chunk P2-10's re-stitch action: takes a kept work directory and an output
+/// Chunk P2-10's re-stitch action: takes a work directory and an output
 /// folder and runs `stitch`, reusing `run` — the very `RunModel` a normal Run
 /// drives — so progress and results show up in the same UI.
 /// (`docs/PHASE2_IMPLEMENTATION_PLAN.md`, "App: re-stitch".) This is what
-/// makes tuning cost minutes rather than hours: the work directory survives a
-/// run precisely so it can be handed back here.
+/// makes tuning cost minutes rather than hours: a work directory you keep
+/// (a run started with `--work`, since a run never keeps the one it creates
+/// itself) can be handed back here.
 ///
 /// Section 3.6 asks for "the exact files that will be replaced, and an
 /// explicit agreement, before `--overwrite` is ever passed" — the rule
@@ -34,13 +35,13 @@ struct RestitchSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Re-stitch").font(.title2.bold())
-            Text("Re-run the stitch stage over a kept work directory's intermediates, without decoding the RAW files again.")
+            Text("Re-run the stitch stage over a work directory's intermediates, without decoding the RAW files again.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             folderRow(
                 title: "Work directory", folder: workDirectory,
-                message: "Choose the kept work directory to re-stitch."
+                message: "Choose the work directory to re-stitch."
             ) { workDirectory = $0 }
 
             folderRow(
@@ -105,7 +106,7 @@ struct RestitchSheet: View {
 
     private func startRestitch() {
         guard let workDirectory, let outputFolder else { return }
-        // The kept work directory always holds `scanny-boy-manifest.json`,
+        // The work directory always holds `scanny-boy-manifest.json`,
         // the convert stage's own record (CONTRACT.md) — the only place a
         // negative count for this re-stitch is known ahead of time.
         let totalNegatives = try? RunManifest.read(inOutputFolder: workDirectory).groups.count

@@ -505,12 +505,23 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     assert [e.negative_id for e in failures] == ["stitch-negative-02"]
     assert failures[0].code is Code.STITCH_UNDERCONSTRAINED
 
+    # The recorded message is the friendly, user-facing wording that names
+    # the negative and its source files. `CONTRACT.md` is explicit that
+    # message text is not the machine interface (`code` is), so this is the
+    # one place wording can be reworded without breaking the app.
+    expected_message = (
+        "Could not find a stitching solution for stitch-negative-02 "
+        "(IMG_90.NEF, IMG_91.NEF, IMG_92.NEF)"
+    )
+    assert failures[0].message == expected_message
+
     roll = load_roll_manifest(out_dir)
     assert roll.run("stitch-run").status == "partial"
     assert roll.negative("stitch-negative-01").status == "completed"
     failed_record = roll.negative("stitch-negative-02")
     assert failed_record.status == "failed"
     assert failed_record.error_code == Code.STITCH_UNDERCONSTRAINED.value
+    assert failed_record.error_message == expected_message
     assert failed_record.output is None
 
     # Section 3.4 asks for every per-pair metric to be recorded. A failed

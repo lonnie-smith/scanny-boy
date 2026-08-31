@@ -170,8 +170,12 @@ struct RunIntegrationTests {
 
         #expect(run.failedNegatives.count == 1)
         let failed = try #require(run.failedNegatives.first)
-        #expect(failed.groupID == "negative-02")
         #expect(failed.code == .stitchUnderconstrained)
+        #expect(
+            failed.message
+                == "Could not find a stitching solution for \(failed.groupID) "
+                    + "(_DSC4644.NEF, _DSC4645.NEF, _DSC4646.NEF)"
+        )
 
         let report = try #require(run.rollManifestReport)
         guard case .final(let manifest) = report else {
@@ -188,8 +192,6 @@ struct RunIntegrationTests {
             "the stitched negative was not published"
         )
         #expect(try Self.stagingDirectories(in: roll).isEmpty)
-        // A negative failed, so the work directory is kept (section 3.5).
-        #expect(run.keptWorkDirectory != nil)
     }
 
     // MARK: - Blocked selections
@@ -377,11 +379,13 @@ struct RunIntegrationTests {
     // MARK: - Chunk P2-10's additions: re-stitch
 
     /// The whole point of a kept work directory: re-stitching it costs no
-    /// RAW decoding at all. `--keep-intermediates` keeps the work directory
-    /// from `run` even though every negative succeeds, so this test does not
-    /// have to rely on a failure to get one to re-stitch.
+    /// RAW decoding at all. A `run` never keeps the work directory it
+    /// creates itself (on any outcome), so this test supplies its own
+    /// `--work` directory — the one kind of work directory `run` never
+    /// deletes, since deleting a folder the caller pointed at is never this
+    /// program's decision — to get one to re-stitch.
     @Test(
-        "re-stitching a kept work directory reuses its intermediates and stitches again",
+        "re-stitching a supplied work directory reuses its intermediates and stitches again",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(5))
     )
@@ -389,28 +393,33 @@ struct RunIntegrationTests {
         let firstRoll = try await Self.createRoll()
         let secondRoll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
+        let workDirectory = try Self.makeTemporaryDirectory()
 
         let model = try await Self.configuredModel(roll: firstRoll, select: negativeOne)
-        model.keepIntermediates = true
-        await model.waitForPendingProbes()
 
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(model.runCommand()),
+            command: CLICommand.run(
+                input: SampleFixtures.directory,
+                files: model.selectedFilesInCanonicalOrder,
+                roll: firstRoll,
+                perNegative: model.perNegative,
+                skipSources: [],
+                work: workDirectory
+            ),
             files: model.selectedFilesInCanonicalOrder,
             outputFolder: firstRoll
         )
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
         #expect(firstRun.stitchedNegatives.count == 1)
-        // Section 3.5: `--keep-intermediates` keeps the work directory even
-        // on complete success.
-        let workDirectory = try #require(firstRun.keptWorkDirectory)
-        #expect(FileManager.default.fileExists(atPath: workDirectory))
+        // A caller-supplied `--work` directory survives regardless of
+        // outcome — it's the one kind `run` never deletes.
+        #expect(FileManager.default.fileExists(atPath: workDirectory.path))
 
         let restitch = RunModel(runner: try Self.runner())
         restitch.start(
-            command: .stitch(work: URL(filePath: workDirectory), roll: secondRoll),
+            command: .stitch(work: workDirectory, roll: secondRoll),
             files: [],
             outputFolder: secondRoll
         )
@@ -438,7 +447,7 @@ struct RunIntegrationTests {
         #expect(manifest.runs.last?.status == "complete")
         // A plain `stitch` did not create the work directory, so it is never
         // this run's to remove — it must still be there afterwards.
-        #expect(FileManager.default.fileExists(atPath: workDirectory))
+        #expect(FileManager.default.fileExists(atPath: workDirectory.path))
     }
 
     /// The error path Chunk P2-10 asks for: a folder that never held a work

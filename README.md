@@ -143,12 +143,11 @@ moves it to the Trash.
    one row per overlapping prospective negative, defaulting to **Skip**;
    choosing **Replace** supersedes the existing negative and deletes its
    TIFF.
-4. **Re-stitch, if a negative needs tuning.** A run that keeps its
-   intermediates (because a negative failed, the run was cancelled, or
-   "Keep intermediates" was checked) leaves a work directory behind. **File
-   > Re-stitch…**, or the **Re-stitch…** button next to a kept work
-   directory, re-runs just the stitch stage against it — no RAW decoding
-   paid for twice.
+4. **Re-stitch, if a negative needs tuning.** A run never keeps the work
+   directory it creates — it is removed on every outcome — so to re-stitch
+   you point the app at one you kept yourself (a run started with `--work`,
+   or any work directory you have on disk). **File > Re-stitch…** re-runs
+   just the stitch stage against it — no RAW decoding paid for twice.
 
 **Edit** — the roll's negatives in sequence, with a thumbnail, source
 frames, and quality metrics for each; a dirty count and an **Apply** button

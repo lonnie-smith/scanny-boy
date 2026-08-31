@@ -281,7 +281,6 @@ public enum CLICode: Sendable, Hashable {
     case stitchLayoutUnexpected
     case stitchRebateCheckFailed
     case outputDimensionsLarge
-    case intermediatesKept
     case rollNotFound
     case rollManifestUnsupported
     case rollExists
@@ -329,7 +328,6 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
-        case "INTERMEDIATES_KEPT": self = .intermediatesKept
         case "ROLL_NOT_FOUND": self = .rollNotFound
         case "ROLL_MANIFEST_UNSUPPORTED": self = .rollManifestUnsupported
         case "ROLL_EXISTS": self = .rollExists
@@ -379,7 +377,6 @@ public enum CLICode: Sendable, Hashable {
         case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
-        case .intermediatesKept: "INTERMEDIATES_KEPT"
         case .rollNotFound: "ROLL_NOT_FOUND"
         case .rollManifestUnsupported: "ROLL_MANIFEST_UNSUPPORTED"
         case .rollExists: "ROLL_EXISTS"

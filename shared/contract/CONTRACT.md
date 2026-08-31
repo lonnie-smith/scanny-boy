@@ -32,7 +32,7 @@ scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-pa
                       [--negatives ID ...]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
-                      [--skip-sources FILE ...] [--work DIR] [--keep-intermediates]
+                      [--skip-sources FILE ...] [--work DIR]
 
 scanny-boy apply-metadata --roll DIR
 ```
@@ -256,7 +256,6 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
-| `INTERMEDIATES_KEPT` | Warning: work directory retained; carries its path |
 | `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 2` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |

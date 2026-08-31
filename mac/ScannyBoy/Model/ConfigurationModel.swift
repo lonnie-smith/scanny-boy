@@ -63,11 +63,6 @@ final class ConfigurationModel {
         }
     }
 
-    /// Section 3.5: kept, with an `INTERMEDIATES_KEPT` warning, when true —
-    /// even on an otherwise complete success. Off by default, matching the
-    /// CLI's own default.
-    var keepIntermediates = false
-
     private(set) var groups: [[String]] = []
     private(set) var selectionWarnings: [Issue] = []
     private(set) var selectionError: Issue?
@@ -169,8 +164,7 @@ final class ConfigurationModel {
             files: selectedFilesInCanonicalOrder,
             roll: rollURL,
             perNegative: perNegative,
-            skipSources: [],
-            keepIntermediates: keepIntermediates
+            skipSources: []
         )
     }
 
