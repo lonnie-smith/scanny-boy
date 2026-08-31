@@ -66,8 +66,8 @@ targets:
       properties:
         CFBundleName: Scanny Boy
         CFBundleDisplayName: Scanny Boy
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "0.1.0"
+        CFBundleShortVersionString: "0.3.0"
+        CFBundleVersion: "0.3.0"
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.photography
         NSHumanReadableCopyright: Copyright (c) 2026 Lonnie Smith. All rights reserved.

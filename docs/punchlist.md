@@ -8,7 +8,7 @@
   (−5.2%), rising to −20.8% at 0.005 and falling to nothing at white. Phase 2
   reads the pixels correctly and is unaffected.~~ **Fixed in Phase 3 P3-1:**
   `ScannyBoy-ROMM-LibRaw-v4.icc` embeds LibRaw's curve; no pixel values change.
-* `probe --out` has no notion of `scanny-boy-roll.json` (Phase 2's stitched
+* ~~`probe --out` has no notion of `scanny-boy-roll.json` (Phase 2's stitched
   roll manifest) — only `scanny-boy-manifest.json`. It reports a folder
   holding only a roll manifest as `OUTPUT_NOT_EMPTY` rather than recognising
   it as a legitimate rerun/re-stitch target. The app works around the
@@ -16,9 +16,13 @@
   but this means the app can't show an itemized preview of what a rerun or
   re-stitch would actually replace, the way it already does for a plain
   `convert`/`run` — it can only ask for one general, explicit
-  acknowledgement before passing `--overwrite`. Fixing it means generalising
-  `probe`'s output-folder handling over which manifest it's reading, the way
-  Chunk P2-6 already generalised `output_folder.py` itself.
+  acknowledgement before passing `--overwrite`.~~ **Fixed in Phase 3 P3-3:**
+  `probe --roll` validates directly against the roll manifest and reports
+  `roll_overlap` per prospective negative (§3.5); the app's Add Scans stage
+  (P3-11) targets `--roll` exclusively now, so `ConfigurationModel` no
+  longer needs the `--out`-blind-spot workaround at all —
+  `ConfigurationModel.existingRoll` and its `OUTPUT_NOT_EMPTY` special case
+  are gone, replaced by the overlap sheet's itemized Skip/Replace review.
 
 Phase n:
 
@@ -33,6 +37,19 @@ Phase n:
   finder. A detector constrained to edges near the frame margin and roughly
   parallel to the solved strip axis (rather than the longest line anywhere in
   the image) could make this a real gate instead of an always-`null` field.
+* Manual negative reordering. Phase 3 orders a roll's negatives by capture
+  time alone (§3.7); an optional `sequence_override` on `negative`, consumed
+  by `roll_sequence.py` ahead of capture time, is where a manual order would
+  attach.
+* Deleting a negative outright. The Edit tab, reusing §3.4's supersede
+  mechanism with a null replacement, is where this attaches.
+* Setting a roll's capture date or a per-negative date override, and editing
+  an unlocked roll's `shots_per_negative`, from the app. Phase 3's Edit tab
+  (P3-12) shows all three read-only: no CLI command writes
+  `metadata.roll_capture_date`, a negative's `capture_time.date_override`,
+  or an existing roll's `shots_per_negative` — see Phase 3 plan §5.6. A
+  `roll set-date` command, by analogy with `roll rename` (§5.5), is the
+  likely shape of the fix.
 
 Phase n: 
 Negative inversion

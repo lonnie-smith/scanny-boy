@@ -373,3 +373,144 @@ lens, and white balance.
 - Everything Phase 1's "Scope this project does not cover" already says
   still applies unchanged — no App Store, no Developer ID signing, no
   notarisation, no Intel build.
+
+---
+
+# Phase 3 decisions
+
+This mirrors [`PHASE3_IMPLEMENTATION_PLAN.md`](PHASE3_IMPLEMENTATION_PLAN.md)
+section 3 the same way the sections above mirror Phases 1 and 2 — readable,
+not authoritative. **The Phase 3 plan wins on any disagreement.** Phases 1
+and 2's decisions above stand except where named below.
+
+## What changed, and why it's a break
+
+The Phase 2 roll manifest was single-run by construction: one `run_id`, one
+`film_date`, one `source_order`, and a rerun rule that rejects anything that
+differs from what's recorded. An additive roll must be allowed to change
+exactly those things, so Phase 3 is `manifest_format_version: 2`, a
+rewritten `roll_manifest.py`, and **protocol version 3** — not a patch to
+the old format. There is no migration: a Phase 2 folder is not importable,
+and the app refuses a protocol-2 event stream.
+
+Three consequences: `--film-date` is removed from the CLI entirely (dates
+move to the metadata stage, below); a freshly stitched TIFF now carries its
+first frame's **real** capture timestamp, and only gets a synthetic,
+ordered one once metadata is applied; and Phase 1's long-standing
+profile/curve mismatch is fixed by replacing the embedded ICC profile
+(`ScannyBoy-ROMM-LibRaw-v4.icc`) — every TIFF's bytes and hash change, no
+pixel value does (`punchlist.md`).
+
+## The library and rolls
+
+- One library folder (`~/Pictures/Scanny Boy` by default, relocatable
+  through Settings) holds every roll as a direct child. The filesystem is
+  the only source of truth — no index, no registry — and `roll list`
+  scans it one level deep for `scanny-boy-roll.json`, server-side; the app
+  never enumerates the library or parses a roll manifest itself.
+- `roll_id` is a UUID, generated once, never in a path. `roll_name` is free
+  text; the folder name is a slug of it (NFC-normalised,
+  `[A-Za-z0-9._-]` plus single-dash whitespace runs, 60 characters,
+  case-insensitive collision suffixes). Renaming moves the folder to a new
+  slug, then writes `roll_name` — refused while a run is active, enforced
+  client-side since the CLI is stateless between invocations. Deleting
+  moves the folder to the Trash via `NSWorkspace.recycle`, no CLI
+  involvement at all.
+
+## Roll invariants and additive runs
+
+- `shots_per_negative`, `processing_params`, the ICC profile hash, and
+  `stitch_params` are roll-invariant across every run in a roll; anything
+  else (input folder, source list, order, grouping) is expected to differ
+  and is never compared. `shots_per_negative` locks once any run reaches
+  `complete`/`partial` with a completed negative.
+- `negative_id` is `<run.short_id>-negative-NN`; `short_id` starts at the
+  first six hex characters of the run's UUID and lengthens on collision.
+  Output names keep Phase 2's first-member-stem rule, with a `-2`, `-3`, …
+  suffix on collision across runs.
+- **Replacement is additive, never in-place.** A run may include sources
+  already in the roll; the new negative publishes under its own identity,
+  and once it completes, every existing negative whose members are a
+  subset of the new one's is superseded: `superseded_by` set,
+  `sequence` cleared, its TIFF deleted (manifest write first, so a crash
+  leaves an orphan file rather than a dangling record). Superseded
+  negatives are never removed from the manifest and their output names
+  stay claimed.
+
+## Command surface (protocol version 3)
+
+- `roll init/list/info/rename` manage the library; `roll rename` is a
+  P3-10 addition to the original plan (§5.5) — the plan named only
+  `init`/`list`/`info` until Chunk P3-10 found renaming had no CLI path at
+  all, despite `roll_folder.rename_roll` already existing.
+- `probe` gains `--roll`, validating the selection against the roll's
+  invariants and reporting `roll_overlap` — one entry per prospective
+  negative that shares sources with a negative already in the roll —
+  without rejecting the overlap outright; the app's overlap sheet decides.
+- `run` and `stitch` take `--roll` in place of `--out`; `--film-date` and
+  `run --overwrite` are both gone. Replacing a negative is expressed by
+  *not* skipping its sources (`run --skip-sources`), which the app derives
+  from the overlap sheet, never by an overwrite flag.
+- `apply-metadata --roll DIR` is new: section "Metadata and Apply" below.
+
+## Sequence and metadata
+
+- A roll's negatives are ordered by real capture time of each negative's
+  first member, across every run, ascending; a superseded negative is
+  excluded from the order entirely (`sequence: null`), so a replacement
+  takes its predecessor's position rather than shifting later negatives.
+- The applied timestamp is **rank-based**: `12:00:00 + (rank − 1)` seconds
+  on the roll's capture date, or on a negative's own date override when it
+  has one, ranked within that date's negatives. One computation,
+  `roll_sequence.py`, and nothing else recomputes it.
+- **Intent lives in the manifest; the TIFF is the artefact.** A negative is
+  dirty when `intended_datetime_original` differs from
+  `applied_datetime_original`. `apply-metadata` processes every dirty,
+  completed, non-superseded negative: verifies the published TIFF against
+  the manifest's recorded size/hash (skips with `OUTPUT_MODIFIED_
+  EXTERNALLY` rather than rewriting a file the roll no longer recognises),
+  rewrites the nested EXIF `DateTimeOriginal`/`SubSecTimeOriginal` with
+  `tifftools`, re-hashes, and updates the manifest. No pixel data is ever
+  touched. A re-stitch of a negative that already had metadata applied
+  re-applies it automatically, without asking.
+- **Not yet wired to the app (§5.6):** no CLI command writes
+  `metadata.roll_capture_date` or a negative's `capture_time.date_override`
+  — not even a library-level function exists to wrap, unlike the rename
+  gap above. Chunk P3-12 shows both, and an unlocked roll's
+  `shots_per_negative`, read-only in the Edit tab rather than inventing a
+  write path; see `punchlist.md`.
+
+## The app (Swift)
+
+- **One window**, `NavigationSplitView`: a sidebar of rolls (name, negative
+  count, unreadable rolls shown disabled with their reason — all from one
+  `roll list` call) and a workspace with **Add Scans** and **Edit** tabs
+  for whichever roll is selected. One active run app-wide disables the
+  sidebar, the tab picker, and both stages' controls.
+- **Add Scans** lost the output-folder and film-date fields Phase 2 had;
+  shots per negative is the roll's own, shown read-only. The
+  overwrite-confirmation dialog is replaced by the overlap sheet — one row
+  per `roll_overlap` entry, Skip (default) or Replace.
+- **Edit** is new: negatives in sequence order with thumbnails (read via a
+  QuickLook-skipping `ThumbnailLoader` path tuned for large published
+  TIFFs, not RAW previews), source frames, quality metrics, the dirty
+  count, and Apply — driven through the same shared `RunModel`/
+  `CLISession` as Run and re-stitch, not a parallel mechanism.
+- Swift reads a roll only through `roll list` and `roll info`, never by
+  parsing `scanny-boy-roll.json` or walking the library itself.
+
+## Scope Phase 3 does not cover
+
+- **Setting the roll capture date or a per-negative date override, and
+  editing an unlocked roll's `shots_per_negative`, from the app** — see
+  "Sequence and metadata" above and `punchlist.md`.
+- Crop from manifest data, white balance/base neutralisation, extended
+  metadata (location, camera, lens, film stock), the cyan fill colour,
+  manual negative reordering, and deleting a negative outright are all
+  deferred with an attachment point recorded on `punchlist.md`; none is
+  scheduled.
+- Negative inversion is Phase 4.
+- The rebate-deviation detector (Phase 2's punchlist item) is untouched by
+  Phase 3.
+- Everything Phase 1 and 2's own "Scope ... does not cover" sections say
+  still applies unchanged.
