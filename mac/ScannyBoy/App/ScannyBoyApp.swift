@@ -70,7 +70,7 @@ struct RootView: View {
             // One resolved helper, shared by the probes, the conversion, and
             // the library.
             let runner = try CLIRunner(locator: .mainBundle())
-            library = RollLibrary(runner: runner)
+            library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
             model = ConfigurationModel(runner: runner)
             run = RunModel(runner: runner)
         } catch let error as CLILocatorError {
@@ -78,6 +78,25 @@ struct RootView: View {
         } catch {
             unavailableReason = error.localizedDescription
         }
+    }
+
+    /// Section 4: "Never test the library against the real `~/Pictures`."
+    /// `CLILocator`'s `SCANNY_BOY_CLI` override is the precedent for this —
+    /// a Debug-only, absolute-path environment override so
+    /// `ScannyBoyUITests` can point the real running app at a temporary
+    /// library base instead of `RollLibrary`'s own `.picturesDirectory`
+    /// default. Release builds never honour it.
+    static let libraryBaseOverrideEnvironmentKey = "SCANNY_BOY_LIBRARY_BASE"
+
+    private static func debugLibraryBaseOverride() -> URL? {
+        #if DEBUG
+        guard let override = ProcessInfo.processInfo.environment[libraryBaseOverrideEnvironmentKey],
+            !override.isEmpty
+        else { return nil }
+        return URL(filePath: override, directoryHint: .isDirectory)
+        #else
+        return nil
+        #endif
     }
 }
 

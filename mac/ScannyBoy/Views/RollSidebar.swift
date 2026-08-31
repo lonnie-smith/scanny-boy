@@ -43,6 +43,7 @@ struct RollSidebar: View {
                     Label("New Roll", systemImage: "plus")
                 }
                 .disabled(runIsActive)
+                .accessibilityIdentifier("newRollButton")
             }
         }
         .task { library.scan() }

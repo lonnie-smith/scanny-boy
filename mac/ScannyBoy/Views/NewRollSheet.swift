@@ -21,6 +21,7 @@ struct NewRollSheet: View {
 
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("newRollNameField")
 
             Stepper("Shots per negative: \(shotsPerNegative)", value: $shotsPerNegative, in: 1...12)
 
@@ -39,6 +40,7 @@ struct NewRollSheet: View {
                 Button("Create") { create() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isReady == false)
+                    .accessibilityIdentifier("createRollButton")
             }
         }
         .padding(20)
