@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Chunk P3-12's Edit tab (section 3.10): the selected roll's negatives in
 /// sequence order with thumbnails, source frames, and quality metrics; the
-/// dirty count and Apply; the roll's name, folder path, and run history.
+/// dirty count and Apply; the roll's name and folder path.
 ///
 /// The roll capture date, each negative's date override, and
 /// `shots_per_negative` are shown read-only. No CLI command exists yet to
@@ -22,7 +22,6 @@ struct EditStageView: View {
             rollSection
             negativesSection
             applySection
-            runHistorySection
         }
         .formStyle(.grouped)
         .padding()
@@ -80,23 +79,6 @@ struct EditStageView: View {
                         style: .warning
                     )
                 }
-            }
-        }
-    }
-
-    private var runHistorySection: some View {
-        Section("Run history") {
-            if let runs = edit.roll?.runs, !runs.isEmpty {
-                ForEach(runs, id: \.runID) { historyRun in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(historyRun.kind) — \(historyRun.status)")
-                        Text(historyRun.startedAt)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text("No runs yet.").foregroundStyle(.secondary)
             }
         }
     }
