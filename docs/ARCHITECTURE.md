@@ -155,7 +155,7 @@ to bottom.
 | `catalogue.py` | Discover `.nef` (case-insensitive, no recursion), read capture timestamps, compute canonical order. |
 | `selection.py` | Pure functions: order a selection, check contiguity, chunk into groups. |
 | `metadata.py` | Read EXIF settings, white balance, and the "digitized" source fields from a NEF. |
-| `consistency.py` | Validate that a selection shares exposure/aperture/ISO/focal length/orientation/WB/lens. Operates on `SourceSettings`, so it is testable without real NEFs. |
+| `consistency.py` | Validate that a selection shares aperture/ISO/focal length/orientation/WB/lens, and that every file carries an exposure time (values are not compared — exposure may differ across a roll). Operates on `SourceSettings`, so it is testable without real NEFs. |
 | `raw_decode.py` | `RAW_PARAMS` and the rawpy calls. |
 
 **Output side**
@@ -308,8 +308,11 @@ with a nonlinear optimiser.
 **Blending** is a linear feather in linear light: each frame's weight is a
 distance transform of its own eroded validity mask, and the output is the
 weighted average wherever any frame contributes. This is safe *because*
-exposure and white balance are locked across a roll — there is no exposure
-mismatch to hide, only misregistration, which a feather tolerates gracefully.
+exposure and white balance are assumed locked across all the raw files
+that are stitched together to make each negative — there is no exposure
+mismatch to hide, only misregistration, which a feather tolerates
+gracefully. Exposure properties are *not* required to match across a
+whole roll; only the frames sharing one negative are assumed uniform.
 It is deliberate but **provisional**; a hard midline seam (preserves grain,
 shows misregistration as a line) and a multi-band Laplacian blend (hides
 misalignment, softens grain, much heavier) were both considered and set

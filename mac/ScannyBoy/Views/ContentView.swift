@@ -70,6 +70,11 @@ struct ContentView: View {
         // before `library.rolls` has re-scanned to include it — this catches
         // that up rather than leaving `model.rollURL` stuck at `nil`.
         .onChange(of: library.rolls) { _, _ in resolveSelectedRoll() }
+        // The run log belongs to the roll it stitched: switching rolls clears
+        // it, so the "Stitch Results" section only ever describes the roll
+        // now selected. Safe even mid-run — the sidebar blocks switching
+        // while a run is active — and `clearResults` guards anyway.
+        .onChange(of: model.rollURL) { _, _ in run.clearResults() }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
             restitchOutputFolder = model.rollURL
@@ -174,11 +179,27 @@ struct ContentView: View {
 
     private var detailColumn: some View {
         Form {
-            configurationSections
-                .disabled(run.isActive)
-            runSection
+            // While a probe is in flight the configuration (and the Stitch
+            // button, whose enablement depends on it) is not yet trustworthy
+            // — show a spinner instead. A run's own results stay visible:
+            // the post-run re-validation probe must not blank them out.
+            if model.isProbing {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.large)
+                        Spacer()
+                    }
+                    .padding(.vertical, 24)
+                }
+            } else {
+                configurationSections
+                    .disabled(run.isActive)
+                runSection
+            }
             if run.phase != .idle {
-                Section("Run") {
+                Section("Stitch Results") {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
@@ -217,16 +238,12 @@ struct ContentView: View {
     private var runSection: some View {
         Section {
             HStack {
-                if model.isProbing {
-                    ProgressView()
-                        .controlSize(.small)
-                }
                 Spacer()
                 if run.isActive {
                     Button("Cancel", role: .destructive) { run.cancel() }
                         .disabled(!run.canCancel)
                 }
-                Button("Run") { startRun() }
+                Button("Stitch") { startRun() }
                     .disabled(!model.runEnabled || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }
@@ -246,18 +263,27 @@ struct ContentView: View {
         )
         // The roll's contents, and therefore selection validity, change as
         // soon as this finishes.
-        Task {
-            await run.waitForCompletion()
-            model.refreshValidation()
-        }
+        awaitRunCompletionAndRefresh()
     }
 
     /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
     /// so its contents may have changed too.
     private func handleRestitchStarted() {
+        awaitRunCompletionAndRefresh()
+    }
+
+    /// A run (or re-stitch) rewrites the roll manifest while it works, so
+    /// everything that reads the roll back has to re-read it once the run
+    /// finishes — not just this tab's validation probe. The Edit tab in
+    /// particular may never have been mounted while the run ran, so nothing
+    /// else would ever tell `EditModel` the manifest changed: it keeps
+    /// showing the pre-run negative list and dirty count.
+    private func awaitRunCompletionAndRefresh() {
         Task {
             await run.waitForCompletion()
             model.refreshValidation()
+            edit.refresh()
+            library.scan()
         }
     }
 

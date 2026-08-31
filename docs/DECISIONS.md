@@ -338,9 +338,9 @@ horizontal prediction, the two-pass `tifftools` EXIF write) with three
 differences: dimensions are the canvas, not one frame; `ImageDescription`
 names the negative's sources and says it is stitched
 (`"_DSC4638.NEF+2: stitched scan"`); and curated EXIF comes from the
-negative's first frame in canonical order, since Phase 1 already proves every
-frame of a negative shares identical exposure, aperture, ISO, focal length,
-lens, and white balance.
+negative's first frame in canonical order — a deterministic choice, not a
+claim that Phase 1 proves the frames' settings match, since exposure is
+required per file but its value is not compared across a roll.
 
 ## The app (Swift)
 
