@@ -3,18 +3,19 @@ import SwiftUI
 
 /// Section 3.10: `NavigationSplitView` shell — the library sidebar
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
-/// picker. Chunk P3-10 adds the shell and the sidebar; the workspace's own
-/// tabs are still Phase 2's configuration UI for now, unmodified, and
-/// reworked into "Add Scans" proper by Chunk P3-11. "Edit" is a placeholder
+/// picker. Chunk P3-10 adds the shell and the sidebar. Chunk P3-11 reworks
+/// the workspace's Add Scans tab onto the selected roll: no output-folder
+/// picker, no film date, the shots-per-negative stepper replaced by the
+/// roll's own (read-only here), and the overwrite-confirmation dialog
+/// replaced by the overlap sheet (section 3.4/3.5). "Edit" is a placeholder
 /// until Chunk P3-12.
 ///
-/// Chunk 9: folder selection, one-range selection, grouping preview, film
-/// date, output-folder validation, disk estimate, and overwrite-conflict
-/// preview. Chunk 10 adds Run with its overwrite confirmation, live progress,
-/// cooperative Cancel, the completed/failed negatives, Reveal in Finder, and
-/// the manifest the run left behind. Chunk P2-10 adds re-stitch: the same
-/// `run` driving `scanny-boy stitch` over a kept work directory instead of
-/// `scanny-boy run` over a fresh selection.
+/// Chunk 9: folder selection, one-range selection, grouping preview.
+/// Chunk 10 adds Run with live progress, cooperative Cancel, the
+/// completed/failed negatives, Reveal in Finder, and the manifest the run
+/// left behind. Chunk P2-10 adds re-stitch: the same `run` driving
+/// `scanny-boy stitch` over a kept work directory instead of `scanny-boy
+/// run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
     @Bindable var model: ConfigurationModel
@@ -27,7 +28,7 @@ struct ContentView: View {
 
     @State private var selection: Roll.ID?
     @State private var workspaceTab: WorkspaceTab = .addScans
-    @State private var isConfirmingOverwrite = false
+    @State private var isPresentingOverlapSheet = false
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
@@ -51,9 +52,14 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .onChange(of: selection, initial: true) { _, _ in resolveSelectedRoll() }
+        // `selection` can be set (from `NewRollSheet`'s just-created roll)
+        // before `library.rolls` has re-scanned to include it — this catches
+        // that up rather than leaving `model.rollURL` stuck at `nil`.
+        .onChange(of: library.rolls) { _, _ in resolveSelectedRoll() }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
-            restitchOutputFolder = model.outputFolder
+            restitchOutputFolder = model.rollURL
             isPresentingRestitch = true
         }
         .sheet(isPresented: $isPresentingRestitch) {
@@ -96,6 +102,13 @@ struct ContentView: View {
             detailColumn
                 .frame(minWidth: 380, idealWidth: 460)
         }
+    }
+
+    /// Keeps `model.rollURL` following the sidebar selection (section 3.10):
+    /// `ConfigurationModel` has no folder picker of its own any more, so
+    /// this is the only thing that ever sets it.
+    private func resolveSelectedRoll() {
+        model.rollURL = library.rolls.first { $0.id == selection }?.path
     }
 
     private var catalogueColumn: some View {
@@ -164,10 +177,11 @@ struct ContentView: View {
     @ViewBuilder
     private var configurationSections: some View {
         Section("Grouping") {
-            Stepper(
-                "Shots per negative: \(model.perNegative)",
-                value: $model.perNegative, in: 1...12
-            )
+            // Section 3.4: shots-per-negative is the roll's own now, locked
+            // once any run reaches complete/partial — Add Scans just shows
+            // it. Editable only from the Edit tab (Chunk P3-12), while
+            // unlocked.
+            Text("Shots per negative: \(model.perNegative)")
             if !model.groups.isEmpty {
                 GroupingPreview(groups: model.groups)
             }
@@ -177,50 +191,8 @@ struct ContentView: View {
             if let error = model.selectionError {
                 IssueLabel(issue: error, style: .error)
             }
-        }
-
-        Section("Film date") {
-            TextField("YYYY-MM-DD", text: $model.filmDate)
-                .textFieldStyle(.roundedBorder)
-            if !model.filmDate.isEmpty && !model.isFilmDateValid {
-                Text("Enter the date as YYYY-MM-DD.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-
-        Section("Output folder") {
-            HStack {
-                if let outputFolder = model.outputFolder {
-                    Text(outputFolder.path)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text("Not chosen").foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Choose…") { chooseOutputFolder() }
-            }
-            if let error = model.outputError {
+            if let error = model.rollError {
                 IssueLabel(issue: error, style: .error)
-            }
-            if let required = model.estimatedRequiredBytes, let available = model.availableBytes {
-                DiskEstimateView(requiredBytes: required, availableBytes: available)
-            }
-            if !model.outputConflicts.isEmpty {
-                OverwritePreview(
-                    conflicts: model.outputConflicts,
-                    confirmed: model.overwriteConfirmed
-                )
-            }
-            if let existingRoll = model.existingRoll {
-                Text(
-                    "This folder already holds the roll \"\(existingRoll.rollName)\", "
-                        + "with \(existingRoll.liveNegatives.count) negative(s)."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
 
@@ -243,48 +215,38 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Run") { startRun() }
-                    .disabled(!model.isReadyPendingOverwriteConfirmation || run.isActive)
+                    .disabled(!model.isReadyPendingOverlapReview || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }
-            // Section 3.6: the exact files that will be replaced, and an
-            // explicit agreement, before `--overwrite` is ever passed.
-            .confirmationDialog(
-                "Replace \(model.outputConflicts.count) existing file(s)?",
-                isPresented: $isConfirmingOverwrite
-            ) {
-                Button("Replace", role: .destructive) {
-                    model.confirmOverwrite()
-                    beginRun()
+            // Section 3.4/3.5: the overlap sheet replaces the old
+            // overwrite-confirmation dialog — one row per overlapping
+            // prospective negative, Skip or Replace, before the run starts.
+            .sheet(isPresented: $isPresentingOverlapSheet) {
+                OverlapSheet(entries: model.rollOverlap) { skipSources in
+                    beginRun(skipSources: skipSources)
                 }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text(
-                    "These files in the output folder will be overwritten:\n"
-                        + model.outputConflicts.joined(separator: "\n")
-                )
             }
         }
     }
 
     private func startRun() {
-        if model.needsOverwriteConfirmation {
-            isConfirmingOverwrite = true
+        if model.needsOverlapReview {
+            isPresentingOverlapSheet = true
         } else {
-            beginRun()
+            beginRun(skipSources: [])
         }
     }
 
-    private func beginRun() {
-        guard let command = model.runCommand, let outputFolder = model.outputFolder else {
-            return
-        }
+    private func beginRun(skipSources: [String]) {
+        guard let command = model.runCommand(skipSources: skipSources), let rollURL = model.rollURL
+        else { return }
         run.start(
             command: command,
             files: model.selectedFilesInCanonicalOrder,
-            outputFolder: outputFolder
+            outputFolder: rollURL
         )
-        // The output folder's contents, and therefore the conflict preview and
-        // the disk estimate, change as soon as this finishes.
+        // The roll's contents, and therefore the overlap preview, change as
+        // soon as this finishes.
         Task {
             await run.waitForCompletion()
             model.refreshValidation()
@@ -296,11 +258,11 @@ struct ContentView: View {
     /// the menu command, which has no run to pre-fill from.
     private func presentRestitch(workDirectory: String) {
         restitchWorkDirectory = URL(filePath: workDirectory)
-        restitchOutputFolder = model.outputFolder
+        restitchOutputFolder = model.rollURL
         isPresentingRestitch = true
     }
 
-    /// Mirrors `beginRun`'s tail: a re-stitch can target `model.outputFolder`
+    /// Mirrors `beginRun`'s tail: a re-stitch can target `model.rollURL`
     /// (most often, since the button pre-fills it), so its contents may have
     /// changed too.
     private func handleRestitchStarted() {
@@ -336,20 +298,6 @@ struct ContentView: View {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return exists && isDir.boolValue
-    }
-
-    private func chooseOutputFolder() {
-        // The output folder for a roll of film usually does not exist yet, so
-        // the panel offers "New Folder" and starts inside whichever folder
-        // was used last (punchlist: "I should be able to create a new folder,
-        // not just choose an existing one").
-        let url = Self.pickFolder(
-            startingAt: model.outputFolder,
-            message: "Choose or create the folder to write the TIFFs into.",
-            canCreateDirectories: true
-        )
-        guard let url else { return }
-        model.outputFolder = url
     }
 
     /// `canCreateDirectories` is off by default and on only where a new

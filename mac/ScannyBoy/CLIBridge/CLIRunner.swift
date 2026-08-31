@@ -41,16 +41,19 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "rename", "--roll", roll.path, "--name", name])
     }
 
-    /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--per-negative N]`
+    /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--roll DIR] [--per-negative N]`
     ///
     /// With `--input` alone this returns the catalogue in canonical order.
     /// Adding `--files` also validates the selection; adding `--out` on top of
     /// that includes output-folder validation and the overwrite-conflict
-    /// preview.
+    /// preview (Phase 2's rerun path). Adding `--roll` instead validates the
+    /// selection against a roll's invariants and reports `roll_overlap`
+    /// (Phase 3 section 3.5) — the Add Scans stage's own probe call.
     public static func probe(
         input: URL,
         files: [String] = [],
         out: URL? = nil,
+        roll: URL? = nil,
         perNegative: Int? = nil
     ) -> CLICommand {
         var arguments = ["probe", "--input", input.path]
@@ -60,6 +63,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let out {
             arguments.append(contentsOf: ["--out", out.path])
+        }
+        if let roll {
+            arguments.append(contentsOf: ["--roll", roll.path])
         }
         if let perNegative {
             arguments.append(contentsOf: ["--per-negative", String(perNegative)])
@@ -98,38 +104,35 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy run --input DIR --files ... --out DIR --film-date YYYY-MM-DD ... [--work DIR] [--keep-intermediates]`
+    /// `scanny-boy run --input DIR --files ... --roll DIR [--skip-sources ...] [--work DIR] [--keep-intermediates]`
     ///
     /// One process, one event stream, one cancellation, from a selection of
-    /// NEFs all the way to finished, stitched negatives
-    /// (`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3.6). This is the app's
-    /// normal path — `Run` builds this, not `.convert`. `work` is left `nil`
-    /// here: a chosen work directory is Chunk P2-10's re-stitch feature, not
-    /// this one's.
+    /// NEFs all the way to finished, stitched negatives, published into a
+    /// roll rather than a bare output folder (Phase 3 section 3.5). This is
+    /// the app's normal path — `Run` builds this, not `.convert`. `work` is
+    /// left `nil` here: a chosen work directory is Chunk P2-10's re-stitch
+    /// feature, not this one's. There is no `--overwrite`: replacing an
+    /// existing negative is expressed by *not* skipping its sources
+    /// (`skipSources`), which the overlap sheet derives (section 3.4).
     public static func run(
         input: URL,
         files: [String],
-        out: URL,
-        filmDate: String,
+        roll: URL,
         perNegative: Int? = nil,
         jobs: Int? = nil,
-        overwrite: Bool = false,
+        skipSources: [String] = [],
         work: URL? = nil,
         keepIntermediates: Bool = false
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
         arguments.append("--files")
         arguments.append(contentsOf: files)
-        arguments.append(contentsOf: ["--out", out.path])
-        arguments.append(contentsOf: ["--film-date", filmDate])
+        arguments.append(contentsOf: ["--roll", roll.path])
         if let perNegative {
             arguments.append(contentsOf: ["--per-negative", String(perNegative)])
         }
         if let jobs {
             arguments.append(contentsOf: ["--jobs", String(jobs)])
-        }
-        if overwrite {
-            arguments.append("--overwrite")
         }
         if let work {
             arguments.append(contentsOf: ["--work", work.path])
@@ -137,10 +140,14 @@ public struct CLICommand: Sendable, Hashable {
         if keepIntermediates {
             arguments.append("--keep-intermediates")
         }
+        if !skipSources.isEmpty {
+            arguments.append("--skip-sources")
+            arguments.append(contentsOf: skipSources)
+        }
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy stitch --work DIR --out DIR [--jobs N] [--overwrite] [--allow-partial]`
+    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in
     /// `work`, verifies every intermediate, and stitches — without paying for
@@ -148,15 +155,17 @@ public struct CLICommand: Sendable, Hashable {
     /// work directory is exactly as likely to be `partial` (kept because one
     /// negative failed) as `complete`, and passing it is a no-op when the
     /// manifest is already `complete`. `overwrite` is only ever set after the
-    /// user has explicitly agreed (section 3.6).
+    /// user has explicitly agreed (section 3.6). `--out` became `--roll` in
+    /// Phase 3 section 3.5; a re-stitch's target is a roll folder same as
+    /// everything else now.
     public static func stitch(
         work: URL,
-        out: URL,
+        roll: URL,
         jobs: Int? = nil,
         overwrite: Bool = false,
         allowPartial: Bool = true
     ) -> CLICommand {
-        var arguments = ["stitch", "--work", work.path, "--out", out.path]
+        var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
         if let jobs {
             arguments.append(contentsOf: ["--jobs", String(jobs)])
         }

@@ -5,12 +5,15 @@ import Testing
 
 /// The Chunk 10 run flow driven end to end: the real bundled helper, the real
 /// sample NEFs, `ConfigurationModel` deciding what may run, and `RunModel`
-/// running it.
+/// running it. Chunk P3-11 ports every scenario onto a real roll (`roll
+/// init`, then `run --roll`) rather than a bare output folder — every run
+/// here targets a roll `Self.createRoll()` creates for real, through the CLI,
+/// exactly as the app does.
 ///
 /// These are the automated half of Chunk 10's manual-verification list. They
 /// prove the behaviour; they do not stand in for the user's own sign-off on
-/// overwrite and cancellation in the finished app, which is approval point 4
-/// of section 8.
+/// replacement and cancellation in the finished app, which is approval point
+/// 4 of section 8.
 ///
 /// Both prerequisites — the built app hosting these tests, and the sample
 /// files at `tests/fixtures/nef/` — are absent from CI, so the suite skips
@@ -35,8 +38,8 @@ struct RunIntegrationTests {
                 The real sample NEFs are not present at tests/fixtures/nef/ \
                 (see docs/IMPLEMENTATION_PLAN.md appendix A). The Chunk 10 \
                 run flow — a six-frame conversion, the blocked selections, \
-                the rerun that requires confirmation, and cooperative \
-                cancellation keeping earlier negatives — did not run.
+                the rerun that overlaps, and cooperative cancellation \
+                keeping earlier negatives — did not run.
                 """
             )
         }
@@ -59,25 +62,25 @@ struct RunIntegrationTests {
         UserDefaults(suiteName: "scanny-boy-tests-\(UUID().uuidString)")!
     }
 
-    /// A configuration model pointed at the sample folder, with its catalogue
-    /// probe already applied.
-    private static func configuredModel(
-        outputFolder: URL,
-        select: [String],
-        perNegative: Int = 3,
-        filmDate: String = "2026-08-02"
-    ) async throws -> ConfigurationModel {
-        let model = ConfigurationModel(
-            runner: try runner(), defaults: isolatedDefaults()
+    /// `roll init` for real, through the CLI — every scenario below targets a
+    /// roll it actually created, exactly as the app does (section 3.1: Swift
+    /// never invents a roll folder of its own).
+    private static func createRoll(perNegative: Int = 3) async throws -> URL {
+        let library = try Self.makeTemporaryDirectory()
+        let runner = try Self.runner()
+        let session = runner.session(
+            for: .rollInit(
+                library: library, name: "Test Roll \(UUID().uuidString.prefix(8))",
+                perNegative: perNegative
+            )
         )
-        model.inputFolder = SampleFixtures.directory
-        await model.waitForPendingProbes()
-        model.outputFolder = outputFolder
-        model.perNegative = perNegative
-        model.filmDate = filmDate
-        model.selectedFiles = Set(select)
-        await model.waitForPendingProbes()
-        return model
+        for await output in try await session.start() {
+            if case .event(let event) = output, event.kind == .rollCreated, let path = event.rollPath {
+                return URL(filePath: path)
+            }
+        }
+        Issue.record("roll init produced no roll_created event")
+        throw CocoaError(.fileNoSuchFile)
     }
 
     private static func tiffNames(_ nefNames: [String]) -> [String] {
@@ -102,6 +105,23 @@ struct RunIntegrationTests {
         Issue.record("timed out waiting for the run to reach the expected state")
     }
 
+    /// A configuration model pointed at the sample folder and a real roll,
+    /// with its catalogue probe already applied.
+    private static func configuredModel(
+        roll: URL,
+        select: [String]
+    ) async throws -> ConfigurationModel {
+        let model = ConfigurationModel(
+            runner: try runner(), defaults: isolatedDefaults()
+        )
+        model.inputFolder = SampleFixtures.directory
+        await model.waitForPendingProbes()
+        model.rollURL = roll
+        model.selectedFiles = Set(select)
+        await model.waitForPendingProbes()
+        return model
+    }
+
     // MARK: - Six sample files at three per negative
 
     /// Chunk P2-9: the model's Run command is now `run` (convert *and*
@@ -119,23 +139,18 @@ struct RunIntegrationTests {
         .timeLimit(.minutes(5))
     )
     func sixFilesStitchOneNegativeAndRefuseTheOther() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let out = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let roll = try await Self.createRoll()
 
-        let model = try await Self.configuredModel(
-            outputFolder: out, select: SampleFixtures.files
-        )
+        let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files)
         #expect(model.groups.count == 2)
         #expect(model.runEnabled)
-        #expect(!model.needsOverwriteConfirmation)
+        #expect(!model.needsOverlapReview)
 
         let run = RunModel(runner: try Self.runner())
         run.start(
-            command: try #require(model.runCommand),
+            command: try #require(model.runCommand()),
             files: model.selectedFilesInCanonicalOrder,
-            outputFolder: out
+            outputFolder: roll
         )
         await run.waitForCompletion()
 
@@ -169,11 +184,11 @@ struct RunIntegrationTests {
 
         #expect(
             FileManager.default.fileExists(
-                atPath: out.appending(path: Self.tiffNames(SampleFixtures.files)[0]).path
+                atPath: roll.appending(path: Self.tiffNames(SampleFixtures.files)[0]).path
             ),
             "the stitched negative was not published"
         )
-        #expect(try Self.stagingDirectories(in: out).isEmpty)
+        #expect(try Self.stagingDirectories(in: roll).isEmpty)
         // A negative failed, so the work directory is kept (section 3.5).
         #expect(run.keptWorkDirectory != nil)
     }
@@ -186,18 +201,14 @@ struct RunIntegrationTests {
         .timeLimit(.minutes(5))
     )
     func fiveFileSelectionIsBlocked() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let out = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-
+        let roll = try await Self.createRoll()
         let model = try await Self.configuredModel(
-            outputFolder: out, select: Array(SampleFixtures.files.prefix(5))
+            roll: roll, select: Array(SampleFixtures.files.prefix(5))
         )
 
         #expect(model.selectionError?.code == .notDivisible)
         #expect(!model.runEnabled)
-        #expect(model.runCommand == nil)
+        #expect(model.runCommand() == nil)
     }
 
     /// Appendix A: the break between frames 4640 and 4644 is *not* a catalogue
@@ -209,104 +220,84 @@ struct RunIntegrationTests {
         .timeLimit(.minutes(5))
     )
     func selectionWithAGapIsBlocked() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let out = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-
+        let roll = try await Self.createRoll()
         let withGap = [0, 1, 3, 4, 5].map { SampleFixtures.files[$0] }
-        let model = try await Self.configuredModel(outputFolder: out, select: withGap)
+        let model = try await Self.configuredModel(roll: roll, select: withGap)
 
         #expect(model.selectionError?.code == .nonContiguousSelection)
         #expect(!model.runEnabled)
-        #expect(model.runCommand == nil)
+        #expect(model.runCommand() == nil)
     }
 
     @Test(
-        "unrelated content in the output folder is blocked",
+        "a roll folder that was never created is blocked",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(5))
     )
-    func unrelatedOutputFolderIsBlocked() async throws {
+    func missingRollIsBlocked() async throws {
         let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let out = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-        try "not ours".write(
-            to: out.appending(path: "holiday-snap.jpg"), atomically: true, encoding: .utf8
-        )
+        let notARoll = directory.appending(path: "not-a-roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: notARoll, withIntermediateDirectories: true)
 
-        let model = try await Self.configuredModel(
-            outputFolder: out, select: SampleFixtures.files
-        )
+        let model = try await Self.configuredModel(roll: notARoll, select: SampleFixtures.files)
 
-        #expect(model.outputError?.code == .outputNotEmpty)
+        #expect(model.rollError?.code == .rollNotFound)
         #expect(!model.runEnabled)
-        #expect(model.runCommand == nil)
+        #expect(model.runCommand() == nil)
     }
 
-    // MARK: - Rerunning a folder that already holds a roll
+    // MARK: - Rerunning against a roll that already holds the negative
 
-    /// Chunk P2-9's known limitation, exercised directly rather than left
-    /// implicit: `probe --out` only understands `scanny-boy-manifest.json`
-    /// (Phase 1's convert manifest), so it has no way to compute *which*
-    /// stitched TIFFs a rerun would replace in a folder holding
-    /// `scanny-boy-roll.json`. `ConfigurationModel.existingRoll` stops that
-    /// folder from being misreported as unrelated content and lets Run
-    /// proceed — but real conflict detection, and the `--overwrite` gate
-    /// itself, only happen for real, server-side, when `run_stitch` calls
-    /// `plan_rerun(rules: ROLL_RULES)`. So a rerun the app never asked the
-    /// user to confirm still fails safely with `OUTPUT_CONFLICT`, rather
-    /// than silently overwriting the first run's negative. A full client-side
-    /// overwrite-confirmation flow for roll reruns is left for a later
-    /// chunk; this test is the proof that nothing unsafe happens without it.
+    /// Section 3.4: a selection that overlaps a negative already in the roll
+    /// is never rejected outright — the overlap sheet decides, defaulting to
+    /// Skip. Left at that default, every overlapping source is skipped, so a
+    /// rerun with nothing left to convert fails safely with `NO_FILES`
+    /// rather than silently touching the first run's negative.
     @Test(
-        "a folder already holding a roll is recognised, and an unconfirmed rerun fails safely",
+        "a rerun left at the overlap sheet's Skip default touches nothing",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
         .timeLimit(.minutes(10))
     )
-    func rerunOfAnExistingRollFailsSafelyWithoutConfirmation() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let out = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    func rerunLeftAtSkipDefaultTouchesNothing() async throws {
+        let roll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
-        let first = try await Self.configuredModel(outputFolder: out, select: negativeOne)
+        let first = try await Self.configuredModel(roll: roll, select: negativeOne)
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(first.runCommand),
+            command: try #require(first.runCommand()),
             files: first.selectedFilesInCanonicalOrder,
-            outputFolder: out
+            outputFolder: roll
         )
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
         #expect(firstRun.stitchedNegatives.count == 1)
 
-        // A second configuration over the same folder recognises the prior
-        // roll rather than reporting OUTPUT_NOT_EMPTY, and offers Run — but
-        // without a real conflict list, since the app cannot compute one.
-        let second = try await Self.configuredModel(outputFolder: out, select: negativeOne)
-        #expect(second.existingRoll != nil)
-        #expect(second.outputError == nil)
-        #expect(second.outputConflicts.isEmpty)
-        #expect(!second.needsOverwriteConfirmation)
-        #expect(second.runEnabled)
+        // A second configuration over the same roll and selection reports
+        // the overlap rather than rejecting it outright.
+        let second = try await Self.configuredModel(roll: roll, select: negativeOne)
+        #expect(second.rollError == nil)
+        #expect(second.needsOverlapReview)
+        #expect(second.rollOverlap.count == 1)
+        #expect(second.rollOverlap.first?.overlappingSources.sorted() == negativeOne.sorted())
 
-        let command = try #require(second.runCommand)
+        // Left at the sheet's own Skip default (`OverlapReview`), every
+        // overlapping source is skipped.
+        let review = OverlapReview(entries: second.rollOverlap)
+        let command = try #require(second.runCommand(skipSources: review.skipSources))
         #expect(!command.arguments.contains("--overwrite"))
 
         let secondRun = RunModel(runner: try Self.runner())
         secondRun.start(
             command: command,
             files: second.selectedFilesInCanonicalOrder,
-            outputFolder: out
+            outputFolder: roll
         )
         await secondRun.waitForCompletion()
 
-        // The CLI's own real, server-side check refuses the rerun.
+        // Nothing was left to convert once every source was skipped.
         #expect(secondRun.outcome == .failure)
-        #expect(secondRun.cliError?.code == .outputConflict)
+        #expect(secondRun.cliError?.code == .noFiles)
         #expect(secondRun.stitchedNegatives.isEmpty)
     }
 
@@ -325,14 +316,13 @@ struct RunIntegrationTests {
         let out = directory.appending(path: "out", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
-        let model = try await Self.configuredModel(
-            outputFolder: out, select: SampleFixtures.files
-        )
-        // Serial, so the second negative is unmistakably still in progress
-        // when cancellation arrives.
+        // A plain `convert`, not `run` — this test is about `RunModel`'s own
+        // cancellation bookkeeping over `item_done`/`group_done`, not about
+        // rolls at all, so it keeps Phase 1's bare output folder rather than
+        // a roll `--out` no longer accepts for `run`.
         let command = CLICommand.convert(
             input: SampleFixtures.directory,
-            files: model.selectedFilesInCanonicalOrder,
+            files: SampleFixtures.files,
             out: out,
             filmDate: "2026-08-02",
             perNegative: 3,
@@ -343,7 +333,7 @@ struct RunIntegrationTests {
         let run = RunModel(runner: try Self.runner(), gracePeriod: .seconds(120))
         run.start(
             command: command,
-            files: model.selectedFilesInCanonicalOrder,
+            files: SampleFixtures.files,
             outputFolder: out
         )
 
@@ -396,23 +386,19 @@ struct RunIntegrationTests {
         .timeLimit(.minutes(5))
     )
     func restitchReusesAKeptWorkDirectory() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let firstOut = directory.appending(path: "out-1", directoryHint: .isDirectory)
-        let secondOut = directory.appending(path: "out-2", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: firstOut, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: secondOut, withIntermediateDirectories: true)
+        let firstRoll = try await Self.createRoll()
+        let secondRoll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
-        let model = try await Self.configuredModel(outputFolder: firstOut, select: negativeOne)
+        let model = try await Self.configuredModel(roll: firstRoll, select: negativeOne)
         model.keepIntermediates = true
         await model.waitForPendingProbes()
 
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(model.runCommand),
+            command: try #require(model.runCommand()),
             files: model.selectedFilesInCanonicalOrder,
-            outputFolder: firstOut
+            outputFolder: firstRoll
         )
         await firstRun.waitForCompletion()
         #expect(firstRun.outcome == .success)
@@ -424,9 +410,9 @@ struct RunIntegrationTests {
 
         let restitch = RunModel(runner: try Self.runner())
         restitch.start(
-            command: .stitch(work: URL(filePath: workDirectory), out: secondOut),
+            command: .stitch(work: URL(filePath: workDirectory), roll: secondRoll),
             files: [],
-            outputFolder: secondOut
+            outputFolder: secondRoll
         )
         await restitch.waitForCompletion()
 
@@ -439,9 +425,9 @@ struct RunIntegrationTests {
         #expect(stitched.output == Self.tiffNames(negativeOne)[0])
         #expect(
             FileManager.default.fileExists(
-                atPath: secondOut.appending(path: Self.tiffNames(negativeOne)[0]).path
+                atPath: secondRoll.appending(path: Self.tiffNames(negativeOne)[0]).path
             ),
-            "the re-stitched negative was not published into the second output folder"
+            "the re-stitched negative was not published into the second roll"
         )
 
         let report = try #require(restitch.rollManifestReport)
@@ -459,7 +445,8 @@ struct RunIntegrationTests {
     /// manifest at all. `WORK_MANIFEST_UNUSABLE` is for a manifest that
     /// exists but is in the wrong state (`running`/`cancelled`, or `partial`
     /// without `--allow-partial`); a folder with no manifest file fails the
-    /// same way any other missing/unreadable manifest does, `BAD_MANIFEST`.
+    /// same way any other missing/unreadable manifest does, `BAD_MANIFEST` —
+    /// before `stitch` ever looks at whether `--roll` itself is real.
     @Test(
         "re-stitching a folder with no work manifest fails safely",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
@@ -477,7 +464,7 @@ struct RunIntegrationTests {
 
         let restitch = RunModel(runner: try Self.runner())
         restitch.start(
-            command: .stitch(work: notAWorkDirectory, out: out),
+            command: .stitch(work: notAWorkDirectory, roll: out),
             files: [],
             outputFolder: out
         )

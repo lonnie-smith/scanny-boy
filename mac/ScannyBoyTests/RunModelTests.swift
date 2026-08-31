@@ -548,24 +548,28 @@ struct RunModelTests {
         #expect(run.elapsed.truncatingRemainder(dividingBy: 30) == 0)
     }
 
-    // MARK: - Chunk 10's additions to the configuration model
+    // MARK: - Chunk 10's additions to the configuration model, reworked onto
+    // rolls by Chunk P3-11
 
-    @Test("Run is offered before the overwrite confirmation, and asks for it")
-    func overwriteConfirmationIsAskedForAtRunTime() async throws {
+    @Test("Run is offered before overlap review, and the sheet's decisions become --skip-sources")
+    func overlapReviewIsAskedForAtRunTime() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let catalogue =
             #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
-        let withConflicts =
-            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":["a.tif"],"estimated_required_bytes":1000,"available_bytes":50000}"#
+        let withOverlap =
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
         let script = """
+            if [ "$1" = "roll" ]; then
+            exit 0
+            fi
             case "$*" in
-              *--out*)
-            echo '\(withConflicts)'
+              *--roll*)
+            echo '\(withOverlap)'
                 ;;
               *)
             echo '\(catalogue)'
@@ -580,42 +584,44 @@ struct RunModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
-        // The button is live, but pressing it asks rather than converting.
-        #expect(model.isReadyPendingOverwriteConfirmation)
-        #expect(model.needsOverwriteConfirmation)
-        #expect(!model.runEnabled)
-        #expect(model.runCommand == nil)
-
-        model.confirmOverwrite()
-
-        #expect(!model.needsOverwriteConfirmation)
+        // The button is live, but pressing it asks for the overlap sheet
+        // rather than running unreviewed.
+        #expect(model.isReadyPendingOverlapReview)
+        #expect(model.needsOverlapReview)
         #expect(model.runEnabled)
-        let command = try #require(model.runCommand)
-        #expect(command.arguments.contains("--overwrite"))
-        #expect(command.arguments.contains("--film-date"))
-        #expect(command.arguments.contains("2026-08-02"))
+
+        // Left at the sheet's own Skip default (section 3.5), every
+        // overlapping source becomes `--skip-sources`.
+        let review = OverlapReview(entries: model.rollOverlap)
+        let command = try #require(model.runCommand(skipSources: review.skipSources))
+        let skipIndex = try #require(command.arguments.firstIndex(of: "--skip-sources"))
+        #expect(Set(command.arguments[(skipIndex + 1)...]) == Set(["a.NEF", "b.NEF", "c.NEF"]))
+        #expect(!command.arguments.contains("--film-date"))
+        #expect(!command.arguments.contains("--overwrite"))
     }
 
-    @Test("A run with nothing to replace never passes --overwrite")
-    func noConflictsMeansNoOverwriteFlag() async throws {
+    @Test("A run with nothing overlapping never passes --skip-sources")
+    func noOverlapMeansNoSkipSourcesFlag() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let outputDir = directory.appending(path: "out", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let catalogue =
             #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let clean =
-            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"output_conflicts":[],"estimated_required_bytes":1000,"available_bytes":50000}"#
+            #"{"protocol_version":3,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
         let script = """
+            if [ "$1" = "roll" ]; then
+            exit 0
+            fi
             case "$*" in
-              *--out*)
+              *--roll*)
             echo '\(clean)'
                 ;;
               *)
@@ -631,14 +637,13 @@ struct RunModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.outputFolder = outputDir
+        model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.filmDate = "2026-08-02"
         await model.waitForPendingProbes()
 
-        #expect(!model.needsOverwriteConfirmation)
-        let command = try #require(model.runCommand)
-        #expect(!command.arguments.contains("--overwrite"))
+        #expect(!model.needsOverlapReview)
+        let command = try #require(model.runCommand())
+        #expect(!command.arguments.contains("--skip-sources"))
         // Canonical order, straight from the catalogue.
         #expect(model.selectedFilesInCanonicalOrder == ["a.NEF", "b.NEF", "c.NEF"])
     }

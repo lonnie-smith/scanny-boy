@@ -1,19 +1,25 @@
 import Foundation
 import Observation
 
-/// Configuration state for one prospective conversion run: input folder and
-/// catalogue, the user's contiguous selection, shots per negative, film
-/// date, and output folder — everything `docs/IMPLEMENTATION_PLAN.md`
-/// Chunk 9 asks the app to validate before Run can be enabled.
+/// Configuration state for one prospective run against a selected roll:
+/// input folder and catalogue, the user's contiguous selection, and the
+/// roll it targets.
+///
+/// Phase 3 section 3.10: "Add Scans is Phase 2's `ContentView` with the
+/// output-folder section and the film-date field deleted, the
+/// shots-per-negative stepper moved to the roll, and the
+/// overwrite-confirmation replaced by the overlap sheet." There is no
+/// output-folder picker any more — every run targets whichever roll is
+/// selected in the sidebar (`rollURL`), and `perNegative` reads the roll's
+/// own `shots_per_negative` rather than being a setting of its own.
 ///
 /// Swift never sorts files itself and never re-implements the CLI's
-/// selection, grouping, output-folder, or setting-consistency rules
-/// (section 3.2's vocabulary, and `CONTRACT.md`'s `probe`). Every rule this
-/// type enforces beyond plain UI bookkeeping — contiguity, divisibility,
-/// setting consistency, output conflicts, disk space — is read back from a
-/// `probe` call; this type only decides *when* to call `probe` and how to
-/// fold its result into `runEnabled`. `convert` itself, and the actual Run
-/// action, belong to Chunk 10.
+/// selection, grouping, or roll-invariant rules (section 3.2's vocabulary,
+/// and `CONTRACT.md`'s `probe`). Every rule this type enforces beyond plain
+/// UI bookkeeping — contiguity, divisibility, setting consistency, roll
+/// overlap — is read back from a `probe --roll` call; this type only
+/// decides *when* to call `probe` and how to fold its result into
+/// `runEnabled`.
 @MainActor
 @Observable
 final class ConfigurationModel {
@@ -24,7 +30,6 @@ final class ConfigurationModel {
     }
 
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
-    static let lastOutputFolderKey = "com.lonniesmith.scanny-boy.lastOutputFolder"
 
     let runner: CLIRunner
     private let defaults: UserDefaults
@@ -58,16 +63,6 @@ final class ConfigurationModel {
         }
     }
 
-    var perNegative: Int = 3 {
-        didSet {
-            guard perNegative != oldValue else { return }
-            scheduleValidation()
-        }
-    }
-
-    /// Required, and starts blank (section 6, Chunk 9).
-    var filmDate: String = ""
-
     /// Section 3.5: kept, with an `INTERMEDIATES_KEPT` warning, when true —
     /// even on an otherwise complete success. Off by default, matching the
     /// CLI's own default.
@@ -77,45 +72,42 @@ final class ConfigurationModel {
     private(set) var selectionWarnings: [Issue] = []
     private(set) var selectionError: Issue?
 
-    // MARK: - Output folder, disk estimate, and overwrite preview
+    // MARK: - The roll this configuration targets
 
-    var outputFolder: URL? {
+    /// Set by `ContentView` from the sidebar selection (section 3.10). Add
+    /// Scans has no folder picker of its own — every run targets whichever
+    /// roll is already selected.
+    var rollURL: URL? {
         didSet {
-            guard outputFolder != oldValue else { return }
-            overwriteConfirmed = false
-            startExistingRollFetch(outputFolder: outputFolder)
-            if let outputFolder {
-                Self.save(outputFolder, forKey: Self.lastOutputFolderKey, in: defaults)
-            }
+            guard rollURL != oldValue else { return }
+            roll = nil
+            startRollFetch(rollURL: rollURL)
             scheduleValidation()
         }
     }
 
-    private(set) var outputConflicts: [String] = []
-    private(set) var estimatedRequiredBytes: Int?
-    private(set) var availableBytes: Int?
-    private(set) var outputError: Issue?
+    /// `roll info` for `rollURL` (section 3.1: Swift never parses
+    /// `scanny-boy-roll.json` itself), so `perNegative` and the roll's
+    /// identity are only known once this finishes.
+    private(set) var roll: RollManifest?
+    @ObservationIgnored private var rollTask: Task<Void, Never>?
 
-    /// A completed roll from a prior `run`/`stitch`, when the chosen output
-    /// folder holds one.
-    ///
-    /// `probe --out` validates only against `scanny-boy-manifest.json`
-    /// (Phase 1's convert manifest); it has no notion of
-    /// `scanny-boy-roll.json` at all, so it reports a folder holding only a
-    /// roll manifest as `OUTPUT_NOT_EMPTY` — unrelated content, not a rerun.
-    /// This is read back through `roll info` (section 3.1: Swift never
-    /// parses `scanny-boy-roll.json` itself), so `apply(_:outputFolderWasGiven:)`
-    /// can recognise that specific case rather than surface a raw,
-    /// misleading error. Real conflict detection for a rerun into this
-    /// folder still happens for real, server-side, in `run_stitch`'s own
-    /// `plan_rerun(rules: ROLL_RULES)` when the run is actually started.
-    private(set) var existingRoll: RollManifest?
-    @ObservationIgnored private var existingRollTask: Task<Void, Never>?
+    /// `shots_per_negative` is the roll's own, locked once any run reaches
+    /// `complete`/`partial` with a completed negative (section 3.4) and
+    /// editable only from the Edit tab (Chunk P3-12) — Add Scans just reads
+    /// it back. Falls back to the CLI's own default while the roll has not
+    /// loaded yet, matching what `probe` itself defaults to.
+    var perNegative: Int { roll?.shotsPerNegative ?? 3 }
 
-    /// Set once the user has agreed to replace `outputConflicts`. Reset
-    /// whenever the output folder changes, so a stale confirmation from a
-    /// previous folder can never silently authorise a different one.
-    var overwriteConfirmed = false
+    /// A `probe --roll` failure specific to the roll itself — missing,
+    /// unreadable, unsupported, or invariant-mismatched — as opposed to one
+    /// the selection alone caused (section 3.4's roll-invariant checks).
+    private(set) var rollError: Issue?
+
+    /// One entry per prospective negative that overlaps a negative already
+    /// in the roll (section 3.4), from `probe --roll`'s `roll_overlap`.
+    /// Non-overlapping groups never appear here and always run.
+    private(set) var rollOverlap: [RollOverlapEntry] = []
 
     // MARK: - Status
 
@@ -128,7 +120,6 @@ final class ConfigurationModel {
         self.runner = runner
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
-        outputFolder = Self.loadURL(forKey: Self.lastOutputFolderKey, in: defaults)
         if let inputFolder {
             startCatalogueProbe(inputFolder: inputFolder)
         }
@@ -136,70 +127,37 @@ final class ConfigurationModel {
 
     // MARK: - Derived state
 
-    /// Section 4.1's error-code table splits into two families: ones a
-    /// selection can cause on its own, and ones only an output folder can
-    /// cause. One `probe --files --out` call can only fail with one of them
-    /// at a time — the CLI validates the selection before it ever looks at
-    /// `--out` — so the code alone tells the two apart.
-    private static let outputRelatedCodes: Set<CLICode> = [
-        .outputSameAsInput,
-        .outputNotWritable,
-        .outputNotEmpty,
-        .insufficientDisk,
+    /// Section 3.4/3.5's roll-invariant and roll-folder codes — the ones
+    /// only the roll itself can cause, as opposed to the selection.
+    private static let rollRelatedCodes: Set<CLICode> = [
+        .rollNotFound,
         .badManifest,
-        .manifestMismatch,
-        .iccProfileInvalid,
+        .rollManifestUnsupported,
+        .rollInvariantMismatch,
+        .outputNotWritable,
     ]
 
-    private static func isValidFilmDate(_ text: String) -> Bool {
-        guard text.count == 10 else { return false }
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.isLenient = false
-        guard let date = formatter.date(from: text) else { return false }
-        // `isLenient = false` still accepts some out-of-range values by
-        // rolling them into the next unit; round-tripping catches those.
-        return formatter.string(from: date) == text
-    }
-
-    var isFilmDateValid: Bool { Self.isValidFilmDate(filmDate) }
-
-    /// Every gate Chunk 9 names except the overwrite confirmation: a
-    /// contiguous, divisible selection with consistent settings; a valid
-    /// output folder; and a well-formed film date.
+    /// Every gate section 3.10 names except the overlap review: a
+    /// contiguous, divisible selection with consistent settings, targeting a
+    /// roll that validated.
     ///
-    /// Separate from `runEnabled` because Chunk 10 asks for the confirmation
-    /// at the moment Run is pressed rather than as a checkbox the user has to
-    /// find first. The Run button is offered from here; `runEnabled` is still
-    /// what decides whether pressing it starts a conversion or raises the
-    /// confirmation dialog.
-    var isReadyPendingOverwriteConfirmation: Bool {
+    /// Separate from a stricter "no review needed" gate because the overlap
+    /// sheet is asked for at the moment Run is pressed rather than as
+    /// something to notice beforehand. The Run button is offered from here.
+    var isReadyPendingOverlapReview: Bool {
         !selectedFiles.isEmpty
             && selectionError == nil
-            && outputError == nil
-            && isFilmDateValid
-            && outputFolder != nil
+            && rollError == nil
+            && rollURL != nil
     }
 
-    /// Every gate Chunk 9 names: a contiguous, divisible selection with
-    /// consistent settings; a valid, non-conflicting (or confirmed) output
-    /// folder; and a well-formed film date.
-    var runEnabled: Bool {
-        isReadyPendingOverwriteConfirmation
-            && (outputConflicts.isEmpty || overwriteConfirmed)
-    }
+    var runEnabled: Bool { isReadyPendingOverlapReview }
 
-    /// True when the only thing left is the user agreeing to replace
-    /// `outputConflicts` (section 3.6).
-    var needsOverwriteConfirmation: Bool {
-        isReadyPendingOverwriteConfirmation && !outputConflicts.isEmpty && !overwriteConfirmed
-    }
-
-    func confirmOverwrite() {
-        overwriteConfirmed = true
+    /// True when the only thing left before Run is reviewing the overlap
+    /// sheet (section 3.4/3.5) — some prospective negative in this selection
+    /// overlaps one already in the roll.
+    var needsOverlapReview: Bool {
+        isReadyPendingOverlapReview && !rollOverlap.isEmpty
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -219,35 +177,28 @@ final class ConfigurationModel {
     }
 
     /// The `run` invocation this configuration describes, or `nil` when it
-    /// does not yet describe a runnable one.
-    ///
-    /// Chunk P2-9: the app's Run button drives `run` — convert and stitch in
-    /// one process — not `convert` alone. `--work` is left unset, so the CLI
-    /// uses a fresh temporary directory (section 3.6); choosing a specific
-    /// work directory belongs to Chunk P2-10's re-stitch flow. `--overwrite`
-    /// is passed only after the user has confirmed the replacements; the CLI
-    /// rejects conflicts by default (section 3.6).
-    var runCommand: CLICommand? {
-        guard runEnabled, let inputFolder, let outputFolder else { return nil }
+    /// does not yet describe a runnable one. `skipSources` comes from the
+    /// overlap sheet's decisions (section 3.5) — empty when there was
+    /// nothing to review, in which case every group runs and, per section
+    /// 3.4, supersedes whatever it overlaps.
+    func runCommand(skipSources: [String] = []) -> CLICommand? {
+        guard runEnabled, let inputFolder, let rollURL else { return nil }
         return .run(
             input: inputFolder,
             files: selectedFilesInCanonicalOrder,
-            out: outputFolder,
-            filmDate: filmDate,
+            roll: rollURL,
             perNegative: perNegative,
-            overwrite: !outputConflicts.isEmpty && overwriteConfirmed,
+            skipSources: skipSources,
             keepIntermediates: keepIntermediates
         )
     }
 
     // MARK: - Probing
 
-    /// Re-runs selection and output validation. Chunk 10 calls this once a
-    /// conversion has ended: the output folder now holds files it did not
-    /// before, so the conflict preview, the disk estimate, and any previous
-    /// overwrite agreement are all out of date.
+    /// Re-runs selection and roll validation. Chunk 10 calls this once a
+    /// conversion has ended: the roll now holds negatives it did not
+    /// before, so the overlap preview is out of date.
     func refreshValidation() {
-        overwriteConfirmed = false
         scheduleValidation()
     }
 
@@ -264,17 +215,13 @@ final class ConfigurationModel {
         }
     }
 
-    /// `roll info` for the chosen output folder — a real CLI round trip
-    /// (section 3.1: Swift never parses `scanny-boy-roll.json` itself), so
-    /// `existingRoll` is only known once this finishes.
-    private func startExistingRollFetch(outputFolder: URL?) {
-        existingRollTask?.cancel()
-        existingRoll = nil
-        guard let outputFolder else { return }
-        existingRollTask = Task { [weak self, runner] in
-            let manifest = await Self.fetchRollManifest(runner: runner, roll: outputFolder)
+    private func startRollFetch(rollURL: URL?) {
+        rollTask?.cancel()
+        guard let rollURL else { return }
+        rollTask = Task { [weak self, runner] in
+            let manifest = await Self.fetchRollManifest(runner: runner, roll: rollURL)
             guard let self, !Task.isCancelled else { return }
-            self.existingRoll = manifest
+            self.roll = manifest
         }
     }
 
@@ -299,14 +246,12 @@ final class ConfigurationModel {
             groups = []
             selectionWarnings = []
             selectionError = nil
-            outputConflicts = []
-            estimatedRequiredBytes = nil
-            availableBytes = nil
-            outputError = nil
+            rollError = nil
+            rollOverlap = []
             return
         }
 
-        let outputFolder = outputFolder
+        let rollURL = rollURL
         let perNegative = perNegative
         let files = selectedFilesInCanonicalOrder
 
@@ -315,60 +260,39 @@ final class ConfigurationModel {
             let result = await Self.runProbe(
                 runner: runner,
                 command: .probe(
-                    input: inputFolder, files: files, out: outputFolder, perNegative: perNegative
+                    input: inputFolder, files: files, roll: rollURL, perNegative: perNegative
                 )
             )
-            // `apply` reads `existingRoll` to recognise `OUTPUT_NOT_EMPTY`
-            // against a roll folder — wait for that concurrent fetch (started
-            // in the same `outputFolder` change) so the two never race.
-            await self?.existingRollTask?.value
             guard let self, !Task.isCancelled else { return }
-            self.apply(result, outputFolderWasGiven: outputFolder != nil)
+            self.apply(result, rollWasGiven: rollURL != nil)
             self.isProbing = false
         }
     }
 
     /// `probe`'s single-outcome design (`CONTRACT.md`) means one call either
-    /// produces a `probe_result` or a `error`, never a partial mix — so on
+    /// produces a `probe_result` or an `error`, never a partial mix — so on
     /// failure every derived field here is cleared, not just the ones the
     /// failing step would have touched.
-    private func apply(_ result: ProbeCallResult, outputFolderWasGiven: Bool) {
+    private func apply(_ result: ProbeCallResult, rollWasGiven: Bool) {
         selectionWarnings = result.warnings
 
         if let error = result.error {
             groups = []
-            outputConflicts = []
-            estimatedRequiredBytes = nil
-            availableBytes = nil
-            // A folder holding only a roll manifest is a legitimate rerun
-            // target, not unrelated content — `probe` has no way to know
-            // that, so this is the one output error `existingRoll`
-            // overrides. Every other output error still blocks Run.
-            if error.code == .outputNotEmpty, existingRoll != nil {
+            rollOverlap = []
+            if Self.rollRelatedCodes.contains(error.code) {
                 selectionError = nil
-                outputError = nil
-            } else if Self.outputRelatedCodes.contains(error.code) {
-                selectionError = nil
-                outputError = error
+                rollError = error
             } else {
                 selectionError = error
-                outputError = nil
+                rollError = nil
             }
             return
         }
 
         selectionError = nil
-        outputError = nil
+        rollError = nil
         groups = result.groups ?? []
-        if outputFolderWasGiven {
-            outputConflicts = result.outputConflicts ?? []
-            estimatedRequiredBytes = result.estimatedRequiredBytes
-            availableBytes = result.availableBytes
-        } else {
-            outputConflicts = []
-            estimatedRequiredBytes = nil
-            availableBytes = nil
-        }
+        rollOverlap = rollWasGiven ? (result.rollOverlap ?? []) : []
     }
 
     // MARK: - Folder memory
@@ -387,9 +311,7 @@ final class ConfigurationModel {
         var catalogue: [String]?
         var groups: [[String]]?
         var warnings: [Issue] = []
-        var outputConflicts: [String]?
-        var estimatedRequiredBytes: Int?
-        var availableBytes: Int?
+        var rollOverlap: [RollOverlapEntry]?
         var error: Issue?
     }
 
@@ -404,9 +326,9 @@ final class ConfigurationModel {
                     case .probeResult:
                         result.catalogue = event.catalogue
                         result.groups = event.groups
-                        result.outputConflicts = event.outputConflicts
-                        result.estimatedRequiredBytes = event.estimatedRequiredBytes
-                        result.availableBytes = event.availableBytes
+                        result.rollOverlap = (event.rollOverlap ?? []).compactMap(
+                            RollOverlapEntry.init(fields:)
+                        )
                     case .warning:
                         if let code = event.code, let message = event.message {
                             result.warnings.append(Issue(code: code, message: message))
@@ -436,7 +358,54 @@ final class ConfigurationModel {
     /// everything from `@Observable`'s change notifications instead.
     func waitForPendingProbes() async {
         await catalogueTask?.value
-        await existingRollTask?.value
+        await rollTask?.value
         await validationTask?.value
+    }
+}
+
+/// One `probe --roll`'s `roll_overlap` entry: a prospective group in the
+/// current selection that shares sources, by content hash, with a negative
+/// already in the roll (section 3.4). `negativeID` and `groupIndex`
+/// together identify the row, since one prospective group can in principle
+/// overlap more than one existing negative.
+struct RollOverlapEntry: Sendable, Hashable {
+    let negativeID: String
+    let expectedOutput: String
+    let runID: String
+    let overlappingSources: [String]
+    let groupIndex: Int
+
+    /// A stable identity for this row across the group and the negative it
+    /// overlaps — used both as `List`'s `id` and as `OverlapReview`'s
+    /// decision key, since `negativeID` alone is not guaranteed unique.
+    var reviewKey: String { "\(groupIndex)_\(negativeID)" }
+
+    init(negativeID: String, expectedOutput: String, runID: String, overlappingSources: [String], groupIndex: Int) {
+        self.negativeID = negativeID
+        self.expectedOutput = expectedOutput
+        self.runID = runID
+        self.overlappingSources = overlappingSources
+        self.groupIndex = groupIndex
+    }
+
+    /// Decodes one entry of `probe_result`'s `roll_overlap` array
+    /// (`{negative_id, expected_output, run_id, overlapping_sources,
+    /// group_index}`, CONTRACT.md). `nil` for a malformed entry — a CLI
+    /// this version understands never sends one.
+    init?(fields: [String: JSONValue]) {
+        guard
+            let negativeID = fields["negative_id"]?.stringValue,
+            let expectedOutput = fields["expected_output"]?.stringValue,
+            let runID = fields["run_id"]?.stringValue,
+            let overlappingSources = fields["overlapping_sources"]?.stringArrayValue,
+            let groupIndex = fields["group_index"]?.intValue
+        else { return nil }
+        self.init(
+            negativeID: negativeID,
+            expectedOutput: expectedOutput,
+            runID: runID,
+            overlappingSources: overlappingSources,
+            groupIndex: groupIndex
+        )
     }
 }
