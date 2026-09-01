@@ -1,18 +1,20 @@
 import Foundation
 
-/// The parts of `scanny-boy-roll.json` the app needs, decoded from
-/// `roll info`'s `manifest` field — never read from disk. Phase 3 section
-/// 3.1: "Swift never parses `scanny-boy-roll.json` itself... `roll list`
-/// and `roll info` are the only two ways in."
+/// The parts of a roll's durable record the app needs, decoded from
+/// `roll info`'s `manifest` field — never read from disk (the record now
+/// lives in the library database; the shape came from the roll manifest
+/// file protocol version 4 retired). Phase 3 section 3.1: "Swift never
+/// parses `scanny-boy-roll.json` itself... `roll list` and `roll info` are
+/// the only two ways in."
 ///
 /// `shared/contract/roll-manifest.schema.json` is the authoritative
 /// definition; this type deliberately decodes only the fields the app
 /// actually uses — the roll's own identity, each run's `run_id`/`status`
 /// (read by `RollManifestReport` for cleanup-incomplete detection), and each
-/// negative's identity, sequence, output, and capture-time state — and
-/// ignores the rest (`sources`, `processing_params`, `icc_profile`,
-/// `stitch_params`, and every per-negative registration detail: `frames`,
-/// `pairs`, `global_rms_px`, `canvas`, `valid_rect`, `fill_color`,
+/// negative's identity, sequence, output, capture-time state, preview, and
+/// rotation — and ignores the rest (`sources`, `processing_params`,
+/// `icc_profile`, `stitch_params`, and every per-negative registration
+/// detail: `frames`, `pairs`, `canvas`, `valid_rect`, `fill_color`,
 /// `rebate_deviation_px`). A manifest that grows a field must not stop the
 /// app reading the ones it needs.
 struct RollManifest: Sendable, Hashable {
@@ -61,6 +63,14 @@ struct RollManifest: Sendable, Hashable {
         /// deviation `nil` unless a rebate check ran.
         let globalRMSPixels: Double?
         let rebateDeviationPixels: Double?
+        /// The CLI-rendered preview of this negative as its edits render so
+        /// far; `nil` until first generated or for unstitched negatives.
+        /// Swift displays the file; it never renders one.
+        let previewPath: String?
+        /// The ops log's net clockwise quarter turns, derived by the CLI.
+        /// Swift rotates nothing itself; the preview file already shows the
+        /// edited orientation.
+        let rotationQuarterTurns: Int
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -84,6 +94,48 @@ struct RollManifest: Sendable, Hashable {
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
     var publishedOutputs: [String] { negatives.compactMap { $0.output?.name } }
+
+    /// A copy of this manifest with one negative replaced — how an
+    /// `edit_recorded` event's fresh preview path and net rotation land in
+    /// the model without a `roll info` round trip.
+    func replacingNegative(_ updated: Negative) -> RollManifest {
+        var negatives = negatives
+        if let index = negatives.firstIndex(where: { $0.negativeID == updated.negativeID }) {
+            negatives[index] = updated
+        }
+        return RollManifest(
+            rollID: rollID,
+            rollName: rollName,
+            shotsPerNegative: shotsPerNegative,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            runs: runs,
+            negatives: negatives,
+            metadata: metadata
+        )
+    }
+
+    /// The memberwise initializer the decoding path in the extension below
+    /// and `replacingNegative` both use.
+    init(
+        rollID: String,
+        rollName: String,
+        shotsPerNegative: Int,
+        createdAt: String,
+        updatedAt: String,
+        runs: [Run],
+        negatives: [Negative],
+        metadata: Metadata
+    ) {
+        self.rollID = rollID
+        self.rollName = rollName
+        self.shotsPerNegative = shotsPerNegative
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.runs = runs
+        self.negatives = negatives
+        self.metadata = metadata
+    }
 
     /// Decodes the `manifest` field of a `roll_info` event.
     /// `CLIEvent.manifest` is already `[String: JSONValue]`; this performs
@@ -172,7 +224,11 @@ struct RollManifest: Sendable, Hashable {
             output: output,
             captureTime: Self.decodeCaptureTime(captureTimeFields),
             globalRMSPixels: fields["global_rms_px"]?.doubleValue,
-            rebateDeviationPixels: fields["rebate_deviation_px"]?.doubleValue
+            rebateDeviationPixels: fields["rebate_deviation_px"]?.doubleValue,
+            previewPath: fields["preview_path"]?.stringValue,
+            // Protocol version 4's CLI did not augment this field; a roll
+            // whose record predates the augmentation reads as unrotated.
+            rotationQuarterTurns: fields["rotation_quarter_turns"]?.intValue ?? 0
         )
     }
 

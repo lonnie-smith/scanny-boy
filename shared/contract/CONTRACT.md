@@ -9,13 +9,17 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 4 replaces the single-run output folder with a durable
-**roll** — a named folder holding many runs — and adds library management,
-overlap detection, and a metadata-apply stage. It also makes replacement
-in-place: a rerun adopts the covered negative (same `negative_id` and output
-name) instead of publishing a replacement and leaving a tombstone behind. A
-client that only understands an earlier protocol version must reject a newer
-stream rather than guess at the new fields.
+Protocol version 5 keeps version 4's roll model and adds **nondestructive
+editing**: each roll's durable record moved from the roll folder's
+`scanny-boy-roll.json` into a library SQLite database (one row per roll,
+negative, run, and source, plus an ordered per-negative **edits ops log**),
+the CLI renders each negative's preview, and `edit rotate` records a
+rotation without ever touching a published TIFF. `roll info`'s payload keeps
+the roll-manifest shape; each negative additionally carries
+`preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` (the
+ops log's net effect, derived rather than stored). A client that only
+understands an earlier protocol version must reject a newer stream rather
+than guess at the new fields.
 
 ## Invocation
 
@@ -37,6 +41,10 @@ scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
                       [--skip-sources FILE ...] [--work DIR]
 
 scanny-boy apply-metadata --roll DIR
+
+scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw
+
+scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 ```
 
 `--roll` replaces `--out` on `stitch` and `run`. `convert` keeps `--out`,
@@ -82,26 +90,49 @@ a skip must remove a whole group's worth or the run fails
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
-writes an empty v3 roll manifest. It emits `roll_created` carrying `roll_id`,
-`roll_name`, and `path`.
+registers an empty v3 roll in the library database. It emits `roll_created`
+carrying `roll_id`, `roll_name`, and `path`.
 
-`roll list` performs a one-level scan of `--library` and emits a single
-`roll_list` event.
+`roll list` reports the rolls registered under `--library` from the library
+database and emits a single `roll_list` event. A registered roll whose
+folder has vanished is reported as `"unreadable"` with `ROLL_NOT_FOUND`
+rather than silently disappearing.
 
-`roll info` loads and validates one roll manifest and emits it as a
-`roll_info` event. Swift never parses `scanny-boy-roll.json` itself and never
-enumerates the library itself — `roll list` and `roll info` are the only two
-ways in.
+`roll info` loads one roll from the library database and emits it as a
+`roll_info` event, each negative augmented with `preview_path` and
+`rotation_quarter_turns`. Swift never reads the library database itself and
+never enumerates the library itself — `roll list` and `roll info` are the
+only two ways in.
 
 `roll rename` moves the roll's folder to a slug of `--name` and, only after a
-successful move, writes the new `roll_name` into the manifest. It emits
+successful move, saves the new `roll_name` and folder location to the
+library database. It emits
 `roll_renamed` carrying `roll_id`, `roll_name`, and `path` (the roll's new
 location). It does not enforce "refused while any run is active" — the CLI
 is stateless between invocations, so the app checks that itself before
 issuing the command.
 
-`apply-metadata` writes intended capture times from the roll manifest into
+`apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
+
+`edit rotate` records a 90-degree rotation of one negative — `cw` clockwise,
+`ccw` counter-clockwise — by appending to the negative's ordered edits ops
+log in the library database. The published TIFF is never modified. It
+regenerates the CLI-rendered preview (a lossless PNG under Application
+Support, path recorded on the negative) and emits `edit_recorded` carrying
+`negative_id`, the `edit` row (`id`, `negative_id`, `position`, `op`,
+`params`, `created_at`), `rotation_quarter_turns` (the ops log's net effect,
+0–3), and `preview_path`. It fails with `INVALID_EDIT` for an unknown
+direction, `ROLL_NOT_FOUND` for an unregistered roll, and
+`NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
+
+`export` writes each negative's TIFF into `--output` with the negative's
+edits applied — the ops log replayed over the published pixels, named after
+the negative and never touching the roll's own files. It emits `export_done`
+per negative (`negative_id`, `output`, `width`, `height`); a negative that
+has not been stitched is skipped with a `warning` (`NEGATIVE_NOT_FOUND`) and
+fails the command's exit status, while a write failure warns with
+`EXPORT_FAILED`. A failed write per negative does not stop the rest.
 
 ### `--version`
 
@@ -139,9 +170,9 @@ computed default is never rejected this way, only lowered.
 `schema.json` is the authoritative JSON Schema for one event line.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
-`roll-manifest.schema.json` is the authoritative schema for
-`scanny-boy-roll.json`, the roll folder's durable record (Phase 3 section
-3.3, format version 3).
+`roll-manifest.schema.json` is the authoritative schema for a roll's durable
+record as delivered by `roll info` (format version 3; now persisted in the
+library database rather than a JSON file in the roll folder).
 
 ### Event types
 
@@ -161,6 +192,8 @@ computed default is never rejected this way, only lowered.
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
+| `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
+| `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
@@ -260,7 +293,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
-| `ROLL_NOT_FOUND` | `--roll` has no readable `scanny-boy-roll.json` |
+| `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 3` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
@@ -269,6 +302,10 @@ staging directories, and reruns the incomplete negative.
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
 | `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
+| `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
+| `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
+| `EXPORT_FAILED` | Writing one negative's export failed |
+| `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
 
 ## Exit status
 

@@ -21,10 +21,13 @@ struct ContentView: View {
     @Bindable var model: ConfigurationModel
     let edit: EditModel
     let run: RunModel
+    let export: ExportModel
 
     private enum WorkspaceTab {
         case addScans
         case edit
+        case metadata
+        case export
     }
 
     @State private var selection: Roll.ID?
@@ -104,6 +107,8 @@ struct ContentView: View {
             Picker("Stage", selection: $workspaceTab) {
                 Text("Add Scans").tag(WorkspaceTab.addScans)
                 Text("Edit").tag(WorkspaceTab.edit)
+                Text("Metadata").tag(WorkspaceTab.metadata)
+                Text("Export").tag(WorkspaceTab.export)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -114,8 +119,21 @@ struct ContentView: View {
                 addScansStage
             case .edit:
                 EditStageView(edit: edit, run: run)
+            case .metadata:
+                MetadataStageView(edit: edit, run: run)
+            case .export:
+                ExportStageView(export: export, edit: edit, run: run)
             }
         }
+        .navigationTitle("Scanny Boy")
+        .navigationSubtitle(selectedRollName)
+    }
+
+    /// The selected roll's name for the window title bar — "Scanny Boy"
+    /// first, then the roll, so the user always knows which roll the
+    /// workspace is pointed at.
+    private var selectedRollName: String {
+        library.rolls.first { $0.id == selection }?.displayName ?? ""
     }
 
     private var addScansStage: some View {

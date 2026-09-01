@@ -22,6 +22,10 @@ datas = [
     # The vetted ICC profile, loaded through `importlib.resources` so the
     # same code works in a checkout and in the bundle (section 3.4).
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-ROMM-LibRaw-v4.icc"), "scanny_boy/resources"),
+    # The Alembic migration scripts for the library database. `db.py`
+    # locates them at the bundle root when frozen (`sys._MEIPASS`), which
+    # this destination provides.
+    (str(SRC_DIR / "scanny_boy" / "library" / "migrations"), "migrations"),
 ]
 
 # `tifftools` reads its own package metadata at import; without this the
@@ -38,6 +42,14 @@ datas += copy_metadata("scanny-boy")
 # Narrowing this to individual submodules was tried and does not work; do not
 # trim it without rebuilding and rerunning the packaged checks (section 5.2).
 hiddenimports = collect_submodules("imagecodecs")
+
+# The library database stack. Alembic resolves its migration templates and
+# SQLAlchemy its sqlite dialect through imports PyInstaller's static
+# analysis does not follow, so both are collected explicitly — a bundle
+# without them starts fine and dies on the first `roll` command.
+hiddenimports += collect_submodules("alembic")
+hiddenimports += collect_submodules("mako")
+hiddenimports += collect_submodules("sqlalchemy.dialects.sqlite")
 
 analysis = Analysis(  # noqa: F821
     [str(SRC_DIR / "scanny_boy" / "__main__.py")],

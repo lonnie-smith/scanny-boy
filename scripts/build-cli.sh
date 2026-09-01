@@ -16,7 +16,7 @@ DEST_DIR="$ROOT_DIR/mac/ScannyBoy/Helpers"
 DEST_APP="$DEST_DIR/$APP_NAME"
 
 cd "$CLI_DIR"
-uv run pyinstaller build/scanny_boy.spec \
+uv run pyinstaller packaging/scanny_boy.spec \
   --distpath dist \
   --workpath build/pyinstaller-work \
   --noconfirm

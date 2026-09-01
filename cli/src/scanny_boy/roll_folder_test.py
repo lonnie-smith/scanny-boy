@@ -8,14 +8,12 @@ from scanny_boy.roll_folder import (
     SLUG_MAX_LENGTH,
     RollFolderError,
     create_roll,
-    list_rolls,
     rename_roll,
     scan_library,
     slugify,
     unique_folder_name,
 )
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     load_roll_manifest,
     write_roll_manifest,
 )
@@ -93,11 +91,13 @@ def test_unique_folder_name_raises_roll_exists_after_exhaustion(tmp_path):
 # --- create_roll -------------------------------------------------------------
 
 
-def test_create_roll_writes_empty_v3_manifest(tmp_path):
+def test_create_roll_registers_an_empty_v3_roll(tmp_path):
     roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998", 3)
 
     assert roll_dir == tmp_path / "Tri-X-Portland-1998"
-    assert (roll_dir / ROLL_MANIFEST_FILENAME).exists()
+    # The record lives in the library database; the folder holds only
+    # stitched TIFFs and staging directories.
+    assert sorted(p.name for p in roll_dir.iterdir()) == []
 
     manifest = load_roll_manifest(roll_dir)
     assert manifest.roll_name == "Tri-X, Portland 1998"
@@ -144,22 +144,25 @@ def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypat
     assert manifest.roll_name == original_manifest.roll_name
 
 
-# --- list_rolls / scan_library --------------------------------------------
+# --- scan_library ----------------------------------------------------------
 
 
-def test_list_rolls_ignores_directories_without_a_manifest(tmp_path):
-    roll_dir = create_roll(tmp_path, "Roll A", 3)
+def test_scan_library_ignores_directories_without_a_registered_roll(tmp_path):
+    create_roll(tmp_path, "Roll A", 3)
     (tmp_path / "not-a-roll").mkdir()
     (tmp_path / "some-file.txt").write_text("hello")
 
-    assert list_rolls(tmp_path) == [roll_dir]
+    listings = scan_library(tmp_path)
+
+    assert [listing.path for listing in listings] == [tmp_path / "Roll-A"]
 
 
-def test_scan_library_reports_ok_and_unreadable_side_by_side(tmp_path):
+def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
     ok_dir = create_roll(tmp_path, "Roll A", 3)
-    bad_dir = tmp_path / "broken-roll"
-    bad_dir.mkdir()
-    (bad_dir / ROLL_MANIFEST_FILENAME).write_text("not json")
+    vanished_dir = create_roll(tmp_path, "Vanished Roll", 3)
+    import shutil
+
+    shutil.rmtree(vanished_dir)
 
     listings = scan_library(tmp_path)
 
@@ -167,10 +170,11 @@ def test_scan_library_reports_ok_and_unreadable_side_by_side(tmp_path):
     assert by_path[ok_dir].status == "ok"
     assert by_path[ok_dir].roll_id is not None
     assert by_path[ok_dir].negative_count == 0
-    assert by_path[bad_dir].status == "unreadable"
-    assert by_path[bad_dir].reason is not None
-    assert by_path[bad_dir].roll_id is None
-    assert by_path[bad_dir].negative_count is None
+    assert by_path[vanished_dir].status == "unreadable"
+    assert by_path[vanished_dir].reason is not None
+    assert by_path[vanished_dir].reason[0] == "ROLL_NOT_FOUND"
+    assert by_path[vanished_dir].roll_id is None
+    assert by_path[vanished_dir].negative_count is None
 
 
 def test_scan_library_negative_count_is_every_negative(tmp_path):

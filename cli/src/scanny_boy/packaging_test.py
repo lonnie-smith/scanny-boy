@@ -38,7 +38,6 @@ from scanny_boy.packaged_app_support import (
     run_packaged,
 )
 from scanny_boy.pipeline import run_convert
-from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_schema_test_support import (
     assert_matches_roll_manifest_schema,
     load_roll_manifest_schema,
@@ -289,20 +288,24 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     all inside the bundle.
     """
     work_dir = tmp_path / "work"
-    out_dir = tmp_path / "out"
     work_dir.mkdir()
-    out_dir.mkdir()
     # Section 5.4 decision 1: `run` publishes into a roll, and never creates
-    # one. `roll init` arrives in P3-4; until then the roll is written through
-    # the same constructor it will call.
-    write_roll_manifest(
-        out_dir,
-        new_roll_manifest(
-            roll_id="00000000-0000-4000-8000-00000000000b",
-            roll_name="packaged",
-            shots_per_negative=3,
-        ),
+    # one. The roll is created through the packaged binary itself — its
+    # record lands in the packaged process's own library database, so an
+    # in-process write would not be visible to it.
+    result = run_packaged(
+        "roll",
+        "init",
+        "--library",
+        str(tmp_path),
+        "--name",
+        "packaged",
+        "--per-negative",
+        "3",
+        timeout=60,
     )
+    assert result.returncode == 0, result.stderr
+    out_dir = tmp_path / "packaged"
 
     result = run_packaged(
         "run",
@@ -341,13 +344,17 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         assert page.tags["InterColorProfile"].value is not None
         assert page.tags["ImageDescription"].value == "_DSC4638.NEF+2: stitched scan"
 
-    roll_manifest = out_dir / "scanny-boy-roll.json"
-    assert roll_manifest.exists()
-    data = json.loads(roll_manifest.read_text())
-    assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
+    # The record lives in the packaged process's library database, so it is
+    # read back through a packaged `roll info`.
+    info = run_packaged("roll", "info", "--roll", str(out_dir), timeout=60)
+    assert info.returncode == 0, info.stderr
+    manifest = next(
+        e for e in _events(info.stdout) if e["event"] == "roll_info"
+    )["manifest"]
+    assert_matches_roll_manifest_schema(manifest, load_roll_manifest_schema())
     # Section 3.3: a roll is additive, so the status belongs to the run.
-    assert data["runs"][0]["status"] == "complete"
-    assert data["negatives"][0]["status"] == "completed"
+    assert manifest["runs"][0]["status"] == "complete"
+    assert manifest["negatives"][0]["status"] == "completed"
 
     # `--work` was supplied explicitly, so it survives a complete run
     # (section 3.5) — proving the packaged program's cleanup logic, not

@@ -32,7 +32,14 @@ import tifftools
 from tifftools.constants import Tag
 
 from scanny_boy import composite as composite_module
-from scanny_boy import concurrency, disk_check, hashing, registration, tiff_exif
+from scanny_boy import (
+    concurrency,
+    disk_check,
+    hashing,
+    previews,
+    registration,
+    tiff_exif,
+)
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.composite import (
@@ -67,6 +74,7 @@ from scanny_boy.layout import (
     largest_valid_rect,
     solve_layout,
 )
+from scanny_boy.library import repo
 from scanny_boy.manifest import (
     BadManifestError,
     GroupRecord,
@@ -96,7 +104,6 @@ from scanny_boy.registration import (
     register_pair,
 )
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     CaptureTime,
     FrameRecord,
     NegativeRecord,
@@ -104,11 +111,9 @@ from scanny_boy.roll_manifest import (
     RollInvariantMismatchError,
     RollInvariants,
     RollManifest,
-    RollManifestUnsupportedError,
     RunRecord,
     allocate_output_name,
     append_run,
-    current_roll_manifest_path,
     estimate_roll_manifest_size,
     format_negative_id,
     merge_sources,
@@ -636,10 +641,10 @@ def run_stitch(
 
     # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
     #    creates one) and this run's parameters must match its invariants.
-    if not current_roll_manifest_path(out_dir).exists():
+    if not repo.roll_registered(out_dir):
         raise StitchError(
             Code.ROLL_NOT_FOUND,
-            f"{out_dir} has no {ROLL_MANIFEST_FILENAME}; create the roll first",
+            f"{out_dir} is not a registered roll; create the roll first",
         )
     invariants = RollInvariants(
         shots_per_negative=work_manifest.shots_per_negative,
@@ -652,7 +657,7 @@ def run_stitch(
     except (
         OutputFolderError,
         BadManifestError,
-        RollManifestUnsupportedError,
+        repo.RollNotRegisteredError,
         RollInvariantMismatchError,
     ) as exc:
         raise StitchError(exc.code, exc.message) from exc
@@ -807,6 +812,18 @@ def run_stitch(
     run_record.status = status
     run_record.finished_at = _now_iso()
     write_roll_manifest(out_dir, roll)
+
+    # Previews for the newly published negatives: the app's Edit tab shows
+    # the CLI's rendering, never its own (Python owns every decision).
+    try:
+        previews.sync_previews(out_dir, roll)
+    except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
+        emit(
+            WarningEvent(
+                code=Code.PREVIEW_FAILED,
+                message=f"could not generate previews: {exc}",
+            )
+        )
 
     return StitchOutcome(status=status, published=published, failed=failed)
 

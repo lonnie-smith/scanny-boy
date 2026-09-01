@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 4
+    public static let supportedProtocolVersion = 5
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -36,6 +36,8 @@ public struct CLIEvent: Sendable, Hashable {
         case rollRenamed
         case metadataApplied
         case metadataSkipped
+        case editRecorded
+        case exportDone
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -59,6 +61,8 @@ public struct CLIEvent: Sendable, Hashable {
             case "roll_renamed": self = .rollRenamed
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
+            case "edit_recorded": self = .editRecorded
+            case "export_done": self = .exportDone
             default: self = .unknown(name)
             }
         }
@@ -82,6 +86,8 @@ public struct CLIEvent: Sendable, Hashable {
             case .rollRenamed: "roll_renamed"
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
+            case .editRecorded: "edit_recorded"
+            case .exportDone: "export_done"
             case .unknown(let name): name
             }
         }
@@ -183,6 +189,12 @@ extension CLIEvent {
     public var height: Int? { fields["height"]?.intValue }
     public var globalRMS: Double? { fields["global_rms_px"]?.doubleValue }
     public var maxOverlapMAD: Double? { fields["max_overlap_mad"]?.doubleValue }
+
+    // `edit_recorded`: the appended ops-log row and the negative's net
+    // rotation after it.
+    public var edit: [String: JSONValue]? { fields["edit"]?.objectValue }
+    public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
+    public var previewPath: String? { fields["preview_path"]?.stringValue }
 }
 
 /// One pipeline step, from the plan's Vocabulary section. The last seven
@@ -283,6 +295,10 @@ public enum CLICode: Sendable, Hashable {
     case outputModifiedExternally
     case metadataWriteFailed
     case orphanFileNotRemoved
+    case negativeNotFound
+    case invalidEdit
+    case exportFailed
+    case previewFailed
     case unknown(String)
 
     public init(name: String) {
@@ -330,6 +346,10 @@ public enum CLICode: Sendable, Hashable {
         case "OUTPUT_MODIFIED_EXTERNALLY": self = .outputModifiedExternally
         case "METADATA_WRITE_FAILED": self = .metadataWriteFailed
         case "ORPHAN_FILE_NOT_REMOVED": self = .orphanFileNotRemoved
+        case "NEGATIVE_NOT_FOUND": self = .negativeNotFound
+        case "INVALID_EDIT": self = .invalidEdit
+        case "EXPORT_FAILED": self = .exportFailed
+        case "PREVIEW_FAILED": self = .previewFailed
         default: self = .unknown(name)
         }
     }
@@ -379,6 +399,10 @@ public enum CLICode: Sendable, Hashable {
         case .outputModifiedExternally: "OUTPUT_MODIFIED_EXTERNALLY"
         case .metadataWriteFailed: "METADATA_WRITE_FAILED"
         case .orphanFileNotRemoved: "ORPHAN_FILE_NOT_REMOVED"
+        case .negativeNotFound: "NEGATIVE_NOT_FOUND"
+        case .invalidEdit: "INVALID_EDIT"
+        case .exportFailed: "EXPORT_FAILED"
+        case .previewFailed: "PREVIEW_FAILED"
         case .unknown(let name): name
         }
     }

@@ -57,7 +57,7 @@ struct EditModelTests {
             "negatives":[\(negatives.joined(separator: ","))],\
             "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        return #"{"protocol_version":4,"event":"roll_info","manifest":\#(manifest)}"#
+        return #"{"protocol_version":5,"event":"roll_info","manifest":\#(manifest)}"#
     }
 
     @Test("Dirty count reflects intended versus applied, not just completion")

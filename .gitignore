@@ -1,8 +1,7 @@
 # Python
 cli/.venv/
 cli/dist/
-cli/build/pyinstaller-work/
-cli/build/*.spec.bak
+cli/build/
 __pycache__/
 *.pyc
 .pytest_cache/

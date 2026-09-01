@@ -150,20 +150,24 @@ moves it to the Trash.
    or any work directory you have on disk). **File > Re-stitch…** re-runs
    just the stitch stage against it — no RAW decoding paid for twice.
 
-**Edit** — the roll's negatives in sequence, with a thumbnail, source
-frames, and quality metrics for each; a dirty count and an **Apply** button
-that writes intended capture times into the published TIFFs' EXIF tags (no
-pixel data is touched); the roll's name and folder. A rerun that replaced
-a negative does not leave anything behind to show: the negative simply
-holds the new result. The roll capture date,
-each negative's date override, and shots per negative are shown here but
-are not yet editable from the app — see `docs/punchlist.md`.
+**Edit** — a filmstrip of the roll's negatives in sequence along the bottom
+and a large preview of the selected negative above it; **rotate left /
+rotate right** buttons (and Option←/Option→ to move the selection) record a
+nondestructive rotation per negative — the ops log lives in the library
+database, the CLI re-renders the preview, and the published TIFF is never
+touched. **Metadata** carries the roll's info and the dirty count with its
+**Apply** button, which writes intended capture times into the published
+TIFFs' EXIF tags (no pixel data is touched). **Export** writes TIFFs with
+the edits applied into a folder of your choosing. The roll capture date,
+each negative's date override, and shots per negative are shown but are not
+yet editable from the app — see `docs/punchlist.md`.
 
-A roll's folder holds the stitched TIFFs themselves, plus
-`scanny-boy-roll.json`, which records everything about how they were
-produced — sources, every run, per-negative layout and quality metrics,
-thresholds in force — so the folder is self-describing without any work
-directory.
+Every roll is recorded in one library SQLite database
+(`~/Library/Application Support/ScannyBoy/library.db`) — sources, every run,
+per-negative layout and quality metrics, thresholds in force, and each
+negative's ordered edit ops — while the roll folder holds the stitched
+TIFFs themselves. The CLI renders each negative's small preview, so the app
+only ever displays what Python produced.
 
 ## How frames are registered and blended
 
