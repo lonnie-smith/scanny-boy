@@ -37,6 +37,7 @@ public struct CLIEvent: Sendable, Hashable {
         case metadataApplied
         case metadataSkipped
         case editRecorded
+        case negativeDeleted
         case exportDone
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
@@ -62,6 +63,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
             case "edit_recorded": self = .editRecorded
+            case "negative_deleted": self = .negativeDeleted
             case "export_done": self = .exportDone
             default: self = .unknown(name)
             }
@@ -87,6 +89,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
             case .editRecorded: "edit_recorded"
+            case .negativeDeleted: "negative_deleted"
             case .exportDone: "export_done"
             case .unknown(let name): name
             }

@@ -121,6 +121,7 @@ run     --input DIR --files ... --roll DIR [--per-negative N] [--jobs N]
         [--work DIR] [--skip-sources FILE ...]
 apply-metadata --roll DIR
 edit rotate --roll DIR --negative ID --direction cw|ccw
+edit delete --roll DIR --negative ID
 export      --roll DIR --output DIR [--negatives ID ...]
 ```
 
@@ -145,7 +146,10 @@ place, which needs no flag
 
 `edit rotate` appends a rotation op to the negative's ordered ops log in the
 library database and regenerates the CLI-rendered preview — it **never
-touches the published TIFF**. `export` is the moment edits become pixels: it
+touches the published TIFF**. `edit delete` is the one destructive edit: it
+drops the negative's record (its edits log cascades away), unlinks its
+published TIFF and preview, and renumbers the survivors. `export` is the
+moment edits become pixels: it
 replays each negative's ops log over the published TIFF and writes the
 result into a separate output folder, never opening the roll's own files
 for writing. Pixels only for now: export carries no EXIF and no ICC profile
@@ -198,7 +202,7 @@ to bottom.
 **Editing and export**
 | Module | Role |
 | --- | --- |
-| `edits.py` | `edit rotate`: append a rotation op, regenerate the preview, emit `edit_recorded`. Never touches the published TIFF. |
+| `edits.py` | `edit rotate`: append a rotation op, regenerate the preview, emit `edit_recorded`. `edit delete`: drop the negative's record, TIFF, and preview, emit `negative_deleted`. Never touches a surviving negative's published TIFF. |
 | `previews.py` | Small lossless PNG previews of published TIFFs, under Application Support beside the database; rewritten whenever an edit changes the rendering. |
 | `exporter.py` | `export`: replay a negative's ops log over its published TIFF into an output folder. Pixels only — no EXIF/ICC carry-over yet. |
 
@@ -722,7 +726,7 @@ export — one helper invocation at a time.
 | --- | --- |
 | `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
 | `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is the roll's own, read-only. |
-| `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
+| `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` and `edit delete` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
 | `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
 

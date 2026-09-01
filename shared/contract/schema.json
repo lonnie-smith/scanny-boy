@@ -25,6 +25,7 @@
         "metadata_applied",
         "metadata_skipped",
         "edit_recorded",
+        "negative_deleted",
         "export_done"
       ]
     },
@@ -267,6 +268,7 @@
               "roll rename",
               "apply-metadata",
               "edit rotate",
+              "edit delete",
               "export"
             ]
           }
@@ -366,6 +368,16 @@
           },
           "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
           "preview_path": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "negative_deleted" } } },
+      "then": {
+        "required": ["negative_id", "output"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "output": { "type": ["string", "null"] }
         }
       }
     },

@@ -195,4 +195,16 @@ struct CLICommandTests {
         let command = CLICommand.stitch(work: Self.work, roll: Self.out, allowPartial: false)
         #expect(!command.arguments.contains("--allow-partial"))
     }
+
+    @Test("edit delete names the roll and the negative")
+    func editDeleteArguments() {
+        let command = CLICommand.editDelete(roll: Self.out, negative: "a1b2c3-negative-01")
+        #expect(
+            command.arguments == [
+                "edit", "delete",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "a1b2c3-negative-01",
+            ]
+        )
+    }
 }

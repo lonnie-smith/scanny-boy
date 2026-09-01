@@ -9,13 +9,14 @@ from pathlib import Path
 
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import sigterm_cancellation
-from scanny_boy.edits import EditFailure, run_edit_rotate
+from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
 from scanny_boy.events import (
     Code,
     EditRecorded,
     ErrorEvent,
     EventWriter,
     Finished,
+    NegativeDeleted,
     ProbeResult,
     RollCreated,
     RollInfo,
@@ -160,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cw", "ccw"],
         help="cw rotates the image 90 degrees clockwise, ccw counter-clockwise",
     )
+
+    edit_delete = edit_subparsers.add_parser(
+        "delete", help="Delete one negative's record, TIFF, and preview."
+    )
+    edit_delete.add_argument("--roll", required=True, metavar="DIR")
+    edit_delete.add_argument("--negative", required=True, metavar="ID")
 
     export = subparsers.add_parser(
         "export",
@@ -362,6 +369,21 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         writer.write(EditRecorded(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.edit_command == "delete":
+        try:
+            fields = run_edit_delete(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )
+        except EditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(NegativeDeleted(**fields))
         writer.write(Finished(status="success", exit_status=0))
         return 0
     raise AssertionError(f"unhandled edit command {args.edit_command!r}")

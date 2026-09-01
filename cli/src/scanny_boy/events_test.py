@@ -14,6 +14,7 @@ from scanny_boy.events import (
     ItemDone,
     MetadataApplied,
     MetadataSkipped,
+    NegativeDeleted,
     NegativeDone,
     NegativeFailed,
     PipelineStep,
@@ -37,6 +38,7 @@ SCHEMA = load_schema()
 ALL_EVENTS: list[Event] = [
     Started(command="probe"),
     Started(command="convert", run_id="run-1"),
+    Started(command="edit delete"),
     ProbeResult(catalogue=["DSC_0001.NEF", "DSC_0002.NEF"], run_id="run-1"),
     ProbeResult(
         catalogue=["DSC_0001.NEF", "DSC_0002.NEF"],
@@ -126,6 +128,8 @@ ALL_EVENTS: list[Event] = [
         width=4553,
         height=13972,
     ),
+    NegativeDeleted(negative_id="a1b2c3-negative-04", output="_DSC4641.tif"),
+    NegativeDeleted(negative_id="a1b2c3-negative-05", output=None),
     ProbeResult(
         catalogue=["DSC_0001.NEF"],
         groups=[["DSC_0001.NEF"]],
@@ -230,6 +234,8 @@ def test_new_event_kinds_round_trip():
             preview_path=None,
         ),
         ExportDone(negative_id="neg-4", output="out.tif", width=4, height=3),
+        NegativeDeleted(negative_id="neg-5", output="out.tif"),
+        NegativeDeleted(negative_id="neg-6", output=None),
     ]
     for event in events:
         data = event.to_dict()
