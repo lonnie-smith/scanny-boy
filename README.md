@@ -243,8 +243,4 @@ cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
 
 Both are also run in CI on every pull request (`.github/workflows/ci.yml`).
 
-## Contributing
 
-This is a one-person project; see [`CONTRIBUTING.md`](CONTRIBUTING.md) for
-how it's worked on day to day. Being public doesn't make it open source —
-see "Licence" above.

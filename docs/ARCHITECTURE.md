@@ -857,5 +857,4 @@ negative outright, and the rebate detector. **Negative inversion is Phase 4**
   `library/migrations/versions/`. Tests point `SCANNY_BOY_LIBRARY_DB` at a
   per-test file.
 - Work is planned chunk-by-chunk; each chunk is one branch and one PR merged
-  in order, `main` is protected, and CI must pass. See
-  [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+  in order, `main` is protected, and CI must pass.
