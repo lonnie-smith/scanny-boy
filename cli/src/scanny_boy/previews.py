@@ -23,7 +23,7 @@ from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
 # Longest edge of a generated preview, in pixels.
-PREVIEW_MAX_EDGE = 512
+PREVIEW_MAX_EDGE = 1024
 
 
 def previews_root() -> Path:
@@ -81,7 +81,8 @@ def rotate_preview(current_path: Path, direction: str) -> Path:
     if image is None:
         raise ValueError(f"could not read preview {current_path}")
     # cv2 is BGR but a transpose is channel-agnostic.
-    rotated = np.rot90(image, k=1 if direction == "cw" else 3)
+    # np.rot90 turns counter-clockwise, so cw is k=3.
+    rotated = np.rot90(image, k=3 if direction == "cw" else 1)
     ok, encoded = cv2.imencode(".png", rotated)
     if not ok:
         raise ValueError(f"could not encode preview {current_path}")
