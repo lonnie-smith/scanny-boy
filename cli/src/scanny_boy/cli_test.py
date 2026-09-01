@@ -289,6 +289,54 @@ def test_roll_info_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+def _set_db_revision(revision: str) -> None:
+    import sqlite3
+
+    from scanny_boy.library.db import library_db_path
+
+    with sqlite3.connect(library_db_path()) as connection:
+        connection.execute("UPDATE alembic_version SET version_num = ?", (revision,))
+
+
+def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tmp_path):
+    """A database migrated by a newer helper must surface as an ordinary
+    `error` event, not a stream that stops after `started` — the app's
+    "produced no result" hid an Alembic `ResolutionError`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+    _set_db_revision("9999")
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "LIBRARY_DB_UNSUPPORTED"
+    assert "9999" in events[1]["message"]
+    assert err == ""
+
+
+def test_an_internal_crash_reaches_the_stream_as_an_error_event(capsys, tmp_path, monkeypatch):
+    """Whatever escapes a command must still produce a decodable failure:
+    `INTERNAL_ERROR` plus the exception, rather than a bare `started`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    def _raise(_roll_dir):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", _raise)
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INTERNAL_ERROR"
+    assert "RuntimeError" in events[1]["message"]
+    assert "boom" in events[1]["message"]
+
+
 def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
     main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
     capsys.readouterr()

@@ -102,7 +102,9 @@
         "NEGATIVE_NOT_FOUND",
         "INVALID_EDIT",
         "EXPORT_FAILED",
-        "PREVIEW_FAILED"
+        "PREVIEW_FAILED",
+        "LIBRARY_DB_UNSUPPORTED",
+        "INTERNAL_ERROR"
       ]
     },
     "rollOverlapEntry": {

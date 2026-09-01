@@ -28,6 +28,7 @@ from scanny_boy.events import (
 )
 from scanny_boy.exporter import ExportFailure, run_export
 from scanny_boy.library import repo
+from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
@@ -486,6 +487,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser, f"--jobs must be between {MIN_JOBS} and {MAX_JOBS}, got {jobs}"
         )
 
+    try:
+        return _dispatch_command(args, writer, files, jobs)
+    except LibraryDBError as exc:
+        # A database this helper cannot open is the one failure that can
+        # strike every command alike, so it gets its own sentence rather
+        # than Alembic's.
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except Exception as exc:  # noqa: BLE001 — a crash must still be legible
+        # Last resort: an unexpected exception reached the top of the
+        # command. Without this, stdout stops after `started` and the app
+        # can only say "produced no result"; with it, the user sees the
+        # exception itself and the exit is an ordinary failed one.
+        writer.write(
+            ErrorEvent(
+                code=Code.INTERNAL_ERROR,
+                message=f"unexpected {type(exc).__name__}: {exc}",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+
+def _dispatch_command(
+    args, writer: EventWriter, files: list[str] | None, jobs: int | None
+) -> int:
     if args.command == "roll":
         return _run_roll_command(args, writer)
 

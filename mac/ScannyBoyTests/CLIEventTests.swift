@@ -220,6 +220,8 @@ struct CLIEventTests {
         "ROLL_INVARIANT_MISMATCH", "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY", "METADATA_WRITE_FAILED",
         "ORPHAN_FILE_NOT_REMOVED",
+        "NEGATIVE_NOT_FOUND", "INVALID_EDIT", "EXPORT_FAILED", "PREVIEW_FAILED",
+        "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
     ])
     func everyStableCodeIsKnown(name: String) {
         let code = CLICode(name: name)

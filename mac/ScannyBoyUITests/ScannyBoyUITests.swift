@@ -17,13 +17,19 @@ final class ScannyBoyUITests: XCTestCase {
     /// Section 4: "Never test the library against the real `~/Pictures`."
     /// The app honours `SCANNY_BOY_LIBRARY_BASE` (a Debug-only override,
     /// mirroring `CLILocator`'s `SCANNY_BOY_CLI`) so this suite can point it
-    /// at a fresh temporary directory instead of the real library.
+    /// at a fresh temporary directory instead of the real library. The
+    /// helper honours `SCANNY_BOY_LIBRARY_DB` for the same reason: without
+    /// it, the launched app's every `roll init` and `run` registers its
+    /// rolls in the *real* library database, whose `folder_path` rows then
+    /// outlive the deleted temporary folders.
     @MainActor
     private func launchedApp() -> XCUIApplication {
         let app = XCUIApplication()
         let tempLibrary = FileManager.default.temporaryDirectory
             .appending(path: "scanny-boy-ui-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
         app.launchEnvironment["SCANNY_BOY_LIBRARY_BASE"] = tempLibrary.path
+        app.launchEnvironment["SCANNY_BOY_LIBRARY_DB"] = tempLibrary
+            .appending(path: "library.db").path
         app.launch()
         return app
     }

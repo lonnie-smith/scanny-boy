@@ -43,6 +43,10 @@ if TYPE_CHECKING:
 ROTATE_OP = "rotate"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
+# The gain a frame record carries when the row predates gain normalization
+# and never had one written: unity, since nothing was applied.
+_UNITY_GAIN = (1.0, 1.0, 1.0)
+
 
 class RollNotRegisteredError(Exception):
     """Maps to `ROLL_NOT_FOUND`: the folder is not a roll the library knows
@@ -316,7 +320,10 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             name=f["name"],
                             rotation_deg=f["rotation_deg"],
                             translation=(f["translation"][0], f["translation"][1]),
-                            gain=(f["gain"][0], f["gain"][1], f["gain"][2]),
+                            # Rows written before gain normalization carry no
+                            # `gain` (nothing was applied to them) — a missing
+                            # gain is unity, not a corrupt row.
+                            gain=tuple(f.get("gain", _UNITY_GAIN)),
                         )
                         for f in n.frames
                     ],
@@ -331,7 +338,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             scale_drift=p["scale_drift"],
                             overlap_fraction=p["overlap_fraction"],
                             overlap_mad=p["overlap_mad"],
-                            overlap_mad_pregain=p["overlap_mad_pregain"],
+                            # Likewise absent before gain normalization: no
+                            # pre-gain measurement was ever taken.
+                            overlap_mad_pregain=p.get("overlap_mad_pregain"),
                             accepted=p["accepted"],
                         )
                         for p in n.pairs

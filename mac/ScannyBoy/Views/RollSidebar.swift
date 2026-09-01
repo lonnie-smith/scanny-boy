@@ -29,6 +29,20 @@ struct RollSidebar: View {
 
     var body: some View {
         List(selection: $selection) {
+            if let scanError = library.scanError {
+                Section {
+                    // A failed scan leaves `rolls` at its last successful
+                    // snapshot — without this, the list silently shows stale
+                    // counts (a roll stitched since reads as it was before)
+                    // instead of saying why nothing refreshed.
+                    Label(
+                        "The library could not be read: \(scanError)",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
             ForEach(sortedRolls) { roll in
                 RollRow(roll: roll)
                     .tag(roll.id)

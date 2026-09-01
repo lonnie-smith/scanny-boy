@@ -106,6 +106,8 @@ class Code(enum.StrEnum):
     INVALID_EDIT = "INVALID_EDIT"
     EXPORT_FAILED = "EXPORT_FAILED"
     PREVIEW_FAILED = "PREVIEW_FAILED"
+    LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

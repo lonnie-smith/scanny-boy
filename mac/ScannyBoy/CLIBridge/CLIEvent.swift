@@ -299,6 +299,8 @@ public enum CLICode: Sendable, Hashable {
     case invalidEdit
     case exportFailed
     case previewFailed
+    case libraryDBUnsupported
+    case internalError
     case unknown(String)
 
     public init(name: String) {
@@ -350,6 +352,8 @@ public enum CLICode: Sendable, Hashable {
         case "INVALID_EDIT": self = .invalidEdit
         case "EXPORT_FAILED": self = .exportFailed
         case "PREVIEW_FAILED": self = .previewFailed
+        case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
+        case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
     }
@@ -403,6 +407,8 @@ public enum CLICode: Sendable, Hashable {
         case .invalidEdit: "INVALID_EDIT"
         case .exportFailed: "EXPORT_FAILED"
         case .previewFailed: "PREVIEW_FAILED"
+        case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
+        case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }
     }

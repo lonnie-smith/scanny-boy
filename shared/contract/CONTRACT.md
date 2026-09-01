@@ -307,6 +307,8 @@ staging directories, and reruns the incomplete negative.
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
+| `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
+| `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 
 ## Exit status
 
