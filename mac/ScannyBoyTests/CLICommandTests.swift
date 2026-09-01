@@ -196,6 +196,18 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--allow-partial"))
     }
 
+    @Test("edit delete names the roll and the negative")
+    func editDeleteArguments() {
+        let command = CLICommand.editDelete(roll: Self.out, negative: "a1b2c3-negative-01")
+        #expect(
+            command.arguments == [
+                "edit", "delete",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "a1b2c3-negative-01",
+            ]
+        )
+    }
+
     // MARK: - Protocol version 6: flat field
 
     @Test("run carries --flatfield when a profile is chosen")

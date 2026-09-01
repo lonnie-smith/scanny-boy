@@ -290,6 +290,54 @@ def test_roll_info_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+def _set_db_revision(revision: str) -> None:
+    import sqlite3
+
+    from scanny_boy.library.db import library_db_path
+
+    with sqlite3.connect(library_db_path()) as connection:
+        connection.execute("UPDATE alembic_version SET version_num = ?", (revision,))
+
+
+def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tmp_path):
+    """A database migrated by a newer helper must surface as an ordinary
+    `error` event, not a stream that stops after `started` — the app's
+    "produced no result" hid an Alembic `ResolutionError`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+    _set_db_revision("9999")
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "LIBRARY_DB_UNSUPPORTED"
+    assert "9999" in events[1]["message"]
+    assert err == ""
+
+
+def test_an_internal_crash_reaches_the_stream_as_an_error_event(capsys, tmp_path, monkeypatch):
+    """Whatever escapes a command must still produce a decodable failure:
+    `INTERNAL_ERROR` plus the exception, rather than a bare `started`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    def _raise(_roll_dir):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", _raise)
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INTERNAL_ERROR"
+    assert "RuntimeError" in events[1]["message"]
+    assert "boom" in events[1]["message"]
+
+
 def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
     main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
     capsys.readouterr()
@@ -346,6 +394,49 @@ def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
     assert [e["event"] for e in events] == ["started", "finished"]
     assert events[1]["status"] == "success"
     assert err == ""
+
+
+def test_edit_delete_removes_the_negative_and_its_tiff(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    output_name = load_roll_manifest(roll_dir).negatives[0].output["name"]
+    assert (roll_dir / output_name).exists()
+    capsys.readouterr()
+
+    status = main(["edit", "delete", "--roll", str(roll_dir), "--negative", negative_id])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "negative_deleted", "finished"]
+    assert events[0]["command"] == "edit delete"
+    assert events[1]["negative_id"] == negative_id
+    assert events[1]["output"] == output_name
+    assert events[2]["status"] == "success"
+    assert not (roll_dir / output_name).exists()
+    assert load_roll_manifest(roll_dir).negatives == []
+    assert err == ""
+
+
+def test_edit_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["edit", "delete", "--roll", str(tmp_path / "nope"), "--negative", "x"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "edit delete"
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
+def test_edit_delete_without_negative_id_returns_status_2(capsys):
+    status = main(["edit", "delete", "--roll", "/tmp/roll"])
+
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert err != ""
 
 
 def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):

@@ -33,6 +33,7 @@ class EventType(enum.StrEnum):
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
     EDIT_RECORDED = "edit_recorded"
+    NEGATIVE_DELETED = "negative_deleted"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -115,6 +116,8 @@ class Code(enum.StrEnum):
     FLATFIELD_GAIN_MAP_MISSING = "FLATFIELD_GAIN_MAP_MISSING"
     FLATFIELD_ASPECT_MISMATCH = "FLATFIELD_ASPECT_MISMATCH"
     FLATFIELD_HIGHLIGHT_CLIPPED = "FLATFIELD_HIGHLIGHT_CLIPPED"
+    LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -353,6 +356,19 @@ class EditRecorded(Event):
     edit: dict[str, Any]
     rotation_quarter_turns: int
     preview_path: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativeDeleted(Event):
+    """`edit delete`'s confirmation: the negative's record is gone from the
+    library database (its edits log cascaded away) and its published TIFF
+    was unlinked from the roll folder. `output` is the deleted TIFF's name,
+    or None when the negative had never been stitched."""
+
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_DELETED
+
+    negative_id: str
+    output: str | None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

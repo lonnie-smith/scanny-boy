@@ -14,7 +14,12 @@ from scanny_boy import flatfield
 from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library import db, repo
-from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
+from scanny_boy.roll_manifest import (
+    FrameRecord,
+    PairRecord,
+    new_roll_manifest,
+    write_roll_manifest,
+)
 
 
 @pytest.fixture()
@@ -45,6 +50,88 @@ def test_open_engine_migrates_to_head():
     engine = db.open_engine()
     table_names = set(inspect(engine).get_table_names())
     assert {"rolls", "runs", "sources", "negatives", "edits"} <= table_names
+
+
+def test_open_engine_refuses_a_revision_it_does_not_know(monkeypatch, tmp_path):
+    import sqlite3
+
+    db.open_engine()  # migrate the per-test database first
+    monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "newer.db"))
+    db.reset_engine_cache()
+    with sqlite3.connect(tmp_path / "newer.db") as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT NOT NULL)")
+        connection.execute("INSERT INTO alembic_version VALUES ('9999')")
+    with pytest.raises(db.LibraryDBError) as excinfo:
+        db.open_engine()
+    assert "9999" in excinfo.value.message
+    assert excinfo.value.code.name == "LIBRARY_DB_UNSUPPORTED"
+
+
+# --- rows written before gain normalization -------------------------------
+
+
+def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
+    """Rows written before gain normalization carry neither `gain` nor
+    `overlap_mad_pregain`; loading them must not raise, and the values must
+    read as "nothing was applied"."""
+    import json
+
+    from sqlalchemy import text
+
+    from scanny_boy.roll_manifest import load_roll_manifest
+    from scanny_boy.roll_manifest_test import _negative
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.negatives.append(_negative(negative_id="rid-1-negative-01"))
+    negative = manifest.negatives[0]
+    negative.frames.append(
+        FrameRecord(
+            name="a.tif",
+            rotation_deg=0.0,
+            translation=(0.0, 0.0),
+            gain=(1.5, 1.0, 0.9),
+        )
+    )
+    negative.pairs.append(
+        PairRecord(
+            a="a.tif",
+            b="b.tif",
+            inliers=10,
+            good_matches=12,
+            inlier_ratio=0.9,
+            rms_residual_px=0.5,
+            scale_drift=0.001,
+            overlap_fraction=0.2,
+            overlap_mad=0.01,
+            overlap_mad_pregain=0.02,
+            accepted=True,
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+
+    # Rewrite the stored rows in their pre-gain shape, exactly as a helper
+    # from before the feature would have left them.
+    engine = db.open_engine()
+    with engine.begin() as connection:
+        row = connection.execute(
+            text("SELECT negative_id, frames, pairs FROM negatives")
+        ).one()
+        frames = [
+            {key: value for key, value in frame.items() if key != "gain"}
+            for frame in json.loads(row.frames)
+        ]
+        pairs = [
+            {key: value for key, value in pair.items() if key != "overlap_mad_pregain"}
+            for pair in json.loads(row.pairs)
+        ]
+        connection.execute(
+            text("UPDATE negatives SET frames = :frames, pairs = :pairs"),
+            {"frames": json.dumps(frames), "pairs": json.dumps(pairs)},
+        )
+
+    loaded = load_roll_manifest(roll_dir)
+    assert loaded.negatives[0].frames[0].gain == (1.0, 1.0, 1.0)
+    assert loaded.negatives[0].pairs[0].overlap_mad_pregain is None
 
 
 def test_migrations_are_idempotent():

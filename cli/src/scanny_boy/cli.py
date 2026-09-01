@@ -9,7 +9,7 @@ from pathlib import Path
 
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import sigterm_cancellation
-from scanny_boy.edits import EditFailure, run_edit_rotate
+from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
 from scanny_boy.events import (
     Code,
     EditRecorded,
@@ -19,6 +19,7 @@ from scanny_boy.events import (
     FlatFieldCreated,
     FlatFieldDeleted,
     FlatFieldList,
+    NegativeDeleted,
     ProbeResult,
     RollCreated,
     RollInfo,
@@ -36,6 +37,7 @@ from scanny_boy.flatfield import (
     flatfield_profile_summary,
 )
 from scanny_boy.library import repo
+from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
 from scanny_boy.pipeline import ConvertFailure, run_convert
@@ -189,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cw", "ccw"],
         help="cw rotates the image 90 degrees clockwise, ccw counter-clockwise",
     )
+
+    edit_delete = edit_subparsers.add_parser(
+        "delete", help="Delete one negative's record, TIFF, and preview."
+    )
+    edit_delete.add_argument("--roll", required=True, metavar="DIR")
+    edit_delete.add_argument("--negative", required=True, metavar="ID")
 
     export = subparsers.add_parser(
         "export",
@@ -391,6 +399,21 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         writer.write(EditRecorded(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.edit_command == "delete":
+        try:
+            fields = run_edit_delete(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )
+        except EditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(NegativeDeleted(**fields))
         writer.write(Finished(status="success", exit_status=0))
         return 0
     raise AssertionError(f"unhandled edit command {args.edit_command!r}")
@@ -599,6 +622,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser, f"--jobs must be between {MIN_JOBS} and {MAX_JOBS}, got {jobs}"
         )
 
+    try:
+        return _dispatch_command(args, writer, files, jobs)
+    except LibraryDBError as exc:
+        # A database this helper cannot open is the one failure that can
+        # strike every command alike, so it gets its own sentence rather
+        # than Alembic's.
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except Exception as exc:  # noqa: BLE001 — a crash must still be legible
+        # Last resort: an unexpected exception reached the top of the
+        # command. Without this, stdout stops after `started` and the app
+        # can only say "produced no result"; with it, the user sees the
+        # exception itself and the exit is an ordinary failed one.
+        writer.write(
+            ErrorEvent(
+                code=Code.INTERNAL_ERROR,
+                message=f"unexpected {type(exc).__name__}: {exc}",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+
+def _dispatch_command(
+    args, writer: EventWriter, files: list[str] | None, jobs: int | None
+) -> int:
     if args.command == "roll":
         return _run_roll_command(args, writer)
 

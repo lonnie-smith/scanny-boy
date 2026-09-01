@@ -37,6 +37,7 @@ public struct CLIEvent: Sendable, Hashable {
         case metadataApplied
         case metadataSkipped
         case editRecorded
+        case negativeDeleted
         case exportDone
         case flatfieldCreated
         case flatfieldList
@@ -65,6 +66,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
             case "edit_recorded": self = .editRecorded
+            case "negative_deleted": self = .negativeDeleted
             case "export_done": self = .exportDone
             case "flatfield_created": self = .flatfieldCreated
             case "flatfield_list": self = .flatfieldList
@@ -93,6 +95,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
             case .editRecorded: "edit_recorded"
+            case .negativeDeleted: "negative_deleted"
             case .exportDone: "export_done"
             case .flatfieldCreated: "flatfield_created"
             case .flatfieldList: "flatfield_list"
@@ -325,6 +328,8 @@ public enum CLICode: Sendable, Hashable {
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
+    case libraryDBUnsupported
+    case internalError
     case unknown(String)
 
     public init(name: String) {
@@ -382,6 +387,8 @@ public enum CLICode: Sendable, Hashable {
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
+        case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
+        case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
     }
@@ -441,6 +448,8 @@ public enum CLICode: Sendable, Hashable {
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
+        case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
+        case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }
     }

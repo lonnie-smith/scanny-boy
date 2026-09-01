@@ -25,6 +25,7 @@
         "metadata_applied",
         "metadata_skipped",
         "edit_recorded",
+        "negative_deleted",
         "export_done",
         "flatfield_created",
         "flatfield_list",
@@ -111,7 +112,9 @@
         "FLATFIELD_PROFILE_IN_USE",
         "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH",
-        "FLATFIELD_HIGHLIGHT_CLIPPED"
+        "FLATFIELD_HIGHLIGHT_CLIPPED",
+        "LIBRARY_DB_UNSUPPORTED",
+        "INTERNAL_ERROR"
       ]
     },
     "rollOverlapEntry": {
@@ -293,6 +296,7 @@
               "roll rename",
               "apply-metadata",
               "edit rotate",
+              "edit delete",
               "export",
               "flatfield create",
               "flatfield list",
@@ -425,6 +429,16 @@
         "required": ["profile_id"],
         "properties": {
           "profile_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "negative_deleted" } } },
+      "then": {
+        "required": ["negative_id", "output"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "output": { "type": ["string", "null"] }
         }
       }
     },

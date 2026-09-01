@@ -55,6 +55,7 @@ scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
 scanny-boy apply-metadata --roll DIR
 
 scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw
+scanny-boy edit delete --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
@@ -164,6 +165,19 @@ Support, path recorded on the negative) and emits `edit_recorded` carrying
 direction, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
 
+`edit delete` removes one negative outright, whatever its status: its record
+(and its edits ops log, by cascade) is deleted from the library database,
+its published TIFF is unlinked from the roll folder, and its rendered
+preview PNG is unlinked from Application Support. The record goes first, so
+a crash leaves an orphan file rather than a dangling record; a failed
+unlink warns with `ORPHAN_FILE_NOT_REMOVED` and never fails the command. It
+emits `negative_deleted` carrying `negative_id` and `output` (the deleted
+TIFF's name, null when the negative had never been stitched). The
+surviving negatives' `sequence` values are renumbered. The negative's run
+row and source rows are kept — a later run over the same NEFs re-creates
+the negative. It fails with `ROLL_NOT_FOUND` for an unregistered roll and
+`NEGATIVE_NOT_FOUND` for an unknown negative.
+
 `export` writes each negative's TIFF into `--output` with the negative's
 edits applied — the ops log replayed over the published pixels, named after
 the negative and never touching the roll's own files. It emits `export_done`
@@ -231,6 +245,7 @@ library database rather than a JSON file in the roll folder).
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
+| `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
 | `flatfield_created` | A flat-field profile was created. Carries `profile`. |
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
@@ -354,6 +369,8 @@ staging directories, and reruns the incomplete negative.
 | `FLATFIELD_GAIN_MAP_MISSING` | The profile's `.npz` is missing or corrupt |
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
 | `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
+| `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
+| `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 
 ## Exit status
 

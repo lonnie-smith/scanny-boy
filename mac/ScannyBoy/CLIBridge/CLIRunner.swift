@@ -176,6 +176,21 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    /// `scanny-boy edit delete --roll DIR --negative ID`
+    ///
+    /// The one destructive edit: removes the negative's record (and its
+    /// ops log, by cascade) from the library database, unlinks its
+    /// published TIFF from the roll folder, and unlinks its rendered
+    /// preview. The confirmation dialog lives in the view layer; by the
+    /// time this command is built the user has already agreed.
+    public static func editDelete(roll: URL, negative: String) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "delete",
+            "--roll", roll.path,
+            "--negative", negative,
+        ])
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
     ///
     /// Applies each negative's recorded edits to its published pixels and

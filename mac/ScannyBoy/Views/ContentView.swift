@@ -129,7 +129,7 @@ struct ContentView: View {
             case .addScans:
                 addScansStage
             case .edit:
-                EditStageView(edit: edit, run: run)
+                EditStageView(edit: edit, run: run, onNegativeDeleted: { library.scan() })
             case .metadata:
                 MetadataStageView(edit: edit, run: run)
             case .export:
