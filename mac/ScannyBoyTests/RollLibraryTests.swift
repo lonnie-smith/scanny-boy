@@ -62,7 +62,7 @@ struct RollLibraryTests {
     }
 
     private static func rollListEvent(entries: [String]) -> String {
-        #"{"protocol_version":6,"event":"roll_list","rolls":[\#(entries.joined(separator: ","))]}"#
+        TestEvents.line(#"{"event":"roll_list","rolls":[\#(entries.joined(separator: ","))]}"#)
     }
 
     private static func listingEntry(
@@ -198,7 +198,7 @@ struct RollLibraryTests {
         let executable = try Self.fakeRollExecutable(
             in: directory,
             initLines: [
-                #"{"protocol_version":6,"event":"roll_created","roll_id":"id-9","roll_name":"New Roll","path":"\#(rollPath.path)"}"#
+                TestEvents.line(#"{"event":"roll_created","roll_id":"id-9","roll_name":"New Roll","path":"\#(rollPath.path)"}"#)
             ]
         )
 
@@ -230,7 +230,7 @@ struct RollLibraryTests {
         let executable = try Self.fakeRollExecutable(
             in: directory,
             renameLines: [
-                #"{"protocol_version":6,"event":"roll_renamed","roll_id":"id-1","roll_name":"New Name","path":"\#(newPath.path)"}"#
+                TestEvents.line(#"{"event":"roll_renamed","roll_id":"id-1","roll_name":"New Name","path":"\#(newPath.path)"}"#)
             ]
         )
 
