@@ -70,9 +70,10 @@ def stitched_roll(tmp_path: Path) -> Path:
     return roll_dir
 
 
-def test_apply_edits_matches_np_rot90_quarter_turns():
+def test_apply_edits_matches_clockwise_quarter_turns():
+    # Quarter turns count clockwise; np.rot90 is counter-clockwise.
     for k in range(4):
-        np.testing.assert_array_equal(apply_edits(_ORIGINAL, k), np.rot90(_ORIGINAL, k=k))
+        np.testing.assert_array_equal(apply_edits(_ORIGINAL, k), np.rot90(_ORIGINAL, k=-k))
 
 
 def test_export_applies_the_recorded_rotation(stitched_roll, tmp_path):
@@ -83,8 +84,8 @@ def test_export_applies_the_recorded_rotation(stitched_roll, tmp_path):
 
     assert outcome.failed == []
     assert outcome.exported == ["_DSC0001.tif", "_DSC0003.tif"]
-    # One cw turn of the 3x4 arange: 90 degrees.
-    expected = np.rot90(_ORIGINAL, k=1)
+    # One cw turn of the 3x4 arange: 90 degrees clockwise.
+    expected = np.rot90(_ORIGINAL, k=-1)
     np.testing.assert_array_equal(
         tifffile.imread(output_dir / "_DSC0001.tif"), expected
     )
