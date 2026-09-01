@@ -239,6 +239,24 @@ outright as `STITCH_UNDERCONSTRAINED`. Every threshold was measured from real
 scans at user gate C and lives in exactly one place — plan section 3.12 —
 that production code reads from and nowhere else.
 
+Before the MAD gate runs, per-frame per-channel **photometric gains**
+reconcile lamp drift between a negative's frames: the pairwise mean ratios
+over each used pair's shared area feed a global least-squares solve in log
+space (one row per usable pair, weighted by overlap area, anchored so the
+solved gains have geometric mean 1 — no frame's lamp level is privileged,
+and the worst-case gain excursion into the encode clamp is minimized), and
+the gains are applied to the warped linear buffers before the blend. The
+MAD gate is thereby re-pointed at the *post-gain residual*: it checks
+registration, not lamp drift. The pre-gain MAD is recorded beside it as the
+diagnostic that explains why a gain was applied, and a solved gain far from
+unity warns as `STITCH_GAIN_DRIFT`. **Three constants here are not yet
+measured**: `MIN_GAIN_OVERLAP_PX` (a pair's shared area below this is
+dropped from the gain solve; it borrows NegPy's measured 1000px floor) and
+`GAIN_DRIFT_WARN` are provisional and unmeasured, and `MAX_OVERLAP_MAD`'s
+value (0.20) was measured against *uncorrected* overlaps, so applied to the
+post-gain residual it is far looser than intended — all three need
+measurement from real scans at the next user gate.
+
 `rebate_deviation_px` (checking that the film rebate's edges stay collinear
 across a negative) is specified in the contract and recorded, but **never
 gated in Phase 2 and not implemented at all**: Chunk P2-1 found the rebate is

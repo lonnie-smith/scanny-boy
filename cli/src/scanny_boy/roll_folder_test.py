@@ -91,7 +91,7 @@ def test_unique_folder_name_raises_roll_exists_after_exhaustion(tmp_path):
 # --- create_roll -------------------------------------------------------------
 
 
-def test_create_roll_registers_an_empty_v3_roll(tmp_path):
+def test_create_roll_registers_an_empty_v4_roll(tmp_path):
     roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998", 3)
 
     assert roll_dir == tmp_path / "Tri-X-Portland-1998"

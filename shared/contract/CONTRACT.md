@@ -90,7 +90,7 @@ a skip must remove a whole group's worth or the run fails
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
-registers an empty v3 roll in the library database. It emits `roll_created`
+registers an empty v4 roll in the library database. It emits `roll_created`
 carrying `roll_id`, `roll_name`, and `path`.
 
 `roll list` reports the rolls registered under `--library` from the library
@@ -171,7 +171,7 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
-record as delivered by `roll info` (format version 3; now persisted in the
+record as delivered by `roll info` (format version 4; now persisted in the
 library database rather than a JSON file in the roll folder).
 
 ### Event types
@@ -184,7 +184,7 @@ library database rather than a JSON file in the roll folder).
 | `item_done` | A TIFF has been published in the output folder after its whole group completed successfully. |
 | `group_done` | A negative's group finished, after that group's `item_done` events. |
 | `group_failed` | A negative's group failed and its staging directory was removed. |
-| `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad`. |
+| `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad` (the worst post-gain overlap residual). |
 | `negative_failed` | A negative could not be stitched. Carries `negative_id`, `code`, and `message`. |
 | `roll_created` | A new roll folder was created. Carries `roll_id`, `roll_name`, and `path`. |
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
@@ -289,12 +289,13 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_OUTPUT_TOO_LARGE` | Estimated stitched file exceeds 3.5 GiB |
 | `STITCH_FAILED` | Any other failure while stitching one negative |
 | `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
+| `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll manifest is not `manifest_format_version: 3` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 4` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |

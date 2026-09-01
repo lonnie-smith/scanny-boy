@@ -37,6 +37,15 @@ Phase n:
   finder. A detector constrained to edges near the frame margin and roughly
   parallel to the solved strip axis (rather than the longest line anywhere in
   the image) could make this a real gate instead of an always-`null` field.
+* Measure the photometric-gain thresholds from real scans. Stitch-phase gain
+  compensation (per-frame, per-channel gains solved globally in log space,
+  geometric mean 1) shipped with two **unmeasured** constants that need a
+  user gate: `MIN_GAIN_OVERLAP_PX` (borrows NegPy's 1000px floor) and
+  `GAIN_DRIFT_WARN`. `MAX_OVERLAP_MAD` itself now gates the *post-gain
+  residual*, but its value (0.20) was measured against uncorrected overlaps
+  and is far looser than a healthy residual — re-measure it at the same
+  gate. See composite.py's module docstring and DECISIONS.md "Quality
+  gates".
 * Manual negative reordering. Phase 3 orders a roll's negatives by capture
   time alone (§3.7); an optional `sequence_override` on `negative`, consumed
   by `roll_sequence.py` ahead of capture time, is where a manual order would

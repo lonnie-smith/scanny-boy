@@ -316,6 +316,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             name=f["name"],
                             rotation_deg=f["rotation_deg"],
                             translation=(f["translation"][0], f["translation"][1]),
+                            gain=(f["gain"][0], f["gain"][1], f["gain"][2]),
                         )
                         for f in n.frames
                     ],
@@ -330,6 +331,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             scale_drift=p["scale_drift"],
                             overlap_fraction=p["overlap_fraction"],
                             overlap_mad=p["overlap_mad"],
+                            overlap_mad_pregain=p["overlap_mad_pregain"],
                             accepted=p["accepted"],
                         )
                         for p in n.pairs

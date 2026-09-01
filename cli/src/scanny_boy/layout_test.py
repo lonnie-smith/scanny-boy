@@ -1,4 +1,5 @@
 import dataclasses
+import math
 
 import numpy as np
 import pytest
@@ -7,14 +8,101 @@ from scanny_boy.events import Code
 from scanny_boy.layout import (
     STRIP_SPREAD_RATIO,
     FramePlacement,
+    GainStat,
     StitchError,
     _largest_all_covered_rectangle,
     largest_valid_rect,
+    solve_gains,
     solve_layout,
 )
 from scanny_boy.registration import PairResult
 
 _FRAME_SIZE = (400, 600)  # (height, width)
+
+
+def _stat(a, b, mean_a, mean_b, shared_count=10_000):
+    return GainStat(
+        a=a,
+        b=b,
+        mean_a=tuple(mean_a),
+        mean_b=tuple(mean_b),
+        shared_count=shared_count,
+    )
+
+
+def test_solve_gains_recovers_injected_offsets_under_the_geometric_mean_anchor():
+    stats = [_stat("f0", "f1", (0.5, 0.4, 0.6), (0.4, 0.4, 0.42))]
+    gains = solve_gains(["f0", "f1"], stats)
+
+    # g1/g0 = mean_a/mean_b per channel; the anchor pins g0*g1 = 1, so the
+    # two gains bracket 1 symmetrically in log space.
+    ratio = np.array([0.5 / 0.4, 0.4 / 0.4, 0.6 / 0.42])
+    assert np.allclose(gains["f0"], 1.0 / np.sqrt(ratio), rtol=1e-9)
+    assert np.allclose(gains["f1"], np.sqrt(ratio), rtol=1e-9)
+    assert np.allclose(np.multiply(gains["f0"], gains["f1"]), 1.0)
+
+
+def test_solve_gains_distributes_inconsistent_ratios_instead_of_chaining():
+    # f0-f1 and f1-f2 each report a doubling; f0-f2 directly reports 3x.
+    # A chained estimator (NegPy's) accumulates down the chain and puts the
+    # whole conflict into the f0-f2 relation; the global least-squares solve
+    # spreads it equally across the three equal-weight rows.
+    log2 = math.log(2.0)
+    log3 = math.log(3.0)
+    stats = [
+        _stat("f0", "f1", (0.4, 0.4, 0.4), (0.2, 0.2, 0.2)),  # ratio 2
+        _stat("f1", "f2", (0.4, 0.4, 0.4), (0.2, 0.2, 0.2)),  # ratio 2
+        _stat("f0", "f2", (0.4, 0.4, 0.4), (0.4 / 3.0,) * 3),  # ratio 3
+    ]
+    gains = solve_gains(["f0", "f1", "f2"], stats)
+
+    r01 = math.log(gains["f1"][0] / gains["f0"][0]) - log2
+    r12 = math.log(gains["f2"][0] / gains["f1"][0]) - log2
+    r02 = math.log(gains["f2"][0] / gains["f0"][0]) - log3
+    assert r01 == pytest.approx(r12, abs=1e-9)
+    assert r01 == pytest.approx(-r02, abs=1e-9)
+    # The worst per-row residual is far below the chained estimator's, which
+    # would leave the direct pair with the full 4x-vs-3x conflict.
+    assert max(abs(r01), abs(r02)) < abs(2 * log2 + 2 * log2 - log3)
+
+    # The anchor still holds exactly per channel.
+    assert gains["f0"][0] * gains["f1"][0] * gains["f2"][0] == pytest.approx(1.0)
+
+
+def test_solve_gains_drops_rows_with_degenerate_channel_means():
+    stats = [
+        _stat("f0", "f1", (0.5, 0.0, 0.6), (0.4, 0.5, 0.5)),
+        _stat("f1", "f2", (0.5, 0.0, 0.6), (0.4, 0.5, 0.5)),
+    ]
+    gains = solve_gains(["f0", "f1", "f2"], stats)
+
+    # Every channel-1 row is degenerate, so that channel is unsolved and
+    # every frame keeps gain 1 there; the other channels still solve.
+    assert gains["f0"][1] == 1.0
+    assert gains["f1"][1] == 1.0
+    assert gains["f2"][1] == 1.0
+    assert gains["f0"][0] != 1.0 and gains["f2"][0] != 1.0
+
+
+def test_solve_gains_leaves_uncovered_frames_at_unity():
+    stats = [_stat("f0", "f1", (0.5, 0.5, 0.5), (0.4, 0.4, 0.4))]
+    gains = solve_gains(["f0", "f1", "f2"], stats)
+
+    assert gains["f2"] == (1.0, 1.0, 1.0)
+    assert np.allclose(np.multiply(gains["f0"], gains["f1"]), 1.0)
+
+
+def test_solve_gains_weights_rows_by_overlap_area():
+    # f0-f1 (huge overlap) says ratio 2; f1-f2 and f0-f2 (tiny overlaps)
+    # say ratio 1. The large row must dominate the small ones.
+    stats = [
+        _stat("f0", "f1", (0.4, 0.4, 0.4), (0.2, 0.2, 0.2), shared_count=1_000_000),
+        _stat("f1", "f2", (0.4, 0.4, 0.4), (0.4, 0.4, 0.4), shared_count=100),
+        _stat("f0", "f2", (0.4, 0.4, 0.4), (0.4, 0.4, 0.4), shared_count=100),
+    ]
+    gains = solve_gains(["f0", "f1", "f2"], stats)
+
+    assert gains["f1"][0] / gains["f0"][0] > 1.8
 
 
 def _rotation_matrix(angle_deg):
@@ -72,6 +160,7 @@ def _ground_truth_pair(
         inlier_points_b=pts_b,
         overlap_fraction=None,
         overlap_mad=None,
+        overlap_mad_pregain=None,
     )
 
 
