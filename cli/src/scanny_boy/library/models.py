@@ -39,7 +39,9 @@ class JSONText(TypeDecorator):
     def process_bind_param(self, value: typing.Any, dialect: typing.Any) -> str | None:
         return None if value is None else json.dumps(value, sort_keys=True)
 
-    def process_result_value(self, value: str | None, dialect: typing.Any) -> typing.Any:
+    def process_result_value(
+        self, value: str | None, dialect: typing.Any
+    ) -> typing.Any:
         return None if value is None else json.loads(value)
 
 
@@ -55,7 +57,6 @@ class RollRow(Base):
     # `roll rename` updates it when the folder moves.
     folder_path: Mapped[str] = mapped_column(Text, unique=True, index=True)
     roll_name: Mapped[str] = mapped_column(Text)
-    shots_per_negative: Mapped[int] = mapped_column(Integer)
     scanny_boy_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(Text)

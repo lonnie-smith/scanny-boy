@@ -24,21 +24,21 @@ than guess at the new fields.
 ## Invocation
 
 ```text
-scanny-boy roll init   --library DIR --name NAME --per-negative N
+scanny-boy roll init   --library DIR --name NAME
 scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
 
-scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR [--per-negative N]
+scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR --per-negative N
                       [--jobs N] [--overwrite]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ...]
 
-scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
-                      [--skip-sources FILE ...] [--work DIR]
+scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negative N
+                      [--jobs N] [--skip-sources FILE ...] [--work DIR]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -91,8 +91,10 @@ a skip must remove a whole group's worth or the run fails
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
-registers an empty v4 roll in the library database. It emits `roll_created`
-carrying `roll_id`, `roll_name`, and `path`.
+registers an empty v5 roll in the library database. It emits `roll_created`
+carrying `roll_id`, `roll_name`, and `path`. A roll records no grouping of
+its own: `--per-negative` is each stitch batch's choice, so one roll can
+hold negatives stitched from different scan counts.
 
 `roll list` reports the rolls registered under `--library` from the library
 database and emits a single `roll_list` event. A registered roll whose
@@ -161,10 +163,11 @@ invocation emits only JSON event lines on stdout.
 `--jobs` sets how many frames of one negative are converted at once;
 parallelism never spans negatives, because a negative is published all at
 once or not at all. Omitting it uses
-`min(shots_per_negative, logical CPUs, 4)`, reduced silently if this
-machine's memory budget is smaller. An explicit value is accepted from 1 to
-12; 1 uses the serial path. Values outside that range are a usage error
-(exit 2).
+`min(shots_per_negative, logical CPUs, 4)` — where `shots_per_negative` is
+the batch's own value, from `--per-negative` or the work manifest — reduced
+silently if this machine's memory budget is smaller. An explicit value is
+accepted from 1 to 12; 1 uses the serial path. Values outside that range are
+a usage error (exit 2).
 
 Each worker is budgeted a fixed amount of memory, and the total must not
 exceed half of physical RAM. An explicit `--jobs` above that limit is
@@ -223,7 +226,7 @@ in canonical order — section 3.3 — regardless of whether `--files` was
 given), `warnings` (the stable codes of any `warning` events emitted during
 this probe, as a convenience rollup), and `groups` (present only when
 `--files` was given and validated: the selection's filenames in canonical
-order, chunked into `shots_per_negative`-sized negatives; empty otherwise).
+order, chunked into `--per-negative`-sized negatives; empty otherwise).
 
 When `--out` is also given alongside a validated `--files` selection,
 `probe_result` additionally carries `output_conflicts` (output filenames
@@ -275,7 +278,7 @@ staging directories, and reruns the incomplete negative.
 | --- | --- |
 | `NO_FILES` | No `.nef` files, or none selected |
 | `NON_CONTIGUOUS_SELECTION` | Selection has a gap in canonical order |
-| `NOT_DIVISIBLE` | Selected count not divisible by shots per negative |
+| `NOT_DIVISIBLE` | Selected count not divisible by the batch's shots per negative |
 | `INVALID_PER_NEGATIVE` | Shots per negative outside 1–12 |
 | `MISSING_CAPTURE_TIME` | A catalogue file has no usable capture timestamp |
 | `FILENAME_SORT_USED` | Warning: whole catalogue fell back to filename order |
@@ -314,7 +317,6 @@ staging directories, and reruns the incomplete negative.
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
-| `PER_NEGATIVE_LOCKED` | Attempt to change `shots_per_negative` after a run published |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
 | `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |

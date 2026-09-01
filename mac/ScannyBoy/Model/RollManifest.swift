@@ -84,7 +84,6 @@ struct RollManifest: Sendable, Hashable {
 
     let rollID: String
     let rollName: String
-    let shotsPerNegative: Int
     let createdAt: String
     let updatedAt: String
     let runs: [Run]
@@ -106,7 +105,6 @@ struct RollManifest: Sendable, Hashable {
         return RollManifest(
             rollID: rollID,
             rollName: rollName,
-            shotsPerNegative: shotsPerNegative,
             createdAt: createdAt,
             updatedAt: updatedAt,
             runs: runs,
@@ -120,7 +118,6 @@ struct RollManifest: Sendable, Hashable {
     init(
         rollID: String,
         rollName: String,
-        shotsPerNegative: Int,
         createdAt: String,
         updatedAt: String,
         runs: [Run],
@@ -129,7 +126,6 @@ struct RollManifest: Sendable, Hashable {
     ) {
         self.rollID = rollID
         self.rollName = rollName
-        self.shotsPerNegative = shotsPerNegative
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.runs = runs
@@ -148,7 +144,6 @@ struct RollManifest: Sendable, Hashable {
         guard
             let rollID = fields["roll_id"]?.stringValue,
             let rollName = fields["roll_name"]?.stringValue,
-            let shotsPerNegative = fields["shots_per_negative"]?.intValue,
             let createdAt = fields["created_at"]?.stringValue,
             let updatedAt = fields["updated_at"]?.stringValue,
             let runFields = fields["runs"]?.arrayValue,
@@ -166,7 +161,6 @@ struct RollManifest: Sendable, Hashable {
 
         self.rollID = rollID
         self.rollName = rollName
-        self.shotsPerNegative = shotsPerNegative
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.runs = runs

@@ -107,14 +107,13 @@ struct ConfigurationModelTests {
         #"{"protocol_version":5,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
 
     /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
-    /// to be read back by `RollManifest` — the `roll info` CLI response
-    /// `roll` is now built from, rather than a file on disk (section 3.1).
-    private static func rollInfoEvent(
-        rollID: String = "roll-1", rollName: String = "Test Roll", shotsPerNegative: Int = 3
-    ) -> String {
+    /// to be read back by `RollManifest`. Nothing in this suite needs it any
+    /// more — the roll record no longer carries a grouping — but the fake
+    /// executable still answers `roll info` like the real CLI does.
+    private static func rollInfoEvent(rollID: String = "roll-1", rollName: String = "Test Roll") -> String {
         let manifest = """
-            {"manifest_format_version":3,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
-            "roll_id":"\(rollID)","roll_name":"\(rollName)","shots_per_negative":\(shotsPerNegative),\
+            {"manifest_format_version":5,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            "roll_id":"\(rollID)","roll_name":"\(rollName)",\
             "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
             "processing_params":{},\
             "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
@@ -169,6 +168,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
+        model.perNegative = 3
         await model.waitForPendingProbes()
 
         #expect(model.groups == [
@@ -203,6 +203,7 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
+        model.perNegative = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
@@ -211,7 +212,7 @@ struct ConfigurationModelTests {
         #expect(model.runEnabled == false)
     }
 
-    @Test("Run is disabled until a roll is selected, and enables once probe succeeds against it")
+    @Test("Run is disabled until a roll is selected and a grouping is chosen")
     func runDisabledUntilRollSelected() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -240,8 +241,50 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         await model.waitForPendingProbes()
 
+        // A validated roll and selection is not enough: the batch's
+        // scans-per-negative must be chosen first.
+        #expect(model.runEnabled == false)
+
+        model.perNegative = 3
+        await model.waitForPendingProbes()
+
         #expect(model.runEnabled == true)
-        #expect(model.roll?.rollID == "roll-1")
+    }
+
+    @Test("Choosing scans-per-negative re-validates the selection")
+    func changingPerNegativeRevalidates() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [
+                Self.started,
+                #"{"protocol_version":5,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
+                Self.finishedSuccess,
+            ],
+            withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = Set(Self.sixFileNames)
+        await model.waitForPendingProbes()
+
+        // No grouping chosen: no groups to preview and nothing validated.
+        #expect(model.groups.isEmpty)
+        #expect(model.isProbing == false)
+
+        model.perNegative = 3
+        await model.waitForPendingProbes()
+
+        #expect(model.groups == [
+            ["n1.NEF", "n2.NEF", "n3.NEF"],
+            ["n4.NEF", "n5.NEF", "n6.NEF"],
+        ])
     }
 
     @Test("A roll-related probe failure blocks Run without touching the selection error")
@@ -266,6 +309,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        model.perNegative = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
@@ -276,7 +320,7 @@ struct ConfigurationModelTests {
 
     // MARK: - Chunk P3-11's additions: rolls and the overlap sheet
 
-    @Test("The run command targets --roll, at the roll's own shots per negative, never --film-date or --out")
+    @Test("The run command targets --roll at the batch's chosen grouping, never --film-date or --out")
     func testRunCommandOmitsFilmDateAndOutputFolder() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -287,8 +331,7 @@ struct ConfigurationModelTests {
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
             withFiles: [Self.started, Self.threeFileGroupNoRoll, Self.finishedSuccess],
-            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess],
-            rollInfo: [Self.rollInfoEvent(shotsPerNegative: 3)]
+            withFilesAndRoll: [Self.started, Self.threeFileGroupNoOverlap, Self.finishedSuccess]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -298,6 +341,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.perNegative = 3
         await model.waitForPendingProbes()
 
         let command = try #require(model.runCommand())
@@ -333,6 +377,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.perNegative = 3
         await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to

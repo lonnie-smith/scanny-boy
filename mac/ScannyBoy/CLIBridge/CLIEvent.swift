@@ -294,7 +294,6 @@ public enum CLICode: Sendable, Hashable {
     case rollExists
     case rollRenameFailed
     case rollInvariantMismatch
-    case perNegativeLocked
     case outputModifiedExternally
     case metadataWriteFailed
     case orphanFileNotRemoved
@@ -347,7 +346,6 @@ public enum CLICode: Sendable, Hashable {
         case "ROLL_EXISTS": self = .rollExists
         case "ROLL_RENAME_FAILED": self = .rollRenameFailed
         case "ROLL_INVARIANT_MISMATCH": self = .rollInvariantMismatch
-        case "PER_NEGATIVE_LOCKED": self = .perNegativeLocked
         case "OUTPUT_MODIFIED_EXTERNALLY": self = .outputModifiedExternally
         case "METADATA_WRITE_FAILED": self = .metadataWriteFailed
         case "ORPHAN_FILE_NOT_REMOVED": self = .orphanFileNotRemoved
@@ -402,7 +400,6 @@ public enum CLICode: Sendable, Hashable {
         case .rollExists: "ROLL_EXISTS"
         case .rollRenameFailed: "ROLL_RENAME_FAILED"
         case .rollInvariantMismatch: "ROLL_INVARIANT_MISMATCH"
-        case .perNegativeLocked: "PER_NEGATIVE_LOCKED"
         case .outputModifiedExternally: "OUTPUT_MODIFIED_EXTERNALLY"
         case .metadataWriteFailed: "METADATA_WRITE_FAILED"
         case .orphanFileNotRemoved: "ORPHAN_FILE_NOT_REMOVED"

@@ -64,7 +64,9 @@ def test_probe_with_input_alone_is_accepted(capsys, tmp_path):
     assert err == ""
 
 
-def test_probe_with_input_alone_warns_and_falls_back_on_missing_timestamp(capsys, tmp_path):
+def test_probe_with_input_alone_warns_and_falls_back_on_missing_timestamp(
+    capsys, tmp_path
+):
     write_fake_nef(tmp_path / "DSC_2.NEF", date_time_original="2026:08:02 12:00:00")
     write_fake_nef(tmp_path / "DSC_10.NEF", date_time_original=None)
 
@@ -72,7 +74,12 @@ def test_probe_with_input_alone_warns_and_falls_back_on_missing_timestamp(capsys
 
     assert status == 0
     events, _err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == ["started", "warning", "probe_result", "finished"]
+    assert [e["event"] for e in events] == [
+        "started",
+        "warning",
+        "probe_result",
+        "finished",
+    ]
     assert events[1]["code"] == "FILENAME_SORT_USED"
     assert events[2]["catalogue"] == ["DSC_2.NEF", "DSC_10.NEF"]
     assert events[2]["warnings"] == ["FILENAME_SORT_USED"]
@@ -91,7 +98,17 @@ def test_probe_with_empty_input_folder_is_no_files(capsys, tmp_path):
 
 @requires_real_samples
 def test_probe_with_files_real_samples_emits_groups(capsys):
-    status = main(["probe", "--input", str(FIXTURES_DIR), "--files", *REAL_SAMPLE_FILES])
+    status = main(
+        [
+            "probe",
+            "--input",
+            str(FIXTURES_DIR),
+            "--files",
+            *REAL_SAMPLE_FILES,
+            "--per-negative",
+            "3",
+        ]
+    )
 
     assert status == 0
     events, _err = _stdout_events(capsys)
@@ -112,6 +129,8 @@ def test_probe_with_out_emits_disk_estimate_and_empty_conflicts(capsys, tmp_path
             str(FIXTURES_DIR),
             "--files",
             *negative_1,
+            "--per-negative",
+            "3",
             "--out",
             str(tmp_path),
         ]
@@ -151,6 +170,8 @@ def test_probe_with_out_same_as_input_reports_structured_error(capsys):
             str(FIXTURES_DIR),
             "--files",
             *negative_1,
+            "--per-negative",
+            "3",
             "--out",
             str(FIXTURES_DIR),
         ]
@@ -172,7 +193,17 @@ def test_probe_with_files_non_contiguous_selection_reports_structured_error(caps
         "_DSC4646.NEF",
     ]
 
-    status = main(["probe", "--input", str(FIXTURES_DIR), "--files", *files])
+    status = main(
+        [
+            "probe",
+            "--input",
+            str(FIXTURES_DIR),
+            "--files",
+            *files,
+            "--per-negative",
+            "3",
+        ]
+    )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
@@ -197,7 +228,14 @@ def test_convert_without_files_is_rejected(capsys):
 
 def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
     status = main(
-        ["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"]
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
     )
 
     assert status == 0
@@ -209,15 +247,24 @@ def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
     assert err == ""
 
 
-def test_roll_init_per_negative_out_of_range_returns_structured_error(capsys, tmp_path):
+def test_roll_init_per_negative_is_no_longer_a_flag(capsys, tmp_path):
     status = main(
-        ["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "0"]
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+            "--per-negative",
+            "3",
+        ]
     )
 
+    # A grouping is each batch's choice, not the roll's — the flag is gone.
     assert status == 2
     events, _err = _stdout_events(capsys)
-    assert len(events) == 1
-    assert events[0]["code"] == "INVALID_PER_NEGATIVE"
+    assert events == []
 
 
 def test_roll_init_collision_reports_roll_exists(capsys, tmp_path):
@@ -230,8 +277,6 @@ def test_roll_init_collision_reports_roll_exists(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "roll-a",
-            "--per-negative",
-            "3",
         ]
     )
     assert status == 0
@@ -242,8 +287,26 @@ def test_roll_init_collision_reports_roll_exists(capsys, tmp_path):
 
 
 def test_roll_list_emits_roll_list_with_every_roll(capsys, tmp_path):
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll B", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll B",
+        ]
+    )
     capsys.readouterr()
 
     status = main(["roll", "list", "--library", str(tmp_path)])
@@ -267,7 +330,16 @@ def test_roll_list_on_empty_library_reports_no_rolls(capsys, tmp_path):
 
 
 def test_roll_info_emits_the_manifest(capsys, tmp_path):
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
     capsys.readouterr()
 
     status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
@@ -302,7 +374,16 @@ def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tm
     """A database migrated by a newer helper must surface as an ordinary
     `error` event, not a stream that stops after `started` — the app's
     "produced no result" hid an Alembic `ResolutionError`."""
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
     capsys.readouterr()
     _set_db_revision("9999")
 
@@ -316,10 +397,21 @@ def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tm
     assert err == ""
 
 
-def test_an_internal_crash_reaches_the_stream_as_an_error_event(capsys, tmp_path, monkeypatch):
+def test_an_internal_crash_reaches_the_stream_as_an_error_event(
+    capsys, tmp_path, monkeypatch
+):
     """Whatever escapes a command must still produce a decodable failure:
     `INTERNAL_ERROR` plus the exception, rather than a bare `started`."""
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
     capsys.readouterr()
 
     def _raise(_roll_dir):
@@ -338,10 +430,21 @@ def test_an_internal_crash_reaches_the_stream_as_an_error_event(capsys, tmp_path
 
 
 def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
     capsys.readouterr()
 
-    status = main(["roll", "rename", "--roll", str(tmp_path / "Roll-A"), "--name", "Roll B"])
+    status = main(
+        ["roll", "rename", "--roll", str(tmp_path / "Roll-A"), "--name", "Roll B"]
+    )
 
     assert status == 0
     events, err = _stdout_events(capsys)
@@ -355,7 +458,9 @@ def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
 
 
 def test_roll_rename_missing_roll_reports_roll_not_found(capsys, tmp_path):
-    status = main(["roll", "rename", "--roll", str(tmp_path / "nope"), "--name", "New Name"])
+    status = main(
+        ["roll", "rename", "--roll", str(tmp_path / "nope"), "--name", "New Name"]
+    )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
@@ -383,7 +488,16 @@ def test_apply_metadata_missing_roll_reports_roll_not_found(capsys, tmp_path):
 
 
 def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
     capsys.readouterr()
 
     status = main(["apply-metadata", "--roll", str(tmp_path / "Roll-A")])
@@ -405,7 +519,9 @@ def test_edit_delete_removes_the_negative_and_its_tiff(capsys, tmp_path):
     assert (roll_dir / output_name).exists()
     capsys.readouterr()
 
-    status = main(["edit", "delete", "--roll", str(roll_dir), "--negative", negative_id])
+    status = main(
+        ["edit", "delete", "--roll", str(roll_dir), "--negative", negative_id]
+    )
 
     assert status == 0
     events, err = _stdout_events(capsys)
@@ -420,7 +536,9 @@ def test_edit_delete_removes_the_negative_and_its_tiff(capsys, tmp_path):
 
 
 def test_edit_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
-    status = main(["edit", "delete", "--roll", str(tmp_path / "nope"), "--negative", "x"])
+    status = main(
+        ["edit", "delete", "--roll", str(tmp_path / "nope"), "--negative", "x"]
+    )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
@@ -503,10 +621,20 @@ def test_per_negative_out_of_range_returns_structured_error(capsys, per_negative
     assert events[0]["code"] == "INVALID_PER_NEGATIVE"
 
 
-def test_per_negative_default_is_three(capsys, tmp_path):
+def test_probe_catalogue_only_needs_no_per_negative(capsys, tmp_path):
+    """Without `--files` there is no selection to group, so `--per-negative`
+    is not required."""
     write_fake_nef(tmp_path / "a.NEF")
     status = main(["probe", "--input", str(tmp_path)])
     assert status == 0
+
+
+def test_probe_with_files_requires_per_negative(capsys):
+    status = main(["probe", "--input", "/tmp/in", "--files", "a.NEF"])
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "--per-negative" in err
 
 
 @pytest.mark.parametrize("jobs", ["0", "13", "-1"])
@@ -544,7 +672,9 @@ def test_selection_at_5000_files_is_not_rejected_by_the_usage_cap(capsys, tmp_pa
     # proceeds to real catalogue validation and fails differently instead
     # (the input folder is empty).
     files = [f"DSC_{i:05d}.NEF" for i in range(MAX_SELECTION_FILES)]
-    status = main(["probe", "--input", str(tmp_path), "--files", *files])
+    status = main(
+        ["probe", "--input", str(tmp_path), "--files", *files, "--per-negative", "3"]
+    )
     assert status == 1
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "error", "finished"]
@@ -578,7 +708,9 @@ def test_stderr_never_contains_machine_readable_events(capsys):
                 json.loads(line)
 
 
-def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately(capsys):
+def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately(
+    capsys,
+):
     # `--input`/`--files` don't need to exist yet for `started` itself to
     # carry a run_id — the run "exists" as soon as convert begins, even if
     # it fails validation a moment later (here: the input folder is
@@ -593,6 +725,8 @@ def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately
             "b.NEF",
             "--out",
             "/tmp/out",
+            "--per-negative",
+            "3",
             "--jobs",
             "2",
             "--overwrite",
@@ -621,6 +755,8 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
             str(FIXTURES_DIR),
             "--files",
             *REAL_SAMPLE_FILES,
+            "--per-negative",
+            "3",
             "--out",
             str(out_dir),
         ]
@@ -660,6 +796,8 @@ def _convert_argv(input_dir, out_dir, files, **extra) -> list[str]:
         str(input_dir),
         "--files",
         *files,
+        "--per-negative",
+        "3",
         "--out",
         str(out_dir),
     ]

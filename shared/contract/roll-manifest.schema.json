@@ -260,7 +260,6 @@
     "scanny_boy_version",
     "roll_id",
     "roll_name",
-    "shots_per_negative",
     "created_at",
     "updated_at",
     "processing_params",
@@ -272,12 +271,11 @@
     "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 4 },
+    "manifest_format_version": { "type": "integer", "const": 5 },
     "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
     "roll_id": { "type": "string" },
     "roll_name": { "type": "string" },
-    "shots_per_negative": { "type": "integer", "minimum": 1, "maximum": 12 },
     "created_at": { "type": "string" },
     "updated_at": { "type": "string" },
     "processing_params": { "type": "object" },

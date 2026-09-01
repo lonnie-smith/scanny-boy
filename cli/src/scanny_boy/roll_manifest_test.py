@@ -74,7 +74,6 @@ def _negative(**overrides) -> NegativeRecord:
 
 def _invariants(**overrides) -> RollInvariants:
     defaults = {
-        "shots_per_negative": 2,
         "processing_params": {"gamma": [1.8, 16]},
         "icc_profile_sha256": _SHA,
         "stitch_params": {"detector": "AKAZE"},
@@ -89,7 +88,6 @@ def _manifest(**overrides) -> RollManifest:
         "scanny_boy_version": "0.3.0",
         "roll_id": _ROLL_ID,
         "roll_name": "Tri-X, Portland 1998",
-        "shots_per_negative": 2,
         "created_at": "2026-08-02T00:00:00Z",
         "updated_at": "2026-08-02T00:00:00Z",
         "processing_params": {"gamma": [1.8, 16]},
@@ -102,7 +100,9 @@ def _manifest(**overrides) -> RollManifest:
     manifest = RollManifest(**defaults)
     if "sources" not in overrides:
         merge_sources(
-            manifest, [_source("_DSC4638.NEF"), _source("_DSC4639.NEF", _OTHER_SHA)], "run-1"
+            manifest,
+            [_source("_DSC4638.NEF"), _source("_DSC4639.NEF", _OTHER_SHA)],
+            "run-1",
         )
     return manifest
 
@@ -111,7 +111,9 @@ def _completed_negative(**overrides) -> NegativeRecord:
     defaults = {
         "status": "completed",
         "sequence": 1,
-        "capture_time": CaptureTime(source_datetime_original="2026-08-02T12:33:41.450000"),
+        "capture_time": CaptureTime(
+            source_datetime_original="2026-08-02T12:33:41.450000"
+        ),
         "output": {
             "name": "_DSC4638.tif",
             "size": 4096,
@@ -120,8 +122,18 @@ def _completed_negative(**overrides) -> NegativeRecord:
             "height": 730,
         },
         "frames": [
-            FrameRecord(name="_DSC4638.tif", rotation_deg=0.0, translation=(0.0, 0.0), gain=(1.0, 1.0, 1.0)),
-            FrameRecord(name="_DSC4639.tif", rotation_deg=1.5, translation=(900.0, 3.0), gain=(1.05, 0.98, 1.02)),
+            FrameRecord(
+                name="_DSC4638.tif",
+                rotation_deg=0.0,
+                translation=(0.0, 0.0),
+                gain=(1.0, 1.0, 1.0),
+            ),
+            FrameRecord(
+                name="_DSC4639.tif",
+                rotation_deg=1.5,
+                translation=(900.0, 3.0),
+                gain=(1.05, 0.98, 1.02),
+            ),
         ],
         "pairs": [
             PairRecord(
@@ -149,14 +161,14 @@ def _completed_negative(**overrides) -> NegativeRecord:
 # --- shape, round trip, and the published contract ------------------------
 
 
-def test_v4_round_trips(tmp_path):
+def test_v5_round_trips(tmp_path):
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 4
+    assert loaded.manifest_format_version == 5
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id
@@ -164,7 +176,9 @@ def test_v4_round_trips(tmp_path):
     assert negative.canvas == (2080, 730)
     assert negative.valid_rect == (10, 10, 2000, 700)
     assert negative.sequence == 1
-    assert negative.capture_time.source_datetime_original == "2026-08-02T12:33:41.450000"
+    assert (
+        negative.capture_time.source_datetime_original == "2026-08-02T12:33:41.450000"
+    )
     assert negative.capture_time.applied_datetime_original is None
     assert loaded.all_expected_outputs() == ["_DSC4638.tif"]
     assert loaded.metadata.roll_capture_date is None
@@ -180,9 +194,7 @@ def test_write_touches_no_files_in_the_roll_folder(tmp_path):
 
 
 def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
-    manifest = new_roll_manifest(
-        roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998", shots_per_negative=3
-    )
+    manifest = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998")
     assert manifest.runs == []
     assert manifest.sources == []
     assert manifest.negatives == []
@@ -247,9 +259,10 @@ def test_estimate_size_is_positive():
 # --- section 3.4: invariants --------------------------------------------
 
 
-def test_check_roll_invariants_rejects_changed_per_negative():
-    with pytest.raises(RollInvariantMismatchError):
-        check_roll_invariants(_manifest(), _invariants(shots_per_negative=3))
+def test_check_roll_invariants_ignores_changed_per_negative():
+    """`shots_per_negative` is each batch's choice, never the roll's, so a
+    run at a different grouping than every earlier run still passes."""
+    check_roll_invariants(_manifest(), _invariants())
 
 
 @pytest.mark.parametrize(
@@ -294,15 +307,11 @@ def test_check_roll_invariants_ignores_changed_input_folder():
 def test_check_roll_invariants_seeds_on_an_unseeded_roll():
     """Section 5.4: an empty roll has no `processing_params` or
     `stitch_params` yet, so the first run establishes them rather than being
-    compared against `{}`. `shots_per_negative` is set at creation and is
-    still compared."""
-    empty = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Fresh", shots_per_negative=2)
+    compared against `{}`."""
+    empty = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Fresh")
 
     check_roll_invariants(empty, _invariants())
     assert empty.processing_params == {}, "check must never mutate"
-
-    with pytest.raises(RollInvariantMismatchError):
-        check_roll_invariants(empty, _invariants(shots_per_negative=4))
 
 
 # --- section 3.4: runs and negative ids ---------------------------------
@@ -460,9 +469,12 @@ def test_adopted_names_are_free_for_allocation():
     )
     manifest = _manifest(negatives=[covered, neighbour])
 
-    assert allocate_output_name(
-        manifest, "_DSC4638.NEF", "run-2-negative-01", adoptable={"_DSC4638.tif"}
-    ) == "_DSC4638.tif"
+    assert (
+        allocate_output_name(
+            manifest, "_DSC4638.NEF", "run-2-negative-01", adoptable={"_DSC4638.tif"}
+        )
+        == "_DSC4638.tif"
+    )
     # Without the adopt set, the name stays claimed as usual.
     assert allocate_output_name(manifest, "_DSC4638.NEF", "run-2-negative-01") == (
         "_DSC4638-2.tif"
@@ -489,9 +501,7 @@ def _roll_with(members_by_id: dict[str, list[str]]) -> RollManifest:
 
 def test_covered_negatives_include_an_exact_member_match():
     manifest = _roll_with({"old-negative-01": ["a.NEF", "b.NEF"]})
-    covered = [
-        n for n in manifest.negatives if set(n.members) <= {"a.NEF", "b.NEF"}
-    ]
+    covered = [n for n in manifest.negatives if set(n.members) <= {"a.NEF", "b.NEF"}]
     assert [n.negative_id for n in covered] == ["old-negative-01"]
 
 

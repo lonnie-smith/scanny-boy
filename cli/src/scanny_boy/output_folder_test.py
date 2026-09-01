@@ -54,7 +54,8 @@ def _manifest(run_id: str = "run-1", **overrides) -> Manifest:
         "icc_profile": {"name": "ProPhoto-v4.icc", "sha256": GOOD_SHA},
         "source_order": ["a.NEF", "b.NEF", "c.NEF"],
         "sources": [
-            SourceRecord(n, f"/input/{n}", 100, 1.0, GOOD_SHA) for n in ["a.NEF", "b.NEF", "c.NEF"]
+            SourceRecord(n, f"/input/{n}", 100, 1.0, GOOD_SHA)
+            for n in ["a.NEF", "b.NEF", "c.NEF"]
         ],
         "curated_metadata": _curated(),
         "groups": [
@@ -64,7 +65,8 @@ def _manifest(run_id: str = "run-1", **overrides) -> Manifest:
                 expected_outputs=["a.tif", "b.tif", "c.tif"],
                 status="completed",
                 outputs=[
-                    OutputRecord(name=f"{n}.tif", size=1, sha256=GOOD_SHA) for n in ["a", "b", "c"]
+                    OutputRecord(name=f"{n}.tif", size=1, sha256=GOOD_SHA)
+                    for n in ["a", "b", "c"]
                 ],
             )
         ],
@@ -165,7 +167,9 @@ def test_plan_rerun_mismatch_propagates(tmp_path):
         plan_rerun(tmp_path, different)
 
 
-def test_plan_rerun_reports_conflicts_for_completed_groups_whose_outputs_exist(tmp_path):
+def test_plan_rerun_reports_conflicts_for_completed_groups_whose_outputs_exist(
+    tmp_path,
+):
     existing = _manifest()
     write_manifest(tmp_path, existing)
     (tmp_path / "a.tif").touch()
@@ -178,7 +182,9 @@ def test_plan_rerun_reports_conflicts_for_completed_groups_whose_outputs_exist(t
     assert plan.stale_outputs == []
 
 
-def test_plan_rerun_treats_non_completed_groups_outputs_as_stale_not_conflicting(tmp_path):
+def test_plan_rerun_treats_non_completed_groups_outputs_as_stale_not_conflicting(
+    tmp_path,
+):
     existing = _manifest(
         groups=[
             GroupRecord(
@@ -208,7 +214,6 @@ def _candidate_from(manifest) -> RollInvariants:
     """The invariants of a rerun with the same parameters the roll already
     established, read back from the roll itself rather than restated."""
     return RollInvariants(
-        shots_per_negative=manifest.shots_per_negative,
         processing_params=manifest.processing_params,
         icc_profile_sha256=manifest.icc_profile.get("sha256", ""),
         stitch_params=manifest.stitch_params,
@@ -267,7 +272,9 @@ def test_plan_rerun_preview_empty_folder_has_no_prior_manifest(tmp_path):
     assert plan.conflicting_outputs == []
 
 
-def test_plan_rerun_preview_nonempty_folder_without_manifest_is_output_not_empty(tmp_path):
+def test_plan_rerun_preview_nonempty_folder_without_manifest_is_output_not_empty(
+    tmp_path,
+):
     (tmp_path / "some-other-file.tif").touch()
 
     with pytest.raises(OutputFolderError) as excinfo:
@@ -275,7 +282,9 @@ def test_plan_rerun_preview_nonempty_folder_without_manifest_is_output_not_empty
     assert excinfo.value.code.value == "OUTPUT_NOT_EMPTY"
 
 
-def test_plan_rerun_preview_reports_conflicts_for_completed_groups_whose_outputs_exist(tmp_path):
+def test_plan_rerun_preview_reports_conflicts_for_completed_groups_whose_outputs_exist(
+    tmp_path,
+):
     existing = _manifest()
     write_manifest(tmp_path, existing)
     (tmp_path / "a.tif").touch()
@@ -305,7 +314,9 @@ def test_plan_rerun_preview_accepts_a_different_film_date(tmp_path):
     (tmp_path / "a.tif").touch()
 
     different_date = _manifest(film_date="2026-09-01")
-    plan = plan_rerun_preview(tmp_path, **_known_fields(different_date))  # must not raise
+    plan = plan_rerun_preview(
+        tmp_path, **_known_fields(different_date)
+    )  # must not raise
 
     assert plan.conflicting_outputs == ["a.tif"]
     with pytest.raises(ManifestMismatchError):

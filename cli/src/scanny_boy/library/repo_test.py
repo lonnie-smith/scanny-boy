@@ -23,7 +23,7 @@ def roll_dir(tmp_path: Path) -> Path:
     directory.mkdir()
     write_roll_manifest(
         directory,
-        new_roll_manifest(roll_id="rid-1", roll_name="Roll", shots_per_negative=2),
+        new_roll_manifest(roll_id="rid-1", roll_name="Roll"),
     )
     return directory
 

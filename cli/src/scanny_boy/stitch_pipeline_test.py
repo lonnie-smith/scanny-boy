@@ -195,9 +195,7 @@ def _make_work_dir(
                 )
             )
 
-        group_status = (
-            group_statuses[negative_index] if group_statuses else "completed"
-        )
+        group_status = group_statuses[negative_index] if group_statuses else "completed"
         groups.append(
             GroupRecord(
                 group_id=f"negative-{negative_index + 1:02d}",
@@ -244,7 +242,7 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
     return out
 
 
-def _roll_dir(tmp_path: Path, name: str = "out", *, shots_per_negative: int = 3) -> Path:
+def _roll_dir(tmp_path: Path, name: str = "out") -> Path:
     """A real, empty roll, written through P3-2's own writer.
 
     Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
@@ -257,7 +255,6 @@ def _roll_dir(tmp_path: Path, name: str = "out", *, shots_per_negative: int = 3)
         new_roll_manifest(
             roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
             roll_name=name,
-            shots_per_negative=shots_per_negative,
         ),
     )
     return roll
@@ -268,7 +265,6 @@ def _roll_invariants(work_dir: Path) -> RollInvariants:
     that drive `plan_rerun` directly."""
     work = load_manifest(work_dir)
     return RollInvariants(
-        shots_per_negative=work.shots_per_negative,
         processing_params=work.processing_params,
         icc_profile_sha256=work.icc_profile["sha256"],
         stitch_params={},
@@ -828,25 +824,21 @@ def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
     assert not [p for p in out_dir.iterdir()]
 
 
-def test_roll_invariant_mismatch_is_rejected(tmp_path):
-    """Section 3.4, replacing Phase 2's film-date mismatch test (section 5.4
-    decision 3): a run whose parameters differ from the roll's invariants is
-    refused, and it is `ROLL_INVARIANT_MISMATCH`, not `MANIFEST_MISMATCH` —
-    that code stays with the Phase 1 work manifest."""
+def test_changed_shots_per_negative_is_accepted(tmp_path):
+    """`shots_per_negative` is each batch's own choice, never the roll's: a
+    work directory stitched at 2 scans per negative publishes into a roll
+    whose earlier batches stitched at 3, with no invariant complaint."""
     work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, shots_per_negative=3)
+    out_dir = _roll_dir(tmp_path)
     assert _stitch(work_dir, out_dir).status == "complete"
 
     (tmp_path / "second").mkdir()
     other = _make_work_dir(tmp_path / "second", shots_per_negative=2)
 
-    with pytest.raises(StitchError) as exc_info:
-        _stitch(other, out_dir, run_id="stitch-run-2")
-    assert exc_info.value.code is Code.ROLL_INVARIANT_MISMATCH
+    assert _stitch(other, out_dir, run_id="stitch-run-2").status == "complete"
 
-    # Refused before anything was published or recorded.
     roll = load_roll_manifest(out_dir)
-    assert [r.run_id for r in roll.runs] == ["stitch-run"]
+    assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
 
 
 def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
@@ -932,7 +924,9 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     roll = load_roll_manifest(out_dir)
     target = roll.negatives[0]
 
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", negatives=[target.negative_id])
+    second = _stitch(
+        work_dir, out_dir, run_id="stitch-run-2", negatives=[target.negative_id]
+    )
 
     assert second.status == "complete"
     assert len(second.published) == 1
@@ -949,7 +943,9 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
 _REAPPLY_INTENDED = "2026-01-15T09:30:00.250000"
 
 
-def _apply_manually(out_dir: Path, negative_id: str, intended: str = _REAPPLY_INTENDED) -> None:
+def _apply_manually(
+    out_dir: Path, negative_id: str, intended: str = _REAPPLY_INTENDED
+) -> None:
     """Sets `intended_datetime_original` and drives it through the real
     `apply-metadata` path, so `applied_datetime_original` is genuinely
     non-null before a re-stitch, per section 4."""
@@ -1023,7 +1019,9 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
     _apply_manually(out_dir, old_id)
 
     def _failing_rewrite(tiff_path, intended):
-        raise ApplyMetadataFailure(Code.METADATA_WRITE_FAILED, "simulated rewrite failure")
+        raise ApplyMetadataFailure(
+            Code.METADATA_WRITE_FAILED, "simulated rewrite failure"
+        )
 
     monkeypatch.setattr(
         "scanny_boy.stitch_pipeline.rewrite_date_time_original", _failing_rewrite

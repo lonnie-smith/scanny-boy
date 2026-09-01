@@ -5,10 +5,11 @@ import SwiftUI
 /// time Apply control, moved out of the Edit tab when that tab became the
 /// filmstrip/preview editor.
 ///
-/// The roll capture date, each negative's date override, and
-/// `shots_per_negative` are shown read-only — no CLI command writes them yet
-/// (sections 3.5/3.7/3.8 describe what these fields mean but not how the app
-/// is meant to set them).
+/// The roll capture date and each negative's date override are shown
+/// read-only — no CLI command writes them yet (sections 3.5/3.7/3.8
+/// describe what these fields mean but not how the app is meant to set
+/// them). The roll has no shots-per-negative to show: grouping is each
+/// stitch batch's own choice.
 struct MetadataStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
@@ -35,7 +36,6 @@ struct MetadataStageView: View {
         Section("Roll") {
             if let roll = edit.roll {
                 LabeledContent("Name", value: roll.rollName)
-                LabeledContent("Shots per negative", value: String(roll.shotsPerNegative))
                 LabeledContent("Capture date", value: roll.metadata.rollCaptureDate ?? "Not set")
             }
             if let rollURL = edit.rollURL {

@@ -208,7 +208,7 @@ struct RollLibraryTests {
             defaults: Self.isolatedDefaults()
         )
 
-        let result = await library.createRoll(name: "New Roll", shotsPerNegative: 3)
+        let result = await library.createRoll(name: "New Roll")
         guard case .success(let roll) = result else {
             Issue.record("expected a created roll, got \(result)")
             return

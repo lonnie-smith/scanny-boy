@@ -73,9 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
     roll_init = roll_subparsers.add_parser("init", help="Create a new roll.")
     roll_init.add_argument("--library", required=True, metavar="DIR")
     roll_init.add_argument("--name", required=True, metavar="NAME")
-    roll_init.add_argument(
-        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
-    )
 
     roll_list = roll_subparsers.add_parser(
         "list", help="Scan the library and list its rolls."
@@ -99,7 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--out", metavar="DIR")
     probe.add_argument("--roll", metavar="DIR")
     probe.add_argument(
-        "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
+        "--per-negative",
+        type=int,
+        default=None,
+        metavar="N",
+        dest="per_negative",
+        help="required with --files: the scans stitched into each negative",
     )
 
     convert = subparsers.add_parser(
@@ -109,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--files", nargs="+", required=True, metavar="FILE")
     convert.add_argument("--out", required=True, metavar="DIR")
     convert.add_argument(
-        "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
+        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
     )
     convert.add_argument("--jobs", type=int, metavar="N")
     convert.add_argument("--overwrite", action="store_true")
@@ -132,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--files", nargs="+", required=True, metavar="FILE")
     run.add_argument("--roll", required=True, metavar="DIR")
     run.add_argument(
-        "--per-negative", type=int, default=3, metavar="N", dest="per_negative"
+        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
     )
     run.add_argument("--jobs", type=int, metavar="N")
     run.add_argument("--work", metavar="DIR")
@@ -141,7 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     apply_metadata = subparsers.add_parser(
-        "apply-metadata", help="Write dirty negatives' intended capture times into their TIFFs."
+        "apply-metadata",
+        help="Write dirty negatives' intended capture times into their TIFFs.",
     )
     apply_metadata.add_argument("--roll", required=True, metavar="DIR")
 
@@ -268,7 +271,7 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     if args.roll_command == "init":
         writer.write(Started(command="roll init"))
         try:
-            roll_dir = create_roll(Path(args.library), args.name, args.per_negative)
+            roll_dir = create_roll(Path(args.library), args.name)
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
@@ -487,8 +490,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     # `stitch` takes no --per-negative: it reads the grouping from the work
-    # manifest, which already recorded it.
+    # manifest, which already recorded it. `probe` needs one only when it
+    # has a selection to group — a catalogue-only probe has no negatives.
     per_negative = getattr(args, "per_negative", None)
+    if args.command == "probe" and files is not None and per_negative is None:
+        return _usage_error(parser, "probe --files requires --per-negative")
     if per_negative is not None and not (
         MIN_PER_NEGATIVE <= per_negative <= MAX_PER_NEGATIVE
     ):

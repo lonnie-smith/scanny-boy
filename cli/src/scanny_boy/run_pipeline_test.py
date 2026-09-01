@@ -51,7 +51,9 @@ _OVERLAP = 0.35
 _PER_NEGATIVE = 3
 
 
-def _install_fast_registerable_decode(monkeypatch, files: list[str], *, seed: int = 1) -> None:
+def _install_fast_registerable_decode(
+    monkeypatch, files: list[str], *, seed: int = 1
+) -> None:
     """Cuts one film-like scene into `len(files)` overlapping, mildly
     rotated frames -- real enough for AKAZE to register -- and serves them
     from `raw_decode.decode_raw` keyed by filename, in place of a real RAW
@@ -96,13 +98,14 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
         new_roll_manifest(
             roll_id="00000000-0000-4000-8000-00000000000a",
             roll_name=name,
-            shots_per_negative=_PER_NEGATIVE,
         ),
     )
     return out
 
 
-def _run(tmp_path, monkeypatch, *, files, events=None, cancel=None, work_dir=None, **kwargs):
+def _run(
+    tmp_path, monkeypatch, *, files, events=None, cancel=None, work_dir=None, **kwargs
+):
     _install_fast_registerable_decode(monkeypatch, files)
     defaults = {
         "run_id": "run-run",
@@ -123,7 +126,15 @@ def _run(tmp_path, monkeypatch, *, files, events=None, cancel=None, work_dir=Non
 
 
 def _run_into_roll(
-    roll_dir, monkeypatch, files, *, run_id, events=None, decode_files=None, seed=1, **kwargs
+    roll_dir,
+    monkeypatch,
+    files,
+    *,
+    run_id,
+    events=None,
+    decode_files=None,
+    seed=1,
+    **kwargs,
 ):
     """Like `_run`, but into a roll the caller already created -- for tests
     that run more than once against the same roll (the replacement rule can
@@ -165,7 +176,9 @@ def _publish_and_rerun(tmp_path, monkeypatch, *, seed=2):
     first_run_sha = load_roll_manifest(roll_dir).negatives[0].output["sha256"]
 
     events: list = []
-    _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events, seed=seed)
+    _run_into_roll(
+        roll_dir, monkeypatch, NEGATIVE_1, run_id="run-2", events=events, seed=seed
+    )
     return roll_dir, old_negative_id, first_run_sha, events
 
 
@@ -315,7 +328,9 @@ def test_cancellation_during_convert_skips_stitch_entirely(tmp_path, monkeypatch
     assert not [
         e for e in events if e.__class__.__name__ in ("NegativeDone", "NegativeFailed")
     ]
-    assert not [e for e in events if isinstance(e, Progress) and e.stage is Stage.STITCH]
+    assert not [
+        e for e in events if isinstance(e, Progress) and e.stage is Stage.STITCH
+    ]
 
 
 @requires_real_samples
@@ -577,7 +592,9 @@ def test_merged_coverage_removes_the_other_record_and_file(tmp_path, monkeypatch
     (roll_dir / f"{Path(first).stem}.tif").write_bytes(b"stale adopted result")
 
     events: list = []
-    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events)
+    outcome = _run_into_roll(
+        roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events
+    )
 
     assert outcome.status == "complete"
     roll = load_roll_manifest(roll_dir)
@@ -669,7 +686,9 @@ def test_failed_delete_of_removed_covered_tiff_warns_but_does_not_fail_the_run(
     monkeypatch.setattr(Path, "unlink", _failing_unlink)
 
     events: list = []
-    outcome = _run_into_roll(roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events)
+    outcome = _run_into_roll(
+        roll_dir, monkeypatch, NEGATIVE_1, run_id="run-1", events=events
+    )
 
     assert outcome.status == "complete"
     assert stray_path.exists()  # the delete failed; the stray file remains

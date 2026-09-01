@@ -40,7 +40,9 @@ from scanny_boy.stitch_pipeline_test import (
 def _run_probe_collecting_warnings(*args, **kwargs):
     warnings: list[tuple[Code, str]] = []
     outcome = run_probe(
-        *args, on_warning=lambda code, message: warnings.append((code, message)), **kwargs
+        *args,
+        on_warning=lambda code, message: warnings.append((code, message)),
+        **kwargs,
     )
     return outcome, warnings
 
@@ -214,7 +216,9 @@ def test_probe_with_out_dir_same_as_input_is_rejected():
 @requires_real_samples
 def test_probe_with_out_dir_not_writable_is_rejected(tmp_path):
     with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(FIXTURES_DIR, list(NEGATIVE_1), 3, out_dir=tmp_path / "does-not-exist")
+        run_probe(
+            FIXTURES_DIR, list(NEGATIVE_1), 3, out_dir=tmp_path / "does-not-exist"
+        )
 
     assert excinfo.value.code == Code.OUTPUT_NOT_WRITABLE
 
@@ -388,7 +392,7 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
         ),
     )
 
-    roll = _roll_dir(tmp_path, "roll", shots_per_negative=len(groups[0]))
+    roll = _roll_dir(tmp_path, "roll")
     outcome = _stitch(work_dir, roll, run_id=run_id)
     assert outcome.status == "complete"
     assert outcome.failed == []
@@ -449,8 +453,8 @@ def test_roll_overlap_detects_regrouped_sources(tmp_path):
     """Section 3.5: a selection whose grouping straddles the roll's negative
     boundaries — here the tail of negative 1 plus the head of negative 2 in
     one prospective group — collides with both, and each entry names only
-    the sources the two actually share. `shots_per_negative` cannot change
-    (section 3.4), so this straddle is how a regroup reaches the roll."""
+    the sources the two actually share. Overlap is by content, not grouping:
+    this straddle is how a regroup reaches the roll."""
     roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
 
     outcome = run_probe(
@@ -460,7 +464,10 @@ def test_roll_overlap_detects_regrouped_sources(tmp_path):
     assert [entry.group_index for entry in outcome.roll_overlap] == [0, 0]
     by_id = {entry.negative_id: entry for entry in outcome.roll_overlap}
     assert sorted(by_id) == ["stitch-negative-01", "stitch-negative-02"]
-    assert by_id["stitch-negative-01"].overlapping_sources == ["_DSC4639.NEF", "_DSC4640.NEF"]
+    assert by_id["stitch-negative-01"].overlapping_sources == [
+        "_DSC4639.NEF",
+        "_DSC4640.NEF",
+    ]
     assert by_id["stitch-negative-01"].expected_output == "_DSC4638.tif"
     assert by_id["stitch-negative-02"].overlapping_sources == ["_DSC4644.NEF"]
     assert by_id["stitch-negative-02"].expected_output == "_DSC4644.tif"
@@ -468,12 +475,11 @@ def test_roll_overlap_detects_regrouped_sources(tmp_path):
 
 
 @requires_real_samples
-def test_probe_rejects_changed_shots_per_negative(tmp_path):
-    """Section 3.5: `--roll` validates the roll invariants of section 3.4 —
-    `shots_per_negative` was fixed at roll creation and cannot change."""
+def test_probe_accepts_changed_shots_per_negative(tmp_path):
+    """`shots_per_negative` is each batch's choice, never the roll's, so a
+    selection grouped differently from every earlier run still validates."""
     roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
 
-    with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
+    outcome = run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
 
-    assert excinfo.value.code == Code.ROLL_INVARIANT_MISMATCH
+    assert outcome.catalogue

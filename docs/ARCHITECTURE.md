@@ -35,7 +35,10 @@ Three vocabulary terms carry the whole design:
 | **negative** | One physical film frame = one group of N consecutive frames = one published TIFF. |
 | **roll** | A named folder holding many negatives, added to across many runs over time. |
 
-`shots_per_negative` (1–12, typically 3) is fixed per roll at creation.
+`shots_per_negative` (1–12, typically 3) is each stitch batch's own choice —
+required on `convert`/`run`, recorded in the work manifest, and never stored
+on the roll, so one roll can hold negatives stitched from different scan
+counts.
 
 ---
 
@@ -109,15 +112,15 @@ stream rather than guess.
 ## 4. The CLI's command surface
 
 ```
-roll init   --library DIR --name NAME --per-negative N
+roll init   --library DIR --name NAME
 roll list   --library DIR
 roll info   --roll DIR
 roll rename --roll DIR --name NAME
 
 probe   --input DIR [--files ...] [--per-negative N] [--out DIR] [--roll DIR]
-convert --input DIR --files ... --out DIR [--per-negative N] [--jobs N] [--overwrite]
+convert --input DIR --files ... --out DIR --per-negative N [--jobs N] [--overwrite]
 stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--negatives ID ...]
-run     --input DIR --files ... --roll DIR [--per-negative N] [--jobs N]
+run     --input DIR --files ... --roll DIR --per-negative N [--jobs N]
         [--work DIR] [--skip-sources FILE ...]
 apply-metadata --roll DIR
 edit rotate --roll DIR --negative ID --direction cw|ccw
@@ -504,10 +507,11 @@ negative by taking over its identity, not by publishing a rival.
   `NSWorkspace.recycle` in Swift, with no CLI involvement at all; the
   database rows survive, so the next `roll list` reports the vanished
   folder as `unreadable`.
-- **Roll invariants** (`RollInvariants`): `shots_per_negative`,
-  `processing_params`, the ICC profile hash, `stitch_params`. Everything else
-  — input folder, source list, order, grouping — is *expected* to differ
-  between runs and is **never compared**. A roll with no runs yet is unseeded:
+- **Roll invariants** (`RollInvariants`): `processing_params`, the ICC
+  profile hash, `stitch_params`. Everything else — input folder, source
+  list, order, grouping, and the batch's `shots_per_negative` — is
+  *expected* to differ between runs and is **never compared**. A roll with
+  no runs yet is unseeded:
   the last three are established by the first run.
 - **Replacement happens in place, at publish.** A group whose members cover
   existing negatives **adopts** one of them (deterministically: the one whose
@@ -624,10 +628,11 @@ nothing keys off them.
 ## 11. Concurrency, memory, disk
 
 - `ThreadPoolExecutor` for RAW work — rawpy's LibRaw build releases the GIL.
-  Default workers `min(shots_per_negative, os.process_cpu_count() or 1, 4)`;
-  the cap of 4 exists because neither CPU-count API distinguishes P-cores from
-  E-cores on Apple silicon. `--jobs 1` uses a fully serial path that never
-  constructs an executor.
+  Default workers `min(shots_per_negative, os.process_cpu_count() or 1, 4)`,
+  where `shots_per_negative` is the batch's own value; the cap of 4 exists
+  because neither CPU-count API distinguishes P-cores from E-cores on Apple
+  silicon. `--jobs 1` uses a fully serial path that never constructs an
+  executor.
 - **640 MiB per worker**, and the total must not exceed half of physical RAM.
   The computed default is silently *reduced* to fit; an explicit `--jobs` that
   exceeds it is *rejected* with `INSUFFICIENT_MEMORY`, because the user asked
@@ -792,12 +797,7 @@ where the README or `DECISIONS.md` describes intent that is not implemented.
    set-date`, by analogy with `roll rename`), a call to `intended_times()`
    to populate the field, and Metadata-tab controls.
 
-3. **`PER_NEGATIVE_LOCKED` is declared but never raised.** The code exists in
-   `events.py`, `CONTRACT.md`, `schema.json`, and `CLIEvent.swift`, but no
-   Python code path emits it — because nothing can change an existing roll's
-   `shots_per_negative` in the first place. `roll init` sets it once.
-
-4. **`rebate_deviation_px` is always `null`.** See §8.1.
+3. **`rebate_deviation_px` is always `null`.** See §8.1.
 
 5. **The app can never keep a work directory.** `CLICommand.run` accepts a
    `work:` parameter, but `ConfigurationModel.runCommand()` never supplies one,

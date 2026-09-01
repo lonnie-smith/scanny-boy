@@ -54,13 +54,14 @@ Phase n:
   (no tombstone, no supersede-with-null-replacement to reuse), this needs
   its own real delete mechanism — a `roll delete-negative` command is the
   likely shape; the Edit tab is where it would attach.
-* Setting a roll's capture date or a per-negative date override, and editing
-  an unlocked roll's `shots_per_negative`, from the app. Phase 3's Edit tab
-  (P3-12) shows all three read-only: no CLI command writes
-  `metadata.roll_capture_date`, a negative's `capture_time.date_override`,
-  or an existing roll's `shots_per_negative` — see Phase 3 plan §5.6. A
-  `roll set-date` command, by analogy with `roll rename` (§5.5), is the
-  likely shape of the fix.
+* Setting a roll's capture date or a per-negative date override from the
+  app. Phase 3's Edit tab (P3-12) shows both read-only: no CLI command
+  writes `metadata.roll_capture_date` or a negative's
+  `capture_time.date_override` — see Phase 3 plan §5.6. A `roll set-date`
+  command, by analogy with `roll rename` (§5.5), is the likely shape of the
+  fix. (An app-level `shots_per_negative` editor was retired entirely: the
+  grouping is each stitch batch's own choice, picked on Add Scans, and the
+  roll record no longer stores it.)
 
 Phase n: 
 Negative inversion

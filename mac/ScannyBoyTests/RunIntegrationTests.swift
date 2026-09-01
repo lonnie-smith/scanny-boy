@@ -65,14 +65,11 @@ struct RunIntegrationTests {
     /// `roll init` for real, through the CLI — every scenario below targets a
     /// roll it actually created, exactly as the app does (section 3.1: Swift
     /// never invents a roll folder of its own).
-    private static func createRoll(perNegative: Int = 3) async throws -> URL {
+    private static func createRoll() async throws -> URL {
         let library = try Self.makeTemporaryDirectory()
         let runner = try Self.runner()
         let session = runner.session(
-            for: .rollInit(
-                library: library, name: "Test Roll \(UUID().uuidString.prefix(8))",
-                perNegative: perNegative
-            )
+            for: .rollInit(library: library, name: "Test Roll \(UUID().uuidString.prefix(8))")
         )
         for await output in try await session.start() {
             if case .event(let event) = output, event.kind == .rollCreated, let path = event.rollPath {
@@ -118,6 +115,9 @@ struct RunIntegrationTests {
         await model.waitForPendingProbes()
         model.rollURL = roll
         model.selectedFiles = Set(select)
+        // These scenarios test run/stitch behaviour, not the Add Scans
+        // grouping picker, so they choose the grouping up front.
+        model.perNegative = 3
         await model.waitForPendingProbes()
         return model
     }

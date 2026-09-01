@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Section 3.10: creating a roll asks for a name and a shots-per-negative,
-/// and nothing else — no location, since every roll lives under the library
-/// base (section 3.1).
+/// Section 3.10: creating a roll asks for a name and nothing else — no
+/// location, since every roll lives under the library base (section 3.1),
+/// and no scans-per-negative, since that is each stitch batch's choice,
+/// selected on the Add Scans stage before every run.
 struct NewRollSheet: View {
     let library: RollLibrary
     /// Called with the newly created roll, right before the sheet dismisses.
@@ -11,7 +12,6 @@ struct NewRollSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
-    @State private var shotsPerNegative = 3
     @State private var isCreating = false
     @State private var errorMessage: String?
 
@@ -22,8 +22,6 @@ struct NewRollSheet: View {
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("newRollNameField")
-
-            Stepper("Shots per negative: \(shotsPerNegative)", value: $shotsPerNegative, in: 1...12)
 
             if let errorMessage {
                 Text(errorMessage)
@@ -55,7 +53,7 @@ struct NewRollSheet: View {
         isCreating = true
         errorMessage = nil
         Task {
-            let result = await library.createRoll(name: name, shotsPerNegative: shotsPerNegative)
+            let result = await library.createRoll(name: name)
             isCreating = false
             switch result {
             case .success(let roll):

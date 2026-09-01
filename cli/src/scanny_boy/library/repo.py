@@ -96,7 +96,6 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
             session.add(roll)
         roll.folder_path = folder
         roll.roll_name = manifest.roll_name
-        roll.shots_per_negative = manifest.shots_per_negative
         roll.scanny_boy_version = manifest.scanny_boy_version
         roll.created_at = manifest.created_at
         roll.updated_at = manifest.updated_at
@@ -186,7 +185,9 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                         else {"width": negative.canvas[0], "height": negative.canvas[1]}
                     ),
                     valid_rect=(
-                        None if negative.valid_rect is None else list(negative.valid_rect)
+                        None
+                        if negative.valid_rect is None
+                        else list(negative.valid_rect)
                     ),
                     fill_color=list(negative.fill_color),
                     rebate_deviation_px=negative.rebate_deviation_px,
@@ -206,7 +207,9 @@ def roll_registered(roll_dir: Path) -> bool:
     with _session() as session:
         return (
             session.scalar(
-                select(RollRow.folder_path).where(RollRow.folder_path == _folder_key(roll_dir))
+                select(RollRow.folder_path).where(
+                    RollRow.folder_path == _folder_key(roll_dir)
+                )
             )
             is not None
         )
@@ -228,9 +231,7 @@ def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
                 .select_from(NegativeRow)
                 .where(NegativeRow.roll_id == roll.roll_id)
             )
-            listing.append(
-                (roll.folder_path, roll.roll_id, roll.roll_name, count or 0)
-            )
+            listing.append((roll.folder_path, roll.roll_id, roll.roll_name, count or 0))
         listing.sort(key=lambda entry: entry[0])
         return listing
 
@@ -256,7 +257,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
             )
 
         runs = session.scalars(
-            select(RunRow).where(RunRow.roll_id == roll.roll_id).order_by(RunRow.ordinal)
+            select(RunRow)
+            .where(RunRow.roll_id == roll.roll_id)
+            .order_by(RunRow.ordinal)
         ).all()
         sources = session.scalars(
             select(SourceRow)
@@ -273,7 +276,6 @@ def load_roll(roll_dir: Path) -> RollManifest:
             scanny_boy_version=roll.scanny_boy_version,
             roll_id=roll.roll_id,
             roll_name=roll.roll_name,
-            shots_per_negative=roll.shots_per_negative,
             created_at=roll.created_at,
             updated_at=roll.updated_at,
             processing_params=roll.processing_params,
@@ -347,7 +349,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     ],
                     global_rms_px=n.global_rms_px,
                     canvas=(
-                        None if n.canvas is None else (n.canvas["width"], n.canvas["height"])
+                        None
+                        if n.canvas is None
+                        else (n.canvas["width"], n.canvas["height"])
                     ),
                     valid_rect=None if n.valid_rect is None else tuple(n.valid_rect),
                     rebate_deviation_px=n.rebate_deviation_px,
@@ -378,7 +382,9 @@ def _negative_row(session: Session, roll_dir: Path, negative_id: str) -> Negativ
     return negative
 
 
-def append_edit(roll_dir: Path, negative_id: str, op: str, params: dict[str, Any]) -> dict:
+def append_edit(
+    roll_dir: Path, negative_id: str, op: str, params: dict[str, Any]
+) -> dict:
     """Appends one op to the negative's ordered log and returns it as a
     dict: `{id, negative_id, position, op, params, created_at}`."""
     from scanny_boy.roll_manifest import _now_iso

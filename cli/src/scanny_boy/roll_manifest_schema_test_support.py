@@ -6,10 +6,11 @@ driving the test from the schema file itself, independent of any hand-written
 structural checks a production module may add, so a drift between the two
 would still be caught here.
 
-Phase 3 section 0: there is no migration, so this validates format version 4
-and nothing else. The v2 rules P3-2 carried through the contract chunk are
-gone with the supersession-tombstone removal; v4 added per-frame solved
-photometric gains and per-pair pre-gain overlap MAD.
+Phase 3 section 0: there is no migration, so this validates the current
+format version and nothing else. The v2 rules P3-2 carried through the
+contract chunk are gone with the supersession-tombstone removal; v4 added
+per-frame solved photometric gains and per-pair pre-gain overlap MAD; v5
+dropped the roll-level `shots_per_negative`.
 """
 
 from __future__ import annotations
@@ -20,7 +21,10 @@ from pathlib import Path
 from typing import Any
 
 _SCHEMA_PATH = (
-    Path(__file__).resolve().parents[3] / "shared" / "contract" / "roll-manifest.schema.json"
+    Path(__file__).resolve().parents[3]
+    / "shared"
+    / "contract"
+    / "roll-manifest.schema.json"
 )
 
 
@@ -28,22 +32,20 @@ def load_roll_manifest_schema() -> dict[str, Any]:
     return json.loads(_SCHEMA_PATH.read_text())
 
 
-def empty_v4_manifest(
+def empty_v5_manifest(
     *,
     roll_id: str = "00000000-0000-4000-8000-000000000001",
     roll_name: str = "Test Roll",
-    shots_per_negative: int = 3,
 ) -> dict[str, Any]:
-    """Minimal empty v4 manifest matching §3.3."""
+    """Minimal empty v5 manifest matching §3.3."""
     now = "2026-08-30T12:00:00+00:00"
     sha = "a" * 64
     return {
-        "manifest_format_version": 4,
+        "manifest_format_version": 5,
         "manifest_kind": "roll",
         "scanny_boy_version": "0.3.0",
         "roll_id": roll_id,
         "roll_name": roll_name,
-        "shots_per_negative": shots_per_negative,
         "created_at": now,
         "updated_at": now,
         "processing_params": {"gamma": [1.8, 16]},
@@ -61,7 +63,7 @@ def _require_keys(data: dict[str, Any], keys: list[str]) -> None:
     assert not missing, f"missing required fields: {missing}"
 
 
-def _assert_matches_v4_roll_manifest_schema(
+def _assert_matches_v5_roll_manifest_schema(
     data: dict[str, Any], schema: dict[str, Any]
 ) -> None:
     defs = schema["definitions"]
@@ -105,5 +107,7 @@ def _assert_matches_v4_roll_manifest_schema(
         assert len(negative["fill_color"]) == 3
 
 
-def assert_matches_roll_manifest_schema(data: dict[str, Any], schema: dict[str, Any]) -> None:
-    _assert_matches_v4_roll_manifest_schema(data, schema)
+def assert_matches_roll_manifest_schema(
+    data: dict[str, Any], schema: dict[str, Any]
+) -> None:
+    _assert_matches_v5_roll_manifest_schema(data, schema)
