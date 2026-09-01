@@ -22,7 +22,10 @@ only the current state.
 
 Turn a strip of 35mm film negatives, scanned frame-by-frame on a Nikon Z f as
 overlapping RAW captures, into one stitched 16-bit RGB TIFF per negative,
-collected in a durable named folder called a **roll**.
+collected in a durable named folder called a **roll**. Published negatives
+can then be edited **non-destructively** (rotation ops recorded in a library
+database; pixels transformed only at export) and exported with their edits
+applied.
 
 Three vocabulary terms carry the whole design:
 
@@ -75,12 +78,13 @@ cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
 **Python owns every decision. Swift owns no logic at all.**
 
 Swift never sorts files, never groups negatives, never judges an output
-folder, never parses a manifest, never enumerates the library. Everything it
+folder, never parses a manifest, never enumerates the library, never reads
+the library database. Everything it
 displays comes back from a CLI call. This is not stylistic — it is the
 constraint that keeps validation from drifting between two implementations,
 and it is enforced by convention in review, not by a compiler. If you find
-yourself about to add a `sort`, a `filter`-that-decides, or a JSON decode of
-`scanny-boy-roll.json` in Swift, that is the wrong place.
+yourself about to add a `sort`, a `filter`-that-decides, or a SQLite read in
+Swift, that is the wrong place.
 
 The two legal ways Swift learns anything:
 
@@ -94,8 +98,11 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **3** ([`events.py`](../cli/src/scanny_boy/events.py)).
-A client that only understands 2 must reject the stream rather than guess.
+`PROTOCOL_VERSION` is **5** ([`events.py`](../cli/src/scanny_boy/events.py)).
+Version 5 moved each roll's durable record from the roll folder's
+`scanny-boy-roll.json` into a library SQLite database and added `edit rotate`
+/ `export`. A client that only understands an earlier version must reject the
+stream rather than guess.
 
 ---
 
@@ -113,6 +120,8 @@ stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--nega
 run     --input DIR --files ... --roll DIR [--per-negative N] [--jobs N]
         [--work DIR] [--skip-sources FILE ...]
 apply-metadata --roll DIR
+edit rotate --roll DIR --negative ID --direction cw|ccw
+export      --roll DIR --output DIR [--negatives ID ...]
 ```
 
 [`cli.py`](../cli/src/scanny_boy/cli.py) is pure argparse plumbing plus
@@ -128,10 +137,19 @@ cancellation. It never spawns a subprocess of itself.
 
 `convert` and `stitch` remain independently usable; `convert` is the only
 command that still writes to a plain `--out` work directory rather than a
-roll. `stitch --overwrite` is accepted and **deliberately ignored** — a roll
-is additive and a stitch never replaces a published file
+roll. `stitch --overwrite` is accepted and **deliberately ignored** — a
+stitch replaces a published file only by adopting the covered negative in
+place, which needs no flag
 ([`stitch_pipeline.py`](../cli/src/scanny_boy/stitch_pipeline.py),
 `run_stitch` docstring).
+
+`edit rotate` appends a rotation op to the negative's ordered ops log in the
+library database and regenerates the CLI-rendered preview — it **never
+touches the published TIFF**. `export` is the moment edits become pixels: it
+replays each negative's ops log over the published TIFF and writes the
+result into a separate output folder, never opening the roll's own files
+for writing. Pixels only for now: export carries no EXIF and no ICC profile
+yet (§14).
 
 ---
 
@@ -165,18 +183,32 @@ to bottom.
 | `tiff_exif.py` | Pass 2: nested EXIF directory via `tifftools`, addressed by numeric tag code. |
 | `stitched_tiff.py` | The stitched variant of the same two-pass write. |
 | `manifest.py` | `scanny-boy-manifest.json` (work directory, format version 1). |
-| `roll_manifest.py` | `scanny-boy-roll.json` (roll folder, format version 2). |
-| `roll_folder.py` | The library: slugging, collision suffixes, create, rename, one-level scan. |
+| `roll_manifest.py` | One roll's durable record (format version 4) — the dataclasses, invariants, and naming rules; persisted in the library database, not a file. |
+| `roll_folder.py` | The library folder: slugging, collision suffixes, create, rename, `roll list` from the database. |
 | `roll_sequence.py` | A roll's display order and rank-based applied timestamps. Pure functions. |
 | `output_folder.py` | Folder validation, rerun planning, recovery cleanup — parameterised over which manifest kind it reads. |
+
+**The library database**
+| Module | Role |
+| --- | --- |
+| `library/db.py` | The one SQLite store (`~/Library/Application Support/ScannyBoy/library.db`; `SCANNY_BOY_LIBRARY_DB` relocates it): engine cache, WAL/busy-timeout PRAGMAs, Alembic migrations applied programmatically on every open. |
+| `library/models.py` | The SQLAlchemy rows: roll, run, source, negative, edit. |
+| `library/repo.py` | `RollManifest` dataclasses to and from rows. `save_roll` upserts the whole manifest keyed by `roll_id`; children are diffed by key. Load and save are the only two shapes the rest of the program sees. |
+
+**Editing and export**
+| Module | Role |
+| --- | --- |
+| `edits.py` | `edit rotate`: append a rotation op, regenerate the preview, emit `edit_recorded`. Never touches the published TIFF. |
+| `previews.py` | Small lossless PNG previews of published TIFFs, under Application Support beside the database; rewritten whenever an edit changes the rendering. |
+| `exporter.py` | `export`: replay a negative's ops log over its published TIFF into an output folder. Pixels only — no EXIF/ICC carry-over yet. |
 
 **Stitching**
 | Module | Role |
 | --- | --- |
 | `detection.py` | Build the small 8-bit greyscale detection image (downscale, percentile-normalise, optional CLAHE). |
 | `registration.py` | Feature detect, match, RANSAC, the rigid fit, the per-pair gates. |
-| `layout.py` | The global least-squares solve, connectivity check, canvas size, valid rect. |
-| `composite.py` | Warp, feather-blend in linear light, overlap MAD, encode. |
+| `layout.py` | The global least-squares solve, connectivity check, canvas size, valid rect — and the photometric counterpart `solve_gains`. |
+| `composite.py` | Warp, solve and apply per-frame photometric gains, feather-blend in linear light, overlap MAD, encode. |
 
 **Orchestration**
 | Module | Role |
@@ -209,12 +241,13 @@ run --input IN --files ... --roll ROLL
   │    │
   │    ├─ run_stitch (stitch_pipeline.py) ──────────── stage "stitch"
   │    │    verify every intermediate's size + SHA-256
-  │    │    → check roll invariants, append this run to the roll manifest
+  │    │    → check roll invariants, append this run to the roll record
   │    │    → SOLVE every negative's layout first (canvas sizes needed for disk check)
   │    │    → disk check on the roll's volume
-  │    │    → for each negative: composite → gate on overlap MAD → stage → publish
-  │    │
-  │    ├─ _supersede_this_run: mark covered negatives superseded, delete their TIFFs
+  │    │    → for each negative: composite (warp → solve gains → blend)
+  │    │       → gate on the post-gain overlap MAD → stage → publish
+  │    │       (covered negatives are adopted in place or removed here —
+  │    │        stitch_pipeline's replacement rule; nothing after the fact)
   │    └─ rmtree(work dir)
   │
   └─ finished
@@ -307,16 +340,13 @@ with a nonlinear optimiser.
 
 **Blending** is a linear feather in linear light: each frame's weight is a
 distance transform of its own eroded validity mask, and the output is the
-weighted average wherever any frame contributes. This is safe *because*
-exposure and white balance are assumed locked across all the raw files
-that are stitched together to make each negative — there is no exposure
-mismatch to hide, only misregistration, which a feather tolerates
-gracefully. Exposure properties are *not* required to match across a
-whole roll; only the frames sharing one negative are assumed uniform.
-It is deliberate but **provisional**; a hard midline seam (preserves grain,
-shows misregistration as a line) and a multi-band Laplacian blend (hides
-misalignment, softens grain, much heavier) were both considered and set
-aside.
+weighted average wherever any frame contributes. Before the blend,
+per-frame per-channel **photometric gains** (§8.3) reconcile lamp drift
+between frames, so the feather only ever has to tolerate misregistration.
+The feather is deliberate but **provisional**; a hard midline seam (preserves
+grain, shows misregistration as a line) and a multi-band Laplacian blend
+(hides misalignment, softens grain, much heavier) were both considered and
+set aside.
 
 Warp details that are load-bearing: `INTER_LANCZOS4` on `float32`, clamped to
 `>= 0` immediately after (measured −0.088 undershoot); each frame warps into
@@ -327,7 +357,7 @@ under-erodes exactly the diagonal edges a rotated frame has); `cv2.erode`
 uses `BORDER_CONSTANT/0` so a frame's own corners actually erode.
 
 Uncovered pixels get `FILL_COLOR`, currently black, recorded in the roll
-manifest so a file is interpretable without knowing which build wrote it.
+record so a file is interpretable without knowing which build wrote it.
 
 ### 8.1 Quality gates — where the numbers live
 
@@ -341,32 +371,38 @@ else. Production code must never re-declare one.
 | `MIN_PAIR_INLIERS`, `MIN_PAIR_INLIER_RATIO`, `MAX_PAIR_RMS_PX` | `registration.py` | `40`, `0.25`, `6.0` |
 | `SCALE_DRIFT_WARN`, `SCALE_DRIFT_FAIL` | `registration.py` | `0.005`, `0.01` |
 | `MAX_GLOBAL_RMS_PX`, `STRIP_SPREAD_RATIO` | `layout.py` | `12.0`, `0.15` |
-| `MAX_OVERLAP_MAD`, `MASK_ERODE_PX`, `MEMORY_SAFETY_FACTOR` | `composite.py` | `0.20`, `5`, `3.5` |
+| `MAX_OVERLAP_MAD`, `MASK_ERODE_PX`, `MEMORY_SAFETY_FACTOR` | `composite.py` | `0.20` (post-gain residual — see §8.3), `5`, `3.5` |
+| `MIN_GAIN_OVERLAP_PX`, `GAIN_DRIFT_WARN` | `composite.py` | `1000`, `0.05` — **both provisional and unmeasured** (§8.3) |
 | `MAX_CANVAS_DIMENSION`, `MAX_STITCHED_BYTES` | `composite.py` | `30_000` (warn), `3.5 GiB` (fail) |
 
-All were measured from real scans and approved at "user gate C". Pixel
+Most were measured from real scans and approved at "user gate C"; the two
+gain constants are the exception (§8.3). Pixel
 thresholds are **full-resolution** pixels — points are converted out of
 detection space with `detection.to_full_resolution` before RANSAC.
 
 `stitch_pipeline._stitch_params()` serialises this whole table into the roll
-manifest, so a roll records every threshold that was in force when it was
+record, so a roll records every threshold that was in force when it was
 built — and because `stitch_params` is a roll invariant, changing any
 constant here will make existing rolls reject new runs with
 `ROLL_INVARIANT_MISMATCH`. That is intended, but know it before you tune.
 
 **Overlap MAD is the honest gate.** Inlier counts and reprojection residuals
 measure whether the solver was pleased with itself; overlap MAD measures
-whether the pixels actually line up. It can only be computed once both frames
-are warped, so it is checked *after* compositing, in `_composite_and_publish`
-— a negative can therefore fail late, having done all the expensive work.
+whether the pixels actually line up. Since gain compensation now runs
+before the measurement, the gate value is the **post-gain residual** — a
+registration check, not a lamp-drift check — and it is computed *after*
+compositing, in `_composite_and_publish`, so a negative can still fail
+late, having done all the expensive work. The pre-gain MAD is recorded
+beside it in the roll record as the diagnostic that explains why a gain
+was applied.
 
 **`rebate_deviation_px` is specified, recorded, and never implemented.** The
-field exists in the contract and the manifest and is always `null`. Chunk P2-1
+field exists in the contract and the roll record and is always `null`. Chunk P2-1
 found a generic straight-edge finder cannot reliably find the same physical
 rebate edge across frames. `layout.py` deliberately does not define a
 `REBATE_DEVIATION_WARN`. A purpose-built detector is on the punchlist.
 
-### 8.2 The CLAHE fallback (newest feature — not in `DECISIONS.md`)
+### 8.2 The CLAHE fallback (not in `DECISIONS.md`)
 
 `USE_CLAHE` is `False`, so the first registration pass runs on the plain
 detection image. If that pass fails a negative with
@@ -386,44 +422,109 @@ Two details that matter if you touch this:
 Recorded per negative as `used_clahe_fallback`; the roll-level policy is
 recorded as `clahe_fallback_enabled` in `stitch_params`.
 
+### 8.3 Photometric gain compensation (the newest feature)
+
+Lamp drift between a negative's frames is reconciled by per-frame,
+per-channel **gains**, solved before the blend and before the MAD gate.
+
+**The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py),
+`solve_gains`) is the geometric twin of the layout solve: per channel, one
+linear least-squares in log space — one row per usable pair
+(`g_b − g_a = log(mean_a/mean_b)` over the pair's shared valid area,
+weighted by `sqrt(shared_count)`, since a mean over N pixels has variance
+∝ 1/N) plus one all-ones anchor row with rhs 0, so the solved gains have
+**geometric mean 1**: no frame's lamp level is privileged, and the
+worst-case gain excursion into the encode clamp is minimized. Names are
+sorted internally, so compositing a layout forward or reversed produces
+bitwise-identical gains. Rows whose channel means are degenerate are
+dropped, not errored; a frame surviving in no row keeps gain 1.0. Like the
+layout solve, this is `np.linalg.lstsq` on a deliberately linear system —
+the "no SciPy / no nonlinear optimiser" rule applies here too.
+
+**The application** ([`composite.py`](../cli/src/scanny_boy/composite.py))
+restructures compositing into two passes. Nothing is accumulated during the
+warp pass: the photometric stats need any pair's two frames side by side,
+so **every warped frame stays resident** (bounding-box sized, cheap next to
+the two canvas-sized accumulators — `estimate_peak_bytes` takes the frame
+count for exactly this reason). Then: gather pairwise per-channel means and
+the pre-gain overlap MAD, solve the gains, apply them in place to the
+warped **linear float32** buffers — never to encoded uint16, never to the
+canvas — measure the post-gain residual, and only then accumulate and free
+each frame.
+
+Consequences to know about:
+
+- **`MAX_OVERLAP_MAD = 0.20` now gates the post-gain residual**, but the
+  value was measured against *uncorrected* overlaps, so applied to the new
+  semantics it is far looser than a healthy capture's residual. It — along
+  with `MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` — is pending
+  re-measurement at the next user gate ([`punchlist.md`](punchlist.md)).
+  The two gain constants are the only unmeasured thresholds in the
+  pipeline; `MIN_GAIN_OVERLAP_PX` borrows NegPy's measured 1000 px floor,
+  and `GAIN_DRIFT_WARN` was chosen as the smallest bound that never fires
+  on healthy synthetic fixtures.
+- A solved gain deviating more than `GAIN_DRIFT_WARN` from unity warns
+  `STITCH_GAIN_DRIFT`, by the same pattern as scale drift: it means
+  something is wrong with the *capture*, not the solver.
+- All three values are serialised into `stitch_params` (with
+  `max_overlap_mad_semantics: "post-gain-residual"` naming the change), so
+  they are roll invariants — changing them makes existing rolls reject new
+  runs with `ROLL_INVARIANT_MISMATCH`.
+
 ---
 
-## 9. The roll: additive, never in place
+## 9. The roll: durable, additive, with replacement in place
 
 This is the Phase 3 break, and the thing most likely to surprise you if you
-carry Phase 2 intuitions.
+carry Phase 2 intuitions. Since PR #58 there is a second break layered on
+it: **each roll's durable record lives in one SQLite library database, not
+in a file inside the roll folder.** And since PRs #52/#53, the original
+"never in place" rule became "adopt in place": a rerun replaces a covered
+negative by taking over its identity, not by publishing a rival.
 
 - One library folder (`~/Pictures/Scanny Boy` by default, relocatable in
-  Settings) holds every roll as a **direct child**. The filesystem is the only
-  source of truth — no index, no registry. `roll list` scans one level deep
-  for `scanny-boy-roll.json`.
+  Settings) holds every roll as a **direct child**. The folder holds only
+  the published TIFFs (plus `.work/` during a run); the record — roll,
+  runs, sources, negatives, edits — lives in the library database at
+  `~/Library/Application Support/ScannyBoy/library.db` (§5's `library/`
+  package; `SCANNY_BOY_LIBRARY_DB` relocates it). A roll "exists" exactly
+  when it is registered there. `roll list` reports registered rolls from
+  the database, and a registered roll whose folder has vanished (unmounted
+  drive, manual delete) is reported `unreadable` with `ROLL_NOT_FOUND`
+  rather than silently disappearing.
 - `roll_id` is a UUID and never appears in a path. `roll_name` is free text;
   the folder name is a slug of it (NFC, `[A-Za-z0-9._-]`, whitespace runs →
-  single `-`, 60 chars, case-insensitive collision suffixes). Rename moves the
-  folder **first**, then writes `roll_name` — so a failed move leaves both
-  untouched. Delete is `NSWorkspace.recycle` in Swift, with no CLI
-  involvement at all.
+  single `-`, 60 chars, case-insensitive collision suffixes). Rename moves
+  the folder **first**, then saves the new name and location to the
+  database — so a failed move leaves both untouched. Delete is
+  `NSWorkspace.recycle` in Swift, with no CLI involvement at all; the
+  database rows survive, so the next `roll list` reports the vanished
+  folder as `unreadable`.
 - **Roll invariants** (`RollInvariants`): `shots_per_negative`,
   `processing_params`, the ICC profile hash, `stitch_params`. Everything else
   — input folder, source list, order, grouping — is *expected* to differ
   between runs and is **never compared**. A roll with no runs yet is unseeded:
   the last three are established by the first run.
-- **Replacement is additive, never in place.** A run may include sources
-  already in the roll. The new negative publishes under its own identity;
-  once it completes, every existing non-superseded negative whose members are
-  a **subset** of the new one's is superseded — `superseded_by` set,
-  `sequence` cleared, its TIFF deleted. The manifest is written *before* any
-  file is touched, so a crash leaves an orphan file rather than a dangling
-  record. Superseded negatives are never removed from the manifest and their
-  output names stay claimed forever, so a name is never reissued.
-  (`roll_manifest.mark_superseded` + `run_pipeline._supersede_this_run`.)
-  The subset test means an exact rescan supersedes its predecessor and a
-  merge-regrouping supersedes its parts; a *split* regrouping supersedes
-  nothing.
+- **Replacement happens in place, at publish.** A group whose members cover
+  existing negatives **adopts** one of them (deterministically: the one whose
+  first member matches the group's first member, else the first) — it keeps
+  its `negative_id` and output name, and this run's identity, members,
+  frames, output, and status replace the record's as the group publishes.
+  Any other covered negative is **removed outright** at publish: record
+  first, manifest write after, TIFF unlink best-effort (a failed delete
+  warns `ORPHAN_FILE_NOT_REMOVED` and never fails the run) — so a crash
+  leaves an orphan file, never a dangling record. A group covering nothing
+  gets a fresh id and name exactly as before.
+  (`stitch_pipeline._append_this_run` + `_remove_covered_negatives`;
+  `allocate_output_name`'s `adoptable` set keeps the removed names free.)
+  The subset test means an exact rescan adopts its predecessor's identity
+  and a merge-regrouping adopts one part and removes the rest; a *split*
+  regrouping adopts nothing.
 - `negative_id` is `<run.short_id>-negative-NN`, where `short_id` is the
   first 6 hex chars of the run UUID, lengthening to 8, 10, then the whole
   UUID on collision within the roll. Assigned once by `append_run` and never
-  recomputed, so ids are stable for the life of the roll.
+  recomputed, so ids are stable for the life of the roll — which is also
+  what keeps a negative's edit history attached across a re-stitch.
 - Output names: the stem of the group's first member in canonical order, plus
   `.tif`, with `-2`, `-3`, … on collision across runs.
   `roll_manifest.allocate_output_name` is the **only** place a published name
@@ -432,35 +533,39 @@ carry Phase 2 intuitions.
   recognised as the same source and keeps the `run_id` that first contributed
   it.
 
-There is **no migration** from the Phase 2 (`manifest_format_version: 1`) roll
-manifest. A v1 folder is not importable and is reported
-`ROLL_MANIFEST_UNSUPPORTED`.
+There is **no migration** from the JSON-manifest era — neither from the
+Phase 2 (`manifest_format_version: 1`) file nor from any later one, because
+the app never shipped. `load_roll_manifest` reads the database only; a
+folder holding a `scanny-boy-roll.json` is not a roll unless it is
+registered.
 
 ### 9.1 Sequence and metadata
 
 - A roll's negatives are ordered by the **real capture time** of each
   negative's first member, across every run, ascending. Ties break by run
-  index then first filename. Superseded negatives are excluded entirely
-  (`sequence: null`), so a replacement takes its predecessor's position rather
-  than shifting later negatives.
+  index then first filename. Only negatives that are actually published —
+  `completed` with a real capture time — can hold a position
+  (`roll_sequence._sequenceable`); `pending` and `failed` negatives are
+  unsequenced. Since replacement is in place (§9), a re-scan of the same
+  frames keeps the position its capture time dictates.
 - `sequence` is recomputed on **every** `write_roll_manifest` call — the
   manifest writer mutates the manifest it is given. `roll_sequence.py` is the
   only computation of it.
 - The applied timestamp is **rank-based**: `12:00:00 + (rank − 1)` seconds on
   the roll's capture date, or a negative's own date override, ranked within
   that date's negatives.
-- **Intent lives in the manifest; the TIFF is the artefact.** A negative is
+- **Intent lives in the record; the TIFF is the artefact.** A negative is
   *dirty* when `intended_datetime_original ≠ applied_datetime_original`.
-  `apply-metadata` handles every dirty, completed, non-superseded negative:
-  verify the published TIFF against the manifest's recorded size and hash
+  `apply-metadata` handles every dirty, completed, published negative:
+  verify the published TIFF against the record's recorded size and hash
   (skip with `OUTPUT_MODIFIED_EXTERNALLY` rather than rewrite a file the roll
   no longer recognises), rewrite only the nested EXIF
   `DateTimeOriginal`/`SubSecTimeOriginal` via `tifftools` into a sibling temp
   file, verify the temp reads back correctly, rename over the original,
-  re-hash, update the manifest. **No pixel data is ever read or written.**
+  re-hash, update the record. **No pixel data is ever read or written.**
 - A re-stitch of a negative that already had metadata applied re-applies it
   automatically, without asking (`_maybe_reapply_metadata`), as the last step
-  before the manifest write. A failed re-apply leaves the negative `completed`
+  before the record write. A failed re-apply leaves the negative `completed`
   but dirty — recoverable with Apply — and never fails the stitch.
 
 ---
@@ -473,7 +578,7 @@ The same rule at both stages: **the unit fails alone.**
   next group continues; the run ends `partial`. Nothing is ever published
   half a group.
 - A negative that cannot be stitched is recorded `failed` in the roll
-  manifest, reported via `negative_failed`, and the run continues.
+  record, reported via `negative_failed`, and the run continues.
 - A **cancelled** unit is *abandoned, not failed* — no `group_failed` /
   `negative_failed` event. A rerun will simply do it again.
 
@@ -504,7 +609,8 @@ registration/layout/composite), `RunFailure` (run, unifying both),
 `ProbeFailure`, `ApplyMetadataFailure`, `RollFolderError`,
 `OutputFolderError`, `BadManifestError`, `RollManifestUnsupportedError`,
 `RollInvariantMismatchError`, `MemoryBudgetError`, `DiskCheckError`,
-`IccProfileError`, `CancelledError`. **The `code` is the machine interface;
+`IccProfileError`, `CancelledError`, `EditFailure` (edit),
+`ExportFailure` (export). **The `code` is the machine interface;
 message text is not.** `stitch_pipeline._friendly_failure_message` deliberately
 rewrites technical messages into user-facing sentences precisely because
 nothing keys off them.
@@ -531,9 +637,11 @@ nothing keys off them.
   by `MEMORY_SAFETY_FACTOR = 3.5`. That factor is measured, not padding:
   NumPy does not return freed arenas to the OS, so resident memory tracks the
   *sum* of successive allocation phases rather than their peak, and real
-  three-frame stitches measured 2.5–3.4× a naive estimate. Re-measure with
-  `scripts/measure-registration.py` whenever the composite's allocation
-  pattern changes.
+  three-frame stitches measured 2.5–3.4× a naive estimate. The estimate
+  formula itself changed with gain compensation — every warped frame now
+  stays resident until the gain solve is done (§8.3), and
+  `estimate_peak_bytes` takes the frame count for exactly that — so the
+  factor is overdue for re-measurement with `scripts/measure-registration.py`.
 - **Disk** is estimated conservatively (compression assumed to save nothing,
   20% margin) and checked per volume. For `run`, the work directory and the
   roll may be on different volumes; each is checked separately against its own
@@ -543,23 +651,32 @@ nothing keys off them.
 
 ## 12. Manifests
 
-Both use identical discipline: write to a temp file, `fsync`, rename into
-place, then `fsync` the directory — so a reader never sees a half-written
-manifest. Both validate **structurally by hand**, not against the JSON Schema
+The **work manifest** (`scanny-boy-manifest.json`, format version 1) keeps
+the original discipline: write to a temp file, `fsync`, rename into place,
+then `fsync` the directory — so a reader never sees a half-written manifest
+— and it validates **structurally by hand**, not against the JSON Schema
 file, because *the packaged CLI must never load a file outside
-`cli/src/scanny_boy/` at runtime.* The schema files in `shared/contract/` are
-authoritative for the shape and are read **only by tests**
-(`manifest_schema_test_support.py`, `roll_manifest_schema_test_support.py`,
-`schema_test_support.py`). If you add a field, you must update the dataclass,
-`to_dict`, the hand-written validator, the `_from_dict` reader, and the schema
-file.
+`cli/src/scanny_boy/` at runtime.*
 
-| | `scanny-boy-manifest.json` | `scanny-boy-roll.json` |
+The **roll record** no longer exists as a file at all: it is rows in the
+library database (§9), written only by this program. The hand-written
+structural validator that guarded against corrupt or foreign JSON is gone
+with the file; what survives on load is the output-path containment check,
+which is cheap and protects the pipelines from a tampered row.
+
+The schema files in `shared/contract/` are authoritative for the shape and
+are read **only by tests** (`manifest_schema_test_support.py`,
+`roll_manifest_schema_test_support.py`, `schema_test_support.py`). If you
+add a field to the roll record, you must update the dataclass, `to_dict`,
+`library/models.py` + `library/repo.py` (rows to dataclasses and back), and
+the schema file.
+
+| | `scanny-boy-manifest.json` | the library database |
 | --- | --- | --- |
-| Lives in | the work directory | the roll folder |
-| Format version | 1 | 2 |
+| Lives in | the work directory | `~/Library/Application Support/ScannyBoy/library.db` |
+| Format version | 1 | 4 |
 | Scope | one `convert` run | many runs, forever |
-| Records | sources + hashes, canonical order, groups, expected/completed outputs + hashes, `processing_params` | roll identity, invariants, every run, every source by hash, every negative's members / layout / all quality metrics / canvas / valid rect / fill colour / capture times / output hash |
+| Records | sources + hashes, canonical order, groups, expected/completed outputs + hashes, `processing_params` | roll identity, invariants, every run, every source by hash, every negative's members / layout / per-frame gains / all quality metrics (pre- and post-gain MAD) / canvas / valid rect / fill colour / capture times / output hash, and each negative's ordered **edits ops log** |
 
 The work manifest still carries a `film_date` field, now filled with the
 calendar date of the selection's first *real* capture time. It is vestigial —
@@ -572,9 +689,11 @@ valid rect exists for a future crop tool.
 
 `output_folder.py` is parameterised over which manifest kind it reads via
 `FolderRules` (`CONVERT_RULES` / `ROLL_RULES`) rather than being duplicated.
-Under `ROLL_RULES` a published negative is neither a conflict nor a stale
-output — a nonempty roll folder is normal, not `OUTPUT_NOT_EMPTY`. Only
-recovery cleanup of never-finished negatives still applies.
+Under `ROLL_RULES` registration — a database check, not a filename check —
+decides whether the folder holds a record, and a registered roll folder may
+be genuinely empty, since its record lives in the database. A published
+negative is neither a conflict nor a stale output; only recovery cleanup of
+never-finished negatives still applies.
 
 ---
 
@@ -588,11 +707,14 @@ RootView                    resolves the CLI helper once; shows why not if it ca
    ├─ RollSidebar           every roll from one `roll list` call
    └─ workspace (per roll)
       ├─ Add Scans          input folder → contiguous selection → Run
-      └─ EditStageView      negatives in sequence, thumbnails, metrics, Apply
+      ├─ EditStageView      filmstrip of CLI-rendered previews, rotate cw/ccw
+      ├─ MetadataStageView  roll info (read-only) + capture-time Apply
+      └─ ExportStageView    choose an output folder → one `export` invocation
 ```
 
-One active run **app-wide** disables the sidebar, the tab picker, and both
-stages' controls.
+One active run **app-wide** disables the sidebar, the tab picker, and every
+stage's controls; the Export button additionally waits for any in-flight
+export — one helper invocation at a time.
 
 **Models** (all `@MainActor @Observable`):
 
@@ -600,8 +722,9 @@ stages' controls.
 | --- | --- |
 | `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
 | `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is the roll's own, read-only. |
-| `EditModel` | Edit tab state, from `roll info`. Derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
+| `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
+| `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
 
 **CLI bridge** (`CLIBridge/`): `CLILocator` finds the helper
 (`Contents/Helpers/ScannyBoyCLI.app`; a Debug build additionally honours an
@@ -626,9 +749,11 @@ user-requested cancellation is treated as cancelled whether the helper exits
 `ThumbnailLoader` (an actor, app-wide singleton) renders catalogue previews:
 QuickLook first (same machinery as the Finder, with a system-wide on-disk
 cache), ImageIO reading the NEF's embedded JPEG preview as fallback. Neither
-path demosaics, which is why a folder of 40MP negatives fills in quickly. The
-Edit tab uses a QuickLook-skipping path tuned for large published TIFFs
-instead.
+path demosaics, which is why a folder of 40MP negatives fills in quickly.
+The Edit tab displays neither of those: with edits in the picture, "what the
+negative looks like" is **derived state** and only the CLI may derive it, so
+the filmstrip loads the CLI-rendered PNG named by each negative's
+`preview_path` (`previews.py`), re-fetching whenever rotation changes.
 
 `ScannyBoyUITests` is **excluded from the test scheme**. Under CI's XCUITest
 session the window opens but the `NavigationSplitView`'s content never
@@ -642,24 +767,26 @@ These are all real, all verified in the current code, and several are places
 where the README or `DECISIONS.md` describes intent that is not implemented.
 
 1. **The overlap sheet does not exist.** `probe --roll` correctly computes and
-   emits `roll_overlap`, but nothing in Swift decodes it — the string
-   `roll_overlap` does not appear anywhere under `mac/ScannyBoy/`.
+   emits `roll_overlap`, but nothing in Swift decodes it — the only
+   occurrence of the string under `mac/ScannyBoy/` is a comment in
+   `CLIRunner.swift`.
    `ConfigurationModel.runCommand()` passes `skipSources: []`
-   unconditionally, so **every run replaces (supersedes) whatever it
-   overlaps**, with no Skip/Replace choice offered. The README and
+   unconditionally, so **every run adopts whatever it overlaps in place**,
+   with no Skip/Replace choice offered. The README and
    `DECISIONS.md` both describe the sheet as shipped; it is not. The CLI side
    is ready for it.
 
 2. **Nothing ever sets `intended_datetime_original`.**
    `roll_sequence.intended_times()` is fully implemented and tested but is
    **never called by production code**. `metadata.roll_capture_date` and a
-   negative's `capture_time.date_override` have no CLI write path at all.
-   Consequently no negative is ever dirty in normal use, and the Edit tab's
-   Apply button is effectively unreachable — the only thing that ever writes
-   an intended time is `_maybe_reapply_metadata`, propagating an
-   already-applied value across a re-stitch. Wiring this up means: a CLI
-   command (`roll set-date`, by analogy with `roll rename`), a call to
-   `intended_times()` to populate the field, and Edit-tab controls.
+   negative's `capture_time.date_override` have no CLI write path at all
+   (the Metadata tab shows all three read-only). Consequently no negative
+   is ever dirty in normal use, and the Metadata tab's Apply button is
+   effectively unreachable — the only thing that ever writes an intended
+   time is `_maybe_reapply_metadata`, propagating an already-applied value
+   across a re-stitch. Wiring this up means: a CLI command (`roll
+   set-date`, by analogy with `roll rename`), a call to `intended_times()`
+   to populate the field, and Metadata-tab controls.
 
 3. **`PER_NEGATIVE_LOCKED` is declared but never raised.** The code exists in
    `events.py`, `CONTRACT.md`, `schema.json`, and `CLIEvent.swift`, but no
@@ -677,6 +804,13 @@ where the README or `DECISIONS.md` describes intent that is not implemented.
 
 6. **`stitch --overwrite` is accepted and ignored** — intentionally, but it is
    still dead surface area.
+
+7. **`export` is pixels-only.** The exported TIFF carries no EXIF and no
+   embedded ICC profile — `exporter._write_export` is a plain
+   `tifffile.imwrite` of the replayed pixels. EXIF/ICC carry-over from the
+   published TIFF is the deliberately-deferred next step, not half-done.
+   Rotation is also the **only** edit operation: the ops-log shape (`op` +
+   `params`) is general, but `rotate` is the single op implemented.
 
 ---
 
@@ -718,6 +852,10 @@ negative outright, and the rebate detector. **Negative inversion is Phase 4**
   `shared/contract/CONTRACT.md`, `shared/contract/schema.json`, and
   `mac/ScannyBoy/CLIBridge/CLIEvent.swift` (which has an exhaustive
   string↔case mapping, tested for completeness in `CLIEventTests.swift`).
+- The library database migrates itself to head on every engine open
+  (`library/db.py`), so schema changes are a new Alembic revision under
+  `library/migrations/versions/`. Tests point `SCANNY_BOY_LIBRARY_DB` at a
+  per-test file.
 - Work is planned chunk-by-chunk; each chunk is one branch and one PR merged
   in order, `main` is protected, and CI must pass. See
   [`CONTRIBUTING.md`](../CONTRIBUTING.md).
