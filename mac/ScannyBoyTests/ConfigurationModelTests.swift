@@ -70,41 +70,41 @@ struct ConfigurationModelTests {
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
 
-    private static let started = #"{"protocol_version":5,"event":"started","command":"probe"}"#
+    private static let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
     private static let finishedSuccess =
-        #"{"protocol_version":5,"event":"finished","status":"success","exit_status":0}"#
+        TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#)
     private static let finishedFailed =
-        #"{"protocol_version":5,"event":"finished","status":"failed","exit_status":1}"#
+        TestEvents.line(#"{"event":"finished","status":"failed","exit_status":1}"#)
 
     private static func errorEvent(code: String) -> String {
-        #"{"protocol_version":5,"event":"error","code":"\#(code)","message":"synthetic failure"}"#
+        TestEvents.line(#"{"event":"error","code":"\#(code)","message":"synthetic failure"}"#)
     }
 
     // Deliberately not alphabetical: proves the model displays `probe`'s
     // order verbatim instead of re-sorting (section 3.3: "Swift always uses
     // the order it is given and never sorts files itself").
     private static let catalogueUnsorted =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#)
 
     private static let catalogueABC =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#)
 
     // Raw string literals do not support backslash line-continuation (that
     // is a plain-string-literal escape only), so each of these stays on one
     // line rather than risk a stray literal backslash inside the JSON.
     private static let threeFileGroupNoRoll =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]]}"#)
 
     private static let threeFileGroupNoOverlap =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#)
 
     private static let threeFileGroupWithOverlap =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#)
 
     private static let sixFileNames = ["n1.NEF", "n2.NEF", "n3.NEF", "n4.NEF", "n5.NEF", "n6.NEF"]
 
     private static let sixFileTwoGroups =
-        #"{"protocol_version":5,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#
+        TestEvents.line(#"{"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#)
 
     /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
     /// to be read back by `RollManifest` — the `roll info` CLI response
@@ -121,7 +121,7 @@ struct ConfigurationModelTests {
             "stitch_params":{},"runs":[],"sources":[],"negatives":[],\
             "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        return #"{"protocol_version":5,"event":"roll_info","manifest":\#(manifest)}"#
+        return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
 
     // MARK: - Model state follows probe results
@@ -157,7 +157,7 @@ struct ConfigurationModelTests {
             in: directory,
             catalogueOnly: [
                 Self.started,
-                #"{"protocol_version":5,"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#,
+                TestEvents.line(#"{"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[]}"#),
                 Self.finishedSuccess,
             ],
             withFiles: [Self.started, Self.sixFileTwoGroups, Self.finishedSuccess]
