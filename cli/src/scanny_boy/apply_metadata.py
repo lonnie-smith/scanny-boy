@@ -24,12 +24,10 @@ from tifftools.constants import Tag
 
 from scanny_boy import hashing
 from scanny_boy.events import Code, MetadataApplied, MetadataSkipped
+from scanny_boy.library import repo
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     NegativeRecord,
-    RollManifestUnsupportedError,
-    current_roll_manifest_path,
     load_roll_manifest,
     write_roll_manifest,
 )
@@ -138,14 +136,14 @@ def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
     itself can't be read; a single negative's problem is reported through
     `MetadataSkipped` and never stops the rest (section 3.8: "never fail
     the whole roll for one")."""
-    if not current_roll_manifest_path(roll_dir).exists():
+    if not repo.roll_registered(roll_dir):
         raise ApplyMetadataFailure(
             Code.ROLL_NOT_FOUND,
-            f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}; create the roll first",
+            f"{roll_dir} is not a registered roll; create the roll first",
         )
     try:
         roll = load_roll_manifest(roll_dir)
-    except (BadManifestError, RollManifestUnsupportedError) as exc:
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
         raise ApplyMetadataFailure(exc.code, exc.message) from exc
 
     dirty = [n for n in roll.negatives if _is_dirty(n)]

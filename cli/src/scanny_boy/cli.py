@@ -9,8 +9,10 @@ from pathlib import Path
 
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import sigterm_cancellation
+from scanny_boy.edits import EditFailure, run_edit_rotate
 from scanny_boy.events import (
     Code,
+    EditRecorded,
     ErrorEvent,
     EventWriter,
     Finished,
@@ -24,6 +26,8 @@ from scanny_boy.events import (
     Started,
     WarningEvent,
 )
+from scanny_boy.exporter import ExportFailure, run_export
+from scanny_boy.library import repo
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
@@ -34,11 +38,7 @@ from scanny_boy.roll_folder import (
     rename_roll,
     scan_library,
 )
-from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
-    RollManifestUnsupportedError,
-    load_roll_manifest,
-)
+from scanny_boy.roll_manifest import load_roll_manifest
 from scanny_boy.run_pipeline import RunFailure, run_full
 from scanny_boy.stitch_pipeline import run_stitch
 
@@ -142,6 +142,31 @@ def build_parser() -> argparse.ArgumentParser:
         "apply-metadata", help="Write dirty negatives' intended capture times into their TIFFs."
     )
     apply_metadata.add_argument("--roll", required=True, metavar="DIR")
+
+    edit = subparsers.add_parser(
+        "edit", help="Record nondestructive edits against a roll's negatives."
+    )
+    edit_subparsers = edit.add_subparsers(dest="edit_command", required=True)
+
+    edit_rotate = edit_subparsers.add_parser(
+        "rotate", help="Record a 90-degree rotation of one negative."
+    )
+    edit_rotate.add_argument("--roll", required=True, metavar="DIR")
+    edit_rotate.add_argument("--negative", required=True, metavar="ID")
+    edit_rotate.add_argument(
+        "--direction",
+        required=True,
+        choices=["cw", "ccw"],
+        help="cw rotates the image 90 degrees clockwise, ccw counter-clockwise",
+    )
+
+    export = subparsers.add_parser(
+        "export",
+        help="Write TIFFs with each negative's edits applied into an output folder.",
+    )
+    export.add_argument("--roll", required=True, metavar="DIR")
+    export.add_argument("--output", required=True, metavar="DIR")
+    export.add_argument("--negatives", nargs="+", metavar="ID", default=[])
 
     return parser
 
@@ -263,11 +288,11 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     if args.roll_command == "rename":
         writer.write(Started(command="roll rename"))
         roll_dir = Path(args.roll)
-        if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+        if not repo.roll_registered(roll_dir):
             writer.write(
                 ErrorEvent(
                     code=Code.ROLL_NOT_FOUND,
-                    message=f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}",
+                    message=f"{roll_dir} is not a registered roll",
                 )
             )
             writer.write(Finished(status="failed", exit_status=1))
@@ -292,24 +317,76 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     # info
     writer.write(Started(command="roll info"))
     roll_dir = Path(args.roll)
-    if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+    if not repo.roll_registered(roll_dir):
         writer.write(
             ErrorEvent(
                 code=Code.ROLL_NOT_FOUND,
-                message=f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}",
+                message=f"{roll_dir} is not a registered roll",
             )
         )
         writer.write(Finished(status="failed", exit_status=1))
         return 1
     try:
         manifest = load_roll_manifest(roll_dir)
-    except (BadManifestError, RollManifestUnsupportedError) as exc:
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
-    writer.write(RollInfo(manifest=manifest.to_dict()))
+    info = manifest.to_dict()
+    # Net rotation is derived state — the ops log's replay — so it is
+    # augmented here rather than stored in the negatives' own shape.
+    for negative in info["negatives"]:
+        negative["rotation_quarter_turns"] = repo.net_rotation_quarter_turns(
+            roll_dir, negative["negative_id"]
+        )
+    writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
+
+
+def _run_edit_command(args, writer: EventWriter) -> int:
+    """The `edit rotate` subcommand: records the op and refreshes the
+    preview; brackets like every other subcommand."""
+    writer.write(Started(command=f"edit {args.edit_command}"))
+    if args.edit_command == "rotate":
+        try:
+            fields = run_edit_rotate(
+                Path(args.roll),
+                args.negative,
+                args.direction,
+                emit=writer.write,
+            )
+        except EditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(EditRecorded(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+    raise AssertionError(f"unhandled edit command {args.edit_command!r}")
+
+
+def _run_export_command(args, writer: EventWriter) -> int:
+    writer.write(Started(command="export"))
+    try:
+        outcome = run_export(
+            Path(args.roll),
+            Path(args.output),
+            args.negatives,
+            emit=writer.write,
+        )
+    except ExportFailure as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    exit_status = 0 if not outcome.failed else 1
+    writer.write(
+        Finished(
+            status="success" if exit_status == 0 else "failed",
+            exit_status=exit_status,
+        )
+    )
+    return exit_status
 
 
 def _run_run_command(
@@ -411,6 +488,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "roll":
         return _run_roll_command(args, writer)
+
+    if args.command == "edit":
+        return _run_edit_command(args, writer)
+
+    if args.command == "export":
+        return _run_export_command(args, writer)
 
     if args.command == "apply-metadata":
         writer.write(Started(command="apply-metadata"))

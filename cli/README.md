@@ -61,7 +61,7 @@ they didn't test when the files are absent.
 The macOS app doesn't run this Python source directly — it runs a frozen,
 self-contained `ScannyBoyCLI.app` built with PyInstaller and staged into
 `mac/ScannyBoy/Helpers/`. See
-[`build/scanny_boy.spec`](build/scanny_boy.spec) and
+[`packaging/scanny_boy.spec`](packaging/scanny_boy.spec) and
 [`../scripts/build-cli.sh`](../scripts/build-cli.sh), which builds and stages
 it in one step:
 

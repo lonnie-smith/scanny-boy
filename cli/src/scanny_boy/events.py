@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 
 class EventType(enum.StrEnum):
@@ -32,6 +32,8 @@ class EventType(enum.StrEnum):
     ROLL_RENAMED = "roll_renamed"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
+    EDIT_RECORDED = "edit_recorded"
+    EXPORT_DONE = "export_done"
 
 
 class Stage(enum.StrEnum):
@@ -100,6 +102,10 @@ class Code(enum.StrEnum):
     OUTPUT_MODIFIED_EXTERNALLY = "OUTPUT_MODIFIED_EXTERNALLY"
     METADATA_WRITE_FAILED = "METADATA_WRITE_FAILED"
     ORPHAN_FILE_NOT_REMOVED = "ORPHAN_FILE_NOT_REMOVED"
+    NEGATIVE_NOT_FOUND = "NEGATIVE_NOT_FOUND"
+    INVALID_EDIT = "INVALID_EDIT"
+    EXPORT_FAILED = "EXPORT_FAILED"
+    PREVIEW_FAILED = "PREVIEW_FAILED"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -324,6 +330,32 @@ class MetadataSkipped(Event):
     negative_id: str
     code: Code
     message: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class EditRecorded(Event):
+    """`edit rotate`'s confirmation: the ops log entry as appended, the
+    negative's net rotation after it, and the regenerated preview the app
+    should now display. No pixel data of the published TIFF changes."""
+
+    event_type: ClassVar[EventType] = EventType.EDIT_RECORDED
+
+    negative_id: str
+    edit: dict[str, Any]
+    rotation_quarter_turns: int
+    preview_path: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ExportDone(Event):
+    """One negative's edits applied and written into the export folder."""
+
+    event_type: ClassVar[EventType] = EventType.EXPORT_DONE
+
+    negative_id: str
+    output: str
+    width: int
+    height: int
 
 
 class EventWriter:

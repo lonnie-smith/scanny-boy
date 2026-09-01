@@ -1,11 +1,10 @@
-import json
-
 import pytest
 
+from scanny_boy.events import Code
 from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256
+from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError, SourceRecord
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     CaptureTime,
     FrameRecord,
     NegativeRecord,
@@ -13,18 +12,15 @@ from scanny_boy.roll_manifest import (
     RollInvariantMismatchError,
     RollInvariants,
     RollManifest,
-    RollManifestUnsupportedError,
     RunRecord,
     allocate_output_name,
     append_run,
     check_roll_invariants,
-    current_roll_manifest_path,
     estimate_roll_manifest_size,
     format_negative_id,
     load_roll_manifest,
     merge_sources,
     new_roll_manifest,
-    validate_roll_manifest_dict,
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_schema_test_support import (
@@ -150,14 +146,13 @@ def _completed_negative(**overrides) -> NegativeRecord:
     return _negative(**defaults)
 
 
-# --- shape, round trip, and the version break ---------------------------
+# --- shape, round trip, and the published contract ------------------------
 
 
 def test_v4_round_trips(tmp_path):
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
-    assert current_roll_manifest_path(tmp_path).name == ROLL_MANIFEST_FILENAME
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
@@ -175,23 +170,13 @@ def test_v4_round_trips(tmp_path):
     assert loaded.metadata.roll_capture_date is None
 
 
-def test_rejects_format_version_one():
-    # Section 0: there is no migration. A Phase 2 manifest is refused with
-    # its own code, not silently upgraded and not read as corrupt.
-    data = _manifest().to_dict()
-    data["manifest_format_version"] = 1
-    with pytest.raises(RollManifestUnsupportedError):
-        validate_roll_manifest_dict(data)
-
-
-def test_rejects_format_version_two():
-    # Section 0: there is no migration. A v2 manifest (with its
-    # `superseded_by` tombstones) is refused with its own code.
-    data = _manifest().to_dict()
-    data["manifest_format_version"] = 2
-    data["negatives"][0]["superseded_by"] = None
-    with pytest.raises(RollManifestUnsupportedError):
-        validate_roll_manifest_dict(data)
+def test_write_touches_no_files_in_the_roll_folder(tmp_path):
+    """The record lives in the library database; the folder holds only
+    stitched TIFFs (and staging directories while a run is in flight)."""
+    roll_dir = tmp_path / "Roll"
+    roll_dir.mkdir()
+    write_roll_manifest(roll_dir, _manifest())
+    assert list(roll_dir.iterdir()) == []
 
 
 def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
@@ -208,17 +193,20 @@ def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
     assert manifest.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
 
     write_roll_manifest(tmp_path, manifest)
-    data = json.loads(current_roll_manifest_path(tmp_path).read_text())
-    assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
     assert load_roll_manifest(tmp_path).to_dict() == manifest.to_dict()
 
 
-def test_written_manifest_matches_the_published_schema(tmp_path):
+def test_persisted_manifest_matches_the_published_schema(tmp_path):
+    """`to_dict()` is the `roll info` event payload's shape; the schema file
+    that once described the JSON manifest now pins the event contract."""
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
-    data = json.loads(current_roll_manifest_path(tmp_path).read_text())
-    assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+    assert_matches_roll_manifest_schema(
+        load_roll_manifest(tmp_path).to_dict(), load_roll_manifest_schema()
+    )
 
 
 def test_rebate_deviation_is_always_null(tmp_path):
@@ -227,15 +215,8 @@ def test_rebate_deviation_is_always_null(tmp_path):
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
-    data = json.loads(current_roll_manifest_path(tmp_path).read_text())
-    for negative in data["negatives"]:
-        assert negative["rebate_deviation_px"] is None
-
-
-def test_write_is_atomic_and_leaves_no_temp_file(tmp_path):
-    write_roll_manifest(tmp_path, _manifest())
-    names = sorted(p.name for p in tmp_path.iterdir())
-    assert names == [ROLL_MANIFEST_FILENAME]
+    for negative in load_roll_manifest(tmp_path).negatives:
+        assert negative.rebate_deviation_px is None
 
 
 def test_write_refreshes_updated_at(tmp_path):
@@ -246,55 +227,6 @@ def test_write_refreshes_updated_at(tmp_path):
     assert manifest.created_at == "2026-08-02T00:00:00Z"
 
 
-def test_validate_rejects_a_missing_top_level_field():
-    data = _manifest().to_dict()
-    del data["metadata"]
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_wrong_manifest_kind():
-    data = _manifest().to_dict()
-    data["manifest_kind"] = "stitch"
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_bad_run_status():
-    data = _manifest().to_dict()
-    data["runs"][0]["status"] = "halfway"
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_bad_negative_status():
-    data = _manifest().to_dict()
-    data["negatives"][0]["status"] = "probably"
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_malformed_fill_color():
-    data = _manifest().to_dict()
-    data["negatives"][0]["fill_color"] = [0, 0]
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_missing_capture_time_field():
-    data = _manifest().to_dict()
-    del data["negatives"][0]["capture_time"]["date_override"]
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
-def test_validate_rejects_a_source_without_a_run_id():
-    data = _manifest().to_dict()
-    del data["sources"][0]["run_id"]
-    with pytest.raises(BadManifestError):
-        validate_roll_manifest_dict(data)
-
-
 def test_load_rejects_an_output_escaping_the_folder(tmp_path):
     manifest = _manifest(negatives=[_negative(expected_output="../escape.tif")])
     write_roll_manifest(tmp_path, manifest)
@@ -302,10 +234,10 @@ def test_load_rejects_an_output_escaping_the_folder(tmp_path):
         load_roll_manifest(tmp_path)
 
 
-def test_load_rejects_invalid_json(tmp_path):
-    current_roll_manifest_path(tmp_path).write_text("{not json")
-    with pytest.raises(BadManifestError):
+def test_load_rejects_an_unregistered_folder(tmp_path):
+    with pytest.raises(RollNotRegisteredError) as exc_info:
         load_roll_manifest(tmp_path)
+    assert exc_info.value.code == Code.ROLL_NOT_FOUND
 
 
 def test_estimate_size_is_positive():

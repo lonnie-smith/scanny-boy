@@ -41,6 +41,7 @@ from scanny_boy.icc_profile import (
     IccProfileError,
     load_icc_profile,
 )
+from scanny_boy.library import repo
 from scanny_boy.manifest import (
     BadManifestError,
     Manifest,
@@ -65,10 +66,8 @@ from scanny_boy.output_folder import (
 from scanny_boy.pipeline import build_curated_metadata, build_groups, hash_sources
 from scanny_boy.raw_decode import jsonable_raw_params, read_active_size
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     RollInvariantMismatchError,
     RollInvariants,
-    RollManifestUnsupportedError,
 )
 from scanny_boy.selection import (
     SelectionUsageError,
@@ -211,18 +210,17 @@ def _preview_roll(
 ) -> list[RollOverlapEntry]:
     """`probe --roll`'s roll-folder validation and overlap report (section
     3.5). Raises `ProbeFailure` for anything that would also stop `run
-    --roll`: no roll manifest in the folder, an unreadable or unsupported
-    one, content unrelated to the roll, or invariants that differ from this
-    run's parameters.
+    --roll`: an unregistered roll folder, content unrelated to the roll, or
+    invariants that differ from this run's parameters.
 
     Overlap is reported, not rejected: whether a prospective group adopts the
     overlapped negative is decided at `run` time (the replacement rule), so
     the report names what each prospective group shares with the roll and
     lets the caller decide."""
-    if not (roll_dir / ROLL_MANIFEST_FILENAME).exists():
+    if not repo.roll_registered(roll_dir):
         raise ProbeFailure(
             Code.ROLL_NOT_FOUND,
-            f"{roll_dir} has no {ROLL_MANIFEST_FILENAME}; create the roll first",
+            f"{roll_dir} is not a registered roll; create the roll first",
         )
 
     # The same invariants `run --roll` will present (section 3.4), so a
@@ -238,7 +236,7 @@ def _preview_roll(
     except (
         OutputFolderError,
         BadManifestError,
-        RollManifestUnsupportedError,
+        repo.RollNotRegisteredError,
         RollInvariantMismatchError,
     ) as exc:
         raise ProbeFailure(exc.code, exc.message) from exc

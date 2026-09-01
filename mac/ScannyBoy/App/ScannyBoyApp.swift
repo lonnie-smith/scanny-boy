@@ -50,12 +50,13 @@ struct RootView: View {
     @State private var model: ConfigurationModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
+    @State private var export: ExportModel?
     @State private var unavailableReason: String?
 
     var body: some View {
         Group {
-            if let library, let model, let edit, let run {
-                ContentView(library: library, model: model, edit: edit, run: run)
+            if let library, let model, let edit, let run, let export {
+                ContentView(library: library, model: model, edit: edit, run: run, export: export)
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
             } else {
@@ -75,6 +76,7 @@ struct RootView: View {
             model = ConfigurationModel(runner: runner)
             edit = EditModel(runner: runner)
             run = RunModel(runner: runner)
+            export = ExportModel(runner: runner)
         } catch let error as CLILocatorError {
             unavailableReason = error.description
         } catch {

@@ -165,7 +165,8 @@
         "used_clahe_fallback",
         "error_code",
         "error_message",
-        "capture_time"
+        "capture_time",
+        "preview_path"
       ],
       "properties": {
         "negative_id": { "type": "string" },
@@ -228,7 +229,17 @@
         "used_clahe_fallback": { "type": "boolean" },
         "error_code": { "type": ["string", "null"] },
         "error_message": { "type": ["string", "null"] },
-        "capture_time": { "$ref": "#/definitions/captureTime" }
+        "capture_time": { "$ref": "#/definitions/captureTime" },
+        "preview_path": {
+          "type": ["string", "null"],
+          "description": "CLI-generated preview of the negative as its edits render so far; null until first generated."
+        },
+        "rotation_quarter_turns": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Derived, not stored: present in `roll info` output only — the ops log's net clockwise quarter turns."
+        }
       }
     },
     "metadata": {

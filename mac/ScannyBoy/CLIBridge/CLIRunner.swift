@@ -150,6 +150,34 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["apply-metadata", "--roll", roll.path])
     }
 
+    /// `scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw`
+    ///
+    /// Protocol version 5's nondestructive edit: appends one rotation op to
+    /// the negative's ordered ops log in the library database, regenerates
+    /// the CLI-rendered preview, and never touches the published TIFF.
+    public static func editRotate(roll: URL, negative: String, clockwise: Bool) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "rotate",
+            "--roll", roll.path,
+            "--negative", negative,
+            "--direction", clockwise ? "cw" : "ccw",
+        ])
+    }
+
+    /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
+    ///
+    /// Applies each negative's recorded edits to its published pixels and
+    /// writes the result into the chosen folder; the roll's own TIFFs are
+    /// never modified. No selection means every negative.
+    public static func export(roll: URL, output: URL, negatives: [String] = []) -> CLICommand {
+        var arguments = ["export", "--roll", roll.path, "--output", output.path]
+        if !negatives.isEmpty {
+            arguments.append("--negatives")
+            arguments.append(contentsOf: negatives)
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in

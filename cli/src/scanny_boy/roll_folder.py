@@ -2,9 +2,9 @@
 `roll info` see them. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.1
 for the library's rules and section 3.2 for slugging and renaming.
 
-**The filesystem is the source of truth** (section 3.1): there is no index or
-registry anywhere. `list_rolls` and `scan_library` perform the one-level scan
-of the library that `roll list` reports from; nothing here caches it.
+Rolls are registered in the library database (`scanny_boy.library`), which
+is what `scan_library` reports from; the filesystem supplies the folder the
+stitched TIFFs live in.
 """
 
 from __future__ import annotations
@@ -17,11 +17,8 @@ import uuid
 from pathlib import Path
 
 from scanny_boy.events import Code
-from scanny_boy.manifest import BadManifestError
+from scanny_boy.library import repo
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
-    RollManifestUnsupportedError,
-    load_roll_manifest,
     new_roll_manifest,
     write_roll_manifest,
 )
@@ -109,15 +106,21 @@ def create_roll(library: Path, name: str, shots_per_negative: int) -> Path:
 
 def rename_roll(roll_dir: Path, new_name: str) -> Path:
     """Section 3.2: move the folder first, then write `roll_name` — so a
-    failed move leaves both the folder and the manifest untouched. Renaming
+    failed move leaves both the folder and the record untouched. Renaming
     to a name that slugs to the folder's current name (case-insensitively)
     is a no-op move.
+
+    The record now lives in the library database, so the order is: load it
+    (the row still names the old folder), move the folder, then save — the
+    save updates the row's `folder_path` to the new location.
 
     Section 5.5: a failed move raises `RollFolderError(ROLL_RENAME_FAILED)`
     rather than a raw `OSError`, so `roll rename` (the CLI command Chunk
     P3-10 added) has one exception type to catch, matching every other
     subcommand's pattern.
     """
+    manifest = repo.load_roll(roll_dir)
+
     library = roll_dir.parent
     slug = slugify(new_name)
     if slug.lower() == roll_dir.name.lower():
@@ -131,53 +134,40 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
                 Code.ROLL_RENAME_FAILED, f"could not rename {roll_dir} to {new_path}: {exc}"
             ) from exc
 
-    manifest = load_roll_manifest(new_path)
     manifest.roll_name = new_name
     write_roll_manifest(new_path, manifest)
     return new_path
 
 
-def list_rolls(library: Path) -> list[Path]:
-    """One level deep, unsorted: every child directory of `library` holding
-    a `scanny-boy-roll.json`. Does not load any of them."""
-    if not library.is_dir():
-        return []
-    return [
-        p
-        for p in library.iterdir()
-        if p.is_dir() and (p / ROLL_MANIFEST_FILENAME).exists()
-    ]
-
-
 def scan_library(library: Path) -> list[RollListing]:
-    """What `roll list` reports from: every roll `list_rolls` finds, loaded
-    and validated. A manifest that fails to load or is not format version 3
-    becomes an `"unreadable"` listing carrying its section 3.12 code, rather
-    than raising. `negative_count` is the number of negatives."""
+    """What `roll list` reports from: every roll registered under `library`,
+    straight from the database. A roll whose folder has vanished (an
+    unmounted external drive, a manual delete) becomes an `"unreadable"`
+    listing rather than silently disappearing."""
     listings: list[RollListing] = []
-    for roll_dir in list_rolls(library):
-        try:
-            manifest = load_roll_manifest(roll_dir)
-        except (BadManifestError, RollManifestUnsupportedError) as exc:
+    for folder_path, roll_id, roll_name, negative_count in repo.registered_rolls_under(
+        library
+    ):
+        if not Path(folder_path).is_dir():
             listings.append(
                 RollListing(
-                    path=roll_dir,
+                    path=Path(folder_path),
                     status="unreadable",
-                    reason=(exc.code.value, exc.message),
+                    reason=(Code.ROLL_NOT_FOUND.value, f"{folder_path} does not exist"),
                     roll_id=None,
-                    roll_name=None,
+                    roll_name=roll_name,
                     negative_count=None,
                 )
             )
             continue
         listings.append(
             RollListing(
-                path=roll_dir,
+                path=Path(folder_path),
                 status="ok",
                 reason=None,
-                roll_id=manifest.roll_id,
-                roll_name=manifest.roll_name,
-                negative_count=len(manifest.negatives),
+                roll_id=roll_id,
+                roll_name=roll_name,
+                negative_count=negative_count,
             )
         )
     return listings

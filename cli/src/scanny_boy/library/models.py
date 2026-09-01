@@ -1,0 +1,149 @@
+"""SQLAlchemy ORM models for the library database.
+
+One row per domain record, mirroring `roll_manifest.py`'s dataclasses:
+`rolls`/`runs`/`sources`/`negatives` carry the fields the app queries or
+constrains as real columns, and everything with manifest-schema structure
+(`processing_params`, `frames`, `pairs`, `output`, ...) is stored as JSON
+text — it is only ever read back whole, never queried piecemeal.
+
+`edits` is the nondestructive editing ops log: an ordered list of operations
+per negative, replayed at export time. `negative_id` is the published,
+stable identifier from `roll_manifest.format_negative_id`, so an edit
+survives re-stitching the negative it belongs to.
+"""
+
+from __future__ import annotations
+
+import json
+import typing
+
+from sqlalchemy import (
+    Float as SQLFloat,
+)
+from sqlalchemy import (
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
+
+
+class JSONText(TypeDecorator):
+    """A TEXT column that transparently serialises JSON values."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: typing.Any, dialect: typing.Any) -> str | None:
+        return None if value is None else json.dumps(value, sort_keys=True)
+
+    def process_result_value(self, value: str | None, dialect: typing.Any) -> typing.Any:
+        return None if value is None else json.loads(value)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class RollRow(Base):
+    __tablename__ = "rolls"
+
+    roll_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # The folder the roll was last written to. `roll list` filters on this;
+    # `roll rename` updates it when the folder moves.
+    folder_path: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    roll_name: Mapped[str] = mapped_column(Text)
+    shots_per_negative: Mapped[int] = mapped_column(Integer)
+    scanny_boy_version: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+    processing_params: Mapped[dict] = mapped_column(JSONText)
+    icc_profile: Mapped[dict] = mapped_column(JSONText)
+    stitch_params: Mapped[dict] = mapped_column(JSONText)
+    # `metadata`: two nullable strings rather than a nested object.
+    roll_capture_date: Mapped[str | None] = mapped_column(Text)
+    last_applied_at: Mapped[str | None] = mapped_column(Text)
+
+
+class RunRow(Base):
+    __tablename__ = "runs"
+
+    run_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    roll_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rolls.roll_id", ondelete="CASCADE"), index=True
+    )
+    # Position in the manifest's `runs` list; restores list order on load.
+    ordinal: Mapped[int] = mapped_column(Integer)
+    short_id: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    convert_run_id: Mapped[str | None] = mapped_column(Text)
+    input_folder: Mapped[str | None] = mapped_column(Text)
+    source_order: Mapped[list] = mapped_column(JSONText)
+    work_dir: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(Text)
+    finished_at: Mapped[str | None] = mapped_column(Text)
+
+
+class SourceRow(Base):
+    __tablename__ = "sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    roll_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rolls.roll_id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    filename: Mapped[str] = mapped_column(Text)
+    absolute_path: Mapped[str] = mapped_column(Text)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime: Mapped[float] = mapped_column(SQLFloat)
+    sha256: Mapped[str] = mapped_column(Text)
+    run_id: Mapped[str] = mapped_column(Text)
+
+
+class NegativeRow(Base):
+    __tablename__ = "negatives"
+
+    negative_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    roll_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rolls.roll_id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    run_id: Mapped[str] = mapped_column(Text)
+    sequence: Mapped[int | None] = mapped_column(Integer)
+    members: Mapped[list] = mapped_column(JSONText)
+    expected_output: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    output: Mapped[dict | None] = mapped_column(JSONText)
+    frames: Mapped[list] = mapped_column(JSONText)
+    pairs: Mapped[list] = mapped_column(JSONText)
+    global_rms_px: Mapped[float | None] = mapped_column(SQLFloat)
+    canvas: Mapped[dict | None] = mapped_column(JSONText)
+    valid_rect: Mapped[list | None] = mapped_column(JSONText)
+    fill_color: Mapped[list] = mapped_column(JSONText)
+    rebate_deviation_px: Mapped[float | None] = mapped_column(SQLFloat)
+    used_clahe_fallback: Mapped[bool] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    capture_time: Mapped[dict] = mapped_column(JSONText)
+    # Set by the preview generator once a small preview of the published
+    # TIFF exists; null until then.
+    preview_path: Mapped[str | None] = mapped_column(Text)
+
+
+class EditRow(Base):
+    __tablename__ = "edits"
+    __table_args__ = (UniqueConstraint("negative_id", "position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    negative_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("negatives.negative_id", ondelete="CASCADE"), index=True
+    )
+    # 1-based position in the negative's ordered ops log; appended, never
+    # reordered.
+    position: Mapped[int] = mapped_column(Integer)
+    op: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict] = mapped_column(JSONText)
+    created_at: Mapped[str] = mapped_column(Text)

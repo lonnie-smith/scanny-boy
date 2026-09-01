@@ -1,6 +1,5 @@
 import dataclasses
 import datetime
-import json
 from fractions import Fraction
 from pathlib import Path
 
@@ -41,7 +40,6 @@ from scanny_boy.output_folder import (
 )
 from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FILENAME,
     RollInvariants,
     load_roll_manifest,
     new_roll_manifest,
@@ -313,7 +311,7 @@ def test_end_to_end_on_real_samples(tmp_path):
     assert sorted(outcome.published) == ["IMG_00.tif", "IMG_10.tif"]
 
     produced = sorted(p.name for p in out_dir.iterdir())
-    assert produced == ["IMG_00.tif", "IMG_10.tif", ROLL_MANIFEST_FILENAME]
+    assert produced == ["IMG_00.tif", "IMG_10.tif"]
 
     manifest = load_roll_manifest(out_dir)
     # Section 3.3: the roll is additive and has no single status; the status
@@ -357,7 +355,7 @@ def test_end_to_end_on_real_samples(tmp_path):
         assert negative.error_code is None
 
     assert_matches_roll_manifest_schema(
-        json.loads((out_dir / ROLL_MANIFEST_FILENAME).read_text()),
+        manifest.to_dict(),
         load_roll_manifest_schema(),
     )
 
@@ -399,7 +397,7 @@ def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
     assert all(pregain > post for pregain, post in measured)
 
     assert_matches_roll_manifest_schema(
-        json.loads((out_dir / ROLL_MANIFEST_FILENAME).read_text()),
+        manifest.to_dict(),
         load_roll_manifest_schema(),
     )
 
@@ -817,7 +815,7 @@ def test_unrelated_nonempty_output_folder_is_rejected(tmp_path):
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
 
-def test_stitch_without_a_roll_manifest_is_rejected(tmp_path):
+def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
     """Section 5.4 decision 1: `stitch` never creates a roll. An empty
     directory is not one."""
     work_dir = _make_work_dir(tmp_path)
@@ -826,22 +824,8 @@ def test_stitch_without_a_roll_manifest_is_rejected(tmp_path):
     with pytest.raises(StitchError) as exc_info:
         _stitch(work_dir, out_dir)
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
-    assert ROLL_MANIFEST_FILENAME in exc_info.value.message
+    assert "registered roll" in exc_info.value.message
     assert not [p for p in out_dir.iterdir()]
-
-
-def test_roll_manifest_of_the_wrong_version_is_rejected(tmp_path):
-    """Section 0: there is no migration. A Phase 2 folder is not importable."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
-    path = out_dir / ROLL_MANIFEST_FILENAME
-    data = json.loads(path.read_text())
-    data["manifest_format_version"] = 1
-    path.write_text(json.dumps(data))
-
-    with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
-    assert exc_info.value.code is Code.ROLL_MANIFEST_UNSUPPORTED
 
 
 def test_roll_invariant_mismatch_is_rejected(tmp_path):
@@ -1096,9 +1080,8 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
     )
     assert implicit.stale_outputs == []
 
-    # The roll rules do not recognise a Phase 1 folder: there is no
-    # scanny-boy-roll.json in it, so it reads as unrelated content rather
-    # than as a rerun.
+    # The roll rules do not recognise a Phase 1 folder: it is not registered
+    # as a roll, so it reads as unrelated content rather than as a rerun.
     roll_out = _roll_dir(tmp_path, "roll-out")
     _stitch(work_dir, roll_out)
     with pytest.raises(OutputFolderError) as exc_info:

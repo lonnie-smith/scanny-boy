@@ -25,6 +25,7 @@ final class EditModel {
         didSet {
             guard rollURL != oldValue else { return }
             roll = nil
+            selectedNegativeID = nil
             startRollFetch(rollURL: rollURL)
         }
     }
@@ -33,6 +34,17 @@ final class EditModel {
     /// `scanny-boy-roll.json` itself).
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
+
+    /// The Edit tab's selection: the negative shown large above the
+    /// filmstrip. `nil` means "fall back to the first visible negative",
+    /// which is also how a freshly loaded roll starts out.
+    var selectedNegativeID: String?
+
+    /// Set while one `edit rotate` round trip is in flight. Rotate is its
+    /// own short CLI session, deliberately not `RunModel`'s — but the
+    /// one-helper-at-a-time discipline holds: the views gate on
+    /// `run.isActive || edit.isRotating`, and this flag refuses re-entry.
+    private(set) var isRotating = false
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -79,6 +91,94 @@ final class EditModel {
         guard canApply, let rollURL else { return nil }
         return .applyMetadata(roll: rollURL)
     }
+
+    /// The selected negative, or the first visible one when nothing (or
+    /// something stale, e.g. after a roll switch) is selected.
+    var selectedNegative: RollManifest.Negative? {
+        let negatives = visibleNegatives
+        if let selectedNegativeID,
+            let match = negatives.first(where: { $0.negativeID == selectedNegativeID })
+        {
+            return match
+        }
+        return negatives.first
+    }
+
+    /// Option-left/Option-right and filmstrip clicks land here. The filmstrip
+    /// shows every negative in `visibleNegatives` order, so selection moves
+    /// through that same order.
+    func selectNext() {
+        moveSelection(+1)
+    }
+
+    func selectPrevious() {
+        moveSelection(-1)
+    }
+
+    private func moveSelection(_ delta: Int) {
+        let negatives = visibleNegatives
+        guard !negatives.isEmpty else { return }
+        let current = selectedNegativeID.flatMap { id in
+            negatives.firstIndex { $0.negativeID == id }
+        } ?? negatives.startIndex
+        let next = max(negatives.startIndex, min(negatives.index(before: negatives.endIndex), current + delta))
+        selectedNegativeID = negatives[next].negativeID
+    }
+
+    // MARK: - Editing
+
+    /// Records one 90-degree rotation for `negative` through the CLI and
+    /// refreshes the roll when the edit is confirmed. The published TIFF is
+    /// never touched — only the ops log and the CLI-rendered preview.
+    func rotate(_ negative: RollManifest.Negative, clockwise: Bool) async {
+        guard let rollURL, !isRotating else { return }
+        isRotating = true
+        defer { isRotating = false }
+        let command = CLICommand.editRotate(
+            roll: rollURL, negative: negative.negativeID, clockwise: clockwise
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .editRecorded {
+                    applyEditRecorded(event, negativeID: negative.negativeID)
+                }
+            }
+        } catch {
+            return
+        }
+        // The in-place update above is what the user sees; the refresh
+        // reconciles anything the event's fields did not carry.
+        refresh()
+    }
+
+    /// Applies an `edit_recorded` event to the in-memory roll without a
+    /// round trip: preview path and net rotation are exactly what the event
+    /// carries.
+    private func applyEditRecorded(_ event: CLIEvent, negativeID: String) {
+        guard let manifest = roll,
+            let index = manifest.negatives.firstIndex(where: { $0.negativeID == negativeID }),
+            let turns = event.rotationQuarterTurns
+        else { return }
+        let negative = manifest.negatives[index]
+        roll = manifest.replacingNegative(
+            RollManifest.Negative(
+                negativeID: negative.negativeID,
+                runID: negative.runID,
+                sequence: negative.sequence,
+                members: negative.members,
+                expectedOutput: negative.expectedOutput,
+                status: negative.status,
+                output: negative.output,
+                captureTime: negative.captureTime,
+                globalRMSPixels: negative.globalRMSPixels,
+                rebateDeviationPixels: negative.rebateDeviationPixels,
+                previewPath: event.previewPath ?? negative.previewPath,
+                rotationQuarterTurns: turns
+            )
+        )
+    }
+
+    // MARK: - Fetching
 
     // MARK: - Fetching
 
