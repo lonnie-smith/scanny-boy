@@ -12,10 +12,10 @@ frame per channel cannot represent.
 
 The reference is a shot of the bare light source with no negative in the
 holder, decoded with the project's locked `RAW_PARAMS` — reusing the one
-decode path the project treats as load-bearing. Dividing each channel by its
-own mean cancels any constant per-channel scale, so decoding the reference
-with `use_camera_wb=True` (as NegPy's no-white-balance decode would not)
-yields an identical gain map; `flatfield_test.py` proves that.
+decode path the project treats as load-bearing, which is NegPy's linear,
+no-white-balance decode. Dividing each channel by its own mean cancels any
+constant per-channel scale, so the gain map is independent of the
+reference's as-shot white balance.
 
 Memory (docs/FLATFIELD_PLAN.md section 2.7): the gain map is computed and
 stored at `GAIN_MAP_MAX_EDGE`, materialised at frame resolution once per run
@@ -37,7 +37,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import romm
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.events import Code, FlatFieldProfileSummary
 from scanny_boy.hashing import sha256_file
 from scanny_boy.library.db import library_db_path
@@ -156,7 +156,7 @@ def build_gain_map(reference: Path) -> tuple[np.ndarray, int, int]:
     reference_height)` — the full-resolution dimensions the profile records
     for the aspect-ratio check."""
     frame = decode_raw(reference)
-    gain_map = compute_gain(romm.decode_to_linear(frame.pixels))
+    gain_map = compute_gain(decode_to_linear(frame.pixels))
     return gain_map, frame.width, frame.height
 
 
@@ -233,10 +233,10 @@ def apply_in_place(pixels: np.ndarray, full_res_gain: np.ndarray) -> int:
     for start in range(0, height, FLATFIELD_BAND_ROWS):
         stop = min(start + FLATFIELD_BAND_ROWS, height)
         band = pixels[start:stop]
-        linear = romm.decode_to_linear(band)
+        linear = decode_to_linear(band)
         corrected = linear * full_res_gain[start:stop]
         clipped += int(np.count_nonzero(np.any(corrected > 1.0, axis=-1)))
-        band[:] = romm.encode_from_linear(corrected)
+        band[:] = encode_from_linear(corrected)
     return clipped
 
 

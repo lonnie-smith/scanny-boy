@@ -176,7 +176,7 @@ to bottom.
 | `cancellation.py` | `CancellationToken` (a `threading.Event`) + the SIGTERM handler. The handler does exactly one thing: set the flag. |
 | `hashing.py`, `disk_check.py`, `concurrency.py` | SHA-256 streaming; the free-space formula; worker-count and memory-budget policy. |
 | `icc_profile.py` | Loads and SHA-256-verifies the bundled ICC profile before **every** use. |
-| `romm.py` | LibRaw's transfer curve, as a 65,536-entry `float32` decode LUT. |
+| `linear.py` | The linear transfer: plain fixed-point decode/encode between uint16 codes and [0, 1]. |
 
 **Input side**
 | Module | Role |
@@ -302,40 +302,45 @@ from `completed`/`total` **only** — never from `source_index`, which with
 
 ## 7. Colour: the one thing most likely to be got wrong
 
-RAW decode uses `rawpy` with `gamma=(1.8, 16)`, which is **not** the ROMM /
-ProPhoto transfer curve. It is LibRaw's own generalised curve: same gamma and
-toe slope, different breakpoints, plus an offset term ROMM does not have.
-Measured error against true ROMM: 3.1% of linear light on average.
+RAW decode uses `rawpy` with **`gamma=(1, 1)`, `output_color=raw` and unity
+white balance** (`user_wb=[1, 1, 1, 1]`): linear sensor channels straight
+from the demosaic, with no colour-matrix conversion into a colourimetric
+space and no per-channel white-balance gain. This matches NegPy's decode
+exactly — its pipeline treats the scan as a radiometric measurement of the
+sensor's own channels and handles channel balance in film terms (see
+`docs/DECISIONS.md`, "Linear decode for NegPy compatibility"). This
+supersedes the earlier `gamma=(1.8, 16)` / ProPhoto decode, whose LibRaw
+curve and colour conversion violated NegPy's assumption on three counts.
 
 Consequences, all live in the code today:
 
-- [`romm.py`](../cli/src/scanny_boy/romm.py) implements **LibRaw's** curve,
-  not the registry's. Do not substitute ROMM's `0.03125` / `0.001953125`
-  breakpoints.
-- Decode/encode go through `DECODE_LUT`, a 65,536-entry `float32` table —
-  never per-pixel `numpy.power`.
-- The embedded profile is `ScannyBoy-ROMM-LibRaw-v4.icc`, generated to
-  declare LibRaw's curve. This **fixed** the Phase 1/2 profile-vs-pixels
-  mismatch (see the struck-through first item of
-  [`punchlist.md`](punchlist.md)). No pixel values changed; every TIFF's bytes
-  and hash did.
+- [`linear.py`](../cli/src/scanny_boy/linear.py) (formerly `romm.py`)
+  holds plain fixed-point scaling: `decode_to_linear` is `code / 65535`,
+  `encode_from_linear` is clip-and-round. The round trip is exact for every
+  code — proved by a test, not assumed.
+- The embedded profile is `ScannyBoy-Linear-ProPhoto-v1.icc`: ProPhoto
+  primaries (byte-identical to the upstream ProPhoto-v4 source) with a
+  **linear** TRC (parametric type 0, g = 1.0) — the truth about the pixels.
+  Generated deterministically by `cli/tools/generate_icc_profile.py`.
 - `icc_profile.py` verifies the profile's SHA-256 on every load, and
   `tiff_writer.write_base_tiff` refuses to write a TIFF with an empty
-  profile. An untagged ROMM file is never produced.
+  profile. An untagged file is never produced.
 - All geometric and photometric work happens in **linear light**: decode to
   linear `float32`, warp, blend, then encode back to `uint16` exactly once.
-- Flat-field correction adds **one more round trip through the transfer
-  curve** in the convert stage: the decoded frame is gamma-encoded `uint16`,
-  the correction is multiplicative and therefore only valid in linear light,
-  so `flatfield.apply_in_place` does `decode_to_linear → multiply →
-  encode_from_linear` per band. `DECODE_LUT` and `encode_from_linear` are
-  exact inverses (proved by a test, not assumed — a gain map of exactly 1.0
-  round-trips a real decoded frame to byte-identical pixels), so this round
-  trip is lossless. Where the correction would boost an already-bright pixel
-  past full scale, `encode_from_linear`'s clip at 1.0 loses the highlight —
-  the pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED` when more than 0.1% of a
-  frame's pixels clip rather than losing them silently. Writing intermediates
-  in linear gamma (a punchlist item) would remove the round trip entirely.
+- Flat-field correction multiplies in the same linear light:
+  `flatfield.apply_in_place` does `decode_to_linear → multiply →
+  encode_from_linear` per band, a lossless fixed-point round trip (proved
+  by a test — a gain map of exactly 1.0 round-trips a real decoded frame
+  to byte-identical pixels). Where the correction would boost an
+  already-bright pixel past full scale, `encode_from_linear`'s clip at 1.0
+  loses the highlight — the pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED`
+  when more than 0.1% of a frame's pixels clip rather than losing them
+  silently. The old punchlist item asking for linear intermediates is
+  resolved: the intermediates **are** linear.
+- **Previews are display-encoded.** The published TIFF is linear, so
+  `previews.py` downscales in linear light and then 16→8-bit encodes
+  through an sRGB LUT — an untagged 8-bit PNG is assumed sRGB, and SwiftUI
+  displays it as-is. The sRGB encode lives there and only there.
 
 `RAW_PARAMS` ([`raw_decode.py`](../cli/src/scanny_boy/raw_decode.py)) is
 locked and every value was independently verified to matter — in particular
@@ -344,7 +349,7 @@ scaling identical across a negative's frames. Changing it invalidates every
 roll's `processing_params` invariant.
 
 **TIFF format**, identical for frames and stitched output: three-channel
-`uint16`, ROMM with the embedded profile, `Orientation` always `1` (pixels
+`uint16`, linear RGB with the embedded profile, `Orientation` always `1` (pixels
 are already upright — never copy the source value), Deflate with horizontal
 prediction (compression code `32946`, not `8`), written in two passes
 (`tifffile` for the base, `tifftools` for the nested EXIF, base removed only

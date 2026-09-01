@@ -12,7 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scanny_boy import flatfield, romm
+from scanny_boy import flatfield
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.sample_nef_support import FIXTURES_DIR, requires_real_samples
@@ -103,7 +104,7 @@ def test_per_channel_constant_scales_cancel_identically():
 
 
 def _encode(linear: np.ndarray) -> np.ndarray:
-    return romm.encode_from_linear(linear)
+    return encode_from_linear(linear)
 
 
 def test_applying_the_derived_map_flattens_the_falloff():
@@ -114,7 +115,7 @@ def test_applying_the_derived_map_flattens_the_falloff():
 
     corrected = pixels.copy()
     flatfield.apply_in_place(corrected, flatfield.resize_gain_map(gain, width, height))
-    corrected_linear = romm.decode_to_linear(corrected)
+    corrected_linear = decode_to_linear(corrected)
 
     # Mean per channel preserved, spatial spread collapsed. The residual is
     # the part of the falloff smoother than the blur sigma removed — the
@@ -136,12 +137,12 @@ def test_banded_application_equals_whole_array_application_exactly():
     banded = pixels.copy()
     banded_clipped = flatfield.apply_in_place(banded, full_res_gain)
 
-    whole = romm.encode_from_linear(
-        romm.decode_to_linear(pixels) * full_res_gain
+    whole = encode_from_linear(
+        decode_to_linear(pixels) * full_res_gain
     )
     assert np.array_equal(banded, whole)
     # The clip count is likewise independent of where the bands fall.
-    corrected = romm.decode_to_linear(pixels) * full_res_gain
+    corrected = decode_to_linear(pixels) * full_res_gain
     whole_clipped = int(
         np.count_nonzero(np.any(corrected > 1.0, axis=-1))
     )

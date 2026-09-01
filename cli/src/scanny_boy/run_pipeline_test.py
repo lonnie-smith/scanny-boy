@@ -30,7 +30,7 @@ from scanny_boy.roll_manifest import (
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_test import _negative
-from scanny_boy.romm import encode_from_linear
+from scanny_boy.linear import encode_from_linear
 from scanny_boy.run_pipeline import (
     STITCH_UNITS_PER_FRAME,
     STITCH_UNITS_PER_NEGATIVE,

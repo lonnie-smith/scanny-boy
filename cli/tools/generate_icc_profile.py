@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Deterministic generator for ScannyBoy-ROMM-LibRaw-v4.icc.
+"""Deterministic generator for ScannyBoy-Linear-ProPhoto-v1.icc.
 
-See docs/PHASE3_IMPLEMENTATION_PLAN.md section 3.13 and chunk P3-1.
+Derived from the committed ProPhoto-v4.icc bytes: primaries, white point and
+chromatic-adaptation tag are carried over byte-identical, the description is
+rewritten, and the TRC tags become a parametric function type 0 (pure
+gamma) with g = 1.0 — the identity, declaring that the pixels the profile
+tags are linear. The decode is linear (`raw_decode.RAW_PARAMS`), so the
+profile's TRC is the identity by construction.
 """
 
 from __future__ import annotations
@@ -18,11 +23,12 @@ _PROPHOTO_V4_ICC_B64 = (
     "AAAB4GxjbXMEIAAAbW50clJHQiBYWVogB+IAAwAUAAkADgAdYWNzcE1TRlQAAAAAc2F3c2N0cmwAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1oYW5kH9ZD3wQwsLzdCGIbXzs4jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKZGVzYwAAAPwAAAAkY3BydAAAASAAAAAid3RwdAAAAUQAAAAUY2hhZAAAAVgAAAAsclhZWgAAAYQAAAAUZ1hZWgAAAZgAAAAUYlhZWgAAAawAAAAUclRSQwAAAcAAAAAgZ1RSQwAAAcAAAAAgYlRSQwAAAcAAAAAgbWx1YwAAAAAAAAABAAAADGVuVVMAAAAIAAAAHABSAE8ATQBNbWx1YwAAAAAAAAABAAAADGVuVVMAAAAGAAAAHABDAEMAMAAAWFlaIAAAAAAAAPbWAAEAAAAA0y1zZjMyAAAAAAAA//3////+/////v////0AAQAD//////////8AAAABAAD/71hZWiAAAAAAAADMNwAASb4AAAAAWFlaIAAAAAAAACKaAAC2PQAAAAFYWVogAAAAAAAACAUAAAAFAADTLHBhcmEAAAAAAAMAAAABzM0AAQAAAAAAAAAAEAAAAAgA"
 )
 
-DESCRIPTION = "Scanny Boy ROMM RGB (LibRaw transfer curve)"
+DESCRIPTION = "Scanny Boy Linear RGB (ProPhoto primaries, linear TRC)"
 
-# Section 3.13. ICC parametricCurveType function type 4, decoding direction.
-TRC_FUNCTION_TYPE = 4
-TRC_PARAMS = (117965, 65096, 440, 0, 554, 4096, 0)
+# ICC parametricCurveType function type 0: pure gamma. g = 1.0 in s15Fixed16
+# — the identity curve, because the decode is linear.
+TRC_FUNCTION_TYPE = 0
+TRC_PARAMS = (65536,)
 
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
 

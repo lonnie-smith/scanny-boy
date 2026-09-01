@@ -175,7 +175,7 @@ def test_bundle_carries_the_vetted_icc_profile_and_its_own_metadata():
     """The profile is ordinary package data and the two `copy_metadata`
     entries of section 5.2 are what keep `importlib.metadata` working in the
     frozen program."""
-    profiles = list(BUNDLE_PATH.rglob("ScannyBoy-ROMM-LibRaw-v4.icc"))
+    profiles = list(BUNDLE_PATH.rglob("ScannyBoy-Linear-ProPhoto-v1.icc"))
     assert profiles, "the vetted ICC profile is missing from the bundle"
 
     for profile in profiles:

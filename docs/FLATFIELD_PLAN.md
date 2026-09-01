@@ -60,7 +60,7 @@ unchanged:
 Computation, per channel independently:
 
 1. Decode the reference with the project's **locked `RAW_PARAMS`**
-   (`raw_decode.decode_raw`), then `romm.decode_to_linear` — one linear
+   (`raw_decode.decode_raw`), then `linear.decode_to_linear` — one linear
    float32 array.
 2. Downsample with `INTER_AREA` so `max(h, w) <= GAIN_MAP_MAX_EDGE`.
 3. `cv2.GaussianBlur` each channel with `sigma = max(h, w) / BLUR_SIGMA_DIVISOR`.
@@ -68,13 +68,13 @@ Computation, per channel independently:
 5. `np.clip(gain, GAIN_MIN, GAIN_MAX)`.
 
 **On white balance.** NegPy decodes its reference linear with no white
-balance; this plan reuses the locked `RAW_PARAMS` (`use_camera_wb=True`)
-instead, and that is *not* a deviation in result. Step 4 divides each channel
-by its own mean, so any constant per-channel scale — which is exactly what a
-white-balance multiplier is — cancels identically. Reusing the one decode
-path the project already treats as load-bearing is worth more than matching
-NegPy's parameter list. **This gets a test**: two references differing only
-by a per-channel constant must produce byte-identical gain maps.
+balance, and the locked `RAW_PARAMS` **is** that decode (`user_wb=[1, 1, 1, 1]`,
+see `docs/DECISIONS.md`, "Linear decode for NegPy compatibility"). The match
+is by design, not coincidence — but even independent of it, step 4 divides
+each channel by its own mean, so any constant per-channel scale — which is
+exactly what a white-balance multiplier is — cancels identically. **This
+gets a test**: two references differing only by a per-channel constant must
+produce byte-identical gain maps.
 
 ### 2.2 The reference file
 
@@ -177,15 +177,14 @@ So:
 
 Net effect: the per-worker budget is untouched and needs no re-measurement.
 
-### 2.8 The extra round trip through the transfer curve
+### 2.8 The fixed-point round trip
 
-The decoded frame is gamma-encoded `uint16`; the correction is multiplicative
-and therefore only valid in linear light. Applying it means
-`decode_to_linear → multiply → encode_from_linear`, one round trip more than
-the pipeline does today.
+The decoded frame is **linear** `uint16`; the correction is multiplicative
+and valid in linear light. Applying it means
+`decode_to_linear → multiply → encode_from_linear`, plain fixed-point
+scaling since the decode is linear (`linear.py`).
 
-`romm.DECODE_LUT` and `encode_from_linear` are exact inverses to within one
-code, so this is not a meaningful loss — but it must be **proved, not
+The round trip is exact for every code — but it must be **proved, not
 assumed**: a test asserts that a gain map of exactly `1.0` everywhere
 round-trips a real decoded frame to byte-identical pixels.
 
@@ -197,8 +196,9 @@ Two related notes:
   the pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED` when more than 0.1% of a
   frame's pixels are clipped by the correction, rather than losing highlights
   silently.
-- The punchlist item about writing intermediates in linear gamma would remove
-  this round trip entirely. Not scope here; worth knowing they interact.
+- The punchlist item about writing intermediates in linear gamma is resolved:
+  the intermediates **are** linear, and this round trip is the plain
+  fixed-point scaling of `linear.py`.
 
 ---
 
@@ -422,7 +422,6 @@ and for `run`/`probe` with `--flatfield`.
 | Reference may be RAW or an ordinary image | `.NEF` only | One decode path, one colour story. |
 | `flatfield_token()` invalidates a render cache | The same token invalidates a **roll** | There is no render cache here; the equivalent guarantee is the invariant check. |
 | Correction applied at render time, skipped for stitched composites and applied per tile instead | Applied once at convert time, per frame | This program's frames *are* the tiles; the intermediate TIFF is the natural place. |
-| Reference decoded with no white balance | Decoded with the locked `RAW_PARAMS` | Per-channel normalisation makes the two identical (§2.1), and reuse beats a second decode configuration. |
 
 ## 5. Risks
 

@@ -25,7 +25,7 @@ import math
 import cv2
 import numpy as np
 
-from scanny_boy import romm
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.concurrency import physical_memory_bytes
 from scanny_boy.events import Code
@@ -217,7 +217,7 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
     result released immediately, so the caller controls residency.
 
     Warp pass, per frame:
-      1. romm.decode_to_linear -> float32.
+      1. decode_to_linear -> float32.
       2. cv2.warpAffine into the frame's OWN bounding box (not the canvas)
          with INTERPOLATION, BORDER_CONSTANT, borderValue 0.
       3. np.clip(warped, 0.0, None) — section 2.3's measured -0.088
@@ -244,7 +244,7 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
         warped frame as it is consumed.
 
     Finally: divide where weight > 0; write FILL_COLOR elsewhere; encode
-    with romm.encode_from_linear.
+    with encode_from_linear.
 
     overlap_mad for a pair is the mean absolute difference between the two
     frames' linear values over their shared valid area, divided by the mean
@@ -263,7 +263,7 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
 
         frame = load_frame(placement.name)
         source_height, source_width = frame.shape[0], frame.shape[1]
-        linear = romm.decode_to_linear(frame).astype(np.float32)
+        linear = decode_to_linear(frame).astype(np.float32)
         del frame
 
         matrix = placement.matrix()
@@ -390,7 +390,7 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
     result_linear = np.zeros_like(accum)
     result_linear[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
 
-    encoded = romm.encode_from_linear(result_linear)
+    encoded = encode_from_linear(result_linear)
     encoded[~covered] = FILL_COLOR
 
     coverage_fraction = float(np.count_nonzero(covered)) / covered.size

@@ -8,6 +8,9 @@
   (−5.2%), rising to −20.8% at 0.005 and falling to nothing at white. Phase 2
   reads the pixels correctly and is unaffected.~~ **Fixed in Phase 3 P3-1:**
   `ScannyBoy-ROMM-LibRaw-v4.icc` embeds LibRaw's curve; no pixel values change.
+  ~~Superseded again by the linear decode~~ (see "Negative inversion" below):
+  the profile is now `ScannyBoy-Linear-ProPhoto-v1.icc`, a linear TRC, which
+  is what makes the *pixel* story match the profile story for good.
 * ~~`probe --out` has no notion of `scanny-boy-roll.json` (Phase 2's stitched
   roll manifest) — only `scanny-boy-manifest.json`. It reports a folder
   holding only a roll manifest as `OUTPUT_NOT_EMPTY` rather than recognising
@@ -74,15 +77,19 @@ Phase n:
     de-vignetted — the falloff the old measurement carried is gone, so the
     gate can probably tighten. Fold into the same user gate as the gain
     thresholds above.
-  - **Interacts with linear-gamma intermediates.** Writing intermediates
-    in linear gamma (the note under Negative inversion below) would remove
-    flat-field's extra `decode → linear → multiply → encode` round trip
-    entirely.
+  - ~~**Interacts with linear-gamma intermediates.**~~ **Resolved** by the
+    linear decode (see "Negative inversion" below): the round trip is now
+    the plain fixed-point scaling of `linear.py`.
 
 Phase n: 
 Negative inversion
 
-might need to put the tiff in linear (gamma 1, 1???) instead of whatever gamma rawpy gives us on conversion right now. 
+~~might need to put the tiff in linear (gamma 1, 1???) instead of whatever gamma rawpy gives us on conversion right now.~~
+**Done:** `RAW_PARAMS` is now `gamma=(1, 1)`, `output_color=raw`, unity
+white balance — NegPy's decode exactly. The written TIFFs are linear
+sensor-channel data, tagged `ScannyBoy-Linear-ProPhoto-v1.icc`; previews
+sRGB-encode for display. Old rolls must be reconverted (their manifests pin
+the old profile hash and `processing_params`).
 
 Eventual:
 - would it be easy to convert this to an electron app for better cross-platform compatibility (plus familiarity to me)

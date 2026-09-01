@@ -1,9 +1,11 @@
-"""Loads and verifies the bundled ROMM-compatible ICC colour profile.
+"""Loads and verifies the bundled Linear-ProPhoto ICC colour profile.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.4 ("The ICC colour profile").
-Every TIFF this program writes must carry this exact profile — never
-untagged ROMM data — so its SHA-256 is checked before every use, not just
-once at import time.
+See `docs/DECISIONS.md` ("Linear decode for NegPy compatibility"). Every
+TIFF this program writes must carry this exact profile — never untagged
+data — so its SHA-256 is checked before every use, not just once at import
+time. The profile declares ProPhoto (ROMM) primaries with a **linear**
+TRC, the truth about the pixels since `raw_decode.RAW_PARAMS` decodes
+linear (`output_color=raw`, `gamma=(1, 1)`, unity white balance).
 """
 
 from __future__ import annotations
@@ -13,20 +15,15 @@ import importlib.resources
 
 from scanny_boy.events import Code
 
-PROFILE_FILENAME = "ScannyBoy-ROMM-LibRaw-v4.icc"
+PROFILE_FILENAME = "ScannyBoy-Linear-ProPhoto-v1.icc"
 
-# Verified against the generated file per section 3.13.
-PROFILE_SHA256 = "18760274dbf58e150f5d3d391a762b51ad7799b26dac5acc4d74289d70998575"
+# Verified against the generated file.
+PROFILE_SHA256 = "a739982a10dc1b9de27dd262c4d7a8269c2a48ec42c4eb3743e1a108c6a8d744"
 
-# Section 3.13. ICC parametricCurveType function type 4, decoding direction.
-TRC_FUNCTION_TYPE = 4
-TRC_G = 117965
-TRC_A = 65096
-TRC_B = 440
-TRC_C = 0
-TRC_D = 554
-TRC_E = 4096
-TRC_F = 0
+# ICC parametricCurveType function type 0 (pure gamma), g = 1.0 in
+# s15Fixed16 — the identity curve, because the decode is linear.
+TRC_FUNCTION_TYPE = 0
+TRC_G = 65536
 
 
 class IccProfileError(Exception):

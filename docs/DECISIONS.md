@@ -587,13 +587,12 @@ authoritative; this section only makes the decisions findable.
   clipped to `[0.25, 4.0]`. Every constant lives in `flatfield.py` and
   nowhere else.
 - **White balance**: the reference is decoded with the project's locked
-  `RAW_PARAMS` (`use_camera_wb=True`), not NegPy's no-white-balance decode.
-  That is *not* a deviation in result — step 4 divides each channel by its
-  own mean, so any constant per-channel scale cancels identically — and
-  this is **proved by a test**: two references differing only by a
-  per-channel constant produce byte-identical gain maps. Reusing the one
-  decode path the project already treats as load-bearing beats a second
-  decode configuration.
+  `RAW_PARAMS`, which **is** NegPy's decode — linear sensor channels,
+  unity white balance (see "Linear decode for NegPy compatibility" below).
+  Step 4 divides each channel by its own mean, so any constant per-channel
+  scale cancels identically regardless: the gain map is independent of the
+  reference's as-shot white balance, and reusing the one decode path the
+  project treats as load-bearing beats a second decode configuration.
 
 ## The profile
 
@@ -660,13 +659,13 @@ CLI stays a general tool and its existing tests keep working unchanged.
   worker is ~37 MB instead of ~294 MB, so the 640 MiB per-worker budget
   needs no re-measurement.
 
-## The extra transfer-curve round trip
+## The fixed-point round trip
 
-The decoded frame is gamma-encoded `uint16`; the correction is
-multiplicative and only valid in linear light, so applying it costs one
-`decode_to_linear → multiply → encode_from_linear` round trip.
-`DECODE_LUT` and `encode_from_linear` are exact inverses to within one
-code — **proved, not assumed**: a test asserts a gain map of exactly 1.0
+The decoded frame is **linear** `uint16`; the correction is multiplicative
+and valid in linear light, so applying it costs one
+`decode_to_linear → multiply → encode_from_linear` round trip, which is
+plain fixed-point scaling (`linear.py`). It is exact for every code —
+**proved, not assumed**: a test asserts a gain map of exactly 1.0
 round-trips a real decoded frame to byte-identical pixels. Where the
 correction boosts an already-bright pixel past full scale it clips; the
 pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED` when more than 0.1% of a
@@ -680,12 +679,58 @@ frame's pixels clip, rather than losing highlights silently.
 | Reference may be RAW or an ordinary image | `.NEF` only | One decode path, one colour story. |
 | `flatfield_token()` invalidates a render cache | The same token invalidates a **roll** | There is no render cache here; the equivalent guarantee is the invariant check. |
 | Correction applied at render time, skipped for stitched composites and applied per tile instead | Applied once at convert time, per frame | This program's frames *are* the tiles; the intermediate TIFF is the natural place. |
-| Reference decoded with no white balance | Decoded with the locked `RAW_PARAMS` | Per-channel normalisation makes the two identical, and reuse beats a second decode configuration. |
 
 ## Scope flat-field does not cover
 
 Non-RAW references, a per-image/per-negative toggle, black-frame
 subtraction, and re-measuring `MAX_OVERLAP_MAD` now that overlaps arrive
-de-vignetted are all on [`punchlist.md`](punchlist.md). Writing
-intermediates in linear gamma would remove the transfer-curve round trip
-entirely; it interacts with this feature but is not part of it.
+de-vignetted are all on [`punchlist.md`](punchlist.md).
+
+# Linear decode for NegPy compatibility
+
+NegPy's pipeline (`NegPy/docs/PIPELINE.md`, "Color handling") works on
+**linear RGB straight from the raw decode** — `output_color=raw`,
+`gamma=(1, 1)`, unity white balance, `adjust_maximum_thr=0.0` — because it
+treats the scan as a radiometric measurement of the sensor's own channels
+and handles channel balance in film terms. This program fed it the opposite:
+`gamma=(1.8, 16)` (LibRaw's generalised curve), `output_color=ProPhoto`
+(camera primaries through LibRaw's colour matrix), and
+`use_camera_wb=True`. The flat-field, gain and stitch maths happened to run
+in linear light, but the written TIFFs were curve-encoded, colour-converted
+and white-balanced — violating NegPy's assumption on three counts.
+
+The decode now matches NegPy's exactly. `RAW_PARAMS` is `gamma=(1, 1)`,
+`output_color=raw`, `user_wb=[1, 1, 1, 1]` (LibRaw's `user_mul`),
+`use_camera_wb=False`, `adjust_maximum_thr=0.0`; everything else is
+unchanged. Every TIFF this program writes is linear sensor-channel data.
+
+Consequences, all intended:
+
+- **`romm.py` became `linear.py`.** The 65,536-entry LibRaw-curve decode LUT
+  is gone; `decode_to_linear`/`encode_from_linear` are plain fixed-point
+  scaling and the round trip is exact for every code. This supersedes the
+  Phase 2 amendment above ("The colour decode curve"), which locked LibRaw's
+  measured curve into these helpers; the curve measurement was correct but
+  the curve itself is no longer wanted.
+- **A new ICC profile** (`ScannyBoy-Linear-ProPhoto-v1.icc`, generated by
+  the same deterministic tool) declares ProPhoto primaries — carried over
+  byte-identical from the upstream ProPhoto-v4 source — with a **linear**
+  TRC (parametric type 0, g = 1.0): the truth about the pixels. This
+  supersedes `ScannyBoy-ROMM-LibRaw-v4.icc`. NegPy reads an input profile's
+  primaries only, never its declared TRC, so the boundary behaves as its
+  doc assumes.
+- **Previews are display-encoded.** The published TIFF is linear, so
+  `previews.py` now 16→8-bit encodes through an sRGB LUT (after downscaling
+  in linear light) — an untagged 8-bit PNG is assumed sRGB, and SwiftUI
+  displays it as-is. The TIFF is never touched.
+- **This resolves the punchlist item** that asked for linear ("gamma 1, 1")
+  TIFFs, and removes flat-field's curve round trip.
+- **Compatibility break**: every existing roll's manifest pins the old
+  profile hash and the old `processing_params`, and its TIFFs are
+  curve-encoded in a colourimetric space. Re-running `convert` or `stitch`
+  against them is refused by the recorded mismatch; existing rolls must be
+  reconverted. There is no migration.
+
+Deliberately **not** changed: the demosaic (AHD), `no_auto_bright`,
+`output_bps=16`, `highlight_mode=Clip`, the stitch and flat-field maths
+(already linear), and the export stage's pixels-only behaviour.

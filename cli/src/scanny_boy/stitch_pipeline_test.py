@@ -49,7 +49,7 @@ from scanny_boy.roll_manifest_schema_test_support import (
     assert_matches_roll_manifest_schema,
     load_roll_manifest_schema,
 )
-from scanny_boy.romm import encode_from_linear
+from scanny_boy.linear import encode_from_linear
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_2,
