@@ -29,20 +29,6 @@ struct RollSidebar: View {
 
     var body: some View {
         List(selection: $selection) {
-            if let scanError = library.scanError {
-                Section {
-                    // A failed scan leaves `rolls` at its last successful
-                    // snapshot — without this, the list silently shows stale
-                    // counts (a roll stitched since reads as it was before)
-                    // instead of saying why nothing refreshed.
-                    Label(
-                        "The library could not be read: \(scanError)",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
             ForEach(sortedRolls) { roll in
                 RollRow(roll: roll)
                     .tag(roll.id)
@@ -55,6 +41,25 @@ struct RollSidebar: View {
             }
         }
         .navigationTitle("Rolls")
+        .safeAreaInset(edge: .bottom) {
+            // A failed scan leaves `rolls` at its last successful snapshot —
+            // without this, the list silently shows stale counts (a roll
+            // stitched since reads as it was before) instead of saying why
+            // nothing refreshed. Pinned below the list rather than shown as a
+            // list row: sidebar-styled lists force single-line rows, so a row
+            // would truncate the message instead of wrapping it.
+            if let scanError = library.scanError {
+                HStack(alignment: .firstTextBaseline) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text("The library could not be read: \(scanError)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.background.secondary)
+            }
+        }
         .toolbar {
             ToolbarItem {
                 Button {
