@@ -207,6 +207,7 @@ def _preview_roll(
     per_negative: int,
     groups: list[list[str]],
     roll_dir: Path,
+    processing_params: dict,
 ) -> list[RollOverlapEntry]:
     """`probe --roll`'s roll-folder validation and overlap report (section
     3.5). Raises `ProbeFailure` for anything that would also stop `run
@@ -227,7 +228,7 @@ def _preview_roll(
     # probe that passes here cannot fail there on parameters.
     candidate = RollInvariants(
         shots_per_negative=per_negative,
-        processing_params=jsonable_raw_params(),
+        processing_params=processing_params,
         icc_profile_sha256=PROFILE_SHA256,
         stitch_params=_stitch_params(),
     )
@@ -285,6 +286,7 @@ def run_probe(
     *,
     out_dir: Path | None = None,
     roll_dir: Path | None = None,
+    flatfield_profile_id: str | None = None,
     on_warning: OnWarning = lambda code, message: None,
 ) -> ProbeOutcome:
     try:
@@ -295,6 +297,21 @@ def run_probe(
         raise ProbeFailure(
             Code.NO_FILES, f"input folder does not exist or is not readable: {exc}"
         ) from exc
+
+    # The candidate's processing params must be exactly what `run` will
+    # present (section 3.4), so an unknown profile id fails here before any
+    # roll is touched — the run would fail at its own load having touched
+    # nothing either.
+    processing_params = jsonable_raw_params()
+    if flatfield_profile_id is not None:
+        from scanny_boy import flatfield
+        from scanny_boy.library import repo
+
+        try:
+            profile = repo.load_flatfield_profile(flatfield_profile_id)
+        except flatfield.FlatFieldError as exc:
+            raise ProbeFailure(exc.code, exc.message) from exc
+        processing_params["flat_field"] = flatfield.profile_token(profile)
 
     if not names:
         raise ProbeFailure(Code.NO_FILES, f"no .nef files found in {input_dir}")
@@ -314,7 +331,7 @@ def run_probe(
         # folder and its invariants; without a selection there is no overlap
         # to report.
         if roll_dir is not None:
-            _preview_roll(input_dir, [], per_negative, [], roll_dir)
+            _preview_roll(input_dir, [], per_negative, [], roll_dir, processing_params)
         return ProbeOutcome(catalogue=order.order, groups=[])
 
     if not files:
@@ -374,7 +391,7 @@ def run_probe(
     roll_overlap: list[RollOverlapEntry] = []
     if roll_dir is not None:
         roll_overlap = _preview_roll(
-            input_dir, selection.names, per_negative, groups, roll_dir
+            input_dir, selection.names, per_negative, groups, roll_dir, processing_params
         )
 
     return ProbeOutcome(

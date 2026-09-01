@@ -195,4 +195,67 @@ struct CLICommandTests {
         let command = CLICommand.stitch(work: Self.work, roll: Self.out, allowPartial: false)
         #expect(!command.arguments.contains("--allow-partial"))
     }
+
+    // MARK: - Protocol version 6: flat field
+
+    @Test("run carries --flatfield when a profile is chosen")
+    func runWithFlatField() {
+        let command = CLICommand.run(
+            input: Self.input,
+            files: ["a.NEF"],
+            roll: Self.out,
+            flatfield: "pid-1"
+        )
+        #expect(
+            command.arguments == [
+                "run", "--input", "/Volumes/Scans/roll-12",
+                "--files", "a.NEF",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--flatfield", "pid-1",
+            ]
+        )
+    }
+
+    @Test("run omits --flatfield when no profile is chosen")
+    func runWithoutFlatField() {
+        let command = CLICommand.run(input: Self.input, files: ["a.NEF"], roll: Self.out)
+        #expect(!command.arguments.contains("--flatfield"))
+    }
+
+    @Test("probe carries --flatfield when a profile is chosen")
+    func probeWithFlatField() throws {
+        let command = CLICommand.probe(
+            input: Self.input,
+            files: ["a.NEF"],
+            roll: Self.out,
+            perNegative: 3,
+            flatfield: "pid-1"
+        )
+        #expect(command.arguments.contains("--flatfield"))
+        let index = try #require(command.arguments.firstIndex(of: "--flatfield"))
+        #expect(command.arguments[index + 1] == "pid-1")
+    }
+
+    @Test("flatfield create names the reference and the profile")
+    func flatfieldCreateArguments() {
+        let reference = URL(filePath: "/Volumes/Refs/bare-light.NEF")
+        let command = CLICommand.flatfieldCreate(reference: reference, name: "Copy stand")
+        #expect(
+            command.arguments == [
+                "flatfield", "create",
+                "--reference", "/Volumes/Refs/bare-light.NEF",
+                "--name", "Copy stand",
+            ]
+        )
+    }
+
+    @Test("flatfield list and delete are shaped like CONTRACT.md says")
+    func flatfieldListAndDeleteArguments() {
+        #expect(CLICommand.flatfieldList().arguments == ["flatfield", "list"])
+        #expect(
+            CLICommand.flatfieldDelete(profile: "pid-1").arguments == [
+                "flatfield", "delete", "--profile", "pid-1",
+            ]
+        )
+    }
 }

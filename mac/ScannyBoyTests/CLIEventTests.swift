@@ -10,7 +10,7 @@ struct CLIEventTests {
     @Test("started")
     func startedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":5,"event":"started","command":"probe"}"#
+            line: #"{"protocol_version":6,"event":"started","command":"probe"}"#
         )
         #expect(event.kind == .started)
         #expect(event.command == "probe")
@@ -21,7 +21,7 @@ struct CLIEventTests {
     func probeResultDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"probe_result",\
+                {"protocol_version":6,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF","_DSC4639.NEF"],\
                 "warnings":["FILENAME_SORT_USED"],\
                 "groups":[["_DSC4638.NEF","_DSC4639.NEF"]]}
@@ -37,7 +37,7 @@ struct CLIEventTests {
     func probeResultWithOutDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"probe_result",\
+                {"protocol_version":6,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[["_DSC4638.NEF"]],\
                 "output_conflicts":["_DSC4638.tif"],\
                 "estimated_required_bytes":2223767655,"available_bytes":50000000000}
@@ -52,7 +52,7 @@ struct CLIEventTests {
     func probeResultWithoutOutDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"probe_result",\
+                {"protocol_version":6,"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[],\
                 "output_conflicts":[],"estimated_required_bytes":null,"available_bytes":null}
                 """
@@ -66,7 +66,7 @@ struct CLIEventTests {
     func progressDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"progress","run_id":"r1",\
+                {"protocol_version":6,"event":"progress","run_id":"r1",\
                 "source_index":3,"step":"write_tiff","completed":4,"total":6}
                 """
         )
@@ -82,7 +82,7 @@ struct CLIEventTests {
     func itemDoneDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"item_done","run_id":"r1",\
+                {"protocol_version":6,"event":"item_done","run_id":"r1",\
                 "source_index":0,"output":"_DSC4638.tif"}
                 """
         )
@@ -94,7 +94,7 @@ struct CLIEventTests {
     @Test("group_done")
     func groupDoneDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":5,"event":"group_done","run_id":"r1","group_id":"g1"}"#
+            line: #"{"protocol_version":6,"event":"group_done","run_id":"r1","group_id":"g1"}"#
         )
         #expect(event.kind == .groupDone)
         #expect(event.groupID == "g1")
@@ -104,7 +104,7 @@ struct CLIEventTests {
     func groupFailedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"group_failed","run_id":"r1",\
+                {"protocol_version":6,"event":"group_failed","run_id":"r1",\
                 "group_id":"g2","code":"TIFF_WRITE_FAILED","message":"no space"}
                 """
         )
@@ -118,7 +118,7 @@ struct CLIEventTests {
     func negativeDoneDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"negative_done","run_id":"r1",\
+                {"protocol_version":6,"event":"negative_done","run_id":"r1",\
                 "negative_id":"negative-0","output":"_DSC4638.tif",\
                 "width":13972,"height":4553,\
                 "global_rms_px":1.12,"max_overlap_mad":0.004}
@@ -137,7 +137,7 @@ struct CLIEventTests {
     func negativeFailedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"negative_failed","run_id":"r1",\
+                {"protocol_version":6,"event":"negative_failed","run_id":"r1",\
                 "negative_id":"negative-0","code":"STITCH_UNDERCONSTRAINED",\
                 "message":"frame not reachable"}
                 """
@@ -152,7 +152,7 @@ struct CLIEventTests {
     func progressStitchStageDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"progress","run_id":"r1",\
+                {"protocol_version":6,"event":"progress","run_id":"r1",\
                 "source_index":0,"step":"warp","completed":1,"total":6,"stage":"stitch"}
                 """
         )
@@ -163,7 +163,7 @@ struct CLIEventTests {
     func warningDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"warning",\
+                {"protocol_version":6,"event":"warning",\
                 "code":"FILENAME_SORT_USED","message":"fell back"}
                 """
         )
@@ -176,7 +176,7 @@ struct CLIEventTests {
     func errorDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"error",\
+                {"protocol_version":6,"event":"error",\
                 "code":"NON_CONTIGUOUS_SELECTION","message":"gap"}
                 """
         )
@@ -188,7 +188,7 @@ struct CLIEventTests {
     func finishedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"finished","run_id":"r1",\
+                {"protocol_version":6,"event":"finished","run_id":"r1",\
                 "status":"cancelled","exit_status":143}
                 """
         )
@@ -220,6 +220,11 @@ struct CLIEventTests {
         "ROLL_INVARIANT_MISMATCH", "PER_NEGATIVE_LOCKED",
         "OUTPUT_MODIFIED_EXTERNALLY", "METADATA_WRITE_FAILED",
         "ORPHAN_FILE_NOT_REMOVED",
+        "NEGATIVE_NOT_FOUND", "INVALID_EDIT", "EXPORT_FAILED", "PREVIEW_FAILED",
+        // Protocol version 6: flat field.
+        "FLATFIELD_PROFILE_NOT_FOUND", "FLATFIELD_PROFILE_EXISTS",
+        "FLATFIELD_PROFILE_IN_USE", "FLATFIELD_GAIN_MAP_MISSING",
+        "FLATFIELD_ASPECT_MISMATCH", "FLATFIELD_HIGHLIGHT_CLIPPED",
     ])
     func everyStableCodeIsKnown(name: String) {
         let code = CLICode(name: name)
@@ -244,7 +249,7 @@ struct CLIEventTests {
     func unknownEventTypeIsPreserved() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"negative_previewed","run_id":"r1",\
+                {"protocol_version":6,"event":"negative_previewed","run_id":"r1",\
                 "group_id":"g1","preview":{"width":800,"height":600}}
                 """
         )
@@ -262,7 +267,7 @@ struct CLIEventTests {
     func unknownCodeIsPreserved() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"error",\
+                {"protocol_version":6,"event":"error",\
                 "code":"SENSOR_DUST_DETECTED","message":"speck"}
                 """
         )
@@ -275,7 +280,7 @@ struct CLIEventTests {
     func unknownFieldsSurvive() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":5,"event":"item_done","source_index":1,\
+                {"protocol_version":6,"event":"item_done","source_index":1,\
                 "output":"a.tif","bytes":154340928,"verified":true}
                 """
         )
@@ -331,7 +336,66 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":5,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":6,"command":"probe"}"#)
         }
+    }
+
+    @Test("protocol version five is rejected")
+    func testRejectsProtocolVersionFive() {
+        #expect(throws: CLIEventDecodingError.unsupportedProtocolVersion(5)) {
+            try CLIEvent(line: #"{"protocol_version":5,"event":"started","command":"probe"}"#)
+        }
+    }
+
+    // MARK: - Protocol version 6: flat field
+
+    @Test("flatfield_created")
+    func flatfieldCreatedDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":6,"event":"flatfield_created",\
+                "profile":{"profile_id":"pid-1","name":"Copy stand",\
+                "reference_width":6064,"reference_height":4040,\
+                "source_path":"/refs/bare.NEF","created_at":"2026-09-01T00:00:00Z"}}
+                """
+        )
+        #expect(event.kind == .flatfieldCreated)
+        let profile = try #require(
+            event.flatFieldProfile.flatMap(FlatFieldProfile.init(fields:))
+        )
+        #expect(profile.profileID == "pid-1")
+        #expect(profile.name == "Copy stand")
+        #expect(profile.referenceWidth == 6064)
+        #expect(profile.referenceHeight == 4040)
+        #expect(profile.sourcePath == "/refs/bare.NEF")
+    }
+
+    @Test("flatfield_list")
+    func flatfieldListDecodes() throws {
+        let event = try CLIEvent(
+            line: """
+                {"protocol_version":6,"event":"flatfield_list","profiles":[\
+                {"profile_id":"pid-1","name":"Copy stand",\
+                "reference_width":6064,"reference_height":4040,\
+                "source_path":null,"created_at":"2026-09-01T00:00:00Z"},\
+                {"profile_id":"pid-2","name":"Stand 2",\
+                "reference_width":4000,"reference_height":6000,\
+                "source_path":null,"created_at":"2026-09-01T01:00:00Z"}]}
+                """
+        )
+        #expect(event.kind == .flatfieldList)
+        let profiles = try #require(
+            event.flatFieldProfiles?.compactMap(FlatFieldProfile.init(fields:))
+        )
+        #expect(profiles.map { $0.name } == ["Copy stand", "Stand 2"])
+    }
+
+    @Test("flatfield_deleted")
+    func flatfieldDeletedDecodes() throws {
+        let event = try CLIEvent(
+            line: #"{"protocol_version":6,"event":"flatfield_deleted","profile_id":"pid-1"}"#
+        )
+        #expect(event.kind == .flatfieldDeleted)
+        #expect(event.flatFieldProfileID == "pid-1")
     }
 }

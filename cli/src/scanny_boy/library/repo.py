@@ -26,9 +26,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from scanny_boy.events import Code
+from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
     EditRow,
+    FlatFieldProfileRow,
     NegativeRow,
     RollRow,
     RunRow,
@@ -438,3 +440,85 @@ def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
             continue
         turns += _DIRECTIONS[direction]
     return turns % 4
+
+
+# --- flat-field profiles -----------------------------------------------------
+
+
+def _flatfield_profile_row(session: Session, profile_id: str) -> FlatFieldProfileRow:
+    row = session.get(FlatFieldProfileRow, profile_id)
+    if row is None:
+        raise FlatFieldError(
+            Code.FLATFIELD_PROFILE_NOT_FOUND,
+            f"no flat-field profile with id {profile_id}",
+        )
+    return row
+
+
+def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
+    return FlatFieldProfile(
+        profile_id=row.profile_id,
+        name=row.name,
+        gain_map_path=row.gain_map_path,
+        gain_map_sha256=row.gain_map_sha256,
+        source_path=row.source_path,
+        reference_width=row.reference_width,
+        reference_height=row.reference_height,
+        params=dict(row.params),
+        scanny_boy_version=row.scanny_boy_version,
+        created_at=row.created_at,
+    )
+
+
+def save_flatfield_profile(profile: FlatFieldProfile) -> None:
+    """Upserts one profile row. Profile records are immutable once created —
+    `name` is not in the roll token precisely so renaming stays possible,
+    but nothing here needs to rewrite one today."""
+    with _session() as session:
+        session.merge(
+            FlatFieldProfileRow(
+                profile_id=profile.profile_id,
+                name=profile.name,
+                gain_map_path=profile.gain_map_path,
+                gain_map_sha256=profile.gain_map_sha256,
+                source_path=profile.source_path,
+                reference_width=profile.reference_width,
+                reference_height=profile.reference_height,
+                params=profile.params,
+                scanny_boy_version=profile.scanny_boy_version,
+                created_at=profile.created_at,
+            )
+        )
+
+
+def list_flatfield_profiles() -> list[FlatFieldProfile]:
+    with _session() as session:
+        rows = session.scalars(
+            select(FlatFieldProfileRow).order_by(FlatFieldProfileRow.created_at, FlatFieldProfileRow.name)
+        ).all()
+        return [_to_flatfield_profile(row) for row in rows]
+
+
+def load_flatfield_profile(profile_id: str) -> FlatFieldProfile:
+    with _session() as session:
+        return _to_flatfield_profile(_flatfield_profile_row(session, profile_id))
+
+
+def delete_flatfield_profile(profile_id: str) -> None:
+    with _session() as session:
+        row = _flatfield_profile_row(session, profile_id)
+        session.delete(row)
+
+
+def rolls_using_flatfield(profile_id: str) -> list[str]:
+    """Every roll whose `processing_params.flat_field.profile_id` names
+    `profile_id`. `processing_params` is an open JSON object the CLI wrote,
+    so the match is made on the decoded value, not a string pattern."""
+    with _session() as session:
+        rows = session.scalars(select(RollRow)).all()
+        return sorted(
+            roll.roll_id
+            for roll in rows
+            if (roll.processing_params or {}).get("flat_field", {}).get("profile_id")
+            == profile_id
+        )

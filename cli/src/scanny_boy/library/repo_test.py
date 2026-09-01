@@ -1,13 +1,18 @@
-"""Tests for the library repository: registration, edits ops log, and the
-rotation bookkeeping the edit/export commands build on."""
+"""Tests for the library repository: registration, edits ops log, the
+rotation bookkeeping the edit/export commands build on, and the flat-field
+profile records."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from sqlalchemy import inspect
 
+from scanny_boy import flatfield
+from scanny_boy.events import Code
+from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library import db, repo
 from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 
@@ -155,3 +160,78 @@ def test_save_updates_folder_path_after_a_move(roll_dir, tmp_path):
     assert repo.roll_registered(moved) is True
     assert repo.roll_registered(roll_dir) is False
     assert load_roll_manifest(moved).roll_id == "rid-1"
+
+
+# --- flat-field profiles ---------------------------------------------------
+
+
+def _flatfield_profile(name: str = "Copy stand") -> FlatFieldProfile:
+    gain_map = np.full((8, 8, 3), 1.25, dtype=np.float32)
+    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
+    return FlatFieldProfile(
+        profile_id=f"pid-{name}",
+        name=name,
+        gain_map_path=str(path),
+        gain_map_sha256=sha256,
+        source_path="/refs/bare.NEF",
+        reference_width=6064,
+        reference_height=4040,
+        params=flatfield.build_params(),
+        scanny_boy_version="0.3.0",
+        created_at="2026-09-01T00:00:00Z",
+    )
+
+
+def test_flatfield_profiles_round_trip_all_fields():
+    profile = _flatfield_profile()
+
+    repo.save_flatfield_profile(profile)
+
+    loaded = repo.load_flatfield_profile(profile.profile_id)
+    assert loaded == profile
+    assert [p.profile_id for p in repo.list_flatfield_profiles()] == [
+        profile.profile_id
+    ]
+
+
+def test_load_flatfield_profile_unknown_id_is_typed_not_found():
+    with pytest.raises(FlatFieldError) as excinfo:
+        repo.load_flatfield_profile("nope")
+
+    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
+
+
+def test_delete_flatfield_profile_removes_the_row():
+    profile = _flatfield_profile()
+    repo.save_flatfield_profile(profile)
+
+    repo.delete_flatfield_profile(profile.profile_id)
+
+    assert repo.list_flatfield_profiles() == []
+    with pytest.raises(FlatFieldError):
+        repo.load_flatfield_profile(profile.profile_id)
+
+
+def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
+    profile = _flatfield_profile()
+    repo.save_flatfield_profile(profile)
+
+    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked", shots_per_negative=2)
+    locked.processing_params = {
+        "output_bps": 16,
+        "flat_field": flatfield.profile_token(profile),
+    }
+    write_roll_manifest(tmp_roll_dir("locked"), locked)
+
+    other = new_roll_manifest(roll_id="rid-other", roll_name="Other", shots_per_negative=2)
+    other.processing_params = {"output_bps": 16}
+    write_roll_manifest(tmp_roll_dir("other"), other)
+
+    assert repo.rolls_using_flatfield(profile.profile_id) == ["rid-locked"]
+    assert repo.rolls_using_flatfield("someone-else") == []
+
+
+def tmp_roll_dir(name: str) -> Path:
+    directory = Path(db.library_db_path()).parent / name
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory

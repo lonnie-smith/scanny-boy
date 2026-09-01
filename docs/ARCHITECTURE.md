@@ -98,8 +98,12 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **5** ([`events.py`](../cli/src/scanny_boy/events.py)).
-Version 5 moved each roll's durable record from the roll folder's
+`PROTOCOL_VERSION` is **6** ([`events.py`](../cli/src/scanny_boy/events.py)).
+Version 6 added flat-field profiles: a `flatfield` command family
+(`create`/`list`/`delete`), gain maps stored beside the library database, and
+`--flatfield` on `convert`/`run`/`probe`, folded into `processing_params` as
+the profile token so a roll locks to one profile with its first run. Version
+5 moved each roll's durable record from the roll folder's
 `scanny-boy-roll.json` into a library SQLite database and added `edit rotate`
 / `export`. A client that only understands an earlier version must reject the
 stream rather than guess.
@@ -114,14 +118,17 @@ roll list   --library DIR
 roll info   --roll DIR
 roll rename --roll DIR --name NAME
 
-probe   --input DIR [--files ...] [--per-negative N] [--out DIR] [--roll DIR]
-convert --input DIR --files ... --out DIR [--per-negative N] [--jobs N] [--overwrite]
+probe   --input DIR [--files ...] [--per-negative N] [--out DIR] [--roll DIR] [--flatfield ID]
+convert --input DIR --files ... --out DIR [--per-negative N] [--jobs N] [--overwrite] [--flatfield ID]
 stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--negatives ID ...]
 run     --input DIR --files ... --roll DIR [--per-negative N] [--jobs N]
-        [--work DIR] [--skip-sources FILE ...]
+        [--work DIR] [--skip-sources FILE ...] [--flatfield ID]
 apply-metadata --roll DIR
 edit rotate --roll DIR --negative ID --direction cw|ccw
 export      --roll DIR --output DIR [--negatives ID ...]
+flatfield create --reference FILE --name NAME
+flatfield list
+flatfield delete --profile ID
 ```
 
 [`cli.py`](../cli/src/scanny_boy/cli.py) is pure argparse plumbing plus
@@ -176,6 +183,11 @@ to bottom.
 | `consistency.py` | Validate that a selection shares aperture/ISO/focal length/orientation/WB/lens, and that every file carries an exposure time (values are not compared — exposure may differ across a roll). Operates on `SourceSettings`, so it is testable without real NEFs. |
 | `raw_decode.py` | `RAW_PARAMS` and the rawpy calls. |
 
+**Flat field**
+| Module | Role |
+| --- | --- |
+| `flatfield.py` | The gain-map maths (`compute_gain`, ported from NegPy), the `.npz` store beside the library database, banded in-place application, and the profile token. Every constant of the feature is defined here and nowhere else. |
+
 **Output side**
 | Module | Role |
 | --- | --- |
@@ -226,17 +238,17 @@ to bottom.
 ### 6.1 `run` (the app's normal path)
 
 ```
-run --input IN --files ... --roll ROLL
+run --input IN --files ... --roll ROLL [--flatfield ID]
   │
   ├─ run_full (run_pipeline.py)
   │    ├─ work dir = ROLL/.work/<run_id>/   (created here; ALWAYS removed at the end)
   │    ├─ files -= skip_sources             (BEFORE grouping)
   │    │
   │    ├─ run_convert (pipeline.py) ────────────────── stage "convert"
-  │    │    validate selection → consistency → hash sources → disk check
-  │    │    → write `running` work manifest
+  │    │    load profile + gain map → validate selection → consistency → hash
+  │    │    sources → disk check → write `running` work manifest
   │    │    → for each group: stage every frame, then publish the group atomically
-  │    │        per frame: decode → base TIFF → nested EXIF   (3 progress steps)
+  │    │        per frame: decode → FLAT FIELD → base TIFF → nested EXIF   (3 progress steps)
   │    │    → work dir now holds one intermediate TIFF per frame + manifest
   │    │
   │    ├─ run_stitch (stitch_pipeline.py) ──────────── stage "stitch"
@@ -252,6 +264,17 @@ run --input IN --files ... --roll ROLL
   │
   └─ finished
 ```
+
+**Why flat-field correction sits inside the convert stage, before the
+stitch's gain solve:** the stitch stage's per-frame per-channel gains
+(`layout.solve_gains`, §8.3) are a global scalar per frame per channel and
+cannot represent a spatial gradient. Correcting vignetting before they run
+means the residual they are asked to explain is real exposure mismatch, not
+lens falloff — which also makes `overlap_mad` a cleaner measurement, since
+overlapping regions sit at different distances from each frame's own optical
+centre and disagree *spatially* before correction. The stitch stage needs no
+change at all: it reads `processing_params` off the work manifest already,
+and the flat-field token rides inside it.
 
 **Why layouts are all solved before compositing:** the section-3.8 free-space
 formula needs `canvas_width × canvas_height`, and a canvas does not exist
@@ -297,6 +320,18 @@ Consequences, all live in the code today:
   profile. An untagged ROMM file is never produced.
 - All geometric and photometric work happens in **linear light**: decode to
   linear `float32`, warp, blend, then encode back to `uint16` exactly once.
+- Flat-field correction adds **one more round trip through the transfer
+  curve** in the convert stage: the decoded frame is gamma-encoded `uint16`,
+  the correction is multiplicative and therefore only valid in linear light,
+  so `flatfield.apply_in_place` does `decode_to_linear → multiply →
+  encode_from_linear` per band. `DECODE_LUT` and `encode_from_linear` are
+  exact inverses (proved by a test, not assumed — a gain map of exactly 1.0
+  round-trips a real decoded frame to byte-identical pixels), so this round
+  trip is lossless. Where the correction would boost an already-bright pixel
+  past full scale, `encode_from_linear`'s clip at 1.0 loses the highlight —
+  the pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED` when more than 0.1% of a
+  frame's pixels clip rather than losing them silently. Writing intermediates
+  in linear gamma (a punchlist item) would remove the round trip entirely.
 
 `RAW_PARAMS` ([`raw_decode.py`](../cli/src/scanny_boy/raw_decode.py)) is
 locked and every value was independently verified to matter — in particular
@@ -504,7 +539,18 @@ negative by taking over its identity, not by publishing a rival.
   `processing_params`, the ICC profile hash, `stitch_params`. Everything else
   — input folder, source list, order, grouping — is *expected* to differ
   between runs and is **never compared**. A roll with no runs yet is unseeded:
-  the last three are established by the first run.
+  the last three are established by the first run. `processing_params` now
+  carries the **flat-field profile token** under the key `flat_field` when a
+  profile was given, so a roll locks to one profile with its first run — a
+  run using a different profile (or none) is refused with
+  `ROLL_INVARIANT_MISMATCH`. The key is absent, not null, when no profile is
+  given, so a no-profile run still compares equal to a pre-flat-field roll.
+  `name` is deliberately not in the token: renaming a profile must not
+  invalidate a roll. This needs no new comparison code — the token rides in
+  `processing_params`. Existing rolls (pre-flat-field) have no `flat_field`
+  key and therefore refuse profile-carrying runs; same breakage the
+  gain-normalization merge (#59) caused through `stitch_params`, same remedy:
+  start a new roll.
 - **Replacement happens in place, at publish.** A group whose members cover
   existing negatives **adopts** one of them (deterministically: the one whose
   first member matches the group's first member, else the first) — it keeps
@@ -629,6 +675,13 @@ nothing keys off them.
   exceeds it is *rejected* with `INSUFFICIENT_MEMORY`, because the user asked
   for a specific number. The measurement table justifying 640 MiB is in
   `concurrency.py`; re-measure with `scripts/measure-concurrency.py`.
+- **Flat-field memory** stays inside that budget without re-measuring it: the
+  full-resolution gain map is materialised **once per run** and shared
+  read-only across workers (~294 MB for a 24.5MP frame, one allocation, not
+  per worker), and the multiply is applied in horizontal bands of
+  `FLATFIELD_BAND_ROWS = 512` rows — decode, multiply, re-encode each band
+  back into the same `uint16` array in place — so the peak transient per
+  worker is band-sized (~37 MB), not frame-sized.
 - Parallelism **never spans negatives** — a negative is published all at once
   or not at all. In the stitch stage `--jobs` bounds feature detection only;
   compositing is one negative at a time, single-threaded through the
@@ -721,10 +774,21 @@ export — one helper invocation at a time.
 | Type | Role |
 | --- | --- |
 | `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
-| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is the roll's own, read-only. |
+| `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
+| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is the roll's own, read-only. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); a roll locked to a profile pre-selects it. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
 | `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
+
+Flat-field profiles are managed through a menu command ("Flat-Field
+Profiles…", the same notification pattern `Re-stitch…` uses) opening the
+`FlatFieldProfilesSheet`: the profile list with per-row delete (through the
+CLI, which refuses `FLATFIELD_PROFILE_IN_USE` when a roll's invariants name
+the profile — shown as an alert), plus New Profile… — an `NSOpenPanel`
+limited to NEF, a name field, and Create with a spinner, since building a
+profile decodes a RAW and takes seconds. A gain map is app-private data with
+a database row, not a user document, so unlike deleting a roll folder this
+goes through the CLI rather than `NSWorkspace.recycle`.
 
 **CLI bridge** (`CLIBridge/`): `CLILocator` finds the helper
 (`Contents/Helpers/ScannyBoyCLI.app`; a Debug build additionally honours an

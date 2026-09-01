@@ -61,6 +61,23 @@ Phase n:
   or an existing roll's `shots_per_negative` — see Phase 3 plan §5.6. A
   `roll set-date` command, by analogy with `roll rename` (§5.5), is the
   likely shape of the fix.
+* Flat-field deferred pieces (see FLATFIELD_PLAN.md §4 for what did ship):
+  - **Non-RAW references.** NegPy accepts ordinary images too; here a
+    reference must be a `.NEF`, because a JPEG reference would have to be
+    guessed into linear light.
+  - **A per-image / per-negative toggle.** NegPy has one; this design
+    applies a profile to a whole roll by construction — a per-negative
+    toggle would defeat the roll invariants.
+  - **Black-frame subtraction.** The correction is multiplicative gain
+    only, same as NegPy; a dark-frame reference would be additive.
+  - **Re-measure `MAX_OVERLAP_MAD`** now that overlaps arrive
+    de-vignetted — the falloff the old measurement carried is gone, so the
+    gate can probably tighten. Fold into the same user gate as the gain
+    thresholds above.
+  - **Interacts with linear-gamma intermediates.** Writing intermediates
+    in linear gamma (the note under Negative inversion below) would remove
+    flat-field's extra `decode → linear → multiply → encode` round trip
+    entirely.
 
 Phase n: 
 Negative inversion

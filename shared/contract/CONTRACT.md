@@ -9,7 +9,18 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 5 keeps version 4's roll model and adds **nondestructive
+Protocol version 6 keeps version 5's roll model and adds **flat-field
+correction**: gain maps measured once from a reference shot of the bare
+light source (`.NEF` only), stored beside the library database and managed
+through a new `flatfield` command family (`create`, `list`, `delete`). A
+profile chosen with `--flatfield` on `convert`, `run`, or `probe` is applied
+per frame in the convert stage and folded into `processing_params` under
+`flat_field`, so a roll locks to one profile with its first run — a run
+using a different profile (or none) is refused with
+`ROLL_INVARIANT_MISMATCH`. The key is absent, not null, when no profile is
+given, so pre-flat-field rolls still accept no-profile runs.
+
+Protocol version 5 kept version 4's roll model and added **nondestructive
 editing**: each roll's durable record moved from the roll folder's
 `scanny-boy-roll.json` into a library SQLite database (one row per roll,
 negative, run, and source, plus an ordered per-negative **edits ops log**),
@@ -30,21 +41,26 @@ scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
+                      [--flatfield ID]
 
 scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR [--per-negative N]
-                      [--jobs N] [--overwrite]
+                      [--jobs N] [--overwrite] [--flatfield ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ...]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR [--jobs N]
-                      [--skip-sources FILE ...] [--work DIR]
+                      [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
 
 scanny-boy apply-metadata --roll DIR
 
 scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
+
+scanny-boy flatfield create --reference FILE --name NAME
+scanny-boy flatfield list
+scanny-boy flatfield delete --profile ID
 ```
 
 `--roll` replaces `--out` on `stitch` and `run`. `convert` keeps `--out`,
@@ -88,6 +104,28 @@ a skip must remove a whole group's worth or the run fails
 `NON_CONTIGUOUS_SELECTION`.
 
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
+
+`--flatfield` on `convert`, `run`, and `probe` names a flat-field profile
+built by `flatfield create`. The correction is multiplicative gain only,
+applied per frame immediately after RAW decode. An unknown profile id fails
+with `FLATFIELD_PROFILE_NOT_FOUND` before anything is written. A frame whose
+correction pushes more than 0.1% of its pixels past full scale warns with
+`FLATFIELD_HIGHLIGHT_CLIPPED`; a profile whose reference aspect ratio
+differs from the frames' by more than 1% warns with
+`FLATFIELD_ASPECT_MISMATCH` but proceeds.
+
+`flatfield create` decodes `--reference` (a `.NEF` of the bare light source
+with no negative in the holder), builds and stores the gain map, and inserts
+the profile; it emits `flatfield_created` carrying the profile (`profile_id`,
+`name`, `reference_width`, `reference_height`, `source_path`,
+`created_at`). A duplicate name fails with `FLATFIELD_PROFILE_EXISTS`.
+`flatfield list` emits `flatfield_list` carrying `profiles`, an array of the
+same shape. `flatfield delete --profile ID` refuses with
+`FLATFIELD_PROFILE_IN_USE` when any roll's invariants name the profile —
+the gain map is the only thing that could reproduce that roll — and
+otherwise removes the row and the `.npz`, emitting `flatfield_deleted`
+carrying `profile_id`. Each command brackets like `roll init`/`roll list`
+and carries no `run_id`; none is a pipeline run.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
 registers an empty v4 roll in the library database. It emits `roll_created`
@@ -194,6 +232,9 @@ library database rather than a JSON file in the roll folder).
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
+| `flatfield_created` | A flat-field profile was created. Carries `profile`. |
+| `flatfield_list` | The flat-field profile list. Carries `profiles`. |
+| `flatfield_deleted` | A flat-field profile was deleted. Carries `profile_id`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
@@ -307,6 +348,12 @@ staging directories, and reruns the incomplete negative.
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
+| `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |
+| `FLATFIELD_PROFILE_EXISTS` | A flat-field profile with that name already exists |
+| `FLATFIELD_PROFILE_IN_USE` | The profile is locked into a roll's invariants and cannot be deleted |
+| `FLATFIELD_GAIN_MAP_MISSING` | The profile's `.npz` is missing or corrupt |
+| `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
+| `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
 
 ## Exit status
 

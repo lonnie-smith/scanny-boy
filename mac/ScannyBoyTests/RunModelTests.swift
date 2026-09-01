@@ -60,47 +60,47 @@ struct RunModelTests {
     private static let runID = "run-0001"
 
     private static let started =
-        #"{"protocol_version":5,"event":"started","command":"convert","run_id":"run-0001"}"#
+        #"{"protocol_version":6,"event":"started","command":"convert","run_id":"run-0001"}"#
 
     private static func finished(status: String, exitStatus: Int) -> String {
-        #"{"protocol_version":5,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
+        #"{"protocol_version":6,"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#
     }
 
     private static func progress(
         sourceIndex: Int, step: String, completed: Int, total: Int
     ) -> String {
-        #"{"protocol_version":5,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
+        #"{"protocol_version":6,"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#
     }
 
     private static func itemDone(sourceIndex: Int, output: String) -> String {
-        #"{"protocol_version":5,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
+        #"{"protocol_version":6,"event":"item_done","run_id":"run-0001","source_index":\#(sourceIndex),"output":"\#(output)"}"#
     }
 
     private static func groupDone(_ groupID: String) -> String {
-        #"{"protocol_version":5,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
+        #"{"protocol_version":6,"event":"group_done","run_id":"run-0001","group_id":"\#(groupID)"}"#
     }
 
     private static func groupFailed(_ groupID: String, code: String, message: String) -> String {
-        #"{"protocol_version":5,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":6,"event":"group_failed","run_id":"run-0001","group_id":"\#(groupID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func errorEvent(code: String, message: String) -> String {
-        #"{"protocol_version":5,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":6,"event":"error","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func negativeDone(
         negativeID: String, output: String, width: Int, height: Int,
         globalRMS: Double, maxOverlapMAD: Double
     ) -> String {
-        #"{"protocol_version":5,"event":"negative_done","run_id":"run-0001","negative_id":"\#(negativeID)","output":"\#(output)","width":\#(width),"height":\#(height),"global_rms_px":\#(globalRMS),"max_overlap_mad":\#(maxOverlapMAD)}"#
+        #"{"protocol_version":6,"event":"negative_done","run_id":"run-0001","negative_id":"\#(negativeID)","output":"\#(output)","width":\#(width),"height":\#(height),"global_rms_px":\#(globalRMS),"max_overlap_mad":\#(maxOverlapMAD)}"#
     }
 
     private static func negativeFailed(_ negativeID: String, code: String, message: String) -> String {
-        #"{"protocol_version":5,"event":"negative_failed","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":6,"event":"negative_failed","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static func warningEvent(code: String, message: String) -> String {
-        #"{"protocol_version":5,"event":"warning","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":6,"event":"warning","run_id":"run-0001","code":"\#(code)","message":"\#(message)"}"#
     }
 
     private static let sixFiles = [
@@ -560,9 +560,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":6,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let withOverlap =
-            #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
+            #"{"protocol_version":6,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
         let script = """
             if [ "$1" = "roll" ]; then
             exit 0
@@ -587,6 +587,8 @@ struct RunModelTests {
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
+        await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to
         // withhold the Run button.
@@ -609,9 +611,9 @@ struct RunModelTests {
         try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let catalogue =
-            #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
+            #"{"protocol_version":6,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[]}"#
         let clean =
-            #"{"protocol_version":5,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
+            #"{"protocol_version":6,"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
         let script = """
             if [ "$1" = "roll" ]; then
             exit 0
@@ -635,6 +637,8 @@ struct RunModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
 
         let command = try #require(model.runCommand())
@@ -717,8 +721,8 @@ struct RunModelTests {
         let executable = try Self.fakeConvertExecutable(
             emitting: [
                 Self.started,
-                #"{"protocol_version":5,"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#,
-                #"{"protocol_version":5,"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#,
+                #"{"protocol_version":6,"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#,
+                #"{"protocol_version":6,"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#,
                 Self.finished(status: "success", exitStatus: 0),
             ],
             in: directory
@@ -958,17 +962,17 @@ struct RunModelTests {
             "applied_datetime_original":null,"date_override":null}}],\
             "metadata":{"roll_capture_date":null,"last_applied_at":null}}
             """
-        return #"{"protocol_version":5,"event":"roll_info","manifest":\#(manifest)}"#
+        return #"{"protocol_version":6,"event":"roll_info","manifest":\#(manifest)}"#
     }
 
     // MARK: - Chunk P3-12's additions: apply-metadata
 
     private static func metadataApplied(_ negativeID: String) -> String {
-        #"{"protocol_version":5,"event":"metadata_applied","run_id":"run-0001","negative_id":"\#(negativeID)"}"#
+        #"{"protocol_version":6,"event":"metadata_applied","run_id":"run-0001","negative_id":"\#(negativeID)"}"#
     }
 
     private static func metadataSkipped(_ negativeID: String, code: String, message: String) -> String {
-        #"{"protocol_version":5,"event":"metadata_skipped","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
+        #"{"protocol_version":6,"event":"metadata_skipped","run_id":"run-0001","negative_id":"\#(negativeID)","code":"\#(code)","message":"\#(message)"}"#
     }
 
     @Test("Skipped negatives are reported by name, separately from what was applied")

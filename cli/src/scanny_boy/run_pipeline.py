@@ -98,6 +98,7 @@ def run_full(
     jobs: int | None,
     cancel: CancellationToken,
     emit: EmitFn,
+    flatfield_profile_id: str | None = None,
 ) -> RunOutcome:
     """Convert `files` into a work directory, then stitch it into `out_dir`
     (a roll).
@@ -154,6 +155,7 @@ def run_full(
             emit=emit,
             completed_offset=0,
             total_override=combined_total,
+            flatfield_profile_id=flatfield_profile_id,
         )
     except ConvertFailure as exc:
         raise RunFailure(exc.code, exc.message) from exc
