@@ -53,7 +53,7 @@
     },
     "frame": {
       "type": "object",
-      "required": ["name", "rotation_deg", "translation"],
+      "required": ["name", "rotation_deg", "translation", "gain"],
       "properties": {
         "name": { "type": "string" },
         "rotation_deg": { "type": "number" },
@@ -62,6 +62,12 @@
           "items": { "type": "number" },
           "minItems": 2,
           "maxItems": 2
+        },
+        "gain": {
+          "type": "array",
+          "items": { "type": "number", "exclusiveMinimum": 0 },
+          "minItems": 3,
+          "maxItems": 3
         }
       }
     },
@@ -77,6 +83,7 @@
         "scale_drift",
         "overlap_fraction",
         "overlap_mad",
+        "overlap_mad_pregain",
         "accepted"
       ],
       "properties": {
@@ -89,6 +96,7 @@
         "scale_drift": { "type": "number" },
         "overlap_fraction": { "type": ["number", "null"] },
         "overlap_mad": { "type": ["number", "null"] },
+        "overlap_mad_pregain": { "type": ["number", "null"] },
         "accepted": { "type": "boolean" }
       }
     },
@@ -264,7 +272,7 @@
     "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 3 },
+    "manifest_format_version": { "type": "integer", "const": 4 },
     "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
     "roll_id": { "type": "string" },

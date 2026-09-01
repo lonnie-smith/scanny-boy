@@ -10,6 +10,18 @@ least-squares problem in the scalar `theta`s), then translations (linear in
 `t` once `theta` is known). This two-step formulation is why section 4.1
 forbids SciPy — do not replace it with a nonlinear bundle adjustment.
 
+`solve_layout` places frames geometrically; `solve_gains` is its photometric
+counterpart: per-channel gains reconciling lamp drift between frames, from
+one linear least-squares problem per channel in log space (one row per
+usable pair: `-1` in column a, `+1` in column b, rhs `log(mean_a/mean_b)`
+over the pair's shared area, weighted by `sqrt(shared_count)` — a mean over
+N pixels has variance ∝ 1/N). The anchor row is all-ones with rhs 0, so the
+solved gains have geometric mean 1: no frame's lamp level is privileged, and
+the worst-case gain excursion — the clipping exposure, since gains above 1.0
+push linear values into `romm.encode_from_linear`'s [0, 1] clamp — is
+minimized. Names are sorted internally so the solved system does not depend
+on placement order.
+
 `MAX_GLOBAL_RMS_PX` and `STRIP_SPREAD_RATIO` are Chunk P2-1's measured
 constants, approved at user gate C (section 3.12). Production code reads
 them from here and from nowhere else. `REBATE_DEVIATION_WARN` is
@@ -221,6 +233,90 @@ def solve_layout(
         used_pairs=accepted_pairs,
         strip_spread_ratio=strip_spread_ratio(shifted_placements, frame_size),
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class GainStat:
+    """Per-pair photometric evidence for `solve_gains`, measured by
+    composite.py over the pair's shared valid area: the per-channel mean
+    linear level of each frame, and the number of shared pixels."""
+
+    a: str
+    b: str
+    mean_a: tuple[float, float, float]
+    mean_b: tuple[float, float, float]
+    shared_count: int
+
+
+# Numerical guard, not a measured threshold: a channel mean at or below this
+# carries no usable log-ratio (NegPy's gain_compensate uses the same floor).
+_MIN_CHANNEL_MEAN = 1e-6
+
+
+def solve_gains(
+    names: list[str],
+    stats: list[GainStat],
+) -> dict[str, tuple[float, float, float]]:
+    """Per-frame, per-channel gains reconciling photometric mismatch
+    (lamp drift, exposure variation) between a negative's frames.
+
+    For each channel independently, the log-gains solve one least-squares
+    system: one row per stat whose channel means are both usable
+    (`g_b - g_a = log(mean_a / mean_b)`, weighted by `sqrt(shared_count)`),
+    plus one all-ones anchor row with rhs 0 fixing the gains' geometric mean
+    to 1. Rows are dropped, not errored, when a channel mean is degenerate;
+    frames that survive in no row for a channel keep gain 1.0. Connectivity
+    of `stats` is guaranteed upstream by `check_connectivity`, so the only
+    degeneracy this handles is dropped rows.
+
+    Names are sorted before the system is built so the matrix does not
+    depend on the caller's placement order — compositing a layout forward or
+    reversed must produce bitwise-identical gains.
+    """
+    gains = {name: [1.0, 1.0, 1.0] for name in names}
+    index = {name: i for i, name in enumerate(sorted(names))}
+
+    for channel in range(3):
+        rows = []
+        rhs = []
+        covered: set[str] = set()
+        for stat in stats:
+            mean_a = stat.mean_a[channel]
+            mean_b = stat.mean_b[channel]
+            if mean_a <= _MIN_CHANNEL_MEAN or mean_b <= _MIN_CHANNEL_MEAN:
+                continue
+            weight = math.sqrt(stat.shared_count)
+            row = np.zeros(len(index))
+            row[index[stat.a]] = -weight
+            row[index[stat.b]] = weight
+            rows.append(row)
+            rhs.append(weight * math.log(mean_a / mean_b))
+            covered.add(stat.a)
+            covered.add(stat.b)
+
+        if not rows:
+            continue
+
+        # The anchor row is weighted to the same total as the data rows so
+        # the geometric-mean constraint holds effectively exactly without
+        # being a hard constraint lstsq cannot trade against.
+        anchor_weight = math.sqrt(sum(float(row @ row) for row in rows))
+        anchor = np.zeros(len(index))
+        for name in sorted(covered):
+            anchor[index[name]] = anchor_weight
+        rows.append(anchor)
+        rhs.append(0.0)
+
+        solution, *_ = np.linalg.lstsq(
+            np.array(rows), np.array(rhs), rcond=None
+        )
+        for name in covered:
+            gains[name][channel] = float(np.exp(solution[index[name]]))
+
+    return {
+        name: (channel_gains[0], channel_gains[1], channel_gains[2])
+        for name, channel_gains in gains.items()
+    }
 
 
 def global_rms(placements: list[FramePlacement], pairs: list[PairResult]) -> float:

@@ -95,7 +95,7 @@ ALL_EVENTS: list[Event] = [
                 status="unreadable",
                 reason=RollListingReason(
                     code="ROLL_MANIFEST_UNSUPPORTED",
-                    message="manifest_format_version must be 3",
+                    message="manifest_format_version must be 4",
                 ),
             ),
         ]

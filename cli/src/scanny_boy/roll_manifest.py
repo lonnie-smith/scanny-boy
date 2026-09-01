@@ -1,9 +1,17 @@
-"""One roll's durable record: format version 3, now persisted in the
-library database instead of `scanny-boy-roll.json`.
+"""One roll's durable record: format version 4, persisted in the library
+database instead of `scanny-boy-roll.json`.
 
 A *roll* is a named folder the user returns to, holding the stitched TIFFs of
-one roll of film across many runs. The record's shape is unchanged from the
-JSON-manifest era — `to_dict()` still emits exactly the fields
+one roll of film across many runs. That is the whole reason this record is a
+break rather than a patch: Phase 2's version 1 carried one `run_id`, one
+`input_folder`, and one `film_date`, and refused any rerun that changed them,
+version 2's supersession tombstones are gone in version 3 — a rerun
+adopts the covered negative in place instead of publishing a replacement —
+and version 4 adds per-frame solved photometric gains and per-pair
+pre-gain overlap MAD. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
+for the shape and section 3.4 for the invariants and naming rules this
+module enforces. The record's shape is unchanged from the JSON-manifest era
+otherwise — `to_dict()` still emits exactly the fields
 `roll-manifest.schema.json` and the `roll info` event describe — but the
 file is gone: `load_roll_manifest` and `write_roll_manifest` read and write
 rows through `scanny_boy.library.repo`. A roll "exists" when it is
@@ -33,7 +41,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 3
+ROLL_MANIFEST_FORMAT_VERSION = 4
 ROLL_MANIFEST_KIND = "roll"
 
 # Section 3.4: `short_id` starts at six characters of the run's UUID and
@@ -67,7 +75,11 @@ class PairRecord:
     rms_residual_px: float
     scale_drift: float
     overlap_fraction: float | None
+    # Post-gain residual — the value the MAX_OVERLAP_MAD gate checks.
     overlap_mad: float | None
+    # The same measurement taken before per-frame gain compensation; the
+    # diagnostic that explains why a gain was applied.
+    overlap_mad_pregain: float | None
     accepted: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -79,12 +91,17 @@ class FrameRecord:
     name: str
     rotation_deg: float
     translation: tuple[float, float]
+    # Solved per-channel (R, G, B) photometric gain; the frame's warped
+    # linear values were multiplied by this before the blend. Geometric
+    # mean of the gains across a negative's frames is 1 by construction.
+    gain: tuple[float, float, float]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "rotation_deg": self.rotation_deg,
             "translation": list(self.translation),
+            "gain": list(self.gain),
         }
 
 
