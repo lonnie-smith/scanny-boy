@@ -9,6 +9,7 @@ import pytest
 
 from scanny_boy import concurrency
 from scanny_boy.cli import MAX_SELECTION_FILES, main
+from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.manifest import load_manifest
 from scanny_boy.output_folder import STAGING_SUFFIX
@@ -766,7 +767,7 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
     events, _err = _stdout_events(capsys)
     assert events[0]["event"] == "started"
     assert events[-1] == {
-        "protocol_version": 5,
+        "protocol_version": PROTOCOL_VERSION,
         "event": "finished",
         "run_id": events[0]["run_id"],
         "status": "success",

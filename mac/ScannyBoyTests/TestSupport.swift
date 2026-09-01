@@ -3,6 +3,26 @@ import Testing
 
 @testable import ScannyBoy
 
+/// Builds CLI event lines at the protocol version the app supports, so a
+/// protocol bump changes one constant (plus `events.py` and `schema.json`)
+/// instead of dozens of fixture literals. Deliberate wrong-version fixtures
+/// (rejection tests in `CLIEventTests`) keep their literals.
+enum TestEvents {
+    static let version = CLIEvent.supportedProtocolVersion
+
+    /// `json` is a full JSON object *without* `protocol_version`; the
+    /// version is spliced in right after the opening brace.
+    static func line(_ json: String) -> String {
+        guard let firstBrace = json.firstIndex(of: "{") else {
+            fatalError("TestEvents.line requires a JSON object starting with '{'")
+        }
+        let afterBrace = json.index(after: firstBrace)
+        return String(json[json.startIndex...firstBrace])
+            + "\"protocol_version\":\(version),"
+            + String(json[afterBrace...])
+    }
+}
+
 /// Shared helpers for the Swift tests.
 ///
 /// Paths are resolved from this source file's own location, never from the
