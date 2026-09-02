@@ -31,8 +31,9 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy import concurrency, disk_check, pipeline, raw_decode
+from scanny_boy import concurrency, disk_check, flatfield, pipeline, raw_decode
 from scanny_boy.cancellation import CancellationToken
+from scanny_boy.events import Code, WarningEvent
 from scanny_boy.hashing import sha256_file
 from scanny_boy.manifest import MANIFEST_FILENAME, load_manifest
 from scanny_boy.manifest_schema_test_support import (
@@ -1010,3 +1011,128 @@ def test_cancelling_before_the_first_group_publishes_nothing(monkeypatch, tmp_pa
     manifest = load_manifest(out_dir)
     assert manifest.status == "cancelled"
     assert all(g.status == "pending" for g in manifest.groups)
+
+
+# --- flat-field correction ------------------------------------------------
+
+
+def _save_flatfield_profile(tmp_path, *, name: str, width: int, height: int, value: float = 1.5):
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    gain_map = np.full((8, 8, 3), value, dtype=np.float32)
+    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
+    profile = flatfield.FlatFieldProfile(
+        profile_id=f"pid-{name}",
+        name=name,
+        gain_map_path=str(path),
+        gain_map_sha256=sha256,
+        source_path="/refs/bare.NEF",
+        reference_width=width,
+        reference_height=height,
+        params=flatfield.build_params(),
+        scanny_boy_version="0.3.0",
+        created_at="2026-09-01T00:00:00Z",
+    )
+    repo.save_flatfield_profile(profile)
+    return profile
+
+
+@requires_real_samples
+def test_convert_with_flatfield_applies_the_gain_and_tokens_the_manifest(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    # The fake decode returns 12x8 frames; the run plans for the size
+    # `read_active_size` reports, so keep the two consistent.
+    monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
+    profile = _save_flatfield_profile(tmp_path, name="Boost", width=12, height=8)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    outcome = run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
+        emit=lambda e: None, flatfield_profile_id=profile.profile_id,
+    )
+    corrected_out = tmp_path / "out-plain"
+    corrected_out.mkdir()
+    run_convert(FIXTURES_DIR, list(NEGATIVE_1), corrected_out, 3, run_id="r2", emit=lambda e: None)
+
+    assert outcome.status == "complete"
+    manifest = load_manifest(out_dir)
+    assert manifest.processing_params["flat_field"] == flatfield.profile_token(profile)
+
+    for name in manifest.all_expected_outputs():
+        corrected = tifffile.imread(out_dir / name)
+        plain = tifffile.imread(corrected_out / name)
+        # A constant 1.5x gain is multiplicative only in linear light, so the
+        # gamma-encoded output rises everywhere but not linearly.
+        assert corrected.mean() > plain.mean()
+
+
+@requires_real_samples
+def test_convert_without_flatfield_carries_no_flat_field_key(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None)
+
+    manifest = load_manifest(out_dir)
+    # Absent, not null (section 2.4): a no-profile run still compares equal
+    # to a pre-flat-field roll.
+    assert "flat_field" not in manifest.processing_params
+
+
+@requires_real_samples
+def test_convert_with_an_unknown_profile_fails_before_the_output_is_touched(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(ConvertFailure) as excinfo:
+        run_convert(
+            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
+            emit=lambda e: None, flatfield_profile_id="nope",
+        )
+
+    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
+    assert list(out_dir.iterdir()) == []
+
+
+@requires_real_samples
+def test_convert_warns_when_the_reference_aspect_differs(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
+    # 4x3 is 12.5% off 12x8's 1.5 ratio — past the 1% gate.
+    profile = _save_flatfield_profile(tmp_path, name="Portrait", width=4, height=3)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    warnings: list[str] = []
+
+    outcome = run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
+        emit=lambda e: warnings.append(e.code.value) if isinstance(e, WarningEvent) else None,
+        flatfield_profile_id=profile.profile_id,
+    )
+
+    assert outcome.status == "complete"
+    assert "FLATFIELD_ASPECT_MISMATCH" in warnings
+
+
+@requires_real_samples
+def test_convert_warns_when_the_correction_clips_highlights(monkeypatch, tmp_path):
+    _install_fast_decode(monkeypatch)
+    monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
+    # _fast_frame's top rows sit near full scale; GAIN_MAX pushes them past it.
+    profile = _save_flatfield_profile(tmp_path, name="Hot", width=12, height=8, value=4.0)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    warnings: list[str] = []
+
+    outcome = run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
+        emit=lambda e: warnings.append(e.code.value) if isinstance(e, WarningEvent) else None,
+        flatfield_profile_id=profile.profile_id,
+    )
+
+    assert outcome.status == "complete"
+    assert "FLATFIELD_HIGHLIGHT_CLIPPED" in warnings

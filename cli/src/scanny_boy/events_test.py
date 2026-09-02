@@ -9,6 +9,10 @@ from scanny_boy.events import (
     EventWriter,
     ExportDone,
     Finished,
+    FlatFieldCreated,
+    FlatFieldDeleted,
+    FlatFieldList,
+    FlatFieldProfileSummary,
     GroupDone,
     GroupFailed,
     ItemDone,
@@ -211,8 +215,10 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_five():
-    assert PROTOCOL_VERSION == 5
+def test_protocol_version_is_six():
+    """Protocol 5→6: the flat-field events and codes (docs/FLATFIELD_PLAN.md
+    section F-2)."""
+    assert PROTOCOL_VERSION == 6
 
 
 def test_new_event_kinds_round_trip():
@@ -234,12 +240,24 @@ def test_new_event_kinds_round_trip():
             preview_path=None,
         ),
         ExportDone(negative_id="neg-4", output="out.tif", width=4, height=3),
+        FlatFieldCreated(
+            profile=FlatFieldProfileSummary(
+                profile_id="pid-1",
+                name="Copy stand",
+                reference_width=6064,
+                reference_height=4040,
+                source_path="/refs/bare.NEF",
+                created_at="2026-09-01T00:00:00Z",
+            )
+        ),
+        FlatFieldList(profiles=[]),
+        FlatFieldDeleted(profile_id="pid-1"),
         NegativeDeleted(negative_id="neg-5", output="out.tif"),
         NegativeDeleted(negative_id="neg-6", output=None),
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 5
+        assert data["protocol_version"] == 6
         assert json.loads(json.dumps(data)) == data
 
 

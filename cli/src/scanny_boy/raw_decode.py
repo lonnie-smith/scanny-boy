@@ -1,10 +1,16 @@
-"""RAW decoding with the exact rawpy parameters of section 3.4.
+"""RAW decoding: linear sensor channels, matching NegPy's decode exactly.
 
-`RAW_PARAMS` fixes bit depth, colour space, demosaicing, and — critically —
-disables histogram-based brightening and content-dependent maximum
-adjustment, so pixel scaling stays fixed across a whole negative. See
-`docs/IMPLEMENTATION_PLAN.md` section 3.4; every name and value here is
-locked and was checked against the installed rawpy 0.27.0.
+NegPy's pipeline (its `docs/PIPELINE.md`, "Color handling") works on
+**linear RGB straight from the raw decode** — `output_color=raw`,
+`gamma=(1, 1)`, unity white balance — because film density is a
+radiometric measurement of the sensor's own channels, never converted
+through camera primaries into a colorimetric space. `RAW_PARAMS` matches
+that decode value for value; channel balance is downstream business, not
+the decoder's. `adjust_maximum_thr=0.0` pins the scale to the camera's
+white level (not LibRaw's per-frame maximum), so pixel scaling stays fixed
+across a whole negative. Every name and value here is locked and was
+checked against the installed rawpy 0.27.0 (`user_wb` maps to LibRaw's
+`user_mul`; `ColorSpace.raw` is 0).
 """
 
 from __future__ import annotations
@@ -19,12 +25,13 @@ from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
 
 RAW_PARAMS = {
     "output_bps": 16,
-    "gamma": (1.8, 16),
+    "gamma": (1, 1),
     "no_auto_bright": True,
     "adjust_maximum_thr": 0.0,
-    "use_camera_wb": True,
+    "use_camera_wb": False,
     "use_auto_wb": False,
-    "output_color": rawpy.ColorSpace.ProPhoto,
+    "user_wb": [1, 1, 1, 1],
+    "output_color": rawpy.ColorSpace.raw,
     "demosaic_algorithm": rawpy.DemosaicAlgorithm.AHD,
     "four_color_rgb": False,
     "median_filter_passes": 0,
@@ -42,7 +49,7 @@ class DecodedFrame:
 def jsonable_raw_params() -> dict:
     """`RAW_PARAMS` as a JSON-serialisable dict, for the manifest's
     `processing_params` (section 3.7: "all pixel-processing parameters").
-    Enum values become their names (`"ProPhoto"`, `"AHD"`, `"Clip"`) and the
+    Enum values become their names (`"raw"`, `"AHD"`, `"Clip"`) and the
     `gamma` tuple becomes a list; everything else passes through unchanged.
     """
     result: dict = {}

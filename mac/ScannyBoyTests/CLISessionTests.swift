@@ -36,12 +36,15 @@ struct CLISessionTests {
     @Test("a successful run yields its events, its logs, and one completion")
     func successfulRun() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
+            let probeResult = TestEvents.line(#"{"event":"probe_result","catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[]}"#)
+            let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"probe"}'
+                printf '%s\n' '\#(started)'
                 printf '%s\n' 'reading /tmp/input' 1>&2
-                printf '%s\n' '{"protocol_version":5,"event":"probe_result","catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[]}'
-                printf '%s\n' '{"protocol_version":5,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '\#(probeResult)'
+                printf '%s\n' '\#(finished)'
                 exit 0
                 """#,
                 in: directory
@@ -64,11 +67,14 @@ struct CLISessionTests {
     @Test("a structured failure reports its error event and exit 1")
     func structuredFailure() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
+            let errorJSON = TestEvents.line(#"{"event":"error","run_id":"r1","code":"OUTPUT_CONFLICT","message":"3 outputs already exist"}"#)
+            let finished = TestEvents.line(#"{"event":"finished","run_id":"r1","status":"failed","exit_status":1}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert","run_id":"r1"}'
-                printf '%s\n' '{"protocol_version":5,"event":"error","run_id":"r1","code":"OUTPUT_CONFLICT","message":"3 outputs already exist"}'
-                printf '%s\n' '{"protocol_version":5,"event":"finished","run_id":"r1","status":"failed","exit_status":1}'
+                printf '%s\n' '\#(started)'
+                printf '%s\n' '\#(errorJSON)'
+                printf '%s\n' '\#(finished)'
                 exit 1
                 """#,
                 in: directory
@@ -104,15 +110,18 @@ struct CLISessionTests {
     @Test("cooperative cancellation exiting 143 is reported as cancelled")
     func cooperativeCancellationExiting143() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let error = TestEvents.line(#"{"event":"error","run_id":"r1","code":"CANCELLED","message":"cancelled by the user"}"#)
+            let cancelled = TestEvents.line(#"{"event":"finished","run_id":"r1","status":"cancelled","exit_status":143}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
-                  printf '%s\n' '{"protocol_version":5,"event":"error","run_id":"r1","code":"CANCELLED","message":"cancelled by the user"}'
-                  printf '%s\n' '{"protocol_version":5,"event":"finished","run_id":"r1","status":"cancelled","exit_status":143}'
+                  printf '%s\n' '\#(error)'
+                  printf '%s\n' '\#(cancelled)'
                   exit 143
                 }
                 trap on_term TERM
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '\#(started)'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -150,9 +159,10 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             // No trap: the shell takes SIGTERM's default action, so the child
             // is reported as terminated by signal 15 rather than exiting 143.
+            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '\#(started)'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -184,10 +194,11 @@ struct CLISessionTests {
     @Test("a CLI that ignores SIGTERM is force-terminated and classified forced")
     func forcedCancellationIsClassifiedAsForced() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 trap '' TERM
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert","run_id":"r1"}'
+                printf '%s\n' '\#(started)'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0
@@ -217,14 +228,16 @@ struct CLISessionTests {
     @Test("a run that ends on its own during the grace period is not called forced")
     func cancellationHonouredWithinTheGracePeriodIsNotForced() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let cancelled = TestEvents.line(#"{"event":"finished","status":"cancelled","exit_status":143}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"convert"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
-                  printf '%s\n' '{"protocol_version":5,"event":"finished","status":"cancelled","exit_status":143}'
+                  printf '%s\n' '\#(cancelled)'
                   exit 143
                 }
                 trap on_term TERM
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert"}'
+                printf '%s\n' '\#(started)'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 """#,
@@ -257,16 +270,17 @@ struct CLISessionTests {
             // Each stream carries about 1.6 MB, far past a pipe's 64 KiB
             // buffer: an implementation that read one stream to the end
             // before starting the other would block here forever.
+            let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 PAD=$(head -c 2000 /dev/zero | tr '\0' 'x')
                 i=0
                 while [ $i -lt 800 ]; do
-                  printf '{"protocol_version":5,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
+                  printf '{"protocol_version":6,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
                   printf 'log %s\n' "$PAD" 1>&2
                   i=$((i + 1))
                 done
-                printf '%s\n' '{"protocol_version":5,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '\#(finished)'
                 exit 0
                 """#,
                 in: directory
@@ -288,9 +302,10 @@ struct CLISessionTests {
             // stdout reaches EOF first, stderr keeps producing afterwards,
             // and the process outlives both. Each assertion below fails if
             // the stream finished at an earlier point than it should.
+            let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"probe"}'
+                printf '%s\n' '\#(started)'
                 exec 1>&-
                 i=0
                 while [ $i -lt 10 ]; do
@@ -326,11 +341,13 @@ struct CLISessionTests {
     @Test("events arrive while the CLI is still running, not in one batch at the end")
     func eventsArriveBeforeTheProcessExits() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let started = TestEvents.line(#"{"event":"started","command":"convert"}"#)
+            let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert"}'
+                printf '%s\n' '\#(started)'
                 sleep 2
-                printf '%s\n' '{"protocol_version":5,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '\#(finished)'
                 exit 0
                 """#,
                 in: directory
@@ -363,12 +380,12 @@ struct CLISessionTests {
             // splits a line and one that straddles a newline.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":5,"event":"started",'
+                printf '%s' '{"protocol_version":6,"event":"started",'
                 sleep 0.2
                 printf '%s' '"command":"convert","run_id":"r1"}'
                 sleep 0.2
                 printf '%s' '
-                {"protocol_version":5,"event":"finis'
+                {"protocol_version":6,"event":"finis'
                 sleep 0.2
                 printf '%s\n' 'hed","run_id":"r1","status":"complete","exit_status":0}'
                 exit 0
@@ -388,9 +405,10 @@ struct CLISessionTests {
     @Test("a final line without a trailing newline is still delivered")
     func finalLineWithoutNewlineIsDelivered() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":5,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s' '\#(finished)'
                 exit 0
                 """#,
                 in: directory
@@ -406,11 +424,13 @@ struct CLISessionTests {
     @Test("an unreadable stdout line is a decode failure, not a dropped stream")
     func garbageOnStdoutIsADecodeFailure() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
+            let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"probe"}'
+                printf '%s\n' '\#(started)'
                 printf '%s\n' 'Traceback (most recent call last):'
-                printf '%s\n' '{"protocol_version":5,"event":"finished","status":"complete","exit_status":0}'
+                printf '%s\n' '\#(finished)'
                 exit 0
                 """#,
                 in: directory
@@ -457,9 +477,10 @@ struct CLISessionTests {
     @Test("cancelling the consuming task closes the readers and stops the child")
     func cancellingTheConsumerTerminatesTheChild() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let startedJSON = TestEvents.line(#"{"event":"started","command":"convert"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s\n' '{"protocol_version":5,"event":"started","command":"convert"}'
+                printf '%s\n' '\#(startedJSON)'
                 i=0
                 while [ $i -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
                 exit 0

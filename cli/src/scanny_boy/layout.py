@@ -18,7 +18,7 @@ over the pair's shared area, weighted by `sqrt(shared_count)` — a mean over
 N pixels has variance ∝ 1/N). The anchor row is all-ones with rhs 0, so the
 solved gains have geometric mean 1: no frame's lamp level is privileged, and
 the worst-case gain excursion — the clipping exposure, since gains above 1.0
-push linear values into `romm.encode_from_linear`'s [0, 1] clamp — is
+push linear values into `encode_from_linear`'s [0, 1] clamp — is
 minimized. Names are sorted internally so the solved system does not depend
 on placement order.
 

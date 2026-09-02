@@ -2,7 +2,7 @@
 """Measure everything Chunk P2-1 has to decide, on the real gate-B scans.
 
 `docs/PHASE2_IMPLEMENTATION_PLAN.md` Chunk P2-1 requires seven tables of
-measurements plus a ROMM gate, from which the user approves the constants in
+measurements plus a linear gate, from which the user approves the constants in
 section 3.12 at gate C. This script produces them as GitHub-flavoured Markdown
 on stdout, so appendix B can be regenerated rather than remembered.
 
@@ -103,13 +103,9 @@ MEASURE_INTERPOLATION = cv2.INTER_LANCZOS4
 MEASURE_MIN_INLIERS = 20
 MEASURE_MAX_RMS_PX = 10.0
 
-# Section 2.3.1: LibRaw's curve, which is what rawpy's gamma=(1.8, 16) writes.
-# Not ROMM's — see that amendment for the measurement which settled it.
-ROMM_GAMMA = 1.8
-ROMM_SLOPE = 16.0
-ENCODED_BREAKPOINT = 0.008454220179
-LINEAR_BREAKPOINT = 0.000528388761
-CURVE_OFFSET = 0.006763376143
+# The production decode is linear (raw_decode.RAW_PARAMS: gamma=(1, 1),
+# output_color=raw, unity WB), so the harness's decode/encode pair is plain
+# fixed-point scaling — see cli/src/scanny_boy/linear.py.
 MAX_CODE = 65535
 
 MASK_ERODE_PX = 5  # section 3.3: Lanczos4 support radius 4, plus one
@@ -118,20 +114,8 @@ MASK_ERODE_PX = 5  # section 3.3: Lanczos4 support radius 4, plus one
 _RSS_SCALE = 1 if sys.platform == "darwin" else 1024
 
 
-def _build_decode_lut() -> np.ndarray:
-    e = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
-    return np.where(
-        e < ENCODED_BREAKPOINT,
-        e / ROMM_SLOPE,
-        np.power((e + CURVE_OFFSET) / (1.0 + CURVE_OFFSET), ROMM_GAMMA),
-    ).astype(np.float32)
-
-
-DECODE_LUT = _build_decode_lut()
-
-
 def decode_to_linear(image: np.ndarray) -> np.ndarray:
-    return DECODE_LUT[image]
+    return image.astype(np.float32) / MAX_CODE
 
 
 def encode_from_linear(image: np.ndarray) -> np.ndarray:
@@ -143,13 +127,7 @@ def encode_from_linear(image: np.ndarray) -> np.ndarray:
     band = max(1, 8_000_000 // per_row)
     for y in range(0, image.shape[0], band):
         block = np.clip(image[y : y + band], 0.0, 1.0).astype(np.float32)
-        high = np.power(block, np.float32(1.0 / ROMM_GAMMA))
-        high *= np.float32(1.0 + CURVE_OFFSET)
-        high -= np.float32(CURVE_OFFSET)
-        low = block * np.float32(ROMM_SLOPE)
-        encoded = np.where(block < np.float32(LINEAR_BREAKPOINT), low, high)
-        np.clip(encoded, 0.0, 1.0, out=encoded)
-        out[y : y + band] = np.rint(encoded * np.float32(MAX_CODE)).astype(np.uint16)
+        out[y : y + band] = np.rint(block * np.float32(MAX_CODE)).astype(np.uint16)
     return out
 
 
@@ -1149,31 +1127,31 @@ def table_sweep(work: Path, detector: str) -> None:
     )
 
 
-def romm_gate(work: Path, nef_dir: Path) -> None:
-    print("## The ROMM gate\n")
+def linear_gate(work: Path, nef_dir: Path) -> None:
+    print("## The linear gate\n")
     name = frame_names(GOOD_NEGATIVES[0])[0]
     codes = load_frame(work, name)
     again = encode_from_linear(decode_to_linear(codes))
     diff = np.abs(again.astype(np.int32) - codes.astype(np.int32))
-    print(f"Round trip on `{name}.tif` with the section 2.3.1 curve: **max "
+    print(f"Round trip on `{name}.tif` with the linear transfer: **max "
           f"{int(diff.max())} LSB**, {int(np.count_nonzero(diff))} of {codes.size} "
           f"pixels changed.\n")
 
     with rawpy.imread(str(nef_dir / f"{name}.NEF")) as raw:
-        linear_codes = raw.postprocess(**dict(RAW_PARAMS, gamma=(1, 1)))
+        linear_codes = raw.postprocess(**RAW_PARAMS)
     index = np.linspace(0, codes.size - 1, 2_000_000).astype(np.int64)
     truth = linear_codes.reshape(-1)[index].astype(np.float64) / MAX_CODE
     got = decode_to_linear(codes.reshape(-1)[index]).astype(np.float64)
     nonzero = truth > 0
     relative = np.abs(got[nonzero] - truth[nonzero]) / truth[nonzero]
-    print(f"Against a linear decode of the same NEF: **max "
+    print(f"Against a fresh linear decode of the same NEF: **max "
           f"{relative.max() * 100:.4f}%**, mean {relative.mean() * 100:.4f}% "
           f"relative error.\n")
     if diff.max() != 0:
         print("**GATE FAILED** — the round trip is not exact. Stop and report.\n")
     else:
-        print("Gate passes. The round trip alone could not detect a wrong curve "
-              "(section 2.3.1); the linear comparison above is what does.\n")
+        print("Gate passes. The round trip alone could not detect a wrong curve; "
+              "the decode comparison above is what does.\n")
 
 
 # --------------------------------------------------------------------------
@@ -1307,7 +1285,7 @@ def main() -> int:
         )
         return 1
 
-    wanted = {"1", "2", "3", "4", "5", "6", "7", "romm", "sweep"}
+    wanted = {"1", "2", "3", "4", "5", "6", "7", "linear", "sweep"}
     if args.tables != "all":
         wanted = set(args.tables.split(","))
 
@@ -1321,8 +1299,8 @@ def main() -> int:
 
     ensure_intermediates(args.nef_dir, work, NEGATIVES)
 
-    if "romm" in wanted:
-        romm_gate(work, args.nef_dir)
+    if "linear" in wanted:
+        linear_gate(work, args.nef_dir)
 
     detector = args.detector
     if "1" in wanted:

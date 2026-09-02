@@ -531,3 +531,40 @@ def test_covered_negatives_do_not_require_completed():
     manifest.negative("old-negative-01").output = None
     covered = [n for n in manifest.negatives if set(n.members) <= {"a.NEF"}]
     assert [n.negative_id for n in covered] == ["old-negative-01"]
+
+
+# --- flat-field profiles as a roll invariant (section 2.4) -----------------
+
+
+def _flat_field_token(profile_id: str) -> dict:
+    return {
+        "profile_id": profile_id,
+        "gain_map_sha256": "c" * 64 if profile_id == "profile-a" else "d" * 64,
+        "params": {"gain_map_max_edge": 256},
+    }
+
+
+def test_check_roll_invariants_rejects_a_different_flatfield_profile():
+    """A roll locks to one profile with its first run; a run using a
+    different profile — or none — is refused. There is no new comparison
+    code: the token rides inside `processing_params`."""
+    locked = _manifest(
+        processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-a")}
+    )
+
+    with pytest.raises(RollInvariantMismatchError):
+        check_roll_invariants(
+            locked,
+            _invariants(
+                processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-b")}
+            ),
+        )
+    with pytest.raises(RollInvariantMismatchError):
+        check_roll_invariants(locked, _invariants(processing_params={"gamma": [1.8, 16]}))
+
+    check_roll_invariants(
+        locked,
+        _invariants(
+            processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-a")}
+        ),
+    )
