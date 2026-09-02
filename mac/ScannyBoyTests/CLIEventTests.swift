@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":6,"event":"negative_deleted",\
+                {"protocol_version":7,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -165,7 +165,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":6,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":7,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -220,6 +220,21 @@ struct CLIEventTests {
         #expect(event.exitStatus == 143)
     }
 
+    @Test("flatfield_progress")
+    func flatfieldProgressDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"flatfield_progress",\
+                "phase":"chromatic","completed":12,"total":20}
+                """)
+        )
+        #expect(event.kind == .flatfieldProgress)
+        #expect(event.flatFieldPhase == "chromatic")
+        #expect(event.completed == 12)
+        #expect(event.total == 20)
+        #expect(event.runID == nil)
+    }
+
     /// Every code in CONTRACT.md maps to a case, and none of them lands in
     /// `unknown`.
     @Test("every stable code maps to a known case", arguments: [
@@ -248,6 +263,11 @@ struct CLIEventTests {
         "FLATFIELD_PROFILE_NOT_FOUND", "FLATFIELD_PROFILE_EXISTS",
         "FLATFIELD_PROFILE_IN_USE", "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH", "FLATFIELD_HIGHLIGHT_CLIPPED",
+        // Protocol version 7: geometric calibration.
+        "GEOMETRY_INSUFFICIENT_FRAMES", "GEOMETRY_BOARD_NOT_DETECTED",
+        "GEOMETRY_FRAME_SIZE_MISMATCH", "GEOMETRY_FIT_REJECTED",
+        "GEOMETRY_MAGNITUDE_SUSPECT", "GEOMETRY_FEW_FRAMES",
+        "CHROMATIC_FIT_REJECTED",
         "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
     ])
     func everyStableCodeIsKnown(name: String) {
@@ -360,7 +380,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":6,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":7,"command":"probe"}"#)
         }
     }
 

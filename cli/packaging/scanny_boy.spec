@@ -70,6 +70,11 @@ analysis = Analysis(  # noqa: F821
         "PyInstaller",
         "setuptools",
         "tkinter",
+        # SciPy's and NumPy's test suites are pulled in by PyInstaller's
+        # scipy hook's package scan; excluding them holds the bundle down
+        # without touching what `import scipy.optimize` needs at run time.
+        "scipy.tests",
+        "numpy.tests",
     ],
     noarchive=False,
     optimize=0,

@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
+from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
 from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
 from scanny_boy.events import (
@@ -33,7 +34,6 @@ from scanny_boy.events import (
 from scanny_boy.exporter import ExportFailure, run_export
 from scanny_boy.flatfield import (
     FlatFieldError,
-    create_profile,
     flatfield_profile_summary,
 )
 from scanny_boy.library import repo
@@ -137,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--overwrite", action="store_true")
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
     stitch.add_argument("--negatives", nargs="+", metavar="ID")
+    stitch.add_argument("--flatfield", metavar="PROFILE_ID")
 
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
@@ -160,10 +161,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     flatfield_create = flatfield_subparsers.add_parser(
-        "create", help="Build a gain map from a bare light source reference NEF."
+        "create",
+        help="Build a gain map, optionally with geometric calibration from ChArUco frames.",
     )
     flatfield_create.add_argument("--reference", required=True, metavar="FILE")
     flatfield_create.add_argument("--name", required=True, metavar="NAME")
+    flatfield_create.add_argument(
+        "--calibration",
+        nargs="*",
+        metavar="FILE",
+        default=[],
+        help="ChArUco calibration frames (absolute paths); omit for a flat-field-only profile",
+    )
 
     flatfield_subparsers.add_parser("list", help="List the flat-field profiles.")
 
@@ -242,6 +251,7 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 cancel=cancel,
                 emit=writer.write,
                 negatives=args.negatives,
+                flatfield_profile_id=args.flatfield,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -429,7 +439,12 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
     if args.flatfield_command == "create":
         writer.write(Started(command="flatfield create"))
         try:
-            profile = create_profile(Path(args.reference), args.name)
+            profile = create_profile(
+                Path(args.reference),
+                args.name,
+                [Path(p) for p in args.calibration],
+                emit=writer.write,
+            )
         except FlatFieldError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
@@ -479,7 +494,10 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    users = repo.rolls_using_flatfield(args.profile)
+    users = sorted(
+        set(repo.rolls_using_flatfield(args.profile))
+        | set(repo.rolls_using_profile_geometry(args.profile))
+    )
     if users:
         # The gain map is the only thing that could reproduce those rolls.
         writer.write(

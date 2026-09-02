@@ -21,6 +21,11 @@ import SwiftUI
 /// `run_stitch`.
 struct RestitchSheet: View {
     let run: RunModel
+    /// The profile list, for the optional `--flatfield` picker: a roll whose
+    /// first stitch ran with a calibrated profile has its geometry locked
+    /// into its invariants, and a re-stitch without the same profile is
+    /// refused (`ROLL_INVARIANT_MISMATCH`).
+    let flatField: FlatFieldModel
     /// Called immediately after `run.start(...)`, so the caller can wait for
     /// completion and refresh whatever else depends on the output folder —
     /// the same thing `ContentView` does after a normal Run.
@@ -31,6 +36,7 @@ struct RestitchSheet: View {
     @State var workDirectory: URL?
     @State var outputFolder: URL?
     @State private var overwriteAcknowledged = false
+    @State private var flatFieldProfileID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -49,6 +55,13 @@ struct RestitchSheet: View {
                 message: "Choose the folder to write the stitched TIFFs into.",
                 canCreateDirectories: true
             ) { outputFolder = $0 }
+
+            Picker("Calibration profile", selection: $flatFieldProfileID) {
+                Text("None").tag(String?.none)
+                ForEach(flatField.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
+                }
+            }
 
             Toggle(
                 "This may replace an existing roll in the output folder.",
@@ -111,7 +124,10 @@ struct RestitchSheet: View {
         // negative count for this re-stitch is known ahead of time.
         let totalNegatives = try? RunManifest.read(inOutputFolder: workDirectory).groups.count
         run.start(
-            command: .stitch(work: workDirectory, roll: outputFolder, overwrite: true),
+            command: .stitch(
+                work: workDirectory, roll: outputFolder, overwrite: true,
+                flatfield: flatFieldProfileID
+            ),
             files: [],
             outputFolder: outputFolder,
             totalNegatives: totalNegatives

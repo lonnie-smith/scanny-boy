@@ -166,3 +166,10 @@ class FlatFieldProfileRow(Base):
     params: Mapped[dict] = mapped_column(JSONText)
     scanny_boy_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
+    # Geometric calibration (docs/GEOMETRIC_PLAN.md section 3): all four
+    # nullable, and rows from migration 0003 and earlier read back with
+    # four Nones and behave exactly as they did before.
+    board_key: Mapped[str | None] = mapped_column(Text)
+    geometry: Mapped[dict | None] = mapped_column(JSONText)
+    chromatic_aberration: Mapped[dict | None] = mapped_column(JSONText)
+    calibration_report: Mapped[dict | None] = mapped_column(JSONText)

@@ -105,6 +105,31 @@ def detect_features(detection: DetectionImage, name: str) -> FrameFeatures:
     )
 
 
+def undistorter_from_geometry(geometry: dict):
+    """Build the point undistorter `register_pair` consumes from a profile's
+    section 3.2 geometry object. The coefficients are already in the OpenCV
+    forward convention, so this is a direct `cv2.undistortPoints` closure —
+    full-resolution pixel points in, undistorted full-resolution pixel
+    points out."""
+    K = np.array(
+        [
+            [geometry["fx"], 0.0, geometry["cx"]],
+            [0.0, geometry["fy"], geometry["cy"]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    D = np.array([geometry["k1"], geometry["k2"], 0.0, 0.0, 0.0])
+
+    def undistort(points: np.ndarray) -> np.ndarray:
+        undistorted = cv2.undistortPoints(
+            points.reshape(-1, 1, 2).astype(np.float32), K, D, P=K
+        )
+        return undistorted.reshape(-1, 2).astype(np.float64)
+
+    return undistort
+
+
 def rigid_from_correspondences(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     """Closed-form Umeyama with scale forced to exactly 1. Returns 2x3."""
     mu_s, mu_d = src.mean(0), dst.mean(0)
@@ -126,7 +151,9 @@ def _rms_residual(
     return float(np.sqrt(np.mean(np.sum(residuals**2, axis=1))))
 
 
-def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
+def register_pair(
+    a: FrameFeatures, b: FrameFeatures, undistorter=None
+) -> PairResult:
     """1. BFMatcher — NORM_HAMMING for uint8 descriptors, NORM_L2 otherwise.
     2. knnMatch(k=2) plus Lowe ratio test at RATIO_TEST.
     3. Convert both point sets to full resolution with
@@ -139,6 +166,13 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
     5. rigid_from_correspondences on the inliers only. This, not the
        similarity, is the returned transform.
     6. Apply the section 3.4 gates and set accepted/reject_code.
+
+    `undistorter`, when given (docs/GEOMETRIC_PLAN.md section 5.3), pushes
+    both point sets through `cv2.undistortPoints` with the profile's fitted
+    coefficients after step 3 — everything downstream (RANSAC, the rigid
+    fit, rms_residual_px, scale_drift) then works in undistorted
+    full-resolution pixels, and no threshold's units change. The transform
+    used is always re-fitted rigidly; the undistorter never changes that.
     """
     norm_type = (
         cv2.NORM_HAMMING if a.descriptors.dtype == np.uint8 else cv2.NORM_L2
@@ -164,6 +198,9 @@ def register_pair(a: FrameFeatures, b: FrameFeatures) -> PairResult:
 
     pts_a_full = to_full_resolution(pts_a_detect, a.scale)
     pts_b_full = to_full_resolution(pts_b_detect, b.scale)
+    if undistorter is not None:
+        pts_a_full = undistorter(pts_a_full)
+        pts_b_full = undistorter(pts_b_full)
 
     matrix = None
     inlier_mask = None

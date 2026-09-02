@@ -20,10 +20,22 @@ final class FlatFieldModel {
         case failure(CLICode, String)
     }
 
+    /// One `flatfield_progress` event, decoded: a long calibration's
+    /// phase and progress (protocol version 7). Phases: "detect", "fit",
+    /// "chromatic", "reference".
+    struct CreationProgress: Sendable, Hashable {
+        let phase: String
+        let completed: Int
+        let total: Int
+    }
+
     let runner: CLIRunner
 
     private(set) var profiles: [FlatFieldProfile] = []
     private(set) var isScanning = false
+    /// Drives the New Profile sheet's determinate progress bar while a
+    /// calibration runs; nil when nothing is in flight.
+    private(set) var creationProgress: CreationProgress?
 
     @ObservationIgnored private var scanTask: Task<Void, Never>?
 
@@ -65,12 +77,20 @@ final class FlatFieldModel {
 
     // MARK: - Create
 
-    /// `flatfield create --reference --name`. Building a profile decodes a
-    /// RAW and takes seconds; the caller shows a spinner while this runs.
-    func create(reference: URL, name: String) async -> CreateResult {
+    /// `flatfield create --reference --name [--calibration FILE ...]`.
+    /// Building a flat-field-only profile decodes a RAW and takes seconds;
+    /// with calibration frames the geometric fit runs for minutes, and the
+    /// CLI's `flatfield_progress` events drive `creationProgress`.
+    func create(
+        reference: URL,
+        name: String,
+        calibrationFrames: [URL] = []
+    ) async -> CreateResult {
         do {
             for await output in try await runner.session(
-                for: .flatfieldCreate(reference: reference, name: name)
+                for: .flatfieldCreate(
+                    reference: reference, name: name, calibrationFrames: calibrationFrames
+                )
             ).start() {
                 guard case .event(let event) = output else { continue }
                 switch event.kind {
@@ -80,6 +100,15 @@ final class FlatFieldModel {
                     else { continue }
                     refresh()
                     return .success(profile)
+                case .flatfieldProgress:
+                    if let phase = event.flatFieldPhase,
+                        let completed = event.completed,
+                        let total = event.total
+                    {
+                        creationProgress = CreationProgress(
+                            phase: phase, completed: completed, total: total
+                        )
+                    }
                 case .error:
                     let code = event.code ?? .unknown("")
                     return .failure(code, event.message ?? "flatfield create failed")

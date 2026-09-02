@@ -35,6 +35,7 @@ from scanny_boy import composite as composite_module
 from scanny_boy import (
     concurrency,
     disk_check,
+    flatfield,
     hashing,
     previews,
     registration,
@@ -160,6 +161,7 @@ class _SolvedNegative:
     covered_to_remove: list[NegativeRecord] = dataclasses.field(default_factory=list)
     layout: Layout | None = None
     frame_size: tuple[int, int] | None = None  # (height, width)
+    ca_maps: dict | None = None  # profile CA object, "maps" mode only
     failure: tuple[Code, str] | None = None
 
 
@@ -177,12 +179,18 @@ def _intermediate_name(member: str) -> str:
     return f"{Path(member).stem}.tif"
 
 
-def _stitch_params() -> dict[str, Any]:
+def _stitch_params(profile=None) -> dict[str, Any]:
     """Section 3.7: the roll manifest records "the stitch parameters and
     every threshold in force", so a file can be interpreted, and the
     section 3.12.2 thresholds revisited, without knowing which build wrote
-    it."""
-    return {
+    it.
+
+    With a calibrated profile (docs/GEOMETRIC_PLAN.md section 3.6), the
+    `geometry` bucket carries the profile id, the geometry object, and —
+    only in "maps" mode — the chromatic aberration object. It is absent,
+    not null, when the profile carries no geometry, so a geometry-free
+    profile compares equal to a pre-geometry roll."""
+    params: dict[str, Any] = {
         "detection_long_edge": DETECTION_LONG_EDGE,
         "use_clahe": USE_CLAHE,
         # `_CLAHE_RETRY_CODES`: whether to fall back to CLAHE for a negative
@@ -212,6 +220,16 @@ def _stitch_params() -> dict[str, Any]:
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
     }
+    if profile is not None and profile.geometry is not None:
+        bucket: dict[str, Any] = {
+            "profile_id": profile.profile_id,
+            "geometry": profile.geometry,
+        }
+        ca = profile.chromatic_aberration
+        if ca is not None and ca.get("mode") == "maps":
+            bucket["chromatic_aberration"] = ca
+        params["geometry"] = bucket
+    return params
 
 
 class _StitchProgress:
@@ -396,7 +414,8 @@ def _solve_negative(
     progress: _StitchProgress,
     source_index: int,
     on_warning,
-) -> tuple[Layout, tuple[int, int]]:
+    profile=None,
+) -> tuple[Layout, tuple[int, int], dict | None]:
     """Detection, registration, and the global solve for one negative,
     retried once with CLAHE if the plain pass leaves the pair graph
     disconnected or too far off (`_CLAHE_RETRY_CODES`). Raises `StitchError`
@@ -423,6 +442,7 @@ def _solve_negative(
             progress=progress,
             source_index=source_index,
             on_warning=on_warning,
+            profile=profile,
         )
     except StitchError as exc:
         if exc.code not in _CLAHE_RETRY_CODES or USE_CLAHE:
@@ -444,6 +464,7 @@ def _solve_negative(
             progress=None,
             source_index=source_index,
             on_warning=on_warning,
+            profile=profile,
         )
 
 
@@ -459,6 +480,7 @@ def _attempt_solve(
     progress: _StitchProgress | None,
     source_index: int,
     on_warning,
+    profile=None,
 ) -> tuple[Layout, tuple[int, int]]:
     """One pass of detection, registration, and the global solve, at a fixed
     `use_clahe`. Raises `StitchError` for anything that fails the negative.
@@ -467,10 +489,23 @@ def _attempt_solve(
     a negative that fails still records its per-pair section 3.4 metrics:
     those numbers are exactly what a reader needs to see *why* it failed.
     `progress` is `None` on a CLAHE retry, which spends no further budget.
-    """
+
+    With a calibrated profile, matched points are undistorted before RANSAC
+    (docs/GEOMETRIC_PLAN.md section 5.3) and the memory estimate includes
+    the band-map terms."""
     if progress is not None:
         for _ in paths:
             progress.advance(source_index, PipelineStep.LOAD)
+
+    undistorter = None
+    geometry = None
+    ca_maps = None
+    if profile is not None and profile.geometry is not None:
+        geometry = profile.geometry
+        undistorter = registration.undistorter_from_geometry(geometry)
+        ca = profile.chromatic_aberration
+        if ca is not None and ca.get("mode") == "maps":
+            ca_maps = ca
 
     features = _detect_all(paths, workers, cancel, use_clahe=use_clahe)
     if progress is not None:
@@ -482,7 +517,7 @@ def _attempt_solve(
     for i in range(len(features)):
         for j in range(i + 1, len(features)):
             cancel.raise_if_cancelled()
-            pairs.append(register_pair(features[i], features[j]))
+            pairs.append(register_pair(features[i], features[j], undistorter))
     entry.pairs = pairs
     entry.record.pairs = _pair_records(pairs)
     if progress is not None:
@@ -524,10 +559,12 @@ def _attempt_solve(
             frame_size,
             (layout.canvas_size[1], layout.canvas_size[0]),
             len(paths),
+            geometry=geometry is not None,
+            ca_maps=ca_maps is not None,
         )
     )
 
-    return layout, frame_size
+    return layout, frame_size, ca_maps
 
 
 def _finite(value: float) -> float:
@@ -582,6 +619,7 @@ def run_stitch(
     cancel: CancellationToken,
     emit: EmitFn,
     negatives: list[str] | None = None,
+    flatfield_profile_id: str | None = None,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -600,6 +638,12 @@ def run_stitch(
     named by `negatives` (section 3.5's `--negatives` re-stitch path). Each
     match adopts the existing negative in place — same `negative_id`, same
     output name — per the replacement rule.
+
+    `flatfield_profile_id` names the calibration profile whose geometry
+    (and, in "maps" mode, CA maps) reach the stitch warp
+    (docs/GEOMETRIC_PLAN.md section 5.4). Omitting it on a roll whose
+    `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH` through
+    the existing check, with no new code.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -651,6 +695,24 @@ def run_stitch(
     for group in groups:
         _verify_intermediates(work_dir, group)
 
+    # The calibration profile, if any: its geometry reaches the stitch warp
+    # (docs/GEOMETRIC_PLAN.md sections 3.6 and 5.4). Loaded before the
+    # invariants are built, because the geometry bucket is part of them.
+    profile = None
+    if flatfield_profile_id is not None:
+        try:
+            profile = repo.load_flatfield_profile(flatfield_profile_id)
+        except flatfield.FlatFieldError as exc:
+            raise StitchError(exc.code, exc.message) from exc
+        if profile.geometry is not None:
+            width, height = _read_intermediate_size(
+                _intermediate_paths(work_dir, groups[0])[0]
+            )
+            try:
+                flatfield.check_geometry_frame_size(profile, width, height)
+            except flatfield.FlatFieldError as exc:
+                raise StitchError(exc.code, exc.message) from exc
+
     # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
     #    creates one) and this run's parameters must match its invariants.
     if not repo.roll_registered(out_dir):
@@ -661,7 +723,7 @@ def run_stitch(
     invariants = RollInvariants(
         processing_params=work_manifest.processing_params,
         icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
-        stitch_params=_stitch_params(),
+        stitch_params=_stitch_params(profile),
     )
     try:
         plan = plan_rerun(out_dir, invariants, rules=ROLL_RULES)
@@ -729,7 +791,7 @@ def run_stitch(
             covered_to_remove=removals_by_group.get(group.group_id, []),
         )
         try:
-            layout, frame_size = _solve_negative(
+            layout, frame_size, ca_maps = _solve_negative(
                 work_dir,
                 entry,
                 workers=workers,
@@ -737,6 +799,7 @@ def run_stitch(
                 progress=progress,
                 source_index=source_index_by_group[group.group_id],
                 on_warning=on_warning,
+                profile=profile,
             )
         except CancelledError:
             cancelled = True
@@ -751,6 +814,7 @@ def run_stitch(
             continue
         entry.layout = layout
         entry.frame_size = frame_size
+        entry.ca_maps = ca_maps
         solved.append(entry)
 
     if not cancelled:
@@ -1100,9 +1164,14 @@ def _composite_and_publish(
     emit: EmitFn,
     progress: _StitchProgress,
     source_index: int,
+    profile=None,
 ) -> None:
     """Composite one negative, apply the remaining section 3.4 gates, and
-    stage-then-publish it atomically, exactly as Phase 1 publishes a group."""
+    stage-then-publish it atomically, exactly as Phase 1 publishes a group.
+
+    With a calibrated profile, the warp folds in the profile's geometry and
+    — in "maps" mode only — its chromatic aberration maps
+    (docs/GEOMETRIC_PLAN.md section 5.3)."""
     layout = entry.layout
     assert layout is not None
     record = entry.record
@@ -1128,8 +1197,15 @@ def _composite_and_publish(
         def on_frame_warped() -> None:
             progress.advance(source_index, PipelineStep.WARP)
 
+        geometry = profile.geometry if profile is not None else None
+        ca = entry.ca_maps if profile is not None else None
         result = composite(
-            layout, load_frame, cancel=cancel, on_progress=on_frame_warped
+            layout,
+            load_frame,
+            cancel=cancel,
+            on_progress=on_frame_warped,
+            geometry=geometry,
+            ca=ca,
         )
         progress.advance(source_index, PipelineStep.BLEND)
         cancel.raise_if_cancelled()

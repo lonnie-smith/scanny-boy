@@ -482,6 +482,10 @@ def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
         params=dict(row.params),
         scanny_boy_version=row.scanny_boy_version,
         created_at=row.created_at,
+        board_key=row.board_key,
+        geometry=row.geometry,
+        chromatic_aberration=row.chromatic_aberration,
+        calibration_report=row.calibration_report,
     )
 
 
@@ -502,6 +506,10 @@ def save_flatfield_profile(profile: FlatFieldProfile) -> None:
                 params=profile.params,
                 scanny_boy_version=profile.scanny_boy_version,
                 created_at=profile.created_at,
+                board_key=profile.board_key,
+                geometry=profile.geometry,
+                chromatic_aberration=profile.chromatic_aberration,
+                calibration_report=profile.calibration_report,
             )
         )
 
@@ -535,5 +543,21 @@ def rolls_using_flatfield(profile_id: str) -> list[str]:
             roll.roll_id
             for roll in rows
             if (roll.processing_params or {}).get("flat_field", {}).get("profile_id")
+            == profile_id
+        )
+
+
+def rolls_using_profile_geometry(profile_id: str) -> list[str]:
+    """Every roll whose `stitch_params.geometry.profile_id` names
+    `profile_id` — the stitch-side half of the two invariant buckets
+    (docs/GEOMETRIC_PLAN.md section 3.6). A profile whose geometry a roll
+    depends on is exactly as undeletable as one whose gain map it depends
+    on; `flatfield delete` unions this with `rolls_using_flatfield`."""
+    with _session() as session:
+        rows = session.scalars(select(RollRow)).all()
+        return sorted(
+            roll.roll_id
+            for roll in rows
+            if (roll.stitch_params or {}).get("geometry", {}).get("profile_id")
             == profile_id
         )

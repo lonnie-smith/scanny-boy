@@ -312,6 +312,16 @@ def run_probe(
         except flatfield.FlatFieldError as exc:
             raise ProbeFailure(exc.code, exc.message) from exc
         processing_params["flat_field"] = flatfield.profile_token(profile)
+        ca_scales = flatfield.chromatic_aberration_scales(profile)
+        if ca_scales is not None:
+            processing_params["chromatic_aberration"] = {
+                "profile_id": profile.profile_id,
+                "mode": "scale",
+                "red_scale": ca_scales[0],
+                "blue_scale": ca_scales[1],
+            }
+    else:
+        profile = None
 
     if not names:
         raise ProbeFailure(Code.NO_FILES, f"no .nef files found in {input_dir}")
@@ -381,6 +391,26 @@ def run_probe(
 
     for warning in result.warnings:
         on_warning(warning.code, warning.message)
+
+    # docs/GEOMETRIC_PLAN.md section 5.4: a calibrated profile is only valid
+    # for the frame dimensions it was fitted at — fail here, before
+    # conversion starts.
+    if profile is not None and profile.geometry is not None:
+        try:
+            width, height = read_active_size(input_dir / selection.names[0])
+        except UnsupportedRawError as exc:
+            raise ProbeFailure(
+                Code.UNSUPPORTED_RAW,
+                f"{selection.names[0]} cannot be read by LibRaw",
+            ) from exc
+        except UnreadableRawError as exc:
+            raise ProbeFailure(
+                Code.UNREADABLE_RAW, f"{selection.names[0]} could not be decoded"
+            ) from exc
+        try:
+            flatfield.check_geometry_frame_size(profile, width, height)
+        except flatfield.FlatFieldError as exc:
+            raise ProbeFailure(exc.code, exc.message) from exc
 
     preview = None
     if out_dir is not None:

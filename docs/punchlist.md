@@ -94,3 +94,26 @@ the old profile hash and `processing_params`).
 
 Eventual:
 - would it be easy to convert this to an electron app for better cross-platform compatibility (plus familiarity to me)
+
+Geometric calibration (docs/GEOMETRIC_PLAN.md, protocol version 7) deferred
+pieces:
+
+* **Rename the `--flatfield` flag / command family.** The flag now names a
+  whole calibration profile (gain map + distortion + CA), not just a
+  flat-field gain map. A rename reaches `cli.py`, `CONTRACT.md`,
+  `schema.json`, `CLIRunner.swift`, `ConfigurationModel.swift`, and the
+  stored-defaults key — cosmetic, and deliberately not done in the same
+  change as the substance.
+* **Re-measure `SCALE_DRIFT_WARN` / `SCALE_DRIFT_FAIL` /
+  `MAX_PAIR_RMS_PX` / `MAX_GLOBAL_RMS_PX`.** Undistorting matched points
+  before registration can only reduce apparent scale drift and pair
+  residuals, so these gate-C thresholds are now loose for
+  geometry-corrected rolls. Fold into the same user gate as the
+  gain-threshold and `MAX_OVERLAP_MAD` re-measurements above.
+* **Detect on green?** The luminance detection image carries a sub-pixel
+  CA displacement from green at the frame corners. It is measured at
+  calibration time and recorded as `detection_channel_ca_px` on the
+  profile's `calibration_report`; if real profiles show it is a
+  meaningful fraction of `RANSAC_REPROJ_PX`, switching
+  `detection.build_detection_image` to the green channel (and re-measuring
+  `DETECTION_LONG_EDGE` / `USE_CLAHE`) becomes worthwhile.

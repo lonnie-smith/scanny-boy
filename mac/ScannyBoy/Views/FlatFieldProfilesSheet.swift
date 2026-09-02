@@ -14,6 +14,7 @@ struct FlatFieldProfilesSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var referenceURL: URL?
+    @State private var calibrationURLs: [URL] = []
     @State private var name = ""
     @State private var isCreating = false
     @State private var createError: String?
@@ -45,10 +46,12 @@ struct FlatFieldProfilesSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(isCreating)
             }
         }
         .padding(20)
         .frame(minWidth: 460, minHeight: 320)
+        .interactiveDismissDisabled(isCreating)
         .confirmationDialog(
             "Delete “\(profilePendingDeletion?.name ?? "")”?",
             isPresented: Binding(
@@ -80,12 +83,21 @@ struct FlatFieldProfilesSheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(profile.name)
+                        Text(profile.calibrationSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         if let width = profile.referenceWidth,
                             let height = profile.referenceHeight
                         {
                             Text("Reference \(width) × \(height)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                        if let rejection = rejectionReason(of: profile) {
+                            Text(rejection)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .help(rejection)
                         }
                     }
                     Spacer()
@@ -103,6 +115,16 @@ struct FlatFieldProfilesSheet: View {
         }
     }
 
+    /// A rejected fit's reason, surfaced so the automatic gates stay
+    /// visible: the user has to be able to see that a correction was
+    /// dropped and why.
+    private func rejectionReason(of profile: FlatFieldProfile) -> String? {
+        guard let distortion = profile.calibrationReport?.objectValue?["distortion"]?
+            .objectValue, distortion["accepted"]?.boolValue == false
+        else { return nil }
+        return "Distortion: not applied — \(distortion["rejection_reason"]?.stringValue ?? "fit did not clear its gates")"
+    }
+
     private var newProfile: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("New Profile").font(.headline)
@@ -116,6 +138,23 @@ struct FlatFieldProfilesSheet: View {
                     .truncationMode(.middle)
             }
 
+            HStack {
+                Button("Calibration Frames…") { chooseCalibrationFrames() }
+                Text(calibrationSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !calibrationURLs.isEmpty {
+                    Button("Clear") { calibrationURLs = [] }
+                        .buttonStyle(.borderless)
+                }
+            }
+
+            Text(
+                "Optional: 16–20 shots of the ChArUco board, rotated 0/45/90/135° and translated so the pattern reaches every quadrant and every image corner."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
 
@@ -127,12 +166,40 @@ struct FlatFieldProfilesSheet: View {
 
             HStack {
                 if isCreating {
-                    ProgressView().controlSize(.small)
+                    if let progress = flatField.creationProgress {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ProgressView(
+                                value: Double(progress.completed),
+                                total: Double(max(progress.total, 1))
+                            )
+                            Text("Calibrating — \(phaseLabel(progress.phase))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                 }
                 Spacer()
                 Button("Create") { create() }
                     .disabled(!isReady)
             }
+        }
+    }
+
+    private var calibrationSummary: String {
+        calibrationURLs.isEmpty
+            ? "No frames selected"
+            : "\(calibrationURLs.count) frame\(calibrationURLs.count == 1 ? "" : "s") selected"
+    }
+
+    private func phaseLabel(_ phase: String) -> String {
+        switch phase {
+        case "detect": "detecting calibration frames"
+        case "fit": "fitting distortion"
+        case "chromatic": "measuring chromatic aberration"
+        case "reference": "building the gain map"
+        default: phase
         }
     }
 
@@ -155,17 +222,34 @@ struct FlatFieldProfilesSheet: View {
         }
     }
 
+    private func chooseCalibrationFrames() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        if let nef = UTType(filenameExtension: "nef") {
+            panel.allowedContentTypes = [nef]
+        }
+        if panel.runModal() == .OK {
+            calibrationURLs = panel.urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+    }
+
     private func create() {
         guard let referenceURL else { return }
         isCreating = true
         createError = nil
+        let frames = calibrationURLs
         Task {
-            let result = await flatField.create(reference: referenceURL, name: name)
+            let result = await flatField.create(
+                reference: referenceURL, name: name, calibrationFrames: frames
+            )
             isCreating = false
             switch result {
             case .success:
                 name = ""
                 self.referenceURL = nil
+                calibrationURLs = []
             case .failure(_, let message):
                 createError = message
             }

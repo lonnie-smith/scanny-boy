@@ -1,14 +1,19 @@
 """The `run` command: one process, one event stream, one cancellation, from
 a selection of NEFs all the way to finished, stitched negatives.
 
-Calls Phase 1's `run_convert` in-process to build a work directory, then
-`stitch_pipeline.run_stitch` to publish it, exactly as section 3.6
-describes. Both stages' section 3.8 disk checks fire for free by simply
-calling each function in turn — `run_convert` already refuses to write
-anything if the work volume is short, and `run_stitch` already refuses to
-publish anything if the output volume is short, so there is no separate
-disk-check code here to add or to accidentally add together.
-"""
+    Calls Phase 1's `run_convert` in-process to build a work directory, then
+    `stitch_pipeline.run_stitch` to publish it, exactly as section 3.6
+    describes. Both stages' section 3.8 disk checks fire for free by simply
+    calling each function in turn — `run_convert` already refuses to write
+    anything if the work volume is short, and `run_stitch` already refuses to
+    publish anything if the output volume is short, so there is no separate
+    disk-check code here to add or to accidentally add together.
+
+    `flatfield_profile_id` passes through to both stages (docs/GEOMETRIC_PLAN.md
+    section 5.4): the convert stage applies the profile's gain map and — in
+    "scale" mode — its CA scales at decode; the stitch stage applies its
+    geometry to the warp.
+    """
 
 from __future__ import annotations
 
@@ -178,6 +183,7 @@ def run_full(
                 jobs=jobs,
                 cancel=cancel,
                 emit=stitch_emit,
+                flatfield_profile_id=flatfield_profile_id,
             )
         except StitchError as exc:
             raise RunFailure(exc.code, exc.message) from exc

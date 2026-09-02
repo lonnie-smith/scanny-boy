@@ -207,7 +207,7 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]`
+    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--flatfield ID]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in
     /// `work`, verifies every intermediate, and stitches — without paying for
@@ -217,13 +217,16 @@ public struct CLICommand: Sendable, Hashable {
     /// manifest is already `complete`. `overwrite` is only ever set after the
     /// user has explicitly agreed (section 3.6). `--out` became `--roll` in
     /// Phase 3 section 3.5; a re-stitch's target is a roll folder same as
-    /// everything else now.
+    /// everything else now. `flatfield` names the calibration profile whose
+    /// geometry reaches the stitch warp (protocol version 7); a roll locked
+    /// to a profile's geometry refuses a stitch without it.
     public static func stitch(
         work: URL,
         roll: URL,
         jobs: Int? = nil,
         overwrite: Bool = false,
-        allowPartial: Bool = true
+        allowPartial: Bool = true,
+        flatfield: String? = nil
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
         if let jobs {
@@ -235,20 +238,34 @@ public struct CLICommand: Sendable, Hashable {
         if allowPartial {
             arguments.append("--allow-partial")
         }
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
+        }
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy flatfield create --reference FILE --name NAME`
+    /// `scanny-boy flatfield create --reference FILE --name NAME [--calibration FILE ...]`
     ///
-    /// Protocol version 6: decodes the bare light source reference, builds
-    /// and stores the gain map, and inserts the profile. Takes seconds — the
-    /// UI shows a spinner, not a progress bar.
-    public static func flatfieldCreate(reference: URL, name: String) -> CLICommand {
-        CLICommand(arguments: [
+    /// Protocol version 7: decodes the bare light source reference, builds
+    /// and stores the gain map, and inserts the profile. With
+    /// `calibrationFrames` (ChArUco board NEFs, absolute paths), the profile
+    /// additionally carries the geometric calibration — and the command runs
+    /// for minutes, driven by `flatfield_progress` events.
+    public static func flatfieldCreate(
+        reference: URL,
+        name: String,
+        calibrationFrames: [URL] = []
+    ) -> CLICommand {
+        var arguments = [
             "flatfield", "create",
             "--reference", reference.path,
             "--name", name,
-        ])
+        ]
+        if !calibrationFrames.isEmpty {
+            arguments.append("--calibration")
+            arguments.append(contentsOf: calibrationFrames.map(\.path))
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy flatfield list`

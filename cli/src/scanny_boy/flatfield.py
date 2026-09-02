@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import uuid
 from pathlib import Path
 
 import cv2
@@ -87,6 +86,15 @@ class FlatFieldProfile:
     params: dict
     scanny_boy_version: str
     created_at: str
+    # Geometric calibration (docs/GEOMETRIC_PLAN.md section 3.1): a profile
+    # may carry a distortion fit, a CA fit, and the human-readable report.
+    # All four nullable; every pre-calibration profile reads back with four
+    # Nones and behaves exactly as it does today — that backward
+    # compatibility is a hard requirement.
+    board_key: str | None = None
+    geometry: dict | None = None
+    chromatic_aberration: dict | None = None
+    calibration_report: dict | None = None
 
 
 def flatfield_root() -> Path:
@@ -103,17 +111,26 @@ def _now_iso() -> str:
     )
 
 
-def build_params() -> dict:
+def build_params(chromatic_aberration_scales: tuple[float, float] | None = None) -> dict:
     """How a gain map is built — the constants of this module that produced
     it, recorded on the profile so a map can be interpreted without knowing
-    which build wrote it."""
-    return {
+    which build wrote it.
+
+    `chromatic_aberration_scales`, when given, is the CA scale pair the
+    reference itself was decoded with (docs/GEOMETRIC_PLAN.md section 4.7:
+    in "scale" mode the reference must be decoded with the same CA scales
+    production will use, so the gain map's provenance says which decode
+    produced it)."""
+    params = {
         "gain_map_max_edge": GAIN_MAP_MAX_EDGE,
         "blur_sigma_divisor": BLUR_SIGMA_DIVISOR,
         "gain_min": GAIN_MIN,
         "gain_max": GAIN_MAX,
         "format_version": GAIN_MAP_FORMAT_VERSION,
     }
+    if chromatic_aberration_scales is not None:
+        params["chromatic_aberration_scales"] = list(chromatic_aberration_scales)
+    return params
 
 
 def compute_gain(linear: np.ndarray) -> np.ndarray:
@@ -250,9 +267,46 @@ def profile_token(profile: FlatFieldProfile) -> dict:
     }
 
 
+def chromatic_aberration_scales(
+    profile: FlatFieldProfile,
+) -> tuple[float, float] | None:
+    """The rawpy decode scales a profile carries, or None: present only in
+    `"scale"` mode (docs/GEOMETRIC_PLAN.md section 3.6 — a decode
+    parameter, so it belongs to the convert stage's processing params)."""
+    if profile.chromatic_aberration is None:
+        return None
+    if profile.chromatic_aberration.get("mode") != "scale":
+        return None
+    return (
+        profile.chromatic_aberration["red_scale"],
+        profile.chromatic_aberration["blue_scale"],
+    )
+
+
+def check_geometry_frame_size(
+    profile: FlatFieldProfile, width: int, height: int
+) -> None:
+    """A profile's geometry is only valid for the frame dimensions it was
+    fitted at (section 1.2): `k1` is normalised by `fx`, which is derived
+    from the frame dimensions. A dimension change means a different decode,
+    and a silently rescaled calibration is worse than none — fail
+    `GEOMETRY_FRAME_SIZE_MISMATCH` before anything is written."""
+    geometry = profile.geometry
+    if geometry is None:
+        return
+    if geometry["frame_width"] != width or geometry["frame_height"] != height:
+        raise FlatFieldError(
+            Code.GEOMETRY_FRAME_SIZE_MISMATCH,
+            f"profile {profile.name!r} was fitted at "
+            f"{geometry['frame_width']}x{geometry['frame_height']} but these "
+            f"frames decode at {width}x{height}",
+        )
+
+
 def flatfield_profile_summary(profile: FlatFieldProfile) -> FlatFieldProfileSummary:
     """The fields a `flatfield` event carries: what the app's profile list
-    needs and nothing it does not."""
+    needs and nothing it does not. The gain map path and SHA stay absent,
+    per the existing rule that Swift never sees the CLI's storage."""
     return FlatFieldProfileSummary(
         profile_id=profile.profile_id,
         name=profile.name,
@@ -260,42 +314,22 @@ def flatfield_profile_summary(profile: FlatFieldProfile) -> FlatFieldProfileSumm
         reference_height=profile.reference_height,
         source_path=profile.source_path,
         created_at=profile.created_at,
+        board_key=profile.board_key,
+        has_geometry=profile.geometry is not None,
+        chromatic_aberration_mode=(
+            profile.chromatic_aberration.get("mode")
+            if profile.chromatic_aberration is not None
+            else None
+        ),
+        calibration_report=profile.calibration_report,
     )
-
-
-def create_profile(reference: Path, name: str) -> FlatFieldProfile:
-    """Decode, build, save, and insert — the one path `flatfield create` and
-    the app's New Profile sheet both use. Raises the reference decode's own
-    errors for a bad NEF and `FlatFieldError` (`FLATFIELD_PROFILE_EXISTS`)
-    when the name is already taken."""
-    from scanny_boy.library import repo
-
-    existing = repo.list_flatfield_profiles()
-    if any(profile.name == name for profile in existing):
-        raise FlatFieldError(
-            Code.FLATFIELD_PROFILE_EXISTS, f"a profile named {name!r} already exists"
-        )
-
-    gain_map, width, height = build_gain_map(reference)
-    profile_id = str(uuid.uuid4())
-    path, sha256 = save_gain_map(profile_id, gain_map)
-    profile = FlatFieldProfile(
-        profile_id=profile_id,
-        name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path=str(reference),
-        reference_width=width,
-        reference_height=height,
-        params=build_params(),
-        scanny_boy_version=_current_scanny_boy_version(),
-        created_at=_now_iso(),
-    )
-    repo.save_flatfield_profile(profile)
-    return profile
 
 
 def _current_scanny_boy_version() -> str:
     from scanny_boy.manifest import current_scanny_boy_version
 
     return current_scanny_boy_version()
+
+
+# `create_profile` moved to `calibration.py` (docs/GEOMETRIC_PLAN.md
+# section 4): this module owns only the gain map.

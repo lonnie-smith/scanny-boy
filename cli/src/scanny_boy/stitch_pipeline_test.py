@@ -622,7 +622,7 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypa
         clahe_by_call.append(use_clahe)
         return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
 
-    def fake_register_pair(a, b):
+    def fake_register_pair(a, b, undistorter=None):
         result = register_pair(a, b)
         if not clahe_by_call[-1]:
             # Force the plain pass to look disconnected regardless of what

@@ -9,7 +9,20 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 6 keeps version 5's roll model and adds **flat-field
+Protocol version 7 keeps version 6's roll model and adds **geometric
+calibration** (docs/GEOMETRIC_PLAN.md): `flatfield create` gains
+`--calibration FILE [FILE ...]`, and a profile becomes the complete optical
+description of one rig configuration — gain map, radial distortion, and
+lateral chromatic aberration fitted from ChArUco frames. The distortion is
+applied inside the stitch warp (registration and compositing work in
+undistorted pixels); the CA is applied at decode in `"scale"` mode (rawpy's
+`chromatic_aberration` scales) or at composite in `"maps"` mode (per-channel
+maps). A profile's geometry is only valid for the frame dimensions it was
+fitted at — `GEOMETRY_FRAME_SIZE_MISMATCH` fails the run before anything is
+written. The `--flatfield` flag now names a whole calibration profile; the
+name is historical and unchanged.
+
+Protocol version 6 kept version 5's roll model and added **flat-field
 correction**: gain maps measured once from a reference shot of the bare
 light source (`.NEF` only), stored beside the library database and managed
 through a new `flatfield` command family (`create`, `list`, `delete`). A
@@ -47,7 +60,7 @@ scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR --per-negati
                       [--jobs N] [--overwrite] [--flatfield ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ...]
+                      [--negatives ID ...] [--flatfield ID]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negative N
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
@@ -60,6 +73,7 @@ scanny-boy edit delete --roll DIR --negative ID
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
 scanny-boy flatfield create --reference FILE --name NAME
+                            [--calibration FILE [FILE ...]]
 scanny-boy flatfield list
 scanny-boy flatfield delete --profile ID
 ```
@@ -106,27 +120,48 @@ a skip must remove a whole group's worth or the run fails
 
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
 
-`--flatfield` on `convert`, `run`, and `probe` names a flat-field profile
-built by `flatfield create`. The correction is multiplicative gain only,
-applied per frame immediately after RAW decode. An unknown profile id fails
-with `FLATFIELD_PROFILE_NOT_FOUND` before anything is written. A frame whose
-correction pushes more than 0.1% of its pixels past full scale warns with
-`FLATFIELD_HIGHLIGHT_CLIPPED`; a profile whose reference aspect ratio
-differs from the frames' by more than 1% warns with
-`FLATFIELD_ASPECT_MISMATCH` but proceeds.
+`--flatfield` on `convert`, `run`, `stitch`, and `probe` names a calibration
+profile built by `flatfield create` — a profile may carry a gain map only,
+or a gain map plus a distortion fit and a chromatic aberration fit (the
+flag's name is historical; it names the whole profile). The gain-map
+correction is multiplicative gain only, applied per frame immediately after
+RAW decode. A profile whose CA mode is `"scale"` additionally decodes every
+frame with rawpy's `chromatic_aberration` scales. An unknown profile id
+fails with `FLATFIELD_PROFILE_NOT_FOUND` before anything is written; a
+profile whose geometry was fitted at other frame dimensions fails with
+`GEOMETRY_FRAME_SIZE_MISMATCH`. A frame whose correction pushes more than
+0.1% of its pixels past full scale warns with `FLATFIELD_HIGHLIGHT_CLIPPED`;
+a profile whose reference aspect ratio differs from the frames' by more than
+1% warns with `FLATFIELD_ASPECT_MISMATCH` but proceeds.
+
+`--flatfield` is optional on `stitch`. A roll whose `stitch_params` carry a
+`geometry` bucket (because its first stitch ran with a calibrated profile)
+refuses a `stitch` without the same profile:
+`ROLL_INVARIANT_MISMATCH`, through the existing check. The bucket is absent,
+not null, when the profile carries no geometry.
 
 `flatfield create` decodes `--reference` (a `.NEF` of the bare light source
 with no negative in the holder), builds and stores the gain map, and inserts
 the profile; it emits `flatfield_created` carrying the profile (`profile_id`,
 `name`, `reference_width`, `reference_height`, `source_path`,
-`created_at`). A duplicate name fails with `FLATFIELD_PROFILE_EXISTS`.
-`flatfield list` emits `flatfield_list` carrying `profiles`, an array of the
-same shape. `flatfield delete --profile ID` refuses with
-`FLATFIELD_PROFILE_IN_USE` when any roll's invariants name the profile —
-the gain map is the only thing that could reproduce that roll — and
-otherwise removes the row and the `.npz`, emitting `flatfield_deleted`
-carrying `profile_id`. Each command brackets like `roll init`/`roll list`
-and carries no `run_id`; none is a pipeline run.
+`created_at`, `board_key`, `has_geometry`, `chromatic_aberration_mode`,
+`calibration_report`). With `--calibration FILE [FILE ...]` (absolute paths,
+at least 12 ChArUco board frames), the profile additionally carries the
+distortion fit, the CA fit, and the human-readable `calibration_report`; a
+fit that fails its acceptance gates is recorded as rejected in the report
+and left out of the profile, with a `warning`. Fewer than 12 usable frames
+fails `GEOMETRY_INSUFFICIENT_FRAMES`; fewer than 16 warns
+`GEOMETRY_FEW_FRAMES`. The command runs for minutes when calibrating and
+reports `flatfield_progress` events carrying `phase` (`detect`, `fit`,
+`chromatic`, or `reference`), `completed`, and `total`. A duplicate name
+fails with `FLATFIELD_PROFILE_EXISTS`. `flatfield list` emits
+`flatfield_list` carrying `profiles`, an array of the same shape.
+`flatfield delete --profile ID` refuses with `FLATFIELD_PROFILE_IN_USE` when
+any roll's invariants name the profile — in either invariant bucket,
+`processing_params.flat_field` or `stitch_params.geometry` — and otherwise
+removes the row and the `.npz`, emitting `flatfield_deleted` carrying
+`profile_id`. Each command brackets like `roll init`/`roll list` and carries
+no `run_id`; none is a pipeline run.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
 registers an empty v5 roll in the library database. It emits `roll_created`
@@ -253,6 +288,7 @@ library database rather than a JSON file in the roll folder).
 | `flatfield_created` | A flat-field profile was created. Carries `profile`. |
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
 | `flatfield_deleted` | A flat-field profile was deleted. Carries `profile_id`. |
+| `flatfield_progress` | A long `flatfield create` is progressing. Carries `phase`, `completed`, `total`. Carries no `run_id`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
@@ -371,6 +407,13 @@ staging directories, and reruns the incomplete negative.
 | `FLATFIELD_GAIN_MAP_MISSING` | The profile's `.npz` is missing or corrupt |
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
 | `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
+| `GEOMETRY_INSUFFICIENT_FRAMES` | Too few usable calibration frames |
+| `GEOMETRY_BOARD_NOT_DETECTED` | Neither calibration board detected, or the read is ambiguous |
+| `GEOMETRY_FRAME_SIZE_MISMATCH` | The profile was fitted at other frame dimensions |
+| `GEOMETRY_FIT_REJECTED` | Warning: the distortion fit did not clear its acceptance gates; it is not applied |
+| `GEOMETRY_MAGNITUDE_SUSPECT` | Warning: the fitted distortion is outside the expected 0.03–0.2% band; it is applied |
+| `GEOMETRY_FEW_FRAMES` | Warning: under 16 calibration frames |
+| `CHROMATIC_FIT_REJECTED` | Warning: the CA fit did not clear its acceptance gates; it is not applied |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

@@ -76,7 +76,7 @@ def _install_fast_registerable_decode(
         for name, frame in zip(files, frames, strict=True)
     }
 
-    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         pixels = pixels_by_name[path.name]
         height, width = pixels.shape[0], pixels.shape[1]
         return raw_decode.DecodedFrame(pixels=pixels, width=width, height=height)
@@ -239,7 +239,7 @@ def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch
                 np.stack([bad_scene, bad_scene, bad_scene], axis=-1)
             )
 
-        def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+        def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
             pixels = pixels_by_name[path.name]
             height, width = pixels.shape[0], pixels.shape[1]
             return raw_decode.DecodedFrame(pixels=pixels, width=width, height=height)

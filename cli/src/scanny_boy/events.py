@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 
 
 class EventType(enum.StrEnum):
@@ -38,6 +38,7 @@ class EventType(enum.StrEnum):
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
     FLATFIELD_DELETED = "flatfield_deleted"
+    FLATFIELD_PROGRESS = "flatfield_progress"
 
 
 class Stage(enum.StrEnum):
@@ -115,6 +116,13 @@ class Code(enum.StrEnum):
     FLATFIELD_GAIN_MAP_MISSING = "FLATFIELD_GAIN_MAP_MISSING"
     FLATFIELD_ASPECT_MISMATCH = "FLATFIELD_ASPECT_MISMATCH"
     FLATFIELD_HIGHLIGHT_CLIPPED = "FLATFIELD_HIGHLIGHT_CLIPPED"
+    GEOMETRY_INSUFFICIENT_FRAMES = "GEOMETRY_INSUFFICIENT_FRAMES"
+    GEOMETRY_BOARD_NOT_DETECTED = "GEOMETRY_BOARD_NOT_DETECTED"
+    GEOMETRY_FRAME_SIZE_MISMATCH = "GEOMETRY_FRAME_SIZE_MISMATCH"
+    GEOMETRY_FIT_REJECTED = "GEOMETRY_FIT_REJECTED"
+    GEOMETRY_MAGNITUDE_SUSPECT = "GEOMETRY_MAGNITUDE_SUSPECT"
+    GEOMETRY_FEW_FRAMES = "GEOMETRY_FEW_FRAMES"
+    CHROMATIC_FIT_REJECTED = "CHROMATIC_FIT_REJECTED"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -387,7 +395,9 @@ class FlatFieldProfileSummary:
     """The profile fields a `flatfield` event carries. The gain map's path
     and SHA-256 are deliberately absent: the path is app-private storage the
     UI has no use for, and the hash is roll-invariant bookkeeping the CLI
-    owns."""
+    owns. The calibration fields (docs/GEOMETRIC_PLAN.md section 6) are a
+    straight decode of what the profile record holds — no computation in
+    Swift."""
 
     profile_id: str
     name: str
@@ -395,6 +405,10 @@ class FlatFieldProfileSummary:
     reference_height: int
     source_path: str | None
     created_at: str
+    board_key: str | None = None
+    has_geometry: bool = False
+    chromatic_aberration_mode: str | None = None
+    calibration_report: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -416,6 +430,19 @@ class FlatFieldDeleted(Event):
     event_type: ClassVar[EventType] = EventType.FLATFIELD_DELETED
 
     profile_id: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldProgress(Event):
+    """Progress of a long `flatfield create` (docs/GEOMETRIC_PLAN.md section
+    4.8). Deliberately carries no `run_id`: the `flatfield` family is not a
+    pipeline run, and this keeps that rule."""
+
+    event_type: ClassVar[EventType] = EventType.FLATFIELD_PROGRESS
+
+    phase: str  # "detect" | "fit" | "chromatic" | "reference"
+    completed: int
+    total: int
 
 
 class EventWriter:

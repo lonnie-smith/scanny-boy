@@ -193,7 +193,8 @@ to bottom.
 **Flat field**
 | Module | Role |
 | --- | --- |
-| `flatfield.py` | The gain-map maths (`compute_gain`, ported from NegPy), the `.npz` store beside the library database, banded in-place application, and the profile token. Every constant of the feature is defined here and nowhere else. |
+| `flatfield.py` | The gain-map maths (`compute_gain`, ported from NegPy), the `.npz` store beside the library database, banded in-place application, and the profile token. Every constant of the feature is defined here and nowhere else. `create_profile` moved to `calibration.py`; this module owns only the gain map. |
+| `calibration.py` | `create_profile`'s calibrated path: board-format detection, full-res and half-size per-channel detection, the fit ordering, the deterministic held-out split, the report assembly, and the `flatfield_progress` events (protocol version 7). |
 
 **Output side**
 | Module | Role |
@@ -225,6 +226,9 @@ to bottom.
 | Module | Role |
 | --- | --- |
 | `detection.py` | Build the small 8-bit greyscale detection image (downscale, percentile-normalise, optional CLAHE). |
+| `charuco.py` | The two ChArUco calibration boards and everything corner-shaped around them: detection, sub-pixel refinement, board-format auto-detection, and the id-driven collinear-set grouping. |
+| `geometry_fit.py` | The staged plumb-line distortion fit, its held-out evaluation, and the acceptance/magnitude gates. |
+| `ca_fit.py` | The half-size per-channel chromatic-aberration fit, the `scale`/`maps` mode decision, and its acceptance gates. |
 | `registration.py` | Feature detect, match, RANSAC, the rigid fit, the per-pair gates. |
 | `layout.py` | The global least-squares solve, connectivity check, canvas size, valid rect — and the photometric counterpart `solve_gains`. |
 | `composite.py` | Warp, solve and apply per-frame photometric gains, feather-blend in linear light, overlap MAD, encode. |
@@ -517,6 +521,77 @@ Consequences to know about:
   `max_overlap_mad_semantics: "post-gain-residual"` naming the change), so
   they are roll invariants — changing them makes existing rolls reject new
   runs with `ROLL_INVARIANT_MISMATCH`.
+
+### 8.4 Geometric calibration (protocol version 7)
+
+A flat-field profile can now carry the rig's full optical description:
+radial lens distortion and lateral chromatic aberration, fitted from ChArUco
+board frames and applied inside the existing stitch warp
+([`docs/GEOMETRIC_PLAN.md`](GEOMETRIC_PLAN.md)).
+
+**The modules**: `charuco.py` owns the two boards (transcribed from
+`calibration/lens_calibration_targets.pdf`, which stays the authoritative
+artefact), full-resolution corner detection, and the collinear-set grouping
+that turns `charucoId`s into straight-line families — rows, columns, and
+both diagonals, the diagonals being what constrains the principal point.
+`geometry_fit.py` is the staged plumb-line fit (`scipy.optimize.least_squares`,
+the project's one nonlinear solver): `k1` alone, then `k1 k2`, then
+`k1 k2 cx cy`, each stage kept only if the next does not beat it on
+held-out residual. `ca_fit.py` fits each colour channel's radial scale
+about its own centre on half-size decodes (`RAW_PARAMS_HALF_SIZE`, where
+each pixel comes from one Bayer quad with no demosaic smear), and decides
+between `"scale"` mode (rawpy decode scales, when the radial terms
+contribute under `CA_SCALE_ONLY_PX`) and `"maps"` mode (per-channel maps at
+composite). `calibration.py` orchestrates, and owns the load-bearing
+ordering: in `"scale"` mode the flat-field reference itself is decoded with
+the same CA scales production will use, or the gain map and the frames
+disagree about geometry.
+
+**Where the corrections apply**:
+
+- *Distortion* lives entirely on the stitch side. `register_pair` pushes
+  matched points through `cv2.undistortPoints` before RANSAC (so every
+  existing pixel threshold keeps its units and its meaning), and
+  `composite._warp_bands` folds the forward model into the warp: a banded
+  `cv2.remap` whose map is the *closed-form forward* distortion — undistorted
+  output pixel → distorted source pixel — generated
+  `GEOMETRY_BAND_ROWS` rows at a time, so no frame-sized base map ever
+  exists. Exactly one interpolation pass per output pixel; the validity
+  mask is remapped with the green map at `INTER_NEAREST`.
+- *CA in `"scale"` mode* lives on the convert side: `decode_raw` merges the
+  profile's `chromatic_aberration` scales into `RAW_PARAMS` for the call,
+  and `jsonable_raw_params` reports the merged params so
+  `processing_params` describes the decode that actually happened.
+- *CA in `"maps"` mode* lives at composite: the red and blue channels'
+  band maps add the per-channel radial scale about each channel's own
+  fitted centre; green is untouched.
+
+**The gauge convention** (`K_new = K`, output frame the same size as the
+source frame) means `frame_size` never changes: `layout.solve_layout`,
+`largest_valid_rect`, `estimate_peak_bytes`, `disk_check.required_free_bytes`
+and `_frame_bbox` are untouched. The cost — a 1–7 px border of unsampled
+pixels at the frame edge under pincushion — is inside what
+`MASK_ERODE_PX` already discards.
+
+**The invariant buckets** split along the convert/stitch boundary:
+`processing_params.flat_field` (unchanged) and
+`processing_params.chromatic_aberration` (the decode scales, `"scale"`
+mode only) on one side; `stitch_params.geometry` (profile id, geometry
+object, and the CA object in `"maps"` mode only) on the other. Both are
+absent, not null, when the profile carries nothing for that bucket, so a
+geometry-free profile compares equal to a pre-geometry roll. A profile
+whose geometry a roll depends on is undeletable exactly like one whose
+gain map it depends on (`rolls_using_profile_geometry` unions into the
+delete check). A profile's geometry is valid only for the frame dimensions
+it was fitted at — `flatfield.check_geometry_frame_size` fails
+`GEOMETRY_FRAME_SIZE_MISMATCH` at convert, probe, and stitch before
+anything is written.
+
+A fit that fails its acceptance gates is dropped, not carried: the profile
+is still created (a perfectly good flat-field profile), `geometry` stays
+null, and the reason is recorded in `calibration_report` — the profile
+record is the one place a human decides whether the numbers are worth
+keeping.
 
 ---
 

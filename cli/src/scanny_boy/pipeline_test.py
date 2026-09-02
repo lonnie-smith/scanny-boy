@@ -72,7 +72,7 @@ def _fast_frame() -> raw_decode.DecodedFrame:
 
 
 def _install_fast_decode(monkeypatch, *, fail_for: set[str] = frozenset()) -> None:
-    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         if path.name in fail_for:
             raise UnsupportedRawError(str(path))
         return _fast_frame()
@@ -344,7 +344,7 @@ def test_source_changed_after_hashing_stops_its_group(monkeypatch, tmp_path):
     input_dir = _copy_samples(tmp_path, list(NEGATIVE_1))
     mutated = input_dir / NEGATIVE_1[1]
 
-    def _decode_then_mutate(path: Path) -> raw_decode.DecodedFrame:
+    def _decode_then_mutate(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         frame = _fast_frame()
         if path == mutated:
             # Simulate the file changing between hashing and the
@@ -532,7 +532,7 @@ def _install_reverse_order_decode(
     predecessor = {members[i]: members[i - 1] for i in range(1, len(members))}
     name_by_index = dict(enumerate(members))
 
-    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         barrier.wait(timeout=30)
         assert gates[path.name].wait(timeout=30), f"gate for {path.name} never opened"
         with order_lock:
@@ -776,7 +776,7 @@ def _install_gated_decode(
     state = {"parked": 0}
     lock = threading.Lock()
 
-    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         with lock:
             decoded.append(path.name)
         if path.name in gated:
