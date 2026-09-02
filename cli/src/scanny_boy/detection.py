@@ -14,7 +14,7 @@ import dataclasses
 import cv2
 import numpy as np
 
-from scanny_boy.romm import decode_to_linear
+from scanny_boy.linear import decode_to_linear
 
 DETECTION_LONG_EDGE = 2000
 USE_CLAHE = False
@@ -36,7 +36,7 @@ def build_detection_image(
 ) -> DetectionImage:
     """frame is uint16 (H, W, 3) as read from an intermediate TIFF.
 
-    1. Decode to linear with romm.decode_to_linear.
+    1. Decode to linear with `decode_to_linear`.
     2. Luminance: 0.2126 R + 0.7152 G + 0.0722 B.
     3. Downscale with cv2.INTER_AREA so the long edge is `long_edge`,
        never upscaling; scale is the exact ratio used.

@@ -103,3 +103,61 @@ def run_edit_rotate(
         "rotation_quarter_turns": quarter_turns,
         "preview_path": negative.preview_path,
     }
+
+
+def run_edit_delete(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
+    """Remove one negative outright: its record (and its edits ops log, by
+    cascade) from the library database, its published TIFF from the roll
+    folder, and its rendered preview from Application Support. Any negative
+    is deletable, whatever its status — a pending or failed one simply has
+    no file to unlink.
+
+    The record goes first, exactly as `_remove_covered_negatives` does: a
+    crash then leaves an orphan file, never a dangling record. A failed
+    unlink is a warning (`ORPHAN_FILE_NOT_REMOVED`), not a failure — the
+    record is already gone, so re-deleting cannot help and the user should
+    not be stuck. Raises `EditFailure` when the roll or negative is no
+    good. Returns the `NegativeDeleted` event's field values."""
+    if not repo.roll_registered(roll_dir):
+        raise EditFailure(
+            Code.ROLL_NOT_FOUND,
+            f"{roll_dir} is not a registered roll; create the roll first",
+        )
+
+    try:
+        roll = load_roll_manifest(roll_dir)
+    except (BadManifestError, RollNotRegisteredError) as exc:
+        raise EditFailure(exc.code, exc.message) from exc
+
+    try:
+        negative = roll.negative(negative_id)
+    except KeyError:
+        raise EditFailure(
+            Code.NEGATIVE_NOT_FOUND,
+            f"{roll_dir} has no negative {negative_id!r}",
+        ) from None
+
+    output_name = negative.output["name"] if negative.output is not None else None
+
+    roll.negatives.remove(negative)
+    # `write_roll_manifest` renumbers the survivors' sequences and saves:
+    # the negative's own row (and its edits) are deleted by the save's diff.
+    write_roll_manifest(roll_dir, roll)
+
+    targets = [Path(negative.preview_path)] if negative.preview_path else []
+    if output_name is not None:
+        targets.insert(0, roll_dir / output_name)
+    for path in targets:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            emit(
+                WarningEvent(
+                    code=Code.ORPHAN_FILE_NOT_REMOVED,
+                    message=f"{path} could not be removed: {exc}",
+                )
+            )
+
+    return {"negative_id": negative_id, "output": output_name}

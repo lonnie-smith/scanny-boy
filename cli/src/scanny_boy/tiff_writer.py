@@ -64,7 +64,7 @@ def write_base_tiff(path: Path, pixels: np.ndarray, tags: BaseTiffTags) -> None:
             f"{pixels.shape} dtype {pixels.dtype}"
         )
     if not tags.icc_profile:
-        # Never silently write untagged ROMM data (section 3.4).
+        # Never silently write untagged linear data (see icc_profile.py).
         raise ValueError("refusing to write a TIFF without an embedded ICC profile")
 
     extratags: list[tuple] = [

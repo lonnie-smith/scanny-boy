@@ -45,7 +45,8 @@ FOCAL_LENGTH = 37386
 COLOR_SPACE = 40961
 
 # ColorSpace value 65535 ("uncalibrated"): the embedded ICC profile
-# identifies ROMM, not one of the two calibrated EXIF ColorSpace values.
+# (linear RGB on ProPhoto primaries) is not one of the two calibrated EXIF
+# ColorSpace values.
 UNCALIBRATED_COLOR_SPACE = 65535
 
 # ImageDescription (270): asserted present exactly once, both here and by

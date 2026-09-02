@@ -147,3 +147,21 @@ class EditRow(Base):
     op: Mapped[str] = mapped_column(Text)
     params: Mapped[dict] = mapped_column(JSONText)
     created_at: Mapped[str] = mapped_column(Text)
+
+
+class FlatFieldProfileRow(Base):
+    __tablename__ = "flatfield_profiles"
+
+    profile_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Unique so the app's profile dropdown is unambiguous.
+    name: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    # The `.npz` beside the library database; provenance only.
+    gain_map_path: Mapped[str] = mapped_column(Text)
+    gain_map_sha256: Mapped[str] = mapped_column(Text)
+    source_path: Mapped[str | None] = mapped_column(Text)
+    reference_width: Mapped[int] = mapped_column(Integer)
+    reference_height: Mapped[int] = mapped_column(Integer)
+    # How the map was built (`flatfield.build_params`).
+    params: Mapped[dict] = mapped_column(JSONText)
+    scanny_boy_version: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)

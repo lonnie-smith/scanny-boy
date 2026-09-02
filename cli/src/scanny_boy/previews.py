@@ -7,6 +7,12 @@ small lossless PNG preview of each published TIFF and rewrites it whenever
 an edit changes the rendering. The path is recorded on the negative row and
 reported through `roll info`; Swift only displays the file it is told to.
 
+The published TIFF is **linear** (`raw_decode.RAW_PARAMS`), so the preview
+is gamma-encoded for display: a 16→8-bit sRGB-encode LUT turns the linear
+codes into the sRGB transfer function an untagged 8-bit PNG is assumed to
+carry. The TIFF itself is never touched — display encoding lives here and
+only here. Downscaling happens in linear light, before the encode.
+
 For a 90-degree rotation the regeneration is a lossless pixel transpose of
 the cached preview, not a re-decode of a multi-megapixel TIFF. PNG, not
 JPEG: repeated edits would otherwise compound generational loss.
@@ -23,7 +29,25 @@ from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
 # Longest edge of a generated preview, in pixels.
-PREVIEW_MAX_EDGE = 512
+PREVIEW_MAX_EDGE = 1024
+
+MAX_CODE = 65535
+
+
+def _build_srgb_encode_lut() -> np.ndarray:
+    """uint16 linear code -> uint8 sRGB-encoded code. The standard IEC
+    sRGB transfer function (linear toe below 0.0031308, pure power above),
+    indexed over the full 16-bit range."""
+    codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
+    encoded = np.where(
+        codes <= 0.0031308,
+        codes * 12.92,
+        1.055 * np.power(codes, 1.0 / 2.4) - 0.055,
+    )
+    return np.rint(np.clip(encoded, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+SRGB_ENCODE_LUT: np.ndarray = _build_srgb_encode_lut()
 
 
 def previews_root() -> Path:
@@ -44,6 +68,9 @@ def _write_downscaled(image: np.ndarray, destination: Path) -> None:
             (round(image.shape[1] * scale), round(image.shape[0] * scale)),
             interpolation=cv2.INTER_AREA,
         )
+    if image.dtype == np.uint16:
+        # The TIFF is linear; encode to the display transfer function.
+        image = SRGB_ENCODE_LUT[image]
     destination.parent.mkdir(parents=True, exist_ok=True)
     # cv2 is BGR; the TIFF is RGB, so flip the channels for storage.
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
@@ -66,9 +93,6 @@ def generate_preview(roll_dir: Path, roll_id: str, negative) -> Path | None:
         image = np.stack([image] * 3, axis=-1)
     elif image.shape[2] == 4:
         image = image[:, :, :3]
-    # 16-bit scans downscale cleanly to 8-bit for a preview.
-    if image.dtype == np.uint16:
-        image = (image >> 8).astype(np.uint8)
 
     destination = _preview_path(roll_id, negative.negative_id)
     _write_downscaled(image, destination)
@@ -81,7 +105,8 @@ def rotate_preview(current_path: Path, direction: str) -> Path:
     if image is None:
         raise ValueError(f"could not read preview {current_path}")
     # cv2 is BGR but a transpose is channel-agnostic.
-    rotated = np.rot90(image, k=1 if direction == "cw" else 3)
+    # np.rot90 turns counter-clockwise, so cw is k=3.
+    rotated = np.rot90(image, k=3 if direction == "cw" else 1)
     ok, encoded = cv2.imencode(".png", rotated)
     if not ok:
         raise ValueError(f"could not encode preview {current_path}")

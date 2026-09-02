@@ -163,4 +163,123 @@ struct EditModelTests {
         #expect(model.visibleNegatives.map(\.negativeID) == ["n1", "n2"])
         #expect(model.dirtyCount == 2)
     }
+
+    // MARK: - Delete
+
+    /// A helper whose `edit delete` invocations emit the delete stream and
+    /// whose `roll info` invocations flip from the full manifest to the
+    /// post-delete one, via a marker beside the script (the helper's own
+    /// working directory is not writable).
+    private static func deleteRunner(
+        _ directory: URL, deleting deletedID: String, negatives: [String]
+    ) throws -> CLIRunner {
+        func negative(_ id: String, sequence: Int) -> String {
+            Self.negativeJSON(negativeID: id, sequence: sequence, intended: nil, applied: nil)
+        }
+        let initial = Self.rollInfoEvent(
+            negatives: negatives.enumerated().map { index, id in
+                negative(id, sequence: index + 1)
+            }
+        )
+        let fresh = Self.rollInfoEvent(
+            negatives: negatives.filter { $0 != deletedID }.enumerated().map { index, id in
+                negative(id, sequence: index + 1)
+            }
+        )
+        let marker = directory.appending(path: "deleted").path
+        let script = """
+            if [ "$1" = "edit" ]; then
+              echo '{"protocol_version":6,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":6,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":6,"event":"finished","status":"success","exit_status":0}'
+            else
+              if [ -f '\(marker)' ]; then
+                echo '\(fresh)'
+              else
+                : > '\(marker)'
+                echo '\(initial)'
+              fi
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    @Test("Delete removes the negative and selects its neighbour")
+    func testDeleteRemovesTheNegativeAndSelectsItsNeighbour() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.deleteRunner(directory, deleting: "n1", negatives: ["n1", "n2", "n3"])
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let first = model.selectedNegative
+
+        await model.delete(first!)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives.map(\.negativeID) == ["n2", "n3"])
+        #expect(model.selectedNegative?.negativeID == "n2")
+    }
+
+    @Test("Deleting the last negative selects the previous one")
+    func testDeletingTheLastNegativeSelectsThePreviousOne() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.deleteRunner(directory, deleting: "n2", negatives: ["n1", "n2"])
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        // Select the last negative explicitly before deleting it.
+        model.selectedNegativeID = "n2"
+
+        await model.delete(model.selectedNegative!)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives.map(\.negativeID) == ["n1"])
+        #expect(model.selectedNegative?.negativeID == "n1")
+    }
+
+    @Test("A failed delete leaves the roll and the selection alone")
+    func testFailedDeleteLeavesTheRollAlone() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // The helper never emits `negative_deleted`: the CLI refused.
+        let alone = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let script = """
+            if [ "$1" = "edit" ]; then
+              echo '{"protocol_version":6,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":6,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":6,"event":"finished","status":"failed","exit_status":1}'
+            else
+              echo '\(alone)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = EditModel(runner: CLIRunner(executable: executable))
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let selected = model.selectedNegative
+
+        await model.delete(selected!)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives.map(\.negativeID) == ["n1"])
+        #expect(model.selectedNegative?.negativeID == "n1")
+        #expect(!model.isDeleting)
+    }
 }

@@ -44,7 +44,9 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from scanny_boy import concurrency, disk_check, hashing, raw_decode
+import numpy as np
+
+from scanny_boy import concurrency, disk_check, flatfield, hashing, raw_decode
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.catalogue import (
     CaptureTimestamp,
@@ -226,6 +228,13 @@ class _ProgressReporter:
                 )
             )
 
+    def warn(self, code: Code, message: str) -> None:
+        """Emits a `warning` under the same lock as `advance`, so a worker
+        thread's warning can never interleave with its progress line or
+        another worker's event."""
+        with self._lock:
+            self._emit(WarningEvent(run_id=self._run_id, code=code, message=message))
+
     @property
     def completed(self) -> int:
         with self._lock:
@@ -249,6 +258,10 @@ class _GroupContext:
     digitized_fields_by_name: dict[str, DigitizedFields]
     settings_by_name: dict[str, SourceSettings]
     icc_profile: bytes
+    # The full-resolution gain map, resized once per run and shared
+    # read-only across workers (docs/FLATFIELD_PLAN.md section 2.7). `None`
+    # for a run without `--flatfield`.
+    full_res_gain: np.ndarray | None
     progress: _ProgressReporter
     cancel: CancellationToken
 
@@ -420,6 +433,19 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
 
     _verify_source_unchanged(path, record)
     pixels = raw_decode.decode_raw(path).pixels
+    # Flat-field correction sits inside the DECODE step boundary: after the
+    # RAW decode, before the base TIFF, so the stitch stage's per-frame
+    # photometric gain solve is asked to explain real exposure mismatch, not
+    # spatial falloff (docs/FLATFIELD_PLAN.md section 1).
+    if ctx.full_res_gain is not None:
+        clipped = flatfield.apply_in_place(pixels, ctx.full_res_gain)
+        height, width = pixels.shape[:2]
+        if clipped / (height * width) > flatfield.CLIPPED_PIXEL_WARN_FRACTION:
+            ctx.progress.warn(
+                Code.FLATFIELD_HIGHLIGHT_CLIPPED,
+                f"{member}: the correction pushed {clipped} pixels past full "
+                "scale; their highlights were clipped",
+            )
     _verify_source_unchanged(path, record)
     ctx.progress.advance(source_index, PipelineStep.DECODE)
     ctx.cancel.raise_if_cancelled()
@@ -563,6 +589,7 @@ def run_convert(
     emit: EmitFn = lambda event: None,
     completed_offset: int = 0,
     total_override: int | None = None,
+    flatfield_profile_id: str | None = None,
 ) -> ConvertOutcome:
     """Validate the selection and output folder exactly as `probe` does,
     then convert every selected frame group by group. Raises
@@ -575,16 +602,34 @@ def run_convert(
     explicit 1-12. Cancelling `cancel` abandons the group in flight,
     leaves already-published groups alone, records the manifest as
     `cancelled`, and returns an outcome whose status is `"cancelled"`.
+
+    `flatfield_profile_id` applies one flat-field profile to every frame of
+    the run; it is folded into `processing_params` under `flat_field` as the
+    profile token, so a roll locks to one profile with its first run. A
+    missing profile or unreadable gain map fails here, having touched
+    nothing.
     """
     cancel = cancel if cancel is not None else CancellationToken()
 
     # Before anything touches the filesystem: an explicit --jobs that
     # exceeds the memory budget is rejected outright (section 3.8), while
-    # the default is silently reduced to fit.
+    # the default is silently reduced to fit. The flat-field profile is
+    # next for the same reason: loading it touches nothing the run writes.
     try:
         workers = concurrency.resolve_worker_count(per_negative, jobs)
     except concurrency.MemoryBudgetError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
+
+    profile = None
+    gain_map = None
+    if flatfield_profile_id is not None:
+        from scanny_boy.library import repo
+
+        try:
+            profile = repo.load_flatfield_profile(flatfield_profile_id)
+            gain_map = flatfield.load_gain_map(profile)
+        except flatfield.FlatFieldError as exc:
+            raise ConvertFailure(exc.code, exc.message) from exc
 
     validated = _validate_selection(input_dir, files, per_negative, emit, run_id)
     selected = validated.names
@@ -605,6 +650,32 @@ def run_convert(
     except IccProfileError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
+    if profile is not None:
+        # A portrait reference against landscape scans would stretch the
+        # correction silently; past 1% aspect difference, say so and let the
+        # user decide.
+        reference_ratio = profile.reference_width / profile.reference_height
+        frame_ratio = width / height
+        if abs(reference_ratio - frame_ratio) / reference_ratio > 0.01:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.FLATFIELD_ASPECT_MISMATCH,
+                    message=(
+                        f"the reference is {profile.reference_width}x"
+                        f"{profile.reference_height} but the frames decode at "
+                        f"{width}x{height}; the gain map will be stretched "
+                        "to fit"
+                    ),
+                )
+            )
+
+    processing_params = raw_decode.jsonable_raw_params()
+    if profile is not None:
+        # Absent, not null, when no profile was given, so a no-profile run
+        # still compares equal to a pre-flat-field roll (section 2.4).
+        processing_params["flat_field"] = flatfield.profile_token(profile)
+
     groups = build_groups(selected, per_negative)
     candidate = Manifest(
         scanny_boy_version=current_scanny_boy_version(),
@@ -617,7 +688,7 @@ def run_convert(
         # field and a rerun still compares it.
         film_date=real_times[0].date().isoformat(),
         shots_per_negative=per_negative,
-        processing_params=raw_decode.jsonable_raw_params(),
+        processing_params=processing_params,
         icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
         source_order=selected,
         sources=source_records,
@@ -674,6 +745,13 @@ def run_convert(
         "digitized_fields_by_name": dict(zip(selected, digitized_fields, strict=True)),
         "settings_by_name": dict(zip(selected, settings_list, strict=True)),
         "icc_profile": icc_profile,
+        # Resized once per run and shared read-only across workers: every
+        # frame of a run has the same dimensions (section 2.7).
+        "full_res_gain": (
+            flatfield.resize_gain_map(gain_map, width, height)
+            if gain_map is not None
+            else None
+        ),
         "progress": progress,
         "cancel": cancel,
     }

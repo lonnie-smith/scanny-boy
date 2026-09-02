@@ -10,24 +10,18 @@ import pytest
 
 from scanny_boy.icc_profile import (
     PROFILE_SHA256,
-    TRC_A,
-    TRC_B,
-    TRC_C,
-    TRC_D,
-    TRC_E,
-    TRC_F,
     TRC_FUNCTION_TYPE,
     TRC_G,
     IccProfileError,
     load_icc_profile,
     verify_icc_profile,
 )
-from scanny_boy.romm import DECODE_LUT, MAX_CODE
+from scanny_boy.linear import MAX_CODE
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GENERATOR = REPO_ROOT / "cli" / "tools" / "generate_icc_profile.py"
 COMMITTED_PROFILE = (
-    Path(__file__).resolve().parent / "resources" / "ScannyBoy-ROMM-LibRaw-v4.icc"
+    Path(__file__).resolve().parent / "resources" / "ScannyBoy-Linear-ProPhoto-v1.icc"
 )
 
 _spec = importlib.util.spec_from_file_location("generate_icc_profile", GENERATOR)
@@ -37,8 +31,8 @@ _spec.loader.exec_module(_generator)
 PROPHOTO_BYTES = _generator.prophoto_source_bytes()
 
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
-TRC_PARAMS = (TRC_G, TRC_A, TRC_B, TRC_C, TRC_D, TRC_E, TRC_F)
-PROFILE_ID = bytes.fromhex("d225fb183d7eda2c613cead9665f2843")
+TRC_PARAMS = (TRC_G,)
+PROFILE_ID = bytes.fromhex("a1108f985e63b5fa50788c48fad2ddd0")
 
 
 def _tag_entries(data: bytes) -> list[tuple[bytes, int, int]]:
@@ -64,13 +58,9 @@ def _parametric_curve_params(data: bytes, tag_signature: bytes) -> list[int]:
     raise AssertionError(f"tag {tag_signature!r} not found in profile")
 
 
-def _decode_parametric_type_four(params: tuple[int, ...], encoded: np.ndarray) -> np.ndarray:
-    g, a, b, c, d, e, f = (p / 65536.0 for p in params)
-    linear = np.empty_like(encoded, dtype=np.float64)
-    low = encoded < d
-    linear[low] = e * encoded[low] + f
-    linear[~low] = np.power(a * encoded[~low] + b, g) + c
-    return linear
+def _decode_parametric_type_zero(params: tuple[int, ...], encoded: np.ndarray) -> np.ndarray:
+    (g,) = params
+    return np.power(encoded, g / 65536.0)
 
 
 def test_generator_reproduces_the_committed_profile(tmp_path):
@@ -87,10 +77,11 @@ def test_committed_profile_hash_matches_the_constant():
     assert hashlib.sha256(data).hexdigest() == PROFILE_SHA256
 
 
-def test_trc_tag_is_parametric_type_four_with_the_section_313_parameters():
+def test_trc_tag_is_parametric_type_zero_with_the_identity_gamma():
     data = load_icc_profile()
     params = _parametric_curve_params(data, b"rTRC")
     assert params == list(TRC_PARAMS)
+    assert TRC_FUNCTION_TYPE == 0
 
 
 def test_three_trc_tags_share_one_offset():
@@ -101,7 +92,7 @@ def test_three_trc_tags_share_one_offset():
     sizes = {entry[2] for entry in trc_entries}
     assert len(offsets) == 1
     assert len(sizes) == 1
-    assert next(iter(sizes)) == 40
+    assert next(iter(sizes)) == 16
 
 
 def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto():
@@ -121,21 +112,19 @@ def test_profile_id_is_the_specified_md5():
     assert data[84:100] == PROFILE_ID
 
 
-def test_decoded_curve_matches_libraw_within_quarter_of_an_lsb():
+def test_decoded_curve_is_the_identity():
     data = load_icc_profile()
     params = tuple(_parametric_curve_params(data, b"rTRC"))
     codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
-    decoded = _decode_parametric_type_four(params, codes)
-    expected = DECODE_LUT.astype(np.float64)
-    max_error = np.max(np.abs(decoded - expected) * MAX_CODE)
-    assert max_error < 0.25
+    decoded = _decode_parametric_type_zero(params, codes)
+    assert np.max(np.abs(decoded - codes)) < 1e-9
 
 
 def test_decoded_curve_is_monotonic_and_spans_zero_to_one():
     data = load_icc_profile()
     params = tuple(_parametric_curve_params(data, b"rTRC"))
     codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
-    decoded = _decode_parametric_type_four(params, codes)
+    decoded = _decode_parametric_type_zero(params, codes)
     assert decoded[0] == pytest.approx(0.0)
     assert decoded[-1] == pytest.approx(1.0)
     assert np.all(np.diff(decoded) >= 0)

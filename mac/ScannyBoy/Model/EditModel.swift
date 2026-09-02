@@ -43,8 +43,13 @@ final class EditModel {
     /// Set while one `edit rotate` round trip is in flight. Rotate is its
     /// own short CLI session, deliberately not `RunModel`'s — but the
     /// one-helper-at-a-time discipline holds: the views gate on
-    /// `run.isActive || edit.isRotating`, and this flag refuses re-entry.
+    /// `run.isActive || edit.isRotating || edit.isDeleting`, and each flag
+    /// refuses re-entry.
     private(set) var isRotating = false
+
+    /// Set while one `edit delete` round trip is in flight, with the same
+    /// one-helper-at-a-time discipline as `isRotating`.
+    private(set) var isDeleting = false
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -149,6 +154,48 @@ final class EditModel {
         // The in-place update above is what the user sees; the refresh
         // reconciles anything the event's fields did not carry.
         refresh()
+    }
+
+    /// Deletes `negative` through the CLI and refreshes the roll when the
+    /// deletion is confirmed: the record (and its ops log) leaves the
+    /// library database, the published TIFF leaves the roll folder, and
+    /// the rendered preview leaves Application Support. The selection
+    /// moves to the deleted negative's neighbour — the next one, else the
+    /// previous — so the user is left looking at something sensible
+    /// instead of a stale id.
+    func delete(_ negative: RollManifest.Negative) async {
+        guard let rollURL, !isDeleting, !isRotating else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+
+        // Computed before the manifest changes anywhere: the neighbour in
+        // `visibleNegatives` order.
+        let negatives = visibleNegatives
+        let neighbour: String? = negatives.firstIndex { $0.negativeID == negative.negativeID }
+            .flatMap { index in
+                if index + 1 < negatives.count {
+                    return negatives[index + 1].negativeID
+                }
+                return index > 0 ? negatives[index - 1].negativeID : nil
+            }
+
+        let command = CLICommand.editDelete(roll: rollURL, negative: negative.negativeID)
+        var deleted = false
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .negativeDeleted {
+                    deleted = true
+                }
+            }
+        } catch {
+            return
+        }
+        // The refresh reconciles the roll either way; the selection only
+        // moves when the deletion actually happened.
+        refresh()
+        if deleted {
+            selectedNegativeID = neighbour
+        }
     }
 
     /// Applies an `edit_recorded` event to the in-memory roll without a

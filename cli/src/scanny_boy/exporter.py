@@ -43,8 +43,9 @@ class ExportOutcome:
 
 def apply_edits(image: np.ndarray, rotation_quarter_turns: int) -> np.ndarray:
     """The single place an op log meets pixels: pure, ordered, and the same
-    replay the preview generator performs at thumbnail scale."""
-    return np.rot90(image, k=rotation_quarter_turns)
+    replay the preview generator performs at thumbnail scale. Quarter turns
+    count clockwise; np.rot90 turns counter-clockwise, so negate."""
+    return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
 def _write_export(destination: Path, image: np.ndarray) -> None:

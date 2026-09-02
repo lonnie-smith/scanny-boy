@@ -105,8 +105,32 @@ struct RunIntegrationTests {
         Issue.record("timed out waiting for the run to reach the expected state")
     }
 
+    /// `flatfield create` for real, through the CLI, from the first sample
+    /// NEF — the app requires a profile on Add Scans, so every scenario below
+    /// runs against one that actually exists. The decoded pixels of a bare
+    /// light source these are not, but nothing here asserts on falloff.
+    private static func createFlatFieldProfile() async throws -> String {
+        let runner = try Self.runner()
+        let session = runner.session(
+            for: .flatfieldCreate(
+                reference: SampleFixtures.directory.appending(path: SampleFixtures.files[0]),
+                name: "Integration \(UUID().uuidString.prefix(8))"
+            )
+        )
+        for await output in try await session.start() {
+            if case .event(let event) = output, event.kind == .flatfieldCreated,
+                let fields = event.flatFieldProfile,
+                let profile = FlatFieldProfile(fields: fields)
+            {
+                return profile.profileID
+            }
+        }
+        Issue.record("flatfield create produced no flatfield_created event")
+        throw CocoaError(.fileNoSuchFile)
+    }
+
     /// A configuration model pointed at the sample folder and a real roll,
-    /// with its catalogue probe already applied.
+    /// with its catalogue probe already applied and a real profile chosen.
     private static func configuredModel(
         roll: URL,
         select: [String]
@@ -117,6 +141,7 @@ struct RunIntegrationTests {
         model.inputFolder = SampleFixtures.directory
         await model.waitForPendingProbes()
         model.rollURL = roll
+        model.flatFieldProfileID = try await Self.createFlatFieldProfile()
         model.selectedFiles = Set(select)
         await model.waitForPendingProbes()
         return model
