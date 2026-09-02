@@ -2,16 +2,18 @@ import Foundation
 import Observation
 
 /// Configuration state for one prospective run against a selected roll:
-/// input folder and catalogue, the user's contiguous selection, and the
-/// roll it targets.
+/// input folder and catalogue, the user's contiguous selection, the batch's
+/// scans-per-negative, and the roll it targets.
 ///
 /// Phase 3 section 3.10: "Add Scans is Phase 2's `ContentView` with the
 /// output-folder section and the film-date field deleted, the
 /// shots-per-negative stepper moved to the roll, and the
 /// overwrite-confirmation replaced by the overlap sheet." There is no
 /// output-folder picker any more — every run targets whichever roll is
-/// selected in the sidebar (`rollURL`), and `perNegative` reads the roll's
-/// own `shots_per_negative` rather than being a setting of its own.
+/// selected in the sidebar (`rollURL`). The roll no longer owns
+/// `shots_per_negative` at all: the grouping is each stitch batch's own
+/// choice (`perNegative`), required before a run can start, so one roll can
+/// hold negatives stitched from different scan counts.
 ///
 /// Swift never sorts files itself and never re-implements the CLI's
 /// selection, grouping, or roll-invariant rules (section 3.2's vocabulary,
@@ -76,15 +78,27 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
-            roll = nil
             startRollFetch(rollURL: rollURL)
             scheduleValidation()
         }
     }
 
+    // MARK: - The batch's grouping
+
+    /// Scans stitched into each negative — this batch's own choice, not the
+    /// roll's. `nil` until the user picks one on the Add Scans stage; the
+    /// Stitch button stays disabled until then. Changing it re-validates the
+    /// selection, since grouping and divisibility depend on it.
+    var perNegative: Int? {
+        didSet {
+            guard perNegative != oldValue else { return }
+            scheduleValidation()
+        }
+    }
+
     /// `roll info` for `rollURL` (section 3.1: Swift never parses
-    /// `scanny-boy-roll.json` itself), so `perNegative` and the roll's
-    /// identity are only known once this finishes.
+    /// `scanny-boy-roll.json` itself), so the roll's locked flat-field
+    /// profile is only known once this finishes.
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
 
@@ -111,13 +125,6 @@ final class ConfigurationModel {
     var isRollLockedToFlatFieldProfile: Bool {
         roll?.processingParams.flatFieldProfileID != nil
     }
-
-    /// `shots_per_negative` is the roll's own, locked once any run reaches
-    /// `complete`/`partial` with a completed negative (section 3.4) and
-    /// editable only from the Edit tab (Chunk P3-12) — Add Scans just reads
-    /// it back. Falls back to the CLI's own default while the roll has not
-    /// loaded yet, matching what `probe` itself defaults to.
-    var perNegative: Int { roll?.shotsPerNegative ?? 3 }
 
     /// A `probe --roll` failure specific to the roll itself — missing,
     /// unreadable, unsupported, or invariant-mismatched — as opposed to one
@@ -153,12 +160,14 @@ final class ConfigurationModel {
         .outputNotWritable,
     ]
 
-    /// Every gate section 3.10 names — a contiguous, divisible selection
-    /// with consistent settings, targeting a roll that validated — plus the
-    /// flat-field profile the app requires (docs/FLATFIELD_PLAN.md section
-    /// 2.5). The Stitch button is offered from here.
+    /// Every gate section 3.10 names — a chosen scans-per-negative, a
+    /// contiguous, divisible selection with consistent settings, targeting a
+    /// roll that validated — plus the flat-field profile the app requires
+    /// (docs/FLATFIELD_PLAN.md section 2.5). The Stitch button is offered
+    /// from here.
     var runEnabled: Bool {
-        !selectedFiles.isEmpty
+        perNegative != nil
+            && !selectedFiles.isEmpty
             && selectionError == nil
             && rollError == nil
             && rollURL != nil
@@ -187,7 +196,9 @@ final class ConfigurationModel {
     /// the roll (the replacement rule). The flat-field profile rides along
     /// as `--flatfield`; a locked roll has already pre-selected its own.
     func runCommand() -> CLICommand? {
-        guard runEnabled, let inputFolder, let rollURL, let flatFieldProfileID else {
+        guard runEnabled, let inputFolder, let rollURL, let perNegative,
+            let flatFieldProfileID
+        else {
             return nil
         }
         return .run(
@@ -266,8 +277,17 @@ final class ConfigurationModel {
             return
         }
 
+        // Grouping and divisibility are per-batch: without a chosen
+        // scans-per-negative there is nothing to validate against yet.
+        guard let perNegative else {
+            groups = []
+            selectionWarnings = []
+            selectionError = nil
+            rollError = nil
+            return
+        }
+
         let rollURL = rollURL
-        let perNegative = perNegative
         let files = selectedFilesInCanonicalOrder
         let flatFieldProfileID = flatFieldProfileID
 
@@ -372,7 +392,7 @@ final class ConfigurationModel {
     /// everything from `@Observable`'s change notifications instead.
     func waitForPendingProbes() async {
         await catalogueTask?.value
-        await rollTask?.value
         await validationTask?.value
+        await rollTask?.value
     }
 }

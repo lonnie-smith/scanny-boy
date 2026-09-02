@@ -5,10 +5,14 @@ import SwiftUI
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
 /// picker. Chunk P3-10 adds the shell and the sidebar. Chunk P3-11 reworks
 /// the workspace's Add Scans tab onto the selected roll: no output-folder
-/// picker, no film date, the shots-per-negative stepper replaced by the
-/// roll's own (read-only here), and the overwrite-confirmation dialog
-/// replaced by the overlap sheet (section 3.4/3.5). Chunk P3-12 adds the
-/// Edit tab: negatives, thumbnails, the dirty count, and Apply.
+/// picker, no film date, and the overwrite-confirmation dialog replaced by
+/// the overlap sheet (section 3.4/3.5). Chunk P3-12 adds the Edit tab:
+/// negatives, thumbnails, the dirty count, and Apply.
+///
+/// Scans-per-negative is no longer a roll property at all: it is each
+/// stitch batch's own choice, selected on the Add Scans stage and required
+/// before the Stitch button enables — so one roll can hold negatives
+/// stitched from different scan counts.
 ///
 /// Chunk 9: folder selection, one-range selection, grouping preview.
 /// Chunk 10 adds Run with live progress, cooperative Cancel, the
@@ -266,11 +270,26 @@ struct ContentView: View {
             }
         }
         Section("Grouping") {
-            // Section 3.4: shots-per-negative is the roll's own now, locked
-            // once any run reaches complete/partial — Add Scans just shows
-            // it. Editable only from the Edit tab (Chunk P3-12), while
-            // unlocked.
-            Text("Shots per negative: \(model.perNegative)")
+            // Scans-per-negative belongs to this stitch batch, not the
+            // roll: each run picks its own grouping, so a roll can hold
+            // negatives stitched from different scan counts. It must be
+            // chosen before stitching — `runEnabled` gates the Stitch
+            // button on it, and choosing (or changing) it re-validates the
+            // selection, since grouping and divisibility depend on it.
+            Picker("Scans per negative", selection: $model.perNegative) {
+                Text("Choose scans per negative…").tag(Int?.none)
+                ForEach(1...12, id: \.self) { count in
+                    Text("\(count)").tag(Int?.some(count))
+                }
+            }
+            .accessibilityIdentifier("perNegativePicker")
+
+            if model.perNegative == nil {
+                Text("How many scans are stitched into each negative. Choose one to enable Stitch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("perNegativeHint")
+            }
             if !model.groups.isEmpty {
                 GroupingPreview(groups: model.groups)
             }

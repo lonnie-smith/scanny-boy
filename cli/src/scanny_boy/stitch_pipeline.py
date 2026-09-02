@@ -256,7 +256,9 @@ def _rational(value: Any) -> Fraction:
     return Fraction(int(value[0]), int(value[1]))
 
 
-def _read_curated_exif(path: Path) -> tuple[tiff_exif.NestedExifFields, str | None, str | None]:
+def _read_curated_exif(
+    path: Path,
+) -> tuple[tiff_exif.NestedExifFields, str | None, str | None]:
     """Read back the curated EXIF Phase 1 wrote into one intermediate,
     plus its `Make`/`Model`.
 
@@ -657,7 +659,6 @@ def run_stitch(
             f"{out_dir} is not a registered roll; create the roll first",
         )
     invariants = RollInvariants(
-        shots_per_negative=work_manifest.shots_per_negative,
         processing_params=work_manifest.processing_params,
         icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
         stitch_params=_stitch_params(),
@@ -755,9 +756,7 @@ def run_stitch(
     if not cancelled:
         # 6. Disk check on the output volume, now that canvases are known.
         canvases = [e.layout.canvas_size for e in solved if e.layout is not None]
-        required = _required_free_bytes(
-            canvases, estimate_roll_manifest_size(roll)
-        )
+        required = _required_free_bytes(canvases, estimate_roll_manifest_size(roll))
         try:
             disk_check.check_disk_space(out_dir, required)
         except disk_check.DiskCheckError as exc:
@@ -934,7 +933,9 @@ def _append_this_run(
                 negative_id=negative_id,
                 run_id=run_id,
                 members=list(group.members),
-                expected_output=allocate_output_name(roll, group.members[0], negative_id),
+                expected_output=allocate_output_name(
+                    roll, group.members[0], negative_id
+                ),
                 fill_color=FILL_COLOR,
             )
             roll.negatives.append(record)
@@ -974,7 +975,9 @@ def _record_failure(
 ) -> None:
     """Section 3.5: a negative that cannot be stitched fails alone. Its
     failure is recorded, the run continues, and the run ends `partial`."""
-    message = _friendly_failure_message(code, record.negative_id, record.members, message)
+    message = _friendly_failure_message(
+        code, record.negative_id, record.members, message
+    )
     record.status = "failed"
     record.error_code = code.value
     record.error_message = message
@@ -1028,10 +1031,10 @@ def _maybe_reapply_metadata(
         return
 
     assert record.output is not None
-    record.capture_time.intended_datetime_original = (
-        source.applied_datetime_original
+    record.capture_time.intended_datetime_original = source.applied_datetime_original
+    intended = datetime.datetime.fromisoformat(
+        record.capture_time.intended_datetime_original
     )
-    intended = datetime.datetime.fromisoformat(record.capture_time.intended_datetime_original)
     tiff_path = out_dir / record.output["name"]
 
     try:
@@ -1040,14 +1043,19 @@ def _maybe_reapply_metadata(
         record.capture_time.applied_datetime_original = None
         emit(
             MetadataSkipped(
-                run_id=run_id, negative_id=record.negative_id, code=exc.code, message=exc.message
+                run_id=run_id,
+                negative_id=record.negative_id,
+                code=exc.code,
+                message=exc.message,
             )
         )
         return
 
     record.output["size"] = tiff_path.stat().st_size
     record.output["sha256"] = hashing.sha256_file(tiff_path)
-    record.capture_time.applied_datetime_original = record.capture_time.intended_datetime_original
+    record.capture_time.applied_datetime_original = (
+        record.capture_time.intended_datetime_original
+    )
     emit(MetadataApplied(run_id=run_id, negative_id=record.negative_id))
 
 
@@ -1170,7 +1178,11 @@ def _composite_and_publish(
         record.global_rms_px = layout.global_rms_px
         record.canvas = layout.canvas_size
 
-        measured = [p.overlap_mad for p in merged_pairs if p.accepted and p.overlap_mad is not None]
+        measured = [
+            p.overlap_mad
+            for p in merged_pairs
+            if p.accepted and p.overlap_mad is not None
+        ]
         worst = max(measured, default=0.0)
         if worst > MAX_OVERLAP_MAD:
             raise StitchError(
@@ -1200,7 +1212,9 @@ def _composite_and_publish(
                     entry.group.members[0], len(entry.group.members)
                 ),
                 software=software_tag_value(),
-                conversion_time=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
+                conversion_time=datetime.datetime.now(datetime.UTC).replace(
+                    tzinfo=None
+                ),
                 icc_profile=b"",  # replaced by write_stitched_tiff's icc_bytes
                 make=make,
                 model=model,
@@ -1227,7 +1241,9 @@ def _composite_and_publish(
             "height": height,
         }
         record.status = "completed"
-        _maybe_reapply_metadata(out_dir, roll, record, previous_capture_time, run_id, emit)
+        _maybe_reapply_metadata(
+            out_dir, roll, record, previous_capture_time, run_id, emit
+        )
         _remove_covered_negatives(out_dir, roll, entry.covered_to_remove, run_id, emit)
         write_roll_manifest(out_dir, roll)
         emit(

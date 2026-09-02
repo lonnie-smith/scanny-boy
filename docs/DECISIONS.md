@@ -123,8 +123,9 @@ makes those decisions easier to find without reading the whole plan.
 
 - `ThreadPoolExecutor` for parallel RAW work (rawpy's LibRaw build releases
   the GIL). Default workers:
-  `min(shots_per_negative, os.process_cpu_count() or 1, 4)`. `--jobs 1` uses
-  a fully serial path.
+  `min(shots_per_negative, os.process_cpu_count() or 1, 4)`, where
+  `shots_per_negative` is the batch's own value. `--jobs 1` uses a fully
+  serial path.
 - A 640 MiB per-worker memory budget (measured in Chunk 6, see plan section
   3.8's table) silently reduces the *default* worker count but rejects an
   *explicit* `--jobs` with `INSUFFICIENT_MEMORY`.
@@ -436,11 +437,14 @@ pixel value does (`punchlist.md`).
 
 ## Roll invariants and additive runs
 
-- `shots_per_negative`, `processing_params`, the ICC profile hash, and
-  `stitch_params` are roll-invariant across every run in a roll; anything
-  else (input folder, source list, order, grouping) is expected to differ
-  and is never compared. `shots_per_negative` locks once any run reaches
-  `complete`/`partial` with a completed negative.
+- `processing_params`, the ICC profile hash, and `stitch_params` are
+  roll-invariant across every run in a roll; anything else (input folder,
+  source list, order, grouping, and each batch's `shots_per_negative`) is
+  expected to differ and is never compared. Originally `shots_per_negative`
+  was a fourth invariant, set at roll creation and locked once any run
+  reached `complete`/`partial` with a completed negative; that constraint
+  is retired — the grouping is each stitch batch's own choice, recorded in
+  its work manifest, and the roll record no longer stores it.
 - `negative_id` is `<run.short_id>-negative-NN`; `short_id` starts at the
   first six hex characters of the run's UUID and lengthens on collision.
   Output names keep Phase 2's first-member-stem rule, with a `-2`, `-3`, …
@@ -520,9 +524,8 @@ pixel value does (`punchlist.md`).
 - **Not yet wired to the app (§5.6):** no CLI command writes
   `metadata.roll_capture_date` or a negative's `capture_time.date_override`
   — not even a library-level function exists to wrap, unlike the rename
-  gap above. Chunk P3-12 shows both, and an unlocked roll's
-  `shots_per_negative`, read-only in the Edit tab rather than inventing a
-  write path; see `punchlist.md`.
+  gap above. Chunk P3-12 shows both read-only in the Edit tab rather than
+  inventing a write path; see `punchlist.md`.
 
 ## The app (Swift)
 
@@ -545,9 +548,8 @@ pixel value does (`punchlist.md`).
 
 ## Scope Phase 3 does not cover
 
-- **Setting the roll capture date or a per-negative date override, and
-  editing an unlocked roll's `shots_per_negative`, from the app** — see
-  "Sequence and metadata" above and `punchlist.md`.
+- **Setting the roll capture date or a per-negative date override from the
+  app** — see "Sequence and metadata" above and `punchlist.md`.
 - Crop from manifest data, white balance/base neutralisation, extended
   metadata (location, camera, lens, film stock), the cyan fill colour,
   manual negative reordering, and deleting a negative outright are all
@@ -610,7 +612,7 @@ authoritative; this section only makes the decisions findable.
   **self-contained**: once created, the reference file can move or be
   deleted; its path is provenance only and is never read again.
 - Profile metadata is a row in the library database (table
-  `flatfield_profiles`, Alembic revision `0002`), not a JSON sidecar —
+  `flatfield_profiles`, Alembic revision `0003`), not a JSON sidecar —
   Swift is forbidden from reading the library's storage directly, so
   profiles come back through CLI events either way.
 - **Commands**: `flatfield create --reference FILE --name NAME`,

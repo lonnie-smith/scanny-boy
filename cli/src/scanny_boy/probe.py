@@ -177,7 +177,9 @@ def _preview_output_folder(
     )
 
     missing_output_count = sum(
-        1 for name in placeholder.all_expected_outputs() if not (out_dir / name).exists()
+        1
+        for name in placeholder.all_expected_outputs()
+        if not (out_dir / name).exists()
     )
     required_bytes = required_free_bytes(
         width=width,
@@ -204,7 +206,6 @@ def _preview_output_folder(
 def _preview_roll(
     input_dir: Path,
     selected: list[str],
-    per_negative: int,
     groups: list[list[str]],
     roll_dir: Path,
     processing_params: dict,
@@ -227,7 +228,6 @@ def _preview_roll(
     # The same invariants `run --roll` will present (section 3.4), so a
     # probe that passes here cannot fail there on parameters.
     candidate = RollInvariants(
-        shots_per_negative=per_negative,
         processing_params=processing_params,
         icc_profile_sha256=PROFILE_SHA256,
         stitch_params=_stitch_params(),
@@ -282,7 +282,7 @@ def _preview_roll(
 def run_probe(
     input_dir: Path,
     files: list[str] | None,
-    per_negative: int,
+    per_negative: int | None,
     *,
     out_dir: Path | None = None,
     roll_dir: Path | None = None,
@@ -331,7 +331,7 @@ def run_probe(
         # folder and its invariants; without a selection there is no overlap
         # to report.
         if roll_dir is not None:
-            _preview_roll(input_dir, [], per_negative, [], roll_dir, processing_params)
+            _preview_roll(input_dir, [], [], roll_dir, processing_params)
         return ProbeOutcome(catalogue=order.order, groups=[])
 
     if not files:
@@ -391,7 +391,7 @@ def run_probe(
     roll_overlap: list[RollOverlapEntry] = []
     if roll_dir is not None:
         roll_overlap = _preview_roll(
-            input_dir, selection.names, per_negative, groups, roll_dir, processing_params
+            input_dir, selection.names, groups, roll_dir, processing_params
         )
 
     return ProbeOutcome(

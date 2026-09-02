@@ -1,4 +1,4 @@
-"""One roll's durable record: format version 4, persisted in the library
+"""One roll's durable record: format version 5, persisted in the library
 database instead of `scanny-boy-roll.json`.
 
 A *roll* is a named folder the user returns to, holding the stitched TIFFs of
@@ -7,8 +7,11 @@ break rather than a patch: Phase 2's version 1 carried one `run_id`, one
 `input_folder`, and one `film_date`, and refused any rerun that changed them,
 version 2's supersession tombstones are gone in version 3 — a rerun
 adopts the covered negative in place instead of publishing a replacement —
-and version 4 adds per-frame solved photometric gains and per-pair
-pre-gain overlap MAD. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
+version 4 adds per-frame solved photometric gains and per-pair pre-gain
+overlap MAD, and version 5 drops the roll-level `shots_per_negative`: each
+stitch batch's grouping lives in its own work manifest, so one roll can hold
+negatives stitched from different scan counts. See
+`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
 for the shape and section 3.4 for the invariants and naming rules this
 module enforces. The record's shape is unchanged from the JSON-manifest era
 otherwise — `to_dict()` still emits exactly the fields
@@ -41,7 +44,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 4
+ROLL_MANIFEST_FORMAT_VERSION = 5
 ROLL_MANIFEST_KIND = "roll"
 
 # Section 3.4: `short_id` starts at six characters of the run's UUID and
@@ -249,10 +252,10 @@ class RollMetadata:
 @dataclasses.dataclass(frozen=True)
 class RollInvariants:
     """Section 3.4's roll-invariant set, and section 5.4's name for it.
-    Everything else — input folder, source list, order, grouping — is
-    expected to differ between runs and is never compared."""
+    Everything else — input folder, source list, order, grouping, and the
+    batch's `shots_per_negative` — is expected to differ between runs and is
+    never compared."""
 
-    shots_per_negative: int
     processing_params: dict[str, Any]
     icc_profile_sha256: str
     stitch_params: dict[str, Any]
@@ -263,7 +266,6 @@ class RollManifest:
     scanny_boy_version: str
     roll_id: str
     roll_name: str
-    shots_per_negative: int
     created_at: str
     updated_at: str
     processing_params: dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -293,7 +295,6 @@ class RollManifest:
 
     def invariants(self) -> RollInvariants:
         return RollInvariants(
-            shots_per_negative=self.shots_per_negative,
             processing_params=self.processing_params,
             icc_profile_sha256=self.icc_profile.get("sha256", ""),
             stitch_params=self.stitch_params,
@@ -306,7 +307,6 @@ class RollManifest:
             "scanny_boy_version": self.scanny_boy_version,
             "roll_id": self.roll_id,
             "roll_name": self.roll_name,
-            "shots_per_negative": self.shots_per_negative,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "processing_params": self.processing_params,
@@ -319,11 +319,10 @@ class RollManifest:
         }
 
 
-def new_roll_manifest(
-    *, roll_id: str, roll_name: str, shots_per_negative: int
-) -> RollManifest:
+def new_roll_manifest(*, roll_id: str, roll_name: str) -> RollManifest:
     """Section 5.4 decision 1: the one constructor of an empty roll. No runs,
-    no sources, no negatives.
+    no sources, no negatives — and no grouping of its own, since
+    `shots_per_negative` is each stitch batch's choice, not the roll's.
 
     `icc_profile` is seeded from the bundled profile's compile-time
     constants, because there is exactly one profile and section 3.4 makes its
@@ -338,7 +337,6 @@ def new_roll_manifest(
         scanny_boy_version=current_scanny_boy_version(),
         roll_id=roll_id,
         roll_name=roll_name,
-        shots_per_negative=shots_per_negative,
         created_at=now,
         updated_at=now,
         processing_params={},
@@ -359,7 +357,8 @@ def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
 
     manifest.updated_at = _now_iso()
     rank_by_id = {
-        negative_id: rank for rank, negative_id in enumerate(sequence_negatives(manifest), start=1)
+        negative_id: rank
+        for rank, negative_id in enumerate(sequence_negatives(manifest), start=1)
     }
     for negative in manifest.negatives:
         negative.sequence = rank_by_id.get(negative.negative_id)
@@ -404,20 +403,13 @@ def check_roll_invariants(
 ) -> None:
     """Section 3.4's roll-invariant check, replacing Phase 2's
     `check_roll_rerun_matches` entirely. Input folder, source list, order,
-    and grouping are *expected* to differ between runs and are never
-    compared.
+    grouping, and each batch's `shots_per_negative` are *expected* to differ
+    between runs and are never compared.
 
-    Section 5.4: `shots_per_negative` is set at roll creation and is always
-    compared. The other three are established by the first run, so a roll
+    The other three invariants are established by the first run, so a roll
     with no runs yet is unseeded and passes; the caller then assigns them.
     This function never mutates. Raises `RollInvariantMismatchError`.
     """
-    if manifest.shots_per_negative != candidate_params.shots_per_negative:
-        raise RollInvariantMismatchError(
-            f"this run stitches {candidate_params.shots_per_negative} shots per "
-            f"negative, but the roll is {manifest.shots_per_negative}"
-        )
-
     if not manifest.runs:
         return
 
@@ -499,7 +491,10 @@ def _claimed_output_names(
 
 
 def allocate_output_name(
-    manifest: RollManifest, first_member: str, negative_id: str, adoptable: set[str] | None = None
+    manifest: RollManifest,
+    first_member: str,
+    negative_id: str,
+    adoptable: set[str] | None = None,
 ) -> str:
     """Section 3.4's output-naming rule, and the **only** place a published
     name is chosen.

@@ -91,8 +91,8 @@ def test_unique_folder_name_raises_roll_exists_after_exhaustion(tmp_path):
 # --- create_roll -------------------------------------------------------------
 
 
-def test_create_roll_registers_an_empty_v4_roll(tmp_path):
-    roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998", 3)
+def test_create_roll_registers_an_empty_roll(tmp_path):
+    roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998")
 
     assert roll_dir == tmp_path / "Tri-X-Portland-1998"
     # The record lives in the library database; the folder holds only
@@ -101,7 +101,6 @@ def test_create_roll_registers_an_empty_v4_roll(tmp_path):
 
     manifest = load_roll_manifest(roll_dir)
     assert manifest.roll_name == "Tri-X, Portland 1998"
-    assert manifest.shots_per_negative == 3
     assert manifest.runs == []
     assert manifest.sources == []
     assert manifest.negatives == []
@@ -111,7 +110,7 @@ def test_create_roll_registers_an_empty_v4_roll(tmp_path):
 
 
 def test_rename_roll_moves_folder_and_updates_name(tmp_path):
-    roll_dir = create_roll(tmp_path, "Old Name", 3)
+    roll_dir = create_roll(tmp_path, "Old Name")
 
     new_dir = rename_roll(roll_dir, "New Name")
 
@@ -123,7 +122,7 @@ def test_rename_roll_moves_folder_and_updates_name(tmp_path):
 
 
 def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypatch):
-    roll_dir = create_roll(tmp_path, "Old Name", 3)
+    roll_dir = create_roll(tmp_path, "Old Name")
     original_manifest = load_roll_manifest(roll_dir)
 
     def _failing_rename(*_args, **_kwargs):
@@ -148,7 +147,7 @@ def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypat
 
 
 def test_scan_library_ignores_directories_without_a_registered_roll(tmp_path):
-    create_roll(tmp_path, "Roll A", 3)
+    create_roll(tmp_path, "Roll A")
     (tmp_path / "not-a-roll").mkdir()
     (tmp_path / "some-file.txt").write_text("hello")
 
@@ -158,8 +157,8 @@ def test_scan_library_ignores_directories_without_a_registered_roll(tmp_path):
 
 
 def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
-    ok_dir = create_roll(tmp_path, "Roll A", 3)
-    vanished_dir = create_roll(tmp_path, "Vanished Roll", 3)
+    ok_dir = create_roll(tmp_path, "Roll A")
+    vanished_dir = create_roll(tmp_path, "Vanished Roll")
     import shutil
 
     shutil.rmtree(vanished_dir)
@@ -178,7 +177,7 @@ def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
 
 
 def test_scan_library_negative_count_is_every_negative(tmp_path):
-    roll_dir = create_roll(tmp_path, "Roll A", 3)
+    roll_dir = create_roll(tmp_path, "Roll A")
     manifest = load_roll_manifest(roll_dir)
     manifest.negatives.append(_negative(negative_id="aaaaaa-negative-01"))
     manifest.negatives.append(
@@ -197,8 +196,8 @@ def test_scan_library_negative_count_is_every_negative(tmp_path):
 
 
 def test_roll_list_emits_one_event_for_the_whole_library(tmp_path):
-    create_roll(tmp_path, "Roll A", 3)
-    create_roll(tmp_path, "Roll B", 3)
+    create_roll(tmp_path, "Roll A")
+    create_roll(tmp_path, "Roll B")
 
     listings = scan_library(tmp_path)
 

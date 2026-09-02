@@ -158,11 +158,11 @@ final class RollLibrary {
         case failure(CLICode, String)
     }
 
-    /// `roll init --library --name --per-negative`. Rescans on success, so
-    /// the sidebar picks up the new roll immediately.
-    func createRoll(name: String, shotsPerNegative: Int) async -> CreateResult {
+    /// `roll init --library --name`. Rescans on success, so the sidebar
+    /// picks up the new roll immediately.
+    func createRoll(name: String) async -> CreateResult {
         let session = runner.session(
-            for: .rollInit(library: libraryBase, name: name, perNegative: shotsPerNegative)
+            for: .rollInit(library: libraryBase, name: name)
         )
         do {
             for await output in try await session.start() {

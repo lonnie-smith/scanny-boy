@@ -28,7 +28,7 @@ def roll_dir(tmp_path: Path) -> Path:
     directory.mkdir()
     write_roll_manifest(
         directory,
-        new_roll_manifest(roll_id="rid-1", roll_name="Roll", shots_per_negative=2),
+        new_roll_manifest(roll_id="rid-1", roll_name="Roll"),
     )
     return directory
 
@@ -303,14 +303,14 @@ def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
     profile = _flatfield_profile()
     repo.save_flatfield_profile(profile)
 
-    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked", shots_per_negative=2)
+    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked")
     locked.processing_params = {
         "output_bps": 16,
         "flat_field": flatfield.profile_token(profile),
     }
     write_roll_manifest(tmp_roll_dir("locked"), locked)
 
-    other = new_roll_manifest(roll_id="rid-other", roll_name="Other", shots_per_negative=2)
+    other = new_roll_manifest(roll_id="rid-other", roll_name="Other")
     other.processing_params = {"output_bps": 16}
     write_roll_manifest(tmp_roll_dir("other"), other)
 

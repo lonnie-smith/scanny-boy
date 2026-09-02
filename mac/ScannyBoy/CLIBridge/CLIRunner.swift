@@ -11,13 +11,15 @@ public struct CLICommand: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// `scanny-boy roll init --library DIR --name NAME --per-negative N`
-    public static func rollInit(library: URL, name: String, perNegative: Int) -> CLICommand {
+    /// `scanny-boy roll init --library DIR --name NAME`
+    ///
+    /// A roll records no grouping of its own: scans-per-negative is each
+    /// stitch batch's choice, chosen on the Add Scans stage.
+    public static func rollInit(library: URL, name: String) -> CLICommand {
         CLICommand(arguments: [
             "roll", "init",
             "--library", library.path,
             "--name", name,
-            "--per-negative", String(perNegative),
         ])
     }
 

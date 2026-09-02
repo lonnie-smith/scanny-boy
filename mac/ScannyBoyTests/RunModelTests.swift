@@ -587,6 +587,7 @@ struct RunModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        model.perNegative = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
@@ -640,6 +641,7 @@ struct RunModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        model.perNegative = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
@@ -947,8 +949,8 @@ struct RunModelTests {
             ? #"{"name":"a.tif","size":123,"sha256":"\#(String(repeating: "a", count: 64))","width":100,"height":100}"#
             : "null"
         let manifest = """
-            {"manifest_format_version":3,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
-            "roll_id":"roll-1","roll_name":"Test Roll","shots_per_negative":3,\
+            {"manifest_format_version":5,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
+            "roll_id":"roll-1","roll_name":"Test Roll",\
             "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
             "processing_params":{},\
             "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\

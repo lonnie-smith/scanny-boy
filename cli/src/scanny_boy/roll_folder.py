@@ -87,10 +87,15 @@ def unique_folder_name(library: Path, slug: str) -> str:
     )
 
 
-def create_roll(library: Path, name: str, shots_per_negative: int) -> Path:
+def create_roll(library: Path, name: str) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
     write an empty v3 manifest into it via `new_roll_manifest`. Returns the
-    roll's directory."""
+    roll's directory.
+
+    A roll records no grouping of its own: `shots_per_negative` is each
+    stitch batch's choice (`run`/`convert --per-negative`, stored in the
+    work manifest), so a roll can hold negatives stitched from different
+    scan counts."""
     library.mkdir(parents=True, exist_ok=True)
     folder_name = unique_folder_name(library, slugify(name))
     roll_dir = library / folder_name
@@ -98,7 +103,6 @@ def create_roll(library: Path, name: str, shots_per_negative: int) -> Path:
     manifest = new_roll_manifest(
         roll_id=str(uuid.uuid4()),
         roll_name=name,
-        shots_per_negative=shots_per_negative,
     )
     write_roll_manifest(roll_dir, manifest)
     return roll_dir
@@ -131,7 +135,8 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
             os.rename(roll_dir, new_path)
         except OSError as exc:
             raise RollFolderError(
-                Code.ROLL_RENAME_FAILED, f"could not rename {roll_dir} to {new_path}: {exc}"
+                Code.ROLL_RENAME_FAILED,
+                f"could not rename {roll_dir} to {new_path}: {exc}",
             ) from exc
 
     manifest.roll_name = new_name

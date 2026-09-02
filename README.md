@@ -123,9 +123,8 @@ tabs: **Add Scans** and **Edit**.
 **The library.** The sidebar lists every roll under the library base
 (`~/Pictures/Scanny Boy` by default, relocatable from **Settings**), each
 showing its name and how many negatives it holds. **+** creates a roll —
-asking only for a name and shots per negative — and the sidebar's context
-menu renames or deletes one. Renaming moves the roll's folder; deleting
-moves it to the Trash.
+asking only for a name — and the sidebar's context menu renames or deletes
+one. Renaming moves the roll's folder; deleting moves it to the Trash.
 
 **Add Scans** — adding negatives to the selected roll:
 
@@ -165,9 +164,9 @@ database, the CLI re-renders the preview, and the published TIFF is never
 touched. **Metadata** carries the roll's info and the dirty count with its
 **Apply** button, which writes intended capture times into the published
 TIFFs' EXIF tags (no pixel data is touched). **Export** writes TIFFs with
-the edits applied into a folder of your choosing. The roll capture date,
-each negative's date override, and shots per negative are shown but are not
-yet editable from the app — see `docs/punchlist.md`.
+the edits applied into a folder of your choosing. The roll capture date and
+each negative's date override are shown but are not yet editable from the
+app — see `docs/punchlist.md`.
 
 Every roll is recorded in one library SQLite database
 (`~/Library/Application Support/ScannyBoy/library.db`) — sources, every run,

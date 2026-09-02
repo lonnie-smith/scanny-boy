@@ -4,8 +4,8 @@ Profiles' gain maps live as `.npz` files beside the library database; the
 row here is the metadata record, read back through the CLI because Swift is
 forbidden from reading the library's storage directly.
 
-Revision ID: 0002
-Revises: 0001
+Revision ID: 0003
+Revises: 0002
 Create Date: 2026-09-01
 
 """
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0002"
-down_revision = "0001"
+revision = "0003"
+down_revision = "0002"
 branch_labels = None
 depends_on = None
 
