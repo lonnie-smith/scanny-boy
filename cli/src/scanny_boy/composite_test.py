@@ -18,8 +18,8 @@ from scanny_boy.composite import (
 )
 from scanny_boy.events import Code
 from scanny_boy.layout import solve_layout
-from scanny_boy.registration import PairResult, StitchError
 from scanny_boy.linear import decode_to_linear, encode_from_linear
+from scanny_boy.registration import PairResult, StitchError
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 
 _SCENE_SIZE = (700, 1300)

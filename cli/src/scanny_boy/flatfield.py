@@ -37,10 +37,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.events import Code, FlatFieldProfileSummary
 from scanny_boy.hashing import sha256_file
 from scanny_boy.library.db import library_db_path
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.raw_decode import decode_raw
 
 # Falloff is low-frequency; a full-resolution gain map buys nothing.

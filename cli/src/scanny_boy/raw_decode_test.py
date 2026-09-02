@@ -99,20 +99,20 @@ def test_decode_is_linear_raw_with_unity_white_balance():
     path = FIXTURES_DIR / SAMPLE_FILE
     fixed = decode_raw(path)
 
-    reference_params = dict(
-        output_bps=16,
-        gamma=(1, 1),
-        no_auto_bright=True,
-        adjust_maximum_thr=0.0,
-        use_camera_wb=False,
-        use_auto_wb=False,
-        user_wb=[1, 1, 1, 1],
-        output_color=rawpy.ColorSpace.raw,
-        demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD,
-        four_color_rgb=False,
-        median_filter_passes=0,
-        highlight_mode=rawpy.HighlightMode.Clip,
-    )
+    reference_params = {
+        "output_bps": 16,
+        "gamma": (1, 1),
+        "no_auto_bright": True,
+        "adjust_maximum_thr": 0.0,
+        "use_camera_wb": False,
+        "use_auto_wb": False,
+        "user_wb": [1, 1, 1, 1],
+        "output_color": rawpy.ColorSpace.raw,
+        "demosaic_algorithm": rawpy.DemosaicAlgorithm.AHD,
+        "four_color_rgb": False,
+        "median_filter_passes": 0,
+        "highlight_mode": rawpy.HighlightMode.Clip,
+    }
     with rawpy.imread(str(path)) as raw:
         reference = raw.postprocess(**reference_params)
 

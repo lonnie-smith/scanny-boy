@@ -25,11 +25,11 @@ import math
 import cv2
 import numpy as np
 
-from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.concurrency import physical_memory_bytes
 from scanny_boy.events import Code
 from scanny_boy.layout import GainStat, Layout, solve_gains
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.registration import StitchError
 
 FILL_COLOR: tuple[int, int, int] = (0, 0, 0)  # section 3.3: one constant, one place

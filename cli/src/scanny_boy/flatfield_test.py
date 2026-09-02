@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 from scanny_boy import flatfield
-from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
+from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.sample_nef_support import FIXTURES_DIR, requires_real_samples
 
 SAMPLE_FILE = "_DSC4638.NEF"
