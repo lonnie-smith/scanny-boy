@@ -134,7 +134,14 @@ one. Renaming moves the roll's folder; deleting moves it to the Trash.
 2. **Select one contiguous range.** Shots per negative is the roll's own,
    fixed when it was created; the selected count must divide evenly by it.
    The grouping preview shows how the selection splits into negatives.
-3. **Run.** One process converts every RAW frame, registers each negative's
+3. **Choose a flat-field profile.** A copy-stand capture is darker at the
+   corners than at the centre — lens falloff plus an uneven light source.
+   **File > Flat-Field Profiles…** manages profiles, each measured once from
+   a reference shot of the bare light source (no negative in the holder);
+   the chosen profile's gain map evens that falloff back out of every frame
+   of the run. The profile is required before Stitch is enabled, and a roll
+   locks to one profile with its first run.
+4. **Run.** One process converts every RAW frame, registers each negative's
    frames against each other, solves a shared layout, and composites one
    stitched TIFF per negative into the roll — reporting live progress, and
    each negative's result (published, or why it failed) when it ends. A
@@ -143,7 +150,7 @@ one. Renaming moves the roll's folder; deleting moves it to the Trash.
    choosing **Replace** adopts the existing negative in place — same
    negative and same filename, its stitched TIFF replaced with the new
    result.
-4. **Re-stitch, if a negative needs tuning.** A run never keeps the work
+5. **Re-stitch, if a negative needs tuning.** A run never keeps the work
    directory it creates — it is removed on every outcome — so to re-stitch
    you point the app at one you kept yourself (a run started with `--work`,
    or any work directory you have on disk). **File > Re-stitch…** re-runs

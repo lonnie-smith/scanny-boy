@@ -171,17 +171,27 @@ struct EditModelTests {
     /// post-delete one, via a marker beside the script (the helper's own
     /// working directory is not writable).
     private static func deleteRunner(
-        _ directory: URL, negatives: [String]
+        _ directory: URL, deleting deletedID: String, negatives: [String]
     ) throws -> CLIRunner {
-        let initial = Self.rollInfoEvent(negatives: negatives)
-        let remaining = Array(negatives.dropFirst())
-        let fresh = Self.rollInfoEvent(negatives: remaining)
+        func negative(_ id: String, sequence: Int) -> String {
+            Self.negativeJSON(negativeID: id, sequence: sequence, intended: nil, applied: nil)
+        }
+        let initial = Self.rollInfoEvent(
+            negatives: negatives.enumerated().map { index, id in
+                negative(id, sequence: index + 1)
+            }
+        )
+        let fresh = Self.rollInfoEvent(
+            negatives: negatives.filter { $0 != deletedID }.enumerated().map { index, id in
+                negative(id, sequence: index + 1)
+            }
+        )
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":5,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":5,"event":"negative_deleted","negative_id":"\(negatives[0])","output":"\(negatives[0]).tif"}'
-              echo '{"protocol_version":5,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":6,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":6,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":6,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -202,7 +212,7 @@ struct EditModelTests {
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let runner = try Self.deleteRunner(directory, negatives: ["n1", "n2", "n3"])
+        let runner = try Self.deleteRunner(directory, deleting: "n1", negatives: ["n1", "n2", "n3"])
         let model = EditModel(runner: runner)
 
         model.rollURL = URL(filePath: "/tmp/roll")
@@ -223,7 +233,7 @@ struct EditModelTests {
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let runner = try Self.deleteRunner(directory, negatives: ["n1", "n2"])
+        let runner = try Self.deleteRunner(directory, deleting: "n2", negatives: ["n1", "n2"])
         let model = EditModel(runner: runner)
 
         model.rollURL = URL(filePath: "/tmp/roll")
@@ -251,9 +261,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":5,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":5,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":5,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":6,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":6,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":6,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi

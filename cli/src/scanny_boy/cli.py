@@ -16,6 +16,9 @@ from scanny_boy.events import (
     ErrorEvent,
     EventWriter,
     Finished,
+    FlatFieldCreated,
+    FlatFieldDeleted,
+    FlatFieldList,
     NegativeDeleted,
     ProbeResult,
     RollCreated,
@@ -28,9 +31,15 @@ from scanny_boy.events import (
     WarningEvent,
 )
 from scanny_boy.exporter import ExportFailure, run_export
+from scanny_boy.flatfield import (
+    FlatFieldError,
+    create_profile,
+    flatfield_profile_summary,
+)
 from scanny_boy.library import repo
 from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
+from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
@@ -103,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="per_negative",
         help="required with --files: the scans stitched into each negative",
     )
+    probe.add_argument("--flatfield", metavar="PROFILE_ID")
 
     convert = subparsers.add_parser(
         "convert", help="Convert a selection of NEFs to TIFFs."
@@ -115,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     convert.add_argument("--jobs", type=int, metavar="N")
     convert.add_argument("--overwrite", action="store_true")
+    convert.add_argument("--flatfield", metavar="PROFILE_ID")
 
     stitch = subparsers.add_parser(
         "stitch",
@@ -141,6 +152,25 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
+    run.add_argument("--flatfield", metavar="PROFILE_ID")
+
+    flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
+    flatfield_subparsers = flatfield.add_subparsers(
+        dest="flatfield_command", required=True
+    )
+
+    flatfield_create = flatfield_subparsers.add_parser(
+        "create", help="Build a gain map from a bare light source reference NEF."
+    )
+    flatfield_create.add_argument("--reference", required=True, metavar="FILE")
+    flatfield_create.add_argument("--name", required=True, metavar="NAME")
+
+    flatfield_subparsers.add_parser("list", help="List the flat-field profiles.")
+
+    flatfield_delete = flatfield_subparsers.add_parser(
+        "delete", help="Delete one flat-field profile."
+    )
+    flatfield_delete.add_argument("--profile", required=True, metavar="ID")
 
     apply_metadata = subparsers.add_parser(
         "apply-metadata",
@@ -392,6 +422,88 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     raise AssertionError(f"unhandled edit command {args.edit_command!r}")
 
 
+def _run_flatfield_command(args, writer: EventWriter) -> int:
+    """The `flatfield create` / `flatfield list` / `flatfield delete`
+    subcommands: each mirrors `roll init`/`roll list`'s started/finished
+    bracketing and carries no `run_id`, since none is a pipeline run."""
+    if args.flatfield_command == "create":
+        writer.write(Started(command="flatfield create"))
+        try:
+            profile = create_profile(Path(args.reference), args.name)
+        except FlatFieldError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        except UnsupportedRawError:
+            writer.write(
+                ErrorEvent(
+                    code=Code.UNSUPPORTED_RAW,
+                    message=f"{args.reference} cannot be read by LibRaw; a flat-field "
+                    "reference must be a NEF",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        except UnreadableRawError:
+            writer.write(
+                ErrorEvent(
+                    code=Code.UNREADABLE_RAW,
+                    message=f"{args.reference} could not be decoded",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(
+            FlatFieldCreated(profile=flatfield_profile_summary(profile))
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.flatfield_command == "list":
+        writer.write(Started(command="flatfield list"))
+        profiles = repo.list_flatfield_profiles()
+        writer.write(
+            FlatFieldList(
+                profiles=[flatfield_profile_summary(p) for p in profiles]
+            )
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    # delete
+    writer.write(Started(command="flatfield delete"))
+    try:
+        profile = repo.load_flatfield_profile(args.profile)
+    except FlatFieldError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    users = repo.rolls_using_flatfield(args.profile)
+    if users:
+        # The gain map is the only thing that could reproduce those rolls.
+        writer.write(
+            ErrorEvent(
+                code=Code.FLATFIELD_PROFILE_IN_USE,
+                message=(
+                    f"profile {profile.name!r} is locked into "
+                    f"{len(users)} roll(s) by their processing invariants "
+                    "and cannot be deleted"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    repo.delete_flatfield_profile(args.profile)
+    gain_map_path = Path(profile.gain_map_path)
+    if gain_map_path.exists():
+        gain_map_path.unlink()
+    writer.write(FlatFieldDeleted(profile_id=args.profile))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_export_command(args, writer: EventWriter) -> int:
     writer.write(Started(command="export"))
     try:
@@ -437,6 +549,7 @@ def _run_run_command(
                 jobs=jobs,
                 cancel=cancel,
                 emit=writer.write,
+                flatfield_profile_id=args.flatfield,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -548,6 +661,9 @@ def _dispatch_command(
     if args.command == "edit":
         return _run_edit_command(args, writer)
 
+    if args.command == "flatfield":
+        return _run_flatfield_command(args, writer)
+
     if args.command == "export":
         return _run_export_command(args, writer)
 
@@ -583,6 +699,7 @@ def _dispatch_command(
                 args.per_negative,
                 out_dir=Path(args.out) if args.out else None,
                 roll_dir=Path(args.roll) if args.roll else None,
+                flatfield_profile_id=args.flatfield,
                 on_warning=on_warning,
             )
         except ProbeFailure as exc:
@@ -629,6 +746,7 @@ def _dispatch_command(
                 jobs=jobs,
                 cancel=cancel,
                 emit=writer.write,
+                flatfield_profile_id=args.flatfield,
             )
     except ConvertFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))

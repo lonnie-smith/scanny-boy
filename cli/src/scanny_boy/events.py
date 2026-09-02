@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 
 
 class EventType(enum.StrEnum):
@@ -35,6 +35,9 @@ class EventType(enum.StrEnum):
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     EXPORT_DONE = "export_done"
+    FLATFIELD_CREATED = "flatfield_created"
+    FLATFIELD_LIST = "flatfield_list"
+    FLATFIELD_DELETED = "flatfield_deleted"
 
 
 class Stage(enum.StrEnum):
@@ -106,6 +109,12 @@ class Code(enum.StrEnum):
     INVALID_EDIT = "INVALID_EDIT"
     EXPORT_FAILED = "EXPORT_FAILED"
     PREVIEW_FAILED = "PREVIEW_FAILED"
+    FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
+    FLATFIELD_PROFILE_EXISTS = "FLATFIELD_PROFILE_EXISTS"
+    FLATFIELD_PROFILE_IN_USE = "FLATFIELD_PROFILE_IN_USE"
+    FLATFIELD_GAIN_MAP_MISSING = "FLATFIELD_GAIN_MAP_MISSING"
+    FLATFIELD_ASPECT_MISMATCH = "FLATFIELD_ASPECT_MISMATCH"
+    FLATFIELD_HIGHLIGHT_CLIPPED = "FLATFIELD_HIGHLIGHT_CLIPPED"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -371,6 +380,42 @@ class ExportDone(Event):
     output: str
     width: int
     height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldProfileSummary:
+    """The profile fields a `flatfield` event carries. The gain map's path
+    and SHA-256 are deliberately absent: the path is app-private storage the
+    UI has no use for, and the hash is roll-invariant bookkeeping the CLI
+    owns."""
+
+    profile_id: str
+    name: str
+    reference_width: int
+    reference_height: int
+    source_path: str | None
+    created_at: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldCreated(Event):
+    event_type: ClassVar[EventType] = EventType.FLATFIELD_CREATED
+
+    profile: FlatFieldProfileSummary
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldList(Event):
+    event_type: ClassVar[EventType] = EventType.FLATFIELD_LIST
+
+    profiles: list[FlatFieldProfileSummary]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldDeleted(Event):
+    event_type: ClassVar[EventType] = EventType.FLATFIELD_DELETED
+
+    profile_id: str
 
 
 class EventWriter:

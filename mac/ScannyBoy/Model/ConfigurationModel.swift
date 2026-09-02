@@ -32,6 +32,7 @@ final class ConfigurationModel {
     }
 
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
+    static let lastFlatFieldProfileKey = "com.lonniesmith.scanny-boy.lastFlatFieldProfile"
 
     let runner: CLIRunner
     private let defaults: UserDefaults
@@ -77,6 +78,7 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
+            startRollFetch(rollURL: rollURL)
             scheduleValidation()
         }
     }
@@ -92,6 +94,36 @@ final class ConfigurationModel {
             guard perNegative != oldValue else { return }
             scheduleValidation()
         }
+    }
+
+    /// `roll info` for `rollURL` (section 3.1: Swift never parses
+    /// `scanny-boy-roll.json` itself), so the roll's locked flat-field
+    /// profile is only known once this finishes.
+    private(set) var roll: RollManifest?
+    @ObservationIgnored private var rollTask: Task<Void, Never>?
+
+    // MARK: - Flat field
+
+    /// The flat-field profile this run applies. Required before Stitch is
+    /// offered: a roll locks to one profile with its first run, so the
+    /// choice belongs to Add Scans, not to a hidden default. Persisted so
+    /// the last choice survives a relaunch, the same as the input folder.
+    var flatFieldProfileID: String? {
+        didSet {
+            guard flatFieldProfileID != oldValue else { return }
+            if let flatFieldProfileID {
+                defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
+            } else {
+                defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
+            }
+            scheduleValidation()
+        }
+    }
+
+    /// Set once the roll's own record names a profile: Add Scans pre-selects
+    /// it and says so, since the user cannot choose differently anyway.
+    var isRollLockedToFlatFieldProfile: Bool {
+        roll?.processingParams.flatFieldProfileID != nil
     }
 
     /// A `probe --roll` failure specific to the roll itself — missing,
@@ -110,6 +142,7 @@ final class ConfigurationModel {
         self.runner = runner
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
+        flatFieldProfileID = defaults.string(forKey: Self.lastFlatFieldProfileKey)
         if let inputFolder {
             startCatalogueProbe(inputFolder: inputFolder)
         }
@@ -127,15 +160,18 @@ final class ConfigurationModel {
         .outputNotWritable,
     ]
 
-    /// Every gate section 3.10 names: a chosen scans-per-negative, a
+    /// Every gate section 3.10 names — a chosen scans-per-negative, a
     /// contiguous, divisible selection with consistent settings, targeting a
-    /// roll that validated. The Run button is offered from here.
+    /// roll that validated — plus the flat-field profile the app requires
+    /// (docs/FLATFIELD_PLAN.md section 2.5). The Stitch button is offered
+    /// from here.
     var runEnabled: Bool {
         perNegative != nil
             && !selectedFiles.isEmpty
             && selectionError == nil
             && rollError == nil
             && rollURL != nil
+            && flatFieldProfileID != nil
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -157,15 +193,21 @@ final class ConfigurationModel {
     /// The `run` invocation this configuration describes, or `nil` when it
     /// does not yet describe a runnable one. `skipSources` is always empty:
     /// every group in the selection runs and adopts whatever it overlaps in
-    /// the roll (the replacement rule).
+    /// the roll (the replacement rule). The flat-field profile rides along
+    /// as `--flatfield`; a locked roll has already pre-selected its own.
     func runCommand() -> CLICommand? {
-        guard runEnabled, let inputFolder, let rollURL, let perNegative else { return nil }
+        guard runEnabled, let inputFolder, let rollURL, let perNegative,
+            let flatFieldProfileID
+        else {
+            return nil
+        }
         return .run(
             input: inputFolder,
             files: selectedFilesInCanonicalOrder,
             roll: rollURL,
             perNegative: perNegative,
-            skipSources: []
+            skipSources: [],
+            flatfield: flatFieldProfileID
         )
     }
 
@@ -191,6 +233,40 @@ final class ConfigurationModel {
         }
     }
 
+    private func startRollFetch(rollURL: URL?) {
+        rollTask?.cancel()
+        guard let rollURL else { return }
+        rollTask = Task { [weak self, runner] in
+            let manifest = await Self.fetchRollManifest(runner: runner, roll: rollURL)
+            guard let self, !Task.isCancelled else { return }
+            self.roll = manifest
+            // A roll already locked to a profile pre-selects it: the user
+            // cannot choose differently (the run would be refused with
+            // `ROLL_INVARIANT_MISMATCH`), so the picker says so instead of
+            // fighting them. Only fills the gap — an explicit choice stays.
+            if let locked = manifest?.processingParams.flatFieldProfileID,
+                flatFieldProfileID == nil
+            {
+                flatFieldProfileID = locked
+            }
+        }
+    }
+
+    private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                if case .event(let event) = output, event.kind == .rollInfo,
+                    let fields = event.manifest
+                {
+                    return RollManifest(fields: fields)
+                }
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
     private func scheduleValidation() {
         validationTask?.cancel()
         guard let inputFolder, !selectedFiles.isEmpty else {
@@ -213,13 +289,18 @@ final class ConfigurationModel {
 
         let rollURL = rollURL
         let files = selectedFilesInCanonicalOrder
+        let flatFieldProfileID = flatFieldProfileID
 
         isProbing = true
         validationTask = Task { [weak self, runner] in
             let result = await Self.runProbe(
                 runner: runner,
                 command: .probe(
-                    input: inputFolder, files: files, roll: rollURL, perNegative: perNegative
+                    input: inputFolder,
+                    files: files,
+                    roll: rollURL,
+                    perNegative: perNegative,
+                    flatfield: flatFieldProfileID
                 )
             )
             guard let self, !Task.isCancelled else { return }
@@ -312,5 +393,6 @@ final class ConfigurationModel {
     func waitForPendingProbes() async {
         await catalogueTask?.value
         await validationTask?.value
+        await rollTask?.value
     }
 }

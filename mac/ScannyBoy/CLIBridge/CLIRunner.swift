@@ -56,7 +56,8 @@ public struct CLICommand: Sendable, Hashable {
         files: [String] = [],
         out: URL? = nil,
         roll: URL? = nil,
-        perNegative: Int? = nil
+        perNegative: Int? = nil,
+        flatfield: String? = nil
     ) -> CLICommand {
         var arguments = ["probe", "--input", input.path]
         if !files.isEmpty {
@@ -71,6 +72,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let perNegative {
             arguments.append(contentsOf: ["--per-negative", String(perNegative)])
+        }
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
         }
         return CLICommand(arguments: arguments)
     }
@@ -87,7 +91,8 @@ public struct CLICommand: Sendable, Hashable {
         out: URL,
         perNegative: Int? = nil,
         jobs: Int? = nil,
-        overwrite: Bool = false
+        overwrite: Bool = false,
+        flatfield: String? = nil
     ) -> CLICommand {
         var arguments = ["convert", "--input", input.path]
         arguments.append("--files")
@@ -101,6 +106,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if overwrite {
             arguments.append("--overwrite")
+        }
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
         }
         return CLICommand(arguments: arguments)
     }
@@ -122,7 +130,8 @@ public struct CLICommand: Sendable, Hashable {
         perNegative: Int? = nil,
         jobs: Int? = nil,
         skipSources: [String] = [],
-        work: URL? = nil
+        work: URL? = nil,
+        flatfield: String? = nil
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
         arguments.append("--files")
@@ -136,6 +145,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let work {
             arguments.append(contentsOf: ["--work", work.path])
+        }
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
         }
         if !skipSources.isEmpty {
             arguments.append("--skip-sources")
@@ -224,6 +236,32 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append("--allow-partial")
         }
         return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy flatfield create --reference FILE --name NAME`
+    ///
+    /// Protocol version 6: decodes the bare light source reference, builds
+    /// and stores the gain map, and inserts the profile. Takes seconds — the
+    /// UI shows a spinner, not a progress bar.
+    public static func flatfieldCreate(reference: URL, name: String) -> CLICommand {
+        CLICommand(arguments: [
+            "flatfield", "create",
+            "--reference", reference.path,
+            "--name", name,
+        ])
+    }
+
+    /// `scanny-boy flatfield list`
+    public static func flatfieldList() -> CLICommand {
+        CLICommand(arguments: ["flatfield", "list"])
+    }
+
+    /// `scanny-boy flatfield delete --profile ID`
+    ///
+    /// The CLI refuses with `FLATFIELD_PROFILE_IN_USE` when any roll's
+    /// invariants name the profile; the app surfaces that as an alert.
+    public static func flatfieldDelete(profile: String) -> CLICommand {
+        CLICommand(arguments: ["flatfield", "delete", "--profile", profile])
     }
 }
 

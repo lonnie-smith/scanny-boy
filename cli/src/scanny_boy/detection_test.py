@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from scanny_boy.detection import build_detection_image, to_full_resolution
-from scanny_boy.romm import encode_from_linear
+from scanny_boy.linear import encode_from_linear
 
 
 def _film_like_frame(height: int, width: int, *, seed: int) -> np.ndarray:

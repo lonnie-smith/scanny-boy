@@ -23,6 +23,7 @@ from scanny_boy.cancellation import CancellationToken
 from scanny_boy.catalogue import read_capture_timestamp
 from scanny_boy.disk_check import DiskCheckError
 from scanny_boy.events import Code, Progress, Stage, WarningEvent
+from scanny_boy.linear import encode_from_linear
 from scanny_boy.pipeline import STEPS_PER_FRAME
 from scanny_boy.roll_manifest import (
     load_roll_manifest,
@@ -30,7 +31,6 @@ from scanny_boy.roll_manifest import (
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_test import _negative
-from scanny_boy.romm import encode_from_linear
 from scanny_boy.run_pipeline import (
     STITCH_UNITS_PER_FRAME,
     STITCH_UNITS_PER_NEGATIVE,

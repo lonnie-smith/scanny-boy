@@ -26,7 +26,10 @@
         "metadata_skipped",
         "edit_recorded",
         "negative_deleted",
-        "export_done"
+        "export_done",
+        "flatfield_created",
+        "flatfield_list",
+        "flatfield_deleted"
       ]
     },
     "stage": {
@@ -103,6 +106,12 @@
         "INVALID_EDIT",
         "EXPORT_FAILED",
         "PREVIEW_FAILED",
+        "FLATFIELD_PROFILE_NOT_FOUND",
+        "FLATFIELD_PROFILE_EXISTS",
+        "FLATFIELD_PROFILE_IN_USE",
+        "FLATFIELD_GAIN_MAP_MISSING",
+        "FLATFIELD_ASPECT_MISMATCH",
+        "FLATFIELD_HIGHLIGHT_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -135,6 +144,25 @@
         "message": { "type": "string" }
       }
     },
+    "flatFieldProfile": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "name",
+        "reference_width",
+        "reference_height",
+        "source_path",
+        "created_at"
+      ],
+      "properties": {
+        "profile_id": { "type": "string" },
+        "name": { "type": "string" },
+        "reference_width": { "type": "integer", "minimum": 1 },
+        "reference_height": { "type": "integer", "minimum": 1 },
+        "source_path": { "type": ["string", "null"] },
+        "created_at": { "type": "string" }
+      }
+    },
     "rollListingEntry": {
       "type": "object",
       "required": ["path", "status", "reason", "roll_id", "roll_name", "negative_count"],
@@ -154,7 +182,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 5
+      "const": 6
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -268,7 +296,10 @@
               "apply-metadata",
               "edit rotate",
               "edit delete",
-              "export"
+              "export",
+              "flatfield create",
+              "flatfield list",
+              "flatfield delete"
             ]
           }
         }
@@ -367,6 +398,36 @@
           },
           "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
           "preview_path": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "flatfield_created" } } },
+      "then": {
+        "required": ["profile"],
+        "properties": {
+          "profile": { "$ref": "#/definitions/flatFieldProfile" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "flatfield_list" } } },
+      "then": {
+        "required": ["profiles"],
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/flatFieldProfile" }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "flatfield_deleted" } } },
+      "then": {
+        "required": ["profile_id"],
+        "properties": {
+          "profile_id": { "type": "string" }
         }
       }
     },

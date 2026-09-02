@@ -22,6 +22,7 @@ import SwiftUI
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
+    let flatField: FlatFieldModel
     @Bindable var model: ConfigurationModel
     let edit: EditModel
     let run: RunModel
@@ -40,6 +41,7 @@ struct ContentView: View {
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
     @State private var isPresentingNewRollSheet = false
+    @State private var isPresentingFlatFieldProfiles = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -87,6 +89,12 @@ struct ContentView: View {
             restitchOutputFolder = model.rollURL
             isPresentingRestitch = true
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .scannyBoyRequestFlatFieldProfiles)
+        ) { _ in
+            flatField.refresh()
+            isPresentingFlatFieldProfiles = true
+        }
         .sheet(isPresented: $isPresentingRestitch) {
             RestitchSheet(
                 run: run,
@@ -103,6 +111,9 @@ struct ContentView: View {
                 // was active when the sheet opened.
                 workspaceTab = .addScans
             }
+        }
+        .sheet(isPresented: $isPresentingFlatFieldProfiles) {
+            FlatFieldProfilesSheet(flatField: flatField)
         }
     }
 
@@ -236,6 +247,28 @@ struct ContentView: View {
 
     @ViewBuilder
     private var configurationSections: some View {
+        Section("Flat Field") {
+            Picker("Profile", selection: $model.flatFieldProfileID) {
+                Text("None").tag(String?.none)
+                ForEach(flatField.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
+                }
+            }
+            if model.isRollLockedToFlatFieldProfile, let locked = model.roll?.processingParams.flatFieldProfileID {
+                let name = flatField.profiles.first { $0.profileID == locked }?.name ?? locked
+                Text("This roll is locked to “\(name)”.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if model.flatFieldProfileID == nil {
+                Text("Choose the profile measured for this copy stand; it corrects the lens falloff every scan of the roll.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Manage…") {
+                flatField.refresh()
+                isPresentingFlatFieldProfiles = true
+            }
+        }
         Section("Grouping") {
             // Scans-per-negative belongs to this stitch batch, not the
             // roll: each run picks its own grouping, so a roll can hold

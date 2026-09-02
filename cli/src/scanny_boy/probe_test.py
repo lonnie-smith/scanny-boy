@@ -261,7 +261,7 @@ def _write_matching_manifest(
         film_date=film_date,
         shots_per_negative=len(members),
         processing_params={"output_bps": 16},
-        icc_profile={"name": "ScannyBoy-ROMM-LibRaw-v4.icc", "sha256": PROFILE_SHA256},
+        icc_profile={"name": "ScannyBoy-Linear-ProPhoto-v1.icc", "sha256": PROFILE_SHA256},
         source_order=members,
         sources=records,
         curated_metadata=_curated_placeholder(),
@@ -483,3 +483,99 @@ def test_probe_accepts_changed_shots_per_negative(tmp_path):
     outcome = run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
 
     assert outcome.catalogue
+
+
+# --- flat-field: --roll surfaces a profile mismatch before any run ---------
+
+
+def _save_flatfield_profile(profile_id: str, name: str):
+    import numpy as np
+
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    path, sha256 = flatfield.save_gain_map(
+        profile_id, np.full((8, 8, 3), 1.25, dtype=np.float32)
+    )
+    profile = flatfield.FlatFieldProfile(
+        profile_id=profile_id,
+        name=name,
+        gain_map_path=str(path),
+        gain_map_sha256=sha256,
+        source_path=None,
+        reference_width=12,
+        reference_height=8,
+        params=flatfield.build_params(),
+        scanny_boy_version="0.3.0",
+        created_at="2026-09-01T00:00:00Z",
+    )
+    repo.save_flatfield_profile(profile)
+    return profile
+
+
+def _catalogue_dir(tmp_path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    write_fake_nef(input_dir / "a.NEF", date_time_original="2026:08:02 12:00:00")
+    write_fake_nef(input_dir / "b.NEF", date_time_original="2026:08:02 12:00:05")
+    return input_dir
+
+
+def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
+    from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
+
+    input_dir = _catalogue_dir(tmp_path)
+    roll_dir = tmp_path / "Roll"
+    write_roll_manifest(roll_dir, new_roll_manifest(roll_id="rid-1", roll_name="Roll"))
+
+    with pytest.raises(ProbeFailure) as excinfo:
+        run_probe(input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id="nope")
+
+    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
+
+
+def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
+    from scanny_boy import flatfield
+    from scanny_boy.roll_manifest import (
+        RunRecord,
+        new_roll_manifest,
+        write_roll_manifest,
+    )
+    from scanny_boy.stitch_pipeline import _stitch_params
+
+    profile_a = _save_flatfield_profile("pid-a", "Profile A")
+    profile_b = _save_flatfield_profile("pid-b", "Profile B")
+    input_dir = _catalogue_dir(tmp_path)
+    roll_dir = tmp_path / "Roll"
+    roll_dir.mkdir()
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    # An unseeded roll accepts anything; the invariants only bind once a
+    # run has established them — so seed the roll exactly as a first run
+    # with profile A would have.
+    manifest.runs.append(
+        RunRecord(run_id="run-1", kind="stitch", status="complete", started_at="t")
+    )
+    manifest.processing_params = {
+        **jsonable_raw_params(),
+        "flat_field": flatfield.profile_token(profile_a),
+    }
+    manifest.stitch_params = _stitch_params()
+    write_roll_manifest(roll_dir, manifest)
+
+    # The roll's own profile probes clean...
+    run_probe(
+        input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id=profile_a.profile_id
+    )
+
+    # ...a different one is the same refusal `run` will give, seen before
+    # Stitch is ever pressed.
+    with pytest.raises(ProbeFailure) as excinfo:
+        run_probe(
+            input_dir,
+            None,
+            2,
+            roll_dir=roll_dir,
+            flatfield_profile_id=profile_b.profile_id,
+        )
+
+    assert excinfo.value.code == Code.ROLL_INVARIANT_MISMATCH

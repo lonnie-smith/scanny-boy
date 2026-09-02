@@ -560,3 +560,179 @@ pixel value does (`punchlist.md`).
   Phase 3.
 - Everything Phase 1 and 2's own "Scope ... does not cover" sections say
   still applies unchanged.
+
+# Flat-field decisions
+
+These are the locked decisions of
+[`FLATFIELD_PLAN.md`](FLATFIELD_PLAN.md) section 2, modelled on NegPy's
+flat-field feature and adapted to this program's architecture — in
+particular to the rule that **Python owns every decision** and to the fact
+that a roll's `processing_params` is an invariant. The plan is
+authoritative; this section only makes the decisions findable.
+
+## The correction itself
+
+- **Multiplicative gain only**, measured once from a reference shot of the
+  **bare light source with no negative in the holder**. No black-frame
+  subtraction — same as NegPy.
+- **Where it sits**: inside the convert stage, per frame, immediately after
+  `raw_decode.decode_raw` and before the intermediate TIFF is written —
+  ahead of the stitch stage's photometric gain solve. The stitch's
+  per-frame per-channel gains are a global scalar per frame per channel and
+  cannot represent a spatial gradient; correcting vignetting first means
+  the residual they explain is real exposure mismatch, not falloff, and
+  `overlap_mad` becomes a cleaner measurement. `stitch_pipeline.py` needs
+  no change at all.
+- **The gain map** (port of NegPy's `compute_gain`, values unchanged):
+  downsample with `INTER_AREA` so `max(h, w) <= 256`, Gaussian-blur each
+  channel with `sigma = max(h, w) / 16`, gain = mean ÷ blurred per channel,
+  clipped to `[0.25, 4.0]`. Every constant lives in `flatfield.py` and
+  nowhere else.
+- **White balance**: the reference is decoded with the project's locked
+  `RAW_PARAMS`, which **is** NegPy's decode — linear sensor channels,
+  unity white balance (see "Linear decode for NegPy compatibility" below).
+  Step 4 divides each channel by its own mean, so any constant per-channel
+  scale cancels identically regardless: the gain map is independent of the
+  reference's as-shot white balance, and reusing the one decode path the
+  project treats as load-bearing beats a second decode configuration.
+
+## The profile
+
+- **`.NEF` references only.** One decode path, one colour story; a JPEG
+  reference would have to be guessed into linear light. Non-RAW references
+  are a punchlist item.
+- The profile records the reference's full-resolution **aspect ratio**; a
+  run whose frames differ from it by more than 1% warns
+  `FLATFIELD_ASPECT_MISMATCH` — a warning, not a failure.
+- **Storage**: gain maps live beside the library database and previews in
+  Application Support (`flatfield_root()` = `library_db_path().parent /
+  "flatfield"`, mirroring `previews_root()`), so `SCANNY_BOY_LIBRARY_DB`
+  relocates them and tests get isolation for free. One float32
+  `(h, w, 3)` array plus a format version in an `.npz`. The profile is
+  **self-contained**: once created, the reference file can move or be
+  deleted; its path is provenance only and is never read again.
+- Profile metadata is a row in the library database (table
+  `flatfield_profiles`, Alembic revision `0003`), not a JSON sidecar —
+  Swift is forbidden from reading the library's storage directly, so
+  profiles come back through CLI events either way.
+- **Commands**: `flatfield create --reference FILE --name NAME`,
+  `flatfield list`, `flatfield delete --profile ID`. `delete` refuses with
+  `FLATFIELD_PROFILE_IN_USE` when any roll's
+  `processing_params.flat_field.profile_id` names the profile — the gain
+  map is the only thing that could reproduce that roll.
+
+## The profile is a roll invariant
+
+`flatfield.profile_token(profile)` — `{"profile_id", "gain_map_sha256",
+"params"}` — is folded into `processing_params` under `flat_field`, which
+`roll_manifest.check_roll_invariants` already compares. No new comparison
+code. Three consequences, all intended:
+
+- **A roll can never mix corrected and uncorrected negatives.** That is
+  the point.
+- **Existing rolls refuse new runs** that carry a profile (their
+  `processing_params` has no `flat_field` key) — the same breakage the
+  gain-normalization merge (#59) caused through `stitch_params`; the
+  remedy is the same: start a new roll.
+- The key is **absent, not `null`**, when no profile is given, so a
+  no-profile run still compares equal to a pre-flat-field roll. CLI users
+  without `--flatfield` are unaffected.
+
+`name` is deliberately **not** in the token: renaming a profile must not
+invalidate a roll.
+
+## Required in the app, optional in the CLI
+
+`--flatfield` is an optional flag on `convert`, `run`, and `probe`. The
+app always passes one and disables Stitch until a profile is chosen; the
+CLI stays a general tool and its existing tests keep working unchanged.
+
+## Cost and memory
+
+- **No new progress step**: the correction happens inside the existing
+  `PipelineStep.DECODE` boundary. `STEPS_PER_FRAME` stays 3, so
+  `run_pipeline`'s calibrated `STITCH_UNITS_PER_FRAME` /
+  `STITCH_UNITS_PER_NEGATIVE` constants are untouched.
+- **Banded application, one shared map**: the full-resolution gain map is
+  materialised once per run and shared read-only across workers (~294 MB,
+  one allocation); the multiply runs in horizontal bands of
+  `FLATFIELD_BAND_ROWS = 512` rows, decoding/multiplying/re-encoding each
+  band back into the same `uint16` array in place. Peak transient per
+  worker is ~37 MB instead of ~294 MB, so the 640 MiB per-worker budget
+  needs no re-measurement.
+
+## The fixed-point round trip
+
+The decoded frame is **linear** `uint16`; the correction is multiplicative
+and valid in linear light, so applying it costs one
+`decode_to_linear → multiply → encode_from_linear` round trip, which is
+plain fixed-point scaling (`linear.py`). It is exact for every code —
+**proved, not assumed**: a test asserts a gain map of exactly 1.0
+round-trips a real decoded frame to byte-identical pixels. Where the
+correction boosts an already-bright pixel past full scale it clips; the
+pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED` when more than 0.1% of a
+frame's pixels clip, rather than losing highlights silently.
+
+## Deliberate differences from NegPy
+
+| NegPy | Here | Why |
+| --- | --- | --- |
+| Per-image "Apply Flat Field" toggle | Per-roll, by construction | A roll's invariants exist to stop one roll holding inconsistently processed negatives. A per-negative toggle would defeat them. |
+| Reference may be RAW or an ordinary image | `.NEF` only | One decode path, one colour story. |
+| `flatfield_token()` invalidates a render cache | The same token invalidates a **roll** | There is no render cache here; the equivalent guarantee is the invariant check. |
+| Correction applied at render time, skipped for stitched composites and applied per tile instead | Applied once at convert time, per frame | This program's frames *are* the tiles; the intermediate TIFF is the natural place. |
+
+## Scope flat-field does not cover
+
+Non-RAW references, a per-image/per-negative toggle, black-frame
+subtraction, and re-measuring `MAX_OVERLAP_MAD` now that overlaps arrive
+de-vignetted are all on [`punchlist.md`](punchlist.md).
+
+# Linear decode for NegPy compatibility
+
+NegPy's pipeline (`NegPy/docs/PIPELINE.md`, "Color handling") works on
+**linear RGB straight from the raw decode** — `output_color=raw`,
+`gamma=(1, 1)`, unity white balance, `adjust_maximum_thr=0.0` — because it
+treats the scan as a radiometric measurement of the sensor's own channels
+and handles channel balance in film terms. This program fed it the opposite:
+`gamma=(1.8, 16)` (LibRaw's generalised curve), `output_color=ProPhoto`
+(camera primaries through LibRaw's colour matrix), and
+`use_camera_wb=True`. The flat-field, gain and stitch maths happened to run
+in linear light, but the written TIFFs were curve-encoded, colour-converted
+and white-balanced — violating NegPy's assumption on three counts.
+
+The decode now matches NegPy's exactly. `RAW_PARAMS` is `gamma=(1, 1)`,
+`output_color=raw`, `user_wb=[1, 1, 1, 1]` (LibRaw's `user_mul`),
+`use_camera_wb=False`, `adjust_maximum_thr=0.0`; everything else is
+unchanged. Every TIFF this program writes is linear sensor-channel data.
+
+Consequences, all intended:
+
+- **`romm.py` became `linear.py`.** The 65,536-entry LibRaw-curve decode LUT
+  is gone; `decode_to_linear`/`encode_from_linear` are plain fixed-point
+  scaling and the round trip is exact for every code. This supersedes the
+  Phase 2 amendment above ("The colour decode curve"), which locked LibRaw's
+  measured curve into these helpers; the curve measurement was correct but
+  the curve itself is no longer wanted.
+- **A new ICC profile** (`ScannyBoy-Linear-ProPhoto-v1.icc`, generated by
+  the same deterministic tool) declares ProPhoto primaries — carried over
+  byte-identical from the upstream ProPhoto-v4 source — with a **linear**
+  TRC (parametric type 0, g = 1.0): the truth about the pixels. This
+  supersedes `ScannyBoy-ROMM-LibRaw-v4.icc`. NegPy reads an input profile's
+  primaries only, never its declared TRC, so the boundary behaves as its
+  doc assumes.
+- **Previews are display-encoded.** The published TIFF is linear, so
+  `previews.py` now 16→8-bit encodes through an sRGB LUT (after downscaling
+  in linear light) — an untagged 8-bit PNG is assumed sRGB, and SwiftUI
+  displays it as-is. The TIFF is never touched.
+- **This resolves the punchlist item** that asked for linear ("gamma 1, 1")
+  TIFFs, and removes flat-field's curve round trip.
+- **Compatibility break**: every existing roll's manifest pins the old
+  profile hash and the old `processing_params`, and its TIFFs are
+  curve-encoded in a colourimetric space. Re-running `convert` or `stitch`
+  against them is refused by the recorded mismatch; existing rolls must be
+  reconverted. There is no migration.
+
+Deliberately **not** changed: the demosaic (AHD), `no_auto_bright`,
+`output_bps=16`, `highlight_mode=Clip`, the stitch and flat-field maths
+(already linear), and the export stage's pixels-only behaviour.

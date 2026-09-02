@@ -5,10 +5,12 @@ struct ScannyBoyApp: App {
     /// Shared with the `Settings` scene below, which needs the same
     /// `RollLibrary` — created once `RootView` resolves the CLI helper.
     @State private var library: RollLibrary?
+    /// Shared with the Add Scans stage's profile picker, same as `library`.
+    @State private var flatField: FlatFieldModel?
 
     var body: some Scene {
         WindowGroup {
-            RootView(library: $library)
+            RootView(library: $library, flatField: $flatField)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -16,6 +18,11 @@ struct ScannyBoyApp: App {
                     NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                Button("Flat-Field Profiles…") {
+                    NotificationCenter.default.post(
+                        name: .scannyBoyRequestFlatFieldProfiles, object: nil
+                    )
+                }
             }
         }
 
@@ -39,6 +46,10 @@ extension Notification.Name {
     static let scannyBoyRequestRestitch = Notification.Name(
         "com.lonniesmith.scanny-boy.requestRestitch"
     )
+    /// The flat-field profile manager, for the same reason.
+    static let scannyBoyRequestFlatFieldProfiles = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestFlatFieldProfiles"
+    )
 }
 
 /// Resolves the CLI helper exactly once and shows either the configuration
@@ -47,6 +58,7 @@ extension Notification.Name {
 /// was never staged.
 struct RootView: View {
     @Binding var library: RollLibrary?
+    @Binding var flatField: FlatFieldModel?
     @State private var model: ConfigurationModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
@@ -55,8 +67,15 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let library, let model, let edit, let run, let export {
-                ContentView(library: library, model: model, edit: edit, run: run, export: export)
+            if let library, let flatField, let model, let edit, let run, let export {
+                ContentView(
+                    library: library,
+                    flatField: flatField,
+                    model: model,
+                    edit: edit,
+                    run: run,
+                    export: export
+                )
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
             } else {
@@ -73,6 +92,7 @@ struct RootView: View {
             // the library.
             let runner = try CLIRunner(locator: .mainBundle())
             library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
+            flatField = FlatFieldModel(runner: runner)
             model = ConfigurationModel(runner: runner)
             edit = EditModel(runner: runner)
             run = RunModel(runner: runner)
