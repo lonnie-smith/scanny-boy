@@ -24,6 +24,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "pyinstaller",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -35,3 +36,13 @@ packages = ["src/scanny_boy"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+# Parallel by default (pytest-xdist). Real-sample tests (raw NEF fixtures at
+# tests/fixtures/nef/) are marked `real_samples` and deselected from the
+# normal run: they cost minutes of RAW decoding and stitching. Run them
+# explicitly when the fixtures are present:
+#   uv run pytest -m real_samples   # only the real-sample tests
+#   uv run pytest -m ""             # everything
+addopts = "-n auto -m 'not real_samples'"
+markers = [
+    "real_samples: needs the real sample NEFs (skipped when the fixtures are absent, and deselected from the default run)",
+]

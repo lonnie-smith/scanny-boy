@@ -67,6 +67,16 @@ Checks (identical to CI in `.github/workflows/ci.yml`):
 cd cli && uv run ruff check . && uv run pytest
 ```
 
+`pytest` runs in parallel (`pytest-xdist`) and **deselects the real-sample
+NEF tests** (`-m 'not real_samples'` in `pyproject.toml`): with the
+gitignored fixtures present they cost minutes of RAW decoding and stitching.
+With them absent they skip anyway, so CI is unaffected. When you want them:
+
+```bash
+cd cli && uv run pytest -m real_samples   # only the NEF-backed tests
+cd cli && uv run pytest -m ""             # everything
+```
+
 ```bash
 cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
 ```

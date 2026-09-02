@@ -5,6 +5,8 @@ film-like — gradients, blobs, and light grain — never pure noise).
 
 from __future__ import annotations
 
+import functools
+
 import cv2
 import numpy as np
 
@@ -13,7 +15,8 @@ _BLUR_SIGMA = 1.4
 _GRAIN_SIGMA = 0.012
 
 
-def synthetic_scene(height: int, width: int, *, seed: int) -> np.ndarray:
+@functools.lru_cache(maxsize=8)
+def _build_scene(height: int, width: int, seed: int) -> np.ndarray:
     """float32 in [0, 1]: smooth sinusoidal gradients, ~220 filled circles
     of random radius and value, Gaussian blur sigma 1.4, then Gaussian grain
     at sigma 0.012."""
@@ -41,7 +44,18 @@ def synthetic_scene(height: int, width: int, *, seed: int) -> np.ndarray:
     grain = rng.normal(0.0, _GRAIN_SIGMA, size=scene.shape).astype(np.float32)
     scene = np.clip(scene + grain, 0.0, 1.0).astype(np.float32)
 
+    scene.setflags(write=False)
     return scene
+
+
+def synthetic_scene(height: int, width: int, *, seed: int) -> np.ndarray:
+    """Same as :func:`_build_scene`, cached per `(height, width, seed)`.
+
+    Scene generation dominates test-suite runtime and every caller with the
+    same seed wants byte-identical pixels, so the (read-only) result is
+    memoised across a pytest session.
+    """
+    return _build_scene(height, width, seed)
 
 
 def _rotation_matrix(angle_deg: float) -> np.ndarray:
