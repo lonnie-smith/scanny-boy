@@ -3,9 +3,9 @@ import pytest
 
 from scanny_boy.detection import DETECTION_LONG_EDGE, USE_CLAHE, build_detection_image
 from scanny_boy.events import Code
+from scanny_boy.linear import encode_from_linear
 from scanny_boy.raw_decode import decode_raw
 from scanny_boy.registration import detect_features, register_pair
-from scanny_boy.romm import encode_from_linear
 from scanny_boy.sample_nef_support import FIXTURES_DIR
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 

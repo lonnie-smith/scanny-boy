@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from scanny_boy import concurrency
@@ -290,6 +291,54 @@ def test_roll_info_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+def _set_db_revision(revision: str) -> None:
+    import sqlite3
+
+    from scanny_boy.library.db import library_db_path
+
+    with sqlite3.connect(library_db_path()) as connection:
+        connection.execute("UPDATE alembic_version SET version_num = ?", (revision,))
+
+
+def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tmp_path):
+    """A database migrated by a newer helper must surface as an ordinary
+    `error` event, not a stream that stops after `started` — the app's
+    "produced no result" hid an Alembic `ResolutionError`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+    _set_db_revision("9999")
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "LIBRARY_DB_UNSUPPORTED"
+    assert "9999" in events[1]["message"]
+    assert err == ""
+
+
+def test_an_internal_crash_reaches_the_stream_as_an_error_event(capsys, tmp_path, monkeypatch):
+    """Whatever escapes a command must still produce a decodable failure:
+    `INTERNAL_ERROR` plus the exception, rather than a bare `started`."""
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
+    capsys.readouterr()
+
+    def _raise(_roll_dir):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", _raise)
+
+    status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INTERNAL_ERROR"
+    assert "RuntimeError" in events[1]["message"]
+    assert "boom" in events[1]["message"]
+
+
 def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
     main(["roll", "init", "--library", str(tmp_path), "--name", "Roll A", "--per-negative", "3"])
     capsys.readouterr()
@@ -346,6 +395,49 @@ def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
     assert [e["event"] for e in events] == ["started", "finished"]
     assert events[1]["status"] == "success"
     assert err == ""
+
+
+def test_edit_delete_removes_the_negative_and_its_tiff(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    output_name = load_roll_manifest(roll_dir).negatives[0].output["name"]
+    assert (roll_dir / output_name).exists()
+    capsys.readouterr()
+
+    status = main(["edit", "delete", "--roll", str(roll_dir), "--negative", negative_id])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "negative_deleted", "finished"]
+    assert events[0]["command"] == "edit delete"
+    assert events[1]["negative_id"] == negative_id
+    assert events[1]["output"] == output_name
+    assert events[2]["status"] == "success"
+    assert not (roll_dir / output_name).exists()
+    assert load_roll_manifest(roll_dir).negatives == []
+    assert err == ""
+
+
+def test_edit_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["edit", "delete", "--roll", str(tmp_path / "nope"), "--negative", "x"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "edit delete"
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
+def test_edit_delete_without_negative_id_returns_status_2(capsys):
+    status = main(["edit", "delete", "--roll", "/tmp/roll"])
+
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert err != ""
 
 
 def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
@@ -754,3 +846,152 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
     for name in REAL_SAMPLE_FILES:
         assert (out_dir / f"{Path(name).stem}.tif").exists()
     assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+
+# --- flatfield ------------------------------------------------------------
+
+
+def _save_flatfield_profile(name: str = "Copy stand") -> None:
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    gain_map = np.full((8, 8, 3), 1.5, dtype=np.float32)
+    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
+    repo.save_flatfield_profile(
+        flatfield.FlatFieldProfile(
+            profile_id=f"pid-{name}",
+            name=name,
+            gain_map_path=str(path),
+            gain_map_sha256=sha256,
+            source_path="/refs/bare.NEF",
+            reference_width=12,
+            reference_height=8,
+            params=flatfield.build_params(),
+            scanny_boy_version="0.3.0",
+            created_at="2026-09-01T00:00:00Z",
+        )
+    )
+
+
+def test_flatfield_list_reports_an_empty_library(capsys):
+    status = main(["flatfield", "list"])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "flatfield_list", "finished"]
+    assert events[0]["command"] == "flatfield list"
+    assert events[1]["profiles"] == []
+
+
+def test_flatfield_create_rejects_a_taken_name_without_decoding(capsys, tmp_path):
+    _save_flatfield_profile("Copy stand")
+
+    status = main(
+        [
+            "flatfield", "create",
+            "--reference", str(tmp_path / "does-not-matter.NEF"),
+            "--name", "Copy stand",
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FLATFIELD_PROFILE_EXISTS"
+
+
+def test_flatfield_create_maps_a_non_raw_reference_to_unsupported_raw(capsys, tmp_path):
+    write_fake_nef(tmp_path / "ref.NEF")
+
+    status = main(
+        [
+            "flatfield", "create",
+            "--reference", str(tmp_path / "ref.NEF"),
+            "--name", "Nope",
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "UNSUPPORTED_RAW"
+
+
+def test_flatfield_delete_unknown_profile_is_not_found(capsys):
+    status = main(["flatfield", "delete", "--profile", "nope"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FLATFIELD_PROFILE_NOT_FOUND"
+
+
+def test_flatfield_delete_refuses_a_profile_locked_into_a_roll(capsys, tmp_path):
+    _save_flatfield_profile("Copy stand")
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
+
+    roll_dir = tmp_path / "Roll"
+    roll_dir.mkdir()
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", shots_per_negative=2)
+    manifest.processing_params = {
+        "output_bps": 16,
+        "flat_field": flatfield.profile_token(repo.load_flatfield_profile("pid-Copy stand")),
+    }
+    write_roll_manifest(roll_dir, manifest)
+
+    status = main(["flatfield", "delete", "--profile", "pid-Copy stand"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FLATFIELD_PROFILE_IN_USE"
+    assert repo.load_flatfield_profile("pid-Copy stand") is not None
+
+
+def test_flatfield_delete_removes_the_row_and_the_npz(capsys, tmp_path):
+    _save_flatfield_profile("Copy stand")
+    from scanny_boy.library import repo
+
+    profile = repo.load_flatfield_profile("pid-Copy stand")
+    assert Path(profile.gain_map_path).exists()
+
+    status = main(["flatfield", "delete", "--profile", "pid-Copy stand"])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "flatfield_deleted", "finished",
+    ]
+    assert events[1]["profile_id"] == "pid-Copy stand"
+    assert repo.list_flatfield_profiles() == []
+    assert not Path(profile.gain_map_path).exists()
+
+
+@requires_real_samples
+def test_flatfield_create_list_and_delete_round_trip(capsys):
+    status = main(
+        [
+            "flatfield", "create",
+            "--reference", str(FIXTURES_DIR / "_DSC4638.NEF"),
+            "--name", "Real reference",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "flatfield_created", "finished",
+    ]
+    profile = events[1]["profile"]
+    assert profile["name"] == "Real reference"
+    assert profile["reference_width"] == 6064
+    assert profile["reference_height"] == 4040
+    assert profile["source_path"].endswith("_DSC4638.NEF")
+
+    status = main(["flatfield", "list"])
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [p["profile_id"] for p in events[1]["profiles"]] == [profile["profile_id"]]
+
+    status = main(["flatfield", "delete", "--profile", profile["profile_id"]])
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert events[1]["profile_id"] == profile["profile_id"]

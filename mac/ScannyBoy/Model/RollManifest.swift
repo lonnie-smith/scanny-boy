@@ -82,6 +82,15 @@ struct RollManifest: Sendable, Hashable {
         let lastAppliedAt: String?
     }
 
+    /// The parts of `processing_params` the app reads. It is an open JSON
+    /// object the CLI wrote (`manifest.schema.json` declares it as such);
+    /// everything except the flat-field token is the CLI's own bookkeeping.
+    struct ProcessingParams: Sendable, Hashable {
+        /// `nil` when the roll was built without a flat-field profile — the
+        /// key is absent, not null, in that case.
+        let flatFieldProfileID: String?
+    }
+
     let rollID: String
     let rollName: String
     let shotsPerNegative: Int
@@ -90,6 +99,7 @@ struct RollManifest: Sendable, Hashable {
     let runs: [Run]
     let negatives: [Negative]
     let metadata: Metadata
+    let processingParams: ProcessingParams
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -111,7 +121,8 @@ struct RollManifest: Sendable, Hashable {
             updatedAt: updatedAt,
             runs: runs,
             negatives: negatives,
-            metadata: metadata
+            metadata: metadata,
+            processingParams: processingParams
         )
     }
 
@@ -125,7 +136,8 @@ struct RollManifest: Sendable, Hashable {
         updatedAt: String,
         runs: [Run],
         negatives: [Negative],
-        metadata: Metadata
+        metadata: Metadata,
+        processingParams: ProcessingParams = ProcessingParams(flatFieldProfileID: nil)
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -135,6 +147,7 @@ struct RollManifest: Sendable, Hashable {
         self.runs = runs
         self.negatives = negatives
         self.metadata = metadata
+        self.processingParams = processingParams
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -164,6 +177,15 @@ struct RollManifest: Sendable, Hashable {
 
         guard let metadata = Self.decodeMetadata(metadataFields) else { return nil }
 
+        // `processing_params` is an open object; only the flat-field token
+        // inside it is read, and it is optional — a pre-flat-field roll has
+        // no key at all.
+        let processingParams = fields["processing_params"]?.objectValue
+        let flatField = processingParams?["flat_field"]?.objectValue
+        let decodedProcessingParams = ProcessingParams(
+            flatFieldProfileID: flatField?["profile_id"]?.stringValue
+        )
+
         self.rollID = rollID
         self.rollName = rollName
         self.shotsPerNegative = shotsPerNegative
@@ -172,6 +194,7 @@ struct RollManifest: Sendable, Hashable {
         self.runs = runs
         self.negatives = negatives
         self.metadata = metadata
+        self.processingParams = decodedProcessingParams
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {

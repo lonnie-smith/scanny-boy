@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 5
+    public static let supportedProtocolVersion = 6
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -37,7 +37,11 @@ public struct CLIEvent: Sendable, Hashable {
         case metadataApplied
         case metadataSkipped
         case editRecorded
+        case negativeDeleted
         case exportDone
+        case flatfieldCreated
+        case flatfieldList
+        case flatfieldDeleted
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -62,7 +66,11 @@ public struct CLIEvent: Sendable, Hashable {
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
             case "edit_recorded": self = .editRecorded
+            case "negative_deleted": self = .negativeDeleted
             case "export_done": self = .exportDone
+            case "flatfield_created": self = .flatfieldCreated
+            case "flatfield_list": self = .flatfieldList
+            case "flatfield_deleted": self = .flatfieldDeleted
             default: self = .unknown(name)
             }
         }
@@ -87,7 +95,11 @@ public struct CLIEvent: Sendable, Hashable {
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
             case .editRecorded: "edit_recorded"
+            case .negativeDeleted: "negative_deleted"
             case .exportDone: "export_done"
+            case .flatfieldCreated: "flatfield_created"
+            case .flatfieldList: "flatfield_list"
+            case .flatfieldDeleted: "flatfield_deleted"
             case .unknown(let name): name
             }
         }
@@ -195,6 +207,16 @@ extension CLIEvent {
     public var edit: [String: JSONValue]? { fields["edit"]?.objectValue }
     public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
     public var previewPath: String? { fields["preview_path"]?.stringValue }
+
+    // `flatfield_created` and `flatfield_list`
+    public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
+    public var flatFieldProfiles: [[String: JSONValue]]? {
+        fields["profiles"]?.arrayValue?.compactMap { entry in
+            entry.objectValue
+        }
+    }
+    // `flatfield_deleted`
+    public var flatFieldProfileID: String? { fields["profile_id"]?.stringValue }
 }
 
 /// One pipeline step, from the plan's Vocabulary section. The last seven
@@ -299,6 +321,15 @@ public enum CLICode: Sendable, Hashable {
     case invalidEdit
     case exportFailed
     case previewFailed
+    // Protocol version 6: flat-field profiles.
+    case flatFieldProfileNotFound
+    case flatFieldProfileExists
+    case flatFieldProfileInUse
+    case flatFieldGainMapMissing
+    case flatFieldAspectMismatch
+    case flatFieldHighlightClipped
+    case libraryDBUnsupported
+    case internalError
     case unknown(String)
 
     public init(name: String) {
@@ -350,6 +381,14 @@ public enum CLICode: Sendable, Hashable {
         case "INVALID_EDIT": self = .invalidEdit
         case "EXPORT_FAILED": self = .exportFailed
         case "PREVIEW_FAILED": self = .previewFailed
+        case "FLATFIELD_PROFILE_NOT_FOUND": self = .flatFieldProfileNotFound
+        case "FLATFIELD_PROFILE_EXISTS": self = .flatFieldProfileExists
+        case "FLATFIELD_PROFILE_IN_USE": self = .flatFieldProfileInUse
+        case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
+        case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
+        case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
+        case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
+        case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
     }
@@ -403,6 +442,14 @@ public enum CLICode: Sendable, Hashable {
         case .invalidEdit: "INVALID_EDIT"
         case .exportFailed: "EXPORT_FAILED"
         case .previewFailed: "PREVIEW_FAILED"
+        case .flatFieldProfileNotFound: "FLATFIELD_PROFILE_NOT_FOUND"
+        case .flatFieldProfileExists: "FLATFIELD_PROFILE_EXISTS"
+        case .flatFieldProfileInUse: "FLATFIELD_PROFILE_IN_USE"
+        case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
+        case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
+        case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
+        case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
+        case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }
     }

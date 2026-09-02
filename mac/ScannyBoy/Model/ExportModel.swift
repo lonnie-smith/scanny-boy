@@ -139,12 +139,13 @@ final class ExportModel {
             if let message = event.message {
                 failureMessage = message
             }
-        case .editRecorded:
+        case .editRecorded, .negativeDeleted:
             // An export emits none of these; kept for exhaustiveness.
             break
         case .started, .probeResult, .progress, .itemDone, .groupDone, .groupFailed,
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
-            .rollInfo, .rollRenamed, .metadataApplied, .metadataSkipped, .unknown:
+            .rollInfo, .rollRenamed, .metadataApplied, .metadataSkipped,
+            .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .unknown:
             break
         }
     }

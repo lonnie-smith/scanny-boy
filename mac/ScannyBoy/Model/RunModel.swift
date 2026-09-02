@@ -403,7 +403,8 @@ final class RunModel {
             }
         case .started, .probeResult, .finished, .unknown,
              .rollCreated, .rollList, .rollInfo, .rollRenamed,
-             .editRecorded, .exportDone:
+             .editRecorded, .negativeDeleted, .exportDone,
+             .flatfieldCreated, .flatfieldList, .flatfieldDeleted:
             break
         }
     }

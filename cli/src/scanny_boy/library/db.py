@@ -21,13 +21,32 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event
+from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
+
+from scanny_boy.events import Code
 
 ENGINES: dict[str, Engine] = {}
 _ENGINES_LOCK = threading.Lock()
 
 _BUSY_TIMEOUT_MS = 30_000
+
+
+class LibraryDBError(Exception):
+    """Maps to `LIBRARY_DB_UNSUPPORTED`: the database sits at a migration
+    revision this helper's script directory does not contain — written by
+    a newer Scanny Boy, so nothing can be safely read or written. Reported
+    as an ordinary `error` event rather than a crash, because every
+    database-touching command reaches the engine through `open_engine` and
+    the app deserves a sentence it can show, not a stream that stops after
+    `started`."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.code = Code.LIBRARY_DB_UNSUPPORTED
+        self.message = message
 
 
 def library_db_path() -> Path:
@@ -89,4 +108,31 @@ def _upgrade_to_head(engine: Engine, path: Path) -> None:
     # Reuse the caller's engine rather than letting Alembic open its own,
     # so the pragmas above apply to migration connections too.
     config.attributes["connection"] = engine
+    _refuse_unknown_revision(engine, config, path)
     command.upgrade(config, "head")
+
+
+def _refuse_unknown_revision(engine: Engine, config: Config, path: Path) -> None:
+    """A database ahead of this helper's migrations cannot be upgraded
+    down; `command.upgrade` would raise Alembic's own `ResolutionError`
+    and kill the process after nothing but `started` reached stdout. The
+    revision table read here is one cheap SELECT on a connection that is
+    about to run a migration anyway, so the constant `probe` traffic pays
+    nothing when the database is current."""
+    script = ScriptDirectory.from_config(config)
+    with engine.connect() as connection:
+        if not inspect(connection).has_table("alembic_version"):
+            return
+        current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    if current is None:
+        return
+    try:
+        script.get_revision(current)
+    except CommandError:
+        head = script.get_current_head()
+        raise LibraryDBError(
+            f"the library database at {path} is at migration revision "
+            f"{current}, which this helper does not know (it knows up to "
+            f"{head}); it was written by a newer Scanny Boy. Update this "
+            "helper, or point SCANNY_BOY_LIBRARY_DB at a fresh database."
+        ) from None

@@ -1,5 +1,6 @@
-"""Tests for `edit rotate`: the ops log gets the op, the preview refreshes,
-and the published TIFF is never touched."""
+"""Tests for `edit rotate` and `edit delete`: the ops log gets the op, the
+preview refreshes, and the published TIFF is never touched by rotate;
+delete removes the record, the TIFF, and the preview."""
 
 from __future__ import annotations
 
@@ -9,8 +10,8 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy.edits import EditFailure, run_edit_rotate
-from scanny_boy.events import Code
+from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
+from scanny_boy.events import Code, WarningEvent
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.stitch_pipeline_test import _roll_dir
@@ -123,3 +124,111 @@ def test_roll_info_reports_the_net_rotation(stitched_roll):
         repo.net_rotation_quarter_turns(stitched_roll, _NEGATIVE_ID) == 3
     )
     assert manifest.negative(_NEGATIVE_ID).preview_path is not None
+
+
+# --- edit delete -----------------------------------------------------------
+
+
+def test_delete_removes_the_record_the_tiff_and_the_preview(stitched_roll):
+    events: list = []
+    # A rotation first, so a preview PNG exists to be removed too.
+    rotated = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    preview_path = Path(rotated["preview_path"])
+    assert preview_path.exists()
+    tiff_path = stitched_roll / "_DSC0001.tif"
+    assert tiff_path.exists()
+
+    fields = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
+
+    assert fields == {"negative_id": _NEGATIVE_ID, "output": "_DSC0001.tif"}
+    assert not tiff_path.exists()
+    assert not preview_path.exists()
+    manifest = load_roll_manifest(stitched_roll)
+    with pytest.raises(KeyError):
+        manifest.negative(_NEGATIVE_ID)
+    # No warnings: every file came off the disk cleanly. (The
+    # `negative_deleted` event itself is emitted by the CLI layer.)
+    assert [e for e in events if isinstance(e, WarningEvent)] == []
+
+
+def test_delete_cascades_the_ops_log(stitched_roll):
+    from scanny_boy.library import repo
+
+    run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+
+    run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.edits_for(stitched_roll, _NEGATIVE_ID)
+
+
+def test_delete_renumbers_the_survivors(stitched_roll):
+    from scanny_boy.roll_manifest import CaptureTime
+
+    manifest = load_roll_manifest(stitched_roll)
+    # Ranking is by the first member's real capture time, so the survivor
+    # needs one to hold a position at all (section 3.7).
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-02",
+            run_id="stitch-run",
+            status="completed",
+            sequence=2,
+            capture_time=CaptureTime(source_datetime_original="2026-08-01T12:00:00"),
+            output={
+                "name": "_DSC0004.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(stitched_roll, manifest)
+
+    run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    survivor = load_roll_manifest(stitched_roll).negative("stitch-negative-02")
+    assert survivor.sequence == 1
+
+
+def test_delete_a_pending_negative_succeeds_without_files(stitched_roll):
+    manifest = load_roll_manifest(stitched_roll)
+    manifest.negatives.append(
+        _negative(negative_id="stitch-negative-02", run_id="stitch-run")
+    )
+    write_roll_manifest(stitched_roll, manifest)
+
+    fields = run_edit_delete(
+        stitched_roll, "stitch-negative-02", emit=lambda event: None
+    )
+
+    assert fields == {"negative_id": "stitch-negative-02", "output": None}
+
+
+def test_delete_an_unknown_negative_fails(stitched_roll):
+    with pytest.raises(EditFailure) as exc_info:
+        run_edit_delete(stitched_roll, "nope-negative-99", emit=lambda event: None)
+    assert exc_info.value.code is Code.NEGATIVE_NOT_FOUND
+
+
+def test_delete_an_unregistered_roll_fails(tmp_path: Path):
+    with pytest.raises(EditFailure) as exc_info:
+        run_edit_delete(tmp_path / "no-such-roll", "any-negative", emit=lambda event: None)
+    assert exc_info.value.code is Code.ROLL_NOT_FOUND
+
+
+def test_delete_survives_a_stuck_tiff(stitched_roll, monkeypatch):
+    def stuck_unlink(self, missing_ok=False):
+        raise PermissionError(1, "Operation not permitted", str(self))
+
+    monkeypatch.setattr(Path, "unlink", stuck_unlink)
+    events: list = []
+
+    fields = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
+
+    # The record is gone regardless; the file left behind is reported, not fatal.
+    assert fields == {"negative_id": _NEGATIVE_ID, "output": "_DSC0001.tif"}
+    assert load_roll_manifest(stitched_roll).negatives == []
+    warnings = [e for e in events if isinstance(e, WarningEvent)]
+    assert [w.code for w in warnings] == [Code.ORPHAN_FILE_NOT_REMOVED]

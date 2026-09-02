@@ -14,11 +14,19 @@ import SwiftUI
 struct EditStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
+    /// Called after a deletion the user confirmed — `ContentView` uses it
+    /// to re-scan the library so the sidebar's negative count keeps up.
+    var onNegativeDeleted: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
             if let negative = edit.selectedNegative {
-                PreviewPane(negative: negative, edit: edit, runIsActive: run.isActive)
+                PreviewPane(
+                    negative: negative,
+                    edit: edit,
+                    runIsActive: run.isActive,
+                    onNegativeDeleted: onNegativeDeleted
+                )
             } else {
                 ContentUnavailableView(
                     "No Negatives Yet",
@@ -84,9 +92,11 @@ private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
     let runIsActive: Bool
+    let onNegativeDeleted: () -> Void
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -100,7 +110,7 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "rotate.left")
                 }
-                .disabled(edit.isRotating || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Rotate 90° counter-clockwise")
 
                 Button {
@@ -108,7 +118,7 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "rotate.right")
                 }
-                .disabled(edit.isRotating || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Rotate 90° clockwise")
 
                 if edit.isRotating {
@@ -123,8 +133,35 @@ private struct PreviewPane: View {
                     .truncationMode(.middle)
 
                 Spacer()
+
+                Button(role: .destructive) {
+                    isConfirmingDelete = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help("Delete Negative…")
             }
             .padding([.horizontal, .bottom], 16)
+        }
+        .confirmationDialog(
+            "Delete “\(negative.expectedOutput)”?",
+            isPresented: $isConfirmingDelete
+        ) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await edit.delete(negative)
+                    onNegativeDeleted()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                """
+                Its published TIFF is removed from the roll folder and its \
+                record is removed from the library. This cannot be undone.
+                """
+            )
         }
         .task(id: previewIdentity) {
             guard let url = previewURL else {

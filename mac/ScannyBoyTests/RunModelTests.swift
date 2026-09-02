@@ -589,6 +589,8 @@ struct RunModelTests {
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
+        await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to
         // withhold the Run button.
@@ -639,6 +641,8 @@ struct RunModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
 
         let command = try #require(model.runCommand())
