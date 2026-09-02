@@ -10,7 +10,7 @@ struct CLIEventTests {
     @Test("started")
     func startedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":5,"event":"started","command":"probe"}"#
+            line: TestEvents.line(#"{"event":"started","command":"probe"}"#)
         )
         #expect(event.kind == .started)
         #expect(event.command == "probe")
@@ -20,12 +20,12 @@ struct CLIEventTests {
     @Test("probe_result")
     func probeResultDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"probe_result",\
+            line: TestEvents.line("""
+                {"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF","_DSC4639.NEF"],\
                 "warnings":["FILENAME_SORT_USED"],\
                 "groups":[["_DSC4638.NEF","_DSC4639.NEF"]]}
-                """
+                """)
         )
         #expect(event.kind == .probeResult)
         #expect(event.catalogue == ["_DSC4638.NEF", "_DSC4639.NEF"])
@@ -36,12 +36,12 @@ struct CLIEventTests {
     @Test("probe_result with --out carries the disk estimate and conflict preview")
     func probeResultWithOutDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"probe_result",\
+            line: TestEvents.line("""
+                {"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[["_DSC4638.NEF"]],\
                 "output_conflicts":["_DSC4638.tif"],\
                 "estimated_required_bytes":2223767655,"available_bytes":50000000000}
-                """
+                """)
         )
         #expect(event.outputConflicts == ["_DSC4638.tif"])
         #expect(event.estimatedRequiredBytes == 2_223_767_655)
@@ -51,11 +51,11 @@ struct CLIEventTests {
     @Test("probe_result without --out leaves the disk fields null")
     func probeResultWithoutOutDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"probe_result",\
+            line: TestEvents.line("""
+                {"event":"probe_result",\
                 "catalogue":["_DSC4638.NEF"],"warnings":[],"groups":[],\
                 "output_conflicts":[],"estimated_required_bytes":null,"available_bytes":null}
-                """
+                """)
         )
         #expect(event.outputConflicts == [])
         #expect(event.estimatedRequiredBytes == nil)
@@ -65,10 +65,10 @@ struct CLIEventTests {
     @Test("progress")
     func progressDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"progress","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"progress","run_id":"r1",\
                 "source_index":3,"step":"write_tiff","completed":4,"total":6}
-                """
+                """)
         )
         #expect(event.kind == .progress)
         #expect(event.runID == "r1")
@@ -81,10 +81,10 @@ struct CLIEventTests {
     @Test("item_done")
     func itemDoneDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"item_done","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"item_done","run_id":"r1",\
                 "source_index":0,"output":"_DSC4638.tif"}
-                """
+                """)
         )
         #expect(event.kind == .itemDone)
         #expect(event.sourceIndex == 0)
@@ -94,7 +94,7 @@ struct CLIEventTests {
     @Test("group_done")
     func groupDoneDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":5,"event":"group_done","run_id":"r1","group_id":"g1"}"#
+            line: TestEvents.line(#"{"event":"group_done","run_id":"r1","group_id":"g1"}"#)
         )
         #expect(event.kind == .groupDone)
         #expect(event.groupID == "g1")
@@ -103,10 +103,10 @@ struct CLIEventTests {
     @Test("group_failed")
     func groupFailedDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"group_failed","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"group_failed","run_id":"r1",\
                 "group_id":"g2","code":"TIFF_WRITE_FAILED","message":"no space"}
-                """
+                """)
         )
         #expect(event.kind == .groupFailed)
         #expect(event.groupID == "g2")
@@ -117,12 +117,12 @@ struct CLIEventTests {
     @Test("negative_done")
     func negativeDoneDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"negative_done","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"negative_done","run_id":"r1",\
                 "negative_id":"negative-0","output":"_DSC4638.tif",\
                 "width":13972,"height":4553,\
                 "global_rms_px":1.12,"max_overlap_mad":0.004}
-                """
+                """)
         )
         #expect(event.kind == .negativeDone)
         #expect(event.negativeID == "negative-0")
@@ -136,11 +136,11 @@ struct CLIEventTests {
     @Test("negative_failed")
     func negativeFailedDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"negative_failed","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"negative_failed","run_id":"r1",\
                 "negative_id":"negative-0","code":"STITCH_UNDERCONSTRAINED",\
                 "message":"frame not reachable"}
-                """
+                """)
         )
         #expect(event.kind == .negativeFailed)
         #expect(event.negativeID == "negative-0")
@@ -174,10 +174,10 @@ struct CLIEventTests {
     @Test("progress carries the stitch stage")
     func progressStitchStageDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"progress","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"progress","run_id":"r1",\
                 "source_index":0,"step":"warp","completed":1,"total":6,"stage":"stitch"}
-                """
+                """)
         )
         #expect(event.stage == "stitch")
     }
@@ -185,10 +185,10 @@ struct CLIEventTests {
     @Test("warning")
     func warningDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"warning",\
+            line: TestEvents.line("""
+                {"event":"warning",\
                 "code":"FILENAME_SORT_USED","message":"fell back"}
-                """
+                """)
         )
         #expect(event.kind == .warning)
         #expect(event.code == .filenameSortUsed)
@@ -198,10 +198,10 @@ struct CLIEventTests {
     @Test("error")
     func errorDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"error",\
+            line: TestEvents.line("""
+                {"event":"error",\
                 "code":"NON_CONTIGUOUS_SELECTION","message":"gap"}
-                """
+                """)
         )
         #expect(event.kind == .error)
         #expect(event.code == .nonContiguousSelection)
@@ -210,10 +210,10 @@ struct CLIEventTests {
     @Test("finished")
     func finishedDecodes() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"finished","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"finished","run_id":"r1",\
                 "status":"cancelled","exit_status":143}
-                """
+                """)
         )
         #expect(event.kind == .finished)
         #expect(event.status == "cancelled")
@@ -268,10 +268,10 @@ struct CLIEventTests {
     @Test("an unknown event type decodes and keeps its fields")
     func unknownEventTypeIsPreserved() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"negative_previewed","run_id":"r1",\
+            line: TestEvents.line("""
+                {"event":"negative_previewed","run_id":"r1",\
                 "group_id":"g1","preview":{"width":800,"height":600}}
-                """
+                """)
         )
         #expect(event.kind == .unknown("negative_previewed"))
         #expect(event.kind.isKnown == false)
@@ -286,10 +286,10 @@ struct CLIEventTests {
     @Test("an unknown code on a known event is kept verbatim")
     func unknownCodeIsPreserved() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"error",\
+            line: TestEvents.line("""
+                {"event":"error",\
                 "code":"SENSOR_DUST_DETECTED","message":"speck"}
-                """
+                """)
         )
         #expect(event.kind == .error)
         #expect(event.code == .unknown("SENSOR_DUST_DETECTED"))
@@ -299,10 +299,10 @@ struct CLIEventTests {
     @Test("unknown extra fields on a known event survive")
     func unknownFieldsSurvive() throws {
         let event = try CLIEvent(
-            line: """
-                {"protocol_version":5,"event":"item_done","source_index":1,\
+            line: TestEvents.line("""
+                {"event":"item_done","source_index":1,\
                 "output":"a.tif","bytes":154340928,"verified":true}
-                """
+                """)
         )
         #expect(event.kind == .itemDone)
         #expect(event.fields["bytes"]?.intValue == 154_340_928)
@@ -358,5 +358,20 @@ struct CLIEventTests {
         #expect(throws: CLIEventDecodingError.missingEventType) {
             try CLIEvent(line: #"{"protocol_version":5,"command":"probe"}"#)
         }
+    }
+
+    @Test("schema.json's protocol_version const matches the app's supported version")
+    func schemaVersionMatches() throws {
+        let schemaURL = TestSupport.repositoryRoot
+            .appending(path: "shared/contract/schema.json", directoryHint: .notDirectory)
+        let data = try Data(contentsOf: schemaURL)
+        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let props = root?["properties"] as? [String: Any]
+        let versionProp = props?["protocol_version"] as? [String: Any]
+        let schemaVersion = versionProp?["const"] as? Int
+        #expect(
+            schemaVersion == CLIEvent.supportedProtocolVersion,
+            "schema.json declares protocol_version \(schemaVersion.map(String.init) ?? "nil"), but the app supports \(CLIEvent.supportedProtocolVersion)"
+        )
     }
 }
