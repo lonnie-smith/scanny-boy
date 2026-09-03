@@ -83,6 +83,8 @@ def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7):
         overlap_fraction=None,
         overlap_mad=None,
         overlap_mad_pregain=None,
+        similarity_transform=transform,
+        similarity_scale=1.0,
     )
 
     layout = solve_layout(names, _FRAME_SIZE, [pair])

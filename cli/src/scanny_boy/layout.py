@@ -1,14 +1,20 @@
 """Global layout solve: places every accepted-pair frame in one canvas
-coordinate system via two linear least-squares problems.
+coordinate system via three linear least-squares problems.
 
-Frame *i* maps its own pixel `p` into canvas space as `x = R(theta_i)*p +
-t_i`. A `PairResult` for (a, b) gives `p_a = R(phi_ab)*p_b + u_ab`.
-Requiring both routes into canvas space to agree gives exactly two
-relations: `theta_b = theta_a + phi_ab` and
-`t_b = t_a + R(theta_a) . u_ab`. Rotations are solved first (one linear
-least-squares problem in the scalar `theta`s), then translations (linear in
-`t` once `theta` is known). This two-step formulation is why section 4.1
-forbids SciPy — do not replace it with a nonlinear bundle adjustment.
+Frame *i* maps its own pixel `p` into canvas space as
+`x = s_i * R(theta_i)*p + t_i` (docs/STITCH_QUALITY_PLAN.md section 2: film
+does not sit at a constant height above the stage, so a strip is not one
+magnification). A `PairResult` for (a, b) contributes a **similarity**:
+`p_a = sigma_ab * R(phi_ab)*p_b + u_ab`. Requiring both routes into canvas
+space to agree gives three relations, each linear in the right variable:
+`log s_b - log s_a = log sigma_ab`, `theta_b = theta_a + phi_ab`, and
+`t_b = t_a + s_a * R(theta_a) . u_ab`. Scales are solved first (log-space,
+the same idiom as `solve_gains`'s geometric-mean-1 anchor), then rotations
+(one linear least-squares problem in the scalar `theta`s), then translations
+(linear in `t` once `s` and `theta` are known). This three-step formulation
+is why section 4.1 forbids SciPy — do not replace it with a nonlinear
+bundle adjustment. The model is a similarity — rigid plus one isotropic
+scale — never an affine, never a homography.
 
 `solve_layout` places frames geometrically; `solve_gains` is its photometric
 counterpart: per-channel gains reconciling lamp drift between frames, from
@@ -62,9 +68,10 @@ class FramePlacement:
     name: str
     rotation_deg: float
     translation: tuple[float, float]
+    scale: float = 1.0
 
     def matrix(self) -> np.ndarray:
-        rotation = _rotation_matrix(self.rotation_deg)
+        rotation = self.scale * _rotation_matrix(self.rotation_deg)
         translation = np.array(self.translation).reshape(2, 1)
         return np.hstack([rotation, translation])
 
@@ -127,12 +134,52 @@ def solve_layout(
     index = {name: i for i, name in enumerate(names)}
     n = len(names)
 
+    # Step 0: per-frame scale. One row per accepted pair whose similarity
+    # scale is usable (-1 in column a, +1 in column b, rhs log sigma_ab), in
+    # log space so the system is linear, plus an all-ones anchor row at rhs
+    # 0 — solve_gains's idiom exactly — so the solved scales' geometric mean
+    # is 1 and no frame's magnification is privileged. A non-positive
+    # similarity scale means a reflected fit, which the reflection guard in
+    # similarity_from_correspondences should already have excluded; such a
+    # row is dropped, not raised on, the same way solve_gains drops a
+    # degenerate channel mean.
+    scale_rows = []
+    scale_rhs = []
+    scale_covered: set[str] = set()
+    for pair in accepted_pairs:
+        if pair.similarity_scale <= 0:
+            continue
+        row = np.zeros(n)
+        row[index[pair.a]] = -1.0
+        row[index[pair.b]] = 1.0
+        scale_rows.append(row)
+        scale_rhs.append(math.log(pair.similarity_scale))
+        scale_covered.add(pair.a)
+        scale_covered.add(pair.b)
+
+    if scale_rows:
+        scale_anchor_weight = math.sqrt(sum(float(row @ row) for row in scale_rows))
+        scale_anchor = np.zeros(n)
+        for name in scale_covered:
+            scale_anchor[index[name]] = scale_anchor_weight
+        scale_rows.append(scale_anchor)
+        scale_rhs.append(0.0)
+
+        log_scales, *_ = np.linalg.lstsq(
+            np.array(scale_rows), np.array(scale_rhs), rcond=None
+        )
+        scales = np.exp(log_scales)
+    else:
+        scales = np.ones(n)
+
     # Step 1: rotations. One row per accepted pair (-1 in column a, +1 in
-    # column b, rhs phi_ab), plus one anchor row fixing theta_0 = 0.
+    # column b, rhs phi_ab, taken from the pair's similarity fit now that
+    # scale is no longer forced to 1), plus one anchor row fixing theta_0
+    # = 0.
     rotation_rows = []
     rotation_rhs = []
     for pair in accepted_pairs:
-        phi_ab_deg = _angle_deg(pair.transform[:, :2])
+        phi_ab_deg = _angle_deg(pair.similarity_transform[:, :2])
         assert abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG, (
             f"pair {pair.a}-{pair.b} rotation {phi_ab_deg} degrees exceeds "
             f"{_MAX_PAIR_ROTATION_DEG} degrees; this is a bug upstream, "
@@ -153,15 +200,16 @@ def solve_layout(
         np.array(rotation_rows), np.array(rotation_rhs), rcond=None
     )
 
-    # Step 2: translations. With theta known, t_b - t_a = R(theta_a) . u_ab
-    # is linear in t. Two rows per accepted pair (x and y), plus two anchor
-    # rows fixing t_0 = (0, 0).
+    # Step 2: translations. With s and theta known,
+    # t_b - t_a = s_a * R(theta_a) . u_ab is linear in t (u_ab likewise
+    # taken from the pair's similarity fit). Two rows per accepted pair (x
+    # and y), plus two anchor rows fixing t_0 = (0, 0).
     translation_rows = []
     translation_rhs = []
     for pair in accepted_pairs:
         rotation_a = _rotation_matrix(np.degrees(theta[index[pair.a]]))
-        u_ab = pair.transform[:, 2]
-        predicted = rotation_a @ u_ab
+        u_ab = pair.similarity_transform[:, 2]
+        predicted = scales[index[pair.a]] * (rotation_a @ u_ab)
 
         row_x = np.zeros(2 * n)
         row_x[2 * index[pair.a]] = -1.0
@@ -195,6 +243,7 @@ def solve_layout(
             name=names[i],
             rotation_deg=float(np.degrees(theta[i])),
             translation=(float(translations[i, 0]), float(translations[i, 1])),
+            scale=float(scales[i]),
         )
         for i in range(n)
     ]
@@ -224,6 +273,7 @@ def solve_layout(
                 p.translation[0] - min_xy[0],
                 p.translation[1] - min_xy[1],
             ),
+            scale=p.scale,
         )
         for p in placements
     ]

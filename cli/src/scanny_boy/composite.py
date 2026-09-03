@@ -336,7 +336,11 @@ def _warp_bands(
 
     rotation = bbox_matrix[:, :2]
     translation = bbox_matrix[:, 2]
-    R_inv = np.linalg.inv(rotation)
+    # Inverse of the placement's scaled rotation block (docs/
+    # STITCH_QUALITY_PLAN.md section 2: a frame's own matrix() is now
+    # scale * R, not R), so this undoes both the rotation and the per-frame
+    # scale in one step.
+    scaled_rotation_inv = np.linalg.inv(rotation)
 
     ca_by_channel: dict[int, dict] = {}
     if ca is not None and ca.get("mode") == "maps":
@@ -353,8 +357,8 @@ def _warp_bands(
         # 1. bbox output px -> undistorted frame px (inverted bbox_matrix).
         du = uu - translation[0]
         dv = vv - translation[1]
-        px = R_inv[0, 0] * du + R_inv[0, 1] * dv
-        py = R_inv[1, 0] * du + R_inv[1, 1] * dv
+        px = scaled_rotation_inv[0, 0] * du + scaled_rotation_inv[0, 1] * dv
+        py = scaled_rotation_inv[1, 0] * du + scaled_rotation_inv[1, 1] * dv
 
         # 2. normalise.
         x = (px - cx) / fx
