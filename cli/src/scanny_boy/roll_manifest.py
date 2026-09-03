@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from scanny_boy.events import Code
-from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256
+from scanny_boy.icc_profile import ProfileKind, profile_record
 from scanny_boy.library import repo
 from scanny_boy.manifest import (
     BadManifestError,
@@ -110,7 +110,7 @@ class FrameRecord:
 
 @dataclasses.dataclass(frozen=True)
 class RollSourceRecord:
-    """Section 3.3: "as Phase 2, plus `run_id` naming the run that first
+    """Section 3.3: "as Phase 1, plus `run_id` naming the run that first
     contributed it". Phase 1's `SourceRecord` is shared with the work
     manifest and must not grow a field, so the roll keeps its own record
     (section 5.4)."""
@@ -121,9 +121,17 @@ class RollSourceRecord:
     mtime: float
     sha256: str
     run_id: str
+    # Per-channel fraction of pixels at or above sensor white, measured in
+    # the prepare stage at decode (docs/DECISIONS.md, "Normalization decisions").
+    # Null when the contributing run predates the measurement.
+    scan_clip_fractions: tuple[float, float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        data = dataclasses.asdict(self)
+        data["scan_clip_fractions"] = (
+            None if self.scan_clip_fractions is None else list(self.scan_clip_fractions)
+        )
+        return data
 
 
 @dataclasses.dataclass
@@ -158,6 +166,10 @@ class RunRecord:
     source_order: list[str] = dataclasses.field(default_factory=list)
     work_dir: str | None = None
     finished_at: str | None = None
+    # D-4: the per-channel median of the run's negatives' bounds, recorded
+    # so the data for a roll-consistency feature exists from day one.
+    # Nothing reads it yet.
+    normalization_aggregate: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +183,7 @@ class RunRecord:
             "work_dir": self.work_dir,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "normalization_aggregate": self.normalization_aggregate,
         }
 
 
@@ -195,6 +208,14 @@ class NegativeRecord:
     global_rms_px: float | None = None
     canvas: tuple[int, int] | None = None  # (width, height)
     valid_rect: tuple[int, int, int, int] | None = None
+    # The normalization record (docs/DECISIONS.md, "Normalization decisions"):
+    # per-negative bounds, metering, observed extrema, headroom clipping,
+    # and the rebate finding. Null when this build predates normalization
+    # or the negative never published.
+    normalization: dict[str, Any] | None = None
+    # Section 3.14's fill value, recorded beside `fill_color` for the same
+    # reason: a file is interpretable without knowing which build wrote it.
+    normalized_fill: float | None = None
     # Phase 2 section 3.12.2: never set, because Chunk P2-1 found the rebate
     # is not cleanly detectable with a generic straight-edge finder. The
     # field stays in the contract; its value is always null.
@@ -231,6 +252,8 @@ class NegativeRecord:
             ),
             "valid_rect": None if self.valid_rect is None else list(self.valid_rect),
             "fill_color": list(self.fill_color),
+            "normalized_fill": self.normalized_fill,
+            "normalization": self.normalization,
             "rebate_deviation_px": self.rebate_deviation_px,
             "used_clahe_fallback": self.used_clahe_fallback,
             "error_code": self.error_code,
@@ -254,11 +277,16 @@ class RollInvariants:
     """Section 3.4's roll-invariant set, and section 5.4's name for it.
     Everything else — input folder, source list, order, grouping, and the
     batch's `shots_per_negative` — is expected to differ between runs and is
-    never compared."""
+    never compared.
+
+    `icc_profile_sha256` is the *intermediates'* linear profile, sourced
+    from the work manifest; `published_icc_profile_sha256` is the density
+    profile the published TIFF is tagged with (section 3.12's split)."""
 
     processing_params: dict[str, Any]
     icc_profile_sha256: str
     stitch_params: dict[str, Any]
+    published_icc_profile_sha256: str = ""
 
 
 @dataclasses.dataclass
@@ -270,6 +298,10 @@ class RollManifest:
     updated_at: str
     processing_params: dict[str, Any] = dataclasses.field(default_factory=dict)
     icc_profile: dict[str, str] = dataclasses.field(default_factory=dict)
+    # The density profile the published TIFFs carry (section 3.12); the
+    # other two profile facts are `icc_profile` (the intermediates', from
+    # the work manifest) and `stitch_params`.
+    published_icc_profile: dict[str, str] = dataclasses.field(default_factory=dict)
     stitch_params: dict[str, Any] = dataclasses.field(default_factory=dict)
     runs: list[RunRecord] = dataclasses.field(default_factory=list)
     sources: list[RollSourceRecord] = dataclasses.field(default_factory=list)
@@ -298,6 +330,7 @@ class RollManifest:
             processing_params=self.processing_params,
             icc_profile_sha256=self.icc_profile.get("sha256", ""),
             stitch_params=self.stitch_params,
+            published_icc_profile_sha256=self.published_icc_profile.get("sha256", ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -311,6 +344,7 @@ class RollManifest:
             "updated_at": self.updated_at,
             "processing_params": self.processing_params,
             "icc_profile": self.icc_profile,
+            "published_icc_profile": self.published_icc_profile,
             "stitch_params": self.stitch_params,
             "runs": [r.to_dict() for r in self.runs],
             "sources": [s.to_dict() for s in self.sources],
@@ -324,11 +358,12 @@ def new_roll_manifest(*, roll_id: str, roll_name: str) -> RollManifest:
     no sources, no negatives — and no grouping of its own, since
     `shots_per_negative` is each stitch batch's choice, not the roll's.
 
-    `icc_profile` is seeded from the bundled profile's compile-time
-    constants, because there is exactly one profile and section 3.4 makes its
-    hash a roll invariant. `processing_params` and `stitch_params` stay empty
-    — they are established by the first run, and `check_roll_invariants`
-    knows not to compare them until then.
+    `icc_profile` is seeded from the bundled linear profile's compile-time
+    constants and `published_icc_profile` from the density profile's,
+    because section 3.4 makes both hashes roll invariants.
+    `processing_params` and `stitch_params` stay empty — they are
+    established by the first run, and `check_roll_invariants` knows not to
+    compare them until then.
     """
     from scanny_boy.manifest import current_scanny_boy_version
 
@@ -340,7 +375,8 @@ def new_roll_manifest(*, roll_id: str, roll_name: str) -> RollManifest:
         created_at=now,
         updated_at=now,
         processing_params={},
-        icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+        icc_profile=profile_record(ProfileKind.LINEAR),
+        published_icc_profile=profile_record(ProfileKind.DENSITY),
         stitch_params={},
     )
 
@@ -421,6 +457,13 @@ def check_roll_invariants(
         raise RollInvariantMismatchError(
             "this run's ICC profile differs from the roll's"
         )
+    if (
+        manifest.published_icc_profile.get("sha256", "")
+        != candidate_params.published_icc_profile_sha256
+    ):
+        raise RollInvariantMismatchError(
+            "this run's published ICC profile differs from the roll's"
+        )
     if manifest.stitch_params != candidate_params.stitch_params:
         raise RollInvariantMismatchError(
             "this run's stitch settings differ from the roll's"
@@ -465,6 +508,7 @@ def merge_sources(
                 mtime=source.mtime,
                 sha256=source.sha256,
                 run_id=run_id,
+                scan_clip_fractions=source.scan_clip_fractions,
             )
         )
 

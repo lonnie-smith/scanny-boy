@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":7,"event":"negative_deleted",\
+                {"protocol_version":8,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -165,7 +165,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":7,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":8,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -268,6 +268,9 @@ struct CLIEventTests {
         "GEOMETRY_FRAME_SIZE_MISMATCH", "GEOMETRY_FIT_REJECTED",
         "GEOMETRY_MAGNITUDE_SUSPECT", "GEOMETRY_FEW_FRAMES",
         "CHROMATIC_FIT_REJECTED",
+        // Protocol version 8: normalization (docs/DECISIONS.md, "Normalization decisions").
+        "SCAN_CLIPPED", "NORMALIZE_DEGENERATE_BOUNDS",
+        "NORMALIZE_HEADROOM_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
     ])
     func everyStableCodeIsKnown(name: String) {
@@ -280,6 +283,8 @@ struct CLIEventTests {
         "decode", "write_tiff", "add_metadata",
         // Phase 2 section 3.9's stitch-stage steps.
         "load", "detect", "match", "solve", "warp", "blend", "write_stitched",
+        // Protocol version 8's normalization step.
+        "normalize",
     ])
     func everyPipelineStepIsKnown(name: String) {
         let step = CLIPipelineStep(name: name)
@@ -380,7 +385,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":7,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":8,"command":"probe"}"#)
         }
     }
 

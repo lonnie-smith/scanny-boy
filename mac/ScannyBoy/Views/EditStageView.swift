@@ -14,6 +14,7 @@ import SwiftUI
 struct EditStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
+    let activity: AppActivity
     /// Called after a deletion the user confirmed — `ContentView` uses it
     /// to re-scan the library so the sidebar's negative count keeps up.
     var onNegativeDeleted: () -> Void = {}
@@ -24,26 +25,29 @@ struct EditStageView: View {
                 PreviewPane(
                     negative: negative,
                     edit: edit,
-                    runIsActive: run.isActive,
+                    runIsActive: activity.isBusy,
                     onNegativeDeleted: onNegativeDeleted
                 )
             } else {
                 ContentUnavailableView(
                     "No Negatives Yet",
                     systemImage: "photo.stack",
-                    description: Text("Stitch scans into this roll to see them here.")
+                    description: Text("Convert scans into this roll to see them here.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
             filmstrip
         }
-        // Nothing about the roll may change while a run is using the
-        // helper — the same rule the old Edit tab applied to Apply.
-        .disabled(run.isActive)
-        .overlay {
+        .background {
             selectionShortcuts
         }
+        // Nothing about the roll may change while any helper in the app is
+        // busy (`AppActivity`) — not just this app's own run, but a
+        // conversion, export, or flat-field calibration too. This also
+        // disables the (invisible) selection-shortcut buttons above, so
+        // Option-arrow cannot move the selection mid-run either.
+        .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted (runs are started from Add Scans), so the phase can
         // already be `.finished` when the tab first appears — and that is
@@ -63,6 +67,7 @@ struct EditStageView: View {
             Button("Next Negative") { edit.selectNext() }
                 .keyboardShortcut(.rightArrow, modifiers: .option)
         }
+        .allowsHitTesting(false)
         .opacity(0)
         .accessibilityHidden(true)
     }
@@ -112,6 +117,7 @@ private struct PreviewPane: View {
                 }
                 .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Rotate 90° counter-clockwise")
+                .accessibilityLabel("Rotate 90° counter-clockwise")
 
                 Button {
                     Task { await edit.rotate(negative, clockwise: true) }
@@ -120,6 +126,7 @@ private struct PreviewPane: View {
                 }
                 .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Rotate 90° clockwise")
+                .accessibilityLabel("Rotate 90° clockwise")
 
                 if edit.isRotating {
                     ProgressView()
@@ -141,6 +148,7 @@ private struct PreviewPane: View {
                 }
                 .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Delete Negative…")
+                .accessibilityLabel("Delete Negative…")
             }
             .padding([.horizontal, .bottom], 16)
         }
@@ -164,8 +172,8 @@ private struct PreviewPane: View {
             )
         }
         .task(id: previewIdentity) {
+            thumbnail = nil
             guard let url = previewURL else {
-                thumbnail = nil
                 return
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
@@ -257,8 +265,8 @@ private struct FilmstripCell: View {
         .buttonStyle(.plain)
         .help(negative.expectedOutput)
         .task(id: "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)") {
+            thumbnail = nil
             guard let previewPath = negative.previewPath else {
-                thumbnail = nil
                 return
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(

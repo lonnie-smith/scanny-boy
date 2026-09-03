@@ -23,6 +23,7 @@ from scanny_boy.events import (
     NegativeDeleted,
     ProbeResult,
     RollCreated,
+    RollDeleted,
     RollInfo,
     RollList,
     RollListingEntry,
@@ -46,6 +47,7 @@ from scanny_boy.registration import StitchError
 from scanny_boy.roll_folder import (
     RollFolderError,
     create_roll,
+    delete_roll,
     rename_roll,
     scan_library,
 )
@@ -97,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     roll_rename.add_argument("--roll", required=True, metavar="DIR")
     roll_rename.add_argument("--name", required=True, metavar="NAME")
 
+    roll_delete = roll_subparsers.add_parser(
+        "delete", help="Unregister a roll; the app trashes its folder."
+    )
+    roll_delete.add_argument("--roll", required=True, metavar="DIR")
+
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
     )
@@ -114,18 +121,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probe.add_argument("--flatfield", metavar="PROFILE_ID")
 
-    convert = subparsers.add_parser(
-        "convert", help="Convert a selection of NEFs to TIFFs."
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="Prepare a selection of NEFs as linear intermediate TIFFs.",
     )
-    convert.add_argument("--input", required=True, metavar="DIR")
-    convert.add_argument("--files", nargs="+", required=True, metavar="FILE")
-    convert.add_argument("--out", required=True, metavar="DIR")
-    convert.add_argument(
+    prepare.add_argument("--input", required=True, metavar="DIR")
+    prepare.add_argument("--files", nargs="+", required=True, metavar="FILE")
+    prepare.add_argument("--out", required=True, metavar="DIR")
+    prepare.add_argument(
         "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
     )
-    convert.add_argument("--jobs", type=int, metavar="N")
-    convert.add_argument("--overwrite", action="store_true")
-    convert.add_argument("--flatfield", metavar="PROFILE_ID")
+    prepare.add_argument("--jobs", type=int, metavar="N")
+    prepare.add_argument("--overwrite", action="store_true")
+    prepare.add_argument("--flatfield", metavar="PROFILE_ID")
 
     stitch = subparsers.add_parser(
         "stitch",
@@ -365,6 +373,19 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
+    if args.roll_command == "delete":
+        writer.write(Started(command="roll delete"))
+        roll_dir = Path(args.roll)
+        try:
+            fields = delete_roll(roll_dir, emit=writer.write)
+        except RollFolderError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(RollDeleted(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
     # info
     writer.write(Started(command="roll info"))
     roll_dir = Path(args.roll)
@@ -468,9 +489,7 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
             )
             writer.write(Finished(status="failed", exit_status=1))
             return 1
-        writer.write(
-            FlatFieldCreated(profile=flatfield_profile_summary(profile))
-        )
+        writer.write(FlatFieldCreated(profile=flatfield_profile_summary(profile)))
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
@@ -478,9 +497,7 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
         writer.write(Started(command="flatfield list"))
         profiles = repo.list_flatfield_profiles()
         writer.write(
-            FlatFieldList(
-                profiles=[flatfield_profile_summary(p) for p in profiles]
-            )
+            FlatFieldList(profiles=[flatfield_profile_summary(p) for p in profiles])
         )
         writer.write(Finished(status="success", exit_status=0))
         return 0
@@ -744,9 +761,11 @@ def _dispatch_command(
     if args.command == "run":
         return _run_run_command(args, writer, files, jobs)
 
-    # convert
+    # prepare — stage 1 of the pipeline, renamed from `convert`
+    # (docs/DECISIONS.md, "Normalization decisions"): "Convert" is reserved,
+    # unambiguously, for the whole `run`.
     run_id = str(uuid.uuid4())
-    writer.write(Started(command="convert", run_id=run_id))
+    writer.write(Started(command="prepare", run_id=run_id))
 
     # The SIGTERM handler is installed for the whole conversion and
     # removed afterwards; it only sets the token's flag, and every

@@ -63,18 +63,20 @@ struct RootView: View {
     @State private var edit: EditModel?
     @State private var run: RunModel?
     @State private var export: ExportModel?
+    @State private var activity: AppActivity?
     @State private var unavailableReason: String?
 
     var body: some View {
         Group {
-            if let library, let flatField, let model, let edit, let run, let export {
+            if let library, let flatField, let model, let edit, let run, let export, let activity {
                 ContentView(
                     library: library,
                     flatField: flatField,
                     model: model,
                     edit: edit,
                     run: run,
-                    export: export
+                    export: export,
+                    activity: activity
                 )
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
@@ -92,11 +94,16 @@ struct RootView: View {
             // the library.
             let runner = try CLIRunner(locator: .mainBundle())
             library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
-            flatField = FlatFieldModel(runner: runner)
+            let flatField = FlatFieldModel(runner: runner)
+            let edit = EditModel(runner: runner)
+            let run = RunModel(runner: runner)
+            let export = ExportModel(runner: runner)
+            self.flatField = flatField
             model = ConfigurationModel(runner: runner)
-            edit = EditModel(runner: runner)
-            run = RunModel(runner: runner)
-            export = ExportModel(runner: runner)
+            self.edit = edit
+            self.run = run
+            self.export = export
+            activity = AppActivity(run: run, edit: edit, export: export, flatField: flatField)
         } catch let error as CLILocatorError {
             unavailableReason = error.description
         } catch {

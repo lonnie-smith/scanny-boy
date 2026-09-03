@@ -431,9 +431,10 @@ pixel value does (`punchlist.md`).
   `[A-Za-z0-9._-]` plus single-dash whitespace runs, 60 characters,
   case-insensitive collision suffixes). Renaming moves the folder to a new
   slug, then writes `roll_name` — refused while a run is active, enforced
-  client-side since the CLI is stateless between invocations. Deleting
-  moves the folder to the Trash via `NSWorkspace.recycle`, no CLI
-  involvement at all.
+  client-side since the CLI is stateless between invocations. Deleting is
+  two steps: the folder moves to the Trash via `NSWorkspace.recycle`, then
+  `roll delete` removes the database registration, so `roll list` drops the
+  roll instead of reporting it as `unreadable`.
 
 ## Roll invariants and additive runs
 
@@ -793,3 +794,143 @@ produced:
 - **SciPy is a runtime dependency** (`scipy.optimize.least_squares`, the
   project's first nonlinear solver), added for the staged plumb-line fit;
   the bundle carries `scipy/optimize` and excludes its test suites.
+
+# Normalization decisions (protocol version 8)
+
+Scan normalization ("Convert") is implemented per docs/NORMALIZATION_PLAN.md
+(deleted after landing, per the repo's convention); this section is the
+durable record of its locked decisions.
+
+## The published TIFF is a baked, normalized working intermediate
+
+The deliverable is a positive export that does not exist yet; the published
+TIFF is the working intermediate the creative-edit stage reads. After
+deciding that, everything else in this section follows.
+
+- **The bake is the fidelity-preserving choice, not a compromise (D-1).**
+  Normalized log density in `uint16` is the *most* precision-efficient
+  16-bit container available: linear `uint16` spends its resolution where
+  the light is, and a negative's picture information is where the light is
+  not — about 11.3 effective bits at the dense end against a uniform 16
+  once log-encoded, at identical file size.
+- **The bake is arithmetically reversible.** The per-channel floors and
+  ceils are recorded in the roll record's `normalization` block, so
+  `10 ** (floor + val * (ceil - floor))` recovers the linear composite to
+  within quantization. `normalization.decode_normalized` is the single
+  inverse of the encode; everything downstream goes through it.
+- **It stays a negative in appearance.** `val = 0` is the scene highlight
+  (dark), `val = 1` the scene shadow (light). Inversion is the print
+  stage's (Phase 4). The preview displays `1 - val` purely so the Edit
+  filmstrip is legible — the file in Photoshop looks like a negative and
+  the preview beside it looks positive. Both are correct.
+
+## Colour negative only
+
+NegPy's `ProcessMode` is not ported: no E-6 branch, no swapped percentiles,
+no fixed-range fallback, no dead flag. This rig photographs colour
+negative film under white light; if transparency support is ever wanted it
+is a new feature with its own plan.
+
+## Two ICC profiles, and the profile is never load-bearing (D-2)
+
+The prepare stage's intermediates stay linear; the published TIFF does not.
+One profile used to assert both; the split is now explicit:
+
+| | Intermediates (prepare) | Published TIFF (stitch) |
+| --- | --- | --- |
+| Profile | `ScannyBoy-Linear-ProPhoto-v1.icc` | `ScannyBoy-Density-ProPhoto-v1.icc` |
+| TRC | parametric type 0, g = 1.0 | parametric type 0, **g = 2.2** |
+| Claim | true — the pixels are linear | a **viewing convention** |
+
+g = 2.2 is deliberately not accurate: a normalized log encoding over ~2
+decades is closer to gamma 3.3, and no ICC parametric type expresses it. A
+*correct* profile would decode the file back to un-normalized linear —
+undoing the one thing normalization does. The tag's only job is legibility
+in external viewers while debugging the edit stage.
+
+**The load-bearing rule:** the profile must never become load-bearing for
+the render. Every internal consumer decodes through
+`normalization.decode_normalized`, never through an ICC transform; a
+grep-shaped guard test keeps the loader out of everything but the write
+path. `RollInvariants` grew `published_icc_profile_sha256` beside the
+intermediates' hash, and `check_roll_invariants` compares both.
+
+## The transfer, the bounds, and the headroom
+
+Ported from NegPy's `normalization.py` unchanged: `D_log = log10(clamp(I,
+1e-6, 1.0))`, then a per-channel affine stretch with `floor` (the low log
+percentile — dense film, scene highlight) mapping to `0.0` and `ceil`
+(thin film / base) to `1.0`. Bounds are sampled on **two independent axes**
+and recombined — luma at `BASE_LUMA_CLIP = 0.01` fixing the floor/ceil
+*mean*, colour at `BASE_COLOR_CLIP = 1.0` fixing each channel's *deviation*
+— with NegPy's asymmetry kept: **mean** on the luma axis, **median** on the
+colour axis. The dense end reads one shared, chroma-gated pixel set drawn
+from the luma-extreme band (independent per-channel percentiles read a
+different scene object per channel and mistake coloured highlights for film
+cast); the thin end reads plain percentiles, physically anchored at film
+base. The constants are pinned, not exposed: normalization is automatic,
+and `normalize` rides in `processing_params` as a **roll invariant** — the
+key is always present, there is no `--no-normalize`, and retuning any
+constant invalidates existing rolls (same breakage as flat-field and the
+gain-normalization merges; start a new roll).
+
+**Encoding with asymmetric headroom (§3.6).** `uint16` cannot keep NegPy's
+unclamped float, so the encode reserves
+`NORMALIZED_HEADROOM_LOW = 0.15` at the dense end (speculars a block
+median never saw) and `0.10` at the thin end (physically bounded by clear
+base). Excursions past the rails clip — documented, not accidental; the
+observed pre-clip extrema and the clipped fraction are recorded per
+negative so the constants can be tuned from real scans, and
+`NORMALIZE_HEADROOM_CLIPPED` warns when they clip too much.
+
+## Naming: "Convert" in the UI, `prepare` inside the CLI (§3.9)
+
+**`run` stays `run`.** The user-facing verb is "Convert" everywhere in
+Swift — the button, the results section, the empty state. CLI stage 1 is
+renamed `convert` → `prepare` (subcommand and `Stage.PREPARE`); stage 2
+keeps `stitch`, which is still exactly what it does. "Convert" is then
+reserved, unambiguously, for the whole `run`.
+
+## The analysis region, and the rebate detector (D-3, §3.13)
+
+Captures **usually** include the film rebate, sometimes not — and it is the
+variability that hurts, not the rebate. Rebate is the thinnest thing in the
+capture, so a per-frame framing accident would otherwise decide whether a
+negative is normalized against base or against its own darkest shadow.
+
+The meters therefore read an **analysis region**, resolved as: explicit
+crop ROI (does not exist yet) → valid rect → whole grid — as a flat boolean
+over the prefiltered grid, so every pass provably reads the identical
+pixel set. `layout.largest_valid_rect` finally has its first real use: it
+restricts the meters only, never crops the output, and keeps the
+uncovered-canvas fill (log10(1e-6) = -6.0, a colossal outlier at the dense
+end) out of the floor percentile.
+
+The **rebate detector** (D-3) works on density and border connectivity, not
+geometry: on a negative, base is strictly the thinnest thing on the film,
+so the thinnest border-touching featureless population that is *separated*
+from the scene distribution is rebate. Detected cells are excluded from the
+meters and the measured `base_density` is recorded raw (no exposure-time
+correction — that belongs to the consumer; one stop of exposure shifts it
+by 0.30 in log D), `None` when the base is sensor-clipped (clipped base is
+worthless base). The documented false positive is a genuinely deep,
+featureless border-touching shadow: mild degradation, never invented data.
+Using the base roll-wide (D-4's staging step 2) is on the punchlist.
+
+## Per-negative bounds (D-4), and the uncovered canvas (§3.14)
+
+**Ship per-negative bounds on both axes**: every frame self-normalizes, no
+cross-run coupling, matching the publish-once model. The run's aggregate
+(per-channel median) is recorded in the database too, so the data for a
+roll-consistency feature exists from day one; the colour axis is the one
+that actually wants to be roll-wide (`--colour-bounds run-median` is the
+likely shape).
+
+**The uncovered canvas fills at the top of the encodable range**:
+`NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH`, code 65535. **Expect
+the published file's border to flip from black to white** — it looks like a
+regression the first time and is not: a fill of `0.0` in a negative-looking
+file becomes a white border in the eventual positive, and the second one
+loses. The fill value is a cosmetic hint, not a sentinel, and nothing in
+the render path may key off it; the machine-readable coverage answer is
+`valid_rect` plus `coverage_fraction`.

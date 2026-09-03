@@ -27,6 +27,10 @@ struct ContentView: View {
     let edit: EditModel
     let run: RunModel
     let export: ExportModel
+    /// The union of every helper session in the app — Convert, rotate,
+    /// delete, export, flat-field calibration — since "one helper at a
+    /// time" (section 3.10) is an app-wide rule, not `RunModel`'s alone.
+    let activity: AppActivity
 
     private enum WorkspaceTab {
         case addScans
@@ -52,8 +56,8 @@ struct ContentView: View {
             RollSidebar(
                 library: library,
                 selection: $selection,
-                runIsActive: run.isActive,
-                onRollCreated: { workspaceTab = .addScans }
+                runIsActive: activity.isBusy,
+                isPresentingNewRollSheet: $isPresentingNewRollSheet
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
@@ -68,7 +72,7 @@ struct ContentView: View {
                     Button("New Roll…") {
                         isPresentingNewRollSheet = true
                     }
-                    .disabled(run.isActive)
+                    .disabled(activity.isBusy)
                     .accessibilityIdentifier("newRollButtonEmptyState")
                 }
             }
@@ -79,11 +83,16 @@ struct ContentView: View {
         // before `library.rolls` has re-scanned to include it — this catches
         // that up rather than leaving `model.rollURL` stuck at `nil`.
         .onChange(of: library.rolls) { _, _ in resolveSelectedRoll() }
-        // The run log belongs to the roll it stitched: switching rolls clears
-        // it, so the "Stitch Results" section only ever describes the roll
-        // now selected. Safe even mid-run — the sidebar blocks switching
-        // while a run is active — and `clearResults` guards anyway.
-        .onChange(of: model.rollURL) { _, _ in run.clearResults() }
+        // The run log and the export summary both belong to the roll they
+        // ran against: switching rolls clears them, so neither the "Convert
+        // Results" section nor the Export tab ever describes the roll that
+        // was previously selected. Safe even mid-run — the sidebar blocks
+        // switching while anything is active (`AppActivity`) — and both
+        // `clearResults` methods guard anyway.
+        .onChange(of: model.rollURL) { _, _ in
+            run.clearResults()
+            export.clearResults()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
             restitchOutputFolder = model.rollURL
@@ -98,10 +107,11 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingRestitch) {
             RestitchSheet(
                 run: run,
+                activity: activity,
                 flatField: flatField,
                 onStarted: handleRestitchStarted,
-                workDirectory: restitchWorkDirectory,
-                outputFolder: restitchOutputFolder
+                initialWorkDirectory: restitchWorkDirectory,
+                initialOutputFolder: restitchOutputFolder
             )
         }
         .sheet(isPresented: $isPresentingNewRollSheet) {
@@ -128,17 +138,21 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Stage")
             .padding()
 
             switch workspaceTab {
             case .addScans:
                 addScansStage
             case .edit:
-                EditStageView(edit: edit, run: run, onNegativeDeleted: { library.scan() })
+                EditStageView(
+                    edit: edit, run: run, activity: activity,
+                    onNegativeDeleted: { library.scan() }
+                )
             case .metadata:
-                MetadataStageView(edit: edit, run: run)
+                MetadataStageView(edit: edit, run: run, activity: activity)
             case .export:
-                ExportStageView(export: export, edit: edit, run: run)
+                ExportStageView(export: export, edit: edit, run: run, activity: activity)
             }
         }
         .navigationTitle("Scanny Boy")
@@ -164,10 +178,23 @@ struct ContentView: View {
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
     /// selection (section 3.10): neither model has a folder picker of its
     /// own, so this is the only thing that ever sets them.
+    ///
+    /// When `selection` names no roll in `library.rolls`, the roll behind it
+    /// is gone (deleted in the Finder, reclassified `unreadable` — which
+    /// changes `Roll.id` — or the library base moved in Settings): clear
+    /// `selection` too, so the detail pane falls back to "No Roll Selected"
+    /// instead of staying mounted on a workspace pointed at nothing. Only
+    /// while `library.isScanning == false` — a roll just created by
+    /// `NewRollSheet` is legitimately selected before the rescan that will
+    /// include it lands, and that transient window must not be mistaken for
+    /// a vanished roll.
     private func resolveSelectedRoll() {
         let rollURL = library.rolls.first { $0.id == selection }?.path
         model.rollURL = rollURL
         edit.rollURL = rollURL
+        if selection != nil, rollURL == nil, !library.isScanning {
+            selection = nil
+        }
     }
 
     private var catalogueColumn: some View {
@@ -208,34 +235,28 @@ struct ContentView: View {
         .padding()
         // Nothing about the configuration may change while a conversion is
         // using it.
-        .disabled(run.isActive)
+        .disabled(activity.isBusy)
     }
 
     private var detailColumn: some View {
         Form {
-            // While a probe is in flight the configuration (and the Stitch
-            // button, whose enablement depends on it) is not yet trustworthy
-            // — show a spinner instead. A run's own results stay visible:
-            // the post-run re-validation probe must not blank them out.
-            if model.isProbing {
-                Section {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                            .controlSize(.large)
-                        Spacer()
-                    }
-                    .padding(.vertical, 24)
-                }
-            } else {
-                configurationSections
-                    .disabled(run.isActive)
-                runSection
-            }
-            if run.phase != .idle {
-                Section("Stitch Results") {
+            // While a probe is in flight the Stitch button's enablement is
+            // not yet trustworthy — but the sections themselves stay
+            // mounted (M3): a drag-select across the catalogue used to tear
+            // the whole form down and rebuild it once per row, and the
+            // grouping picker was unreachable for the duration.
+            configurationSections
+                .disabled(activity.isBusy)
+            runSection
+            // Add Scans shows this section for its own invocations only
+            // (M9): an apply-metadata started from the Metadata tab is not
+            // a conversion, even though it shares the same `RunModel`.
+            if run.phase != .idle, run.invocation != .applyMetadata {
+                Section("Convert Results") {
                     if run.isActive {
                         RunProgressView(run: run)
+                    } else if run.phase == .finishing {
+                        FinishingView()
                     } else {
                         RunResultView(run: run)
                     }
@@ -255,6 +276,10 @@ struct ContentView: View {
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
+            // The caption below says the choice is fixed; the control must
+            // agree, or the user can select a different profile that the
+            // CLI will then refuse with `ROLL_INVARIANT_MISMATCH`.
+            .disabled(model.isRollLockedToFlatFieldProfile)
             if model.isRollLockedToFlatFieldProfile, let locked = model.roll?.processingParams.flatFieldProfileID {
                 let name = flatField.profiles.first { $0.profileID == locked }?.name ?? locked
                 Text("This roll is locked to “\(name)”.")
@@ -270,7 +295,7 @@ struct ContentView: View {
                 isPresentingFlatFieldProfiles = true
             }
         }
-        Section("Grouping") {
+        Section {
             // Scans-per-negative belongs to this stitch batch, not the
             // roll: each run picks its own grouping, so a roll can hold
             // negatives stitched from different scan counts. It must be
@@ -286,7 +311,7 @@ struct ContentView: View {
             .accessibilityIdentifier("perNegativePicker")
 
             if model.perNegative == nil {
-                Text("How many scans are stitched into each negative. Choose one to enable Stitch.")
+                Text("How many scans are stitched into each negative. Choose one to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")
@@ -303,6 +328,18 @@ struct ContentView: View {
             if let error = model.rollError {
                 IssueLabel(issue: error, style: .error)
             }
+        } header: {
+            // A probe in flight only means the Stitch button's enablement
+            // is not yet trustworthy (M3) — the section itself, and every
+            // control in it, stays put and reachable.
+            HStack {
+                Text("Grouping")
+                if model.isProbing {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
         }
     }
 
@@ -314,8 +351,8 @@ struct ContentView: View {
                     Button("Cancel", role: .destructive) { run.cancel() }
                         .disabled(!run.canCancel)
                 }
-                Button("Stitch") { startRun() }
-                    .disabled(!model.runEnabled || run.isActive)
+                Button("Convert") { startRun() }
+                    .disabled(!model.runEnabled || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
             }
         }

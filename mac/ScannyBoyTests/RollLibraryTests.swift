@@ -34,14 +34,16 @@ struct RollLibraryTests {
     }
 
     /// A fake `scanny-boy` that answers `roll list` from `listLines`,
-    /// `roll init` from `initLines`, `roll rename` from `renameLines`, all
-    /// distinguished by `$1 $2` (`roll list`/`roll init`/`roll rename`) —
-    /// the same discriminator the real CLI's own subcommands use.
+    /// `roll init` from `initLines`, `roll rename` from `renameLines`,
+    /// `roll delete` from `deleteLines`, all distinguished by `$1 $2`
+    /// (`roll list`/`roll init`/...) — the same discriminator the real CLI's
+    /// own subcommands use.
     private static func fakeRollExecutable(
         in directory: URL,
         listLines: [String] = [],
         initLines: [String] = [],
-        renameLines: [String] = []
+        renameLines: [String] = [],
+        deleteLines: [String] = []
     ) throws -> URL {
         let script = """
             if [ "$1" = "roll" ] && [ "$2" = "list" ]; then
@@ -54,6 +56,10 @@ struct RollLibraryTests {
             fi
             if [ "$1" = "roll" ] && [ "$2" = "rename" ]; then
             \(echoLines(renameLines))
+            exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "delete" ]; then
+            \(echoLines(deleteLines))
             exit 0
             fi
             exit 1
@@ -282,8 +288,8 @@ struct RollLibraryTests {
 
     // MARK: - Delete
 
-    @Test("deleteRoll moves the folder to the Trash")
-    func testDeleteRecyclesTheFolder() async throws {
+    @Test("deleteRoll trashes the folder, unregisters the roll, and rescans")
+    func testDeleteRecyclesTheFolderAndUnregisters() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let libraryBase = directory.appending(path: "library", directoryHint: .isDirectory)
@@ -298,7 +304,12 @@ struct RollLibraryTests {
 
         let executable = try Self.fakeRollExecutable(
             in: directory,
-            listLines: [Self.rollListEvent(entries: [])]
+            // The next scan reports an empty library: unregistering means
+            // `roll list` no longer names the roll.
+            listLines: [Self.rollListEvent(entries: [])],
+            deleteLines: [
+                TestEvents.line(#"{"event":"roll_deleted","roll_id":"id-1","path":"\#(rollPath.path)"}"#)
+            ]
         )
         let library = RollLibrary(
             runner: CLIRunner(executable: executable),
@@ -312,6 +323,47 @@ struct RollLibraryTests {
 
         try await library.deleteRoll(roll)
 
+        // The folder went to the Trash and the rescan (fed by the fake's
+        // `roll list`) no longer reports the roll.
         #expect(!FileManager.default.fileExists(atPath: rollPath.path))
+        await library.waitForScan()
+        #expect(library.rolls.isEmpty)
+    }
+
+    @Test("deleteRoll still unregisters when the folder is already gone")
+    func testDeleteRegistersEvenWithoutAFolder() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryBase = directory.appending(path: "library", directoryHint: .isDirectory)
+
+        // An `unreadable` roll: registered, but its folder vanished (which
+        // is also the state a crash between the Trash move and the
+        // unregister leaves behind). Delete must still unregister it.
+        let rollPath = libraryBase.appending(path: "Vanished-Roll", directoryHint: .isDirectory)
+        let executable = try Self.fakeRollExecutable(
+            in: directory,
+            listLines: [Self.rollListEvent(entries: [
+                Self.listingEntry(
+                    path: rollPath, status: "unreadable",
+                    reason: #"{"code":"ROLL_NOT_FOUND","message":"gone"}"#,
+                    rollID: nil, rollName: "Vanished Roll", negativeCount: nil
+                )
+            ])],
+            deleteLines: [
+                TestEvents.line(#"{"event":"roll_deleted","roll_id":"id-2","path":"\#(rollPath.path)"}"#)
+            ]
+        )
+        let library = RollLibrary(
+            runner: CLIRunner(executable: executable),
+            libraryBase: libraryBase,
+            defaults: Self.isolatedDefaults()
+        )
+        library.scan()
+        await library.waitForScan()
+
+        // The unreadable listing carries no roll_id, so its id is the path.
+        let roll = try #require(library.rolls.first)
+        #expect(roll.status == .unreadable)
+        try await library.deleteRoll(roll)
     }
 }

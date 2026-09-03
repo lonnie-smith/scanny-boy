@@ -43,6 +43,16 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "rename", "--roll", roll.path, "--name", name])
     }
 
+    /// `scanny-boy roll delete --roll DIR`
+    ///
+    /// Unregisters the roll from the library database — the move of the
+    /// folder to the Trash is Swift's, via `NSWorkspace.recycle`, and must
+    /// happen first, so a failed move leaves both the folder and the
+    /// registration untouched.
+    public static func rollDelete(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
+    }
+
     /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--roll DIR] [--per-negative N]`
     ///
     /// With `--input` alone this returns the catalogue in canonical order.
@@ -79,13 +89,13 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy convert --input DIR --files ... --out DIR [--per-negative N] ...`
+    /// `scanny-boy prepare --input DIR --files ... --out DIR [--per-negative N] ...`
     ///
     /// There is no `--film-date`: Phase 3 removed it from every command, and
     /// the CLI derives `film_date` from the scans' own capture times
     /// (CONTRACT.md). `overwrite` is only ever set after the user has
     /// confirmed the replacements (section 3.6).
-    public static func convert(
+    public static func prepare(
         input: URL,
         files: [String],
         out: URL,
@@ -94,7 +104,7 @@ public struct CLICommand: Sendable, Hashable {
         overwrite: Bool = false,
         flatfield: String? = nil
     ) -> CLICommand {
-        var arguments = ["convert", "--input", input.path]
+        var arguments = ["prepare", "--input", input.path]
         arguments.append("--files")
         arguments.append(contentsOf: files)
         arguments.append(contentsOf: ["--out", out.path])

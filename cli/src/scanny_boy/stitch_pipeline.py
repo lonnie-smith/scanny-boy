@@ -69,7 +69,7 @@ from scanny_boy.events import (
     Stage,
     WarningEvent,
 )
-from scanny_boy.icc_profile import load_icc_profile
+from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
 from scanny_boy.layout import (
     MAX_GLOBAL_RMS_PX,
     STRIP_SPREAD_RATIO,
@@ -83,6 +83,10 @@ from scanny_boy.manifest import (
     GroupRecord,
     Manifest,
     load_manifest,
+)
+from scanny_boy.normalization import (
+    HEADROOM_CLIP_WARN_FRACTION,
+    NORMALIZED_FILL,
 )
 from scanny_boy.output_folder import (
     ROLL_RULES,
@@ -133,11 +137,12 @@ _DISK_SAFETY_MARGIN = 1.20
 
 # Progress steps this stage emits, per section 3.9's `PipelineStep`
 # additions. Per frame: load, detect (solving) and warp (compositing).
-# Per negative: match, solve (solving) and blend, write_stitched
-# (compositing). `run`'s combined span is Chunk P2-7's business; these are
-# the concrete step boundaries that actually occur here.
+# Per negative: match, solve (solving), blend, normalize (the analysis pass
+# fused into the encode, docs/DECISIONS.md, "Normalization decisions") and
+# write_stitched (compositing). `run`'s combined span is Chunk P2-7's
+# business; these are the concrete step boundaries that actually occur here.
 _STEPS_PER_FRAME = 3
-_STEPS_PER_NEGATIVE = 4
+_STEPS_PER_NEGATIVE = 5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -576,6 +581,65 @@ def _finite(value: float) -> float:
     return sys.float_info.max if math.isinf(value) else value
 
 
+def _normalization_record(
+    result: composite_module.CompositeResult,
+    analysis_rect: tuple[int, int, int, int],
+) -> dict[str, Any]:
+    """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
+    decisions"): the bounds the published pixels were stretched with, the
+    recorded-not-acted-on metering, the observed pre-clip extrema and
+    headroom clipping (section 3.6), the analysis region, and the rebate
+    finding (section 3.13, recorded but not yet consumed). `source` names
+    D-4's per-negative policy; a future run-median mode attaches there."""
+    bounds = result.bounds
+    return {
+        "floors": list(bounds.floors),
+        "ceils": list(bounds.ceils),
+        "shadow_refs": list(result.shadow_refs),
+        "anchor": result.anchor,
+        "textural_range": result.textural_range,
+        "analysis_rect": list(analysis_rect),
+        "observed_min": list(result.observed_min),
+        "observed_max": list(result.observed_max),
+        "headroom_clipped": list(result.headroom_clipped),
+        "rebate": {
+            "detected": result.rebate.detected,
+            "mask_fraction": result.rebate.mask_fraction,
+            "base_density": (
+                None
+                if result.rebate.base_density is None
+                else list(result.rebate.base_density)
+            ),
+            "clipped": result.rebate.clipped,
+        },
+        "source": "per-negative",
+    }
+
+
+def _normalization_aggregate(
+    records: list[NegativeRecord],
+) -> dict[str, Any] | None:
+    """D-4's run-level aggregate: the per-channel median of the run's
+    negatives' bounds. Nothing reads it yet; the data for a
+    roll-consistency feature exists from day one."""
+    normalization_blocks = [r.normalization for r in records if r.normalization]
+    if not normalization_blocks:
+        return None
+
+    def channel_medians(key: str) -> list[float]:
+        columns = [
+            [block[key][ch] for block in normalization_blocks] for ch in range(3)
+        ]
+        return [float(np.median(column)) for column in columns]
+
+    return {
+        "negative_count": len(normalization_blocks),
+        "floors": channel_medians("floors"),
+        "ceils": channel_medians("ceils"),
+        "source": "run-median",
+    }
+
+
 def _pair_records(pairs: list[PairResult]) -> list[PairRecord]:
     return [
         PairRecord(
@@ -723,6 +787,11 @@ def run_stitch(
     invariants = RollInvariants(
         processing_params=work_manifest.processing_params,
         icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
+        # The density profile the published TIFFs are tagged with is a
+        # second invariant (section 3.12's split), sourced from
+        # `icc_profile.PROFILES` — not from the work manifest, which only
+        # knows the intermediates'.
+        published_icc_profile_sha256=profile_record(ProfileKind.DENSITY)["sha256"],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -884,6 +953,10 @@ def run_stitch(
     # and has no single status (section 3.3).
     run_record.status = status
     run_record.finished_at = _now_iso()
+    # D-4: record the run's aggregate bounds. Nothing reads it yet.
+    run_record.normalization_aggregate = _normalization_aggregate(
+        list(records_by_group.values())
+    )
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows
@@ -1197,6 +1270,12 @@ def _composite_and_publish(
         def on_frame_warped() -> None:
             progress.advance(source_index, PipelineStep.WARP)
 
+        # The analysis region must be computed *before* compositing (section
+        # 1.5): it takes only `layout` and `entry.frame_size`, both of which
+        # exist at solve time. It restricts the meters only — it never crops
+        # the output.
+        valid_rect = largest_valid_rect(layout, entry.frame_size)
+
         geometry = profile.geometry if profile is not None else None
         ca = entry.ca_maps if profile is not None else None
         result = composite(
@@ -1206,9 +1285,28 @@ def _composite_and_publish(
             on_progress=on_frame_warped,
             geometry=geometry,
             ca=ca,
+            region=valid_rect,
         )
         progress.advance(source_index, PipelineStep.BLEND)
+        progress.advance(source_index, PipelineStep.NORMALIZE)
         cancel.raise_if_cancelled()
+
+        # Section 3.6: the observed extrema are recorded so the two
+        # headroom constants can be tuned from real scans; the warning is
+        # the signal that they are too tight for this film and scanner.
+        worst_headroom = max(result.headroom_clipped)
+        if worst_headroom > HEADROOM_CLIP_WARN_FRACTION:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.NORMALIZE_HEADROOM_CLIPPED,
+                    message=(
+                        f"{record.negative_id}: the encode's headroom clipped "
+                        f"{worst_headroom * 100:.2f}% of one channel's pixels; "
+                        "the headroom constants are likely too tight"
+                    ),
+                )
+            )
 
         # Fold the measured photometric numbers back into the pairs and the
         # frames, warn on solved gains far from unity, then apply the honest
@@ -1267,7 +1365,9 @@ def _composite_and_publish(
                 f"{MAX_OVERLAP_MAD}",
             )
 
-        record.valid_rect = largest_valid_rect(layout, entry.frame_size)
+        record.valid_rect = valid_rect
+        record.normalization = _normalization_record(result, valid_rect)
+        record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])
 
@@ -1296,7 +1396,7 @@ def _composite_and_publish(
                 model=model,
             ),
             exif=exif,
-            icc_bytes=load_icc_profile(),
+            icc_bytes=load_icc_profile(ProfileKind.DENSITY),  # section 3.12
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 

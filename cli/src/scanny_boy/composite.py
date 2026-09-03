@@ -29,7 +29,25 @@ from scanny_boy.cancellation import CancellationToken
 from scanny_boy.concurrency import physical_memory_bytes
 from scanny_boy.events import Code
 from scanny_boy.layout import GainStat, Layout, solve_gains
-from scanny_boy.linear import decode_to_linear, encode_from_linear
+from scanny_boy.linear import decode_to_linear
+from scanny_boy.normalization import (
+    NORMALIZED_FILL,
+    Bounds,
+    Rebate,
+    analysis_grid_block_sizes,
+    analyze_bounds,
+    block_median_grid,
+    detect_rebate,
+    encode_normalized,
+    headroom_clip_fractions,
+    measure_anchor,
+    measure_shadow_refs,
+    measure_textural_range,
+    normalize_log_image,
+    observed_extrema,
+    resolve_analysis_region,
+    to_log_density,
+)
 from scanny_boy.registration import StitchError
 
 FILL_COLOR: tuple[int, int, int] = (0, 0, 0)  # section 3.3: one constant, one place
@@ -62,12 +80,24 @@ _EROSION_KERNEL = cv2.getStructuringElement(
 
 @dataclasses.dataclass(frozen=True)
 class CompositeResult:
-    image: np.ndarray  # uint16 (H, W, 3)
+    image: np.ndarray  # uint16 (H, W, 3), normalized log density (section 3.11)
     gains: dict[str, tuple[float, float, float]]
     overlap_mad: dict[tuple[str, str], float]  # post-gain residual
     overlap_mad_pregain: dict[tuple[str, str], float]
     overlap_fraction: dict[tuple[str, str], float]
     coverage_fraction: float
+    # The normalization meters (docs/DECISIONS.md, "Normalization decisions"
+    # 3.7, 3.13): per-negative bounds, the recorded-not-acted-on print-stage
+    # statistics, the observed pre-clip extrema (section 3.6), the fraction
+    # of pixels the encode's headroom clipped, and the rebate finding.
+    bounds: Bounds
+    shadow_refs: tuple[float, float, float]
+    anchor: float
+    textural_range: float
+    observed_min: tuple[float, float, float]
+    observed_max: tuple[float, float, float]
+    headroom_clipped: tuple[float, float, float]
+    rebate: Rebate
 
 
 def estimate_peak_bytes(
@@ -107,6 +137,11 @@ def estimate_peak_bytes(
     accum = canvas_pixels * 3 * 4  # float32 RGB weighted sum
     weight = canvas_pixels * 4  # float32 weight sum
     result = canvas_pixels * 3 * 2  # uint16 encoded output
+    # The normalization pass (docs/DECISIONS.md, "Normalization decisions"):
+    # log density and the normalized image are both canvas-sized float32,
+    # alive alongside the accumulators before the encode.
+    log_density = canvas_pixels * 3 * 4
+    normalized = canvas_pixels * 3 * 4
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4  # uint16 + linear decode
     warped = bbox_pixels * 3 * 4  # one warped frame
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2  # feather weight + warped/eroded masks
@@ -123,7 +158,7 @@ def estimate_peak_bytes(
     all_warped = frame_count * (warped + warp_aux)
     live_bytes = max(
         accum + weight + source + all_warped + geometry_bytes,
-        accum + result,
+        accum + weight + log_density + normalized + result,
     )
     return math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
 
@@ -385,9 +420,25 @@ def _warp_bands(
     return warped, warped_mask
 
 
-def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progress, geometry: dict | None = None, ca: dict | None = None) -> CompositeResult:
+def composite(
+    layout: Layout,
+    load_frame,
+    *,
+    cancel: CancellationToken,
+    on_progress,
+    geometry: dict | None = None,
+    ca: dict | None = None,
+    region: tuple[int, int, int, int] | None = None,
+) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
     result released immediately, so the caller controls residency.
+
+    `region` is the analysis region `(x, y, width, height)` in canvas
+    pixels — the caller's `largest_valid_rect`, moved above the composite
+    call so the meters can be told where the fill is not
+    (docs/DECISIONS.md, "Normalization decisions"). It restricts the meters
+    only; the canvas stays the full union bounding box and nothing
+    captured is discarded.
 
     Warp pass, per frame:
       1. decode_to_linear -> float32.
@@ -416,8 +467,22 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
         the weight canvas, at each bounding box's offset, freeing each
         warped frame as it is consumed.
 
-    Finally: divide where weight > 0; write FILL_COLOR elsewhere; encode
-    with encode_from_linear.
+    Finally: divide where weight > 0, and — blending, warping and the gain
+    solve having stayed in linear light, which is where they are
+    physically correct (section 1.3) — fuse the normalization into the
+    encode on the float32 accumulator that already exists:
+
+      img_log    = to_log_density(result_linear)
+      keep       = resolve_analysis_region(...); rebate detector excludes
+                   the film rebate from it (section 3.13)
+      bounds     = analyze_bounds(keep)
+      normalized = normalize_log_image(img_log, bounds)
+      encoded    = encode_normalized(normalized)
+
+    The published image is normalized log density (section 3.11), a
+    working intermediate — not the deliverable. Uncovered canvas pixels
+    take `encode_normalized(NORMALIZED_FILL)` — code 65535 (section 3.14);
+    `FILL_COLOR` survives as the linear-era record only.
 
     overlap_mad for a pair is the mean absolute difference between the two
     frames' linear values over their shared valid area, divided by the mean
@@ -570,16 +635,43 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
         accum[entry.y : entry.y + entry.height, entry.x : entry.x + entry.width] += (
             entry.linear * entry.weight[:, :, np.newaxis]
         )
-        weight_canvas[entry.y : entry.y + entry.height, entry.x : entry.x + entry.width] += (
-            entry.weight
-        )
+        weight_canvas[
+            entry.y : entry.y + entry.height, entry.x : entry.x + entry.width
+        ] += entry.weight
 
     covered = weight_canvas > 0
     result_linear = np.zeros_like(accum)
     result_linear[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
 
-    encoded = encode_from_linear(result_linear)
-    encoded[~covered] = FILL_COLOR
+    # The normalization pass, fused into the encode (section 1.3). One
+    # uint16 code at a linear value of 0.008 is ~8.3e-4 in log10 density —
+    # about 11.3 effective bits at the densest end, against a uniform 16
+    # once the data is log-encoded.
+    img_log = to_log_density(result_linear)
+    del result_linear
+
+    grid = block_median_grid(img_log)
+    keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
+    keep, rebate = detect_rebate(grid, keep)
+    bounds = analyze_bounds(grid, keep)
+    shadow_refs = measure_shadow_refs(grid, keep)
+    anchor = measure_anchor(grid, keep)
+    textural_range = measure_textural_range(grid, keep)
+    del grid, keep
+
+    normalized = normalize_log_image(img_log, bounds)
+    del img_log
+    # The observed extrema and headroom clipping are picture statistics:
+    # measured over the covered pixels only, never the fill (section 3.6).
+    observed_min, observed_max = observed_extrema(normalized[covered])
+    headroom_clipped = headroom_clip_fractions(normalized[covered])
+    encoded = encode_normalized(normalized)
+    del normalized
+
+    fill_code = encode_normalized(
+        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+    )[0, 0]
+    encoded[~covered] = fill_code
 
     coverage_fraction = float(np.count_nonzero(covered)) / covered.size
 
@@ -590,4 +682,54 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
         overlap_mad_pregain=overlap_mad_pregain,
         overlap_fraction=overlap_fraction,
         coverage_fraction=coverage_fraction,
+        bounds=bounds,
+        shadow_refs=shadow_refs,
+        anchor=anchor,
+        textural_range=textural_range,
+        observed_min=observed_min,
+        observed_max=observed_max,
+        headroom_clipped=headroom_clipped,
+        rebate=rebate,
     )
+
+
+def _region_keep(
+    grid_shape: tuple[int, int],
+    canvas_shape: tuple[int, ...],
+    region: tuple[int, int, int, int] | None,
+    covered: np.ndarray,
+) -> np.ndarray:
+    """Map a canvas-space `(x, y, width, height)` analysis region onto the
+    prefiltered grid, rounding *inward* so no uncovered-canvas cell ever
+    leaks into the meters (section 1.5: the fill would otherwise drag the
+    floor percentile to log10(1e-6) = -6.0 and garbage the whole stretch).
+
+    With no region known, the fallback restricts the meters to the blocks
+    the blend actually covered — the same protection, from the one
+    per-pixel fact the accumulator already knows. (Production always
+    passes the caller's `largest_valid_rect`.)"""
+    if region is None:
+        covered_grid = block_median_grid(
+            np.where(covered, np.float32(1.0), np.float32(0.0))
+        )
+        keep = covered_grid >= 1.0
+        if keep.any():
+            return keep
+        return resolve_analysis_region(grid_shape, None)
+    block_rows, block_cols = analysis_grid_block_sizes(canvas_shape)
+    x, y, width, height = (float(v) for v in region)
+    gx0 = int(np.ceil(x / block_cols))
+    gy0 = int(np.ceil(y / block_rows))
+    gx1 = int(np.floor((x + width) / block_cols))
+    gy1 = int(np.floor((y + height) / block_rows))
+    grid_rect = (gx0, gy0, gx1 - gx0, gy1 - gy0)
+    keep = resolve_analysis_region(grid_shape, grid_rect)
+    if keep.any():
+        return keep
+    # A rect that rounds away entirely: fall back outward, then to all.
+    gx1 = int(np.ceil((x + width) / block_cols))
+    gy1 = int(np.ceil((y + height) / block_rows))
+    keep = resolve_analysis_region(grid_shape, (gx0, gy0, gx1 - gx0, gy1 - gy0))
+    if keep.any():
+        return keep
+    return resolve_analysis_region(grid_shape, None)

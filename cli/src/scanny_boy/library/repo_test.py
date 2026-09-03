@@ -224,6 +224,29 @@ def test_removing_a_negative_removes_its_edits(roll_dir):
         repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01")
 
 
+def test_delete_roll_unregisters_the_roll_and_cascades_its_children(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+
+    assert repo.delete_roll(roll_dir) == "rid-1"
+
+    assert repo.roll_registered(roll_dir) is False
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.load_roll(roll_dir)
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01")
+    # Deleting again has nothing left to unregister.
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.delete_roll(roll_dir)
+
+
+def test_delete_roll_matches_the_folder_however_it_is_spelled(roll_dir, tmp_path):
+    # `/var` vs `/private/var`, trailing separators: one registration.
+    spelled = Path(str(roll_dir) + "/") / "."
+    repo.delete_roll(spelled)
+    assert repo.roll_registered(roll_dir) is False
+
+
 # --- roll rename and folder moves -------------------------------------------
 
 

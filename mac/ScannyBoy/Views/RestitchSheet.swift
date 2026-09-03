@@ -21,6 +21,11 @@ import SwiftUI
 /// `run_stitch`.
 struct RestitchSheet: View {
     let run: RunModel
+    /// Re-stitch drives `run` directly, so `RunModel.start`'s own
+    /// `guard !isActive` would refuse a second *run*, but not a run started
+    /// while a rotate, delete, export, or flat-field calibration has its own
+    /// helper busy (P4) — this menu-triggered sheet has no other gate on it.
+    let activity: AppActivity
     /// The profile list, for the optional `--flatfield` picker: a roll whose
     /// first stitch ran with a calibrated profile has its geometry locked
     /// into its invariants, and a re-stitch without the same profile is
@@ -31,10 +36,20 @@ struct RestitchSheet: View {
     /// the same thing `ContentView` does after a normal Run.
     let onStarted: () -> Void
 
+    /// Seeds for `workDirectory`/`outputFolder` below, copied across in
+    /// `.onAppear` (M7). SwiftUI applies a `@State` property's memberwise-
+    /// init value only the *first* time a view identity appears — plain
+    /// `@State var workDirectory: URL? = workDirectory` happened to work
+    /// only because `.sheet(isPresented:)` tears this view down on every
+    /// dismiss, so a second presentation is always a fresh identity. Kept
+    /// as `let` so nothing can silently rely on that coincidence again.
+    let initialWorkDirectory: URL?
+    let initialOutputFolder: URL?
+
     @Environment(\.dismiss) private var dismiss
 
-    @State var workDirectory: URL?
-    @State var outputFolder: URL?
+    @State private var workDirectory: URL?
+    @State private var outputFolder: URL?
     @State private var overwriteAcknowledged = false
     @State private var flatFieldProfileID: String?
 
@@ -78,10 +93,14 @@ struct RestitchSheet: View {
         }
         .padding(20)
         .frame(minWidth: 480)
+        .onAppear {
+            workDirectory = initialWorkDirectory
+            outputFolder = initialOutputFolder
+        }
     }
 
     private var isReady: Bool {
-        workDirectory != nil && outputFolder != nil && overwriteAcknowledged && !run.isActive
+        workDirectory != nil && outputFolder != nil && overwriteAcknowledged && !activity.isBusy
     }
 
     @ViewBuilder
@@ -119,20 +138,32 @@ struct RestitchSheet: View {
 
     private func startRestitch() {
         guard let workDirectory, let outputFolder else { return }
-        // The work directory always holds `scanny-boy-manifest.json`,
-        // the convert stage's own record (CONTRACT.md) — the only place a
-        // negative count for this re-stitch is known ahead of time.
-        let totalNegatives = try? RunManifest.read(inOutputFolder: workDirectory).groups.count
-        run.start(
-            command: .stitch(
-                work: workDirectory, roll: outputFolder, overwrite: true,
-                flatfield: flatFieldProfileID
-            ),
-            files: [],
-            outputFolder: outputFolder,
-            totalNegatives: totalNegatives
-        )
-        onStarted()
+        let flatFieldProfileID = flatFieldProfileID
+        // Resolved off-main (M7) before `run.start`, exactly as
+        // `RunModel.readManifest` reads its own manifest off-main: it is
+        // small file I/O, but still file I/O on the path that starts a run.
+        Task {
+            let totalNegatives = await Self.totalNegatives(inWorkDirectory: workDirectory)
+            run.start(
+                command: .stitch(
+                    work: workDirectory, roll: outputFolder, overwrite: true,
+                    flatfield: flatFieldProfileID
+                ),
+                files: [],
+                outputFolder: outputFolder,
+                totalNegatives: totalNegatives
+            )
+            onStarted()
+        }
         dismiss()
+    }
+
+    /// The work directory always holds `scanny-boy-manifest.json`, the
+    /// convert stage's own record (CONTRACT.md) — the only place a negative
+    /// count for this re-stitch is known ahead of time.
+    private static func totalNegatives(inWorkDirectory workDirectory: URL) async -> Int? {
+        await Task.detached {
+            try? RunManifest.read(inOutputFolder: workDirectory).groups.count
+        }.value
     }
 }

@@ -13,6 +13,7 @@ import SwiftUI
 struct MetadataStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
+    let activity: AppActivity
 
     var body: some View {
         Form {
@@ -21,7 +22,7 @@ struct MetadataStageView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .disabled(run.isActive)
+        .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted, so the phase can already be `.finished` when the tab
         // first appears — Apply just finished, and the dirty count and
@@ -61,11 +62,15 @@ struct MetadataStageView: View {
                 Text("\(edit.dirtyCount) negative(s) need their capture time written")
                 Spacer()
                 Button("Apply") { applyMetadata() }
-                    .disabled(!edit.canApply || run.isActive)
+                    .disabled(!edit.canApply || activity.isBusy)
             }
-            if run.phase == .finished, let summary = run.completionSummary,
-                run.stitchedNegatives.isEmpty, !run.appliedNegativeIDs.isEmpty
-                    || !run.skippedMetadata.isEmpty
+            // Keyed on the actual invocation (M9), not inferred from the
+            // shape of the results — that heuristic missed an apply that
+            // failed outright (zero applied, zero skipped) and an apply of
+            // zero negatives, both indistinguishable by shape from "no
+            // apply ever ran".
+            if run.phase == .finished, run.invocation == .applyMetadata,
+                let summary = run.completionSummary
             {
                 Text(summary).font(.caption).foregroundStyle(.secondary)
                 ForEach(run.skippedMetadata, id: \.groupID) { skipped in

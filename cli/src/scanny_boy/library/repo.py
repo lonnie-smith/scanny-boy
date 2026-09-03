@@ -103,6 +103,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.updated_at = manifest.updated_at
         roll.processing_params = manifest.processing_params
         roll.icc_profile = manifest.icc_profile
+        roll.published_icc_profile = manifest.published_icc_profile
         roll.stitch_params = manifest.stitch_params
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
@@ -131,6 +132,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     work_dir=run.work_dir,
                     started_at=run.started_at,
                     finished_at=run.finished_at,
+                    normalization_aggregate=run.normalization_aggregate,
                 )
             )
 
@@ -153,6 +155,11 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     mtime=source.mtime,
                     sha256=source.sha256,
                     run_id=source.run_id,
+                    scan_clip_fractions=(
+                        None
+                        if source.scan_clip_fractions is None
+                        else list(source.scan_clip_fractions)
+                    ),
                 )
             )
 
@@ -192,6 +199,8 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                         else list(negative.valid_rect)
                     ),
                     fill_color=list(negative.fill_color),
+                    normalized_fill=negative.normalized_fill,
+                    normalization=negative.normalization,
                     rebate_deviation_px=negative.rebate_deviation_px,
                     used_clahe_fallback=negative.used_clahe_fallback,
                     error_code=negative.error_code,
@@ -238,6 +247,24 @@ def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
         return listing
 
 
+def delete_roll(roll_dir: Path) -> str:
+    """Remove the roll's registration and return its `roll_id`. The runs,
+    sources, negatives, and edits rows cascade away with it (each child's
+    `ondelete="CASCADE"`; `PRAGMA foreign_keys=ON` is set on every
+    connection). The folder is deliberately not touched — deleting the
+    registration is what makes `roll list` drop the roll, whatever then
+    happens to its files."""
+    folder = _folder_key(roll_dir)
+    with _session() as session:
+        roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
+        if roll is None:
+            raise RollNotRegisteredError(
+                f"{roll_dir} is not a registered roll; create the roll first"
+            )
+        session.delete(roll)
+        return roll.roll_id
+
+
 def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
         CaptureTime,
@@ -282,6 +309,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             updated_at=roll.updated_at,
             processing_params=roll.processing_params,
             icc_profile=roll.icc_profile,
+            published_icc_profile=dict(roll.published_icc_profile or {}),
             stitch_params=roll.stitch_params,
             runs=[
                 RunRecord(
@@ -295,6 +323,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     work_dir=r.work_dir,
                     started_at=r.started_at,
                     finished_at=r.finished_at,
+                    normalization_aggregate=r.normalization_aggregate,
                 )
                 for r in runs
             ],
@@ -306,6 +335,11 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     mtime=s.mtime,
                     sha256=s.sha256,
                     run_id=s.run_id,
+                    scan_clip_fractions=(
+                        None
+                        if s.scan_clip_fractions is None
+                        else tuple(s.scan_clip_fractions)
+                    ),
                 )
                 for s in sources
             ],
@@ -356,6 +390,8 @@ def load_roll(roll_dir: Path) -> RollManifest:
                         else (n.canvas["width"], n.canvas["height"])
                     ),
                     valid_rect=None if n.valid_rect is None else tuple(n.valid_rect),
+                    normalized_fill=n.normalized_fill,
+                    normalization=n.normalization,
                     rebate_deviation_px=n.rebate_deviation_px,
                     used_clahe_fallback=bool(n.used_clahe_fallback),
                     error_code=n.error_code,
@@ -517,7 +553,9 @@ def save_flatfield_profile(profile: FlatFieldProfile) -> None:
 def list_flatfield_profiles() -> list[FlatFieldProfile]:
     with _session() as session:
         rows = session.scalars(
-            select(FlatFieldProfileRow).order_by(FlatFieldProfileRow.created_at, FlatFieldProfileRow.name)
+            select(FlatFieldProfileRow).order_by(
+                FlatFieldProfileRow.created_at, FlatFieldProfileRow.name
+            )
         ).all()
         return [_to_flatfield_profile(row) for row in rows]
 

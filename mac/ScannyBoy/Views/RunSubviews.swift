@@ -63,6 +63,7 @@ enum RunStepName {
         case .solve: "Solving layout"
         case .warp: "Warping frames"
         case .blend: "Blending"
+        case .normalize: "Normalizing"
         case .writeStitched: "Writing stitched TIFF"
         case .unknown(let name): name
         }
@@ -75,6 +76,21 @@ enum RunTimeFormat {
         let minutes = total / 60
         let seconds = total % 60
         return minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
+    }
+}
+
+/// Shown for `RunModel.Phase.finishing`: the helper has exited and the
+/// manifest read-back is in flight, which on a large roll is not instant
+/// (M10). Distinct from `RunProgressView` — there is no more progress to
+/// show, and Cancel has nothing left to cancel.
+struct FinishingView: View {
+    var body: some View {
+        HStack {
+            ProgressView().controlSize(.small)
+            Text("Finishing…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

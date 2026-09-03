@@ -36,10 +36,10 @@ from scanny_boy.consistency import ConsistencyError, check_consistency
 from scanny_boy.disk_check import required_free_bytes
 from scanny_boy.events import Code, RollOverlapEntry
 from scanny_boy.icc_profile import (
-    PROFILE_FILENAME,
-    PROFILE_SHA256,
     IccProfileError,
+    ProfileKind,
     load_icc_profile,
+    profile_record,
 )
 from scanny_boy.library import repo
 from scanny_boy.manifest import (
@@ -142,7 +142,7 @@ def _preview_output_folder(
     group_records = build_groups(selected, per_negative)
 
     try:
-        load_icc_profile()
+        load_icc_profile(ProfileKind.LINEAR)
     except IccProfileError as exc:
         raise ProbeFailure(exc.code, exc.message) from exc
 
@@ -153,7 +153,7 @@ def _preview_output_folder(
             source_hashes={r.filename: r.sha256 for r in source_records},
             shots_per_negative=per_negative,
             groups=[(g.group_id, g.members) for g in group_records],
-            icc_sha256=PROFILE_SHA256,
+            icc_sha256=profile_record(ProfileKind.LINEAR)["sha256"],
         )
     except (OutputFolderError, BadManifestError, ManifestMismatchError) as exc:
         raise ProbeFailure(exc.code, exc.message) from exc
@@ -167,7 +167,7 @@ def _preview_output_folder(
         film_date=_PREVIEW_FILM_DATE,
         shots_per_negative=per_negative,
         processing_params=jsonable_raw_params(),
-        icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+        icc_profile=profile_record(ProfileKind.LINEAR),
         source_order=selected,
         sources=source_records,
         curated_metadata=build_curated_metadata(settings_list),
@@ -229,7 +229,8 @@ def _preview_roll(
     # probe that passes here cannot fail there on parameters.
     candidate = RollInvariants(
         processing_params=processing_params,
-        icc_profile_sha256=PROFILE_SHA256,
+        icc_profile_sha256=profile_record(ProfileKind.LINEAR)["sha256"],
+        published_icc_profile_sha256=profile_record(ProfileKind.DENSITY)["sha256"],
         stitch_params=_stitch_params(),
     )
     try:

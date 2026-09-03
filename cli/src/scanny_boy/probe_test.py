@@ -6,7 +6,7 @@ from scanny_boy import hashing
 from scanny_boy.disk_check import one_frame_bytes
 from scanny_boy.events import Code
 from scanny_boy.fake_nef_support import write_fake_nef
-from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256
+from scanny_boy.icc_profile import ProfileKind, profile_record
 from scanny_boy.manifest import (
     CuratedMetadata,
     GroupRecord,
@@ -282,7 +282,7 @@ def _write_matching_manifest(
         film_date=film_date,
         shots_per_negative=len(members),
         processing_params={"output_bps": 16},
-        icc_profile={"name": "ScannyBoy-Linear-ProPhoto-v1.icc", "sha256": PROFILE_SHA256},
+        icc_profile=profile_record(ProfileKind.LINEAR),
         source_order=members,
         sources=records,
         curated_metadata=_curated_placeholder(),
@@ -403,7 +403,7 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
             film_date="2026-08-02",
             shots_per_negative=len(groups[0]),
             processing_params=jsonable_raw_params(),
-            icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+            icc_profile=profile_record(ProfileKind.LINEAR),
             source_order=members,
             sources=hash_sources(FIXTURES_DIR, members),
             curated_metadata=_curated_placeholder(),

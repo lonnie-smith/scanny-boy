@@ -59,14 +59,14 @@ struct CLICommandTests {
 
     @Test("convert carries every required flag")
     func convertRequiredFlags() {
-        let command = CLICommand.convert(
+        let command = CLICommand.prepare(
             input: Self.input,
             files: ["a.NEF", "b.NEF", "c.NEF"],
             out: Self.out
         )
         #expect(
             command.arguments == [
-                "convert", "--input", "/Volumes/Scans/roll-12",
+        "prepare", "--input", "/Volumes/Scans/roll-12",
                 "--files", "a.NEF", "b.NEF", "c.NEF",
                 "--out", "/Volumes/Scans/roll-12-tif",
             ]
@@ -75,7 +75,7 @@ struct CLICommandTests {
 
     @Test("convert adds the optional flags only when asked")
     func convertOptionalFlags() {
-        let command = CLICommand.convert(
+        let command = CLICommand.prepare(
             input: Self.input,
             files: ["a.NEF"],
             out: Self.out,
@@ -85,7 +85,7 @@ struct CLICommandTests {
         )
         #expect(
             command.arguments == [
-                "convert", "--input", "/Volumes/Scans/roll-12",
+        "prepare", "--input", "/Volumes/Scans/roll-12",
                 "--files", "a.NEF",
                 "--out", "/Volumes/Scans/roll-12-tif",
                 "--per-negative", "1",
@@ -97,7 +97,7 @@ struct CLICommandTests {
 
     @Test("--overwrite is absent unless the user confirmed the replacements")
     func overwriteIsOptIn() {
-        let command = CLICommand.convert(
+        let command = CLICommand.prepare(
             input: Self.input,
             files: ["a.NEF"],
             out: Self.out

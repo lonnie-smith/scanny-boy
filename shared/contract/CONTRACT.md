@@ -9,6 +9,26 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 8 keeps version 7's roll model and adds **scan
+normalization** (docs/DECISIONS.md, "Normalization decisions"), renaming the
+prepare stage and
+adding a per-negative normalization record. Stage 1 is renamed: the `convert` subcommand is
+now `prepare` (the UI's "Convert" is reserved, unambiguously, for the whole
+`run`), and `progress` gains stage value `prepare` in place of `convert`.
+The stitch stage emits a new `normalize` step between `blend` and
+`write_stitched`, and the published TIFF is a normalized log-density
+working intermediate tagged with a second ICC profile — the roll manifest
+gains `published_icc_profile` and `check_roll_invariants` compares it
+alongside the intermediates' linear profile. Three new codes:
+`SCAN_CLIPPED` (a warning, per frame in the prepare stage),
+`NORMALIZE_DEGENERATE_BOUNDS`, and `NORMALIZE_HEADROOM_CLIPPED` (a
+warning). The work manifest's sources gain per-frame
+`scan_clip_fractions`; the roll manifest's negatives gain a `normalization`
+block and `normalized_fill`, its runs a `normalization_aggregate`, and its
+sources `scan_clip_fractions`. Every existing roll refuses new runs with
+`ROLL_INVARIANT_MISMATCH` (the processing-params invariant now carries the
+`normalize` bucket); the remedy is a new roll.
+
 Protocol version 7 keeps version 6's roll model and adds **geometric
 calibration** (docs/GEOMETRIC_PLAN.md): `flatfield create` gains
 `--calibration FILE [FILE ...]`, and a profile becomes the complete optical
@@ -52,11 +72,12 @@ scanny-boy roll init   --library DIR --name NAME
 scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
+scanny-boy roll delete --roll DIR
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
                       [--flatfield ID]
 
-scanny-boy convert    --input DIR --files FILE [FILE ...] --out DIR --per-negative N
+scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR --per-negative N
                       [--jobs N] [--overwrite] [--flatfield ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
@@ -78,11 +99,11 @@ scanny-boy flatfield list
 scanny-boy flatfield delete --profile ID
 ```
 
-`--roll` replaces `--out` on `stitch` and `run`. `convert` keeps `--out`,
+`--roll` replaces `--out` on `stitch` and `run`. `prepare` keeps `--out`,
 because it still writes a work directory rather than a roll.
 
 `--film-date` is removed from every command. Synthetic capture times are
-assigned in the metadata stage, not at convert time.
+assigned in the metadata stage, not at prepare time.
 
 `--overwrite` is removed from `run`. Re-running over sources already in the
 roll adopts the covered negative in place: its `negative_id` and output name
@@ -106,7 +127,7 @@ validation and the overwrite-conflict preview (Phase 1/2 convert path).
 validation: roll-invariant checks and an overlap preview for sources already
 present in the roll.
 
-`convert` repeats all important validation. It does not trust an earlier
+`prepare` repeats all important validation. It does not trust an earlier
 probe result.
 
 `--files` takes filenames relative to `--input`, not absolute paths. Reject a
@@ -187,6 +208,14 @@ library database. It emits
 location). It does not enforce "refused while any run is active" — the CLI
 is stateless between invocations, so the app checks that itself before
 issuing the command.
+
+`roll delete` unregisters the roll from the library database — its runs,
+sources, negatives, and edits rows cascade away with it — and unlinks the
+negatives' rendered previews, emitting `roll_deleted` carrying `roll_id` and
+`path`. It never touches the roll's folder: the app moves that to the Trash
+itself (`NSWorkspace.recycle`) and then calls this command, so the next
+`roll list` no longer reports the roll. It fails with `ROLL_NOT_FOUND` for
+an unregistered roll.
 
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
@@ -270,7 +299,7 @@ library database rather than a JSON file in the roll folder).
 | --- | --- |
 | `started` | The command began. Carries which command. |
 | `probe_result` | The catalogue or selection validation result of `probe`. |
-| `progress` | Work in progress. Carries a stable source index, the pipeline step, a completed work count, a total, and which stage (`convert` or `stitch`) it belongs to. |
+| `progress` | Work in progress. Carries a stable source index, the pipeline step, a completed work count, a total, and which stage (`prepare` or `stitch`) it belongs to. |
 | `item_done` | A TIFF has been published in the output folder after its whole group completed successfully. |
 | `group_done` | A negative's group finished, after that group's `item_done` events. |
 | `group_failed` | A negative's group failed and its staging directory was removed. |
@@ -280,6 +309,7 @@ library database rather than a JSON file in the roll folder).
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
+| `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
@@ -294,9 +324,10 @@ library database rather than a JSON file in the roll folder).
 | `finished` | The command ended. Carries final status and exit status. |
 
 The pipeline step carried by `progress` is one of `decode`, `write_tiff`,
-`add_metadata` (the conversion stage) or `load`, `detect`, `match`, `solve`,
-`warp`, `blend`, `write_stitched` (the stitch stage). `stage` defaults to
-`convert` and is `stitch` only during the stitch stage of `stitch` or `run`.
+`add_metadata` (the prepare stage) or `load`, `detect`, `match`, `solve`,
+`warp`, `blend`, `normalize`, `write_stitched` (the stitch stage). `stage`
+defaults to `prepare` and is `stitch` only during the stitch stage of
+`stitch` or `run`.
 
 `probe_result` carries `catalogue` (the full input folder's `.nef` filenames
 in canonical order — section 3.3 — regardless of whether `--files` was
@@ -414,6 +445,9 @@ staging directories, and reruns the incomplete negative.
 | `GEOMETRY_MAGNITUDE_SUSPECT` | Warning: the fitted distortion is outside the expected 0.03–0.2% band; it is applied |
 | `GEOMETRY_FEW_FRAMES` | Warning: under 16 calibration frames |
 | `CHROMATIC_FIT_REJECTED` | Warning: the CA fit did not clear its acceptance gates; it is not applied |
+| `SCAN_CLIPPED` | Warning: more than 1% of one channel's pixels decoded at or above sensor white; their highlights are clipped and no reconstruction is attempted |
+| `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
+| `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

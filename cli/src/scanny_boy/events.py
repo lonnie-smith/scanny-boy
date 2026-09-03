@@ -11,7 +11,10 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 7
+# Protocol 8 (docs/DECISIONS.md, "Normalization decisions"): the `prepare` stage
+# rename (3.9), the `normalize` step (3.10), the new codes, and the
+# normalization record's new event/manifest fields, together.
+PROTOCOL_VERSION = 8
 
 
 class EventType(enum.StrEnum):
@@ -30,6 +33,7 @@ class EventType(enum.StrEnum):
     ROLL_LIST = "roll_list"
     ROLL_INFO = "roll_info"
     ROLL_RENAMED = "roll_renamed"
+    ROLL_DELETED = "roll_deleted"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
     EDIT_RECORDED = "edit_recorded"
@@ -42,7 +46,10 @@ class EventType(enum.StrEnum):
 
 
 class Stage(enum.StrEnum):
-    CONVERT = "convert"
+    # Renamed `convert` -> `prepare` (docs/DECISIONS.md, "Normalization
+    # decisions"): "Convert" is reserved, unambiguously, for the whole `run`, so
+    # stage 1 — decode + flat-field + write intermediates — is `prepare`.
+    PREPARE = "prepare"
     STITCH = "stitch"
 
 
@@ -56,6 +63,9 @@ class PipelineStep(enum.StrEnum):
     SOLVE = "solve"
     WARP = "warp"
     BLEND = "blend"
+    # Emitted per negative in the stitch stage between BLEND and
+    # WRITE_STITCHED (section 3.10).
+    NORMALIZE = "normalize"
     WRITE_STITCHED = "write_stitched"
 
 
@@ -123,6 +133,9 @@ class Code(enum.StrEnum):
     GEOMETRY_MAGNITUDE_SUSPECT = "GEOMETRY_MAGNITUDE_SUSPECT"
     GEOMETRY_FEW_FRAMES = "GEOMETRY_FEW_FRAMES"
     CHROMATIC_FIT_REJECTED = "CHROMATIC_FIT_REJECTED"
+    SCAN_CLIPPED = "SCAN_CLIPPED"
+    NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
+    NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -212,7 +225,7 @@ class Progress(Event):
     step: PipelineStep
     completed: int
     total: int
-    stage: Stage = Stage.CONVERT
+    stage: Stage = Stage.PREPARE
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -302,6 +315,17 @@ class RollRenamed(Event):
 
     roll_id: str
     roll_name: str
+    path: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollDeleted(Event):
+    """`roll delete`'s counterpart to `RollCreated`, carrying the deleted
+    roll's id and the (now unregistered) folder path."""
+
+    event_type: ClassVar[EventType] = EventType.ROLL_DELETED
+
+    roll_id: str
     path: str
 
 

@@ -1,7 +1,7 @@
 import pytest
 
 from scanny_boy.events import Code
-from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256
+from scanny_boy.icc_profile import ProfileKind, profile_record
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError, SourceRecord
 from scanny_boy.roll_manifest import (
@@ -76,6 +76,7 @@ def _invariants(**overrides) -> RollInvariants:
     defaults = {
         "processing_params": {"gamma": [1.8, 16]},
         "icc_profile_sha256": _SHA,
+        "published_icc_profile_sha256": _SHA,
         "stitch_params": {"detector": "AKAZE"},
     }
     defaults.update(overrides)
@@ -91,7 +92,11 @@ def _manifest(**overrides) -> RollManifest:
         "created_at": "2026-08-02T00:00:00Z",
         "updated_at": "2026-08-02T00:00:00Z",
         "processing_params": {"gamma": [1.8, 16]},
-        "icc_profile": {"name": PROFILE_FILENAME, "sha256": _SHA},
+        "icc_profile": {"name": "ScannyBoy-Linear-ProPhoto-v1.icc", "sha256": _SHA},
+        "published_icc_profile": {
+            "name": "ScannyBoy-Density-ProPhoto-v1.icc",
+            "sha256": _SHA,
+        },
         "stitch_params": {"detector": "AKAZE"},
         "runs": [_run()],
         "negatives": [_negative()],
@@ -202,7 +207,8 @@ def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
     assert manifest.stitch_params == {}
     # Section 5.4: the one thing an empty roll can honestly know is which
     # profile it will embed, because there is exactly one.
-    assert manifest.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
+
+    assert manifest.icc_profile == profile_record(ProfileKind.LINEAR)
 
     write_roll_manifest(tmp_path, manifest)
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
@@ -559,22 +565,33 @@ def test_check_roll_invariants_rejects_a_different_flatfield_profile():
     different profile — or none — is refused. There is no new comparison
     code: the token rides inside `processing_params`."""
     locked = _manifest(
-        processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-a")}
+        processing_params={
+            "gamma": [1.8, 16],
+            "flat_field": _flat_field_token("profile-a"),
+        }
     )
 
     with pytest.raises(RollInvariantMismatchError):
         check_roll_invariants(
             locked,
             _invariants(
-                processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-b")}
+                processing_params={
+                    "gamma": [1.8, 16],
+                    "flat_field": _flat_field_token("profile-b"),
+                }
             ),
         )
     with pytest.raises(RollInvariantMismatchError):
-        check_roll_invariants(locked, _invariants(processing_params={"gamma": [1.8, 16]}))
+        check_roll_invariants(
+            locked, _invariants(processing_params={"gamma": [1.8, 16]})
+        )
 
     check_roll_invariants(
         locked,
         _invariants(
-            processing_params={"gamma": [1.8, 16], "flat_field": _flat_field_token("profile-a")}
+            processing_params={
+                "gamma": [1.8, 16],
+                "flat_field": _flat_field_token("profile-a"),
+            }
         ),
     )

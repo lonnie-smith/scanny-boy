@@ -16,7 +16,6 @@ struct FlatFieldProfilesSheet: View {
     @State private var referenceURL: URL?
     @State private var calibrationURLs: [URL] = []
     @State private var name = ""
-    @State private var isCreating = false
     @State private var createError: String?
     @State private var deleteError: String?
     @State private var profilePendingDeletion: FlatFieldProfile?
@@ -30,28 +29,32 @@ struct FlatFieldProfilesSheet: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            profileList
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    profileList
 
-            Divider()
+                    Divider()
 
-            newProfile
+                    newProfile
 
-            if let deleteError {
-                Text(deleteError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                    if let deleteError {
+                        Text(deleteError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
 
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isCreating)
+                    .disabled(flatField.isCreating)
             }
         }
         .padding(20)
-        .frame(minWidth: 460, minHeight: 320)
-        .interactiveDismissDisabled(isCreating)
+        .frame(minWidth: 460, minHeight: 320, maxHeight: 620)
+        .interactiveDismissDisabled(flatField.isCreating)
         .confirmationDialog(
             "Delete “\(profilePendingDeletion?.name ?? "")”?",
             isPresented: Binding(
@@ -79,39 +82,40 @@ struct FlatFieldProfilesSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            List(flatField.profiles) { profile in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.name)
-                        Text(profile.calibrationSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let width = profile.referenceWidth,
-                            let height = profile.referenceHeight
-                        {
-                            Text("Reference \(width) × \(height)")
+            VStack(spacing: 0) {
+                ForEach(flatField.profiles) { profile in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.name)
+                            Text(profile.calibrationSummary)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if let width = profile.referenceWidth,
+                                let height = profile.referenceHeight
+                            {
+                                Text("Reference \(width) × \(height)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let rejection = rejectionReason(of: profile) {
+                                Text(rejection)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .help(rejection)
+                            }
                         }
-                        if let rejection = rejectionReason(of: profile) {
-                            Text(rejection)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .help(rejection)
+                        Spacer()
+                        Button {
+                            profilePendingDeletion = profile
+                        } label: {
+                            Image(systemName: "trash")
                         }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Delete \(profile.name)")
                     }
-                    Spacer()
-                    Button {
-                        profilePendingDeletion = profile
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Delete \(profile.name)")
+                    .padding(.vertical, 4)
                 }
             }
-            .listStyle(.inset)
-            .frame(minHeight: 80)
         }
     }
 
@@ -165,7 +169,7 @@ struct FlatFieldProfilesSheet: View {
             }
 
             HStack {
-                if isCreating {
+                if flatField.isCreating {
                     if let progress = flatField.creationProgress {
                         VStack(alignment: .leading, spacing: 2) {
                             ProgressView(
@@ -206,7 +210,7 @@ struct FlatFieldProfilesSheet: View {
     private var isReady: Bool {
         referenceURL != nil
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isCreating
+            && !flatField.isCreating
     }
 
     private func chooseReference() {
@@ -237,14 +241,12 @@ struct FlatFieldProfilesSheet: View {
 
     private func create() {
         guard let referenceURL else { return }
-        isCreating = true
         createError = nil
         let frames = calibrationURLs
         Task {
             let result = await flatField.create(
                 reference: referenceURL, name: name, calibrationFrames: frames
             )
-            isCreating = false
             switch result {
             case .success:
                 name = ""

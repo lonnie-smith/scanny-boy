@@ -74,7 +74,7 @@ class FolderRules:
     all_expected_outputs_of: Callable[[Any], list[str]]
 
 
-CONVERT_RULES = FolderRules(
+PREPARE_RULES = FolderRules(
     manifest_filename=MANIFEST_FILENAME,
     registered=lambda output_dir: (output_dir / MANIFEST_FILENAME).exists(),
     unregistered_reason=lambda output_dir: (
@@ -97,8 +97,7 @@ ROLL_RULES = FolderRules(
     manifest_filename="",
     registered=repo.roll_registered,
     unregistered_reason=lambda output_dir: (
-        f"{output_dir} is not empty and is not a registered roll; "
-        "create the roll first"
+        f"{output_dir} is not empty and is not a registered roll; create the roll first"
     ),
     load=load_roll_manifest,
     # Phase 3 section 5.4 decision 2: the v2 roll manifest has no top-level
@@ -149,7 +148,9 @@ def validate_writable(output_dir: Path) -> None:
     # check above. os.access() answers the writability question without
     # creating anything.
     if not os.access(output_dir, os.W_OK):
-        raise OutputFolderError(Code.OUTPUT_NOT_WRITABLE, f"cannot write to {output_dir}")
+        raise OutputFolderError(
+            Code.OUTPUT_NOT_WRITABLE, f"cannot write to {output_dir}"
+        )
 
 
 def staging_dir_path(output_dir: Path, run_id: str, group_id: str) -> Path:
@@ -176,7 +177,7 @@ def _plan_rerun(
     output_dir: Path,
     check: Callable[[Any], None],
     *,
-    rules: FolderRules = CONVERT_RULES,
+    rules: FolderRules = PREPARE_RULES,
 ) -> RerunPlan:
     """Shared by `plan_rerun` and `plan_rerun_preview`: folder-relatedness
     and conflict-listing rules are the same either way, so only the
@@ -197,7 +198,9 @@ def _plan_rerun(
         return RerunPlan(None, [], [], [])
 
     if not registered:
-        raise OutputFolderError(Code.OUTPUT_NOT_EMPTY, rules.unregistered_reason(output_dir))
+        raise OutputFolderError(
+            Code.OUTPUT_NOT_EMPTY, rules.unregistered_reason(output_dir)
+        )
 
     existing = rules.load(output_dir)
 
@@ -229,7 +232,9 @@ def _plan_rerun(
             # decision 3: nothing in a roll is ever overwritten in place).
             if rules is not ROLL_RULES:
                 conflicting.extend(
-                    name for name in unit.expected_outputs if (output_dir / name).exists()
+                    name
+                    for name in unit.expected_outputs
+                    if (output_dir / name).exists()
                 )
         else:
             stale.extend(
@@ -242,7 +247,7 @@ def _plan_rerun(
 
 
 def plan_rerun(
-    output_dir: Path, candidate: Any, *, rules: FolderRules = CONVERT_RULES
+    output_dir: Path, candidate: Any, *, rules: FolderRules = PREPARE_RULES
 ) -> RerunPlan:
     """Raises `OutputFolderError(OUTPUT_NOT_EMPTY)` for an unrelated
     nonempty folder, `manifest.BadManifestError` for an unreadable or
@@ -268,7 +273,7 @@ def plan_rerun(
 def plan_rerun_preview(
     output_dir: Path,
     *,
-    rules: FolderRules = CONVERT_RULES,
+    rules: FolderRules = PREPARE_RULES,
     source_order: list[str],
     source_hashes: dict[str, str],
     shots_per_negative: int,
