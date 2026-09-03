@@ -8,13 +8,14 @@ struct ExportStageView: View {
     @Bindable var export: ExportModel
     let edit: EditModel
     let run: RunModel
+    let activity: AppActivity
 
     var body: some View {
         Form {
             Section("Output Folder") {
                 HStack {
                     Button("Choose…") { chooseOutputFolder() }
-                        .disabled(run.isActive || export.isExporting)
+                        .disabled(activity.isBusy)
                     Spacer()
                 }
                 if let directory = export.outputDirectory {
@@ -69,14 +70,14 @@ struct ExportStageView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .disabled(run.isActive)
+        .disabled(activity.isBusy)
     }
 
     private var canExport: Bool {
-        guard let rollURL = edit.rollURL, export.outputDirectory != nil else {
+        guard edit.rollURL != nil, export.outputDirectory != nil else {
             return false
         }
-        return export.canExport && !rollURL.path.isEmpty && edit.roll != nil
+        return export.canExport && edit.roll != nil
     }
 
     private func chooseOutputFolder() {
@@ -92,7 +93,6 @@ struct ExportStageView: View {
         guard let rollURL = edit.rollURL, let output = export.outputDirectory else {
             return
         }
-        export.outputDirectory = output
         export.export(roll: rollURL, output: output)
     }
 }
