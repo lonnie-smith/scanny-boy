@@ -1,4 +1,4 @@
-"""One roll's durable record: format version 5, persisted in the library
+"""One roll's durable record: format version 6, persisted in the library
 database instead of `scanny-boy-roll.json`.
 
 A *roll* is a named folder the user returns to, holding the stitched TIFFs of
@@ -8,9 +8,11 @@ break rather than a patch: Phase 2's version 1 carried one `run_id`, one
 version 2's supersession tombstones are gone in version 3 — a rerun
 adopts the covered negative in place instead of publishing a replacement —
 version 4 adds per-frame solved photometric gains and per-pair pre-gain
-overlap MAD, and version 5 drops the roll-level `shots_per_negative`: each
+overlap MAD, version 5 drops the roll-level `shots_per_negative`: each
 stitch batch's grouping lives in its own work manifest, so one roll can hold
-negatives stitched from different scan counts. See
+negatives stitched from different scan counts, and version 6 adds a
+per-frame solved `scale` (docs/STITCH_QUALITY_PLAN.md section 2: the global
+layout is now a similarity, not a rigid transform). See
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
 for the shape and section 3.4 for the invariants and naming rules this
 module enforces. The record's shape is unchanged from the JSON-manifest era
@@ -44,7 +46,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 5
+ROLL_MANIFEST_FORMAT_VERSION = 6
 ROLL_MANIFEST_KIND = "roll"
 
 # Section 3.4: `short_id` starts at six characters of the run's UUID and
@@ -98,6 +100,11 @@ class FrameRecord:
     # linear values were multiplied by this before the blend. Geometric
     # mean of the gains across a negative's frames is 1 by construction.
     gain: tuple[float, float, float]
+    # Solved per-frame isotropic scale (docs/STITCH_QUALITY_PLAN.md section
+    # 2): the global layout is a similarity, not a rigid transform. Geometric
+    # mean of the scales across a negative's frames is 1 by construction,
+    # the same gauge convention as `gain`.
+    scale: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +112,7 @@ class FrameRecord:
             "rotation_deg": self.rotation_deg,
             "translation": list(self.translation),
             "gain": list(self.gain),
+            "scale": self.scale,
         }
 
 

@@ -53,7 +53,7 @@
     },
     "frame": {
       "type": "object",
-      "required": ["name", "rotation_deg", "translation", "gain"],
+      "required": ["name", "rotation_deg", "translation", "gain", "scale"],
       "properties": {
         "name": { "type": "string" },
         "rotation_deg": { "type": "number" },
@@ -68,7 +68,8 @@
           "items": { "type": "number", "exclusiveMinimum": 0 },
           "minItems": 3,
           "maxItems": 3
-        }
+        },
+        "scale": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
     "pair": {
@@ -271,7 +272,7 @@
     "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 5 },
+    "manifest_format_version": { "type": "integer", "const": 6 },
     "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
     "roll_id": { "type": "string" },

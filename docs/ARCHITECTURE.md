@@ -375,29 +375,44 @@ frames is matched (O(n²), trivial at n≤12), and a global layout is solved fro
 whichever pairs actually overlap. Neighbour-chaining and order detection are
 both rejected — the global solve makes order irrelevant for free.
 
-**The geometry is rigid: rotation + translation, scale fixed at exactly 1.**
-`cv2.estimateAffinePartial2D` is used only for the RANSAC inlier mask and to
-*measure* scale drift; the transform actually used is always re-fitted with
-closed-form Umeyama with scale forced to 1
-(`registration.rigid_from_correspondences`). Never an affine, never a
-homography.
+**The pairwise geometry is rigid: rotation + translation, scale fixed at
+exactly 1.** `cv2.estimateAffinePartial2D` is used only for the RANSAC
+inlier mask and to *measure* scale drift; the transform actually used
+against the acceptance gates is always re-fitted with closed-form Umeyama
+with scale forced to 1 (`registration.rigid_from_correspondences`). Never
+an affine, never a homography. The same inliers also get a closed-form
+Umeyama fit *with* scale (`registration.similarity_from_correspondences`),
+which the global layout solve reads (docs/STITCH_QUALITY_PLAN.md section 2)
+— the pairwise gates are unaffected.
 
-**The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py)) is two linear
-least-squares problems, not a bundle adjustment. Frame *i* maps `p → R(θᵢ)p +
-tᵢ`; a pair gives `θ_b = θ_a + φ_ab` and `t_b = t_a + R(θ_a)·u_ab`. Rotations
-solve first (linear in the scalar θs), translations second (linear once θ is
-known). **This is why SciPy is forbidden as a dependency.** Do not replace it
-with a nonlinear optimiser.
+**The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py)) is three
+linear least-squares problems, not a bundle adjustment. Frame *i* maps
+`p → sᵢR(θᵢ)p + tᵢ`; a pair gives `log sᵦ - log sₐ = log σ_ab`,
+`θ_b = θ_a + φ_ab`, and `t_b = t_a + sₐR(θ_a)·u_ab`. Scales solve first
+(log-space, `solve_gains`'s geometric-mean-1-anchor idiom), then rotations
+(linear in the scalar θs), then translations (linear once s and θ are
+known). **This is why SciPy is forbidden as a dependency.** Do not replace
+it with a nonlinear optimiser. The model is a similarity — never an affine,
+never a homography — because film does not sit at a constant height above
+the stage from frame to frame; with scale forced to 1 that mismatch used to
+be absorbed into rotation and translation instead.
 
-**Blending** is a linear feather in linear light: each frame's weight is a
-distance transform of its own eroded validity mask, and the output is the
-weighted average wherever any frame contributes. Before the blend,
-per-frame per-channel **photometric gains** (§8.3) reconcile lamp drift
-between frames, so the feather only ever has to tolerate misregistration.
-The feather is deliberate but **provisional**; a hard midline seam (preserves
-grain, shows misregistration as a line) and a multi-band Laplacian blend
-(hides misalignment, softens grain, much heavier) were both considered and
-set aside.
+**Blending** is a linear feather in linear light, ramped along the strip
+axis only: each frame's weight is the distance from the nearer end of its
+own extent along the strip's long axis (`layout.Layout.strip_axis`),
+constant across the strip — an isotropic distance transform of the eroded
+validity mask is kept only as the fallback for a layout with no trustworthy
+axis. The isotropic version made a pixel's crossfade identical near the
+strip's long borders and down its middle, but near those borders the
+nearest mask edge is the border, not the seam, so both frames' weights
+collapsed toward 50/50 there and residual misregistration smeared into a
+curved band that widened toward the edges. Before the blend, per-frame
+per-channel **photometric gains** (§8.3) reconcile lamp drift between
+frames, so the feather only ever has to tolerate misregistration. A hard
+midline seam (preserves grain, shows misregistration as a line), a band
+around the overlap midline, and a multi-band Laplacian blend (hides
+misalignment, softens grain, much heavier) were all considered and set
+aside as named, deliberately deferred next steps.
 
 Warp details that are load-bearing: `INTER_LANCZOS4` on `float32`, clamped to
 `>= 0` immediately after (measured −0.088 undershoot); each frame warps into

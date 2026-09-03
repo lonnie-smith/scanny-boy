@@ -180,14 +180,16 @@ only ever displays what Python produced.
 Two frames are far enough apart that neither can be assumed to be the "next"
 one in capture order — the sequence may run right-to-left, or be shuffled —
 so every pair of a negative's frames is matched, and a global layout is
-solved from whichever pairs actually overlap. The geometric model is
-deliberately simple: rigid rotation plus translation, scale fixed at exactly
-1, matching how a strip of film actually moves under the camera. Several
-metrics per pair and per negative (inlier count and ratio, reprojection
-residual, and — the one that actually measures whether pixels line up —
-overlap MAD) are checked against thresholds measured from real scans before a
-negative is allowed to publish; see
-[docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
+solved from whichever pairs actually overlap. Each frame's pairwise fit is
+still rigid — rotation plus translation, scale forced to exactly 1, and
+still what the acceptance gates measure — but the *global* layout solves one
+isotropic scale per frame on top of that, because film does not sit at a
+constant height above the stage from frame to frame. It is a similarity,
+never an affine and never a homography. Several metrics per pair and per
+negative (inlier count and ratio, reprojection residual, and — the one that
+actually measures whether pixels line up — overlap MAD) are checked against
+thresholds measured from real scans before a negative is allowed to publish;
+see [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
 section 3.4.
 
 **Blending.** Overlapping regions are combined with a linear feather in

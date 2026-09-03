@@ -208,6 +208,23 @@ roll manifest as well as the conversion manifest, by parameterising
   the capture workflow, treated as a validation expectation rather than
   something the solver assumes.
 
+**Amendment (protocol version 8): the layout solves a per-frame scale.**
+The pairwise fit still produces a rigid transform, and that rigid fit is
+still what the acceptance gates measure. The *global layout* now places
+each frame with a similarity — rotation, translation, and one isotropic
+scale — solved from pairwise similarity scales as a log-space linear
+least-squares problem with a geometric-mean-1 anchor, structurally
+identical to `solve_gains`. Still three linear solves, still no SciPy in
+`layout.py`, still never an affine and never a homography.
+
+Why: film does not sit at a constant height above the stage, so a strip is
+not one magnification. With scale locked at 1 that mismatch was absorbed
+into rotation and translation, where it surfaced as residual
+misregistration at frame borders — the error the isotropic feather was
+hiding rather than showing. It could not be modelled honestly before radial
+distortion was corrected, because distortion produced a position-dependent
+apparent scale that a per-frame constant would have fitted wrongly.
+
 ## Colour, resampling, and blending
 
 - All geometric and photometric work happens in **linear light** — decode to

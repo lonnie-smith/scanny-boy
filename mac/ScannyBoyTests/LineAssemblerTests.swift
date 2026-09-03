@@ -20,7 +20,7 @@ struct LineAssemblerTests {
     @Test("a JSON object split across reads is reassembled")
     func splitJSONObjectIsReassembled() throws {
         var assembler = LineAssembler()
-        #expect(assembler.append(Data(#"{"protocol_version":7,"#.utf8)).isEmpty)
+        #expect(assembler.append(Data(#"{"protocol_version":8,"#.utf8)).isEmpty)
         #expect(assembler.append(Data(#""event":"star"#.utf8)).isEmpty)
         let lines = assembler.append(Data("ted\",\"command\":\"probe\"}\n".utf8))
         #expect(lines.count == 1)

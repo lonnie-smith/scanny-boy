@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 7
+    public static let supportedProtocolVersion = 8
 
     public let protocolVersion: Int
     public let kind: Kind

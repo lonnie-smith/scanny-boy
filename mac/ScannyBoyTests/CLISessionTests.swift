@@ -276,7 +276,7 @@ struct CLISessionTests {
                 PAD=$(head -c 2000 /dev/zero | tr '\0' 'x')
                 i=0
                 while [ $i -lt 800 ]; do
-                  printf '{"protocol_version":7,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
+                  printf '{"protocol_version":8,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
                   printf 'log %s\n' "$PAD" 1>&2
                   i=$((i + 1))
                 done
@@ -380,12 +380,12 @@ struct CLISessionTests {
             // splits a line and one that straddles a newline.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":7,"event":"started",'
+                printf '%s' '{"protocol_version":8,"event":"started",'
                 sleep 0.2
                 printf '%s' '"command":"convert","run_id":"r1"}'
                 sleep 0.2
                 printf '%s' '
-                {"protocol_version":7,"event":"finis'
+                {"protocol_version":8,"event":"finis'
                 sleep 0.2
                 printf '%s\n' 'hed","run_id":"r1","status":"complete","exit_status":0}'
                 exit 0

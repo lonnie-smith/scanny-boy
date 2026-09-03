@@ -215,6 +215,10 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "gain_drift_warn": GAIN_DRIFT_WARN,
         "max_global_rms_px": MAX_GLOBAL_RMS_PX,
         "strip_spread_ratio": STRIP_SPREAD_RATIO,
+        # docs/STITCH_QUALITY_PLAN.md section 2.4: distinguishes a manifest
+        # written before this change (implicitly rigid, scale forced to 1)
+        # from one written after, without consulting the build.
+        "layout_model": "similarity",
         "interpolation": "INTER_LANCZOS4",
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
@@ -525,11 +529,17 @@ def _attempt_solve(
         progress.advance(source_index, PipelineStep.MATCH)
 
     for pair in pairs:
+        # docs/STITCH_QUALITY_PLAN.md section 2.5: with a per-frame scale in
+        # the layout solve, `scale_drift` no longer means "this pair should
+        # have been scale 1" — it reports how much magnification the pair
+        # carries, still gated at SCALE_DRIFT_WARN/FAIL because film cannot
+        # plausibly carry more than that between two frames of one strip.
         if pair.accepted and pair.scale_drift > SCALE_DRIFT_WARN:
             on_warning(
                 Code.STITCH_SCALE_DRIFT,
-                f"{group.group_id}: pair {pair.a}-{pair.b} scale drift "
-                f"{pair.scale_drift:.5f} exceeds {SCALE_DRIFT_WARN}",
+                f"{group.group_id}: pair {pair.a}-{pair.b} carries "
+                f"{pair.scale_drift:.5f} magnification, exceeding the "
+                f"plausible-fit bound {SCALE_DRIFT_WARN}",
             )
 
     names = [path.name for path in paths]
@@ -1234,6 +1244,7 @@ def _composite_and_publish(
                 rotation_deg=placement.rotation_deg,
                 translation=(placement.translation[0], placement.translation[1]),
                 gain=result.gains[placement.name],
+                scale=placement.scale,
             )
             for placement in layout.placements
         ]

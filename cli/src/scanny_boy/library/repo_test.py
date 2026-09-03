@@ -70,10 +70,12 @@ def test_open_engine_refuses_a_revision_it_does_not_know(monkeypatch, tmp_path):
 # --- rows written before gain normalization -------------------------------
 
 
-def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
+def test_load_roll_defaults_a_missing_gain_or_scale_to_unity(roll_dir):
     """Rows written before gain normalization carry neither `gain` nor
-    `overlap_mad_pregain`; loading them must not raise, and the values must
-    read as "nothing was applied"."""
+    `overlap_mad_pregain`; rows written before the per-frame scale solve
+    (docs/STITCH_QUALITY_PLAN.md section 2) carry no `scale` either. Loading
+    either must not raise, and the values must read as "nothing was
+    applied": gain 1, scale 1 (the layout was placed as a rigid transform)."""
     import json
 
     from sqlalchemy import text
@@ -90,6 +92,7 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
             rotation_deg=0.0,
             translation=(0.0, 0.0),
             gain=(1.5, 1.0, 0.9),
+            scale=1.02,
         )
     )
     negative.pairs.append(
@@ -109,15 +112,19 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
     )
     write_roll_manifest(roll_dir, manifest)
 
-    # Rewrite the stored rows in their pre-gain shape, exactly as a helper
-    # from before the feature would have left them.
+    # Rewrite the stored rows in their pre-gain, pre-scale shape, exactly as
+    # a helper from before either feature would have left them.
     engine = db.open_engine()
     with engine.begin() as connection:
         row = connection.execute(
             text("SELECT negative_id, frames, pairs FROM negatives")
         ).one()
         frames = [
-            {key: value for key, value in frame.items() if key != "gain"}
+            {
+                key: value
+                for key, value in frame.items()
+                if key not in ("gain", "scale")
+            }
             for frame in json.loads(row.frames)
         ]
         pairs = [
@@ -131,6 +138,7 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
 
     loaded = load_roll_manifest(roll_dir)
     assert loaded.negatives[0].frames[0].gain == (1.0, 1.0, 1.0)
+    assert loaded.negatives[0].frames[0].scale == 1.0
     assert loaded.negatives[0].pairs[0].overlap_mad_pregain is None
 
 

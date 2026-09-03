@@ -216,11 +216,10 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_seven():
-    """Protocol 6→7: geometric calibration (docs/GEOMETRIC_PLAN.md
-    section 6) — the `flatfield_progress` event, the extended profile
-    object, and the GEOMETRY_*/CHROMATIC_* codes."""
-    assert PROTOCOL_VERSION == 7
+def test_protocol_version_is_eight():
+    """Protocol 7→8: a per-frame scale in the layout solve
+    (docs/STITCH_QUALITY_PLAN.md section 2) — FrameRecord gains `scale`."""
+    assert PROTOCOL_VERSION == 8
 
 
 def test_new_event_kinds_round_trip():
@@ -261,7 +260,7 @@ def test_new_event_kinds_round_trip():
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 7
+        assert data["protocol_version"] == 8
         assert json.loads(json.dumps(data)) == data
 
 
