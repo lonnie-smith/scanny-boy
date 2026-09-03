@@ -963,7 +963,7 @@ def run_stitch(
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision).
     try:
-        previews.sync_previews(out_dir, roll)
+        previews.sync_previews(out_dir, roll, published)
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(
