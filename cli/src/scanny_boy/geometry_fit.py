@@ -106,7 +106,14 @@ def residuals(p: np.ndarray, line_sets: list[np.ndarray], K_base: np.ndarray) ->
     D = np.array([k1, k2, 0.0, 0.0, 0.0])
     out = []
     for pts in line_sets:  # (N, 1, 2) float32
-        u = cv2.undistortPoints(pts, K, D, P=K).reshape(-1, 2)
+        # Undistort in float64: in float32 the pixel values quantise at
+        # ~2e-4 px, which swallows the ~1e-5 px residual shift of the
+        # optimiser's finite-difference step on k1 (which starts at 0) and
+        # collapses the Jacobian column to exact zero — the stage solve
+        # then terminates without ever moving. Platform rounding decides
+        # whether the collapse happens, so this must not be left to
+        # float32.
+        u = cv2.undistortPoints(pts.astype(np.float64), K, D, P=K).reshape(-1, 2)
         centred = u - u.mean(0)
         normal = np.linalg.svd(centred, full_matrices=False)[2][1]
         out.append(centred @ normal)

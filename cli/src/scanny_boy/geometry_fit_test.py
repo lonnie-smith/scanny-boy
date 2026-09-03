@@ -14,6 +14,7 @@ from scanny_boy.geometry_fit import (
     base_camera,
     fit_geometry,
     forward_distort,
+    residuals,
 )
 
 FRAME_WIDTH, FRAME_HEIGHT = 6048, 4024
@@ -135,6 +136,18 @@ def test_moderately_out_of_band_magnitude_is_suspect_not_rejected():
 def test_no_training_sets_raises_insufficient_frames():
     with pytest.raises(GeometryFitError):
         fit_geometry([], [], FRAME_WIDTH, FRAME_HEIGHT)
+
+
+def test_residuals_are_float64():
+    """The optimiser's default finite-difference step on k1 (~1.5e-8)
+    shifts the residuals by ~1e-5 px; in float32 that is below the
+    quantisation of the pixel values, so the Jacobian column for k1
+    collapses to exact zero and the stage solve never moves. float32 input
+    corners (what detection produces) must not leak into the residual."""
+    train, _ = _distorted_sets(k1=TRUE_K1, k2=0.0, cx=3024.0, cy=2012.0)
+    K = base_camera(FRAME_WIDTH, FRAME_HEIGHT)
+    residual = residuals(np.array([0.0, 0.0, K[0, 2], K[1, 2]]), train, K)
+    assert residual.dtype == np.float64
 
 
 def test_improvement_gates_are_both_required():
