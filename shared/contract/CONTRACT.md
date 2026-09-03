@@ -72,6 +72,7 @@ scanny-boy roll init   --library DIR --name NAME
 scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
+scanny-boy roll delete --roll DIR
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
                       [--flatfield ID]
@@ -208,6 +209,14 @@ location). It does not enforce "refused while any run is active" — the CLI
 is stateless between invocations, so the app checks that itself before
 issuing the command.
 
+`roll delete` unregisters the roll from the library database — its runs,
+sources, negatives, and edits rows cascade away with it — and unlinks the
+negatives' rendered previews, emitting `roll_deleted` carrying `roll_id` and
+`path`. It never touches the roll's folder: the app moves that to the Trash
+itself (`NSWorkspace.recycle`) and then calls this command, so the next
+`roll list` no longer reports the roll. It fails with `ROLL_NOT_FOUND` for
+an unregistered roll.
+
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
 
@@ -300,6 +309,7 @@ library database rather than a JSON file in the roll folder).
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
+| `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |

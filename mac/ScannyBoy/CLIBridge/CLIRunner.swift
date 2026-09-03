@@ -43,6 +43,16 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "rename", "--roll", roll.path, "--name", name])
     }
 
+    /// `scanny-boy roll delete --roll DIR`
+    ///
+    /// Unregisters the roll from the library database — the move of the
+    /// folder to the Trash is Swift's, via `NSWorkspace.recycle`, and must
+    /// happen first, so a failed move leaves both the folder and the
+    /// registration untouched.
+    public static func rollDelete(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
+    }
+
     /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--roll DIR] [--per-negative N]`
     ///
     /// With `--input` alone this returns the catalogue in canonical order.

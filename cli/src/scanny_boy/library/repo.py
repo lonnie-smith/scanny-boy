@@ -247,6 +247,24 @@ def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
         return listing
 
 
+def delete_roll(roll_dir: Path) -> str:
+    """Remove the roll's registration and return its `roll_id`. The runs,
+    sources, negatives, and edits rows cascade away with it (each child's
+    `ondelete="CASCADE"`; `PRAGMA foreign_keys=ON` is set on every
+    connection). The folder is deliberately not touched — deleting the
+    registration is what makes `roll list` drop the roll, whatever then
+    happens to its files."""
+    folder = _folder_key(roll_dir)
+    with _session() as session:
+        roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
+        if roll is None:
+            raise RollNotRegisteredError(
+                f"{roll_dir} is not a registered roll; create the roll first"
+            )
+        session.delete(roll)
+        return roll.roll_id
+
+
 def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
         CaptureTime,

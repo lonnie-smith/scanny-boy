@@ -15,9 +15,11 @@ import re
 import unicodedata
 import uuid
 from pathlib import Path
+from typing import Any
 
-from scanny_boy.events import Code
+from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
+from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.roll_manifest import (
     new_roll_manifest,
     write_roll_manifest,
@@ -142,6 +144,46 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
     manifest.roll_name = new_name
     write_roll_manifest(new_path, manifest)
     return new_path
+
+
+def delete_roll(roll_dir: Path, *, emit: Any) -> dict:
+    """`roll delete`: unregister the roll — its runs, sources, negatives,
+    and edits rows cascade away with it — and unlink the negatives'
+    rendered previews. The folder itself is deliberately not touched: the
+    app trashes it first with `NSWorkspace.recycle`, and `roll list` stops
+    reporting the roll because the registration is gone.
+
+    Like `run_edit_delete`, the record goes first: a crash then leaves an
+    orphan preview file, never a dangling registration. A failed unlink is
+    a warning (`ORPHAN_FILE_NOT_REMOVED`), not a failure — the registration
+    is already gone, so re-deleting cannot help. Returns the `RollDeleted`
+    event's field values."""
+    try:
+        manifest = repo.load_roll(roll_dir)
+    except RollNotRegisteredError as exc:
+        raise RollFolderError(exc.code, exc.message) from exc
+
+    previews = [
+        Path(negative.preview_path)
+        for negative in manifest.negatives
+        if negative.preview_path
+    ]
+    repo.delete_roll(roll_dir)
+
+    for path in previews:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            emit(
+                WarningEvent(
+                    code=Code.ORPHAN_FILE_NOT_REMOVED,
+                    message=f"{path} could not be removed: {exc}",
+                )
+            )
+
+    return {"roll_id": manifest.roll_id, "path": str(roll_dir)}
 
 
 def scan_library(library: Path) -> list[RollListing]:

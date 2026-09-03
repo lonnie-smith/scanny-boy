@@ -402,7 +402,7 @@ final class RunModel {
                 )
             }
         case .started, .probeResult, .finished, .unknown,
-             .rollCreated, .rollList, .rollInfo, .rollRenamed,
+             .rollCreated, .rollList, .rollInfo, .rollRenamed, .rollDeleted,
              .editRecorded, .negativeDeleted, .exportDone,
              .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress:
             break

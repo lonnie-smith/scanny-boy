@@ -30,16 +30,20 @@ struct FlatFieldProfilesSheet: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            profileList
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    profileList
 
-            Divider()
+                    Divider()
 
-            newProfile
+                    newProfile
 
-            if let deleteError {
-                Text(deleteError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                    if let deleteError {
+                        Text(deleteError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
 
             HStack {
@@ -50,7 +54,7 @@ struct FlatFieldProfilesSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 460, minHeight: 320)
+        .frame(minWidth: 460, idealHeight: 480)
         .interactiveDismissDisabled(isCreating)
         .confirmationDialog(
             "Delete “\(profilePendingDeletion?.name ?? "")”?",
@@ -79,39 +83,40 @@ struct FlatFieldProfilesSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            List(flatField.profiles) { profile in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.name)
-                        Text(profile.calibrationSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let width = profile.referenceWidth,
-                            let height = profile.referenceHeight
-                        {
-                            Text("Reference \(width) × \(height)")
+            VStack(spacing: 0) {
+                ForEach(flatField.profiles) { profile in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.name)
+                            Text(profile.calibrationSummary)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if let width = profile.referenceWidth,
+                                let height = profile.referenceHeight
+                            {
+                                Text("Reference \(width) × \(height)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let rejection = rejectionReason(of: profile) {
+                                Text(rejection)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .help(rejection)
+                            }
                         }
-                        if let rejection = rejectionReason(of: profile) {
-                            Text(rejection)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .help(rejection)
+                        Spacer()
+                        Button {
+                            profilePendingDeletion = profile
+                        } label: {
+                            Image(systemName: "trash")
                         }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Delete \(profile.name)")
                     }
-                    Spacer()
-                    Button {
-                        profilePendingDeletion = profile
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Delete \(profile.name)")
+                    .padding(.vertical, 4)
                 }
             }
-            .listStyle(.inset)
-            .frame(minHeight: 80)
         }
     }
 

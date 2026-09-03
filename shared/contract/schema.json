@@ -22,6 +22,7 @@
         "roll_list",
         "roll_info",
         "roll_renamed",
+        "roll_deleted",
         "metadata_applied",
         "metadata_skipped",
         "edit_recorded",
@@ -316,6 +317,7 @@
               "roll list",
               "roll info",
               "roll rename",
+              "roll delete",
               "apply-metadata",
               "edit rotate",
               "edit delete",
@@ -377,6 +379,16 @@
         "properties": {
           "roll_id": { "type": "string" },
           "roll_name": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_deleted" } } },
+      "then": {
+        "required": ["roll_id", "path"],
+        "properties": {
+          "roll_id": { "type": "string" },
           "path": { "type": "string" }
         }
       }

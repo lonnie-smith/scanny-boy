@@ -700,10 +700,13 @@ negative by taking over its identity, not by publishing a rival.
   the folder name is a slug of it (NFC, `[A-Za-z0-9._-]`, whitespace runs →
   single `-`, 60 chars, case-insensitive collision suffixes). Rename moves
   the folder **first**, then saves the new name and location to the
-  database — so a failed move leaves both untouched. Delete is
-  `NSWorkspace.recycle` in Swift, with no CLI involvement at all; the
-  database rows survive, so the next `roll list` reports the vanished
-  folder as `unreadable`.
+  database — so a failed move leaves both untouched. Delete is two steps,
+  in this order: the app moves the folder to the Trash with
+  `NSWorkspace.recycle`, then `roll delete` removes the database
+  registration (runs, sources, negatives, and edits cascade away with it)
+  and unlinks the negatives' rendered previews. A crash between the steps
+  leaves an orphan registration that `roll list` reports as `unreadable`,
+  never a lost folder; a deleted roll disappears from the next `roll list`.
 - **Roll invariants** (`RollInvariants`): `processing_params`, the ICC
   profile hash, `stitch_params`. Everything else — input folder, source
   list, order, grouping, and the batch's `shots_per_negative` — is
@@ -946,7 +949,7 @@ export — one helper invocation at a time.
 
 | Type | Role |
 | --- | --- |
-| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
+| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for the delete's Trash move; create/rename/list/delete all go through the CLI. |
 | `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
 | `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is each stitch batch's own choice, set on Add Scans and required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); a roll locked to a profile pre-selects it. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` and `edit delete` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
@@ -960,8 +963,9 @@ CLI, which refuses `FLATFIELD_PROFILE_IN_USE` when a roll's invariants name
 the profile — shown as an alert), plus New Profile… — an `NSOpenPanel`
 limited to NEF, a name field, and Create with a spinner, since building a
 profile decodes a RAW and takes seconds. A gain map is app-private data with
-a database row, not a user document, so unlike deleting a roll folder this
-goes through the CLI rather than `NSWorkspace.recycle`.
+a database row, not a user document, so unlike a roll's folder — which the
+app itself trashes with `NSWorkspace.recycle` before `roll delete`
+unregisters it — this goes through the CLI alone.
 
 **CLI bridge** (`CLIBridge/`): `CLILocator` finds the helper
 (`Contents/Helpers/ScannyBoyCLI.app`; a Debug build additionally honours an

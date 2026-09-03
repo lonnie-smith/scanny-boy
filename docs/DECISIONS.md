@@ -431,9 +431,10 @@ pixel value does (`punchlist.md`).
   `[A-Za-z0-9._-]` plus single-dash whitespace runs, 60 characters,
   case-insensitive collision suffixes). Renaming moves the folder to a new
   slug, then writes `roll_name` — refused while a run is active, enforced
-  client-side since the CLI is stateless between invocations. Deleting
-  moves the folder to the Trash via `NSWorkspace.recycle`, no CLI
-  involvement at all.
+  client-side since the CLI is stateless between invocations. Deleting is
+  two steps: the folder moves to the Trash via `NSWorkspace.recycle`, then
+  `roll delete` removes the database registration, so `roll list` drops the
+  roll instead of reporting it as `unreadable`.
 
 ## Roll invariants and additive runs
 

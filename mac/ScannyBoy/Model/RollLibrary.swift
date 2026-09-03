@@ -8,10 +8,11 @@ import Observation
 /// directory enumeration and no manifest parsing of its own. `scan()` is the
 /// only way it learns what is in the library.
 ///
-/// Renaming (section 5.5) and creating a roll both go through the CLI too —
-/// `roll rename` and `roll init` — so the only thing this type ever touches
-/// on disk directly is deleting a roll, via `NSWorkspace.recycle` (section
-/// 3.10), which needs no server-side cooperation at all.
+/// Renaming (section 5.5), creating a roll, and unregistering a deleted
+/// roll all go through the CLI — `roll rename`, `roll init`, and
+/// `roll delete` — so the only thing this type ever touches on disk
+/// directly is moving a roll's folder to the Trash, via `NSWorkspace.recycle`
+/// (section 3.10), which needs no server-side cooperation at all.
 @MainActor
 @Observable
 final class RollLibrary {
@@ -239,20 +240,60 @@ final class RollLibrary {
 
     // MARK: - Delete
 
-    /// Moves the roll's folder to the Trash. Section 3.10: pure Swift,
-    /// `NSWorkspace.recycle` needs no server-side cooperation at all.
-    /// Rescans on success so the sidebar drops the roll immediately.
+    enum DeleteError: Error, LocalizedError {
+        case failed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .failed(let message):
+                message
+            }
+        }
+    }
+
+    /// Moves the roll's folder to the Trash and unregisters it, so the next
+    /// `roll list` drops it. Two steps, in this order: the folder goes first
+    /// via `NSWorkspace.recycle` (section 3.10: pure Swift, no server-side
+    /// cooperation; a failed move leaves both the folder and the
+    /// registration untouched), then `roll delete` removes the database
+    /// registration — with the folder already gone, a crash between the two
+    /// steps leaves an orphan registration that reads as `unreadable`, never
+    /// a lost folder. Rescans on success so the sidebar drops the roll
+    /// immediately.
     func deleteRoll(_ roll: Roll) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            NSWorkspace.shared.recycle([roll.path]) { _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+        if fileManager.fileExists(atPath: roll.path.path) {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                NSWorkspace.shared.recycle([roll.path]) { _, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
                 }
             }
         }
-        scan()
+
+        let session = runner.session(for: .rollDelete(roll: roll.path))
+        do {
+            for await output in try await session.start() {
+                guard case .event(let event) = output else { continue }
+                switch event.kind {
+                case .rollDeleted:
+                    scan()
+                    return
+                case .error:
+                    throw DeleteError.failed(event.message ?? "roll delete failed")
+                default:
+                    continue
+                }
+            }
+        } catch let error as DeleteError {
+            throw error
+        } catch {
+            throw DeleteError.failed(error.localizedDescription)
+        }
+        throw DeleteError.failed("roll delete produced no result")
     }
 
     // MARK: - Testing
