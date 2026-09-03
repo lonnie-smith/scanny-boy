@@ -49,6 +49,9 @@ final class ConfigurationModel {
             if let inputFolder {
                 Self.save(inputFolder, forKey: Self.lastInputFolderKey, in: defaults)
                 startCatalogueProbe(inputFolder: inputFolder)
+            } else {
+                catalogueTask?.cancel()
+                isCataloguing = false
             }
         }
     }
@@ -111,14 +114,21 @@ final class ConfigurationModel {
     var flatFieldProfileID: String? {
         didSet {
             guard flatFieldProfileID != oldValue else { return }
-            if let flatFieldProfileID {
-                defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
-            } else {
-                defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
+            // A lock assignment (`startRollFetch`) sets this flag first so a
+            // roll's locked profile does not get persisted as the user's own
+            // default and inherited by the next, unlocked roll.
+            if !isApplyingLockedFlatFieldProfile {
+                if let flatFieldProfileID {
+                    defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
+                } else {
+                    defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
+                }
             }
             scheduleValidation()
         }
     }
+
+    @ObservationIgnored private var isApplyingLockedFlatFieldProfile = false
 
     /// Set once the roll's own record names a profile: Add Scans pre-selects
     /// it and says so, since the user cannot choose differently anyway.
@@ -133,7 +143,13 @@ final class ConfigurationModel {
 
     // MARK: - Status
 
-    private(set) var isProbing = false
+    /// The catalogue probe and the selection/roll validation probe are
+    /// independent round trips; each clears only its own flag when it
+    /// finishes, so a UI gate reading a single shared flag could see "done"
+    /// while the other probe is still in flight.
+    private(set) var isCataloguing = false
+    private(set) var isValidating = false
+    var isProbing: Bool { isCataloguing || isValidating }
 
     @ObservationIgnored private var catalogueTask: Task<Void, Never>?
     @ObservationIgnored private var validationTask: Task<Void, Never>?
@@ -222,14 +238,14 @@ final class ConfigurationModel {
 
     private func startCatalogueProbe(inputFolder: URL) {
         catalogueTask?.cancel()
-        isProbing = true
+        isCataloguing = true
         catalogueTask = Task { [weak self, runner] in
             let result = await Self.runProbe(runner: runner, command: .probe(input: inputFolder))
             guard let self, !Task.isCancelled else { return }
             self.catalogue = result.catalogue ?? []
             self.catalogueWarnings = result.warnings
             self.catalogueError = result.error
-            self.isProbing = false
+            self.isCataloguing = false
         }
     }
 
@@ -240,32 +256,42 @@ final class ConfigurationModel {
             let manifest = await Self.fetchRollManifest(runner: runner, roll: rollURL)
             guard let self, !Task.isCancelled else { return }
             self.roll = manifest
-            // A roll already locked to a profile pre-selects it: the user
-            // cannot choose differently (the run would be refused with
-            // `ROLL_INVARIANT_MISMATCH`), so the picker says so instead of
-            // fighting them. Only fills the gap — an explicit choice stays.
-            if let locked = manifest?.processingParams.flatFieldProfileID,
-                flatFieldProfileID == nil
-            {
+            // A roll locked to a profile pins the picker to it
+            // unconditionally: the user cannot choose differently anyway (the
+            // run would be refused with `ROLL_INVARIANT_MISMATCH`), and an
+            // explicit choice left over from a *previous* roll must not win
+            // here. A roll that is not locked leaves the user's choice alone.
+            if let locked = manifest?.processingParams.flatFieldProfileID {
+                isApplyingLockedFlatFieldProfile = true
                 flatFieldProfileID = locked
+                isApplyingLockedFlatFieldProfile = false
             }
         }
     }
 
     private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
+        // Recorded rather than returned immediately (M4): see
+        // `RollLibrary.createRoll` — returning from inside the loop abandons
+        // the stream and can SIGTERM a helper that is in the middle of its
+        // own clean exit.
+        var manifest: RollManifest?
         do {
             for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
-                if case .event(let event) = output, event.kind == .rollInfo,
+                guard case .event(let event) = output, event.kind == .rollInfo,
                     let fields = event.manifest
-                {
-                    return RollManifest(fields: fields)
-                }
+                else { continue }
+                manifest = RollManifest(fields: fields)
             }
         } catch {
             return nil
         }
-        return nil
+        return manifest
     }
+
+    /// Debounces `probe --roll` calls: a drag-select across many catalogue
+    /// rows fires this once per row, and each one tore down and rebuilt the
+    /// configuration form (see the fix note on `isProbing`'s consumers).
+    private static let validationDebounce = Duration.milliseconds(200)
 
     private func scheduleValidation() {
         validationTask?.cancel()
@@ -274,6 +300,7 @@ final class ConfigurationModel {
             selectionWarnings = []
             selectionError = nil
             rollError = nil
+            isValidating = false
             return
         }
 
@@ -284,6 +311,7 @@ final class ConfigurationModel {
             selectionWarnings = []
             selectionError = nil
             rollError = nil
+            isValidating = false
             return
         }
 
@@ -291,8 +319,10 @@ final class ConfigurationModel {
         let files = selectedFilesInCanonicalOrder
         let flatFieldProfileID = flatFieldProfileID
 
-        isProbing = true
+        isValidating = true
         validationTask = Task { [weak self, runner] in
+            try? await Task.sleep(for: Self.validationDebounce)
+            guard !Task.isCancelled else { return }
             let result = await Self.runProbe(
                 runner: runner,
                 command: .probe(
@@ -305,7 +335,7 @@ final class ConfigurationModel {
             )
             guard let self, !Task.isCancelled else { return }
             self.apply(result)
-            self.isProbing = false
+            self.isValidating = false
         }
     }
 

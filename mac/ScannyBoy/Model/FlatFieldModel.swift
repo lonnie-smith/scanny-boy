@@ -33,6 +33,11 @@ final class FlatFieldModel {
 
     private(set) var profiles: [FlatFieldProfile] = []
     private(set) var isScanning = false
+    /// Set for the duration of one `create(...)` round trip. Lives here
+    /// rather than in the sheet's local `@State` so the app-wide busy gate
+    /// (`AppActivity`) — and any other view — can see a calibration is
+    /// running even if the sheet that started it was dismissed and reopened.
+    private(set) var isCreating = false
     /// Drives the New Profile sheet's determinate progress bar while a
     /// calibration runs; nil when nothing is in flight.
     private(set) var creationProgress: CreationProgress?
@@ -86,40 +91,63 @@ final class FlatFieldModel {
         name: String,
         calibrationFrames: [URL] = []
     ) async -> CreateResult {
+        isCreating = true
+        creationProgress = nil
+        defer {
+            isCreating = false
+            creationProgress = nil
+        }
+        // Recorded rather than returned immediately (M4): see
+        // `RollLibrary.createRoll`. `outcome` folds a non-success exit in
+        // even after a `flatfieldCreated` event, the same downgrade
+        // `RollLibrary.deleteRoll` applies.
+        var result: CreateResult = .failure(.unknown(""), "flatfield create produced no result")
+        var outcome: CLIOutcome?
         do {
             for await output in try await runner.session(
                 for: .flatfieldCreate(
                     reference: reference, name: name, calibrationFrames: calibrationFrames
                 )
             ).start() {
-                guard case .event(let event) = output else { continue }
-                switch event.kind {
-                case .flatfieldCreated:
-                    guard let fields = event.flatFieldProfile,
-                        let profile = FlatFieldProfile(fields: fields)
-                    else { continue }
-                    refresh()
-                    return .success(profile)
-                case .flatfieldProgress:
-                    if let phase = event.flatFieldPhase,
-                        let completed = event.completed,
-                        let total = event.total
-                    {
-                        creationProgress = CreationProgress(
-                            phase: phase, completed: completed, total: total
-                        )
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .flatfieldCreated:
+                        guard let fields = event.flatFieldProfile,
+                            let profile = FlatFieldProfile(fields: fields)
+                        else { continue }
+                        result = .success(profile)
+                    case .flatfieldProgress:
+                        if let phase = event.flatFieldPhase,
+                            let completed = event.completed,
+                            let total = event.total
+                        {
+                            creationProgress = CreationProgress(
+                                phase: phase, completed: completed, total: total
+                            )
+                        }
+                    case .error:
+                        let code = event.code ?? .unknown("")
+                        result = .failure(code, event.message ?? "flatfield create failed")
+                    default:
+                        continue
                     }
-                case .error:
-                    let code = event.code ?? .unknown("")
-                    return .failure(code, event.message ?? "flatfield create failed")
-                default:
+                case .completed(let completion):
+                    outcome = completion.outcome
+                case .log, .failure:
                     continue
                 }
             }
         } catch {
             return .failure(.unknown(""), error.localizedDescription)
         }
-        return .failure(.unknown(""), "flatfield create produced no result")
+        if case .success = result {
+            if let outcome, outcome != .success {
+                return .failure(.unknown(""), "flatfield create did not complete successfully")
+            }
+            refresh()
+        }
+        return result
     }
 
     // MARK: - Delete
@@ -129,26 +157,43 @@ final class FlatFieldModel {
     /// profile — the gain map is the only thing that could reproduce that
     /// roll — and the caller shows that refusal as an alert.
     func delete(_ profile: FlatFieldProfile) async -> DeleteResult {
+        // Recorded rather than returned immediately (M4/M5's sibling case in
+        // `RollLibrary.deleteRoll`): a `flatfieldDeleted` event without ever
+        // seeing a successful exit status is downgraded below rather than
+        // declared a success outright.
+        var result: DeleteResult = .failure(.unknown(""), "flatfield delete produced no result")
+        var outcome: CLIOutcome?
         do {
             for await output in try await runner.session(
                 for: .flatfieldDelete(profile: profile.profileID)
             ).start() {
-                guard case .event(let event) = output else { continue }
-                switch event.kind {
-                case .flatfieldDeleted:
-                    refresh()
-                    return .success
-                case .error:
-                    let code = event.code ?? .unknown("")
-                    return .failure(code, event.message ?? "flatfield delete failed")
-                default:
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .flatfieldDeleted:
+                        result = .success
+                    case .error:
+                        let code = event.code ?? .unknown("")
+                        result = .failure(code, event.message ?? "flatfield delete failed")
+                    default:
+                        continue
+                    }
+                case .completed(let completion):
+                    outcome = completion.outcome
+                case .log, .failure:
                     continue
                 }
             }
         } catch {
             return .failure(.unknown(""), error.localizedDescription)
         }
-        return .failure(.unknown(""), "flatfield delete produced no result")
+        if case .success = result {
+            if let outcome, outcome != .success {
+                return .failure(.unknown(""), "flatfield delete did not complete successfully")
+            }
+            refresh()
+        }
+        return result
     }
 
     // MARK: - Testing

@@ -79,6 +79,21 @@ enum RunTimeFormat {
     }
 }
 
+/// Shown for `RunModel.Phase.finishing`: the helper has exited and the
+/// manifest read-back is in flight, which on a large roll is not instant
+/// (M10). Distinct from `RunProgressView` — there is no more progress to
+/// show, and Cancel has nothing left to cancel.
+struct FinishingView: View {
+    var body: some View {
+        HStack {
+            ProgressView().controlSize(.small)
+            Text("Finishing…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// What a run left behind: which negatives finished, which failed, what was
 /// published, and what the manifest says about the state of the folder.
 struct RunResultView: View {

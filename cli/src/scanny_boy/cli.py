@@ -23,6 +23,7 @@ from scanny_boy.events import (
     NegativeDeleted,
     ProbeResult,
     RollCreated,
+    RollDeleted,
     RollInfo,
     RollList,
     RollListingEntry,
@@ -46,6 +47,7 @@ from scanny_boy.registration import StitchError
 from scanny_boy.roll_folder import (
     RollFolderError,
     create_roll,
+    delete_roll,
     rename_roll,
     scan_library,
 )
@@ -96,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     roll_rename = roll_subparsers.add_parser("rename", help="Rename a roll.")
     roll_rename.add_argument("--roll", required=True, metavar="DIR")
     roll_rename.add_argument("--name", required=True, metavar="NAME")
+
+    roll_delete = roll_subparsers.add_parser(
+        "delete", help="Unregister a roll; the app trashes its folder."
+    )
+    roll_delete.add_argument("--roll", required=True, metavar="DIR")
 
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
@@ -363,6 +370,19 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                 path=str(new_dir),
             )
         )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.roll_command == "delete":
+        writer.write(Started(command="roll delete"))
+        roll_dir = Path(args.roll)
+        try:
+            fields = delete_roll(roll_dir, emit=writer.write)
+        except RollFolderError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(RollDeleted(**fields))
         writer.write(Finished(status="success", exit_status=0))
         return 0
 

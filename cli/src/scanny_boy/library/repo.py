@@ -5,7 +5,9 @@ library database.
 `folder_path` is updated on every save, which is what makes `roll rename`'s
 folder move a data update rather than a special case. Children are diffed by
 key (`run_id`, `sha256`, `negative_id`): rows the incoming manifest no
-longer describes are deleted, rows it does describe are merged in place. A
+longer describes are deleted, rows it does describe are merged in place.
+Sources are the exception: they are rewritten wholesale on every save because
+their surrogate key gives `merge` no identity to diff against. A
 negative's `edits` rows hang off its stable `negative_id`, so re-stitching a
 negative — which keeps its id — keeps its edit history, while removing a
 negative (adoption's removal path) cascades its edits away with it.
@@ -136,16 +138,16 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                 )
             )
 
-        source_hashes = {s.sha256 for s in manifest.sources}
+        # Sources carry an autoincrement primary key, so a `merge` without a
+        # pre-loaded identity inserts a duplicate row on every save. The list
+        # is small and nothing holds a foreign key to it, so rewriting it
+        # wholesale is the safe diff: delete all, insert the incoming set.
         session.execute(
-            delete(SourceRow).where(
-                SourceRow.roll_id == manifest.roll_id,
-                SourceRow.sha256.not_in(source_hashes),
-            )
+            delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id)
         )
         for ordinal, source in enumerate(manifest.sources):
             assert isinstance(source, RollSourceRecord)
-            session.merge(
+            session.add(
                 SourceRow(
                     roll_id=manifest.roll_id,
                     ordinal=ordinal,
@@ -247,6 +249,24 @@ def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
         return listing
 
 
+def delete_roll(roll_dir: Path) -> str:
+    """Remove the roll's registration and return its `roll_id`. The runs,
+    sources, negatives, and edits rows cascade away with it (each child's
+    `ondelete="CASCADE"`; `PRAGMA foreign_keys=ON` is set on every
+    connection). The folder is deliberately not touched — deleting the
+    registration is what makes `roll list` drop the roll, whatever then
+    happens to its files."""
+    folder = _folder_key(roll_dir)
+    with _session() as session:
+        roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
+        if roll is None:
+            raise RollNotRegisteredError(
+                f"{roll_dir} is not a registered roll; create the roll first"
+            )
+        session.delete(roll)
+        return roll.roll_id
+
+
 def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
         CaptureTime,
@@ -344,6 +364,11 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             # `gain` (nothing was applied to them) — a missing
                             # gain is unity, not a corrupt row.
                             gain=tuple(f.get("gain", _UNITY_GAIN)),
+                            # Likewise, rows written before the per-frame scale
+                            # solve (docs/STITCH_QUALITY_PLAN.md section 2)
+                            # carry no `scale` — the layout was placed as a
+                            # rigid transform, which is scale 1.
+                            scale=f.get("scale", 1.0),
                         )
                         for f in n.frames
                     ],
@@ -395,7 +420,13 @@ def load_roll(roll_dir: Path) -> RollManifest:
 
 def _negative_row(session: Session, roll_dir: Path, negative_id: str) -> NegativeRow:
     negative = session.get(NegativeRow, negative_id)
-    if negative is None:
+    # `negative_id` is a globally-unique primary key and the argument is
+    # user-supplied, so an id that belongs to a *different* roll must be
+    # refused here, not silently edited under the wrong roll's name.
+    roll = session.scalar(
+        select(RollRow).where(RollRow.folder_path == _folder_key(roll_dir))
+    )
+    if negative is None or roll is None or negative.roll_id != roll.roll_id:
         raise RollNotRegisteredError(
             f"{negative_id} is not a negative of {_folder_key(roll_dir)}"
         )

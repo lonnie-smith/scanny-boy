@@ -10,14 +10,13 @@ struct RollSidebar: View {
     /// Disables every mutating action while a run is active app-wide
     /// (section 3.10).
     let runIsActive: Bool
-    /// Run alongside `selection` when a roll is created from this sidebar's
-    /// toolbar **+**. `ContentView` uses it to switch the detail workspace to
-    /// its Add Scans tab: a freshly created roll has no scans yet, so landing
-    /// there (rather than on Edit) is the useful next step regardless of
-    /// which tab was active when the sheet opened.
-    let onRollCreated: () -> Void
+    /// `ContentView` owns `NewRollSheet`'s presentation (L5): the sidebar's
+    /// toolbar **+** and the empty-state's "New Roll…" button used to each
+    /// present their own instance with their own post-create behaviour,
+    /// which happened to agree today but had no reason to stay that way.
+    /// This binding is the sidebar's only way to ask for the sheet.
+    @Binding var isPresentingNewRollSheet: Bool
 
-    @State private var isPresentingNewRollSheet = false
     @State private var renamingRoll: Roll?
     @State private var renameText = ""
     @State private var deletingRoll: Roll?
@@ -32,6 +31,7 @@ struct RollSidebar: View {
             ForEach(sortedRolls) { roll in
                 RollRow(roll: roll)
                     .tag(roll.id)
+                    .selectionDisabled(roll.status == .unreadable)
                     .contextMenu {
                         Button("Rename…") { beginRename(roll) }
                             .disabled(roll.status != .ok || runIsActive)
@@ -72,12 +72,6 @@ struct RollSidebar: View {
             }
         }
         .task { library.scan() }
-        .sheet(isPresented: $isPresentingNewRollSheet) {
-            NewRollSheet(library: library) { roll in
-                selection = roll.id
-                onRollCreated()
-            }
-        }
         .sheet(item: $renamingRoll) { roll in
             renameSheet(for: roll)
         }

@@ -72,6 +72,7 @@ from scanny_boy.events import (
 from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
 from scanny_boy.layout import (
     MAX_GLOBAL_RMS_PX,
+    RMS_WEIGHT_FLOOR_PX,
     STRIP_SPREAD_RATIO,
     Layout,
     largest_valid_rect,
@@ -220,10 +221,19 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "gain_drift_warn": GAIN_DRIFT_WARN,
         "max_global_rms_px": MAX_GLOBAL_RMS_PX,
         "strip_spread_ratio": STRIP_SPREAD_RATIO,
+        # docs/STITCH_QUALITY_PLAN.md section 2.4: distinguishes a manifest
+        # written before this change (implicitly rigid, scale forced to 1)
+        # from one written after, without consulting the build.
+        "layout_model": "similarity",
+        # docs/STITCH_QUALITY_PLAN.md section 3: how the layout's three
+        # solves weight each pairwise row.
+        "layout_row_weight": "sqrt(inliers)/rms",
+        "rms_weight_floor_px": RMS_WEIGHT_FLOOR_PX,
         "interpolation": "INTER_LANCZOS4",
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
+        "feather": composite_module.FEATHER,
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {
@@ -486,7 +496,7 @@ def _attempt_solve(
     source_index: int,
     on_warning,
     profile=None,
-) -> tuple[Layout, tuple[int, int]]:
+) -> tuple[Layout, tuple[int, int], dict | None]:
     """One pass of detection, registration, and the global solve, at a fixed
     `use_clahe`. Raises `StitchError` for anything that fails the negative.
 
@@ -529,11 +539,17 @@ def _attempt_solve(
         progress.advance(source_index, PipelineStep.MATCH)
 
     for pair in pairs:
+        # docs/STITCH_QUALITY_PLAN.md section 2.5: with a per-frame scale in
+        # the layout solve, `scale_drift` no longer means "this pair should
+        # have been scale 1" — it reports how much magnification the pair
+        # carries, still gated at SCALE_DRIFT_WARN/FAIL because film cannot
+        # plausibly carry more than that between two frames of one strip.
         if pair.accepted and pair.scale_drift > SCALE_DRIFT_WARN:
             on_warning(
                 Code.STITCH_SCALE_DRIFT,
-                f"{group.group_id}: pair {pair.a}-{pair.b} scale drift "
-                f"{pair.scale_drift:.5f} exceeds {SCALE_DRIFT_WARN}",
+                f"{group.group_id}: pair {pair.a}-{pair.b} carries "
+                f"{pair.scale_drift:.5f} magnification, exceeding the "
+                f"plausible-fit bound {SCALE_DRIFT_WARN}",
             )
 
     names = [path.name for path in paths]
@@ -923,6 +939,7 @@ def run_stitch(
                 emit=emit,
                 progress=progress,
                 source_index=source_index_by_group[entry.group.group_id],
+                profile=profile,
             )
         except CancelledError:
             cancelled = True
@@ -962,7 +979,7 @@ def run_stitch(
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision).
     try:
-        previews.sync_previews(out_dir, roll)
+        previews.sync_previews(out_dir, roll, published)
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(
@@ -1331,6 +1348,7 @@ def _composite_and_publish(
                 rotation_deg=placement.rotation_deg,
                 translation=(placement.translation[0], placement.translation[1]),
                 gain=result.gains[placement.name],
+                scale=placement.scale,
             )
             for placement in layout.placements
         ]

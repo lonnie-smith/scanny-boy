@@ -5,7 +5,12 @@ from scanny_boy.detection import DETECTION_LONG_EDGE, USE_CLAHE, build_detection
 from scanny_boy.events import Code
 from scanny_boy.linear import encode_from_linear
 from scanny_boy.raw_decode import decode_raw
-from scanny_boy.registration import detect_features, register_pair
+from scanny_boy.registration import (
+    detect_features,
+    register_pair,
+    rigid_from_correspondences,
+    similarity_from_correspondences,
+)
 from scanny_boy.sample_nef_support import FIXTURES_DIR
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 
@@ -47,6 +52,36 @@ def _expected_relative_transform(placements, i, j):
 
 def _angle_deg(rotation):
     return np.degrees(np.arctan2(rotation[1, 0], rotation[0, 0]))
+
+
+def test_featureless_frame_gets_empty_descriptors():
+    """A uniform grey intermediate finds no keypoints at all. `detect_features`
+    must normalise that to an empty array of the detector's dtype — not store
+    the `None` OpenCV hands back — so downstream code can refuse the pair
+    instead of crashing."""
+    grey = np.full((200, 300, 3), 30000, dtype=np.uint16)
+    detection = build_detection_image(grey, long_edge=DETECTION_LONG_EDGE, clahe=False)
+
+    features = detect_features(detection, name="blank")
+
+    assert len(features.keypoints) == 0
+    assert features.descriptors is not None
+    assert len(features.descriptors) == 0
+
+
+def test_featureless_pair_is_rejected_not_crashed():
+    """Two blank frames must be refused with the stable insufficient-matches
+    code — an ordinary scanning outcome, and one the CLAHE retry can respond
+    to — not surface as an AttributeError from inside the matcher."""
+    grey = np.full((200, 300, 3), 30000, dtype=np.uint16)
+    detection = build_detection_image(grey, long_edge=DETECTION_LONG_EDGE, clahe=False)
+    a = detect_features(detection, name="a")
+    b = detect_features(detection, name="b")
+
+    result = register_pair(a, b)
+
+    assert result.accepted is False
+    assert result.reject_code == Code.STITCH_INSUFFICIENT_MATCHES
 
 
 def test_recovers_a_known_rotation_and_translation():
@@ -128,6 +163,55 @@ def test_rigid_fit_never_returns_a_scale_other_than_one():
     rotation = result.transform[:, :2]
     scale = np.hypot(rotation[0, 0], rotation[1, 0])
     assert abs(scale - 1.0) < 1e-9
+
+
+def test_rigid_from_correspondences_is_unaffected_by_adding_the_similarity_fit():
+    features, _ = _build_pair_features([0.0, 3.0])
+    result = register_pair(features[0], features[1])
+    assert result.accepted
+
+    src = result.inlier_points_b
+    dst = result.inlier_points_a
+    assert np.array_equal(rigid_from_correspondences(src, dst), result.transform)
+
+
+def test_similarity_from_correspondences_recovers_a_known_scale_rotation_and_translation():
+    rng = np.random.default_rng(3)
+    src = rng.uniform(0, 1000, size=(50, 2))
+
+    true_scale = 1.017
+    true_angle_deg = 4.0
+    true_translation = np.array([37.0, -12.5])
+    cos_a, sin_a = np.cos(np.radians(true_angle_deg)), np.sin(np.radians(true_angle_deg))
+    true_rotation = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+
+    dst = true_scale * (src @ true_rotation.T) + true_translation
+
+    transform, scale = similarity_from_correspondences(src, dst)
+    recovered_rotation = transform[:, :2]
+    recovered_translation = transform[:, 2]
+    recovered_angle_deg = np.degrees(
+        np.arctan2(recovered_rotation[1, 0], recovered_rotation[0, 0])
+    )
+
+    assert scale == pytest.approx(true_scale, abs=1e-6)
+    assert recovered_angle_deg == pytest.approx(true_angle_deg, abs=1e-6)
+    assert np.allclose(recovered_translation, true_translation, atol=1e-6)
+
+
+def test_similarity_from_correspondences_reflection_guard():
+    # A reflected configuration (mirrored across x): the naive covariance
+    # SVD would give det(R) = -1 without the reflection guard.
+    rng = np.random.default_rng(4)
+    src = rng.uniform(0, 1000, size=(50, 2))
+    reflect = np.array([[1.0, 0.0], [0.0, -1.0]])
+    dst = 1.02 * (src @ reflect.T) + np.array([5.0, 9.0])
+
+    transform, scale = similarity_from_correspondences(src, dst)
+    recovered_rotation = transform[:, :2]
+
+    assert np.linalg.det(recovered_rotation) == pytest.approx(1.0, abs=1e-6)
+    assert scale > 0
 
 
 # Appendix C: which pairs of each gate-B negative genuinely share film, and

@@ -475,6 +475,53 @@ def test_roll_rename_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+def test_roll_delete_unregisters_the_roll_and_leaves_the_folder(capsys, tmp_path):
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
+    created = _stdout_events(capsys)[0][1]
+    roll_dir = tmp_path / "Roll-A"
+    capsys.readouterr()
+
+    status = main(["roll", "delete", "--roll", str(roll_dir)])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_deleted", "finished"]
+    assert events[0]["command"] == "roll delete"
+    assert events[1]["roll_id"] == created["roll_id"]
+    assert events[1]["path"] == str(roll_dir)
+    assert events[2]["status"] == "success"
+    # The folder is the app's to trash; the CLI only unregisters.
+    assert roll_dir.exists()
+    assert err == ""
+
+    # The deleted roll no longer comes back on the next scan — the bug the
+    # app's delete used to hit, when only its folder went to the Trash.
+    capsys.readouterr()
+    status = main(["roll", "list", "--library", str(tmp_path)])
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert events[1]["rolls"] == []
+
+
+def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(["roll", "delete", "--roll", str(tmp_path / "nope")])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "roll delete"
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
 def test_roll_without_subcommand_returns_status_2(capsys):
     status = main(["roll"])
 

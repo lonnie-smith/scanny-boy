@@ -70,10 +70,12 @@ def test_open_engine_refuses_a_revision_it_does_not_know(monkeypatch, tmp_path):
 # --- rows written before gain normalization -------------------------------
 
 
-def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
+def test_load_roll_defaults_a_missing_gain_or_scale_to_unity(roll_dir):
     """Rows written before gain normalization carry neither `gain` nor
-    `overlap_mad_pregain`; loading them must not raise, and the values must
-    read as "nothing was applied"."""
+    `overlap_mad_pregain`; rows written before the per-frame scale solve
+    (docs/STITCH_QUALITY_PLAN.md section 2) carry no `scale` either. Loading
+    either must not raise, and the values must read as "nothing was
+    applied": gain 1, scale 1 (the layout was placed as a rigid transform)."""
     import json
 
     from sqlalchemy import text
@@ -90,6 +92,7 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
             rotation_deg=0.0,
             translation=(0.0, 0.0),
             gain=(1.5, 1.0, 0.9),
+            scale=1.02,
         )
     )
     negative.pairs.append(
@@ -109,15 +112,19 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
     )
     write_roll_manifest(roll_dir, manifest)
 
-    # Rewrite the stored rows in their pre-gain shape, exactly as a helper
-    # from before the feature would have left them.
+    # Rewrite the stored rows in their pre-gain, pre-scale shape, exactly as
+    # a helper from before either feature would have left them.
     engine = db.open_engine()
     with engine.begin() as connection:
         row = connection.execute(
             text("SELECT negative_id, frames, pairs FROM negatives")
         ).one()
         frames = [
-            {key: value for key, value in frame.items() if key != "gain"}
+            {
+                key: value
+                for key, value in frame.items()
+                if key not in ("gain", "scale")
+            }
             for frame in json.loads(row.frames)
         ]
         pairs = [
@@ -131,6 +138,7 @@ def test_load_roll_defaults_a_missing_gain_to_unity(roll_dir):
 
     loaded = load_roll_manifest(roll_dir)
     assert loaded.negatives[0].frames[0].gain == (1.0, 1.0, 1.0)
+    assert loaded.negatives[0].frames[0].scale == 1.0
     assert loaded.negatives[0].pairs[0].overlap_mad_pregain is None
 
 
@@ -224,7 +232,91 @@ def test_removing_a_negative_removes_its_edits(roll_dir):
         repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01")
 
 
+def test_delete_roll_unregisters_the_roll_and_cascades_its_children(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+
+    assert repo.delete_roll(roll_dir) == "rid-1"
+
+    assert repo.roll_registered(roll_dir) is False
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.load_roll(roll_dir)
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01")
+    # Deleting again has nothing left to unregister.
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.delete_roll(roll_dir)
+
+
+def test_delete_roll_matches_the_folder_however_it_is_spelled(roll_dir, tmp_path):
+    # `/var` vs `/private/var`, trailing separators: one registration.
+    spelled = Path(str(roll_dir) + "/") / "."
+    repo.delete_roll(spelled)
+    assert repo.roll_registered(roll_dir) is False
+
+
 # --- roll rename and folder moves -------------------------------------------
+
+
+def test_saving_a_manifest_repeatedly_does_not_duplicate_sources(roll_dir):
+    """`write_roll_manifest` runs many times per run; sources must not grow
+    on every save (`SourceRow` has a surrogate key, so the save rewrites the
+    list wholesale instead of merging)."""
+    from sqlalchemy import func, select
+
+    from scanny_boy.library.models import NegativeRow, RunRow, SourceRow
+    from scanny_boy.roll_manifest import (
+        RollSourceRecord,
+        RunRecord,
+        load_roll_manifest,
+    )
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.runs.append(
+        RunRecord(
+            run_id="run-1",
+            short_id="abc123",
+            kind="run",
+            status="done",
+            convert_run_id="crun-1",
+            input_folder="/in",
+            source_order=["a.NEF"],
+            work_dir="/work",
+            started_at="2026-09-01T00:00:00Z",
+            finished_at="2026-09-01T00:01:00Z",
+        )
+    )
+    manifest.sources.append(
+        RollSourceRecord(
+            filename="a.NEF",
+            absolute_path="/in/a.NEF",
+            size=100,
+            mtime=1.0,
+            sha256="hash-a",
+            run_id="run-1",
+        )
+    )
+    manifest.sources.append(
+        RollSourceRecord(
+            filename="b.NEF",
+            absolute_path="/in/b.NEF",
+            size=200,
+            mtime=2.0,
+            sha256="hash-b",
+            run_id="run-1",
+        )
+    )
+
+    for _ in range(3):
+        write_roll_manifest(roll_dir, manifest)
+
+        loaded = load_roll_manifest(roll_dir)
+        assert [s.sha256 for s in loaded.sources] == ["hash-a", "hash-b"]
+
+    with db.open_engine().connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(SourceRow)) == 2
+        assert connection.scalar(select(func.count()).select_from(RunRow)) == 1
+        assert connection.scalar(select(func.count()).select_from(NegativeRow)) == 0
 
 
 def test_save_updates_folder_path_after_a_move(roll_dir, tmp_path):

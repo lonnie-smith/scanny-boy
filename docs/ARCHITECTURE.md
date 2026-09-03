@@ -455,29 +455,44 @@ frames is matched (O(n²), trivial at n≤12), and a global layout is solved fro
 whichever pairs actually overlap. Neighbour-chaining and order detection are
 both rejected — the global solve makes order irrelevant for free.
 
-**The geometry is rigid: rotation + translation, scale fixed at exactly 1.**
-`cv2.estimateAffinePartial2D` is used only for the RANSAC inlier mask and to
-*measure* scale drift; the transform actually used is always re-fitted with
-closed-form Umeyama with scale forced to 1
-(`registration.rigid_from_correspondences`). Never an affine, never a
-homography.
+**The pairwise geometry is rigid: rotation + translation, scale fixed at
+exactly 1.** `cv2.estimateAffinePartial2D` is used only for the RANSAC
+inlier mask and to *measure* scale drift; the transform actually used
+against the acceptance gates is always re-fitted with closed-form Umeyama
+with scale forced to 1 (`registration.rigid_from_correspondences`). Never
+an affine, never a homography. The same inliers also get a closed-form
+Umeyama fit *with* scale (`registration.similarity_from_correspondences`),
+which the global layout solve reads (docs/STITCH_QUALITY_PLAN.md section 2)
+— the pairwise gates are unaffected.
 
-**The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py)) is two linear
-least-squares problems, not a bundle adjustment. Frame *i* maps `p → R(θᵢ)p +
-tᵢ`; a pair gives `θ_b = θ_a + φ_ab` and `t_b = t_a + R(θ_a)·u_ab`. Rotations
-solve first (linear in the scalar θs), translations second (linear once θ is
-known). **This is why SciPy is forbidden as a dependency.** Do not replace it
-with a nonlinear optimiser.
+**The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py)) is three
+linear least-squares problems, not a bundle adjustment. Frame *i* maps
+`p → sᵢR(θᵢ)p + tᵢ`; a pair gives `log sᵦ - log sₐ = log σ_ab`,
+`θ_b = θ_a + φ_ab`, and `t_b = t_a + sₐR(θ_a)·u_ab`. Scales solve first
+(log-space, `solve_gains`'s geometric-mean-1-anchor idiom), then rotations
+(linear in the scalar θs), then translations (linear once s and θ are
+known). **This is why SciPy is forbidden as a dependency.** Do not replace
+it with a nonlinear optimiser. The model is a similarity — never an affine,
+never a homography — because film does not sit at a constant height above
+the stage from frame to frame; with scale forced to 1 that mismatch used to
+be absorbed into rotation and translation instead.
 
-**Blending** is a linear feather in linear light: each frame's weight is a
-distance transform of its own eroded validity mask, and the output is the
-weighted average wherever any frame contributes. Before the blend,
-per-frame per-channel **photometric gains** (§8.3) reconcile lamp drift
-between frames, so the feather only ever has to tolerate misregistration.
-The feather is deliberate but **provisional**; a hard midline seam (preserves
-grain, shows misregistration as a line) and a multi-band Laplacian blend
-(hides misalignment, softens grain, much heavier) were both considered and
-set aside.
+**Blending** is a linear feather in linear light, ramped along the strip
+axis only: each frame's weight is the distance from the nearer end of its
+own extent along the strip's long axis (`layout.Layout.strip_axis`),
+constant across the strip — an isotropic distance transform of the eroded
+validity mask is kept only as the fallback for a layout with no trustworthy
+axis. The isotropic version made a pixel's crossfade identical near the
+strip's long borders and down its middle, but near those borders the
+nearest mask edge is the border, not the seam, so both frames' weights
+collapsed toward 50/50 there and residual misregistration smeared into a
+curved band that widened toward the edges. Before the blend, per-frame
+per-channel **photometric gains** (§8.3) reconcile lamp drift between
+frames, so the feather only ever has to tolerate misregistration. A hard
+midline seam (preserves grain, shows misregistration as a line), a band
+around the overlap midline, and a multi-band Laplacian blend (hides
+misalignment, softens grain, much heavier) were all considered and set
+aside as named, deliberately deferred next steps.
 
 Warp details that are load-bearing: `INTER_LANCZOS4` on `float32`, clamped to
 `>= 0` immediately after (measured −0.088 undershoot); each frame warps into
@@ -700,10 +715,13 @@ negative by taking over its identity, not by publishing a rival.
   the folder name is a slug of it (NFC, `[A-Za-z0-9._-]`, whitespace runs →
   single `-`, 60 chars, case-insensitive collision suffixes). Rename moves
   the folder **first**, then saves the new name and location to the
-  database — so a failed move leaves both untouched. Delete is
-  `NSWorkspace.recycle` in Swift, with no CLI involvement at all; the
-  database rows survive, so the next `roll list` reports the vanished
-  folder as `unreadable`.
+  database — so a failed move leaves both untouched. Delete is two steps,
+  in this order: the app moves the folder to the Trash with
+  `NSWorkspace.recycle`, then `roll delete` removes the database
+  registration (runs, sources, negatives, and edits cascade away with it)
+  and unlinks the negatives' rendered previews. A crash between the steps
+  leaves an orphan registration that `roll list` reports as `unreadable`,
+  never a lost folder; a deleted roll disappears from the next `roll list`.
 - **Roll invariants** (`RollInvariants`): `processing_params`, the ICC
   profile hash, `stitch_params`. Everything else — input folder, source
   list, order, grouping, and the batch's `shots_per_negative` — is
@@ -946,7 +964,7 @@ export — one helper invocation at a time.
 
 | Type | Role |
 | --- | --- |
-| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
+| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for the delete's Trash move; create/rename/list/delete all go through the CLI. |
 | `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
 | `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is each stitch batch's own choice, set on Add Scans and required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); a roll locked to a profile pre-selects it. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` and `edit delete` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
@@ -960,8 +978,9 @@ CLI, which refuses `FLATFIELD_PROFILE_IN_USE` when a roll's invariants name
 the profile — shown as an alert), plus New Profile… — an `NSOpenPanel`
 limited to NEF, a name field, and Create with a spinner, since building a
 profile decodes a RAW and takes seconds. A gain map is app-private data with
-a database row, not a user document, so unlike deleting a roll folder this
-goes through the CLI rather than `NSWorkspace.recycle`.
+a database row, not a user document, so unlike a roll's folder — which the
+app itself trashes with `NSWorkspace.recycle` before `roll delete`
+unregisters it — this goes through the CLI alone.
 
 **CLI bridge** (`CLIBridge/`): `CLILocator` finds the helper
 (`Contents/Helpers/ScannyBoyCLI.app`; a Debug build additionally honours an

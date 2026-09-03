@@ -76,6 +76,13 @@ class PairResult:
     overlap_fraction: float | None
     overlap_mad: float | None
     overlap_mad_pregain: float | None
+    # docs/STITCH_QUALITY_PLAN.md section 2: the similarity fit (rotation,
+    # translation, and one isotropic scale) on the same inliers, from
+    # similarity_from_correspondences. layout.py's per-frame scale solve
+    # uses these; `transform` and `rms_residual_px` above are unaffected and
+    # stay what the acceptance gates measure.
+    similarity_transform: np.ndarray  # 2x3, rotation+translation, maps b -> a
+    similarity_scale: float
 
 
 _IDENTITY_TRANSFORM = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
@@ -94,15 +101,31 @@ def _make_detector() -> cv2.Feature2D:
 
 def detect_features(detection: DetectionImage, name: str) -> FrameFeatures:
     """Uses the gate-C DETECTOR. SIFT/AKAZE -> float descriptors,
-    ORB -> uint8."""
+    ORB -> uint8. A featureless frame normalises to empty (zero-length)
+    keypoints and an empty array of the detector's dtype — `register_pair`
+    refuses the pair; it must never see `None` descriptors."""
     detector = _make_detector()
     keypoints, descriptors = detector.detectAndCompute(detection.image, None)
+    if keypoints is None or len(keypoints) == 0 or descriptors is None:
+        return FrameFeatures(
+            name=name,
+            keypoints=(),
+            descriptors=np.empty((0, 0), dtype=_descriptor_dtype(detector)),
+            scale=detection.scale,
+        )
     return FrameFeatures(
         name=name,
         keypoints=tuple(keypoints),
         descriptors=descriptors,
         scale=detection.scale,
     )
+
+
+def _descriptor_dtype(detector: cv2.Feature2D) -> type:
+    """The descriptor dtype the configured DETECTOR emits: uint8 for ORB,
+    float32 for SIFT/AKAZE. Only used for the empty-array fallback, where
+    `register_pair`'s norm-type choice must not crash on `None`."""
+    return np.uint8 if DETECTOR == "ORB" else np.float32
 
 
 def undistorter_from_geometry(geometry: dict):
@@ -139,6 +162,24 @@ def rigid_from_correspondences(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     rotation = u @ d @ vt
     translation = mu_d - rotation @ mu_s
     return np.hstack([rotation, translation.reshape(2, 1)])
+
+
+def similarity_from_correspondences(
+    src: np.ndarray, dst: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Closed-form Umeyama *with* scale, from the same SVD as the rigid
+    fit. Returns (2x3 [R|t], scale). The rigid fit stays the one the
+    acceptance gates measure against, so no gate constant changes meaning
+    when this is added."""
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    covariance = ((dst - mu_d).T @ (src - mu_s)) / len(src)
+    u, singular_values, vt = np.linalg.svd(covariance)
+    d = np.diag([1.0, np.sign(np.linalg.det(u @ vt))])
+    rotation = u @ d @ vt
+    variance_src = float(np.mean(np.sum((src - mu_s) ** 2, axis=1)))
+    scale = float(np.trace(np.diag(singular_values) @ d) / variance_src)
+    translation = mu_d - scale * rotation @ mu_s
+    return np.hstack([rotation, translation.reshape(2, 1)]), scale
 
 
 def _rms_residual(
@@ -178,6 +219,34 @@ def register_pair(
         cv2.NORM_HAMMING if a.descriptors.dtype == np.uint8 else cv2.NORM_L2
     )
     matcher = cv2.BFMatcher(norm_type)
+
+    if len(a.descriptors) == 0 or len(b.descriptors) == 0:
+        # A blank or near-black intermediate finds no keypoints at all: an
+        # ordinary scanning outcome, refused as insufficient matches rather
+        # than crashing (and eligible for the CLAHE retry).
+        return PairResult(
+            a=a.name,
+            b=b.name,
+            transform=_IDENTITY_TRANSFORM,
+            good_matches=0,
+            inliers=0,
+            inlier_ratio=0.0,
+            rms_residual_px=float("inf"),
+            scale_drift=float("inf"),
+            accepted=False,
+            reject_code=Code.STITCH_INSUFFICIENT_MATCHES,
+            reject_message=(
+                f"no features detected in {a.name} or {b.name}"
+            ),
+            inlier_points_a=_EMPTY_POINTS,
+            inlier_points_b=_EMPTY_POINTS,
+            overlap_fraction=None,
+            overlap_mad=None,
+            overlap_mad_pregain=None,
+            similarity_transform=_IDENTITY_TRANSFORM,
+            similarity_scale=1.0,
+        )
+
     raw_matches = matcher.knnMatch(a.descriptors, b.descriptors, k=2)
 
     good = [
@@ -233,6 +302,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=_IDENTITY_TRANSFORM,
+            similarity_scale=1.0,
         )
 
     inlier_bool = inlier_mask.ravel().astype(bool)
@@ -250,9 +321,14 @@ def register_pair(
     if inliers >= _MIN_INLIERS_FOR_RIGID_FIT:
         transform = rigid_from_correspondences(src_inliers, dst_inliers)
         rms_residual_px = _rms_residual(transform, src_inliers, dst_inliers)
+        similarity_transform, similarity_scale = similarity_from_correspondences(
+            src_inliers, dst_inliers
+        )
     else:
         transform = _IDENTITY_TRANSFORM
         rms_residual_px = float("inf")
+        similarity_transform = _IDENTITY_TRANSFORM
+        similarity_scale = 1.0
 
     if inliers < MIN_PAIR_INLIERS or inlier_ratio < MIN_PAIR_INLIER_RATIO:
         return PairResult(
@@ -276,6 +352,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     if scale_drift > SCALE_DRIFT_FAIL:
@@ -298,6 +376,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     if rms_residual_px > MAX_PAIR_RMS_PX:
@@ -321,6 +401,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     return PairResult(
@@ -340,4 +422,6 @@ def register_pair(
         overlap_fraction=None,
         overlap_mad=None,
         overlap_mad_pregain=None,
+        similarity_transform=similarity_transform,
+        similarity_scale=similarity_scale,
     )

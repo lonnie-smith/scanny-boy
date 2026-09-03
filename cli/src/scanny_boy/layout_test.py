@@ -11,6 +11,7 @@ from scanny_boy.layout import (
     GainStat,
     StitchError,
     _largest_all_covered_rectangle,
+    global_rms,
     largest_valid_rect,
     solve_gains,
     solve_layout,
@@ -122,10 +123,14 @@ def _ground_truth_pair(
     noise_px=0.0,
     seed=0,
 ):
-    """Builds a PairResult whose transform and inlier correspondences are
-    exactly what register_pair would have produced for two frames placed at
-    the given ground-truth global poses, optionally with small measurement
-    noise on the correspondences."""
+    """Builds a PairResult whose similarity fit and inlier correspondences
+    are exactly what register_pair would have produced for two frames
+    placed at the given ground-truth global similarity poses (rotation,
+    translation, and per-frame scale), optionally with small measurement
+    noise on the correspondences. `transform`/`rms_residual_px` carry the
+    same rigid (scale-forced-to-1) relation as before: layout.py's scale,
+    rotation, and translation solves all read the similarity fields, not
+    these, so an exact rigid re-fit is not needed for these tests."""
     rng = np.random.default_rng(seed)
     height, width = frame_size
 
@@ -134,25 +139,26 @@ def _ground_truth_pair(
     translation_b = np.array(placement_b.translation)
 
     phi_ab_deg = placement_b.rotation_deg - placement_a.rotation_deg
-    u_ab = rotation_a.T @ (translation_b - translation_a)
+    sigma_ab = placement_b.scale / placement_a.scale
+    u_ab = rotation_a.T @ (translation_b - translation_a) / placement_a.scale
     rotation_ab = _rotation_matrix(phi_ab_deg)
 
     pts_b = rng.uniform([0, 0], [width, height], size=(n_points, 2))
-    pts_a = pts_b @ rotation_ab.T + u_ab
+    pts_a = sigma_ab * (pts_b @ rotation_ab.T) + u_ab
     if noise_px:
         pts_a = pts_a + rng.normal(0, noise_px, size=pts_a.shape)
 
-    transform = np.hstack([rotation_ab, u_ab.reshape(2, 1)])
+    similarity_transform = np.hstack([rotation_ab, u_ab.reshape(2, 1)])
 
     return PairResult(
         a=name_a,
         b=name_b,
-        transform=transform,
+        transform=similarity_transform,
         good_matches=n_points,
         inliers=n_points,
         inlier_ratio=1.0,
         rms_residual_px=noise_px if noise_px else 0.0,
-        scale_drift=0.0,
+        scale_drift=abs(sigma_ab - 1.0),
         accepted=True,
         reject_code=None,
         reject_message=None,
@@ -161,14 +167,18 @@ def _ground_truth_pair(
         overlap_fraction=None,
         overlap_mad=None,
         overlap_mad_pregain=None,
+        similarity_transform=similarity_transform,
+        similarity_scale=sigma_ab,
     )
 
 
 def _reversed_pair(pair: PairResult) -> PairResult:
-    rotation = pair.transform[:, :2]
-    translation = pair.transform[:, 2]
+    rotation = pair.similarity_transform[:, :2]
+    translation = pair.similarity_transform[:, 2]
+    scale = pair.similarity_scale
     rotation_inv = rotation.T
-    translation_inv = -rotation_inv @ translation
+    scale_inv = 1.0 / scale
+    translation_inv = -scale_inv * (rotation_inv @ translation)
     transform_inv = np.hstack([rotation_inv, translation_inv.reshape(2, 1)])
     return dataclasses.replace(
         pair,
@@ -177,6 +187,8 @@ def _reversed_pair(pair: PairResult) -> PairResult:
         transform=transform_inv,
         inlier_points_a=pair.inlier_points_b,
         inlier_points_b=pair.inlier_points_a,
+        similarity_transform=transform_inv,
+        similarity_scale=scale_inv,
     )
 
 
@@ -211,6 +223,82 @@ def test_recovers_a_known_layout():
             )
             < 1.0
         )
+        # No scale variation in this fixture: the scale solve must recover
+        # ~1 for every frame and leave rotation/translation exactly as the
+        # scale-1-only solver did — this is the regression that proves the
+        # scale solve is additive.
+        assert placement.scale == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_scaled_layout_is_recovered_with_geometric_mean_one():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0), scale=0.98),
+        FramePlacement("f1", 3.0, (500.0, 50.0), scale=1.03),
+        FramePlacement("f2", -2.0, (1000.0, 50.0), scale=1.01),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    pairs = [
+        _ground_truth_pair(
+            "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+        ),
+        _ground_truth_pair(
+            "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, seed=2
+        ),
+    ]
+
+    layout = solve_layout(names, _FRAME_SIZE, pairs)
+    solved_by_name = {p.name: p for p in layout.placements}
+
+    # Every pairwise scale ratio is exactly reproducible (noise_px=0), so
+    # the solve should recover each frame's scale relative to the others to
+    # a tight tolerance, up to the geometric-mean-1 gauge freedom.
+    log_offset = math.log(by_name["f0"].scale) - math.log(solved_by_name["f0"].scale)
+    for name in names:
+        expected_log_scale = math.log(by_name[name].scale) - log_offset
+        assert math.log(solved_by_name[name].scale) == pytest.approx(
+            expected_log_scale, abs=1e-3
+        )
+
+    geometric_mean_log = sum(
+        math.log(p.scale) for p in layout.placements
+    ) / len(layout.placements)
+    assert geometric_mean_log == pytest.approx(0.0, abs=1e-6)
+
+
+def test_canvas_size_matches_transformed_corners_under_a_scaled_layout():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0), scale=0.95),
+        FramePlacement("f1", 5.0, (500.0, 20.0), scale=1.05),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1"]
+    pairs = [
+        _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+    ]
+
+    layout = solve_layout(names, _FRAME_SIZE, pairs)
+
+    height, width = _FRAME_SIZE
+    corners_local = np.array(
+        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
+    )
+    all_corners = []
+    for placement in layout.placements:
+        matrix = placement.matrix()
+        rotation, translation = matrix[:, :2], matrix[:, 2]
+        all_corners.append(corners_local @ rotation.T + translation)
+    all_corners = np.vstack(all_corners)
+
+    min_xy = all_corners.min(axis=0)
+    max_xy = all_corners.max(axis=0)
+    expected_canvas = (
+        math.ceil(max_xy[0] - min_xy[0]),
+        math.ceil(max_xy[1] - min_xy[1]),
+    )
+    assert layout.canvas_size == expected_canvas
+    assert min_xy[0] == pytest.approx(0.0, abs=1e-6)
+    assert min_xy[1] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_shuffled_frame_order_gives_the_same_layout():
@@ -249,6 +337,7 @@ def test_shuffled_frame_order_gives_the_same_layout():
         assert base.rotation_deg == pytest.approx(scr.rotation_deg, abs=1e-6)
         assert base.translation[0] == pytest.approx(scr.translation[0], abs=1e-6)
         assert base.translation[1] == pytest.approx(scr.translation[1], abs=1e-6)
+        assert base.scale == pytest.approx(scr.scale, abs=1e-6)
 
 
 def test_disconnected_graph_is_rejected():
@@ -385,19 +474,124 @@ def test_l_shaped_layout_reports_a_high_spread_ratio():
     layout = solve_layout(names, _FRAME_SIZE, pairs)
 
     assert layout.strip_spread_ratio > STRIP_SPREAD_RATIO
+    assert layout.strip_axis is None
+
+
+def test_strip_axis_points_along_the_strip():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 3.0, (500.0, 50.0)),
+        FramePlacement("f2", -2.0, (1000.0, 50.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    pairs = [
+        _ground_truth_pair(
+            "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, noise_px=0.2, seed=1
+        ),
+        _ground_truth_pair(
+            "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, noise_px=0.2, seed=2
+        ),
+    ]
+
+    layout = solve_layout(names, _FRAME_SIZE, pairs)
+
+    assert layout.strip_axis is not None
+    ax, ay = layout.strip_axis
+    assert math.isclose(math.hypot(ax, ay), 1.0, abs_tol=1e-6)
+    # The frames run mostly along x (500px steps vs ~50px of y drift), so
+    # the axis must be nearly (+-1, ~0).
+    assert abs(ax) > 0.98
+
+
+def test_strip_axis_is_order_independent_up_to_sign():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 4.0, (500.0, 20.0)),
+        FramePlacement("f2", -3.0, (1000.0, -25.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    pair_01 = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, noise_px=0.0, seed=1
+    )
+    pair_12 = _ground_truth_pair(
+        "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, noise_px=0.0, seed=2
+    )
+
+    baseline = solve_layout(names, _FRAME_SIZE, [pair_01, pair_12])
+
+    scrambled_names = ["f0", "f2", "f1"]
+    scrambled_pairs = [_reversed_pair(pair_12), pair_01]
+    scrambled = solve_layout(scrambled_names, _FRAME_SIZE, scrambled_pairs)
+
+    assert baseline.strip_axis is not None
+    assert scrambled.strip_axis is not None
+    dot = (
+        baseline.strip_axis[0] * scrambled.strip_axis[0]
+        + baseline.strip_axis[1] * scrambled.strip_axis[1]
+    )
+    assert abs(dot) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_single_frame_has_no_strip_axis():
+    layout = solve_layout(["f0"], _FRAME_SIZE, [])
+    assert layout.strip_axis is None
+
+
+def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 3.0, (500.0, 50.0)),
+        FramePlacement("f2", -2.0, (1000.0, 50.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    strong_01 = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE,
+        n_points=200, noise_px=0.05, seed=1,
+    )
+    strong_12 = _ground_truth_pair(
+        "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE,
+        n_points=200, noise_px=0.05, seed=2,
+    )
+    # An accepted but weak f0-f2 pair: few inliers, high residual, and built
+    # from a placement 200px off the true one, so it pulls the solve away
+    # from the strong pairs' consensus if given equal say.
+    wrong_f2 = FramePlacement("f2", -2.0, (1000.0, 250.0))
+    weak_02 = _ground_truth_pair(
+        "f0", "f2", by_name["f0"], wrong_f2, _FRAME_SIZE,
+        n_points=41, noise_px=5.0, seed=3,
+    )
+
+    weighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+
+    monkeypatch.setattr("scanny_boy.layout._row_weight", lambda pair: 1.0)
+    unweighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+
+    def rms_over_strong_pairs(layout):
+        return global_rms(layout.placements, [strong_01, strong_12])
+
+    assert rms_over_strong_pairs(weighted) < rms_over_strong_pairs(unweighted)
 
 
 def test_rejects_an_implausibly_large_pair_rotation():
+    """A 60-degree RANSAC output is data gone wrong, not an internal
+    invariant: it must raise the stable residual code (which keeps the
+    negative CLAHE-retry eligible), not an AssertionError."""
     ground_truth = [
         FramePlacement("f0", 0.0, (0.0, 0.0)),
-        FramePlacement("f1", 50.0, (500.0, 0.0)),
+        FramePlacement("f1", 60.0, (500.0, 0.0)),
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
     pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(StitchError) as exc_info:
         solve_layout(names, _FRAME_SIZE, [pair])
+
+    assert exc_info.value.code is Code.STITCH_RESIDUAL_TOO_HIGH
+    assert "f0" in exc_info.value.message and "f1" in exc_info.value.message
 
 
 def test_largest_all_covered_rectangle_finds_the_true_maximum():

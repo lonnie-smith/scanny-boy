@@ -208,6 +208,23 @@ roll manifest as well as the conversion manifest, by parameterising
   the capture workflow, treated as a validation expectation rather than
   something the solver assumes.
 
+**Amendment (protocol version 8): the layout solves a per-frame scale.**
+The pairwise fit still produces a rigid transform, and that rigid fit is
+still what the acceptance gates measure. The *global layout* now places
+each frame with a similarity — rotation, translation, and one isotropic
+scale — solved from pairwise similarity scales as a log-space linear
+least-squares problem with a geometric-mean-1 anchor, structurally
+identical to `solve_gains`. Still three linear solves, still no SciPy in
+`layout.py`, still never an affine and never a homography.
+
+Why: film does not sit at a constant height above the stage, so a strip is
+not one magnification. With scale locked at 1 that mismatch was absorbed
+into rotation and translation, where it surfaced as residual
+misregistration at frame borders — the error the isotropic feather was
+hiding rather than showing. It could not be modelled honestly before radial
+distortion was corrected, because distortion produced a position-dependent
+apparent scale that a per-frame constant would have fitted wrongly.
+
 ## Colour, resampling, and blending
 
 - All geometric and photometric work happens in **linear light** — decode to
@@ -217,13 +234,24 @@ roll manifest as well as the conversion manifest, by parameterising
   Each frame warps into its own bounding box, not the full canvas. The
   validity mask warps with `INTER_NEAREST` and is eroded by 5 pixels (Lanczos4's
   support radius, plus one pixel of insurance).
-- **Blending is a linear feather in linear light**: per-frame weight is a
-  distance transform of the eroded mask, and the output is the weighted
-  average wherever any frame contributes weight. This is deliberate and
-  provisional — see the README's "How frames are registered and blended" for
-  the reasoning and the alternatives (a hard seam, a multi-band Laplacian
-  blend) that were set aside for now, worth revisiting with real rolls in
-  hand.
+- **Blending is a linear feather in linear light, ramped along the strip
+  axis only**: per-frame weight is the distance from the nearer end of the
+  frame's own extent along the strip's long axis (published on `Layout` as
+  `strip_axis`, a unit vector from the same SVD `strip_spread_ratio`
+  already computed), constant across the strip, floored so a covered pixel
+  always contributes; the output is the weighted average wherever any frame
+  contributes weight. A distance transform of the eroded mask (isotropic in
+  every direction) is kept only as the fallback when a layout has no
+  trustworthy strip axis. The isotropic version was replaced, not merely
+  revisited: it made a pixel's crossfade identical near the strip's long
+  borders and down its middle, but near those borders the nearest mask edge
+  is the border itself, not the seam, so both frames' weights collapsed
+  toward 50/50 there regardless of the true seam position, and residual
+  misregistration smeared into a curved band that widened toward the edges.
+  See the README's "How frames are registered and blended" for the
+  reasoning and the alternatives (a hard seam, an overlap-midline band, a
+  multi-band Laplacian blend) kept as named, deliberately deferred next
+  steps.
 - Pixels covered by no frame are `FILL_COLOR`, one named constant, initially
   black — recorded in the roll manifest so a file can be interpreted without
   knowing which build wrote it. `punchlist.md` already contemplates a
@@ -431,9 +459,10 @@ pixel value does (`punchlist.md`).
   `[A-Za-z0-9._-]` plus single-dash whitespace runs, 60 characters,
   case-insensitive collision suffixes). Renaming moves the folder to a new
   slug, then writes `roll_name` — refused while a run is active, enforced
-  client-side since the CLI is stateless between invocations. Deleting
-  moves the folder to the Trash via `NSWorkspace.recycle`, no CLI
-  involvement at all.
+  client-side since the CLI is stateless between invocations. Deleting is
+  two steps: the folder moves to the Trash via `NSWorkspace.recycle`, then
+  `roll delete` removes the database registration, so `roll list` drops the
+  roll instead of reporting it as `unreadable`.
 
 ## Roll invariants and additive runs
 

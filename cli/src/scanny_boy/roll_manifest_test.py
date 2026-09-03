@@ -132,12 +132,14 @@ def _completed_negative(**overrides) -> NegativeRecord:
                 rotation_deg=0.0,
                 translation=(0.0, 0.0),
                 gain=(1.0, 1.0, 1.0),
+                scale=0.998,
             ),
             FrameRecord(
                 name="_DSC4639.tif",
                 rotation_deg=1.5,
                 translation=(900.0, 3.0),
                 gain=(1.05, 0.98, 1.02),
+                scale=1.002,
             ),
         ],
         "pairs": [
@@ -166,14 +168,14 @@ def _completed_negative(**overrides) -> NegativeRecord:
 # --- shape, round trip, and the published contract ------------------------
 
 
-def test_v5_round_trips(tmp_path):
+def test_v6_round_trips(tmp_path):
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 5
+    assert loaded.manifest_format_version == 6
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id
@@ -225,6 +227,15 @@ def test_persisted_manifest_matches_the_published_schema(tmp_path):
     assert_matches_roll_manifest_schema(
         load_roll_manifest(tmp_path).to_dict(), load_roll_manifest_schema()
     )
+
+
+def test_schema_rejects_a_frame_record_missing_scale():
+    manifest = _manifest(negatives=[_completed_negative()])
+    data = manifest.to_dict()
+    del data["negatives"][0]["frames"][0]["scale"]
+
+    with pytest.raises(AssertionError):
+        assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
 
 
 def test_rebate_deviation_is_always_null(tmp_path):

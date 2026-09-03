@@ -37,6 +37,7 @@ public struct CLIEvent: Sendable, Hashable {
         case rollList
         case rollInfo
         case rollRenamed
+        case rollDeleted
         case metadataApplied
         case metadataSkipped
         case editRecorded
@@ -67,6 +68,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "roll_list": self = .rollList
             case "roll_info": self = .rollInfo
             case "roll_renamed": self = .rollRenamed
+            case "roll_deleted": self = .rollDeleted
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
             case "edit_recorded": self = .editRecorded
@@ -97,6 +99,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .rollList: "roll_list"
             case .rollInfo: "roll_info"
             case .rollRenamed: "roll_renamed"
+            case .rollDeleted: "roll_deleted"
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
             case .editRecorded: "edit_recorded"

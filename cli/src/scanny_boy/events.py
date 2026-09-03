@@ -33,6 +33,7 @@ class EventType(enum.StrEnum):
     ROLL_LIST = "roll_list"
     ROLL_INFO = "roll_info"
     ROLL_RENAMED = "roll_renamed"
+    ROLL_DELETED = "roll_deleted"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
     EDIT_RECORDED = "edit_recorded"
@@ -314,6 +315,17 @@ class RollRenamed(Event):
 
     roll_id: str
     roll_name: str
+    path: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollDeleted(Event):
+    """`roll delete`'s counterpart to `RollCreated`, carrying the deleted
+    roll's id and the (now unregistered) folder path."""
+
+    event_type: ClassVar[EventType] = EventType.ROLL_DELETED
+
+    roll_id: str
     path: str
 
 

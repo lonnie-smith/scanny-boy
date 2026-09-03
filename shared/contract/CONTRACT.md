@@ -9,14 +9,23 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 8 keeps version 7's roll model and adds **scan
-normalization** (docs/DECISIONS.md, "Normalization decisions"), renaming the
-prepare stage and
-adding a per-negative normalization record. Stage 1 is renamed: the `convert` subcommand is
-now `prepare` (the UI's "Convert" is reserved, unambiguously, for the whole
-`run`), and `progress` gains stage value `prepare` in place of `convert`.
-The stitch stage emits a new `normalize` step between `blend` and
-`write_stitched`, and the published TIFF is a normalized log-density
+Protocol version 8 keeps version 7's roll model and makes two changes:
+it adds a **per-frame scale** to the layout solve
+(docs/STITCH_QUALITY_PLAN.md section 2) and **scan normalization**
+(docs/DECISIONS.md, "Normalization decisions"), renaming the prepare stage
+and adding a per-negative normalization record. The layout change: the
+global layout is now a similarity (rotation, translation, and one isotropic
+scale per frame) rather than a rigid transform, because film does not sit
+at a constant height above the stage from frame to frame. Each frame record
+gains `scale` (positive number; geometric mean 1 across a negative's
+frames, the same gauge convention as `gain`). The pairwise fit and its
+acceptance gates (`rms_residual_px`, `scale_drift`) are unchanged — they
+still measure the scale-1 rigid fit; only the global layout's placement
+model changed. The normalization change: stage 1 is renamed — the `convert`
+subcommand is now `prepare` (the UI's "Convert" is reserved, unambiguously,
+for the whole `run`), and `progress` gains stage value `prepare` in place
+of `convert`. The stitch stage emits a new `normalize` step between `blend`
+and `write_stitched`, and the published TIFF is a normalized log-density
 working intermediate tagged with a second ICC profile — the roll manifest
 gains `published_icc_profile` and `check_roll_invariants` compares it
 alongside the intermediates' linear profile. Three new codes:
@@ -28,6 +37,7 @@ block and `normalized_fill`, its runs a `normalization_aggregate`, and its
 sources `scan_clip_fractions`. Every existing roll refuses new runs with
 `ROLL_INVARIANT_MISMATCH` (the processing-params invariant now carries the
 `normalize` bucket); the remedy is a new roll.
+>>>>>>> origin/main
 
 Protocol version 7 keeps version 6's roll model and adds **geometric
 calibration** (docs/GEOMETRIC_PLAN.md): `flatfield create` gains
@@ -72,6 +82,7 @@ scanny-boy roll init   --library DIR --name NAME
 scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
+scanny-boy roll delete --roll DIR
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
                       [--flatfield ID]
@@ -208,6 +219,14 @@ location). It does not enforce "refused while any run is active" — the CLI
 is stateless between invocations, so the app checks that itself before
 issuing the command.
 
+`roll delete` unregisters the roll from the library database — its runs,
+sources, negatives, and edits rows cascade away with it — and unlinks the
+negatives' rendered previews, emitting `roll_deleted` carrying `roll_id` and
+`path`. It never touches the roll's folder: the app moves that to the Trash
+itself (`NSWorkspace.recycle`) and then calls this command, so the next
+`roll list` no longer reports the roll. It fails with `ROLL_NOT_FOUND` for
+an unregistered roll.
+
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
 
@@ -281,7 +300,7 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
-record as delivered by `roll info` (format version 4; now persisted in the
+record as delivered by `roll info` (format version 6; now persisted in the
 library database rather than a JSON file in the roll folder).
 
 ### Event types
@@ -300,6 +319,7 @@ library database rather than a JSON file in the roll folder).
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
 | `roll_renamed` | A roll's folder was renamed. Carries `roll_id`, `roll_name`, and `path`. |
+| `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
@@ -411,7 +431,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 4` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 6` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |

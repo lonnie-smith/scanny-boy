@@ -1,14 +1,20 @@
 """Global layout solve: places every accepted-pair frame in one canvas
-coordinate system via two linear least-squares problems.
+coordinate system via three linear least-squares problems.
 
-Frame *i* maps its own pixel `p` into canvas space as `x = R(theta_i)*p +
-t_i`. A `PairResult` for (a, b) gives `p_a = R(phi_ab)*p_b + u_ab`.
-Requiring both routes into canvas space to agree gives exactly two
-relations: `theta_b = theta_a + phi_ab` and
-`t_b = t_a + R(theta_a) . u_ab`. Rotations are solved first (one linear
-least-squares problem in the scalar `theta`s), then translations (linear in
-`t` once `theta` is known). This two-step formulation is why section 4.1
-forbids SciPy — do not replace it with a nonlinear bundle adjustment.
+Frame *i* maps its own pixel `p` into canvas space as
+`x = s_i * R(theta_i)*p + t_i` (docs/STITCH_QUALITY_PLAN.md section 2: film
+does not sit at a constant height above the stage, so a strip is not one
+magnification). A `PairResult` for (a, b) contributes a **similarity**:
+`p_a = sigma_ab * R(phi_ab)*p_b + u_ab`. Requiring both routes into canvas
+space to agree gives three relations, each linear in the right variable:
+`log s_b - log s_a = log sigma_ab`, `theta_b = theta_a + phi_ab`, and
+`t_b = t_a + s_a * R(theta_a) . u_ab`. Scales are solved first (log-space,
+the same idiom as `solve_gains`'s geometric-mean-1 anchor), then rotations
+(one linear least-squares problem in the scalar `theta`s), then translations
+(linear in `t` once `s` and `theta` are known). This three-step formulation
+is why section 4.1 forbids SciPy — do not replace it with a nonlinear
+bundle adjustment. The model is a similarity — rigid plus one isotropic
+scale — never an affine, never a homography.
 
 `solve_layout` places frames geometrically; `solve_gains` is its photometric
 counterpart: per-channel gains reconciling lamp drift between frames, from
@@ -44,7 +50,20 @@ from scanny_boy.registration import PairResult, StitchError
 MAX_GLOBAL_RMS_PX = 12.0
 STRIP_SPREAD_RATIO = 0.15
 
+# Row weight for the layout solves: a pairwise transform from N inliers at
+# residual `rms` has parameter variance proportional to rms^2 / N, so the
+# natural row weight is sqrt(N) / rms — mirroring solve_gains's
+# sqrt(shared_count), where a mean over N pixels has variance ∝ 1/N. The
+# floor is a numerical guard, not a measured threshold — a synthetic
+# fixture can fit to essentially zero residual, which without it would give
+# one pair unbounded authority over the solve.
+RMS_WEIGHT_FLOOR_PX = 0.1
+
 _MAX_PAIR_ROTATION_DEG = 45.0
+
+
+def _row_weight(pair: PairResult) -> float:
+    return math.sqrt(pair.inliers) / max(pair.rms_residual_px, RMS_WEIGHT_FLOOR_PX)
 
 
 def _rotation_matrix(angle_deg: float) -> np.ndarray:
@@ -62,9 +81,10 @@ class FramePlacement:
     name: str
     rotation_deg: float
     translation: tuple[float, float]
+    scale: float = 1.0
 
     def matrix(self) -> np.ndarray:
-        rotation = _rotation_matrix(self.rotation_deg)
+        rotation = self.scale * _rotation_matrix(self.rotation_deg)
         translation = np.array(self.translation).reshape(2, 1)
         return np.hstack([rotation, translation])
 
@@ -76,6 +96,13 @@ class Layout:
     global_rms_px: float
     used_pairs: list[PairResult]
     strip_spread_ratio: float
+    # Unit vector, canvas space: the strip's long axis, for composite.py's
+    # strip-axis feather. None when fewer than two placements, the centres
+    # are coincident, or strip_spread_ratio says the layout is not
+    # strip-shaped — an axis fitted to a blob would feather along an
+    # arbitrary direction. The weight formula it feeds is symmetric under a
+    # sign flip of the axis, so no sign canonicalisation is needed here.
+    strip_axis: tuple[float, float] | None
 
 
 def check_connectivity(names: list[str], pairs: list[PairResult]) -> None:
@@ -120,25 +147,76 @@ def solve_layout(
     index = {name: i for i, name in enumerate(names)}
     n = len(names)
 
+    # Step 0: per-frame scale. One row per accepted pair whose similarity
+    # scale is usable (-1 in column a, +1 in column b, rhs log sigma_ab), in
+    # log space so the system is linear, plus an all-ones anchor row at rhs
+    # 0 — solve_gains's idiom exactly — so the solved scales' geometric mean
+    # is 1 and no frame's magnification is privileged. A non-positive
+    # similarity scale means a reflected fit, which the reflection guard in
+    # similarity_from_correspondences should already have excluded; such a
+    # row is dropped, not raised on, the same way solve_gains drops a
+    # degenerate channel mean.
+    scale_rows = []
+    scale_rhs = []
+    scale_row_weights = []
+    scale_covered: set[str] = set()
+    for pair in accepted_pairs:
+        if pair.similarity_scale <= 0:
+            continue
+        weight = _row_weight(pair)
+        row = np.zeros(n)
+        row[index[pair.a]] = -weight
+        row[index[pair.b]] = weight
+        scale_rows.append(row)
+        scale_rhs.append(weight * math.log(pair.similarity_scale))
+        scale_row_weights.append(weight)
+        scale_covered.add(pair.a)
+        scale_covered.add(pair.b)
+
+    if scale_rows:
+        scale_anchor_weight = math.sqrt(sum(w * w for w in scale_row_weights))
+        scale_anchor = np.zeros(n)
+        for name in scale_covered:
+            scale_anchor[index[name]] = scale_anchor_weight
+        scale_rows.append(scale_anchor)
+        scale_rhs.append(0.0)
+
+        log_scales, *_ = np.linalg.lstsq(
+            np.array(scale_rows), np.array(scale_rhs), rcond=None
+        )
+        scales = np.exp(log_scales)
+    else:
+        scales = np.ones(n)
+
     # Step 1: rotations. One row per accepted pair (-1 in column a, +1 in
-    # column b, rhs phi_ab), plus one anchor row fixing theta_0 = 0.
+    # column b, rhs phi_ab, taken from the pair's similarity fit now that
+    # scale is no longer forced to 1), plus one anchor row fixing theta_0
+    # = 0.
     rotation_rows = []
     rotation_rhs = []
+    rotation_row_weights = []
     for pair in accepted_pairs:
-        phi_ab_deg = _angle_deg(pair.transform[:, :2])
-        assert abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG, (
-            f"pair {pair.a}-{pair.b} rotation {phi_ab_deg} degrees exceeds "
-            f"{_MAX_PAIR_ROTATION_DEG} degrees; this is a bug upstream, "
-            "not a case this solver handles"
-        )
+        phi_ab_deg = _angle_deg(pair.similarity_transform[:, :2])
+        if not abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG:
+            # Data from `register_pair` (RANSAC output), not an internal
+            # invariant: a wildly wrong pair fit is a residual problem, and
+            # raising the stable code keeps it CLAHE-retry eligible.
+            raise StitchError(
+                Code.STITCH_RESIDUAL_TOO_HIGH,
+                f"pair {pair.a}-{pair.b} rotation {phi_ab_deg:.1f} degrees "
+                f"exceeds {_MAX_PAIR_ROTATION_DEG} degrees",
+            )
+        weight = _row_weight(pair)
         row = np.zeros(n)
-        row[index[pair.a]] = -1.0
-        row[index[pair.b]] = 1.0
+        row[index[pair.a]] = -weight
+        row[index[pair.b]] = weight
         rotation_rows.append(row)
-        rotation_rhs.append(np.deg2rad(phi_ab_deg))
+        rotation_rhs.append(weight * np.deg2rad(phi_ab_deg))
+        rotation_row_weights.append(weight)
 
+    rotation_anchor_weight = math.sqrt(sum(w * w for w in rotation_row_weights))
     anchor_row = np.zeros(n)
-    anchor_row[0] = 1.0
+    anchor_row[0] = rotation_anchor_weight
     rotation_rows.append(anchor_row)
     rotation_rhs.append(0.0)
 
@@ -146,35 +224,40 @@ def solve_layout(
         np.array(rotation_rows), np.array(rotation_rhs), rcond=None
     )
 
-    # Step 2: translations. With theta known, t_b - t_a = R(theta_a) . u_ab
-    # is linear in t. Two rows per accepted pair (x and y), plus two anchor
-    # rows fixing t_0 = (0, 0).
+    # Step 2: translations. With s and theta known,
+    # t_b - t_a = s_a * R(theta_a) . u_ab is linear in t (u_ab likewise
+    # taken from the pair's similarity fit). Two rows per accepted pair (x
+    # and y), plus two anchor rows fixing t_0 = (0, 0).
     translation_rows = []
     translation_rhs = []
+    translation_row_weights = []
     for pair in accepted_pairs:
         rotation_a = _rotation_matrix(np.degrees(theta[index[pair.a]]))
-        u_ab = pair.transform[:, 2]
-        predicted = rotation_a @ u_ab
+        u_ab = pair.similarity_transform[:, 2]
+        predicted = scales[index[pair.a]] * (rotation_a @ u_ab)
+        weight = _row_weight(pair)
+        translation_row_weights.append(weight)
 
         row_x = np.zeros(2 * n)
-        row_x[2 * index[pair.a]] = -1.0
-        row_x[2 * index[pair.b]] = 1.0
+        row_x[2 * index[pair.a]] = -weight
+        row_x[2 * index[pair.b]] = weight
         translation_rows.append(row_x)
-        translation_rhs.append(predicted[0])
+        translation_rhs.append(weight * predicted[0])
 
         row_y = np.zeros(2 * n)
-        row_y[2 * index[pair.a] + 1] = -1.0
-        row_y[2 * index[pair.b] + 1] = 1.0
+        row_y[2 * index[pair.a] + 1] = -weight
+        row_y[2 * index[pair.b] + 1] = weight
         translation_rows.append(row_y)
-        translation_rhs.append(predicted[1])
+        translation_rhs.append(weight * predicted[1])
 
+    translation_anchor_weight = math.sqrt(sum(w * w for w in translation_row_weights))
     anchor_x = np.zeros(2 * n)
-    anchor_x[0] = 1.0
+    anchor_x[0] = translation_anchor_weight
     translation_rows.append(anchor_x)
     translation_rhs.append(0.0)
 
     anchor_y = np.zeros(2 * n)
-    anchor_y[1] = 1.0
+    anchor_y[1] = translation_anchor_weight
     translation_rows.append(anchor_y)
     translation_rhs.append(0.0)
 
@@ -188,6 +271,7 @@ def solve_layout(
             name=names[i],
             rotation_deg=float(np.degrees(theta[i])),
             translation=(float(translations[i, 0]), float(translations[i, 1])),
+            scale=float(scales[i]),
         )
         for i in range(n)
     ]
@@ -217,6 +301,7 @@ def solve_layout(
                 p.translation[0] - min_xy[0],
                 p.translation[1] - min_xy[1],
             ),
+            scale=p.scale,
         )
         for p in placements
     ]
@@ -226,12 +311,17 @@ def solve_layout(
         math.ceil(max_xy[1] - min_xy[1]),
     )
 
+    ratio, axis = _strip_geometry(shifted_placements, frame_size)
+    if ratio > STRIP_SPREAD_RATIO:
+        axis = None
+
     return Layout(
         placements=shifted_placements,
         canvas_size=canvas_size,
         global_rms_px=global_rms(shifted_placements, accepted_pairs),
         used_pairs=accepted_pairs,
-        strip_spread_ratio=strip_spread_ratio(shifted_placements, frame_size),
+        strip_spread_ratio=ratio,
+        strip_axis=axis,
     )
 
 
@@ -345,11 +435,15 @@ def global_rms(placements: list[FramePlacement], pairs: list[PairResult]) -> flo
     return float(np.sqrt(np.mean(np.concatenate(squared_errors))))
 
 
-def strip_spread_ratio(
+def _strip_geometry(
     placements: list[FramePlacement], frame_size: tuple[int, int]
-) -> float:
-    """Placed frame centres, mean-subtracted; the ratio of the second
-    singular value to the first. A strip is near 0."""
+) -> tuple[float, tuple[float, float] | None]:
+    """One SVD of the placed, mean-subtracted frame centres, shared by
+    `strip_spread_ratio` (the ratio of the second singular value to the
+    first — a strip is near 0) and the strip axis (the first right-singular
+    vector) that `solve_layout` publishes on `Layout` for composite.py's
+    feather. The axis is None whenever the ratio is: fewer than two
+    placements, or the largest singular value is 0 (coincident centres)."""
     height, width = frame_size
     local_center = np.array([width / 2.0, height / 2.0])
 
@@ -359,12 +453,28 @@ def strip_spread_ratio(
         rotation, translation = matrix[:, :2], matrix[:, 2]
         centers.append(rotation @ local_center + translation)
     centers = np.array(centers)
+
+    if len(centers) < 2:
+        return 0.0, None
+
     centers = centers - centers.mean(axis=0)
 
-    singular_values = np.linalg.svd(centers, compute_uv=False)
+    _u, singular_values, vt = np.linalg.svd(centers)
     if singular_values[0] == 0:
-        return 0.0
-    return float(singular_values[1] / singular_values[0])
+        return 0.0, None
+
+    axis = (float(vt[0, 0]), float(vt[0, 1]))
+    ratio = float(singular_values[1] / singular_values[0])
+    return ratio, axis
+
+
+def strip_spread_ratio(
+    placements: list[FramePlacement], frame_size: tuple[int, int]
+) -> float:
+    """Placed frame centres, mean-subtracted; the ratio of the second
+    singular value to the first. A strip is near 0."""
+    ratio, _axis = _strip_geometry(placements, frame_size)
+    return ratio
 
 
 def _largest_all_covered_rectangle(mask: np.ndarray) -> tuple[int, int, int, int]:

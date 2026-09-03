@@ -161,68 +161,70 @@ def run_full(
     combined_total = convert_total + stitch_weighted_total
 
     try:
-        convert_outcome = run_convert(
-            input_dir,
-            files,
-            resolved_work_dir,
-            per_negative,
-            run_id=run_id,
-            overwrite=False,
-            jobs=jobs,
-            cancel=cancel,
-            emit=emit,
-            completed_offset=0,
-            total_override=combined_total,
-            flatfield_profile_id=flatfield_profile_id,
-        )
-    except ConvertFailure as exc:
-        raise RunFailure(exc.code, exc.message) from exc
-
-    stitch_outcome: StitchOutcome | None = None
-    if convert_outcome.status != "cancelled":
-        stitch_emit = _wrap_emit_for_stitch(
-            emit,
-            completed_offset=convert_total,
-            weighted_total=stitch_weighted_total,
-            combined_total=combined_total,
-        )
         try:
-            stitch_outcome = run_stitch(
+            convert_outcome = run_convert(
+                input_dir,
+                files,
                 resolved_work_dir,
-                out_dir,
+                per_negative,
                 run_id=run_id,
                 overwrite=False,
-                allow_partial=True,
                 jobs=jobs,
                 cancel=cancel,
-                emit=stitch_emit,
+                emit=emit,
+                completed_offset=0,
+                total_override=combined_total,
                 flatfield_profile_id=flatfield_profile_id,
             )
-        except StitchError as exc:
+        except ConvertFailure as exc:
             raise RunFailure(exc.code, exc.message) from exc
 
-    if convert_outcome.status == "cancelled" or (
-        stitch_outcome is not None and stitch_outcome.status == "cancelled"
-    ):
-        status = "cancelled"
-    elif convert_outcome.status == "partial" or (
-        stitch_outcome is not None and stitch_outcome.status == "partial"
-    ):
-        status = "partial"
-    else:
-        status = "complete"
+        stitch_outcome: StitchOutcome | None = None
+        if convert_outcome.status != "cancelled":
+            stitch_emit = _wrap_emit_for_stitch(
+                emit,
+                completed_offset=convert_total,
+                weighted_total=stitch_weighted_total,
+                combined_total=combined_total,
+            )
+            try:
+                stitch_outcome = run_stitch(
+                    resolved_work_dir,
+                    out_dir,
+                    run_id=run_id,
+                    overwrite=False,
+                    allow_partial=True,
+                    jobs=jobs,
+                    cancel=cancel,
+                    emit=stitch_emit,
+                    flatfield_profile_id=flatfield_profile_id,
+                )
+            except StitchError as exc:
+                raise RunFailure(exc.code, exc.message) from exc
 
-    # Deleting a folder the user pointed at is never this program's decision
-    # (section 3.6): only a work dir this run created is ever removed, and
-    # that now happens unconditionally, regardless of outcome.
-    if created_work_dir:
-        shutil.rmtree(resolved_work_dir, ignore_errors=True)
+        if convert_outcome.status == "cancelled" or (
+            stitch_outcome is not None and stitch_outcome.status == "cancelled"
+        ):
+            status = "cancelled"
+        elif convert_outcome.status == "partial" or (
+            stitch_outcome is not None and stitch_outcome.status == "partial"
+        ):
+            status = "partial"
+        else:
+            status = "complete"
 
-    return RunOutcome(
-        run_id=run_id,
-        status=status,
-        convert=convert_outcome,
-        stitch=stitch_outcome,
-        work_dir=resolved_work_dir,
-        work_dir_kept=not created_work_dir,
-    )
+        return RunOutcome(
+            run_id=run_id,
+            status=status,
+            convert=convert_outcome,
+            stitch=stitch_outcome,
+            work_dir=resolved_work_dir,
+            work_dir_kept=not created_work_dir,
+        )
+    finally:
+        # Deleting a folder the user pointed at is never this program's
+        # decision (section 3.6): only a work dir this run created is ever
+        # removed, and that happens unconditionally — on any outcome,
+        # including the failures that raise — since a rerun regenerates it.
+        if created_work_dir:
+            shutil.rmtree(resolved_work_dir, ignore_errors=True)
