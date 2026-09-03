@@ -74,13 +74,20 @@ def _write_export(
     destination: Path, image: np.ndarray, negative: NegativeRecord
 ) -> None:
     tmp_path = destination.with_suffix(destination.suffix + ".tmp")
-    tifffile.imwrite(
-        tmp_path,
-        image,
-        description=export_image_description(negative),
-        iccprofile=load_icc_profile(ProfileKind.DENSITY),
-    )
-    tmp_path.replace(destination)
+    try:
+        tifffile.imwrite(
+            tmp_path,
+            image,
+            description=export_image_description(negative),
+            iccprofile=load_icc_profile(ProfileKind.DENSITY),
+        )
+        tmp_path.replace(destination)
+    except BaseException:
+        # A failed write (disk full, permissions) must not leave a partial
+        # .tmp file behind in the user's output folder — the same rule
+        # apply_metadata.rewrite_date_time_original already follows.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def run_export(

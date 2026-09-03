@@ -335,7 +335,10 @@ def _validate_selection(
 
 
 def _read_settings_and_check_consistency(
-    input_dir: Path, selected: list[str]
+    input_dir: Path,
+    selected: list[str],
+    emit: EmitFn = lambda event: None,
+    run_id: str = "",
 ) -> list[SourceSettings]:
     settings_list: list[SourceSettings] = []
     for name in selected:
@@ -353,9 +356,19 @@ def _read_settings_and_check_consistency(
             ) from exc
 
     try:
-        check_consistency(settings_list)
+        result = check_consistency(settings_list)
     except ConsistencyError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
+
+    # Optional-tag warnings (a missing lens model today) reach `probe`'s
+    # stream; `prepare`/`run` must emit them too, so the same selection
+    # never warns under one command and stays silent under another.
+    for warning in result.warnings:
+        emit(
+            WarningEvent(
+                run_id=run_id, code=warning.code, message=warning.message
+            )
+        )
 
     return settings_list
 
@@ -712,7 +725,9 @@ def run_convert(
     except OutputFolderError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
-    settings_list = _read_settings_and_check_consistency(input_dir, selected)
+    settings_list = _read_settings_and_check_consistency(
+        input_dir, selected, emit=emit, run_id=run_id
+    )
     source_records = hash_sources(input_dir, selected)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
     if profile is not None:

@@ -415,7 +415,13 @@ def load_roll(roll_dir: Path) -> RollManifest:
 
 def _negative_row(session: Session, roll_dir: Path, negative_id: str) -> NegativeRow:
     negative = session.get(NegativeRow, negative_id)
-    if negative is None:
+    # `negative_id` is a globally-unique primary key and the argument is
+    # user-supplied, so an id that belongs to a *different* roll must be
+    # refused here, not silently edited under the wrong roll's name.
+    roll = session.scalar(
+        select(RollRow).where(RollRow.folder_path == _folder_key(roll_dir))
+    )
+    if negative is None or roll is None or negative.roll_id != roll.roll_id:
         raise RollNotRegisteredError(
             f"{negative_id} is not a negative of {_folder_key(roll_dir)}"
         )
