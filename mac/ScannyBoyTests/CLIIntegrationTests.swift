@@ -79,9 +79,11 @@ struct CLIIntegrationTests {
         .enabled(if: CLIIntegrationTests.canRun, CLIIntegrationTests.unavailable)
     )
     func probeWithSelectionReportsGroups() async throws {
+        // Staged: only the six sample files, so the selection is contiguous
+        // in its catalogue.
         let session = try Self.runner().session(
             for: .probe(
-                input: SampleFixtures.directory,
+                input: SampleFixtures.stagedDirectory(),
                 files: SampleFixtures.files,
                 perNegative: 3
             )
@@ -116,6 +118,7 @@ struct CLIIntegrationTests {
     @Test(
         "a forced stop leaves a running manifest that the next run recovers",
         .enabled(if: CLIIntegrationTests.canRun, CLIIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(5))
     )
     func forcedStopIsRecoveredByTheNextRun() async throws {
@@ -124,8 +127,10 @@ struct CLIIntegrationTests {
             try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
             let runner = try Self.runner()
-            let command = CLICommand.convert(
-                input: SampleFixtures.directory,
+            // Staged: only the six sample files, so the selection is
+            // contiguous in its catalogue.
+            let command = try CLICommand.convert(
+                input: SampleFixtures.stagedDirectory(),
                 files: SampleFixtures.files,
                 out: out,
                 perNegative: 3,

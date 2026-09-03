@@ -36,3 +36,6 @@ packages = ["src/scanny_boy"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+markers = [
+    "slow: really decodes sample RAW frames, stitches real scans, or runs the packaged app (minutes); skipped unless pytest is passed --slow",
+]

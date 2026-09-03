@@ -25,6 +25,7 @@ struct RunIntegrationTests {
     // closure, which cannot reach a main-actor-isolated property.
     private nonisolated static var canRun: Bool {
         HostBundle.isAvailable && SampleFixtures.areAvailable
+            && BareLightReference.isAvailable
     }
 
     private nonisolated static var unavailable: Comment {
@@ -42,6 +43,9 @@ struct RunIntegrationTests {
                 keeping earlier negatives — did not run.
                 """
             )
+        }
+        if !BareLightReference.isAvailable {
+            reasons.append(BareLightReference.unavailableComment.rawValue)
         }
         return Comment(rawValue: reasons.joined(separator: "\n"))
     }
@@ -102,15 +106,18 @@ struct RunIntegrationTests {
         Issue.record("timed out waiting for the run to reach the expected state")
     }
 
-    /// `flatfield create` for real, through the CLI, from the first sample
-    /// NEF — the app requires a profile on Add Scans, so every scenario below
-    /// runs against one that actually exists. The decoded pixels of a bare
-    /// light source these are not, but nothing here asserts on falloff.
+    /// `flatfield create` for real, through the CLI, from the synthetic
+    /// bare-light DNG (`BareLightReference`) — the app requires a profile on
+    /// Add Scans, so every scenario below runs against one that actually
+    /// exists. A real film frame must not stand in: its scene content
+    /// survives the gain map's smoothing and corrupts the correction, which
+    /// is what failed these runs with `STITCH_RESIDUAL_TOO_HIGH`. Nothing
+    /// here asserts on falloff.
     private static func createFlatFieldProfile() async throws -> String {
         let runner = try Self.runner()
         let session = runner.session(
             for: .flatfieldCreate(
-                reference: SampleFixtures.directory.appending(path: SampleFixtures.files[0]),
+                reference: BareLightReference.url,
                 name: "Integration \(UUID().uuidString.prefix(8))"
             )
         )
@@ -126,8 +133,10 @@ struct RunIntegrationTests {
         throw CocoaError(.fileNoSuchFile)
     }
 
-    /// A configuration model pointed at the sample folder and a real roll,
-    /// with its catalogue probe already applied and a real profile chosen.
+    /// A configuration model pointed at a staged sample folder (only the
+    /// six sample files, so a selection is contiguous in its catalogue) and
+    /// a real roll, with its catalogue probe already applied and a real
+    /// profile chosen.
     private static func configuredModel(
         roll: URL,
         select: [String]
@@ -135,14 +144,20 @@ struct RunIntegrationTests {
         let model = ConfigurationModel(
             runner: try runner(), defaults: isolatedDefaults()
         )
-        model.inputFolder = SampleFixtures.directory
+        model.inputFolder = try SampleFixtures.stagedDirectory()
         await model.waitForPendingProbes()
         model.rollURL = roll
-        model.flatFieldProfileID = try await Self.createFlatFieldProfile()
         model.selectedFiles = Set(select)
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
         model.perNegative = 3
+        // The roll fetch pre-selects the profile a first run locked the roll
+        // to — the app does not let the user choose differently. Only a roll
+        // with no profile yet (the first run into it) gets a fresh one.
+        await model.waitForPendingProbes()
+        if model.flatFieldProfileID == nil {
+            model.flatFieldProfileID = try await Self.createFlatFieldProfile()
+        }
         await model.waitForPendingProbes()
         return model
     }
@@ -162,6 +177,7 @@ struct RunIntegrationTests {
     @Test(
         "six sample files at three per negative stitch both negatives",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(5))
     )
     func sixFilesStitchBothNegatives() async throws {
@@ -277,6 +293,7 @@ struct RunIntegrationTests {
     @Test(
         "a rerun over the same selection adopts the earlier negative in place",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(10))
     )
     func rerunAdoptsTheEarlierNegative() async throws {
@@ -335,6 +352,7 @@ struct RunIntegrationTests {
     @Test(
         "cancelling after the first negative keeps it and discards the second",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(10))
     )
     func cancelKeepsCompletedGroups() async throws {
@@ -346,9 +364,10 @@ struct RunIntegrationTests {
         // A plain `convert`, not `run` — this test is about `RunModel`'s own
         // cancellation bookkeeping over `item_done`/`group_done`, not about
         // rolls at all, so it keeps Phase 1's bare output folder rather than
-        // a roll `--out` no longer accepts for `run`.
-        let command = CLICommand.convert(
-            input: SampleFixtures.directory,
+        // a roll `--out` no longer accepts for `run`. The input is staged:
+        // only the six sample files, so the selection is contiguous.
+        let command = try CLICommand.convert(
+            input: SampleFixtures.stagedDirectory(),
             files: SampleFixtures.files,
             out: out,
             perNegative: 3,
@@ -411,6 +430,7 @@ struct RunIntegrationTests {
     @Test(
         "re-stitching a supplied work directory reuses its intermediates and stitches again",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(5))
     )
     func restitchReusesAKeptWorkDirectory() async throws {

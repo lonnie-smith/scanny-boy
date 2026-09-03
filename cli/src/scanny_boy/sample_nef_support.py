@@ -8,6 +8,7 @@ Expected values are recorded in appendix A; do not re-derive them.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -35,3 +36,25 @@ requires_real_samples = pytest.mark.skipif(
         f"docs/IMPLEMENTATION_PLAN.md appendix A); missing: {_missing}"
     ),
 )
+
+
+def stage_samples(tmp_path: Path, names: list[str]) -> Path:
+    """A scratch input directory holding only `names`, copied from the
+    shared fixtures.
+
+    The fixtures directory keeps growing (it now also holds the gate-B
+    stitching scans and later sessions), so a selection of the appendix A
+    sample files is no longer contiguous in *its* catalogue. Probing and
+    converting the staged directory gives the tests the catalogue they were
+    written against — only the six named files, contiguous — while still
+    reading the real sample bytes. `shutil.copy2` clones on APFS, so the
+    copies cost no real space or time; the catalogue check refuses
+    symlinks that resolve outside the input folder, so copying is the one
+    supported route. Tests that must *mutate* a source file use
+    `pipeline_test._copy_samples` for the same reason.
+    """
+    input_dir = tmp_path / "samples"
+    input_dir.mkdir()
+    for name in names:
+        shutil.copy2(FIXTURES_DIR / name, input_dir / name)
+    return input_dir

@@ -49,6 +49,7 @@ from scanny_boy.sample_nef_support import (
     NEGATIVE_2,
     REAL_SAMPLE_FILES,
     requires_real_samples,
+    stage_samples,
 )
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
@@ -171,8 +172,12 @@ def test_a_failed_frame_removes_only_its_own_group_staging_and_later_groups_cont
     out_dir.mkdir()
     events = []
 
+    # Staged, so the six-file selection is contiguous in its catalogue: the
+    # shared fixtures directory also holds the gate-B stitching scans and
+    # later sessions between and around these frames.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     outcome = run_convert(
-        FIXTURES_DIR,
+        input_dir,
         list(REAL_SAMPLE_FILES),
         out_dir,
         3,
@@ -207,9 +212,10 @@ def test_no_staging_directory_survives_success_or_handled_failure(monkeypatch, t
     _install_fast_decode(monkeypatch, fail_for={bad_file})
     out_dir = tmp_path / "out"
     out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
 
     run_convert(
-        FIXTURES_DIR,
+        input_dir,
         list(REAL_SAMPLE_FILES),
         out_dir,
         3,
@@ -433,6 +439,7 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
 # fixed sleep".
 
 
+@pytest.mark.slow
 @requires_real_samples
 def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
     """The headline guarantee of this chunk: turning on threads changes
@@ -442,9 +449,10 @@ def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
     threaded_dir = tmp_path / "threaded"
     serial_dir.mkdir()
     threaded_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
 
     serial = run_convert(
-        FIXTURES_DIR,
+        input_dir,
         list(REAL_SAMPLE_FILES),
         serial_dir,
         3,
@@ -453,7 +461,7 @@ def test_jobs_1_and_jobs_4_produce_identical_pixels_and_metadata(tmp_path):
         emit=lambda e: None,
     )
     threaded = run_convert(
-        FIXTURES_DIR,
+        input_dir,
         list(REAL_SAMPLE_FILES),
         threaded_dir,
         3,
@@ -815,11 +823,12 @@ def test_cancellation_discards_the_current_group_and_keeps_completed_ones(
     started, release, _decoded = _install_gated_decode(monkeypatch, gate_on=NEGATIVE_2[0])
     out_dir = tmp_path / "out"
     out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     events: list = []
     token = CancellationToken()
 
     thread, result = _run_convert_in_thread(
-        input_dir=FIXTURES_DIR,
+        input_dir=input_dir,
         files=list(REAL_SAMPLE_FILES),
         output_dir=out_dir,
         per_negative=3,
@@ -930,6 +939,7 @@ def test_queued_work_is_cancelled_and_workers_stop_before_staging_is_deleted(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     token = CancellationToken()
 
     active = {"count": 0}
@@ -957,7 +967,7 @@ def test_queued_work_is_cancelled_and_workers_stop_before_staging_is_deleted(
     monkeypatch.setattr("scanny_boy.pipeline.shutil.rmtree", _recording_rmtree)
 
     thread, result = _run_convert_in_thread(
-        input_dir=FIXTURES_DIR,
+        input_dir=input_dir,
         files=list(REAL_SAMPLE_FILES),
         output_dir=out_dir,
         per_negative=6,

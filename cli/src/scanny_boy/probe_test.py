@@ -24,6 +24,7 @@ from scanny_boy.sample_nef_support import (
     NEGATIVE_2,
     REAL_SAMPLE_FILES,
     requires_real_samples,
+    stage_samples,
 )
 
 # The rolls the --roll tests probe are built by a genuine `stitch` through
@@ -128,16 +129,13 @@ def test_probe_missing_input_folder_is_no_files(tmp_path):
 
 
 @requires_real_samples
-def test_probe_with_files_six_sample_files_groups_by_three():
-    outcome, warnings = _run_probe_collecting_warnings(
-        FIXTURES_DIR, list(REAL_SAMPLE_FILES), 3
-    )
+def test_probe_with_files_six_sample_files_groups_by_three(tmp_path):
+    # The staged directory holds only the six sample files, so the selection
+    # is contiguous in its catalogue and the assertions are plain equality.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    outcome, warnings = _run_probe_collecting_warnings(input_dir, list(REAL_SAMPLE_FILES), 3)
 
-    # A prefix, not the whole catalogue: the fixtures directory also holds
-    # Phase 2's gate-B stitching scans, captured 27 days later. That makes this
-    # a stronger ordering check than an equality — it proves the canonical sort
-    # orders two capture sessions by timestamp, not just one.
-    assert outcome.catalogue[: len(REAL_SAMPLE_FILES)] == REAL_SAMPLE_FILES
+    assert outcome.catalogue == list(REAL_SAMPLE_FILES)
     assert outcome.groups == [
         ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF"],
         ["_DSC4644.NEF", "_DSC4645.NEF", "_DSC4646.NEF"],
@@ -146,8 +144,30 @@ def test_probe_with_files_six_sample_files_groups_by_three():
 
 
 @requires_real_samples
-def test_probe_with_files_non_contiguous_selection_is_rejected():
-    # Per appendix A: frames 1, 2, 4, 5, 6 skip frame 3 in canonical order.
+def test_probe_without_files_orders_two_capture_sessions_by_timestamp():
+    """The full fixtures catalogue — sample files plus the gate-B stitching
+    scans and later sessions — is the strong ordering check: the canonical
+    sort must interleave capture sessions by timestamp, so the appendix A
+    sample files appear in catalogue order. The block itself is not
+    contiguous any more (4641-4643 were captured between the two
+    negatives), so this asserts an in-order subsequence, not equality."""
+    outcome, warnings = _run_probe_collecting_warnings(FIXTURES_DIR, None, 3)
+
+    assert warnings == []
+    catalogue = outcome.catalogue
+    search_from = 0
+    for name in REAL_SAMPLE_FILES:
+        found = catalogue.index(name, search_from)
+        search_from = found + 1
+
+
+@requires_real_samples
+def test_probe_with_files_non_contiguous_selection_is_rejected(tmp_path):
+    # Appendix A: the six sample files are one uninterrupted run in canonical
+    # order, so dropping the third (4640) leaves frames 1, 2, 4, 5, 6 — a gap.
+    # Staged, so the gap comes from the selection alone, not from whatever
+    # else the shared fixtures directory happens to hold.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     files = [
         "_DSC4638.NEF",
         "_DSC4639.NEF",
@@ -157,15 +177,16 @@ def test_probe_with_files_non_contiguous_selection_is_rejected():
     ]
 
     with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(FIXTURES_DIR, files, 3)
+        run_probe(input_dir, files, 3)
 
     assert excinfo.value.code == Code.NON_CONTIGUOUS_SELECTION
 
 
 @requires_real_samples
-def test_probe_with_files_not_divisible_explains_nearest_counts():
+def test_probe_with_files_not_divisible_explains_nearest_counts(tmp_path):
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 4)
+        run_probe(input_dir, list(REAL_SAMPLE_FILES), 4)
 
     assert excinfo.value.code == Code.NOT_DIVISIBLE
     assert "4" in excinfo.value.message
@@ -449,6 +470,7 @@ def test_roll_overlap_detects_renamed_file_by_hash(tmp_path):
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_roll_overlap_detects_regrouped_sources(tmp_path):
     """Section 3.5: a selection whose grouping straddles the roll's negative
     boundaries — here the tail of negative 1 plus the head of negative 2 in
@@ -457,8 +479,13 @@ def test_roll_overlap_detects_regrouped_sources(tmp_path):
     this straddle is how a regroup reaches the roll."""
     roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
 
+    # Staged so the straddling selection is contiguous in its catalogue: the
+    # full fixtures directory holds frames 4641-4643 between the two
+    # negatives, which would make this selection a gap rather than a
+    # straddle.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     outcome = run_probe(
-        FIXTURES_DIR, ["_DSC4639.NEF", "_DSC4640.NEF", "_DSC4644.NEF"], 3, roll_dir=roll
+        input_dir, ["_DSC4639.NEF", "_DSC4640.NEF", "_DSC4644.NEF"], 3, roll_dir=roll
     )
 
     assert [entry.group_index for entry in outcome.roll_overlap] == [0, 0]
@@ -475,12 +502,14 @@ def test_roll_overlap_detects_regrouped_sources(tmp_path):
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_probe_accepts_changed_shots_per_negative(tmp_path):
     """`shots_per_negative` is each batch's choice, never the roll's, so a
     selection grouped differently from every earlier run still validates."""
     roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1, NEGATIVE_2])
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
 
-    outcome = run_probe(FIXTURES_DIR, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
+    outcome = run_probe(input_dir, list(REAL_SAMPLE_FILES), 2, roll_dir=roll)
 
     assert outcome.catalogue
 
