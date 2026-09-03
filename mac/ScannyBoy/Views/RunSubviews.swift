@@ -63,6 +63,7 @@ enum RunStepName {
         case .solve: "Solving layout"
         case .warp: "Warping frames"
         case .blend: "Blending"
+        case .normalize: "Normalizing"
         case .writeStitched: "Writing stitched TIFF"
         case .unknown(let name): name
         }

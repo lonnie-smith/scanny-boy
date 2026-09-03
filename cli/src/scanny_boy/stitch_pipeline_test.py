@@ -21,7 +21,7 @@ from scanny_boy.events import (
     Stage,
     WarningEvent,
 )
-from scanny_boy.icc_profile import PROFILE_FILENAME, PROFILE_SHA256, load_icc_profile
+from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
 from scanny_boy.linear import encode_from_linear
 from scanny_boy.manifest import (
     CuratedMetadata,
@@ -34,7 +34,7 @@ from scanny_boy.manifest import (
     write_manifest,
 )
 from scanny_boy.output_folder import (
-    CONVERT_RULES,
+    PREPARE_RULES,
     ROLL_RULES,
     OutputFolderError,
     plan_rerun,
@@ -216,7 +216,7 @@ def _make_work_dir(
             film_date=film_date,
             shots_per_negative=shots_per_negative,
             processing_params={"gamma": [1.8, 16]},
-            icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+            icc_profile=profile_record(ProfileKind.LINEAR),
             source_order=source_order,
             sources=sources,
             curated_metadata=CuratedMetadata(
@@ -267,6 +267,7 @@ def _roll_invariants(work_dir: Path) -> RollInvariants:
     return RollInvariants(
         processing_params=work.processing_params,
         icc_profile_sha256=work.icc_profile["sha256"],
+        published_icc_profile_sha256=work.icc_profile["sha256"],
         stitch_params={},
     )
 
@@ -859,7 +860,7 @@ def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     seeded = load_roll_manifest(out_dir)
     assert seeded.processing_params == {"gamma": [1.8, 16]}
     assert seeded.stitch_params["detector"] == DETECTOR
-    assert seeded.icc_profile == {"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256}
+    assert seeded.icc_profile == profile_record(ProfileKind.LINEAR)
 
 
 def test_second_stitch_adopts_the_first_negative(tmp_path):
@@ -1075,7 +1076,7 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
     # Default rules are Phase 1's rules, and passing them explicitly is
     # identical to omitting them.
     implicit = plan_rerun(convert_out, phase_one)
-    explicit = plan_rerun(convert_out, phase_one, rules=CONVERT_RULES)
+    explicit = plan_rerun(convert_out, phase_one, rules=PREPARE_RULES)
     assert implicit == explicit
     assert implicit.existing_manifest is not None
     assert sorted(implicit.conflicting_outputs) == sorted(

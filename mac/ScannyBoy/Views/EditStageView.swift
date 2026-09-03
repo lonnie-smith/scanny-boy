@@ -31,7 +31,7 @@ struct EditStageView: View {
                 ContentUnavailableView(
                     "No Negatives Yet",
                     systemImage: "photo.stack",
-                    description: Text("Stitch scans into this roll to see them here.")
+                    description: Text("Convert scans into this roll to see them here.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

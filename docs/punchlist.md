@@ -117,3 +117,45 @@ pieces:
   meaningful fraction of `RANSAC_REPROJ_PX`, switching
   `detection.build_detection_image` to the green channel (and re-measuring
   `DETECTION_LONG_EDGE` / `USE_CLAHE`) becomes worthwhile.
+
+Normalization (docs/DECISIONS.md, "Normalization decisions"; protocol
+version 8) deferred pieces:
+
+* **Roll-consistent colour bounds (D-4).** The orange mask and the lamp are
+  constant across a roll; the scene content is not. Record exists
+  (`normalization_aggregate`); `--colour-bounds run-median` is the likely
+  shape of the fix.
+* **Run-propagated film base (D-3's staging step 2).** Film base is a
+  property of the *roll*; Dmin measured from whichever negatives do show
+  rebate can set the ceiling and the thin-end colour reference for every
+  negative in the run, including tight ones. Needs the per-negative
+  `log10(t_ref / t_n)` exposure correction from the recorded raw
+  `base_density`. Subsumes D-4's colour axis with a better estimator.
+* **The five unmeasured rebate constants** (`REBATE_ANCHOR_PERCENTILE`,
+  `REBATE_DENSITY_TOLERANCE`, `REBATE_MIN_AREA_FRACTION`,
+  `REBATE_MAX_SPREAD`, `REBATE_MIN_SEPARATION`) — provisional and
+  unmeasured, same status as `MIN_GAIN_OVERLAP_PX` / `GAIN_DRIFT_WARN`.
+  Fold into the same user gate as the other unmeasured thresholds: run the
+  detector over real rolls with a dump of `mask_fraction`, `base_density`,
+  whether it fired, and the per-channel clip fraction inside the mask.
+  Until then, a detector that never fires is the safe failure.
+* **`rebate_deviation_px` retired via the rebate mask** (§3.13's bonus).
+  Given the rebate mask, the edge's deviation from the solved strip axis
+  falls out nearly for free.
+* **Channel unmix / spectral crosstalk.** Deferred entirely. When it comes
+  back: a 3×3 on the raw log densities, slotted between `to_log_density`
+  and `analyze_bounds` — and it invalidates every roll's `normalize_params`.
+* **Intermediate-precision measurement (N-1's measurement task).** Decode
+  one real negative's frames, composite through the current linear-uint16
+  path and a float32 path, normalize both, report RMS against grain sigma.
+  Within a quarter of grain: close out. Otherwise: a new plan for log
+  intermediates.
+* **Intermediate precision itself** stays linear uint16 (§1.4 of the plan);
+  changing it touches `linear.py`, `tiff_writer.py`, `flatfield`, the ICC
+  story, and most of the test suite.
+* **Print-stage metering consumers.** Shadow refs, anchor, textural range
+  are recorded and read by nothing; Phase 4 will need them per negative.
+* **NegPy's dropped controls** (bound trims, lock bounds, roll averages) as
+  edit-page candidates.
+* **Re-measure `STITCH_UNITS_PER_NEGATIVE`** (now 10, was 9) with
+  `scripts/measure-registration.py` rather than asserting the +1.

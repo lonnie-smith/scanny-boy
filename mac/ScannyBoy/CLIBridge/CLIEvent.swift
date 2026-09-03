@@ -9,8 +9,11 @@ import Foundation
 /// reaches the app intact rather than failing the stream.
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
-    /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 7
+    /// anything else is rejected rather than guessed at. Protocol 8
+    /// (docs/DECISIONS.md, "Normalization decisions") renames the prepare stage,
+    /// adds the `normalize` step, the scan-clipping and normalization
+    /// codes, and the normalization record fields.
+    public static let supportedProtocolVersion = 8
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -237,6 +240,7 @@ public enum CLIPipelineStep: Sendable, Hashable {
     case solve
     case warp
     case blend
+    case normalize
     case writeStitched
     case unknown(String)
 
@@ -251,6 +255,7 @@ public enum CLIPipelineStep: Sendable, Hashable {
         case "solve": self = .solve
         case "warp": self = .warp
         case "blend": self = .blend
+        case "normalize": self = .normalize
         case "write_stitched": self = .writeStitched
         default: self = .unknown(name)
         }
@@ -267,6 +272,7 @@ public enum CLIPipelineStep: Sendable, Hashable {
         case .solve: "solve"
         case .warp: "warp"
         case .blend: "blend"
+        case .normalize: "normalize"
         case .writeStitched: "write_stitched"
         case .unknown(let name): name
         }
@@ -341,6 +347,9 @@ public enum CLICode: Sendable, Hashable {
     case geometryMagnitudeSuspect
     case geometryFewFrames
     case chromaticFitRejected
+    case scanClipped
+    case normalizeDegenerateBounds
+    case normalizeHeadroomClipped
     case libraryDBUnsupported
     case internalError
     case unknown(String)
@@ -406,6 +415,9 @@ public enum CLICode: Sendable, Hashable {
         case "GEOMETRY_MAGNITUDE_SUSPECT": self = .geometryMagnitudeSuspect
         case "GEOMETRY_FEW_FRAMES": self = .geometryFewFrames
         case "CHROMATIC_FIT_REJECTED": self = .chromaticFitRejected
+        case "SCAN_CLIPPED": self = .scanClipped
+        case "NORMALIZE_DEGENERATE_BOUNDS": self = .normalizeDegenerateBounds
+        case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
@@ -473,6 +485,9 @@ public enum CLICode: Sendable, Hashable {
         case .geometryMagnitudeSuspect: "GEOMETRY_MAGNITUDE_SUSPECT"
         case .geometryFewFrames: "GEOMETRY_FEW_FRAMES"
         case .chromaticFitRejected: "CHROMATIC_FIT_REJECTED"
+        case .scanClipped: "SCAN_CLIPPED"
+        case .normalizeDegenerateBounds: "NORMALIZE_DEGENERATE_BOUNDS"
+        case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name

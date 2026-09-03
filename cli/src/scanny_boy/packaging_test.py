@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 import tifffile
 
-from scanny_boy.icc_profile import PROFILE_SHA256
+from scanny_boy.icc_profile import LINEAR_PROFILE_SHA256
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.packaged_app_support import (
     BUNDLE_EXECUTABLE,
@@ -82,11 +82,11 @@ def _events(stdout: str) -> list[dict]:
     return [json.loads(line) for line in stdout.splitlines() if line.strip()]
 
 
-def _convert_packaged(
+def _prepare_packaged(
     out_dir: Path, jobs: int, env: dict[str, str] | None = None
 ) -> PackagedRun:
     result = run_packaged(
-        "convert",
+        "prepare",
         "--input",
         str(FIXTURES_DIR),
         "--files",
@@ -117,13 +117,13 @@ def packaged_serial_run(tmp_path_factory) -> PackagedRun:
     the build's file list.
     """
     out_dir = tmp_path_factory.mktemp("packaged-serial")
-    return _convert_packaged(out_dir, jobs=1, env={"DYLD_PRINT_LIBRARIES": "1"})
+    return _prepare_packaged(out_dir, jobs=1, env={"DYLD_PRINT_LIBRARIES": "1"})
 
 
 @pytest.fixture(scope="module")
 def packaged_threaded_run(tmp_path_factory) -> PackagedRun:
     out_dir = tmp_path_factory.mktemp("packaged-threaded")
-    return _convert_packaged(out_dir, jobs=4)
+    return _prepare_packaged(out_dir, jobs=4)
 
 
 @pytest.fixture(scope="module")
@@ -181,7 +181,7 @@ def test_bundle_carries_the_vetted_icc_profile_and_its_own_metadata():
     assert profiles, "the vetted ICC profile is missing from the bundle"
 
     for profile in profiles:
-        assert hashlib.sha256(profile.read_bytes()).hexdigest() == PROFILE_SHA256
+        assert hashlib.sha256(profile.read_bytes()).hexdigest() == LINEAR_PROFILE_SHA256
 
     names = {path.name for path in BUNDLE_PATH.rglob("*.dist-info")}
     assert any(name.startswith("tifftools-") for name in names), names
@@ -202,9 +202,9 @@ def test_bundle_carries_scipy_optimize_and_opencv_aruco():
     )
     # `least_squares` reaches MINPACK through these extensions; a hook that
     # collected only the pure-Python half would pass the glob above.
-    assert any("minpack" in path.name.lower() for path in optimize_binaries), (
-        [path.name for path in optimize_binaries]
-    )
+    assert any("minpack" in path.name.lower() for path in optimize_binaries), [
+        path.name for path in optimize_binaries
+    ]
 
     cv2_binaries = list(BUNDLE_PATH.rglob("cv2/cv2.*so"))
     assert cv2_binaries, "the OpenCV native module is missing from the bundle"
@@ -275,7 +275,9 @@ def test_packaged_probe_returns_the_catalogue_in_canonical_order():
 
 
 @requires_real_samples
-@pytest.mark.parametrize("fixture_name", ["packaged_serial_run", "packaged_threaded_run"])
+@pytest.mark.parametrize(
+    "fixture_name", ["packaged_serial_run", "packaged_threaded_run"]
+)
 def test_packaged_conversion_writes_real_tiffs(fixture_name, request):
     """`--jobs 1` and `--jobs 4`, packaged, each writing genuine Deflate
     TIFFs with the horizontal predictor. This is the check that catches the
@@ -380,9 +382,9 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     # read back through a packaged `roll info`.
     info = run_packaged("roll", "info", "--roll", str(out_dir), timeout=60)
     assert info.returncode == 0, info.stderr
-    manifest = next(
-        e for e in _events(info.stdout) if e["event"] == "roll_info"
-    )["manifest"]
+    manifest = next(e for e in _events(info.stdout) if e["event"] == "roll_info")[
+        "manifest"
+    ]
     assert_matches_roll_manifest_schema(manifest, load_roll_manifest_schema())
     # Section 3.3: a roll is additive, so the status belongs to the run.
     assert manifest["runs"][0]["status"] == "complete"
@@ -424,7 +426,7 @@ def test_packaged_cancellation_keeps_completed_groups_and_exits_143(tmp_path):
     process = subprocess.Popen(
         [
             str(BUNDLE_EXECUTABLE),
-            "convert",
+            "prepare",
             "--input",
             str(input_dir),
             "--files",
@@ -531,4 +533,3 @@ def test_packaged_program_ignores_python_modules_outside_the_bundle(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"scanny-boy {VERSION}"
-

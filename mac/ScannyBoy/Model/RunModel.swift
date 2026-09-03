@@ -81,7 +81,7 @@ final class RunModel {
     /// one worker this is "one of the frames in flight", not "the frame the
     /// run has reached".
     private(set) var currentFilename: String?
-    /// `"convert"` or `"stitch"`, straight from `progress.stage`. `nil` until
+    /// `"prepare"` or `"stitch"`, straight from `progress.stage`. `nil` until
     /// the first `progress` event arrives.
     private(set) var stage: String?
 
@@ -135,7 +135,7 @@ final class RunModel {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var forceTask: Task<Void, Never>?
     @ObservationIgnored private var cancelRequested = false
-    /// The subcommand this invocation started (`"convert"`, `"run"`, or
+    /// The subcommand this invocation started (`"prepare"`, `"run"`, or
     /// `"stitch"`) — `command.arguments.first`, captured at `start()`. Decides
     /// which manifest `finish()` reads back: `RunManifest` for a plain
     /// `convert`, `RollManifest` for anything that can reach the stitch
@@ -211,7 +211,7 @@ final class RunModel {
     }
 
     /// `run`, `stitch`, and `apply-metadata` all end by touching
-    /// `scanny-boy-roll.json`; only a plain `convert` writes
+    /// `scanny-boy-roll.json`; only a plain `prepare` writes
     /// `scanny-boy-manifest.json` instead. Decides which manifest
     /// `finish()` reads back.
     private var touchesRollManifest: Bool {
@@ -246,7 +246,7 @@ final class RunModel {
         switch outcome {
         case .success:
             if isStitchInvocation {
-                return "Stitched \(stitchedNegatives.count) negative(s)."
+                return "Converted \(stitchedNegatives.count) negative(s)."
             }
             return "Converted \(publishedOutputs.count) file(s) in "
                 + "\(completedGroups.count) negative(s)."

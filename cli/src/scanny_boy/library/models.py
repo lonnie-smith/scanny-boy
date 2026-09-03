@@ -62,6 +62,9 @@ class RollRow(Base):
     updated_at: Mapped[str] = mapped_column(Text)
     processing_params: Mapped[dict] = mapped_column(JSONText)
     icc_profile: Mapped[dict] = mapped_column(JSONText)
+    # The density profile the published TIFFs carry (section 3.12's
+    # second-profile split); a roll invariant beside `icc_profile`.
+    published_icc_profile: Mapped[dict] = mapped_column(JSONText)
     stitch_params: Mapped[dict] = mapped_column(JSONText)
     # `metadata`: two nullable strings rather than a nested object.
     roll_capture_date: Mapped[str | None] = mapped_column(Text)
@@ -86,6 +89,9 @@ class RunRow(Base):
     work_dir: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[str] = mapped_column(Text)
     finished_at: Mapped[str | None] = mapped_column(Text)
+    # D-4: the per-channel median of the run's negatives' bounds; recorded,
+    # nothing reads it yet.
+    normalization_aggregate: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class SourceRow(Base):
@@ -102,6 +108,10 @@ class SourceRow(Base):
     mtime: Mapped[float] = mapped_column(SQLFloat)
     sha256: Mapped[str] = mapped_column(Text)
     run_id: Mapped[str] = mapped_column(Text)
+    # Per-channel fraction of pixels at or above sensor white, measured in
+    # the prepare stage at decode; null when the contributing run predates
+    # the measurement.
+    scan_clip_fractions: Mapped[list | None] = mapped_column(JSONText)
 
 
 class NegativeRow(Base):
@@ -124,6 +134,11 @@ class NegativeRow(Base):
     canvas: Mapped[dict | None] = mapped_column(JSONText)
     valid_rect: Mapped[list | None] = mapped_column(JSONText)
     fill_color: Mapped[list] = mapped_column(JSONText)
+    # The per-negative normalization record and section 3.14's fill value
+    # (docs/DECISIONS.md, "Normalization decisions"); null/None when this
+    # build predates normalization or the negative never published.
+    normalization: Mapped[dict | None] = mapped_column(JSONText)
+    normalized_fill: Mapped[float | None] = mapped_column(SQLFloat)
     rebate_deviation_px: Mapped[float | None] = mapped_column(SQLFloat)
     used_clahe_fallback: Mapped[bool] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)

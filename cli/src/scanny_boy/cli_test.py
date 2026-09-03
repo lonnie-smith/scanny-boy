@@ -218,10 +218,10 @@ def test_probe_with_files_non_contiguous_selection_reports_structured_error(caps
     assert events[1]["code"] == "NON_CONTIGUOUS_SELECTION"
 
 
-def test_convert_without_files_is_rejected(capsys):
+def test_prepare_without_files_is_rejected(capsys):
     status = main(
         [
-            "convert",
+            "prepare",
             "--input",
             "/tmp/in",
             "--out",
@@ -602,7 +602,7 @@ def test_film_date_argument_is_rejected(capsys):
     so `convert` (and `run`) no longer recognize it at all."""
     status = main(
         [
-            "convert",
+            "prepare",
             "--input",
             "/tmp/in",
             "--files",
@@ -648,7 +648,7 @@ def test_probe_with_files_requires_per_negative(capsys):
 def test_job_count_out_of_range_returns_status_2(capsys, jobs):
     status = main(
         [
-            "convert",
+            "prepare",
             "--input",
             "/tmp/in",
             "--files",
@@ -694,7 +694,7 @@ def test_stderr_never_contains_machine_readable_events(capsys):
         ["frobnicate"],
         ["probe", "--input", "/tmp/in", "--per-negative", "99"],
         [
-            "convert",
+            "prepare",
             "--input",
             "/tmp/in",
             "--files",
@@ -715,7 +715,7 @@ def test_stderr_never_contains_machine_readable_events(capsys):
                 json.loads(line)
 
 
-def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately(
+def test_prepare_started_carries_a_run_id_even_when_validation_fails_immediately(
     capsys,
 ):
     # `--input`/`--files` don't need to exist yet for `started` itself to
@@ -724,7 +724,7 @@ def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately
     # missing, so this fails with NO_FILES before any real work starts).
     status = main(
         [
-            "convert",
+            "prepare",
             "--input",
             "/tmp/in",
             "--files",
@@ -742,7 +742,7 @@ def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately
     assert status == 1
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "error", "finished"]
-    assert events[0]["command"] == "convert"
+    assert events[0]["command"] == "prepare"
     run_id = events[0]["run_id"]
     assert run_id
     assert all(e["run_id"] == run_id for e in events)
@@ -759,7 +759,7 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
 
     status = main(
         [
-            "convert",
+            "prepare",
             "--input",
             str(input_dir),
             "--files",
@@ -800,7 +800,7 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
 
 def _convert_argv(input_dir, out_dir, files, **extra) -> list[str]:
     argv = [
-        "convert",
+        "prepare",
         "--input",
         str(input_dir),
         "--files",
@@ -872,7 +872,9 @@ def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_
 # --- real subprocesses, driven by their own event stream -----------------
 
 
-def _spawn_convert(input_dir: Path, out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
+def _spawn_convert(
+    input_dir: Path, out_dir: Path, files: list[str], **extra
+) -> subprocess.Popen:
     argv = [
         sys.executable,
         "-m",
@@ -1037,9 +1039,12 @@ def test_flatfield_create_rejects_a_taken_name_without_decoding(capsys, tmp_path
 
     status = main(
         [
-            "flatfield", "create",
-            "--reference", str(tmp_path / "does-not-matter.NEF"),
-            "--name", "Copy stand",
+            "flatfield",
+            "create",
+            "--reference",
+            str(tmp_path / "does-not-matter.NEF"),
+            "--name",
+            "Copy stand",
         ]
     )
 
@@ -1053,9 +1058,12 @@ def test_flatfield_create_maps_a_non_raw_reference_to_unsupported_raw(capsys, tm
 
     status = main(
         [
-            "flatfield", "create",
-            "--reference", str(tmp_path / "ref.NEF"),
-            "--name", "Nope",
+            "flatfield",
+            "create",
+            "--reference",
+            str(tmp_path / "ref.NEF"),
+            "--name",
+            "Nope",
         ]
     )
 
@@ -1083,7 +1091,9 @@ def test_flatfield_delete_refuses_a_profile_locked_into_a_roll(capsys, tmp_path)
     manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
     manifest.processing_params = {
         "output_bps": 16,
-        "flat_field": flatfield.profile_token(repo.load_flatfield_profile("pid-Copy stand")),
+        "flat_field": flatfield.profile_token(
+            repo.load_flatfield_profile("pid-Copy stand")
+        ),
     }
     write_roll_manifest(roll_dir, manifest)
 
@@ -1107,7 +1117,9 @@ def test_flatfield_delete_removes_the_row_and_the_npz(capsys, tmp_path):
     assert status == 0
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == [
-        "started", "flatfield_deleted", "finished",
+        "started",
+        "flatfield_deleted",
+        "finished",
     ]
     assert events[1]["profile_id"] == "pid-Copy stand"
     assert repo.list_flatfield_profiles() == []
@@ -1118,16 +1130,21 @@ def test_flatfield_delete_removes_the_row_and_the_npz(capsys, tmp_path):
 def test_flatfield_create_list_and_delete_round_trip(capsys):
     status = main(
         [
-            "flatfield", "create",
-            "--reference", str(FIXTURES_DIR / "_DSC4638.NEF"),
-            "--name", "Real reference",
+            "flatfield",
+            "create",
+            "--reference",
+            str(FIXTURES_DIR / "_DSC4638.NEF"),
+            "--name",
+            "Real reference",
         ]
     )
 
     assert status == 0
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == [
-        "started", "flatfield_created", "finished",
+        "started",
+        "flatfield_created",
+        "finished",
     ]
     profile = events[1]["profile"]
     assert profile["name"] == "Real reference"

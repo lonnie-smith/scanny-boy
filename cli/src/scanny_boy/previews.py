@@ -7,11 +7,24 @@ small lossless PNG preview of each published TIFF and rewrites it whenever
 an edit changes the rendering. The path is recorded on the negative row and
 reported through `roll info`; Swift only displays the file it is told to.
 
-The published TIFF is **linear** (`raw_decode.RAW_PARAMS`), so the preview
-is gamma-encoded for display: a 16→8-bit sRGB-encode LUT turns the linear
-codes into the sRGB transfer function an untagged 8-bit PNG is assumed to
-carry. The TIFF itself is never touched — display encoding lives here and
-only here. Downscaling happens in linear light, before the encode.
+The published TIFF holds **normalized log density** (section 3.11), a
+negative in appearance — `val = 0` is the scene highlight, `val = 1` the
+scene shadow. Displayed raw it is a flat, un-inverted negative: honest,
+useless for judging a rotation. So the preview decodes through
+`normalization.decode_normalized`, takes `1 - val`, and encodes 8-bit —
+**no gamma**: log density is already roughly perceptually uniform, and
+pushing it through an sRGB OETF would double-encode. The result is a
+positive-looking, flat-contrast image — no print curve, because the print
+curve is Phase 4 and faking one here would be a look nobody chose. The
+downscale happens in normalized density (code space), not linear light,
+which is correct: averaging density is what averaging a photographic image
+means. Uncovered canvas renders black here, without special-casing: the
+fill sits at the thin end, so `1 - val` takes it to zero (section 3.14).
+
+The published TIFF itself is never touched — display encoding lives here
+and only here, and this path decodes through
+`normalization.decode_normalized`, never through the file's ICC profile
+(section 3.12's rule).
 
 For a 90-degree rotation the regeneration is a lossless pixel transpose of
 the cached preview, not a re-decode of a multi-megapixel TIFF. PNG, not
@@ -25,6 +38,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from scanny_boy import normalization
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -34,20 +48,22 @@ PREVIEW_MAX_EDGE = 1024
 MAX_CODE = 65535
 
 
-def _build_srgb_encode_lut() -> np.ndarray:
-    """uint16 linear code -> uint8 sRGB-encoded code. The standard IEC
-    sRGB transfer function (linear toe below 0.0031308, pure power above),
-    indexed over the full 16-bit range."""
-    codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
-    encoded = np.where(
-        codes <= 0.0031308,
-        codes * 12.92,
-        1.055 * np.power(codes, 1.0 / 2.4) - 0.055,
-    )
-    return np.rint(np.clip(encoded, 0.0, 1.0) * 255).astype(np.uint8)
+def _build_display_lut() -> np.ndarray:
+    """uint16 normalized-density code -> uint8 positive display code.
+
+    `decode_normalized` recovers the normalized value, `1 - val` inverts it
+    for legibility (the file is a negative; the Edit filmstrip should read
+    as one), and the 8-bit encode is bare scaling — no gamma, because
+    normalized log density is already roughly perceptually uniform. Values
+    beyond the encode's headroom clip here, as everywhere else.
+    """
+    codes = np.arange(MAX_CODE + 1, dtype=np.float64)
+    normalized = normalization.decode_normalized(codes)
+    display = np.clip(1.0 - normalized, 0.0, 1.0)
+    return np.rint(display * 255).astype(np.uint8)
 
 
-SRGB_ENCODE_LUT: np.ndarray = _build_srgb_encode_lut()
+NORMALIZED_DISPLAY_LUT: np.ndarray = _build_display_lut()
 
 
 def previews_root() -> Path:
@@ -62,6 +78,9 @@ def _preview_path(roll_id: str, negative_id: str) -> Path:
 def _write_downscaled(image: np.ndarray, destination: Path) -> None:
     edge = max(image.shape[0], image.shape[1])
     if edge > PREVIEW_MAX_EDGE:
+        # The downscale happens in normalized density (code space), not
+        # linear light: averaging density is what averaging a photographic
+        # image means (docs/DECISIONS.md, "Normalization decisions").
         scale = PREVIEW_MAX_EDGE / edge
         image = cv2.resize(
             image,
@@ -69,8 +88,9 @@ def _write_downscaled(image: np.ndarray, destination: Path) -> None:
             interpolation=cv2.INTER_AREA,
         )
     if image.dtype == np.uint16:
-        # The TIFF is linear; encode to the display transfer function.
-        image = SRGB_ENCODE_LUT[image]
+        # The TIFF holds normalized log density; decode, invert, encode
+        # 8-bit with no gamma.
+        image = NORMALIZED_DISPLAY_LUT[image]
     destination.parent.mkdir(parents=True, exist_ok=True)
     # cv2 is BGR; the TIFF is RGB, so flip the channels for storage.
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))

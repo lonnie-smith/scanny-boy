@@ -46,7 +46,14 @@ from pathlib import Path
 
 import numpy as np
 
-from scanny_boy import concurrency, disk_check, flatfield, hashing, raw_decode
+from scanny_boy import (
+    concurrency,
+    disk_check,
+    flatfield,
+    hashing,
+    normalization,
+    raw_decode,
+)
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.catalogue import (
     CaptureTimestamp,
@@ -67,10 +74,10 @@ from scanny_boy.events import (
     WarningEvent,
 )
 from scanny_boy.icc_profile import (
-    PROFILE_FILENAME,
-    PROFILE_SHA256,
     IccProfileError,
+    ProfileKind,
     load_icc_profile,
+    profile_record,
 )
 from scanny_boy.manifest import (
     BadManifestError,
@@ -177,12 +184,15 @@ class _StagedFrame:
     Section 3.8: "Each worker opens one RAW, writes its staged TIFF, adds
     metadata, and returns only status and paths. Do not return full image
     arrays to the parent." A name, an index, and a path — the decoded
-    array is dropped when `_stage_one_frame` returns.
+    array is dropped when `_stage_one_frame` returns. The per-channel
+    sensor-clip fractions measured at decode ride along (they are three
+    floats, not pixels).
     """
 
     member: str
     source_index: int
     final_path: Path
+    scan_clip_fractions: tuple[float, float, float]
 
 
 class _ProgressReporter:
@@ -319,7 +329,9 @@ def _validate_selection(
             f"nearest valid counts are {lower} and {upper}",
         )
 
-    return _ValidatedSelection(names=selection.names, used_filename_fallback=order.used_filename_fallback)
+    return _ValidatedSelection(
+        names=selection.names, used_filename_fallback=order.used_filename_fallback
+    )
 
 
 def _read_settings_and_check_consistency(
@@ -336,7 +348,9 @@ def _read_settings_and_check_consistency(
                 "recaptured as lossless-compressed NEFs",
             ) from exc
         except UnreadableRawError as exc:
-            raise ConvertFailure(Code.UNREADABLE_RAW, f"{name} could not be decoded") from exc
+            raise ConvertFailure(
+                Code.UNREADABLE_RAW, f"{name} could not be decoded"
+            ) from exc
 
     try:
         check_consistency(settings_list)
@@ -436,6 +450,20 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
 
     _verify_source_unchanged(path, record)
     pixels = raw_decode.decode_raw(path, chromatic_aberration=ctx.ca_scales).pixels
+    # Sensor clipping is measured here, before anything touches the pixels:
+    # it is a property of the capture, and the flat-field gain would move
+    # the level it is measured against (docs/DECISIONS.md, "Normalization
+    # decisions"). The pipeline attempts no reconstruction, exactly as NegPy says.
+    clip_fractions = normalization.measure_clip_fractions(pixels)
+    for channel, fraction in enumerate(clip_fractions):
+        if fraction > normalization.SCAN_CLIP_WARN:
+            ctx.progress.warn(
+                Code.SCAN_CLIPPED,
+                f"{member}: {fraction * 100:.2f}% of the channel-{channel} "
+                f"pixels are at or above sensor white "
+                f"({normalization.SCAN_CLIP_LEVEL:.2f}); their highlights "
+                "are clipped and no reconstruction is attempted",
+            )
     # Flat-field correction sits inside the DECODE step boundary: after the
     # RAW decode, before the base TIFF, so the stitch stage's per-frame
     # photometric gain solve is asked to explain real exposure mismatch, not
@@ -490,10 +518,17 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
     )
     ctx.progress.advance(source_index, PipelineStep.ADD_METADATA)
 
-    return _StagedFrame(member=member, source_index=source_index, final_path=final_path)
+    return _StagedFrame(
+        member=member,
+        source_index=source_index,
+        final_path=final_path,
+        scan_clip_fractions=clip_fractions,
+    )
 
 
-def _stage_group(members: list[str], ctx: _GroupContext, workers: int) -> dict[str, Path]:
+def _stage_group(
+    members: list[str], ctx: _GroupContext, workers: int
+) -> list[_StagedFrame]:
     """Stage every frame of one group, serially or across threads.
 
     Raises on the first frame that fails or on cancellation; either way
@@ -504,17 +539,16 @@ def _stage_group(members: list[str], ctx: _GroupContext, workers: int) -> dict[s
         # Section 3.8: "`--jobs 1` uses the serial path." No executor is
         # constructed at all, so a serial run has no thread-pool
         # behaviour to go wrong.
-        return {member: _stage_one_frame(member, ctx).final_path for member in members}
+        return [_stage_one_frame(member, ctx) for member in members]
 
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scanny-frame")
     futures: dict[Future[_StagedFrame], str] = {}
     try:
         for member in members:
             futures[pool.submit(_stage_one_frame, member, ctx)] = member
-        staged: dict[str, Path] = {}
+        staged: list[_StagedFrame] = []
         for future in as_completed(futures):
-            frame = future.result()
-            staged[frame.member] = frame.final_path
+            staged.append(future.result())
         return staged
     finally:
         # `cancel_futures=True` drops frames that never started;
@@ -571,10 +605,14 @@ def _publish_group(
         os.replace(source_path, dest)
         size = dest.stat().st_size
         sha256 = hashing.sha256_file(dest)
-        group_record.outputs.append(OutputRecord(name=output_name, size=size, sha256=sha256))
+        group_record.outputs.append(
+            OutputRecord(name=output_name, size=size, sha256=sha256)
+        )
         emit(
             ItemDone(
-                run_id=run_id, source_index=source_index_by_name[member], output=output_name
+                run_id=run_id,
+                source_index=source_index_by_name[member],
+                output=output_name,
             )
         )
 
@@ -656,9 +694,12 @@ def run_convert(
         except flatfield.FlatFieldError as exc:
             raise ConvertFailure(exc.code, exc.message) from exc
     real_times = _read_real_times(input_dir, selected)
-    digitized_fields = [choose_digitized_fields(read_digitization_fields(input_dir / n)) for n in selected]
+    digitized_fields = [
+        choose_digitized_fields(read_digitization_fields(input_dir / n))
+        for n in selected
+    ]
     try:
-        icc_profile = load_icc_profile()
+        icc_profile = load_icc_profile(ProfileKind.LINEAR)
     except IccProfileError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
@@ -683,6 +724,11 @@ def run_convert(
             )
 
     processing_params = raw_decode.jsonable_raw_params(chromatic_aberration=ca_scales)
+    # Section 3.8: the normalization constants are a roll invariant, and
+    # the key is always present — normalization is not optional. Added
+    # here, where the work manifest is written, so the stitch stage
+    # inherits it exactly the way it inherits `flat_field`.
+    processing_params["normalize"] = normalization.build_params()
     if profile is not None:
         # Absent, not null, when no profile was given, so a no-profile run
         # still compares equal to a pre-flat-field roll (section 2.4).
@@ -710,7 +756,7 @@ def run_convert(
         film_date=real_times[0].date().isoformat(),
         shots_per_negative=per_negative,
         processing_params=processing_params,
-        icc_profile={"name": PROFILE_FILENAME, "sha256": PROFILE_SHA256},
+        icc_profile=profile_record(ProfileKind.LINEAR),
         source_order=selected,
         sources=source_records,
         curated_metadata=build_curated_metadata(settings_list),
@@ -728,13 +774,16 @@ def run_convert(
         raise ConvertFailure(
             Code.OUTPUT_CONFLICT,
             "these outputs already exist and would be replaced; pass "
-            "--overwrite to confirm: " + ", ".join(sorted(set(plan.conflicting_outputs))),
+            "--overwrite to confirm: "
+            + ", ".join(sorted(set(plan.conflicting_outputs))),
         )
 
     apply_recovery_cleanup(output_dir, plan)
 
     missing_output_count = sum(
-        1 for name in candidate.all_expected_outputs() if not (output_dir / name).exists()
+        1
+        for name in candidate.all_expected_outputs()
+        if not (output_dir / name).exists()
     )
     required = disk_check.required_free_bytes(
         width=width,
@@ -790,7 +839,7 @@ def run_convert(
         staging_dir.mkdir(parents=True)
 
         try:
-            final_paths = _stage_group(
+            staged_frames = _stage_group(
                 group_record.members,
                 _GroupContext(staging_dir=staging_dir, **base_context),
                 workers,
@@ -810,10 +859,27 @@ def run_convert(
             write_manifest(output_dir, candidate)
             emit(
                 GroupFailed(
-                    run_id=run_id, group_id=group_record.group_id, code=code, message=str(exc)
+                    run_id=run_id,
+                    group_id=group_record.group_id,
+                    code=code,
+                    message=str(exc),
                 )
             )
             continue
+
+        # Record each source's measured sensor-clip fractions on the
+        # manifest's source records, so they ride through `merge_sources`
+        # into the roll (docs/DECISIONS.md, "Normalization decisions").
+        clips_by_member = {f.member: f.scan_clip_fractions for f in staged_frames}
+        candidate.sources = [
+            (
+                dataclasses.replace(s, scan_clip_fractions=clips_by_member[s.filename])
+                if s.filename in clips_by_member
+                else s
+            )
+            for s in candidate.sources
+        ]
+        final_paths = {f.member: f.final_path for f in staged_frames}
 
         if cancel.cancelled:
             # Cancelled in the window between the last frame staging and

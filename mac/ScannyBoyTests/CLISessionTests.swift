@@ -67,7 +67,7 @@ struct CLISessionTests {
     @Test("a structured failure reports its error event and exit 1")
     func structuredFailure() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
-            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare","run_id":"r1"}"#)
             let errorJSON = TestEvents.line(#"{"event":"error","run_id":"r1","code":"OUTPUT_CONFLICT","message":"3 outputs already exist"}"#)
             let finished = TestEvents.line(#"{"event":"finished","run_id":"r1","status":"failed","exit_status":1}"#)
             let executable = try TestSupport.writeTestExecutable(
@@ -112,7 +112,7 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             let error = TestEvents.line(#"{"event":"error","run_id":"r1","code":"CANCELLED","message":"cancelled by the user"}"#)
             let cancelled = TestEvents.line(#"{"event":"finished","run_id":"r1","status":"cancelled","exit_status":143}"#)
-            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
@@ -159,7 +159,7 @@ struct CLISessionTests {
         try await TestSupport.withTemporaryDirectory { directory in
             // No trap: the shell takes SIGTERM's default action, so the child
             // is reported as terminated by signal 15 rather than exiting 143.
-            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 printf '%s\n' '\#(started)'
@@ -194,7 +194,7 @@ struct CLISessionTests {
     @Test("a CLI that ignores SIGTERM is force-terminated and classified forced")
     func forcedCancellationIsClassifiedAsForced() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
-            let started = TestEvents.line(#"{"event":"started","command":"convert","run_id":"r1"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare","run_id":"r1"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 trap '' TERM
@@ -229,7 +229,7 @@ struct CLISessionTests {
     func cancellationHonouredWithinTheGracePeriodIsNotForced() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
             let cancelled = TestEvents.line(#"{"event":"finished","status":"cancelled","exit_status":143}"#)
-            let started = TestEvents.line(#"{"event":"started","command":"convert"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 on_term() {
@@ -276,7 +276,7 @@ struct CLISessionTests {
                 PAD=$(head -c 2000 /dev/zero | tr '\0' 'x')
                 i=0
                 while [ $i -lt 800 ]; do
-                  printf '{"protocol_version":7,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
+                  printf '{"protocol_version":8,"event":"warning","code":"FILENAME_SORT_USED","message":"%s"}\n' "$PAD"
                   printf 'log %s\n' "$PAD" 1>&2
                   i=$((i + 1))
                 done
@@ -341,7 +341,7 @@ struct CLISessionTests {
     @Test("events arrive while the CLI is still running, not in one batch at the end")
     func eventsArriveBeforeTheProcessExits() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
-            let started = TestEvents.line(#"{"event":"started","command":"convert"}"#)
+            let started = TestEvents.line(#"{"event":"started","command":"prepare"}"#)
             let finished = TestEvents.line(#"{"event":"finished","status":"complete","exit_status":0}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
@@ -380,12 +380,12 @@ struct CLISessionTests {
             // splits a line and one that straddles a newline.
             let executable = try TestSupport.writeTestExecutable(
                 #"""
-                printf '%s' '{"protocol_version":7,"event":"started",'
+                printf '%s' '{"protocol_version":8,"event":"started",'
                 sleep 0.2
-                printf '%s' '"command":"convert","run_id":"r1"}'
+                printf '%s' '"command":"prepare","run_id":"r1"}'
                 sleep 0.2
                 printf '%s' '
-                {"protocol_version":7,"event":"finis'
+                {"protocol_version":8,"event":"finis'
                 sleep 0.2
                 printf '%s\n' 'hed","run_id":"r1","status":"complete","exit_status":0}'
                 exit 0
@@ -397,7 +397,7 @@ struct CLISessionTests {
 
             #expect(collected.failures.isEmpty)
             #expect(collected.events.map(\.kind) == [.started, .finished])
-            #expect(collected.events[0].command == "convert")
+            #expect(collected.events[0].command == "prepare")
             #expect(collected.events[1].exitStatus == 0)
         }
     }
@@ -477,7 +477,7 @@ struct CLISessionTests {
     @Test("cancelling the consuming task closes the readers and stops the child")
     func cancellingTheConsumerTerminatesTheChild() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
-            let startedJSON = TestEvents.line(#"{"event":"started","command":"convert"}"#)
+            let startedJSON = TestEvents.line(#"{"event":"started","command":"prepare"}"#)
             let executable = try TestSupport.writeTestExecutable(
                 #"""
                 printf '%s\n' '\#(startedJSON)'

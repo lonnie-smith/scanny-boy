@@ -216,6 +216,7 @@ def _candidate_from(manifest) -> RollInvariants:
     return RollInvariants(
         processing_params=manifest.processing_params,
         icc_profile_sha256=manifest.icc_profile.get("sha256", ""),
+        published_icc_profile_sha256=manifest.published_icc_profile.get("sha256", ""),
         stitch_params=manifest.stitch_params,
     )
 

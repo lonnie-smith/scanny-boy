@@ -7,7 +7,6 @@ import pytest
 
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.composite import (
-    FILL_COLOR,
     MAX_CANVAS_DIMENSION,
     MAX_STITCHED_BYTES,
     MEMORY_SAFETY_FACTOR,
@@ -19,11 +18,32 @@ from scanny_boy.composite import (
 from scanny_boy.events import Code
 from scanny_boy.layout import solve_layout
 from scanny_boy.linear import decode_to_linear, encode_from_linear
+from scanny_boy.normalization import (
+    NORMALIZED_FILL,
+    Bounds,
+    analyze_bounds,
+    block_median_grid,
+    decode_normalized,
+    detect_rebate,
+    encode_normalized,
+    normalize_log_image,
+    to_log_density,
+)
 from scanny_boy.registration import PairResult, StitchError
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 
 _SCENE_SIZE = (700, 1300)
 _FRAME_SIZE = (500, 700)  # (height, width)
+
+
+def _unnormalize(image: np.ndarray, bounds: Bounds) -> np.ndarray:
+    """The arithmetic inverse of the published encoding (section 3.11):
+    `10 ** (floor + val * (ceil - floor))` recovers the linear composite to
+    within quantization."""
+    normalized = decode_normalized(image)
+    floors = np.asarray(bounds.floors, dtype=np.float32)
+    ceils = np.asarray(bounds.ceils, dtype=np.float32)
+    return np.power(10.0, floors + normalized * (ceils - floors))
 
 
 def _rotation_matrix(angle_deg):
@@ -54,9 +74,9 @@ def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7):
     matrix_a, matrix_b = cut_placements
     rotation_a, translation_a = matrix_a[:, :2], matrix_a[:, 2]
     rotation_b, translation_b = matrix_b[:, :2], matrix_b[:, 2]
-    phi_ab_deg = np.degrees(np.arctan2(rotation_b[1, 0], rotation_b[0, 0])) - np.degrees(
-        np.arctan2(rotation_a[1, 0], rotation_a[0, 0])
-    )
+    phi_ab_deg = np.degrees(
+        np.arctan2(rotation_b[1, 0], rotation_b[0, 0])
+    ) - np.degrees(np.arctan2(rotation_a[1, 0], rotation_a[0, 0]))
     u_ab = rotation_a.T @ (translation_b - translation_a)
     rotation_ab = _rotation_matrix(phi_ab_deg)
 
@@ -121,7 +141,7 @@ def test_reconstructs_a_known_scene():
     translation_compose = rotation_cut @ translation_solved_inv + translation_cut
     canvas_to_scene = np.hstack([rotation_compose, translation_compose.reshape(2, 1)])
 
-    linear_result = decode_to_linear(result.image).astype(np.float32)
+    linear_result = _unnormalize(result.image, result.bounds)
     scene_height, scene_width = scene.shape
     reconstructed = cv2.warpAffine(
         linear_result,
@@ -171,25 +191,30 @@ def test_reconstruction_is_order_independent():
 def test_feather_weights_sum_to_one_inside_coverage():
     _scene, names, _uint16_frames, layout, _cut = _build_two_frame_scene()
 
-    # Both frames carry a single known uniform linear value. If the weights
-    # inside the overlap zone summed to anything other than 1 (e.g. a
-    # forgotten division, summing instead of averaging), the blended
-    # region would come out brighter or darker than this constant.
-    constant_value = 0.4
+    # Both frames carry the same known near-constant linear value with a
+    # hair of gradient (a strictly constant frame would be degenerate for
+    # the bounds meters: floor == ceil). If the weights inside the overlap
+    # zone summed to anything other than 1 (e.g. a forgotten division,
+    # summing instead of averaging), the blended region would come out
+    # brighter or darker than this constant.
     height, width = _FRAME_SIZE
-    constant_frame = encode_from_linear(
-        np.full((height, width, 3), constant_value, dtype=np.float32)
+    rng = np.random.default_rng(3)
+    gradient = 0.4 + 0.005 * rng.uniform(-1.0, 1.0, size=(height, width))
+    gradient_frame = encode_from_linear(
+        np.stack([gradient, gradient, gradient], axis=-1).astype(np.float32)
     )
-    uniform_frames = {name: constant_frame for name in names}
+    uniform_frames = {name: gradient_frame for name in names}
 
     result = _composite(layout, uniform_frames)
-    linear = decode_to_linear(result.image)
-
-    covered = np.any(result.image != 0, axis=-1) | np.all(
-        np.abs(linear - constant_value) < 0.05, axis=-1
+    linear = _unnormalize(result.image, result.bounds)
+    covered = (
+        result.image != encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
     )
+
     assert np.count_nonzero(covered) > 0
-    assert np.max(np.abs(linear[covered] - constant_value)) < 0.01
+    # The tolerance covers the double resampling (the warp, then this
+    # test's un-normalization) of a noisy gradient.
+    assert np.max(np.abs(linear[covered] - 0.4)) < 0.025
 
 
 def test_gain_correction_reconciles_a_known_brightness_offset():
@@ -245,34 +270,62 @@ def test_no_output_value_is_negative_or_clipped_high():
     )
     height, width = _FRAME_SIZE
 
-    # A uniform frame close to each end of the linear range. Lanczos4
-    # undershoots below 0 and can overshoot above 1 near a warped frame's
-    # own border (section 2.3); without composite.py's clamp, an
-    # undershoot could drag the weighted average below the true value and
-    # get silently zeroed by encode_from_linear's own clamp, or an
-    # unclamped negative could otherwise corrupt the blend.
-    bright_frame = encode_from_linear(
-        np.full((height, width, 3), 0.98, dtype=np.float32)
+    # A near-uniform frame close to each end of the linear range, with a
+    # hair of gradient (a strictly constant frame is degenerate for the
+    # bounds meters). Lanczos4 undershoots below 0 and can overshoot above
+    # 1 near a warped frame's own border (section 2.3); without
+    # composite.py's clamp, an undershoot could drag the weighted average
+    # below the true value, or an unclamped negative could otherwise
+    # corrupt the blend.
+    rng = np.random.default_rng(5)
+    bright_linear = 0.98 + 0.005 * rng.uniform(-1.0, 1.0, size=(height, width))
+    dark_linear = 0.02 + 0.005 * rng.uniform(-1.0, 1.0, size=(height, width))
+
+    def _frame(linear):
+        return encode_from_linear(
+            np.stack([linear, linear, linear], axis=-1).astype(np.float32)
+        )
+
+    bright_result = _composite(
+        layout, {names[0]: _frame(bright_linear), names[1]: _frame(bright_linear)}
     )
-    dark_frame = encode_from_linear(np.full((height, width, 3), 0.02, dtype=np.float32))
+    dark_result = _composite(
+        layout, {names[0]: _frame(dark_linear), names[1]: _frame(dark_linear)}
+    )
 
-    bright_result = _composite(layout, {names[0]: bright_frame, names[1]: bright_frame})
-    dark_result = _composite(layout, {names[0]: dark_frame, names[1]: dark_frame})
+    fill_code = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
+    bright_covered = np.any(bright_result.image != fill_code, axis=-1)
+    dark_covered = np.any(dark_result.image != fill_code, axis=-1)
 
-    bright_linear = decode_to_linear(bright_result.image)
-    dark_linear = decode_to_linear(dark_result.image)
+    # Normalized values: dense film (scene highlight, i.e. the *bright*
+    # frames) maps toward 0 and thin film (scene shadow, the *dark* frames)
+    # toward 1 — the published image stays a negative in appearance
+    # (section 3.2), so the two fixtures land at opposite ends of the
+    # stretch. The meters' own bounds make both spans full-range by
+    # construction, so the assertions that still mean something are: the
+    # un-normalized reconstruction stays near each frame's known constant
+    # (a wraparound or unclamped blend would produce wild values), and the
+    # observed extrema stay inside the encode's headroom.
+    bright_linear = _unnormalize(bright_result.image, bright_result.bounds)
+    dark_linear = _unnormalize(dark_result.image, dark_result.bounds)
+    assert np.min(bright_linear[bright_covered]) > 0.9
+    assert np.max(dark_linear[dark_covered]) < 0.1
+    # The observed extrema are picture statistics: the scene's densest and
+    # thinnest single pixels sit beyond the *grid's* floor/ceil percentiles
+    # (the block median never sees them), which is exactly why the encode
+    # reserves asymmetric headroom (section 3.6) and why excursions past it
+    # warn rather than fail. They must be finite scene values, not the
+    # fill: no excursion may reach the log10(1e-6) regime.
+    for result in (bright_result, dark_result):
+        assert min(result.observed_min) > -1.0
+        assert max(result.observed_max) < 2.0
 
-    bright_covered = np.any(bright_result.image != 0, axis=-1)
-    dark_covered = np.any(dark_result.image != 0, axis=-1)
 
-    # A corrupted (unclamped) undershoot would drag the bright frame's
-    # covered pixels well below 0.98; an unclamped overshoot/wraparound
-    # would drag the dark frame's covered pixels well above 0.02.
-    assert np.min(bright_linear[bright_covered]) > 0.5
-    assert np.max(dark_linear[dark_covered]) < 0.5
-
-
-def test_uncovered_pixels_are_exactly_fill_color():
+def test_uncovered_pixels_take_the_normalized_fill():
+    """Section 3.14: uncovered canvas pixels take `encode_normalized(
+    NORMALIZED_FILL)` — code 65535, the top of the encodable range. Expect
+    the published file's border to flip from black to white; it is not a
+    regression."""
     _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
     result = _composite(layout, uint16_frames)
 
@@ -283,8 +336,11 @@ def test_uncovered_pixels_are_exactly_fill_color():
         (0, canvas_height - 1),
         (canvas_width - 1, canvas_height - 1),
     ]
+    fill_code = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
     for x, y in corners:
-        assert tuple(int(v) for v in result.image[y, x]) == FILL_COLOR
+        assert tuple(int(v) for v in result.image[y, x]) == tuple(
+            int(v) for v in fill_code
+        )
 
 
 def test_memory_estimate_rejects_an_impossible_canvas():
@@ -317,12 +373,17 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     accum = canvas_pixels * 3 * 4
     weight = canvas_pixels * 4
     result = canvas_pixels * 3 * 2
+    log_density = canvas_pixels * 3 * 4
+    normalized = canvas_pixels * 3 * 4
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4
     warped = bbox_pixels * 3 * 4
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2
 
     all_warped = 2 * (warped + warp_aux)
-    live_bytes = max(accum + weight + source + all_warped, accum + result)
+    live_bytes = max(
+        accum + weight + source + all_warped,
+        accum + weight + log_density + normalized + result,
+    )
 
     expected = math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
     assert large_frame == expected
@@ -410,13 +471,21 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         M = matrix.copy()
         M[:, 2] -= (x, y)
         warped = cv2.warpAffine(
-            linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            linear,
+            M,
+            (w, h),
+            flags=cv2.INTER_LANCZOS4,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
         )
         warped = np.clip(warped, 0.0, None)
         mask = cv2.warpAffine(
-            np.ones((src_h, src_w), np.uint8), M, (w, h),
-            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            np.ones((src_h, src_w), np.uint8),
+            M,
+            (w, h),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
         )
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
@@ -432,8 +501,18 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
     covered = weight_canvas > 0
     out = np.zeros_like(accum)
     out[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
-    encoded = encode_from_linear(out)
-    encoded[~covered] = FILL_COLOR
+
+    # The same fused normalization pass composite() runs on its own
+    # accumulator (no region here: the meters fall back to the blocks the
+    # blend actually covered).
+    img_log = to_log_density(out)
+    grid = block_median_grid(img_log)
+    keep = block_median_grid(np.where(covered, np.float32(1.0), np.float32(0.0))) >= 1.0
+    keep, _rebate = detect_rebate(grid, keep)
+    bounds = analyze_bounds(grid, keep)
+    normalized_img = normalize_log_image(img_log, bounds)
+    encoded = encode_normalized(normalized_img)
+    encoded[~covered] = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
     assert np.array_equal(result.image, encoded)
 
 
@@ -447,9 +526,11 @@ def test_band_map_round_trips_a_distorted_frame():
 
     distorted = {}
     K = np.array(
-        [[geometry["fx"], 0, geometry["cx"]],
-         [0, geometry["fy"], geometry["cy"]],
-         [0, 0, 1.0]]
+        [
+            [geometry["fx"], 0, geometry["cx"]],
+            [0, geometry["fy"], geometry["cy"]],
+            [0, 0, 1.0],
+        ]
     )
     for name, frame in uint16_frames.items():
         ys, xs = np.mgrid[0:height, 0:width]
@@ -481,9 +562,15 @@ def test_band_map_round_trips_a_distorted_frame():
     )
     plain_result = _composite(layout, uint16_frames)
 
-    covered = plain_result.image != FILL_COLOR
+    # Compare after inverting each result's own bounds: the two composites
+    # meter slightly different canvases, so their normalized encodings are
+    # only comparable once unnormalized back to linear. `covered` uses the
+    # fill code, since the published image no longer has a zero fill.
+    fill_code = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
+    covered = np.any(plain_result.image != fill_code, axis=-1)
     err = np.abs(
-        decode_to_linear(distorted_result.image) - decode_to_linear(plain_result.image)
+        _unnormalize(distorted_result.image, distorted_result.bounds)
+        - _unnormalize(plain_result.image, plain_result.bounds)
     )[covered]
     # Double resampling (synthetic distortion, then the band map's inverse)
     # plus the border pixels the distortion pulls in at the frame edge.
@@ -503,15 +590,15 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     }
 
     frame = encode_from_linear(
-        np.random.default_rng(0).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+        np.random.default_rng(0)
+        .uniform(0.1, 0.9, (height, width, 3))
+        .astype(np.float32)
     )
     linear = decode_to_linear(frame).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
     bbox_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 
-    warped, mask = _warp_bands(
-        linear, ones, bbox_matrix, width, height, geometry, ca
-    )
+    warped, mask = _warp_bands(linear, ones, bbox_matrix, width, height, geometry, ca)
 
     # Green: the map is the identity, and Lanczos at exact integer
     # coordinates is the delta function.
@@ -528,8 +615,12 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     expected_x = (dx * 1.01 * fx + cx).astype(np.float32)
     expected_y = (dy * 1.01 * fx + cy).astype(np.float32)
     expected_red = cv2.remap(
-        linear[:, :, 0], expected_x, expected_y, cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        linear[:, :, 0],
+        expected_x,
+        expected_y,
+        cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     interior = (r < 0.4) & (r > 0.05)
     assert np.allclose(warped[:, :, 0][interior], expected_red[interior], atol=1e-4)
@@ -542,7 +633,9 @@ def test_warp_bands_matches_a_whole_frame_map():
     geometry = _geometry_dict(-0.015, width, height)
     linear = decode_to_linear(
         encode_from_linear(
-            np.random.default_rng(1).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+            np.random.default_rng(1)
+            .uniform(0.1, 0.9, (height, width, 3))
+            .astype(np.float32)
         )
     ).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
@@ -560,8 +653,12 @@ def test_warp_bands_matches_a_whole_frame_map():
     map_x = (x * k * fx + cx).astype(np.float32)
     map_y = (y * k * fy + cy).astype(np.float32)
     expected = cv2.remap(
-        linear, map_x, map_y, cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        linear,
+        map_x,
+        map_y,
+        cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     assert np.allclose(warped, expected, atol=1e-4)
 
@@ -582,10 +679,15 @@ def test_estimate_peak_bytes_grows_by_exactly_the_geometry_terms():
         return max(
             canvas * 3 * 4  # accum
             + canvas * 4  # weight
-            + 500 * 700 * 3 * 2 + 500 * 700 * 3 * 4  # source
+            + 500 * 700 * 3 * 2
+            + 500 * 700 * 3 * 4  # source
             + count * (bbox * 3 * 4 + bbox * 4 + bbox * 2)  # all_warped
             + extra,
-            canvas * 3 * 4 + canvas * 3 * 2,  # accum + result
+            canvas * 3 * 4  # accum
+            + canvas * 4  # weight
+            + canvas * 3 * 4  # log density
+            + canvas * 3 * 4  # normalized
+            + canvas * 3 * 2,  # result
         )
 
     assert with_geometry == math.ceil((live(0) + band_maps) * MEMORY_SAFETY_FACTOR)

@@ -13,7 +13,7 @@ a selection of NEFs all the way to finished, stitched negatives.
     section 5.4): the convert stage applies the profile's gain map and — in
     "scale" mode — its CA scales at decode; the stitch stage applies its
     geometry to the warp.
-    """
+"""
 
 from __future__ import annotations
 
@@ -36,8 +36,12 @@ from scanny_boy.stitch_pipeline import EmitFn, StitchOutcome, run_stitch
 # stitch work, and 0.5s match + 0.0s solve + 2.9s blend + 0.8s write is 4.2s
 # of per-negative stitch work. One conversion unit is ~0.48s (15 frames in
 # 21.7s at --jobs 4, 3 units per frame), so 1.07/0.48 ~= 2 and 4.2/0.48 ~= 9.
+# The normalization pass (docs/DECISIONS.md, "Normalization decisions") adds a
+# downscale plus a handful of percentile sorts on a 1024-grid — nearly free,
+# so the per-negative unit count moves 9 -> 10, to be re-measured with
+# `scripts/measure-registration.py` rather than asserted.
 STITCH_UNITS_PER_FRAME = 2
-STITCH_UNITS_PER_NEGATIVE = 9
+STITCH_UNITS_PER_NEGATIVE = 10
 
 
 class RunFailure(Exception):
@@ -62,7 +66,13 @@ class RunOutcome:
     work_dir_kept: bool
 
 
-def _wrap_emit_for_stitch(base_emit: EmitFn, *, completed_offset: int, weighted_total: int, combined_total: int) -> EmitFn:
+def _wrap_emit_for_stitch(
+    base_emit: EmitFn,
+    *,
+    completed_offset: int,
+    weighted_total: int,
+    combined_total: int,
+) -> EmitFn:
     """Rescales `stitch`'s own step-counted progress into its share of the
     combined span. `run_stitch` counts real step boundaries for its own
     sake (correct, but not weighted by wall-clock cost); this rescales that
@@ -81,7 +91,9 @@ def _wrap_emit_for_stitch(base_emit: EmitFn, *, completed_offset: int, weighted_
                 state["raw_total"] = event.total
             raw_total = state["raw_total"]
             scaled = (
-                round(event.completed / raw_total * weighted_total) if raw_total else weighted_total
+                round(event.completed / raw_total * weighted_total)
+                if raw_total
+                else weighted_total
             )
             event = dataclasses.replace(
                 event, completed=completed_offset + scaled, total=combined_total
@@ -143,7 +155,8 @@ def run_full(
     negative_count = frame_count // per_negative if per_negative else 0
     convert_total = frame_count * STEPS_PER_FRAME
     stitch_weighted_total = (
-        STITCH_UNITS_PER_FRAME * frame_count + STITCH_UNITS_PER_NEGATIVE * negative_count
+        STITCH_UNITS_PER_FRAME * frame_count
+        + STITCH_UNITS_PER_NEGATIVE * negative_count
     )
     combined_total = convert_total + stitch_weighted_total
 

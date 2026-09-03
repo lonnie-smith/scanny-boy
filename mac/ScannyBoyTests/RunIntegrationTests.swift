@@ -353,7 +353,7 @@ struct RunIntegrationTests {
         // rolls at all, so it keeps Phase 1's bare output folder rather than
         // a roll `--out` no longer accepts for `run`. The input is staged:
         // only the six sample files, so the selection is contiguous.
-        let command = try CLICommand.convert(
+        let command = try CLICommand.prepare(
             input: SampleFixtures.stagedDirectory(),
             files: SampleFixtures.files,
             out: out,

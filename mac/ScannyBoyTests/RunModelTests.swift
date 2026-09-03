@@ -60,7 +60,7 @@ struct RunModelTests {
     private static let runID = "run-0001"
 
     private static let started =
-        TestEvents.line(#"{"event":"started","command":"convert","run_id":"run-0001"}"#)
+        TestEvents.line(#"{"event":"started","command":"prepare","run_id":"run-0001"}"#)
 
     private static func finished(status: String, exitStatus: Int) -> String {
         TestEvents.line(#"{"event":"finished","run_id":"run-0001","status":"\#(status)","exit_status":\#(exitStatus)}"#)
@@ -112,7 +112,7 @@ struct RunModelTests {
         executable: URL,
         outputFolder: URL,
         files: [String] = RunModelTests.sixFiles,
-        commandName: String = "convert"
+        commandName: String = "prepare"
     ) async -> RunModel {
         let run = RunModel(runner: CLIRunner(executable: executable))
         run.start(
@@ -287,7 +287,7 @@ struct RunModelTests {
             runner: CLIRunner(executable: executable), gracePeriod: .seconds(120)
         )
         run.start(
-            command: CLICommand(arguments: ["convert"]),
+            command: CLICommand(arguments: ["prepare"]),
             files: Self.sixFiles,
             outputFolder: directory
         )
@@ -327,7 +327,7 @@ struct RunModelTests {
         #expect(run.phase == .idle)
 
         run.start(
-            command: CLICommand(arguments: ["convert"]),
+            command: CLICommand(arguments: ["prepare"]),
             files: Self.sixFiles,
             outputFolder: directory
         )
@@ -398,7 +398,7 @@ struct RunModelTests {
         let missing = directory.appending(path: "not-installed", directoryHint: .notDirectory)
         let run = RunModel(runner: CLIRunner(executable: missing))
         run.start(
-            command: CLICommand(arguments: ["convert"]),
+            command: CLICommand(arguments: ["prepare"]),
             files: Self.sixFiles,
             outputFolder: directory
         )
@@ -538,7 +538,7 @@ struct RunModelTests {
         let clock = SteppingClock(step: 30)
         let run = RunModel(runner: CLIRunner(executable: executable), now: clock.next)
         run.start(
-            command: CLICommand(arguments: ["convert"]),
+            command: CLICommand(arguments: ["prepare"]),
             files: Self.sixFiles,
             outputFolder: directory
         )
@@ -685,7 +685,7 @@ struct RunModelTests {
         #expect(negative.height == 7917)
         #expect(abs(negative.globalRMS - 1.57) < 1e-9)
         #expect(abs(negative.maxOverlapMAD - 0.072) < 1e-9)
-        #expect(run.completionSummary == "Stitched 1 negative(s).")
+        #expect(run.completionSummary == "Converted 1 negative(s).")
     }
 
     @Test("negative_failed events populate failedNegatives, not failedGroups")
@@ -727,7 +727,7 @@ struct RunModelTests {
         let executable = try Self.fakeConvertExecutable(
             emitting: [
                 Self.started,
-                TestEvents.line(#"{"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"convert"}"#),
+                TestEvents.line(#"{"event":"progress","run_id":"run-0001","source_index":0,"step":"decode","completed":1,"total":10,"stage":"prepare"}"#),
                 TestEvents.line(#"{"event":"progress","run_id":"run-0001","source_index":0,"step":"warp","completed":8,"total":10,"stage":"stitch"}"#),
                 Self.finished(status: "success", exitStatus: 0),
             ],
@@ -828,7 +828,7 @@ struct RunModelTests {
 
         #expect(run.manifestReport == nil)
         #expect(run.rollManifestReport != nil)
-        #expect(run.completionSummary == "Stitched 1 negative(s).")
+        #expect(run.completionSummary == "Converted 1 negative(s).")
     }
 
     /// A re-stitch has no selection of files to turn a `source_index` back

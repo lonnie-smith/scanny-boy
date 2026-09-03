@@ -79,8 +79,8 @@ struct ContentView: View {
         // before `library.rolls` has re-scanned to include it — this catches
         // that up rather than leaving `model.rollURL` stuck at `nil`.
         .onChange(of: library.rolls) { _, _ in resolveSelectedRoll() }
-        // The run log belongs to the roll it stitched: switching rolls clears
-        // it, so the "Stitch Results" section only ever describes the roll
+        // The run log belongs to the roll it converted: switching rolls clears
+        // it, so the "Convert Results" section only ever describes the roll
         // now selected. Safe even mid-run — the sidebar blocks switching
         // while a run is active — and `clearResults` guards anyway.
         .onChange(of: model.rollURL) { _, _ in run.clearResults() }
@@ -233,7 +233,7 @@ struct ContentView: View {
                 runSection
             }
             if run.phase != .idle {
-                Section("Stitch Results") {
+                Section("Convert Results") {
                     if run.isActive {
                         RunProgressView(run: run)
                     } else {
@@ -286,7 +286,7 @@ struct ContentView: View {
             .accessibilityIdentifier("perNegativePicker")
 
             if model.perNegative == nil {
-                Text("How many scans are stitched into each negative. Choose one to enable Stitch.")
+                Text("How many scans are stitched into each negative. Choose one to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")
@@ -314,7 +314,7 @@ struct ContentView: View {
                     Button("Cancel", role: .destructive) { run.cancel() }
                         .disabled(!run.canCancel)
                 }
-                Button("Stitch") { startRun() }
+                Button("Convert") { startRun() }
                     .disabled(!model.runEnabled || run.isActive)
                     .keyboardShortcut(.defaultAction)
             }
