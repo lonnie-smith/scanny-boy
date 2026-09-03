@@ -63,7 +63,12 @@ from scanny_boy.output_folder import (
     validate_not_same_as_input,
     validate_writable,
 )
-from scanny_boy.pipeline import build_curated_metadata, build_groups, hash_sources
+from scanny_boy.pipeline import (
+    build_curated_metadata,
+    build_groups,
+    build_processing_params,
+    hash_sources,
+)
 from scanny_boy.raw_decode import jsonable_raw_params, read_active_size
 from scanny_boy.roll_manifest import (
     RollInvariantMismatchError,
@@ -209,6 +214,7 @@ def _preview_roll(
     groups: list[list[str]],
     roll_dir: Path,
     processing_params: dict,
+    profile=None,
 ) -> list[RollOverlapEntry]:
     """`probe --roll`'s roll-folder validation and overlap report (section
     3.5). Raises `ProbeFailure` for anything that would also stop `run
@@ -231,7 +237,7 @@ def _preview_roll(
         processing_params=processing_params,
         icc_profile_sha256=profile_record(ProfileKind.LINEAR)["sha256"],
         published_icc_profile_sha256=profile_record(ProfileKind.DENSITY)["sha256"],
-        stitch_params=_stitch_params(),
+        stitch_params=_stitch_params(profile),
     )
     try:
         plan = plan_rerun(roll_dir, candidate, rules=ROLL_RULES)
@@ -303,7 +309,7 @@ def run_probe(
     # present (section 3.4), so an unknown profile id fails here before any
     # roll is touched — the run would fail at its own load having touched
     # nothing either.
-    processing_params = jsonable_raw_params()
+    profile = None
     if flatfield_profile_id is not None:
         from scanny_boy import flatfield
         from scanny_boy.library import repo
@@ -312,17 +318,8 @@ def run_probe(
             profile = repo.load_flatfield_profile(flatfield_profile_id)
         except flatfield.FlatFieldError as exc:
             raise ProbeFailure(exc.code, exc.message) from exc
-        processing_params["flat_field"] = flatfield.profile_token(profile)
-        ca_scales = flatfield.chromatic_aberration_scales(profile)
-        if ca_scales is not None:
-            processing_params["chromatic_aberration"] = {
-                "profile_id": profile.profile_id,
-                "mode": "scale",
-                "red_scale": ca_scales[0],
-                "blue_scale": ca_scales[1],
-            }
-    else:
-        profile = None
+
+    processing_params = build_processing_params(profile)
 
     if not names:
         raise ProbeFailure(Code.NO_FILES, f"no .nef files found in {input_dir}")
@@ -342,7 +339,7 @@ def run_probe(
         # folder and its invariants; without a selection there is no overlap
         # to report.
         if roll_dir is not None:
-            _preview_roll(input_dir, [], [], roll_dir, processing_params)
+            _preview_roll(input_dir, [], [], roll_dir, processing_params, profile)
         return ProbeOutcome(catalogue=order.order, groups=[])
 
     if not files:
@@ -422,7 +419,7 @@ def run_probe(
     roll_overlap: list[RollOverlapEntry] = []
     if roll_dir is not None:
         roll_overlap = _preview_roll(
-            input_dir, selection.names, groups, roll_dir, processing_params
+            input_dir, selection.names, groups, roll_dir, processing_params, profile
         )
 
     return ProbeOutcome(

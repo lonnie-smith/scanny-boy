@@ -617,6 +617,35 @@ def _publish_group(
         )
 
 
+def build_processing_params(profile) -> dict:
+    """The processing params a run presents as its roll invariant (section
+    3.4): the raw decode params, the normalization constants (section 3.8 —
+    the key is always present, normalization is not optional), and, when a
+    flat-field profile applies, its token and any CA decode scales (the
+    second invariant bucket of docs/GEOMETRIC_PLAN.md section 3.6).
+
+    `run_convert` and `probe --roll` must both present exactly this shape,
+    so both go through this one function rather than keeping copies that
+    can drift apart."""
+    ca_scales = (
+        None if profile is None else flatfield.chromatic_aberration_scales(profile)
+    )
+    processing_params = raw_decode.jsonable_raw_params(chromatic_aberration=ca_scales)
+    processing_params["normalize"] = normalization.build_params()
+    if profile is not None:
+        # Absent, not null, when no profile was given, so a no-profile run
+        # still compares equal to a pre-flat-field roll (section 2.4).
+        processing_params["flat_field"] = flatfield.profile_token(profile)
+        if ca_scales is not None:
+            processing_params["chromatic_aberration"] = {
+                "profile_id": profile.profile_id,
+                "mode": "scale",
+                "red_scale": ca_scales[0],
+                "blue_scale": ca_scales[1],
+            }
+    return processing_params
+
+
 def run_convert(
     input_dir: Path,
     files: list[str],
@@ -723,25 +752,7 @@ def run_convert(
                 )
             )
 
-    processing_params = raw_decode.jsonable_raw_params(chromatic_aberration=ca_scales)
-    # Section 3.8: the normalization constants are a roll invariant, and
-    # the key is always present — normalization is not optional. Added
-    # here, where the work manifest is written, so the stitch stage
-    # inherits it exactly the way it inherits `flat_field`.
-    processing_params["normalize"] = normalization.build_params()
-    if profile is not None:
-        # Absent, not null, when no profile was given, so a no-profile run
-        # still compares equal to a pre-flat-field roll (section 2.4).
-        processing_params["flat_field"] = flatfield.profile_token(profile)
-        if ca_scales is not None:
-            # The second invariant bucket of section 3.6: the CA scales are
-            # decode parameters, so they belong in processing_params.
-            processing_params["chromatic_aberration"] = {
-                "profile_id": profile.profile_id,
-                "mode": "scale",
-                "red_scale": ca_scales[0],
-                "blue_scale": ca_scales[1],
-            }
+    processing_params = build_processing_params(profile)
 
     groups = build_groups(selected, per_negative)
     candidate = Manifest(

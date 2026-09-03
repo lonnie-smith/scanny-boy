@@ -17,7 +17,7 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.pipeline import hash_sources
 from scanny_boy.probe import ProbeFailure, run_probe
-from scanny_boy.raw_decode import jsonable_raw_params
+from scanny_boy.pipeline import build_processing_params
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_1,
@@ -361,8 +361,8 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
     work manifest's sources carry the real sample files' names and sha256
     hashes — that is what overlap detection compares — while the
     intermediates are synthetic Phase 1 TIFFs, so only RAW decoding is
-    skipped. `processing_params` is the real decode parameter set, matching
-    what a `run` would present as its invariants."""
+    skipped. `processing_params` is the real invariant set a `run` presents
+    (raw decode params plus the `normalize` bucket)."""
     members = [name for group in groups for name in group]
     work_dir = tmp_path / "work"
     work_dir.mkdir()
@@ -402,7 +402,7 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
             input_folder=str(FIXTURES_DIR),
             film_date="2026-08-02",
             shots_per_negative=len(groups[0]),
-            processing_params=jsonable_raw_params(),
+            processing_params=build_processing_params(None),
             icc_profile=profile_record(ProfileKind.LINEAR),
             source_order=members,
             sources=hash_sources(FIXTURES_DIR, members),
@@ -517,7 +517,7 @@ def test_probe_accepts_changed_shots_per_negative(tmp_path):
 # --- flat-field: --roll surfaces a profile mismatch before any run ---------
 
 
-def _save_flatfield_profile(profile_id: str, name: str):
+def _save_flatfield_profile(profile_id: str, name: str, *, geometry: dict | None = None):
     import numpy as np
 
     from scanny_boy import flatfield
@@ -537,6 +537,7 @@ def _save_flatfield_profile(profile_id: str, name: str):
         params=flatfield.build_params(),
         scanny_boy_version="0.3.0",
         created_at="2026-09-01T00:00:00Z",
+        geometry=geometry,
     )
     repo.save_flatfield_profile(profile)
     return profile
@@ -565,6 +566,7 @@ def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
 
 def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
     from scanny_boy import flatfield
+    from scanny_boy.pipeline import build_processing_params
     from scanny_boy.roll_manifest import (
         RunRecord,
         new_roll_manifest,
@@ -584,10 +586,7 @@ def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
     manifest.runs.append(
         RunRecord(run_id="run-1", kind="stitch", status="complete", started_at="t")
     )
-    manifest.processing_params = {
-        **jsonable_raw_params(),
-        "flat_field": flatfield.profile_token(profile_a),
-    }
+    manifest.processing_params = build_processing_params(profile_a)
     manifest.stitch_params = _stitch_params()
     write_roll_manifest(roll_dir, manifest)
 
@@ -608,3 +607,37 @@ def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
         )
 
     assert excinfo.value.code == Code.ROLL_INVARIANT_MISMATCH
+
+
+def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
+    """A calibrated profile adds a `geometry` bucket to the stitch params
+    `run --roll` presents; probing a roll stitched with that same profile
+    must pass. (Probe used to call `_stitch_params()` without the profile,
+    so every probe of a calibrated roll failed ROLL_INVARIANT_MISMATCH.)"""
+    from scanny_boy.pipeline import build_processing_params
+    from scanny_boy.roll_manifest import (
+        RunRecord,
+        new_roll_manifest,
+        write_roll_manifest,
+    )
+    from scanny_boy.stitch_pipeline import _stitch_params
+
+    profile = _save_flatfield_profile(
+        "pid-geo",
+        "Profile Geo",
+        geometry={"format_version": 1, "k1": -0.001},
+    )
+    input_dir = _catalogue_dir(tmp_path)
+    roll_dir = tmp_path / "Roll"
+    roll_dir.mkdir()
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    manifest.runs.append(
+        RunRecord(run_id="run-1", kind="stitch", status="complete", started_at="t")
+    )
+    manifest.processing_params = build_processing_params(profile)
+    manifest.stitch_params = _stitch_params(profile)
+    write_roll_manifest(roll_dir, manifest)
+
+    run_probe(
+        input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id=profile.profile_id
+    )
