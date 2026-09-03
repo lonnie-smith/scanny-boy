@@ -219,6 +219,7 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
+        "feather": composite_module.FEATHER,
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {

@@ -191,20 +191,37 @@ negative is allowed to publish; see
 section 3.4.
 
 **Blending.** Overlapping regions are combined with a linear feather in
-linear light: each frame's contribution is weighted by its distance from the
-frame's own edge, so the seam fades smoothly rather than cutting sharply.
+linear light, ramped along the strip axis only: each frame's contribution is
+weighted by its distance from the nearer end of its own extent *along the
+direction the film strip runs*, floored so a covered pixel always
+contributes; across the strip the weight is constant. An earlier version
+weighted a pixel by its distance to the nearest edge of the frame's own mask
+in every direction, which is isotropic and therefore identical near the
+strip's long borders and down its middle — but near those borders the
+nearest edge is the border itself, not the seam, so both frames' weights
+collapsed toward 50/50 there regardless of where the seam actually was, and
+residual misregistration smeared into a curved band that grew toward the
+edges instead of showing up as a clean step at the seam. Ramping along the
+strip axis only removes that collapse: the crossfade profile at the top and
+bottom of a stitched strip is now identical to the crossfade down its
+middle, so misregistration shows up as a measurable, bounded step at the
+seam rather than a widening smear.
+
 This is safe specifically *because* exposure and white balance are locked
 across a roll — there is no exposure mismatch a blend needs to hide, only
 misregistration, and a feather tolerates a little of that gracefully instead
-of showing it as a hard line.
-
-That choice is deliberate, but provisional — worth revisiting once more real
-rolls have gone through it, not a closed question. Two alternatives were
-considered and set aside for now:
+of showing it as a hard line. Two alternatives were considered and set aside
+for now:
 
 - **A hard seam at the overlap midline.** Preserves grain exactly, since no
   pixel is ever a blend of two frames — but any misregistration shows up as a
-  visible line at the seam, with nothing to soften it.
+  visible line at the seam, with nothing to soften it. Named as the next step
+  if a measured step at the seam turns out small enough to cut through rather
+  than fade.
+- **A band around the overlap midline, narrower than the whole frame
+  extent.** Makes a step even easier to see, but needs the pair's overlap
+  geometry at blend time, which the compositing pass does not currently
+  carry.
 - **A multi-band Laplacian blend.** Hides misalignment better than a linear
   feather does, at the cost of softening fine grain in the blended region and
   a meaningfully heavier compositing stage.

@@ -76,6 +76,13 @@ class Layout:
     global_rms_px: float
     used_pairs: list[PairResult]
     strip_spread_ratio: float
+    # Unit vector, canvas space: the strip's long axis, for composite.py's
+    # strip-axis feather. None when fewer than two placements, the centres
+    # are coincident, or strip_spread_ratio says the layout is not
+    # strip-shaped — an axis fitted to a blob would feather along an
+    # arbitrary direction. The weight formula it feeds is symmetric under a
+    # sign flip of the axis, so no sign canonicalisation is needed here.
+    strip_axis: tuple[float, float] | None
 
 
 def check_connectivity(names: list[str], pairs: list[PairResult]) -> None:
@@ -226,12 +233,17 @@ def solve_layout(
         math.ceil(max_xy[1] - min_xy[1]),
     )
 
+    ratio, axis = _strip_geometry(shifted_placements, frame_size)
+    if ratio > STRIP_SPREAD_RATIO:
+        axis = None
+
     return Layout(
         placements=shifted_placements,
         canvas_size=canvas_size,
         global_rms_px=global_rms(shifted_placements, accepted_pairs),
         used_pairs=accepted_pairs,
-        strip_spread_ratio=strip_spread_ratio(shifted_placements, frame_size),
+        strip_spread_ratio=ratio,
+        strip_axis=axis,
     )
 
 
@@ -345,11 +357,15 @@ def global_rms(placements: list[FramePlacement], pairs: list[PairResult]) -> flo
     return float(np.sqrt(np.mean(np.concatenate(squared_errors))))
 
 
-def strip_spread_ratio(
+def _strip_geometry(
     placements: list[FramePlacement], frame_size: tuple[int, int]
-) -> float:
-    """Placed frame centres, mean-subtracted; the ratio of the second
-    singular value to the first. A strip is near 0."""
+) -> tuple[float, tuple[float, float] | None]:
+    """One SVD of the placed, mean-subtracted frame centres, shared by
+    `strip_spread_ratio` (the ratio of the second singular value to the
+    first — a strip is near 0) and the strip axis (the first right-singular
+    vector) that `solve_layout` publishes on `Layout` for composite.py's
+    feather. The axis is None whenever the ratio is: fewer than two
+    placements, or the largest singular value is 0 (coincident centres)."""
     height, width = frame_size
     local_center = np.array([width / 2.0, height / 2.0])
 
@@ -359,12 +375,28 @@ def strip_spread_ratio(
         rotation, translation = matrix[:, :2], matrix[:, 2]
         centers.append(rotation @ local_center + translation)
     centers = np.array(centers)
+
+    if len(centers) < 2:
+        return 0.0, None
+
     centers = centers - centers.mean(axis=0)
 
-    singular_values = np.linalg.svd(centers, compute_uv=False)
+    _u, singular_values, vt = np.linalg.svd(centers)
     if singular_values[0] == 0:
-        return 0.0
-    return float(singular_values[1] / singular_values[0])
+        return 0.0, None
+
+    axis = (float(vt[0, 0]), float(vt[0, 1]))
+    ratio = float(singular_values[1] / singular_values[0])
+    return ratio, axis
+
+
+def strip_spread_ratio(
+    placements: list[FramePlacement], frame_size: tuple[int, int]
+) -> float:
+    """Placed frame centres, mean-subtracted; the ratio of the second
+    singular value to the first. A strip is near 0."""
+    ratio, _axis = _strip_geometry(placements, frame_size)
+    return ratio
 
 
 def _largest_all_covered_rectangle(mask: np.ndarray) -> tuple[int, int, int, int]:

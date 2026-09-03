@@ -217,13 +217,24 @@ roll manifest as well as the conversion manifest, by parameterising
   Each frame warps into its own bounding box, not the full canvas. The
   validity mask warps with `INTER_NEAREST` and is eroded by 5 pixels (Lanczos4's
   support radius, plus one pixel of insurance).
-- **Blending is a linear feather in linear light**: per-frame weight is a
-  distance transform of the eroded mask, and the output is the weighted
-  average wherever any frame contributes weight. This is deliberate and
-  provisional — see the README's "How frames are registered and blended" for
-  the reasoning and the alternatives (a hard seam, a multi-band Laplacian
-  blend) that were set aside for now, worth revisiting with real rolls in
-  hand.
+- **Blending is a linear feather in linear light, ramped along the strip
+  axis only**: per-frame weight is the distance from the nearer end of the
+  frame's own extent along the strip's long axis (published on `Layout` as
+  `strip_axis`, a unit vector from the same SVD `strip_spread_ratio`
+  already computed), constant across the strip, floored so a covered pixel
+  always contributes; the output is the weighted average wherever any frame
+  contributes weight. A distance transform of the eroded mask (isotropic in
+  every direction) is kept only as the fallback when a layout has no
+  trustworthy strip axis. The isotropic version was replaced, not merely
+  revisited: it made a pixel's crossfade identical near the strip's long
+  borders and down its middle, but near those borders the nearest mask edge
+  is the border itself, not the seam, so both frames' weights collapsed
+  toward 50/50 there regardless of the true seam position, and residual
+  misregistration smeared into a curved band that widened toward the edges.
+  See the README's "How frames are registered and blended" for the
+  reasoning and the alternatives (a hard seam, an overlap-midline band, a
+  multi-band Laplacian blend) kept as named, deliberately deferred next
+  steps.
 - Pixels covered by no frame are `FILL_COLOR`, one named constant, initially
   black — recorded in the roll manifest so a file can be interpreted without
   knowing which build wrote it. `punchlist.md` already contemplates a

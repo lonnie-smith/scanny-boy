@@ -385,6 +385,69 @@ def test_l_shaped_layout_reports_a_high_spread_ratio():
     layout = solve_layout(names, _FRAME_SIZE, pairs)
 
     assert layout.strip_spread_ratio > STRIP_SPREAD_RATIO
+    assert layout.strip_axis is None
+
+
+def test_strip_axis_points_along_the_strip():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 3.0, (500.0, 50.0)),
+        FramePlacement("f2", -2.0, (1000.0, 50.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    pairs = [
+        _ground_truth_pair(
+            "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, noise_px=0.2, seed=1
+        ),
+        _ground_truth_pair(
+            "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, noise_px=0.2, seed=2
+        ),
+    ]
+
+    layout = solve_layout(names, _FRAME_SIZE, pairs)
+
+    assert layout.strip_axis is not None
+    ax, ay = layout.strip_axis
+    assert math.isclose(math.hypot(ax, ay), 1.0, abs_tol=1e-6)
+    # The frames run mostly along x (500px steps vs ~50px of y drift), so
+    # the axis must be nearly (+-1, ~0).
+    assert abs(ax) > 0.98
+
+
+def test_strip_axis_is_order_independent_up_to_sign():
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 4.0, (500.0, 20.0)),
+        FramePlacement("f2", -3.0, (1000.0, -25.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    pair_01 = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, noise_px=0.0, seed=1
+    )
+    pair_12 = _ground_truth_pair(
+        "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, noise_px=0.0, seed=2
+    )
+
+    baseline = solve_layout(names, _FRAME_SIZE, [pair_01, pair_12])
+
+    scrambled_names = ["f0", "f2", "f1"]
+    scrambled_pairs = [_reversed_pair(pair_12), pair_01]
+    scrambled = solve_layout(scrambled_names, _FRAME_SIZE, scrambled_pairs)
+
+    assert baseline.strip_axis is not None
+    assert scrambled.strip_axis is not None
+    dot = (
+        baseline.strip_axis[0] * scrambled.strip_axis[0]
+        + baseline.strip_axis[1] * scrambled.strip_axis[1]
+    )
+    assert abs(dot) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_single_frame_has_no_strip_axis():
+    layout = solve_layout(["f0"], _FRAME_SIZE, [])
+    assert layout.strip_axis is None
 
 
 def test_rejects_an_implausibly_large_pair_rotation():

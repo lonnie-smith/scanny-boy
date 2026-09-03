@@ -192,6 +192,169 @@ def test_feather_weights_sum_to_one_inside_coverage():
     assert np.max(np.abs(linear[covered] - constant_value)) < 0.01
 
 
+def _hand_built_strip_masks():
+    """Two axis-aligned frame masks, each eroded on all four true edges by
+    MASK_ERODE_PX as `composite` erodes a real frame's warped mask, placed
+    side by side along x with frame A's right edge (canvas col 295) much
+    closer to the sampled overlap column than frame B's left edge (canvas
+    col 205) — the geometry needed to make the isotropic distance
+    transform's border collapse actually visible: at a canvas row right at
+    MASK_ERODE_PX (i.e. at the frames' own top edge, which for a full-height
+    frame is also the strip's long border), the nearest zero pixel for
+    *both* frames is that top edge, not the seam, so both weights collapse
+    to the same tiny value regardless of how far the column sits from the
+    seam. Returns (mask_a, mask_b, b_offset, height, x_pick)."""
+    from scanny_boy.composite import MASK_ERODE_PX
+
+    height, width_a, width_b = 200, 300, 300
+    b_offset = 200
+    mask_a = np.zeros((height, width_a), dtype=np.uint8)
+    mask_a[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_a - MASK_ERODE_PX] = 1
+    mask_b = np.zeros((height, width_b), dtype=np.uint8)
+    mask_b[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_b - MASK_ERODE_PX] = 1
+    return mask_a, mask_b, b_offset, height, 280
+
+
+def _place_on_canvas(weight_a, weight_b, b_offset, height, width_a, width_b):
+    canvas_width = b_offset + width_b
+    canvas_a = np.zeros((height, canvas_width), dtype=np.float32)
+    canvas_a[:, :width_a] = weight_a
+    canvas_b = np.zeros((height, canvas_width), dtype=np.float32)
+    canvas_b[:, b_offset:] = weight_b
+    return canvas_a, canvas_b
+
+
+def test_feather_contribution_is_constant_across_the_strip():
+    from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
+
+    mask_a, mask_b, b_offset, height, x_pick = _hand_built_strip_masks()
+    axis = (1.0, 0.0)
+    canvas_a, canvas_b = _place_on_canvas(
+        _feather_weight(mask_a, 0, 0, axis),
+        _feather_weight(mask_b, b_offset, 0, axis),
+        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+    )
+
+    row_border = MASK_ERODE_PX  # the frames' own top edge == the strip's long border
+    row_mid = height // 2
+
+    def contribution(canvas_a, canvas_b, y):
+        a, b = canvas_a[y, x_pick], canvas_b[y, x_pick]
+        return a / (a + b)
+
+    # The strip-axis ramp must give the same crossfade at the border as at
+    # the middle.
+    assert contribution(canvas_a, canvas_b, row_border) == pytest.approx(
+        contribution(canvas_a, canvas_b, row_mid), abs=1e-6
+    )
+
+    # And this is the regression it fixes: the same geometry, fed through
+    # the old isotropic distance transform, collapses to a near-50/50 blend
+    # at the border while giving a position-dependent ratio in the middle —
+    # exactly the curved smear this plan describes.
+    old_canvas_a, old_canvas_b = _place_on_canvas(
+        _feather_weight(mask_a, 0, 0, None),
+        _feather_weight(mask_b, b_offset, 0, None),
+        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+    )
+    old_border = contribution(old_canvas_a, old_canvas_b, row_border)
+    old_mid = contribution(old_canvas_a, old_canvas_b, row_mid)
+    assert old_border == pytest.approx(0.5, abs=0.02)
+    assert abs(old_border - old_mid) > 0.1
+
+
+def test_transition_band_width_does_not_grow_toward_the_border():
+    from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
+
+    mask_a, mask_b, b_offset, height, _x_pick = _hand_built_strip_masks()
+    axis = (1.0, 0.0)
+    canvas_a, canvas_b = _place_on_canvas(
+        _feather_weight(mask_a, 0, 0, axis),
+        _feather_weight(mask_b, b_offset, 0, axis),
+        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+    )
+
+    total = canvas_a + canvas_b
+    frac = np.divide(canvas_a, total, out=np.zeros_like(total), where=total > 0)
+    band = (total > 0) & (frac > 0.1) & (frac < 0.9)
+
+    def band_width(y):
+        xs = np.where(band[y])[0]
+        return int(xs[-1] - xs[0] + 1) if xs.size else 0
+
+    row_border = MASK_ERODE_PX
+    row_mid = height // 2
+    row_bottom = height - 1 - MASK_ERODE_PX
+
+    widths = [band_width(row_border), band_width(row_mid), band_width(row_bottom)]
+    assert min(widths) > 0
+    # Bounded: the transition band's width at the strip's borders must not
+    # exceed its width at the middle — under the old isotropic feather this
+    # widened toward the border without limit.
+    assert max(widths) - min(widths) == 0
+
+
+def test_misregistration_produces_a_bounded_step_not_a_growing_smear():
+    """A deliberate 3px translational error (perpendicular to the strip
+    axis) between the solved and the "true" placement, on a real-content
+    scene. With the strip-axis feather the mismatched band's width is fixed
+    by the feather geometry alone, not by the misregistration, so it must
+    not grow toward the canvas's long borders — the defect this plan
+    describes was exactly that growth."""
+    _scene, names, uint16_frames, layout, _cut = _build_two_frame_scene(
+        rotations_deg=(0.0, 0.0), overlap=0.3
+    )
+    assert layout.strip_axis is not None
+    ax, ay = layout.strip_axis
+    perp = (-ay, ax)
+
+    misplaced = [
+        dataclasses.replace(
+            p,
+            translation=(
+                p.translation[0] + perp[0] * 3.0,
+                p.translation[1] + perp[1] * 3.0,
+            ),
+        )
+        if p.name == names[1]
+        else p
+        for p in layout.placements
+    ]
+    misregistered_layout = dataclasses.replace(layout, placements=misplaced)
+
+    correct_result = _composite(layout, uint16_frames)
+    misregistered_result = _composite(misregistered_layout, uint16_frames)
+
+    correct_linear = decode_to_linear(correct_result.image).astype(np.float32)
+    mis_linear = decode_to_linear(misregistered_result.image).astype(np.float32)
+    diff = np.mean(np.abs(correct_linear - mis_linear), axis=-1)
+
+    covered = np.any(correct_result.image != 0, axis=-1) & np.any(
+        misregistered_result.image != 0, axis=-1
+    )
+    rows = np.where(covered.any(axis=1))[0]
+    # A small margin from the very first/last covered row, which can carry
+    # partial coverage from the erosion/warp boundary itself.
+    top_y, mid_y, bottom_y = rows[5], rows[len(rows) // 2], rows[-6]
+
+    def step_width(y):
+        return int(np.count_nonzero(covered[y] & (diff[y] > 0.02)))
+
+    widths = [step_width(top_y), step_width(mid_y), step_width(bottom_y)]
+    assert min(widths) > 0
+    assert max(widths) - min(widths) < 0.3 * max(widths)
+
+
+def test_strip_axis_none_reproduces_the_distance_transform_exactly():
+    from scanny_boy.composite import _feather_weight
+
+    mask = np.zeros((80, 120), dtype=np.uint8)
+    mask[10:70, 15:105] = 1
+    expected = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    actual = _feather_weight(mask, bbox_x=3, bbox_y=7, axis=None)
+    assert np.array_equal(actual, expected.astype(np.float32))
+
+
 def test_gain_correction_reconciles_a_known_brightness_offset():
     _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
     # Scale frame f1's linear values down per channel (never up: no clipping
@@ -320,9 +483,12 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4
     warped = bbox_pixels * 3 * 4
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2
+    feather_scratch = bbox_pixels * 4 * 2
 
     all_warped = 2 * (warped + warp_aux)
-    live_bytes = max(accum + weight + source + all_warped, accum + result)
+    live_bytes = max(
+        accum + weight + source + all_warped + feather_scratch, accum + result
+    )
 
     expected = math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
     assert large_frame == expected
@@ -404,7 +570,7 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         src_h, src_w = frame.shape[:2]
         linear = decode_to_linear(frame).astype(np.float32)
         matrix = placement.matrix()
-        from scanny_boy.composite import _EROSION_KERNEL, _frame_bbox
+        from scanny_boy.composite import _EROSION_KERNEL, _feather_weight, _frame_bbox
 
         x, y, w, h = _frame_bbox(matrix, src_h, src_w, layout.canvas_size)
         M = matrix.copy()
@@ -421,7 +587,7 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
         )
-        weight = cv2.distanceTransform(eroded, cv2.DIST_L2, 5)
+        weight = _feather_weight(eroded, x, y, layout.strip_axis)
         gain = np.asarray(result.gains[placement.name], dtype=np.float32)
         warped_frames.append((x, y, w, h, warped * gain, weight))
 
@@ -579,11 +745,13 @@ def test_estimate_peak_bytes_grows_by_exactly_the_geometry_terms():
         canvas = 1000 * 800
         bbox = 1000 * 800
         count = 3
+        feather_scratch = bbox * 4 * 2
         return max(
             canvas * 3 * 4  # accum
             + canvas * 4  # weight
             + 500 * 700 * 3 * 2 + 500 * 700 * 3 * 4  # source
             + count * (bbox * 3 * 4 + bbox * 4 + bbox * 2)  # all_warped
+            + feather_scratch
             + extra,
             canvas * 3 * 4 + canvas * 3 * 2,  # accum + result
         )
