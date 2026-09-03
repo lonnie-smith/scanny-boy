@@ -303,6 +303,101 @@ def test_work_directory_is_removed_after_cancellation(tmp_path, monkeypatch):
     assert outcome.stitch is None
 
 
+def test_work_directory_is_removed_when_convert_fails(tmp_path, monkeypatch):
+    """The work dir a run created is removed on any outcome — including the
+    `RunFailure` paths, which used to leave ~140 MiB of intermediates behind
+    under `<roll>/.work/`."""
+    import scanny_boy.run_pipeline as run_pipeline_module
+    from scanny_boy.pipeline import ConvertFailure
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def boom(*args, **kwargs):
+        raise ConvertFailure(Code.OUTPUT_CONFLICT, "boom")
+
+    monkeypatch.setattr(run_pipeline_module, "run_convert", boom)
+
+    with pytest.raises(RunFailure):
+        run_full(
+            tmp_path,
+            ["a.NEF"],
+            out_dir,
+            3,
+            run_id="run-run",
+            work_dir=None,
+            skip_sources=[],
+            jobs=1,
+            cancel=CancellationToken(),
+            emit=lambda event: None,
+        )
+
+    assert not (out_dir / ".work" / "run-run").exists()
+
+
+def test_work_directory_is_removed_when_stitch_fails(tmp_path, monkeypatch):
+    import scanny_boy.run_pipeline as run_pipeline_module
+    from scanny_boy.manifest import CuratedMetadata, Manifest
+    from scanny_boy.pipeline import ConvertOutcome
+    from scanny_boy.registration import StitchError
+
+    convert_outcome = ConvertOutcome(
+        run_id="run-run",
+        status="complete",
+        manifest=Manifest(
+            scanny_boy_version="0.0.0",
+            run_id="run-run",
+            status="complete",
+            input_folder="/in",
+            film_date="2026-08-02",
+            shots_per_negative=3,
+            processing_params={},
+            icc_profile={},
+            source_order=[],
+            sources=[],
+            curated_metadata=CuratedMetadata(
+                exposure_time="1/30",
+                f_number="8",
+                iso=100,
+                focal_length="55",
+                lens_model="55mm f/2.8",
+                orientation=1,
+                camera_whitebalance=(1.0, 1.0, 1.0, 1.0),
+            ),
+            groups=[],
+            started_at="2026-08-02T00:00:00Z",
+            finished_at="2026-08-02T00:01:00Z",
+        ),
+    )
+    monkeypatch.setattr(
+        run_pipeline_module, "run_convert", lambda *args, **kwargs: convert_outcome
+    )
+
+    def stitch_boom(*args, **kwargs):
+        raise StitchError(Code.ROLL_NOT_FOUND, "unregistered roll")
+
+    monkeypatch.setattr(run_pipeline_module, "run_stitch", stitch_boom)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(RunFailure):
+        run_full(
+            tmp_path,
+            ["a.NEF"],
+            out_dir,
+            3,
+            run_id="run-run",
+            work_dir=None,
+            skip_sources=[],
+            jobs=1,
+            cancel=CancellationToken(),
+            emit=lambda event: None,
+        )
+
+    assert not (out_dir / ".work" / "run-run").exists()
+
+
 # --- the combined progress span --------------------------------------------
 
 

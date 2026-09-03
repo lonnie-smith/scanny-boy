@@ -105,7 +105,10 @@ def _detect_paths(
             cancel_check()
         frame = decode_raw(path)
         gray = charuco.build_full_resolution_gray(frame.pixels)
-        return charuco.detect_corners(gray, board)
+        try:
+            return charuco.detect_corners(gray, board)
+        except BoardDetectionError as exc:  # defensive: the same contract path
+            raise _map_board_error(exc) from exc
 
     if workers <= 1:
         return [one(path) for path in paths]
@@ -144,7 +147,10 @@ def _detect_ca_paths(
             ("luminance", linear @ detection_weights()),
         ):
             gray = charuco.percentile_stretch(image.astype(np.float64))
-            result[name] = charuco.detect_corners(gray, board)
+            try:
+                result[name] = charuco.detect_corners(gray, board)
+            except BoardDetectionError as exc:  # defensive: same contract path
+                raise _map_board_error(exc) from exc
         emit(FlatFieldProgress(phase="chromatic", completed=index + 1, total=total))
         return result
 
@@ -330,9 +336,14 @@ def _create_calibrated_profile(
     #    2): both dictionaries race on one frame and the winner is reused
     #    for every remaining frame — never re-detected per frame.
     first = decode_raw(paths[0])
-    board = charuco.detect_board_format(
-        charuco.build_full_resolution_gray(first.pixels)
-    )
+    try:
+        board = charuco.detect_board_format(
+            charuco.build_full_resolution_gray(first.pixels)
+        )
+    except BoardDetectionError as exc:
+        # The stable contract code (`GEOMETRY_BOARD_NOT_DETECTED`), not the
+        # last-resort internal-error handler.
+        raise _map_board_error(exc) from exc
     frame_width, frame_height = first.width, first.height
     del first
     emit(FlatFieldProgress(phase="detect", completed=1, total=len(paths)))
@@ -415,11 +426,14 @@ def _create_calibrated_profile(
     half_width = ca_frames[0]["width"]
     half_height = ca_frames[0]["height"]
 
-    def prepare(detection: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    def prepare(
+        detection: dict,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
         """Per frame: intersect the three channels by id, undistort with the
         green coefficients, convert to normalised coordinates (section 4.6
-        steps 2-4). Returns `(red, green, blue)` normalised, row-aligned on
-        the common ids — or None when no corner survived in all three."""
+        steps 2-4). Returns `(red, green_for_red, blue, green_for_blue)`
+        normalised, row-aligned on the common ids — or None when no corner
+        survived in all three."""
         def normalised(channel: str) -> tuple[np.ndarray, np.ndarray]:
             points, ids = detection[channel]
             points_n = _undistort_to_normalised(
@@ -525,11 +539,16 @@ def _create_calibrated_profile(
     del reference_frame
     emit(FlatFieldProgress(phase="reference", completed=1, total=1))
 
-    # 7. Assemble the report, save the gain map, insert the row.
+    # 7. Assemble the report, save the gain map, insert the row. The frame
+    #    counts describe the fit that actually happened: the ones that
+    #    survived corner detection and reached the train/heldout split.
+    surviving_names = {path.name for path, _ in surviving}
+    surviving_train = [p for p in train_paths if p.name in surviving_names]
+    surviving_heldout = [p for p in heldout_paths if p.name in surviving_names]
     report = {
         "frames_total": len(paths),
-        "frames_fit": len(train_paths),
-        "frames_heldout": len(heldout_paths),
+        "frames_fit": len(surviving_train),
+        "frames_heldout": len(surviving_heldout),
         "heldout_frame_names": sorted(heldout_names),
         "corners_detected_median": int(
             np.median([len(ids) for _, (_, ids) in surviving])

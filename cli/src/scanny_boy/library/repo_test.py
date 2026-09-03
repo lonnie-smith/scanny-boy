@@ -250,6 +250,67 @@ def test_delete_roll_matches_the_folder_however_it_is_spelled(roll_dir, tmp_path
 # --- roll rename and folder moves -------------------------------------------
 
 
+def test_saving_a_manifest_repeatedly_does_not_duplicate_sources(roll_dir):
+    """`write_roll_manifest` runs many times per run; sources must not grow
+    on every save (`SourceRow` has a surrogate key, so the save rewrites the
+    list wholesale instead of merging)."""
+    from sqlalchemy import func, select
+
+    from scanny_boy.library.models import NegativeRow, RunRow, SourceRow
+    from scanny_boy.roll_manifest import (
+        RollSourceRecord,
+        RunRecord,
+        load_roll_manifest,
+    )
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.runs.append(
+        RunRecord(
+            run_id="run-1",
+            short_id="abc123",
+            kind="run",
+            status="done",
+            convert_run_id="crun-1",
+            input_folder="/in",
+            source_order=["a.NEF"],
+            work_dir="/work",
+            started_at="2026-09-01T00:00:00Z",
+            finished_at="2026-09-01T00:01:00Z",
+        )
+    )
+    manifest.sources.append(
+        RollSourceRecord(
+            filename="a.NEF",
+            absolute_path="/in/a.NEF",
+            size=100,
+            mtime=1.0,
+            sha256="hash-a",
+            run_id="run-1",
+        )
+    )
+    manifest.sources.append(
+        RollSourceRecord(
+            filename="b.NEF",
+            absolute_path="/in/b.NEF",
+            size=200,
+            mtime=2.0,
+            sha256="hash-b",
+            run_id="run-1",
+        )
+    )
+
+    for _ in range(3):
+        write_roll_manifest(roll_dir, manifest)
+
+        loaded = load_roll_manifest(roll_dir)
+        assert [s.sha256 for s in loaded.sources] == ["hash-a", "hash-b"]
+
+    with db.open_engine().connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(SourceRow)) == 2
+        assert connection.scalar(select(func.count()).select_from(RunRow)) == 1
+        assert connection.scalar(select(func.count()).select_from(NegativeRow)) == 0
+
+
 def test_save_updates_folder_path_after_a_move(roll_dir, tmp_path):
     moved = tmp_path / "Moved"
     roll_dir.rename(moved)

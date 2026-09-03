@@ -99,10 +99,13 @@ def _write_downscaled(image: np.ndarray, destination: Path) -> None:
     destination.write_bytes(encoded.tobytes())
 
 
-def generate_preview(roll_dir: Path, roll_id: str, negative) -> Path | None:
-    """A preview of `negative`'s published TIFF as it currently stands —
-    no edits applied. Returns the preview path, or None when the negative
-    has no published output to preview."""
+def generate_preview(
+    roll_dir: Path, roll_id: str, negative, quarter_turns: int = 0
+) -> Path | None:
+    """A preview of `negative`'s published TIFF with the negative's net
+    `quarter_turns` applied — the published TIFF itself never carries edits,
+    so the rotation is folded in here. Returns the preview path, or None
+    when the negative has no published output to preview."""
     if negative.output is None:
         return None
     import tifffile
@@ -113,6 +116,10 @@ def generate_preview(roll_dir: Path, roll_id: str, negative) -> Path | None:
         image = np.stack([image] * 3, axis=-1)
     elif image.shape[2] == 4:
         image = image[:, :, :3]
+    if quarter_turns % 4:
+        # np.rot90 turns counter-clockwise; the count is net clockwise
+        # quarter turns.
+        image = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
 
     destination = _preview_path(roll_id, negative.negative_id)
     _write_downscaled(image, destination)
@@ -138,36 +145,47 @@ def ensure_preview(
     roll_dir: Path, roll_id: str, negative, direction: str | None = None
 ) -> Path | None:
     """The preview path `negative` should display after `direction`
-    (None meaning: make sure an unrotated one exists).
+    (None meaning: make sure one exists).
 
-    - No preview yet: generate one from the published TIFF, then apply the
-      quarter turn if asked.
-    - Preview exists and a direction came in: rotate the cached preview.
+    - No preview yet: generate one from the published TIFF with the ops
+      log's *net* rotation applied — the incremental `direction` is already
+      in that net, and the cache may have been lost several edits ago, so
+      regenerating with only the latest turn would lie.
+    - Preview exists and a direction came in: rotate the cached preview,
+      which already reflects every earlier turn.
     - Preview exists, no direction: leave it alone.
     """
     if negative.preview_path is None or not Path(negative.preview_path).exists():
-        fresh = generate_preview(roll_dir, roll_id, negative)
-        if fresh is None:
-            return None
-        if direction is not None:
-            rotate_preview(fresh, direction)
-        return fresh
+        net = repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
+        return generate_preview(roll_dir, roll_id, negative, quarter_turns=net)
     if direction is not None:
         return rotate_preview(Path(negative.preview_path), direction)
     return Path(negative.preview_path)
 
 
-def sync_previews(roll_dir: Path, manifest) -> None:
-    """Generate previews for any completed negatives that lack one, and
-    record the paths. Called after a stitch publishes; cheap when
-    everything already has one."""
+def sync_previews(
+    roll_dir: Path, manifest, published_outputs: list[str] | None = None
+) -> None:
+    """Generate previews for completed negatives that lack one, regenerate
+    the ones whose pixels this run replaced, and record the paths.
+
+    `published_outputs` names the output files the caller just published.
+    A re-stitch adopts an existing negative — same id, same preview path,
+    brand-new TIFF — so a cached preview must not survive that: it would
+    show the old pixels. Regenerated previews carry the ops log's net
+    rotation, since the published TIFF never does."""
+    published = set(published_outputs or [])
     changed = False
     for negative in manifest.negatives:
         if negative.status != "completed" or negative.output is None:
             continue
-        if negative.preview_path and Path(negative.preview_path).exists():
+        has_preview = negative.preview_path and Path(negative.preview_path).exists()
+        if has_preview and negative.output["name"] not in published:
             continue
-        preview = generate_preview(roll_dir, manifest.roll_id, negative)
+        turns = repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
+        preview = generate_preview(
+            roll_dir, manifest.roll_id, negative, quarter_turns=turns
+        )
         if preview is not None:
             negative.preview_path = str(preview)
             changed = True

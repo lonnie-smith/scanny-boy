@@ -102,6 +102,36 @@ def test_rotate_an_unknown_negative_fails(stitched_roll):
     assert exc_info.value.code is Code.NEGATIVE_NOT_FOUND
 
 
+def test_rotate_rejects_another_rolls_negative_id(tmp_path):
+    """`negative_id` is a global primary key and the argument is
+    user-supplied: roll B's folder with roll A's negative id must be
+    refused, not silently edit roll A's negative."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import new_roll_manifest
+
+    roll_a = tmp_path / "roll-a"
+    roll_b = tmp_path / "roll-b"
+    for roll_dir, roll_id, negative_id in (
+        (roll_a, "rid-a", "aaa-negative-01"),
+        (roll_b, "rid-b", "bbb-negative-01"),
+    ):
+        roll_dir.mkdir()
+        manifest = new_roll_manifest(roll_id=roll_id, roll_name=roll_dir.name)
+        manifest.negatives.append(_negative(negative_id=negative_id, run_id="run-1"))
+        write_roll_manifest(roll_dir, manifest)
+
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.append_edit(
+            roll_b, "aaa-negative-01", repo.ROTATE_OP, {"direction": "cw"}
+        )
+
+    with pytest.raises(EditFailure):
+        run_edit_rotate(roll_b, "aaa-negative-01", "cw", emit=lambda event: None)
+
+    # Roll A's ops log is untouched.
+    assert repo.edits_for(roll_a, "aaa-negative-01") == []
+
+
 def test_rotate_an_unstitched_negative_fails(stitched_roll):
     manifest = load_roll_manifest(stitched_roll)
     manifest.negatives.append(

@@ -316,3 +316,30 @@ def test_too_few_calibration_frames_fails(tmp_path, monkeypatch):
         assert excinfo.value.code == Code.GEOMETRY_INSUFFICIENT_FRAMES
     finally:
         library_db.reset_engine_cache()
+
+
+def test_undetectable_board_raises_the_contract_code(tmp_path, monkeypatch):
+    """Calibration frames carrying no board at all must surface the stable
+    `GEOMETRY_BOARD_NOT_DETECTED` code — the mapper for `BoardDetectionError`
+    existed but was never wired up, so the failure reached the CLI's
+    last-resort handler as `internal_error`."""
+    monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "library.db"))
+    from scanny_boy.events import Code
+    from scanny_boy.flatfield import FlatFieldError
+    from scanny_boy.library import db as library_db
+
+    library_db.reset_engine_cache()
+    blank = np.full((FULL_H, FULL_W, 3), 30000, dtype=np.uint16)
+
+    def fake_decode(path, *, chromatic_aberration=None, params=None):
+        return DecodedFrame(pixels=blank, width=FULL_W, height=FULL_H)
+
+    monkeypatch.setattr(calibration, "decode_raw", fake_decode)
+    reference = tmp_path / REFERENCE_NAME
+    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    try:
+        with pytest.raises(FlatFieldError) as excinfo:
+            calibration.create_profile(reference, "Blank", paths)
+        assert excinfo.value.code == Code.GEOMETRY_BOARD_NOT_DETECTED
+    finally:
+        library_db.reset_engine_cache()

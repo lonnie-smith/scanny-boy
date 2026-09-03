@@ -94,15 +94,31 @@ def _make_detector() -> cv2.Feature2D:
 
 def detect_features(detection: DetectionImage, name: str) -> FrameFeatures:
     """Uses the gate-C DETECTOR. SIFT/AKAZE -> float descriptors,
-    ORB -> uint8."""
+    ORB -> uint8. A featureless frame normalises to empty (zero-length)
+    keypoints and an empty array of the detector's dtype — `register_pair`
+    refuses the pair; it must never see `None` descriptors."""
     detector = _make_detector()
     keypoints, descriptors = detector.detectAndCompute(detection.image, None)
+    if keypoints is None or len(keypoints) == 0 or descriptors is None:
+        return FrameFeatures(
+            name=name,
+            keypoints=(),
+            descriptors=np.empty((0, 0), dtype=_descriptor_dtype(detector)),
+            scale=detection.scale,
+        )
     return FrameFeatures(
         name=name,
         keypoints=tuple(keypoints),
         descriptors=descriptors,
         scale=detection.scale,
     )
+
+
+def _descriptor_dtype(detector: cv2.Feature2D) -> type:
+    """The descriptor dtype the configured DETECTOR emits: uint8 for ORB,
+    float32 for SIFT/AKAZE. Only used for the empty-array fallback, where
+    `register_pair`'s norm-type choice must not crash on `None`."""
+    return np.uint8 if DETECTOR == "ORB" else np.float32
 
 
 def undistorter_from_geometry(geometry: dict):
@@ -178,6 +194,32 @@ def register_pair(
         cv2.NORM_HAMMING if a.descriptors.dtype == np.uint8 else cv2.NORM_L2
     )
     matcher = cv2.BFMatcher(norm_type)
+
+    if len(a.descriptors) == 0 or len(b.descriptors) == 0:
+        # A blank or near-black intermediate finds no keypoints at all: an
+        # ordinary scanning outcome, refused as insufficient matches rather
+        # than crashing (and eligible for the CLAHE retry).
+        return PairResult(
+            a=a.name,
+            b=b.name,
+            transform=_IDENTITY_TRANSFORM,
+            good_matches=0,
+            inliers=0,
+            inlier_ratio=0.0,
+            rms_residual_px=float("inf"),
+            scale_drift=float("inf"),
+            accepted=False,
+            reject_code=Code.STITCH_INSUFFICIENT_MATCHES,
+            reject_message=(
+                f"no features detected in {a.name} or {b.name}"
+            ),
+            inlier_points_a=_EMPTY_POINTS,
+            inlier_points_b=_EMPTY_POINTS,
+            overlap_fraction=None,
+            overlap_mad=None,
+            overlap_mad_pregain=None,
+        )
+
     raw_matches = matcher.knnMatch(a.descriptors, b.descriptors, k=2)
 
     good = [

@@ -55,6 +55,10 @@ def build_detection_image(
     source_long_edge = max(height, width)
     target_long_edge = min(long_edge, source_long_edge)
     resize_factor = target_long_edge / source_long_edge
+    # One `scale` is reported from the long-edge ratio while `cv2.resize`
+    # rounds each axis independently, so the short axis carries a sub-pixel
+    # error in `to_full_resolution` — harmless against
+    # `RANSAC_REPROJ_PX = 3.0`, and per-axis scales are not worth the drift.
     scale = source_long_edge / target_long_edge
 
     new_width = max(1, round(width * resize_factor))

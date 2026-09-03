@@ -486,7 +486,7 @@ def _attempt_solve(
     source_index: int,
     on_warning,
     profile=None,
-) -> tuple[Layout, tuple[int, int]]:
+) -> tuple[Layout, tuple[int, int], dict | None]:
     """One pass of detection, registration, and the global solve, at a fixed
     `use_clahe`. Raises `StitchError` for anything that fails the negative.
 
@@ -923,6 +923,7 @@ def run_stitch(
                 emit=emit,
                 progress=progress,
                 source_index=source_index_by_group[entry.group.group_id],
+                profile=profile,
             )
         except CancelledError:
             cancelled = True
@@ -962,7 +963,7 @@ def run_stitch(
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision).
     try:
-        previews.sync_previews(out_dir, roll)
+        previews.sync_previews(out_dir, roll, published)
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(

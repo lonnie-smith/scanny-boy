@@ -126,11 +126,15 @@ def solve_layout(
     rotation_rhs = []
     for pair in accepted_pairs:
         phi_ab_deg = _angle_deg(pair.transform[:, :2])
-        assert abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG, (
-            f"pair {pair.a}-{pair.b} rotation {phi_ab_deg} degrees exceeds "
-            f"{_MAX_PAIR_ROTATION_DEG} degrees; this is a bug upstream, "
-            "not a case this solver handles"
-        )
+        if not abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG:
+            # Data from `register_pair` (RANSAC output), not an internal
+            # invariant: a wildly wrong pair fit is a residual problem, and
+            # raising the stable code keeps it CLAHE-retry eligible.
+            raise StitchError(
+                Code.STITCH_RESIDUAL_TOO_HIGH,
+                f"pair {pair.a}-{pair.b} rotation {phi_ab_deg:.1f} degrees "
+                f"exceeds {_MAX_PAIR_ROTATION_DEG} degrees",
+            )
         row = np.zeros(n)
         row[index[pair.a]] = -1.0
         row[index[pair.b]] = 1.0

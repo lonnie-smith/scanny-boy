@@ -400,6 +400,68 @@ def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
     )
 
 
+def test_calibrated_profile_geometry_reaches_the_composite_warp(
+    tmp_path, monkeypatch
+):
+    """A stitch run through a calibrated profile must hand that profile's
+    geometry to `composite`, so the warp matches the undistorted coordinates
+    the solve happened in. (The profile keyword was never passed at the call
+    site, so the geometry-aware warp was dead in production.)"""
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    # Zero distortion: the warp is a no-op, so the synthetic scene still
+    # stitches normally — only the plumbing, not the correction, is tested.
+    geometry = {
+        "format_version": 1,
+        "frame_width": _FRAME_SIZE[0],
+        "frame_height": _FRAME_SIZE[1],
+        "fx": float(_FRAME_SIZE[0]),
+        "fy": float(_FRAME_SIZE[0]),
+        "cx": _FRAME_SIZE[0] / 2.0,
+        "cy": _FRAME_SIZE[1] / 2.0,
+        "k1": 0.0,
+        "k2": 0.0,
+    }
+    path, sha256 = flatfield.save_gain_map(
+        "pid-geo", np.full((8, 8, 3), 1.0, dtype=np.float32)
+    )
+    repo.save_flatfield_profile(
+        flatfield.FlatFieldProfile(
+            profile_id="pid-geo",
+            name="Profile Geo",
+            gain_map_path=str(path),
+            gain_map_sha256=sha256,
+            source_path=None,
+            reference_width=_FRAME_SIZE[0],
+            reference_height=_FRAME_SIZE[1],
+            params=flatfield.build_params(),
+            scanny_boy_version="0.3.0",
+            created_at="2026-09-01T00:00:00Z",
+            geometry=geometry,
+        )
+    )
+
+    captured = []
+    real_composite = stitch_pipeline.composite
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs)
+        return real_composite(*args, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline, "composite", spy)
+
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    outcome = _stitch(work_dir, out_dir, flatfield_profile_id="pid-geo")
+
+    assert outcome.status == "complete"
+    assert captured
+    assert captured[0]["geometry"] == geometry
+    assert captured[0]["ca"] is None
+
+
 def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkeypatch):
     """A solved gain far from unity means something is wrong with the
     capture: warn, by the same pattern as STITCH_SCALE_DRIFT."""
@@ -609,6 +671,35 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
 
 
 # --- the CLAHE fallback ---------------------------------------------------
+
+
+def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeypatch):
+    """Blank intermediates — a blank or near-black scan is an ordinary
+    outcome, not an internal error — must fail the negative with a stable,
+    CLAHE-retry-eligible code, not an AttributeError from inside the
+    matcher."""
+    from scanny_boy.linear import encode_from_linear as _encode
+
+    def blank_frames(*, overlapping, seed, count=3, frame_gains=None):
+        blank = np.full(_FRAME_SIZE, 0.2, dtype=np.float32)
+        return [
+            _encode(np.stack([blank] * 3, axis=-1).astype(np.float32))
+            for _ in range(count)
+        ]
+
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "_negative_frames", blank_frames)
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "partial"
+    failures = [e for e in events if isinstance(e, NegativeFailed)]
+    assert failures
+    assert failures[0].code in stitch_pipeline._CLAHE_RETRY_CODES
 
 
 def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypatch):

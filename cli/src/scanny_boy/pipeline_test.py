@@ -1146,3 +1146,38 @@ def test_convert_warns_when_the_correction_clips_highlights(monkeypatch, tmp_pat
 
     assert outcome.status == "complete"
     assert "FLATFIELD_HIGHLIGHT_CLIPPED" in warnings
+
+
+def test_missing_lens_model_emits_the_consistency_warning(monkeypatch, tmp_path):
+    """Optional-tag warnings reach `probe`'s stream; `run_convert` must emit
+    them too, so the same selection never warns under one command and stays
+    silent under another."""
+    from fractions import Fraction
+
+    from scanny_boy.metadata import SourceSettings
+
+    def fake_settings(path: str):
+        return SourceSettings(
+            filename=Path(path).name,
+            exposure_time=Fraction(1, 30),
+            f_number=Fraction(8, 1),
+            iso=100,
+            focal_length=Fraction(55, 1),
+            lens_model=None,
+            orientation=1,
+            camera_whitebalance=(1.69, 1.0, 1.38, 1.0),
+            make="NIKON CORPORATION",
+            model="NIKON Z f",
+        )
+
+    monkeypatch.setattr(pipeline, "read_source_settings", fake_settings)
+
+    events: list = []
+    pipeline._read_settings_and_check_consistency(
+        tmp_path, ["a.NEF", "b.NEF"], emit=events.append, run_id="run-1"
+    )
+
+    warnings = [e for e in events if isinstance(e, WarningEvent)]
+    assert [w.code for w in warnings] == [Code.CAPTURE_METADATA_MISSING] * 2
+    assert all("lens" in w.message.lower() for w in warnings)
+    assert all(w.run_id == "run-1" for w in warnings)

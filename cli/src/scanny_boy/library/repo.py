@@ -5,7 +5,9 @@ library database.
 `folder_path` is updated on every save, which is what makes `roll rename`'s
 folder move a data update rather than a special case. Children are diffed by
 key (`run_id`, `sha256`, `negative_id`): rows the incoming manifest no
-longer describes are deleted, rows it does describe are merged in place. A
+longer describes are deleted, rows it does describe are merged in place.
+Sources are the exception: they are rewritten wholesale on every save because
+their surrogate key gives `merge` no identity to diff against. A
 negative's `edits` rows hang off its stable `negative_id`, so re-stitching a
 negative — which keeps its id — keeps its edit history, while removing a
 negative (adoption's removal path) cascades its edits away with it.
@@ -136,16 +138,16 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                 )
             )
 
-        source_hashes = {s.sha256 for s in manifest.sources}
+        # Sources carry an autoincrement primary key, so a `merge` without a
+        # pre-loaded identity inserts a duplicate row on every save. The list
+        # is small and nothing holds a foreign key to it, so rewriting it
+        # wholesale is the safe diff: delete all, insert the incoming set.
         session.execute(
-            delete(SourceRow).where(
-                SourceRow.roll_id == manifest.roll_id,
-                SourceRow.sha256.not_in(source_hashes),
-            )
+            delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id)
         )
         for ordinal, source in enumerate(manifest.sources):
             assert isinstance(source, RollSourceRecord)
-            session.merge(
+            session.add(
                 SourceRow(
                     roll_id=manifest.roll_id,
                     ordinal=ordinal,
@@ -413,7 +415,13 @@ def load_roll(roll_dir: Path) -> RollManifest:
 
 def _negative_row(session: Session, roll_dir: Path, negative_id: str) -> NegativeRow:
     negative = session.get(NegativeRow, negative_id)
-    if negative is None:
+    # `negative_id` is a globally-unique primary key and the argument is
+    # user-supplied, so an id that belongs to a *different* roll must be
+    # refused here, not silently edited under the wrong roll's name.
+    roll = session.scalar(
+        select(RollRow).where(RollRow.folder_path == _folder_key(roll_dir))
+    )
+    if negative is None or roll is None or negative.roll_id != roll.roll_id:
         raise RollNotRegisteredError(
             f"{negative_id} is not a negative of {_folder_key(roll_dir)}"
         )
