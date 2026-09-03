@@ -76,6 +76,13 @@ class PairResult:
     overlap_fraction: float | None
     overlap_mad: float | None
     overlap_mad_pregain: float | None
+    # docs/STITCH_QUALITY_PLAN.md section 2: the similarity fit (rotation,
+    # translation, and one isotropic scale) on the same inliers, from
+    # similarity_from_correspondences. layout.py's per-frame scale solve
+    # uses these; `transform` and `rms_residual_px` above are unaffected and
+    # stay what the acceptance gates measure.
+    similarity_transform: np.ndarray  # 2x3, rotation+translation, maps b -> a
+    similarity_scale: float
 
 
 _IDENTITY_TRANSFORM = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
@@ -157,6 +164,24 @@ def rigid_from_correspondences(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     return np.hstack([rotation, translation.reshape(2, 1)])
 
 
+def similarity_from_correspondences(
+    src: np.ndarray, dst: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Closed-form Umeyama *with* scale, from the same SVD as the rigid
+    fit. Returns (2x3 [R|t], scale). The rigid fit stays the one the
+    acceptance gates measure against, so no gate constant changes meaning
+    when this is added."""
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    covariance = ((dst - mu_d).T @ (src - mu_s)) / len(src)
+    u, singular_values, vt = np.linalg.svd(covariance)
+    d = np.diag([1.0, np.sign(np.linalg.det(u @ vt))])
+    rotation = u @ d @ vt
+    variance_src = float(np.mean(np.sum((src - mu_s) ** 2, axis=1)))
+    scale = float(np.trace(np.diag(singular_values) @ d) / variance_src)
+    translation = mu_d - scale * rotation @ mu_s
+    return np.hstack([rotation, translation.reshape(2, 1)]), scale
+
+
 def _rms_residual(
     transform: np.ndarray, src: np.ndarray, dst: np.ndarray
 ) -> float:
@@ -218,6 +243,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=_IDENTITY_TRANSFORM,
+            similarity_scale=1.0,
         )
 
     raw_matches = matcher.knnMatch(a.descriptors, b.descriptors, k=2)
@@ -275,6 +302,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=_IDENTITY_TRANSFORM,
+            similarity_scale=1.0,
         )
 
     inlier_bool = inlier_mask.ravel().astype(bool)
@@ -292,9 +321,14 @@ def register_pair(
     if inliers >= _MIN_INLIERS_FOR_RIGID_FIT:
         transform = rigid_from_correspondences(src_inliers, dst_inliers)
         rms_residual_px = _rms_residual(transform, src_inliers, dst_inliers)
+        similarity_transform, similarity_scale = similarity_from_correspondences(
+            src_inliers, dst_inliers
+        )
     else:
         transform = _IDENTITY_TRANSFORM
         rms_residual_px = float("inf")
+        similarity_transform = _IDENTITY_TRANSFORM
+        similarity_scale = 1.0
 
     if inliers < MIN_PAIR_INLIERS or inlier_ratio < MIN_PAIR_INLIER_RATIO:
         return PairResult(
@@ -318,6 +352,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     if scale_drift > SCALE_DRIFT_FAIL:
@@ -340,6 +376,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     if rms_residual_px > MAX_PAIR_RMS_PX:
@@ -363,6 +401,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=similarity_transform,
+            similarity_scale=similarity_scale,
         )
 
     return PairResult(
@@ -382,4 +422,6 @@ def register_pair(
         overlap_fraction=None,
         overlap_mad=None,
         overlap_mad_pregain=None,
+        similarity_transform=similarity_transform,
+        similarity_scale=similarity_scale,
     )

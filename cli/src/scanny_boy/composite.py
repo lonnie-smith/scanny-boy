@@ -59,6 +59,12 @@ MEMORY_SAFETY_FACTOR = 3.5  # section 3.8.1; measured, not padding
 MAX_OVERLAP_MAD = 0.20
 INTERPOLATION = cv2.INTER_LANCZOS4
 
+FEATHER = "strip-axis"  # recorded in the roll manifest's stitch params
+# Numerical guard, not a measured threshold: every covered pixel keeps a
+# positive weight, the same invariant cv2.distanceTransform gave for free
+# (it never returns less than 1.0 inside a mask).
+_FEATHER_FLOOR = 1.0  # px
+
 # Rows of output corrected per cv2.remap call when a profile's geometry is
 # applied (docs/GEOMETRIC_PLAN.md section 5.3): the band map is generated
 # closed-form a band at a time, so no frame-sized base map ever exists.
@@ -125,6 +131,11 @@ def estimate_peak_bytes(
     channels' maps in "maps" mode) and, in "maps" mode, one contiguous
     single-channel source view held during each remap
     (`frame_pixels * 4`). MEMORY_SAFETY_FACTOR is unchanged.
+
+    The strip-axis feather (`_feather_weight`) needs two bbox-sized float32
+    scratch buffers (the along-axis coordinate `s`, and the
+    `minimum`/`maximum` temporary), live for one frame at a time — one
+    additive term, not `frame_count` of them.
     """
     canvas_width, canvas_height = canvas_size
     frame_height, frame_width = frame_size
@@ -145,6 +156,7 @@ def estimate_peak_bytes(
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4  # uint16 + linear decode
     warped = bbox_pixels * 3 * 4  # one warped frame
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2  # feather weight + warped/eroded masks
+    feather_scratch = bbox_pixels * 4 * 2  # strip-axis ramp's `s` + min/max temp
 
     geometry_bytes = 0
     if geometry:
@@ -157,7 +169,7 @@ def estimate_peak_bytes(
 
     all_warped = frame_count * (warped + warp_aux)
     live_bytes = max(
-        accum + weight + source + all_warped + geometry_bytes,
+        accum + weight + source + all_warped + geometry_bytes + feather_scratch,
         accum + weight + log_density + normalized + result,
     )
     return math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
@@ -236,6 +248,38 @@ def _frame_bbox(
     right = min(canvas_width, int(np.ceil(max_xy[0])))
     bottom = min(canvas_height, int(np.ceil(max_xy[1])))
     return x, y, right - x, bottom - y
+
+
+def _feather_weight(
+    mask: np.ndarray,
+    bbox_x: int,
+    bbox_y: int,
+    axis: tuple[float, float] | None,
+) -> np.ndarray:
+    """Blend weight for one warped frame, in its own bounding box.
+
+    With a strip axis, weight ramps only along that axis: the distance from
+    the nearer end of this frame's own along-axis extent, floored so a
+    covered pixel always contributes. Constant across the strip, so the
+    crossfade at the strip's long borders is identical to the crossfade
+    down its middle — the isotropic distance transform's border collapse to
+    50/50 is what smeared misregistration into a curve. Without an axis
+    (a layout that is not a strip), falls back to the distance transform.
+    """
+    if axis is None:
+        return cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    ax, ay = axis
+    height, width = mask.shape
+    s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[np.newaxis, :]
+    s = s + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
+    covered = mask > 0
+    if not covered.any():
+        return np.zeros(mask.shape, dtype=np.float32)
+    s_min = float(s[covered].min())
+    s_max = float(s[covered].max())
+    weight = np.maximum(np.minimum(s - s_min, s_max - s), _FEATHER_FLOOR)
+    weight[~covered] = 0.0
+    return weight.astype(np.float32)
 
 
 @dataclasses.dataclass
@@ -327,7 +371,11 @@ def _warp_bands(
 
     rotation = bbox_matrix[:, :2]
     translation = bbox_matrix[:, 2]
-    R_inv = np.linalg.inv(rotation)
+    # Inverse of the placement's scaled rotation block (docs/
+    # STITCH_QUALITY_PLAN.md section 2: a frame's own matrix() is now
+    # scale * R, not R), so this undoes both the rotation and the per-frame
+    # scale in one step.
+    scaled_rotation_inv = np.linalg.inv(rotation)
 
     ca_by_channel: dict[int, dict] = {}
     if ca is not None and ca.get("mode") == "maps":
@@ -344,8 +392,8 @@ def _warp_bands(
         # 1. bbox output px -> undistorted frame px (inverted bbox_matrix).
         du = uu - translation[0]
         dv = vv - translation[1]
-        px = R_inv[0, 0] * du + R_inv[0, 1] * dv
-        py = R_inv[1, 0] * du + R_inv[1, 1] * dv
+        px = scaled_rotation_inv[0, 0] * du + scaled_rotation_inv[0, 1] * dv
+        py = scaled_rotation_inv[1, 0] * du + scaled_rotation_inv[1, 1] * dv
 
         # 2. normalise.
         x = (px - cx) / fx
@@ -447,7 +495,9 @@ def composite(
       3. np.clip(warped, 0.0, None) — section 2.3's measured -0.088
          undershoot.
       4. Warp a ones-mask with INTER_NEAREST; cv2.erode by MASK_ERODE_PX.
-      5. weight = cv2.distanceTransform(mask, cv2.DIST_L2, 5).
+      5. weight = _feather_weight(mask, bbox_x, bbox_y, layout.strip_axis):
+         a ramp along the strip axis when the layout has one, else the
+         isotropic cv2.distanceTransform.
       6. Check `cancel` between frames.
 
     Nothing is accumulated during the warp pass: the photometric gain solve
@@ -555,7 +605,7 @@ def composite(
             warped_mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
         )
 
-        pair_weight = cv2.distanceTransform(eroded_mask, cv2.DIST_L2, 5)
+        pair_weight = _feather_weight(eroded_mask, bbox_x, bbox_y, layout.strip_axis)
 
         warped_by_name[placement.name] = _WarpedFrame(
             x=bbox_x,

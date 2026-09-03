@@ -364,6 +364,11 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             # `gain` (nothing was applied to them) — a missing
                             # gain is unity, not a corrupt row.
                             gain=tuple(f.get("gain", _UNITY_GAIN)),
+                            # Likewise, rows written before the per-frame scale
+                            # solve (docs/STITCH_QUALITY_PLAN.md section 2)
+                            # carry no `scale` — the layout was placed as a
+                            # rigid transform, which is scale 1.
+                            scale=f.get("scale", 1.0),
                         )
                         for f in n.frames
                     ],

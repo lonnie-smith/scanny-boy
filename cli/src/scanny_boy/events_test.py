@@ -219,10 +219,12 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_eight():
-    """Protocol 7→8: scan normalization (docs/DECISIONS.md, "Normalization
-    decisions") — the `prepare` stage rename, the `normalize` step, the
+    """Protocol 7→8: the per-frame scale in the layout solve
+    (docs/STITCH_QUALITY_PLAN.md section 2) plus scan normalization
+    (docs/DECISIONS.md, "Normalization decisions") — FrameRecord gains
+    `scale`, the `prepare` stage is renamed, the `normalize` step, the
     scan-clipping and normalization codes, and the normalization record's
-    new event and manifest fields."""
+    new event and manifest fields are added."""
     assert PROTOCOL_VERSION == 8
 
 

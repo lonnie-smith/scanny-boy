@@ -10,7 +10,8 @@ Phase 3 section 0: there is no migration, so this validates the current
 format version and nothing else. The v2 rules P3-2 carried through the
 contract chunk are gone with the supersession-tombstone removal; v4 added
 per-frame solved photometric gains and per-pair pre-gain overlap MAD; v5
-dropped the roll-level `shots_per_negative`.
+dropped the roll-level `shots_per_negative`; v6 added a per-frame solved
+scale (docs/STITCH_QUALITY_PLAN.md section 2).
 """
 
 from __future__ import annotations
