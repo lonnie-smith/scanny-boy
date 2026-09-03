@@ -352,12 +352,17 @@ def test_misregistration_produces_a_bounded_step_not_a_growing_smear():
     correct_result = _composite(layout, uint16_frames)
     misregistered_result = _composite(misregistered_layout, uint16_frames)
 
-    correct_linear = decode_to_linear(correct_result.image).astype(np.float32)
-    mis_linear = decode_to_linear(misregistered_result.image).astype(np.float32)
+    correct_linear = _unnormalize(correct_result.image, correct_result.bounds).astype(
+        np.float32
+    )
+    mis_linear = _unnormalize(
+        misregistered_result.image, misregistered_result.bounds
+    ).astype(np.float32)
     diff = np.mean(np.abs(correct_linear - mis_linear), axis=-1)
 
-    covered = np.any(correct_result.image != 0, axis=-1) & np.any(
-        misregistered_result.image != 0, axis=-1
+    fill_code = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
+    covered = np.any(correct_result.image != fill_code, axis=-1) & np.any(
+        misregistered_result.image != fill_code, axis=-1
     )
     rows = np.where(covered.any(axis=1))[0]
     # A small margin from the very first/last covered row, which can carry

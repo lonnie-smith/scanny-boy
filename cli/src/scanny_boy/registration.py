@@ -243,6 +243,8 @@ def register_pair(
             overlap_fraction=None,
             overlap_mad=None,
             overlap_mad_pregain=None,
+            similarity_transform=_IDENTITY_TRANSFORM,
+            similarity_scale=1.0,
         )
 
     raw_matches = matcher.knnMatch(a.descriptors, b.descriptors, k=2)
