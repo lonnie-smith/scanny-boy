@@ -72,6 +72,7 @@ from scanny_boy.events import (
 from scanny_boy.icc_profile import load_icc_profile
 from scanny_boy.layout import (
     MAX_GLOBAL_RMS_PX,
+    RMS_WEIGHT_FLOOR_PX,
     STRIP_SPREAD_RATIO,
     Layout,
     largest_valid_rect,
@@ -219,6 +220,10 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         # written before this change (implicitly rigid, scale forced to 1)
         # from one written after, without consulting the build.
         "layout_model": "similarity",
+        # docs/STITCH_QUALITY_PLAN.md section 3: how the layout's three
+        # solves weight each pairwise row.
+        "layout_row_weight": "sqrt(inliers)/rms",
+        "rms_weight_floor_px": RMS_WEIGHT_FLOOR_PX,
         "interpolation": "INTER_LANCZOS4",
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,

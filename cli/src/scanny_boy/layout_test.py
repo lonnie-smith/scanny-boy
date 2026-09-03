@@ -11,6 +11,7 @@ from scanny_boy.layout import (
     GainStat,
     StitchError,
     _largest_all_covered_rectangle,
+    global_rms,
     largest_valid_rect,
     solve_gains,
     solve_layout,
@@ -536,6 +537,42 @@ def test_strip_axis_is_order_independent_up_to_sign():
 def test_a_single_frame_has_no_strip_axis():
     layout = solve_layout(["f0"], _FRAME_SIZE, [])
     assert layout.strip_axis is None
+
+
+def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 3.0, (500.0, 50.0)),
+        FramePlacement("f2", -2.0, (1000.0, 50.0)),
+    ]
+    by_name = {p.name: p for p in ground_truth}
+    names = ["f0", "f1", "f2"]
+    strong_01 = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE,
+        n_points=200, noise_px=0.05, seed=1,
+    )
+    strong_12 = _ground_truth_pair(
+        "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE,
+        n_points=200, noise_px=0.05, seed=2,
+    )
+    # An accepted but weak f0-f2 pair: few inliers, high residual, and built
+    # from a placement 200px off the true one, so it pulls the solve away
+    # from the strong pairs' consensus if given equal say.
+    wrong_f2 = FramePlacement("f2", -2.0, (1000.0, 250.0))
+    weak_02 = _ground_truth_pair(
+        "f0", "f2", by_name["f0"], wrong_f2, _FRAME_SIZE,
+        n_points=41, noise_px=5.0, seed=3,
+    )
+
+    weighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+
+    monkeypatch.setattr("scanny_boy.layout._row_weight", lambda pair: 1.0)
+    unweighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+
+    def rms_over_strong_pairs(layout):
+        return global_rms(layout.placements, [strong_01, strong_12])
+
+    assert rms_over_strong_pairs(weighted) < rms_over_strong_pairs(unweighted)
 
 
 def test_rejects_an_implausibly_large_pair_rotation():

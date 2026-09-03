@@ -50,7 +50,20 @@ from scanny_boy.registration import PairResult, StitchError
 MAX_GLOBAL_RMS_PX = 12.0
 STRIP_SPREAD_RATIO = 0.15
 
+# Row weight for the layout solves: a pairwise transform from N inliers at
+# residual `rms` has parameter variance proportional to rms^2 / N, so the
+# natural row weight is sqrt(N) / rms — mirroring solve_gains's
+# sqrt(shared_count), where a mean over N pixels has variance ∝ 1/N. The
+# floor is a numerical guard, not a measured threshold — a synthetic
+# fixture can fit to essentially zero residual, which without it would give
+# one pair unbounded authority over the solve.
+RMS_WEIGHT_FLOOR_PX = 0.1
+
 _MAX_PAIR_ROTATION_DEG = 45.0
+
+
+def _row_weight(pair: PairResult) -> float:
+    return math.sqrt(pair.inliers) / max(pair.rms_residual_px, RMS_WEIGHT_FLOOR_PX)
 
 
 def _rotation_matrix(angle_deg: float) -> np.ndarray:
@@ -145,20 +158,23 @@ def solve_layout(
     # degenerate channel mean.
     scale_rows = []
     scale_rhs = []
+    scale_row_weights = []
     scale_covered: set[str] = set()
     for pair in accepted_pairs:
         if pair.similarity_scale <= 0:
             continue
+        weight = _row_weight(pair)
         row = np.zeros(n)
-        row[index[pair.a]] = -1.0
-        row[index[pair.b]] = 1.0
+        row[index[pair.a]] = -weight
+        row[index[pair.b]] = weight
         scale_rows.append(row)
-        scale_rhs.append(math.log(pair.similarity_scale))
+        scale_rhs.append(weight * math.log(pair.similarity_scale))
+        scale_row_weights.append(weight)
         scale_covered.add(pair.a)
         scale_covered.add(pair.b)
 
     if scale_rows:
-        scale_anchor_weight = math.sqrt(sum(float(row @ row) for row in scale_rows))
+        scale_anchor_weight = math.sqrt(sum(w * w for w in scale_row_weights))
         scale_anchor = np.zeros(n)
         for name in scale_covered:
             scale_anchor[index[name]] = scale_anchor_weight
@@ -178,6 +194,7 @@ def solve_layout(
     # = 0.
     rotation_rows = []
     rotation_rhs = []
+    rotation_row_weights = []
     for pair in accepted_pairs:
         phi_ab_deg = _angle_deg(pair.similarity_transform[:, :2])
         assert abs(phi_ab_deg) < _MAX_PAIR_ROTATION_DEG, (
@@ -185,14 +202,17 @@ def solve_layout(
             f"{_MAX_PAIR_ROTATION_DEG} degrees; this is a bug upstream, "
             "not a case this solver handles"
         )
+        weight = _row_weight(pair)
         row = np.zeros(n)
-        row[index[pair.a]] = -1.0
-        row[index[pair.b]] = 1.0
+        row[index[pair.a]] = -weight
+        row[index[pair.b]] = weight
         rotation_rows.append(row)
-        rotation_rhs.append(np.deg2rad(phi_ab_deg))
+        rotation_rhs.append(weight * np.deg2rad(phi_ab_deg))
+        rotation_row_weights.append(weight)
 
+    rotation_anchor_weight = math.sqrt(sum(w * w for w in rotation_row_weights))
     anchor_row = np.zeros(n)
-    anchor_row[0] = 1.0
+    anchor_row[0] = rotation_anchor_weight
     rotation_rows.append(anchor_row)
     rotation_rhs.append(0.0)
 
@@ -206,30 +226,34 @@ def solve_layout(
     # and y), plus two anchor rows fixing t_0 = (0, 0).
     translation_rows = []
     translation_rhs = []
+    translation_row_weights = []
     for pair in accepted_pairs:
         rotation_a = _rotation_matrix(np.degrees(theta[index[pair.a]]))
         u_ab = pair.similarity_transform[:, 2]
         predicted = scales[index[pair.a]] * (rotation_a @ u_ab)
+        weight = _row_weight(pair)
+        translation_row_weights.append(weight)
 
         row_x = np.zeros(2 * n)
-        row_x[2 * index[pair.a]] = -1.0
-        row_x[2 * index[pair.b]] = 1.0
+        row_x[2 * index[pair.a]] = -weight
+        row_x[2 * index[pair.b]] = weight
         translation_rows.append(row_x)
-        translation_rhs.append(predicted[0])
+        translation_rhs.append(weight * predicted[0])
 
         row_y = np.zeros(2 * n)
-        row_y[2 * index[pair.a] + 1] = -1.0
-        row_y[2 * index[pair.b] + 1] = 1.0
+        row_y[2 * index[pair.a] + 1] = -weight
+        row_y[2 * index[pair.b] + 1] = weight
         translation_rows.append(row_y)
-        translation_rhs.append(predicted[1])
+        translation_rhs.append(weight * predicted[1])
 
+    translation_anchor_weight = math.sqrt(sum(w * w for w in translation_row_weights))
     anchor_x = np.zeros(2 * n)
-    anchor_x[0] = 1.0
+    anchor_x[0] = translation_anchor_weight
     translation_rows.append(anchor_x)
     translation_rhs.append(0.0)
 
     anchor_y = np.zeros(2 * n)
-    anchor_y[1] = 1.0
+    anchor_y[1] = translation_anchor_weight
     translation_rows.append(anchor_y)
     translation_rhs.append(0.0)
 
