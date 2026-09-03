@@ -42,7 +42,7 @@ SCHEMA = load_schema()
 
 ALL_EVENTS: list[Event] = [
     Started(command="probe"),
-    Started(command="convert", run_id="run-1"),
+    Started(command="prepare", run_id="run-1"),
     Started(command="edit delete"),
     ProbeResult(catalogue=["DSC_0001.NEF", "DSC_0002.NEF"], run_id="run-1"),
     ProbeResult(
@@ -170,7 +170,7 @@ def test_run_id_omitted_when_absent():
 
 
 def test_run_id_included_when_present():
-    event = Started(command="convert", run_id="run-7")
+    event = Started(command="prepare", run_id="run-7")
     assert event.to_dict()["run_id"] == "run-7"
 
 
@@ -208,7 +208,9 @@ def test_event_writer_line_is_valid_json_per_write():
 
     stream = io.StringIO()
     writer = EventWriter(stream)
-    writer.write(Progress(source_index=2, step=PipelineStep.WRITE_TIFF, completed=3, total=6))
+    writer.write(
+        Progress(source_index=2, step=PipelineStep.WRITE_TIFF, completed=3, total=6)
+    )
 
     lines = stream.getvalue().splitlines()
     assert len(lines) == 1
@@ -217,8 +219,12 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_eight():
-    """Protocol 7→8: a per-frame scale in the layout solve
-    (docs/STITCH_QUALITY_PLAN.md section 2) — FrameRecord gains `scale`."""
+    """Protocol 7→8: the per-frame scale in the layout solve
+    (docs/STITCH_QUALITY_PLAN.md section 2) plus scan normalization
+    (docs/DECISIONS.md, "Normalization decisions") — FrameRecord gains
+    `scale`, the `prepare` stage is renamed, the `normalize` step, the
+    scan-clipping and normalization codes, and the normalization record's
+    new event and manifest fields are added."""
     assert PROTOCOL_VERSION == 8
 
 
@@ -308,10 +314,10 @@ def test_negative_failed_round_trips():
     assert json.loads(json.dumps(data)) == data
 
 
-def test_progress_defaults_to_convert_stage():
+def test_progress_defaults_to_prepare_stage():
     event = Progress(source_index=0, step=PipelineStep.DECODE, completed=1, total=6)
-    assert event.stage == Stage.CONVERT
-    assert event.to_dict()["stage"] == "convert"
+    assert event.stage == Stage.PREPARE
+    assert event.to_dict()["stage"] == "prepare"
 
 
 def test_progress_carries_stitch_stage():

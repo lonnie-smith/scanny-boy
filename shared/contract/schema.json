@@ -22,6 +22,7 @@
         "roll_list",
         "roll_info",
         "roll_renamed",
+        "roll_deleted",
         "metadata_applied",
         "metadata_skipped",
         "edit_recorded",
@@ -36,7 +37,7 @@
     "stage": {
       "type": "string",
       "description": "Which pipeline stage a progress event describes.",
-      "enum": ["convert", "stitch"]
+      "enum": ["prepare", "stitch"]
     },
     "pipelineStep": {
       "type": "string",
@@ -51,6 +52,7 @@
         "solve",
         "warp",
         "blend",
+        "normalize",
         "write_stitched"
       ]
     },
@@ -120,6 +122,9 @@
         "GEOMETRY_MAGNITUDE_SUSPECT",
         "GEOMETRY_FEW_FRAMES",
         "CHROMATIC_FIT_REJECTED",
+        "SCAN_CLIPPED",
+        "NORMALIZE_DEGENERATE_BOUNDS",
+        "NORMALIZE_HEADROOM_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -305,13 +310,14 @@
             "type": "string",
             "enum": [
               "probe",
-              "convert",
+              "prepare",
               "stitch",
               "run",
               "roll init",
               "roll list",
               "roll info",
               "roll rename",
+              "roll delete",
               "apply-metadata",
               "edit rotate",
               "edit delete",
@@ -373,6 +379,16 @@
         "properties": {
           "roll_id": { "type": "string" },
           "roll_name": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_deleted" } } },
+      "then": {
+        "required": ["roll_id", "path"],
+        "properties": {
+          "roll_id": { "type": "string" },
           "path": { "type": "string" }
         }
       }

@@ -29,7 +29,14 @@
         "size": { "type": "integer", "minimum": 0 },
         "mtime": { "type": "number" },
         "sha256": { "$ref": "#/definitions/sha256" },
-        "run_id": { "type": "string" }
+        "run_id": { "type": "string" },
+        "scan_clip_fractions": {
+          "type": ["array", "null"],
+          "items": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Per-channel fraction of pixels at or above sensor white, measured in the prepare stage at decode; null when the contributing run predates the measurement."
+        }
       }
     },
     "iccProfile": {
@@ -101,6 +108,68 @@
         "accepted": { "type": "boolean" }
       }
     },
+    "normalization": {
+      "type": "object",
+      "required": [
+        "floors",
+        "ceils",
+        "shadow_refs",
+        "anchor",
+        "textural_range",
+        "analysis_rect",
+        "observed_min",
+        "observed_max",
+        "headroom_clipped",
+        "rebate",
+        "source"
+      ],
+      "properties": {
+        "floors": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "ceils": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "shadow_refs": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "anchor": { "type": "number" },
+        "textural_range": { "type": "number" },
+        "analysis_rect": {
+          "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4
+        },
+        "observed_min": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "observed_max": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "headroom_clipped": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "rebate": {
+          "type": "object",
+          "required": ["detected", "mask_fraction", "base_density", "clipped"],
+          "properties": {
+            "detected": { "type": "boolean" },
+            "mask_fraction": { "type": "number" },
+            "base_density": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": { "type": "number" },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                { "type": "null" }
+              ]
+            },
+            "clipped": { "type": "boolean" }
+          }
+        },
+        "source": { "type": "string" }
+      }
+    },
     "captureTime": {
       "type": "object",
       "required": [
@@ -143,7 +212,11 @@
         },
         "work_dir": { "type": ["string", "null"] },
         "started_at": { "type": "string" },
-        "finished_at": { "type": ["string", "null"] }
+        "finished_at": { "type": ["string", "null"] },
+        "normalization_aggregate": {
+          "oneOf": [{ "type": "object" }, { "type": "null" }],
+          "description": "D-4: the per-channel median of the run's negatives' bounds; recorded, nothing reads it yet."
+        }
       }
     },
     "negative": {
@@ -167,7 +240,9 @@
         "error_code",
         "error_message",
         "capture_time",
-        "preview_path"
+        "preview_path",
+        "normalized_fill",
+        "normalization"
       ],
       "properties": {
         "negative_id": { "type": "string" },
@@ -235,6 +310,13 @@
           "type": ["string", "null"],
           "description": "CLI-generated preview of the negative as its edits render so far; null until first generated."
         },
+        "normalized_fill": {
+          "type": ["number", "null"],
+          "description": "Section 3.14's uncovered-canvas fill value, recorded so a file is interpretable without knowing which build wrote it."
+        },
+        "normalization": {
+          "oneOf": [{ "$ref": "#/definitions/normalization" }, { "type": "null" }]
+        },
         "rotation_quarter_turns": {
           "type": ["integer", "null"],
           "minimum": 0,
@@ -265,6 +347,7 @@
     "updated_at",
     "processing_params",
     "icc_profile",
+    "published_icc_profile",
     "stitch_params",
     "runs",
     "sources",
@@ -281,6 +364,10 @@
     "updated_at": { "type": "string" },
     "processing_params": { "type": "object" },
     "icc_profile": { "$ref": "#/definitions/iccProfile" },
+    "published_icc_profile": {
+      "allOf": [{ "$ref": "#/definitions/iccProfile" }],
+      "description": "The density profile the published TIFFs carry (docs/DECISIONS.md, \"Normalization decisions\")."
+    },
     "stitch_params": { "type": "object" },
     "runs": {
       "type": "array",

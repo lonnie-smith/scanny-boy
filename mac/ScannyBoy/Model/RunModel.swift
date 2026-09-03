@@ -54,7 +54,39 @@ final class RunModel {
         case running
         /// Cancellation has been requested and the helper has not stopped yet.
         case cancelling
+        /// The helper itself has exited and `finish()` is now reading the
+        /// manifest back — a real CLI round trip on a large roll — before
+        /// declaring the invocation `.finished`. Deliberately excluded from
+        /// `isActive`/`canCancel`: `session` is about to be nilled, so there
+        /// is nothing left to cancel, and `RunProgressView` would otherwise
+        /// keep showing a progress bar frozen at 100%.
+        case finishing
         case finished
+    }
+
+    /// Which subcommand this invocation started. Views key their own
+    /// results sections on this rather than inferring the invocation from
+    /// the *shape* of the results (M9) — e.g. an apply-metadata that failed
+    /// outright produces zero applied and zero skipped, which is
+    /// indistinguishable by shape from "no apply ever ran".
+    enum Invocation: Sendable, Hashable {
+        case convert
+        case run
+        case stitch
+        case applyMetadata
+
+        /// `command.arguments.first`, decoded — `nil` for anything this
+        /// type does not name, in which case `RunModel` simply tracks no
+        /// invocation-specific behaviour for it.
+        init?(commandName: String?) {
+            switch commandName {
+            case "prepare": self = .convert
+            case "run": self = .run
+            case "stitch": self = .stitch
+            case "apply-metadata": self = .applyMetadata
+            default: return nil
+            }
+        }
     }
 
     private let runner: CLIRunner
@@ -81,7 +113,7 @@ final class RunModel {
     /// one worker this is "one of the frames in flight", not "the frame the
     /// run has reached".
     private(set) var currentFilename: String?
-    /// `"convert"` or `"stitch"`, straight from `progress.stage`. `nil` until
+    /// `"prepare"` or `"stitch"`, straight from `progress.stage`. `nil` until
     /// the first `progress` event arrives.
     private(set) var stage: String?
 
@@ -135,12 +167,14 @@ final class RunModel {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var forceTask: Task<Void, Never>?
     @ObservationIgnored private var cancelRequested = false
-    /// The subcommand this invocation started (`"convert"`, `"run"`, or
-    /// `"stitch"`) — `command.arguments.first`, captured at `start()`. Decides
-    /// which manifest `finish()` reads back: `RunManifest` for a plain
-    /// `convert`, `RollManifest` for anything that can reach the stitch
-    /// stage.
-    @ObservationIgnored private var invokedCommandName: String?
+    /// Which subcommand this invocation started, captured at `start()`.
+    /// Decides which manifest `finish()` reads back: `RunManifest` for a
+    /// plain `convert`, `RollManifest` for anything that can reach the
+    /// stitch stage. Exposed as observable, typed state (M9) rather than
+    /// left as a private string, so views can key their own results
+    /// sections on the actual invocation instead of inferring it from the
+    /// shape of the results.
+    private(set) var invocation: Invocation?
     /// The selection in canonical order, so a `source_index` can be named.
     @ObservationIgnored private var sourceNames: [String] = []
     /// The output folder the running or most recently finished invocation
@@ -182,10 +216,10 @@ final class RunModel {
     /// frame. `stage` tells `run` apart from its convert and stitch halves;
     /// `stitch` (re-stitch) has no convert stage at all.
     var negativesCompleted: Int {
-        if invokedCommandName == "apply-metadata" {
+        if invocation == .applyMetadata {
             return appliedNegativeIDs.count + skippedMetadata.count
         }
-        if invokedCommandName == "stitch" || stage == "stitch" {
+        if invocation == .stitch || stage == "stitch" {
             return stitchedNegatives.count + failedNegatives.count
         }
         return completedGroups.count + failedGroups.count
@@ -207,15 +241,15 @@ final class RunModel {
     /// negative (`stitchedNegatives`/`failedNegatives`), never by
     /// intermediate frame.
     private var isStitchInvocation: Bool {
-        invokedCommandName == "run" || invokedCommandName == "stitch"
+        invocation == .run || invocation == .stitch
     }
 
     /// `run`, `stitch`, and `apply-metadata` all end by touching
-    /// `scanny-boy-roll.json`; only a plain `convert` writes
+    /// `scanny-boy-roll.json`; only a plain `prepare` writes
     /// `scanny-boy-manifest.json` instead. Decides which manifest
     /// `finish()` reads back.
     private var touchesRollManifest: Bool {
-        isStitchInvocation || invokedCommandName == "apply-metadata"
+        isStitchInvocation || invocation == .applyMetadata
     }
 
     /// What to tell the user once the run has ended. Deliberately built from
@@ -232,7 +266,7 @@ final class RunModel {
             // could not be launched at all.
             return streamFailures.isEmpty ? nil : "The command-line helper could not be run."
         }
-        if invokedCommandName == "apply-metadata" {
+        if invocation == .applyMetadata {
             switch outcome {
             case .success:
                 return "Applied \(appliedNegativeIDs.count) negative(s)."
@@ -246,7 +280,7 @@ final class RunModel {
         switch outcome {
         case .success:
             if isStitchInvocation {
-                return "Stitched \(stitchedNegatives.count) negative(s)."
+                return "Converted \(stitchedNegatives.count) negative(s)."
             }
             return "Converted \(publishedOutputs.count) file(s) in "
                 + "\(completedGroups.count) negative(s)."
@@ -287,7 +321,7 @@ final class RunModel {
         sourceNames = files
         self.outputFolder = outputFolder
         self.totalNegatives = totalNegatives
-        invokedCommandName = command.arguments.first
+        invocation = Invocation(commandName: command.arguments.first)
         phase = .running
         startedAt = now()
 
@@ -402,7 +436,7 @@ final class RunModel {
                 )
             }
         case .started, .probeResult, .finished, .unknown,
-             .rollCreated, .rollList, .rollInfo, .rollRenamed,
+             .rollCreated, .rollList, .rollInfo, .rollRenamed, .rollDeleted,
              .editRecorded, .negativeDeleted, .exportDone,
              .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress:
             break
@@ -415,6 +449,7 @@ final class RunModel {
         forceTask?.cancel()
         forceTask = nil
         refreshElapsed()
+        phase = .finishing
         // `convert` writes `scanny-boy-manifest.json` into the output folder;
         // `run` and `stitch` write `scanny-boy-roll.json` there instead — the
         // work directory `scanny-boy-manifest.json` still lives in may
@@ -472,7 +507,7 @@ final class RunModel {
         forceTask = nil
         session = nil
         cancelRequested = false
-        invokedCommandName = nil
+        invocation = nil
         phase = .idle
         runID = nil
         completedSteps = 0

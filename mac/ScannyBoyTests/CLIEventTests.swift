@@ -268,6 +268,9 @@ struct CLIEventTests {
         "GEOMETRY_FRAME_SIZE_MISMATCH", "GEOMETRY_FIT_REJECTED",
         "GEOMETRY_MAGNITUDE_SUSPECT", "GEOMETRY_FEW_FRAMES",
         "CHROMATIC_FIT_REJECTED",
+        // Protocol version 8: normalization (docs/DECISIONS.md, "Normalization decisions").
+        "SCAN_CLIPPED", "NORMALIZE_DEGENERATE_BOUNDS",
+        "NORMALIZE_HEADROOM_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
     ])
     func everyStableCodeIsKnown(name: String) {
@@ -280,6 +283,8 @@ struct CLIEventTests {
         "decode", "write_tiff", "add_metadata",
         // Phase 2 section 3.9's stitch-stage steps.
         "load", "detect", "match", "solve", "warp", "blend", "write_stitched",
+        // Protocol version 8's normalization step.
+        "normalize",
     ])
     func everyPipelineStepIsKnown(name: String) {
         let step = CLIPipelineStep(name: name)

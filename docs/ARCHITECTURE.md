@@ -122,7 +122,7 @@ roll info   --roll DIR
 roll rename --roll DIR --name NAME
 
 probe   --input DIR [--files ...] [--per-negative N] [--out DIR] [--roll DIR] [--flatfield ID]
-convert --input DIR --files ... --out DIR --per-negative N [--jobs N] [--overwrite] [--flatfield ID]
+prepare --input DIR --files ... --out DIR --per-negative N [--jobs N] [--overwrite] [--flatfield ID]
 stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--negatives ID ...]
 run     --input DIR --files ... --roll DIR --per-negative N [--jobs N]
         [--work DIR] [--skip-sources FILE ...] [--flatfield ID]
@@ -146,9 +146,10 @@ type into an `error` event and an exit status, emit `finished`. Exit codes:
 **in-process** and then `run_stitch`, one process, one event stream, one
 cancellation. It never spawns a subprocess of itself.
 
-`convert` and `stitch` remain independently usable; `convert` is the only
-command that still writes to a plain `--out` work directory rather than a
-roll. `stitch --overwrite` is accepted and **deliberately ignored** — a
+`prepare` (stage 1, renamed from `convert` — "Convert" is reserved for the
+whole `run`; see DECISIONS.md's naming split) and `stitch` remain
+independently usable; `prepare` is the only command that still writes to a
+plain `--out` work directory rather than a roll. `stitch --overwrite` is accepted and **deliberately ignored** — a
 stitch replaces a published file only by adopting the covered negative in
 place, which needs no flag
 ([`stitch_pipeline.py`](../cli/src/scanny_boy/stitch_pipeline.py),
@@ -162,8 +163,8 @@ published TIFF and preview, and renumbers the survivors. `export` is the
 moment edits become pixels: it
 replays each negative's ops log over the published TIFF and writes the
 result into a separate output folder, never opening the roll's own files
-for writing. Pixels only for now: export carries no EXIF and no ICC profile
-yet (§14).
+for writing. Export carries the density profile and the `normalization`
+block in its `ImageDescription`, but no EXIF yet (§14).
 
 ---
 
@@ -255,11 +256,12 @@ run --input IN --files ... --roll ROLL [--flatfield ID]
   │    ├─ work dir = ROLL/.work/<run_id>/   (created here; ALWAYS removed at the end)
   │    ├─ files -= skip_sources             (BEFORE grouping)
   │    │
-  │    ├─ run_convert (pipeline.py) ────────────────── stage "convert"
+  │    ├─ run_convert (pipeline.py) ────────────────── stage "prepare"
   │    │    load profile + gain map → validate selection → consistency → hash
   │    │    sources → disk check → write `running` work manifest
   │    │    → for each group: stage every frame, then publish the group atomically
-  │    │        per frame: decode → FLAT FIELD → base TIFF → nested EXIF   (3 progress steps)
+  │    │        per frame: decode → CLIP FRACTIONS → FLAT FIELD → base TIFF
+  │    │                   → nested EXIF   (3 progress steps)
   │    │    → work dir now holds one intermediate TIFF per frame + manifest
   │    │
   │    ├─ run_stitch (stitch_pipeline.py) ──────────── stage "stitch"
@@ -267,7 +269,9 @@ run --input IN --files ... --roll ROLL [--flatfield ID]
   │    │    → check roll invariants, append this run to the roll record
   │    │    → SOLVE every negative's layout first (canvas sizes needed for disk check)
   │    │    → disk check on the roll's volume
-  │    │    → for each negative: composite (warp → solve gains → blend)
+  │    │    → for each negative: composite (warp → solve gains → blend
+  │    │       → NORMALIZE: log conversion, bounds analysis, rebate detector,
+  │    │         headroom encode — fused into composite()'s final encode)
   │    │       → gate on the post-gain overlap MAD → stage → publish
   │    │       (covered negatives are adopted in place or removed here —
   │    │        stitch_pipeline's replacement rule; nothing after the fact)
@@ -299,8 +303,10 @@ This is a deliberate deviation from the plan's step ordering, documented in
 One `progress` event stream spans both stages of a `run`. Conversion counts
 real steps (3 per frame). The stitch stage's own step count is **rescaled**
 into a time-weighted share (`STITCH_UNITS_PER_FRAME = 2`,
-`STITCH_UNITS_PER_NEGATIVE = 9`, derived from measured wall-clock in the
-Phase 2 plan) by `_wrap_emit_for_stitch` in `run_pipeline.py`, so `completed`
+`STITCH_UNITS_PER_NEGATIVE = 10` — the flat-field-era 9 plus the
+normalization pass, which is a downscale plus a handful of percentile sorts
+on a 1024-grid and is expected to be nearly free; re-measure, don't assert)
+by `_wrap_emit_for_stitch` in `run_pipeline.py`, so `completed`
 advances monotonically across one combined `total`. The UI derives progress
 from `completed`/`total` **only** — never from `source_index`, which with
 `--jobs > 1` names "one frame in flight", not a queue position.
@@ -325,15 +331,17 @@ Consequences, all live in the code today:
   holds plain fixed-point scaling: `decode_to_linear` is `code / 65535`,
   `encode_from_linear` is clip-and-round. The round trip is exact for every
   code — proved by a test, not assumed.
-- The embedded profile is `ScannyBoy-Linear-ProPhoto-v1.icc`: ProPhoto
-  primaries (byte-identical to the upstream ProPhoto-v4 source) with a
-  **linear** TRC (parametric type 0, g = 1.0) — the truth about the pixels.
-  Generated deterministically by `cli/tools/generate_icc_profile.py`.
-- `icc_profile.py` verifies the profile's SHA-256 on every load, and
+- The prepare stage's intermediates carry `ScannyBoy-Linear-ProPhoto-v1.icc`:
+  ProPhoto primaries (byte-identical to the upstream ProPhoto-v4 source)
+  with a **linear** TRC (parametric type 0, g = 1.0) — the truth about
+  those pixels. Both profiles are generated deterministically by
+  `cli/tools/generate_icc_profile.py`.
+- `icc_profile.py` verifies each profile's SHA-256 on every load, and
   `tiff_writer.write_base_tiff` refuses to write a TIFF with an empty
   profile. An untagged file is never produced.
 - All geometric and photometric work happens in **linear light**: decode to
-  linear `float32`, warp, blend, then encode back to `uint16` exactly once.
+  linear `float32`, warp, blend — then, once, convert to normalized log
+  density (§7.1).
 - Flat-field correction multiplies in the same linear light:
   `flatfield.apply_in_place` does `decode_to_linear → multiply →
   encode_from_linear` per band, a lossless fixed-point round trip (proved
@@ -344,10 +352,6 @@ Consequences, all live in the code today:
   when more than 0.1% of a frame's pixels clip rather than losing them
   silently. The old punchlist item asking for linear intermediates is
   resolved: the intermediates **are** linear.
-- **Previews are display-encoded.** The published TIFF is linear, so
-  `previews.py` downscales in linear light and then 16→8-bit encodes
-  through an sRGB LUT — an untagged 8-bit PNG is assumed sRGB, and SwiftUI
-  displays it as-is. The sRGB encode lives there and only there.
 
 `RAW_PARAMS` ([`raw_decode.py`](../cli/src/scanny_boy/raw_decode.py)) is
 locked and every value was independently verified to matter — in particular
@@ -355,15 +359,91 @@ locked and every value was independently verified to matter — in particular
 scaling identical across a negative's frames. Changing it invalidates every
 roll's `processing_params` invariant.
 
+### 7.1 Normalization: the published TIFF is a baked, normalized working intermediate
+
+The stitch stage's `composite()` no longer encodes linear `uint16`. Its
+final encode fuses the whole normalization pass (NegPy §2, ported in
+[`normalization.py`](../cli/src/scanny_boy/normalization.py); the locked
+decisions and their arguments are in `DECISIONS.md`'s "Normalization
+decisions") on the float32
+accumulator that already exists — blending, warping and the gain solve stay
+in linear light, which is where they are physically correct:
+
+1. `to_log_density`: `D = log10(clamp(I, 1e-6, 1))` — where a negative's
+   picture information lives (a linear uint16 spends ~11.3 effective bits
+   at the dense end; log-encoding is uniform 16 at the same file size).
+2. `block_median_grid`: a b×b block-median prefilter to an `ANALYSIS_GRID`
+   (1024)-bounded grid — isolated extremes vanish, and the statistics are
+   nearly resolution-invariant.
+3. The **rebate detector** (`detect_rebate`) excludes film rebate / clear
+   base from the analysis region; the region itself is the caller's
+   `largest_valid_rect` — see §12 for why it is applied now.
+4. `analyze_bounds`: the two-axis meters (luma at `BASE_LUMA_CLIP`,
+   colour at `BASE_COLOR_CLIP`, recombined with a **mean** on the luma axis
+   and a **median** on the colour axis; the dense end reads one shared
+   chroma-gated pixel set so a saturated highlight is never mistaken for
+   film cast).
+5. `normalize_log_image` + `encode_normalized`: per-channel affine stretch
+   into `[0, 1]` — `floor → 0.0` (scene highlight, still dark), `ceil →
+   1.0` (film base / scene shadow, still light) — **unclamped**, then
+   encoded to `uint16` with asymmetric headroom
+   (`NORMALIZED_HEADROOM_LOW = 0.15`, `HIGH = 0.10`) so the excursion the
+   block median never saw stays representable for the edit stage's tone
+   curve.
+
+Three properties to hold onto:
+
+- **The published TIFF is a working intermediate, not the deliverable** —
+  the positive export does not exist yet, and the creative-edit stage reads
+  this. The bake is arithmetically reversible: the per-channel floors and
+  ceils are recorded, and `10 ** (floor + val * (ceil - floor))` recovers
+  the linear composite to within quantization.
+- **It stays a negative in appearance.** The published file's border is now
+  **white** (`NORMALIZED_FILL` = 1.0 + `NORMALIZED_HEADROOM_HIGH` = code
+  65535), and the file you open in Photoshop looks like a negative while
+  the preview beside it looks positive. Both are correct (§3.11/§3.14 of
+  the plan).
+- **The meters read an analysis region, not the canvas.** Uncovered canvas
+  pixels sit at `log10(1e-6) = -6.0` — a colossal outlier at exactly the
+  dense end the floor percentile reads — so `largest_valid_rect`, computed
+  before compositing, restricts the meters only. It never crops the output.
+
+The published TIFF carries a **second** ICC profile,
+`ScannyBoy-Density-ProPhoto-v1.icc`: ProPhoto primaries, parametric type 0
+at g = 2.2 — a *viewing convention*, explicitly not a colorimetric claim
+(a correct profile would decode the file back to un-normalized linear,
+undoing the one thing this stage does). Every internal consumer —
+previews, the edit stage, export, the future print stage — decodes through
+`normalization.decode_normalized`, never through an ICC transform; a
+grep-shaped guard test keeps the loader out of everything but the write
+path.
+
+- **Previews are display-decoded, then inverted.** The published TIFF is
+  normalized log density, so `previews.py` downscales in code space,
+  decodes through `decode_normalized`, takes `1 − val` so the Edit
+  filmstrip reads as a positive, and scales to 8-bit — **no gamma**: log
+  density is already roughly perceptually uniform, and an sRGB OETF would
+  double-encode. Display encoding lives there and only there.
+- **Metering is recorded, never acted on.** The per-channel shadow refs
+  (P98), the exposure anchor (P50) and the textural range (P10–P90) are
+  measured on the same prefiltered grid and stored in the roll record's
+  `normalization` block for the print stage (Phase 4); nothing in this
+  program reads them back yet.
+- **`normalize` params are a roll invariant.** Every constant of the
+  feature rides in `processing_params.normalize` (§3.8), so a roll can
+  never mix normalized and un-normalized negatives — and retuning any
+  constant invalidates existing rolls. Know that before you tune.
+
 **TIFF format**, identical for frames and stitched output: three-channel
-`uint16`, linear RGB with the embedded profile, `Orientation` always `1` (pixels
+`uint16` with an embedded profile, `Orientation` always `1` (pixels
 are already upright — never copy the source value), Deflate with horizontal
 prediction (compression code `32946`, not `8`), written in two passes
 (`tifffile` for the base, `tifftools` for the nested EXIF, base removed only
 after the final file verifies). The four non-obvious `tifffile` rules
 (`metadata=None`, `description=`/`software=` as keywords, `iccprofile=` as a
 keyword, the Adobe Deflate code) are each documented in place and each
-matters.
+matters. *Transfer by stage:* intermediates are linear (§7), published
+TIFFs are normalized log density (§7.1).
 
 ---
 
@@ -462,11 +542,13 @@ late, having done all the expensive work. The pre-gain MAD is recorded
 beside it in the roll record as the diagnostic that explains why a gain
 was applied.
 
-**`rebate_deviation_px` is specified, recorded, and never implemented.** The
-field exists in the contract and the roll record and is always `null`. Chunk P2-1
-found a generic straight-edge finder cannot reliably find the same physical
-rebate edge across frames. `layout.py` deliberately does not define a
-`REBATE_DEVIATION_WARN`. A purpose-built detector is on the punchlist.
+**`rebate_deviation_px` is specified, recorded, and still always `null`.**
+Chunk P2-1 found a generic straight-edge finder cannot reliably find the
+same physical rebate edge across frames. Normalization's density-based
+**rebate detector** (`normalization.detect_rebate`, §7.1) now finds and
+excludes rebate for the meters' benefit; deriving the edge's deviation from
+the solved strip axis from that mask — retiring the always-`null` field —
+is on the punchlist, not implemented.
 
 ### 8.2 The CLAHE fallback (not in `DECISIONS.md`)
 
@@ -633,10 +715,13 @@ negative by taking over its identity, not by publishing a rival.
   the folder name is a slug of it (NFC, `[A-Za-z0-9._-]`, whitespace runs →
   single `-`, 60 chars, case-insensitive collision suffixes). Rename moves
   the folder **first**, then saves the new name and location to the
-  database — so a failed move leaves both untouched. Delete is
-  `NSWorkspace.recycle` in Swift, with no CLI involvement at all; the
-  database rows survive, so the next `roll list` reports the vanished
-  folder as `unreadable`.
+  database — so a failed move leaves both untouched. Delete is two steps,
+  in this order: the app moves the folder to the Trash with
+  `NSWorkspace.recycle`, then `roll delete` removes the database
+  registration (runs, sources, negatives, and edits cascade away with it)
+  and unlinks the negatives' rendered previews. A crash between the steps
+  leaves an orphan registration that `roll list` reports as `unreadable`,
+  never a lost folder; a deleted roll disappears from the next `roll list`.
 - **Roll invariants** (`RollInvariants`): `processing_params`, the ICC
   profile hash, `stitch_params`. Everything else — input folder, source
   list, order, grouping, and the batch's `shots_per_negative` — is
@@ -839,12 +924,15 @@ calendar date of the selection's first *real* capture time. It is vestigial —
 kept only because the schema has it and a rerun comparison still checks it.
 `--film-date` is gone from every command.
 
-The **valid rectangle** is computed and recorded but never applied. The canvas
-is always the full union bounding box; nothing captured is discarded. The
-valid rect exists for a future crop tool.
+The **valid rectangle** is computed, recorded, and — since normalization —
+**applied once**: it is the analysis region the meters read (§7.1), moved
+above the `composite()` call so the meters can be told where the fill is
+not. It restricts the analysis only; the canvas is still the full union
+bounding box and nothing captured is discarded. The rect still exists for a
+future crop tool, which supersedes the rebate detector's region decision.
 
 `output_folder.py` is parameterised over which manifest kind it reads via
-`FolderRules` (`CONVERT_RULES` / `ROLL_RULES`) rather than being duplicated.
+`FolderRules` (`PREPARE_RULES` / `ROLL_RULES`) rather than being duplicated.
 Under `ROLL_RULES` registration — a database check, not a filename check —
 decides whether the folder holds a record, and a registered roll folder may
 be genuinely empty, since its record lives in the database. A published
@@ -876,7 +964,7 @@ export — one helper invocation at a time.
 
 | Type | Role |
 | --- | --- |
-| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for delete; create/rename/list all go through the CLI. |
+| `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for the delete's Trash move; create/rename/list/delete all go through the CLI. |
 | `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
 | `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is each stitch batch's own choice, set on Add Scans and required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); a roll locked to a profile pre-selects it. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` and `edit delete` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
@@ -890,8 +978,9 @@ CLI, which refuses `FLATFIELD_PROFILE_IN_USE` when a roll's invariants name
 the profile — shown as an alert), plus New Profile… — an `NSOpenPanel`
 limited to NEF, a name field, and Create with a spinner, since building a
 profile decodes a RAW and takes seconds. A gain map is app-private data with
-a database row, not a user document, so unlike deleting a roll folder this
-goes through the CLI rather than `NSWorkspace.recycle`.
+a database row, not a user document, so unlike a roll's folder — which the
+app itself trashes with `NSWorkspace.recycle` before `roll delete`
+unregisters it — this goes through the CLI alone.
 
 **CLI bridge** (`CLIBridge/`): `CLILocator` finds the helper
 (`Contents/Helpers/ScannyBoyCLI.app`; a Debug build additionally honours an
@@ -955,7 +1044,9 @@ where the README or `DECISIONS.md` describes intent that is not implemented.
    set-date`, by analogy with `roll rename`), a call to `intended_times()`
    to populate the field, and Metadata-tab controls.
 
-3. **`rebate_deviation_px` is always `null`.** See §8.1.
+3. **`rebate_deviation_px` is always `null`.** See §8.1. The rebate
+   *detector* exists (§7.1) and excludes rebate from the meters; the
+   deviation field's retirement via that mask is punchlisted.
 
 5. **The app can never keep a work directory.** `CLICommand.run` accepts a
    `work:` parameter, but `ConfigurationModel.runCommand()` never supplies one,
@@ -967,10 +1058,13 @@ where the README or `DECISIONS.md` describes intent that is not implemented.
 6. **`stitch --overwrite` is accepted and ignored** — intentionally, but it is
    still dead surface area.
 
-7. **`export` is pixels-only.** The exported TIFF carries no EXIF and no
-   embedded ICC profile — `exporter._write_export` is a plain
-   `tifffile.imwrite` of the replayed pixels. EXIF/ICC carry-over from the
-   published TIFF is the deliberately-deferred next step, not half-done.
+7. **`export` is pixels-plus-density-tag.** The exported TIFF replays the
+   pixels straight through and carries the density profile and the
+   `normalization` block in its `ImageDescription` (§7.1) — but no EXIF:
+   full EXIF carry-over from the published TIFF remains the
+   deliberately-deferred next step, not half-done. What is still undecided
+   is the profile the eventual **positive** export carries — that is the
+   first colourimetric question that belongs to the export work itself.
    Rotation is also the **only** edit operation: the ops-log shape (`op` +
    `params`) is general, but `rotate` is the single op implemented.
 

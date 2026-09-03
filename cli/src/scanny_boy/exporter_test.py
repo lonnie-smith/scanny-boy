@@ -10,7 +10,7 @@ import pytest
 import tifffile
 
 from scanny_boy.edits import run_edit_rotate
-from scanny_boy.events import Code, ExportDone
+from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.exporter import ExportFailure, apply_edits, run_export
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_test import _negative, _run
@@ -156,3 +156,27 @@ def test_export_of_an_unregistered_roll_fails(tmp_path):
     with pytest.raises(ExportFailure) as exc_info:
         run_export(tmp_path / "not-a-roll", tmp_path / "export", [], emit=lambda e: None)
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
+
+
+def test_a_failed_write_leaves_no_tmp_file_in_the_output_folder(
+    stitched_roll, tmp_path, monkeypatch
+):
+    """A failed imwrite (disk full, permissions) is a per-negative warning,
+    but the partial `.tif.tmp` must not survive it in the user's folder."""
+    import scanny_boy.exporter as exporter_module
+
+    def failing_imwrite(path, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(exporter_module.tifffile, "imwrite", failing_imwrite)
+    output_dir = tmp_path / "export"
+    warnings: list = []
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=warnings.append)
+
+    assert outcome.failed == [_NEGATIVE_ID, _OTHER_ID]
+    assert [w.code for w in warnings if isinstance(w, WarningEvent)] == [
+        Code.EXPORT_FAILED,
+        Code.EXPORT_FAILED,
+    ]
+    assert list(output_dir.glob("*.tmp")) == []

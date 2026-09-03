@@ -54,6 +54,36 @@ def _angle_deg(rotation):
     return np.degrees(np.arctan2(rotation[1, 0], rotation[0, 0]))
 
 
+def test_featureless_frame_gets_empty_descriptors():
+    """A uniform grey intermediate finds no keypoints at all. `detect_features`
+    must normalise that to an empty array of the detector's dtype — not store
+    the `None` OpenCV hands back — so downstream code can refuse the pair
+    instead of crashing."""
+    grey = np.full((200, 300, 3), 30000, dtype=np.uint16)
+    detection = build_detection_image(grey, long_edge=DETECTION_LONG_EDGE, clahe=False)
+
+    features = detect_features(detection, name="blank")
+
+    assert len(features.keypoints) == 0
+    assert features.descriptors is not None
+    assert len(features.descriptors) == 0
+
+
+def test_featureless_pair_is_rejected_not_crashed():
+    """Two blank frames must be refused with the stable insufficient-matches
+    code — an ordinary scanning outcome, and one the CLAHE retry can respond
+    to — not surface as an AttributeError from inside the matcher."""
+    grey = np.full((200, 300, 3), 30000, dtype=np.uint16)
+    detection = build_detection_image(grey, long_edge=DETECTION_LONG_EDGE, clahe=False)
+    a = detect_features(detection, name="a")
+    b = detect_features(detection, name="b")
+
+    result = register_pair(a, b)
+
+    assert result.accepted is False
+    assert result.reject_code == Code.STITCH_INSUFFICIENT_MATCHES
+
+
 def test_recovers_a_known_rotation_and_translation():
     features, placements = _build_pair_features([0.0, 5.0])
     result = register_pair(features[0], features[1])

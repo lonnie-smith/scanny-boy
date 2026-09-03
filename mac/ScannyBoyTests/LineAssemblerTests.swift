@@ -83,11 +83,11 @@ struct LineAssemblerTests {
     func byteAtATimeIsReassembled() {
         var assembler = LineAssembler()
         var lines: [String] = []
-        for byte in Data(#"{"protocol_version":7,"event":"finished"}"#.utf8) {
+        for byte in Data(#"{"protocol_version":8,"event":"finished"}"#.utf8) {
             lines += assembler.append(Data([byte]))
         }
         #expect(lines.isEmpty)
         lines += assembler.append(Data("\n".utf8))
-        #expect(lines == [#"{"protocol_version":7,"event":"finished"}"#])
+        #expect(lines == [#"{"protocol_version":8,"event":"finished"}"#])
     }
 }

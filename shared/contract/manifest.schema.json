@@ -24,7 +24,14 @@
         "absolute_path": { "type": "string" },
         "size": { "type": "integer", "minimum": 0 },
         "mtime": { "type": "number" },
-        "sha256": { "$ref": "#/definitions/sha256" }
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "scan_clip_fractions": {
+          "type": ["array", "null"],
+          "items": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Per-channel fraction of pixels at or above sensor white, measured at decode; null when this build predates the measurement."
+        }
       }
     },
     "output": {

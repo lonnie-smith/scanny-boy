@@ -8,10 +8,11 @@ import Observation
 /// directory enumeration and no manifest parsing of its own. `scan()` is the
 /// only way it learns what is in the library.
 ///
-/// Renaming (section 5.5) and creating a roll both go through the CLI too —
-/// `roll rename` and `roll init` — so the only thing this type ever touches
-/// on disk directly is deleting a roll, via `NSWorkspace.recycle` (section
-/// 3.10), which needs no server-side cooperation at all.
+/// Renaming (section 5.5), creating a roll, and unregistering a deleted
+/// roll all go through the CLI — `roll rename`, `roll init`, and
+/// `roll delete` — so the only thing this type ever touches on disk
+/// directly is moving a roll's folder to the Trash, via `NSWorkspace.recycle`
+/// (section 3.10), which needs no server-side cooperation at all.
 @MainActor
 @Observable
 final class RollLibrary {
@@ -164,6 +165,11 @@ final class RollLibrary {
         let session = runner.session(
             for: .rollInit(library: libraryBase, name: name)
         )
+        // Recorded rather than returned immediately (M4): returning from
+        // inside the loop abandons the `AsyncStream`, which fires
+        // `CLISession`'s `onTermination` and SIGTERMs a helper that, at that
+        // exact moment, may just be in the middle of its own clean exit.
+        var result: CreateResult = .failure(.unknown(""), "roll init produced no result")
         do {
             for await output in try await session.start() {
                 guard case .event(let event) = output else { continue }
@@ -172,19 +178,19 @@ final class RollLibrary {
                     guard let path = event.rollPath, let rollID = event.rollID,
                         let rollName = event.rollName
                     else { continue }
-                    let roll = Roll(
-                        path: URL(filePath: path),
-                        status: .ok,
-                        reason: nil,
-                        rollID: rollID,
-                        rollName: rollName,
-                        negativeCount: 0
+                    result = .success(
+                        Roll(
+                            path: URL(filePath: path),
+                            status: .ok,
+                            reason: nil,
+                            rollID: rollID,
+                            rollName: rollName,
+                            negativeCount: 0
+                        )
                     )
-                    scan()
-                    return .success(roll)
                 case .error:
                     let code = event.code ?? .unknown("")
-                    return .failure(code, event.message ?? "roll init failed")
+                    result = .failure(code, event.message ?? "roll init failed")
                 default:
                     continue
                 }
@@ -192,7 +198,10 @@ final class RollLibrary {
         } catch {
             return .failure(.unknown(""), error.localizedDescription)
         }
-        return .failure(.unknown(""), "roll init produced no result")
+        if case .success = result {
+            scan()
+        }
+        return result
     }
 
     // MARK: - Rename
@@ -205,52 +214,122 @@ final class RollLibrary {
         guard !runIsActive else { throw RenameError.runInProgress }
 
         let session = runner.session(for: .rollRename(roll: roll.path, name: newName))
+        // Recorded rather than returned/thrown immediately (M4): see
+        // `createRoll`. The trailing `.completed` outcome is folded in below
+        // — a `rollRenamed` event without ever seeing a successful exit
+        // status should not be declared a success.
+        var renamed: Roll?
+        var failure: RenameError?
+        var outcome: CLIOutcome?
         do {
             for await output in try await session.start() {
-                guard case .event(let event) = output else { continue }
-                switch event.kind {
-                case .rollRenamed:
-                    guard let path = event.rollPath, let rollID = event.rollID,
-                        let rollName = event.rollName
-                    else { continue }
-                    let renamed = Roll(
-                        path: URL(filePath: path),
-                        status: .ok,
-                        reason: nil,
-                        rollID: rollID,
-                        rollName: rollName,
-                        negativeCount: roll.negativeCount
-                    )
-                    scan()
-                    return renamed
-                case .error:
-                    throw RenameError.failed(event.message ?? "roll rename failed")
-                default:
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .rollRenamed:
+                        guard let path = event.rollPath, let rollID = event.rollID,
+                            let rollName = event.rollName
+                        else { continue }
+                        renamed = Roll(
+                            path: URL(filePath: path),
+                            status: .ok,
+                            reason: nil,
+                            rollID: rollID,
+                            rollName: rollName,
+                            negativeCount: roll.negativeCount
+                        )
+                    case .error:
+                        failure = RenameError.failed(event.message ?? "roll rename failed")
+                    default:
+                        continue
+                    }
+                case .completed(let completion):
+                    outcome = completion.outcome
+                case .log, .failure:
                     continue
                 }
             }
-        } catch let error as RenameError {
-            throw error
         } catch {
             throw RenameError.failed(error.localizedDescription)
         }
-        throw RenameError.failed("roll rename produced no result")
+        if let failure { throw failure }
+        guard let renamed else { throw RenameError.failed("roll rename produced no result") }
+        if let outcome, outcome != .success {
+            throw RenameError.failed("roll rename did not complete successfully")
+        }
+        scan()
+        return renamed
     }
 
     // MARK: - Delete
 
-    /// Moves the roll's folder to the Trash. Section 3.10: pure Swift,
-    /// `NSWorkspace.recycle` needs no server-side cooperation at all.
-    /// Rescans on success so the sidebar drops the roll immediately.
+    enum DeleteError: Error, LocalizedError {
+        case failed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .failed(let message):
+                message
+            }
+        }
+    }
+
+    /// Moves the roll's folder to the Trash and unregisters it, so the next
+    /// `roll list` drops it. Two steps, in this order: the folder goes first
+    /// via `NSWorkspace.recycle` (section 3.10: pure Swift, no server-side
+    /// cooperation; a failed move leaves both the folder and the
+    /// registration untouched), then `roll delete` removes the database
+    /// registration — with the folder already gone, a crash between the two
+    /// steps leaves an orphan registration that reads as `unreadable`, never
+    /// a lost folder. Rescans on success so the sidebar drops the roll
+    /// immediately.
     func deleteRoll(_ roll: Roll) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            NSWorkspace.shared.recycle([roll.path]) { _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+        if fileManager.fileExists(atPath: roll.path.path) {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                NSWorkspace.shared.recycle([roll.path]) { _, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
                 }
             }
+        }
+
+        let session = runner.session(for: .rollDelete(roll: roll.path))
+        // Recorded rather than returned/thrown immediately (M4): see
+        // `createRoll`. This is exactly the case the plan calls out —
+        // declaring the deletion a success on the strength of one event,
+        // without ever having seen the exit status, is folded in below.
+        var deleted = false
+        var failure: DeleteError?
+        var outcome: CLIOutcome?
+        do {
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .rollDeleted:
+                        deleted = true
+                    case .error:
+                        failure = DeleteError.failed(event.message ?? "roll delete failed")
+                    default:
+                        continue
+                    }
+                case .completed(let completion):
+                    outcome = completion.outcome
+                case .log, .failure:
+                    continue
+                }
+            }
+        } catch {
+            throw DeleteError.failed(error.localizedDescription)
+        }
+        if let failure { throw failure }
+        guard deleted else { throw DeleteError.failed("roll delete produced no result") }
+        if let outcome, outcome != .success {
+            throw DeleteError.failed("roll delete did not complete successfully")
         }
         scan()
     }

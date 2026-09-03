@@ -57,9 +57,17 @@ class SourceRecord:
     size: int
     mtime: float
     sha256: str
+    # Per-channel fraction of pixels at or above sensor white, measured at
+    # decode, before flat-field (docs/DECISIONS.md, "Normalization decisions").
+    # Null when this build predates the measurement.
+    scan_clip_fractions: tuple[float, float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        data = dataclasses.asdict(self)
+        data["scan_clip_fractions"] = (
+            None if self.scan_clip_fractions is None else list(self.scan_clip_fractions)
+        )
+        return data
 
 
 @dataclasses.dataclass(frozen=True)
@@ -215,10 +223,25 @@ def _validate_source_dict(data: Any) -> None:
     for key in ("filename", "absolute_path", "size", "mtime", "sha256"):
         _require(key in data, f"source entry missing {key!r}")
     _require(isinstance(data["filename"], str), "source filename is not a string")
-    _require(isinstance(data["absolute_path"], str), "source absolute_path is not a string")
-    _require(isinstance(data["size"], int) and data["size"] >= 0, "source size is invalid")
+    _require(
+        isinstance(data["absolute_path"], str), "source absolute_path is not a string"
+    )
+    _require(
+        isinstance(data["size"], int) and data["size"] >= 0, "source size is invalid"
+    )
     _require(isinstance(data["mtime"], int | float), "source mtime is invalid")
     _require(_looks_like_sha256(data["sha256"]), "source sha256 is invalid")
+    # Per-source sensor-clip fractions (docs/DECISIONS.md, "Normalization
+    # decisions"), written by this program only; older manifests read back as
+    # null through the dataclass default.
+    clips = data.get("scan_clip_fractions")
+    if clips is not None:
+        _require(
+            isinstance(clips, list)
+            and len(clips) == 3
+            and all(isinstance(v, int | float) and 0.0 <= v <= 1.0 for v in clips),
+            "source scan_clip_fractions is invalid",
+        )
 
 
 def _validate_output_dict(data: Any) -> None:
@@ -226,7 +249,9 @@ def _validate_output_dict(data: Any) -> None:
     for key in ("name", "size", "sha256"):
         _require(key in data, f"output entry missing {key!r}")
     _require(isinstance(data["name"], str), "output name is not a string")
-    _require(isinstance(data["size"], int) and data["size"] >= 0, "output size is invalid")
+    _require(
+        isinstance(data["size"], int) and data["size"] >= 0, "output size is invalid"
+    )
     _require(_looks_like_sha256(data["sha256"]), "output sha256 is invalid")
 
 
@@ -235,12 +260,17 @@ def _validate_group_dict(data: Any) -> None:
     for key in ("group_id", "members", "expected_outputs", "status", "outputs"):
         _require(key in data, f"group entry missing {key!r}")
     _require(isinstance(data["group_id"], str), "group_id is not a string")
-    _require(isinstance(data["members"], list) and data["members"], "group members is invalid")
+    _require(
+        isinstance(data["members"], list) and data["members"],
+        "group members is invalid",
+    )
     _require(
         isinstance(data["expected_outputs"], list) and data["expected_outputs"],
         "group expected_outputs is invalid",
     )
-    _require(data["status"] in GROUP_STATUSES, f"invalid group status {data['status']!r}")
+    _require(
+        data["status"] in GROUP_STATUSES, f"invalid group status {data['status']!r}"
+    )
     _require(isinstance(data["outputs"], list), "group outputs is not a list")
     for output in data["outputs"]:
         _validate_output_dict(output)
@@ -285,16 +315,27 @@ def validate_manifest_dict(data: Any) -> None:
         f"unsupported manifest_format_version {data['manifest_format_version']!r}",
     )
     _require(data["status"] in STATUSES, f"invalid manifest status {data['status']!r}")
-    _require(isinstance(data["shots_per_negative"], int), "shots_per_negative is not an integer")
-    _require(isinstance(data["processing_params"], dict), "processing_params is not an object")
+    _require(
+        isinstance(data["shots_per_negative"], int),
+        "shots_per_negative is not an integer",
+    )
+    _require(
+        isinstance(data["processing_params"], dict),
+        "processing_params is not an object",
+    )
     icc = data["icc_profile"]
-    _require(isinstance(icc, dict) and "name" in icc and "sha256" in icc, "icc_profile is invalid")
+    _require(
+        isinstance(icc, dict) and "name" in icc and "sha256" in icc,
+        "icc_profile is invalid",
+    )
     _require(_looks_like_sha256(icc["sha256"]), "icc_profile sha256 is invalid")
     _require(isinstance(data["source_order"], list), "source_order is not a list")
     _require(isinstance(data["sources"], list), "sources is not a list")
     for source in data["sources"]:
         _validate_source_dict(source)
-    _require(isinstance(data["curated_metadata"], dict), "curated_metadata is not an object")
+    _require(
+        isinstance(data["curated_metadata"], dict), "curated_metadata is not an object"
+    )
     _require(isinstance(data["groups"], list), "groups is not a list")
     for group in data["groups"]:
         _validate_group_dict(group)
@@ -377,6 +418,11 @@ def _manifest_from_dict(data: dict[str, Any]) -> Manifest:
                 size=s["size"],
                 mtime=s["mtime"],
                 sha256=s["sha256"],
+                scan_clip_fractions=(
+                    None
+                    if s.get("scan_clip_fractions") is None
+                    else tuple(s["scan_clip_fractions"])
+                ),
             )
             for s in data["sources"]
         ],

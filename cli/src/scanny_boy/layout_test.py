@@ -576,16 +576,22 @@ def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
 
 
 def test_rejects_an_implausibly_large_pair_rotation():
+    """A 60-degree RANSAC output is data gone wrong, not an internal
+    invariant: it must raise the stable residual code (which keeps the
+    negative CLAHE-retry eligible), not an AssertionError."""
     ground_truth = [
         FramePlacement("f0", 0.0, (0.0, 0.0)),
-        FramePlacement("f1", 50.0, (500.0, 0.0)),
+        FramePlacement("f1", 60.0, (500.0, 0.0)),
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
     pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(StitchError) as exc_info:
         solve_layout(names, _FRAME_SIZE, [pair])
+
+    assert exc_info.value.code is Code.STITCH_RESIDUAL_TOO_HIGH
+    assert "f0" in exc_info.value.message and "f1" in exc_info.value.message
 
 
 def test_largest_all_covered_rectangle_finds_the_true_maximum():

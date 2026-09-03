@@ -29,17 +29,9 @@
 
 Phase n:
 
-* Maybe change border fill-in to cyan or some contrasting color
 * extended metadata editing (location, camera, lens, film stock)
 * Crop based on manifest data, maybe lock in an appropriate aspect ratio
 * White balance / base neutralization
-* A purpose-built rebate-deviation detector. Phase 2 specifies
-  `rebate_deviation_px` in the contract and records it in the roll manifest,
-  but never gates on it and never implements detection at all — Chunk P2-1
-  found the rebate isn't cleanly detectable with a generic straight-edge
-  finder. A detector constrained to edges near the frame margin and roughly
-  parallel to the solved strip axis (rather than the longest line anywhere in
-  the image) could make this a real gate instead of an always-`null` field.
 * Measure the photometric-gain thresholds from real scans. Stitch-phase gain
   compensation (per-frame, per-channel gains solved globally in log space,
   geometric mean 1) shipped with two **unmeasured** constants that need a
@@ -49,51 +41,11 @@ Phase n:
   and is far looser than a healthy residual — re-measure it at the same
   gate. See composite.py's module docstring and DECISIONS.md "Quality
   gates".
-* Manual negative reordering. Phase 3 orders a roll's negatives by capture
-  time alone (§3.7); an optional `sequence_override` on `negative`, consumed
-  by `roll_sequence.py` ahead of capture time, is where a manual order would
-  attach.
-* Deleting a negative outright. With replacement now in-place
-  (no tombstone, no supersede-with-null-replacement to reuse), this needs
-  its own real delete mechanism — a `roll delete-negative` command is the
-  likely shape; the Edit tab is where it would attach.
-* Setting a roll's capture date or a per-negative date override from the
-  app. Phase 3's Edit tab (P3-12) shows both read-only: no CLI command
-  writes `metadata.roll_capture_date` or a negative's
-  `capture_time.date_override` — see Phase 3 plan §5.6. A `roll set-date`
-  command, by analogy with `roll rename` (§5.5), is the likely shape of the
-  fix. (An app-level `shots_per_negative` editor was retired entirely: the
-  grouping is each stitch batch's own choice, picked on Add Scans, and the
-  roll record no longer stores it.)
 * Flat-field deferred pieces (see FLATFIELD_PLAN.md §4 for what did ship):
-  - **Non-RAW references.** NegPy accepts ordinary images too; here a
-    reference must be a `.NEF`, because a JPEG reference would have to be
-    guessed into linear light.
-  - **A per-image / per-negative toggle.** NegPy has one; this design
-    applies a profile to a whole roll by construction — a per-negative
-    toggle would defeat the roll invariants.
-  - **Black-frame subtraction.** The correction is multiplicative gain
-    only, same as NegPy; a dark-frame reference would be additive.
   - **Re-measure `MAX_OVERLAP_MAD`** now that overlaps arrive
     de-vignetted — the falloff the old measurement carried is gone, so the
     gate can probably tighten. Fold into the same user gate as the gain
     thresholds above.
-  - ~~**Interacts with linear-gamma intermediates.**~~ **Resolved** by the
-    linear decode (see "Negative inversion" below): the round trip is now
-    the plain fixed-point scaling of `linear.py`.
-
-Phase n: 
-Negative inversion
-
-~~might need to put the tiff in linear (gamma 1, 1???) instead of whatever gamma rawpy gives us on conversion right now.~~
-**Done:** `RAW_PARAMS` is now `gamma=(1, 1)`, `output_color=raw`, unity
-white balance — NegPy's decode exactly. The written TIFFs are linear
-sensor-channel data, tagged `ScannyBoy-Linear-ProPhoto-v1.icc`; previews
-sRGB-encode for display. Old rolls must be reconverted (their manifests pin
-the old profile hash and `processing_params`).
-
-Eventual:
-- would it be easy to convert this to an electron app for better cross-platform compatibility (plus familiarity to me)
 
 Geometric calibration (docs/GEOMETRIC_PLAN.md, protocol version 7) deferred
 pieces:
@@ -117,3 +69,45 @@ pieces:
   meaningful fraction of `RANSAC_REPROJ_PX`, switching
   `detection.build_detection_image` to the green channel (and re-measuring
   `DETECTION_LONG_EDGE` / `USE_CLAHE`) becomes worthwhile.
+
+Normalization (docs/DECISIONS.md, "Normalization decisions"; protocol
+version 8) deferred pieces:
+
+* **Roll-consistent colour bounds (D-4).** The orange mask and the lamp are
+  constant across a roll; the scene content is not. Record exists
+  (`normalization_aggregate`); `--colour-bounds run-median` is the likely
+  shape of the fix.
+* **Run-propagated film base (D-3's staging step 2).** Film base is a
+  property of the *roll*; Dmin measured from whichever negatives do show
+  rebate can set the ceiling and the thin-end colour reference for every
+  negative in the run, including tight ones. Needs the per-negative
+  `log10(t_ref / t_n)` exposure correction from the recorded raw
+  `base_density`. Subsumes D-4's colour axis with a better estimator.
+* **The five unmeasured rebate constants** (`REBATE_ANCHOR_PERCENTILE`,
+  `REBATE_DENSITY_TOLERANCE`, `REBATE_MIN_AREA_FRACTION`,
+  `REBATE_MAX_SPREAD`, `REBATE_MIN_SEPARATION`) — provisional and
+  unmeasured, same status as `MIN_GAIN_OVERLAP_PX` / `GAIN_DRIFT_WARN`.
+  Fold into the same user gate as the other unmeasured thresholds: run the
+  detector over real rolls with a dump of `mask_fraction`, `base_density`,
+  whether it fired, and the per-channel clip fraction inside the mask.
+  Until then, a detector that never fires is the safe failure.
+* **`rebate_deviation_px` retired via the rebate mask** (§3.13's bonus).
+  Given the rebate mask, the edge's deviation from the solved strip axis
+  falls out nearly for free.
+* **Channel unmix / spectral crosstalk.** Deferred entirely. When it comes
+  back: a 3×3 on the raw log densities, slotted between `to_log_density`
+  and `analyze_bounds` — and it invalidates every roll's `normalize_params`.
+* **Intermediate-precision measurement (N-1's measurement task).** Decode
+  one real negative's frames, composite through the current linear-uint16
+  path and a float32 path, normalize both, report RMS against grain sigma.
+  Within a quarter of grain: close out. Otherwise: a new plan for log
+  intermediates.
+* **Intermediate precision itself** stays linear uint16 (§1.4 of the plan);
+  changing it touches `linear.py`, `tiff_writer.py`, `flatfield`, the ICC
+  story, and most of the test suite.
+* **Print-stage metering consumers.** Shadow refs, anchor, textural range
+  are recorded and read by nothing; Phase 4 will need them per negative.
+* **NegPy's dropped controls** (bound trims, lock bounds, roll averages) as
+  edit-page candidates.
+* **Re-measure `STITCH_UNITS_PER_NEGATIVE`** (now 10, was 9) with
+  `scripts/measure-registration.py` rather than asserting the +1.

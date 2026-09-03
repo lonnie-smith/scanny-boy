@@ -246,18 +246,22 @@ final class EditModel {
     }
 
     private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
+        // Recorded rather than returned immediately (M4): see
+        // `RollLibrary.createRoll` — returning from inside the loop abandons
+        // the stream and can SIGTERM a helper that is in the middle of its
+        // own clean exit.
+        var manifest: RollManifest?
         do {
             for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
-                if case .event(let event) = output, event.kind == .rollInfo,
+                guard case .event(let event) = output, event.kind == .rollInfo,
                     let fields = event.manifest
-                {
-                    return RollManifest(fields: fields)
-                }
+                else { continue }
+                manifest = RollManifest(fields: fields)
             }
         } catch {
             return nil
         }
-        return nil
+        return manifest
     }
 
     // MARK: - Testing

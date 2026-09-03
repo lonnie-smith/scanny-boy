@@ -6,13 +6,20 @@ writes the result, named after the negative, into the output folder. The
 roll's own TIFF is never opened for writing: exports land elsewhere, and a
 re-export after further edits simply runs again.
 
-Pixels only, for the PoC: EXIF and ICC carry-over is the next step and
-deliberately not half-done here.
+The export *is* a normalized digital negative: the pixels replay straight
+through, carrying the same density profile the published TIFF carries
+(docs/DECISIONS.md, "Normalization decisions"), and the negative's
+`normalization` block is written into the `ImageDescription` so the file is
+interpretable without the database. Full EXIF carry-over stays the deferred
+item it already is. What this does *not* settle is the profile the
+eventual positive export carries — that is the first colourimetric
+question that belongs to the export work itself.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +27,7 @@ import numpy as np
 import tifffile
 
 from scanny_boy.events import Code, ExportDone, WarningEvent
+from scanny_boy.icc_profile import ProfileKind, load_icc_profile
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError
@@ -48,10 +56,38 @@ def apply_edits(image: np.ndarray, rotation_quarter_turns: int) -> np.ndarray:
     return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
-def _write_export(destination: Path, image: np.ndarray) -> None:
+def export_image_description(negative: NegativeRecord) -> str:
+    """The export's `ImageDescription`: the negative's `normalization`
+    block as JSON, so the file is interpretable without the database."""
+    return json.dumps(
+        {
+            "kind": "scanny-boy export",
+            "negative_id": negative.negative_id,
+            "normalization": negative.normalization,
+            "normalized_fill": negative.normalized_fill,
+        },
+        sort_keys=True,
+    )
+
+
+def _write_export(
+    destination: Path, image: np.ndarray, negative: NegativeRecord
+) -> None:
     tmp_path = destination.with_suffix(destination.suffix + ".tmp")
-    tifffile.imwrite(tmp_path, image)
-    tmp_path.replace(destination)
+    try:
+        tifffile.imwrite(
+            tmp_path,
+            image,
+            description=export_image_description(negative),
+            iccprofile=load_icc_profile(ProfileKind.DENSITY),
+        )
+        tmp_path.replace(destination)
+    except BaseException:
+        # A failed write (disk full, permissions) must not leave a partial
+        # .tmp file behind in the user's output folder — the same rule
+        # apply_metadata.rewrite_date_time_original already follows.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def run_export(
@@ -102,7 +138,9 @@ def run_export(
                 Code.OUTPUT_NOT_WRITABLE, f"could not create {output_dir}: {exc}"
             ) from exc
     if not output_dir.is_dir():
-        raise ExportFailure(Code.OUTPUT_NOT_WRITABLE, f"{output_dir} is not a directory")
+        raise ExportFailure(
+            Code.OUTPUT_NOT_WRITABLE, f"{output_dir} is not a directory"
+        )
 
     exported: list[str] = []
     failed: list[str] = []
@@ -154,11 +192,11 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        rotated = apply_edits(image, repo.net_rotation_quarter_turns(
-            roll_dir, negative.negative_id
-        ))
+        rotated = apply_edits(
+            image, repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
+        )
         destination = output_dir / negative.output["name"]
-        _write_export(destination, rotated)
+        _write_export(destination, rotated, negative)
     except Exception as exc:  # noqa: BLE001 — one bad negative never stops the export
         emit(
             WarningEvent(

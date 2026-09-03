@@ -129,7 +129,7 @@ struct CLIIntegrationTests {
             let runner = try Self.runner()
             // Staged: only the six sample files, so the selection is
             // contiguous in its catalogue.
-            let command = try CLICommand.convert(
+            let command = try CLICommand.prepare(
                 input: SampleFixtures.stagedDirectory(),
                 files: SampleFixtures.files,
                 out: out,

@@ -40,6 +40,12 @@ final class ExportModel {
     private(set) var outcome: CLIOutcome?
 
     @ObservationIgnored private var exportTask: Task<Void, Never>?
+    /// Bumped on every `export(...)` and captured by that call's completion
+    /// closure, so a superseded invocation's tail cannot overwrite a later
+    /// one's `phase`. Unreachable today — `exportTask` is never cancelled and
+    /// a second `export(...)` is refused by `canExport` — but the guard
+    /// costs nothing and matches the pattern `RunModel` already establishes.
+    @ObservationIgnored private var exportGeneration = 0
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -87,6 +93,8 @@ final class ExportModel {
         failureMessage = nil
         outcome = nil
 
+        exportGeneration += 1
+        let generation = exportGeneration
         exportTask = Task { [weak self, runner] in
             let session = runner.session(for: .export(roll: roll, output: output))
             do {
@@ -96,7 +104,8 @@ final class ExportModel {
             } catch {
                 self?.failureMessage = error.localizedDescription
             }
-            self?.phase = .finished
+            guard let self, self.exportGeneration == generation else { return }
+            self.phase = .finished
         }
     }
 
@@ -104,6 +113,23 @@ final class ExportModel {
     /// `RunModel.waitForCompletion`.
     func waitForCompletion() async {
         await exportTask?.value
+    }
+
+    /// Clears the last export's results (Chunk P4-5): the export summary and
+    /// exported-file list belong to the roll they were exported from, the
+    /// same reasoning `RunModel.clearResults()` applies to the run log.
+    /// `outputDirectory` is left alone — it is a convenience default for the
+    /// next export, not part of what "belongs to" a roll. Never interrupts
+    /// an export in flight, matching `RunModel.clearResults()`'s posture.
+    func clearResults() {
+        guard !isExporting else { return }
+        exportGeneration += 1
+        exportTask = nil
+        phase = .idle
+        exportedNegatives = []
+        warnings = []
+        failureMessage = nil
+        outcome = nil
     }
 
     private func apply(_ output: CLISessionOutput) {
@@ -144,7 +170,7 @@ final class ExportModel {
             break
         case .started, .probeResult, .progress, .itemDone, .groupDone, .groupFailed,
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
-            .rollInfo, .rollRenamed, .metadataApplied, .metadataSkipped,
+            .rollInfo, .rollRenamed, .rollDeleted, .metadataApplied, .metadataSkipped,
             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
             .unknown:
             break

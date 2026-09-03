@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
-"""Deterministic generator for ScannyBoy-Linear-ProPhoto-v1.icc.
+"""Deterministic generator for the bundled Scanny Boy ICC profiles.
 
 Derived from the committed ProPhoto-v4.icc bytes: primaries, white point and
 chromatic-adaptation tag are carried over byte-identical, the description is
 rewritten, and the TRC tags become a parametric function type 0 (pure
-gamma) with g = 1.0 — the identity, declaring that the pixels the profile
-tags are linear. The decode is linear (`raw_decode.RAW_PARAMS`), so the
-profile's TRC is the identity by construction.
+gamma). Two profiles (docs/DECISIONS.md, "Normalization decisions"):
+
+- `ScannyBoy-Linear-ProPhoto-v1.icc`, g = 1.0 — the identity, declaring
+  that the prepare stage's intermediate pixels are linear
+  (`raw_decode.RAW_PARAMS` decodes linear).
+- `ScannyBoy-Density-ProPhoto-v1.icc`, g = 2.2 — a **viewing convention**
+  for the published, normalized log-density TIFF, not a colorimetric
+  claim. A normalized log encoding over ~2 decades is closer to gamma 3.3
+  than 2.2, and no ICC parametric type expresses it exactly anyway; but a
+  *correct* profile would decode the file back to un-normalized linear —
+  it would show the orange-masked raw scan, undoing the one thing the
+  normalization stage does. The tag exists to make the file legible in an
+  external viewer while debugging the edit stage. Every internal consumer
+  decodes through `normalization.decode_normalized`, never through an ICC
+  transform.
 """
 
 from __future__ import annotations
@@ -19,16 +31,27 @@ from pathlib import Path
 
 # Committed ProPhoto-v4.icc bytes, vendored so the generator keeps working
 # after that file is deleted.
-_PROPHOTO_V4_ICC_B64 = (
-    "AAAB4GxjbXMEIAAAbW50clJHQiBYWVogB+IAAwAUAAkADgAdYWNzcE1TRlQAAAAAc2F3c2N0cmwAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1oYW5kH9ZD3wQwsLzdCGIbXzs4jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKZGVzYwAAAPwAAAAkY3BydAAAASAAAAAid3RwdAAAAUQAAAAUY2hhZAAAAVgAAAAsclhZWgAAAYQAAAAUZ1hZWgAAAZgAAAAUYlhZWgAAAawAAAAUclRSQwAAAcAAAAAgZ1RSQwAAAcAAAAAgYlRSQwAAAcAAAAAgbWx1YwAAAAAAAAABAAAADGVuVVMAAAAIAAAAHABSAE8ATQBNbWx1YwAAAAAAAAABAAAADGVuVVMAAAAGAAAAHABDAEMAMAAAWFlaIAAAAAAAAPbWAAEAAAAA0y1zZjMyAAAAAAAA//3////+/////v////0AAQAD//////////8AAAABAAD/71hZWiAAAAAAAADMNwAASb4AAAAAWFlaIAAAAAAAACKaAAC2PQAAAAFYWVogAAAAAAAACAUAAAAFAADTLHBhcmEAAAAAAAMAAAABzM0AAQAAAAAAAAAAEAAAAAgA"
+_PROPHOTO_V4_ICC_B64 = "AAAB4GxjbXMEIAAAbW50clJHQiBYWVogB+IAAwAUAAkADgAdYWNzcE1TRlQAAAAAc2F3c2N0cmwAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1oYW5kH9ZD3wQwsLzdCGIbXzs4jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKZGVzYwAAAPwAAAAkY3BydAAAASAAAAAid3RwdAAAAUQAAAAUY2hhZAAAAVgAAAAsclhZWgAAAYQAAAAUZ1hZWgAAAZgAAAAUYlhZWgAAAawAAAAUclRSQwAAAcAAAAAgZ1RSQwAAAcAAAAAgYlRSQwAAAcAAAAAgbWx1YwAAAAAAAAABAAAADGVuVVMAAAAIAAAAHABSAE8ATQBNbWx1YwAAAAAAAAABAAAADGVuVVMAAAAGAAAAHABDAEMAMAAAWFlaIAAAAAAAAPbWAAEAAAAA0y1zZjMyAAAAAAAA//3////+/////v////0AAQAD//////////8AAAABAAD/71hZWiAAAAAAAADMNwAASb4AAAAAWFlaIAAAAAAAACKaAAC2PQAAAAFYWVogAAAAAAAACAUAAAAFAADTLHBhcmEAAAAAAAMAAAABzM0AAQAAAAAAAAAAEAAAAAgA"
+
+LINEAR_DESCRIPTION = "Scanny Boy Linear RGB (ProPhoto primaries, linear TRC)"
+
+DENSITY_DESCRIPTION = (
+    "ScannyBoy Normalized Density (viewing gamma 2.2). A viewing convention "
+    "for normalized log-density working files, not a colorimetric claim: "
+    "the pixels are per-channel affine-stretched log10 density, which no "
+    "ICC TRC expresses exactly. Decode through "
+    "scanny_boy.normalization.decode_normalized, never through this "
+    "profile - it exists so external viewers show approximately the code "
+    "values."
 )
 
-DESCRIPTION = "Scanny Boy Linear RGB (ProPhoto primaries, linear TRC)"
-
 # ICC parametricCurveType function type 0: pure gamma. g = 1.0 in s15Fixed16
-# — the identity curve, because the decode is linear.
+# — the identity curve, because the decode is linear. The density profile's
+# g = 2.2 is `round(2.2 * 65536) = 144179`, a viewing convention, not a
+# colorimetric claim (see the module docstring).
 TRC_FUNCTION_TYPE = 0
 TRC_PARAMS = (65536,)
+DENSITY_TRC_PARAMS = (144179,)
 
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
 
@@ -59,13 +82,13 @@ def _build_desc_tag(text: str) -> bytes:
     return bytes(tag)
 
 
-def _build_trc_tag() -> bytes:
+def _build_trc_tag(trc_params: tuple[int, ...]) -> bytes:
     tag = bytearray()
     tag.extend(b"para")
     tag.extend(b"\x00\x00\x00\x00")
     tag.extend(struct.pack(">H", TRC_FUNCTION_TYPE))
     tag.extend(b"\x00\x00")
-    for value in TRC_PARAMS:
+    for value in trc_params:
         tag.extend(_s15fixed16(value))
     return bytes(tag)
 
@@ -94,7 +117,10 @@ def prophoto_source_bytes() -> bytes:
     return base64.b64decode(_PROPHOTO_V4_ICC_B64)
 
 
-def generate_profile() -> bytes:
+def generate_profile(
+    description: str = LINEAR_DESCRIPTION,
+    trc_params: tuple[int, ...] = TRC_PARAMS,
+) -> bytes:
     source = base64.b64decode(_PROPHOTO_V4_ICC_B64)
     entries = _parse_tag_table(source)
 
@@ -106,11 +132,11 @@ def generate_profile() -> bytes:
             trc_signatures.append(sig)
             continue
         if sig == b"desc":
-            tag_payloads.append((sig, _build_desc_tag(DESCRIPTION)))
+            tag_payloads.append((sig, _build_desc_tag(description)))
         else:
             tag_payloads.append((sig, source[tag_offset : tag_offset + size]))
 
-    trc_bytes = _build_trc_tag()
+    trc_bytes = _build_trc_tag(trc_params)
     if not trc_signatures:
         trc_signatures = list(TRC_SIGNATURES)
 
@@ -156,12 +182,24 @@ def generate_profile() -> bytes:
     return bytes(table)
 
 
+def generate_linear_profile() -> bytes:
+    return generate_profile(LINEAR_DESCRIPTION, TRC_PARAMS)
+
+
+def generate_density_profile() -> bytes:
+    return generate_profile(DENSITY_DESCRIPTION, DENSITY_TRC_PARAMS)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print(f"usage: {argv[0]} OUTPUT.icc", file=sys.stderr)
+        print(f"usage: {argv[0]} OUTPUT_DIR", file=sys.stderr)
         return 2
     output = Path(argv[1])
-    output.write_bytes(generate_profile())
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "ScannyBoy-Linear-ProPhoto-v1.icc").write_bytes(generate_linear_profile())
+    (output / "ScannyBoy-Density-ProPhoto-v1.icc").write_bytes(
+        generate_density_profile()
+    )
     return 0
 
 
