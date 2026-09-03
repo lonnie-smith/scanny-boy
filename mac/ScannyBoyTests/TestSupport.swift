@@ -172,6 +172,31 @@ enum SampleFixtures {
         """
 }
 
+/// The committed synthetic bare-light reference at
+/// `tests/fixtures/flatfield/bare-light.dng` — a DNG (the one RAW container
+/// that can be authored) holding a smooth radial falloff, written by
+/// `cli/tools/generate_bare_light_dng.py`. The integration scenarios build
+/// their flat-field profile from it: the app requires a profile on Add
+/// Scans, and a real film frame must not stand in — its scene content
+/// survives the gain map's smoothing and corrupts the correction, failing
+/// the very runs these scenarios exercise.
+enum BareLightReference {
+    static let url = TestSupport.repositoryRoot
+        .appending(path: "tests/fixtures/flatfield/bare-light.dng")
+
+    static var isAvailable: Bool {
+        FileManager.default.isReadableFile(atPath: url.path)
+    }
+
+    static let unavailableComment: Comment = """
+        The synthetic bare-light reference is not present at \
+        tests/fixtures/flatfield/bare-light.dng. Regenerate it with \
+        uv run --project cli python cli/tools/generate_bare_light_dng.py. \
+        No flat-field profile could be created, so the scenarios that need \
+        one did not run.
+        """
+}
+
 /// The slow integration scenarios — real multi-minute conversions, runs,
 /// and forced-stop/recovery cycles against the bundled helper. They skip
 /// unless the run explicitly asks for them, so an ordinary `xcodebuild

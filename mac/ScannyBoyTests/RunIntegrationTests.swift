@@ -25,6 +25,7 @@ struct RunIntegrationTests {
     // closure, which cannot reach a main-actor-isolated property.
     private nonisolated static var canRun: Bool {
         HostBundle.isAvailable && SampleFixtures.areAvailable
+            && BareLightReference.isAvailable
     }
 
     private nonisolated static var unavailable: Comment {
@@ -42,6 +43,9 @@ struct RunIntegrationTests {
                 keeping earlier negatives — did not run.
                 """
             )
+        }
+        if !BareLightReference.isAvailable {
+            reasons.append(BareLightReference.unavailableComment.rawValue)
         }
         return Comment(rawValue: reasons.joined(separator: "\n"))
     }
@@ -102,15 +106,18 @@ struct RunIntegrationTests {
         Issue.record("timed out waiting for the run to reach the expected state")
     }
 
-    /// `flatfield create` for real, through the CLI, from the first sample
-    /// NEF — the app requires a profile on Add Scans, so every scenario below
-    /// runs against one that actually exists. The decoded pixels of a bare
-    /// light source these are not, but nothing here asserts on falloff.
+    /// `flatfield create` for real, through the CLI, from the synthetic
+    /// bare-light DNG (`BareLightReference`) — the app requires a profile on
+    /// Add Scans, so every scenario below runs against one that actually
+    /// exists. A real film frame must not stand in: its scene content
+    /// survives the gain map's smoothing and corrupts the correction, which
+    /// is what failed these runs with `STITCH_RESIDUAL_TOO_HIGH`. Nothing
+    /// here asserts on falloff.
     private static func createFlatFieldProfile() async throws -> String {
         let runner = try Self.runner()
         let session = runner.session(
             for: .flatfieldCreate(
-                reference: SampleFixtures.directory.appending(path: SampleFixtures.files[0]),
+                reference: BareLightReference.url,
                 name: "Integration \(UUID().uuidString.prefix(8))"
             )
         )
@@ -140,11 +147,17 @@ struct RunIntegrationTests {
         model.inputFolder = try SampleFixtures.stagedDirectory()
         await model.waitForPendingProbes()
         model.rollURL = roll
-        model.flatFieldProfileID = try await Self.createFlatFieldProfile()
         model.selectedFiles = Set(select)
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
         model.perNegative = 3
+        // The roll fetch pre-selects the profile a first run locked the roll
+        // to — the app does not let the user choose differently. Only a roll
+        // with no profile yet (the first run into it) gets a fresh one.
+        await model.waitForPendingProbes()
+        if model.flatFieldProfileID == nil {
+            model.flatFieldProfileID = try await Self.createFlatFieldProfile()
+        }
         await model.waitForPendingProbes()
         return model
     }
