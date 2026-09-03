@@ -13,7 +13,7 @@ a selection of NEFs all the way to finished, stitched negatives.
     section 5.4): the convert stage applies the profile's gain map and — in
     "scale" mode — its CA scales at decode; the stitch stage applies its
     geometry to the warp.
-    """
+"""
 
 from __future__ import annotations
 
