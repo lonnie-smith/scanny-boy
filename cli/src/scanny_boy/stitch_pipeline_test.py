@@ -687,9 +687,9 @@ def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeyp
             for _ in range(count)
         ]
 
-    import scanny_boy.stitch_pipeline_test as this_module
+    import sys
 
-    monkeypatch.setattr(this_module, "_negative_frames", blank_frames)
+    monkeypatch.setattr(sys.modules[__name__], "_negative_frames", blank_frames)
     work_dir = _make_work_dir(tmp_path)
     out_dir = _roll_dir(tmp_path)
 

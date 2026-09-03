@@ -125,7 +125,7 @@ def test_rotate_rejects_another_rolls_negative_id(tmp_path):
             roll_b, "aaa-negative-01", repo.ROTATE_OP, {"direction": "cw"}
         )
 
-    with pytest.raises(EditFailure) as exc_info:
+    with pytest.raises(EditFailure):
         run_edit_rotate(roll_b, "aaa-negative-01", "cw", emit=lambda event: None)
 
     # Roll A's ops log is untouched.

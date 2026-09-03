@@ -15,9 +15,8 @@ from scanny_boy.manifest import (
     current_scanny_boy_version,
     write_manifest,
 )
-from scanny_boy.pipeline import hash_sources
+from scanny_boy.pipeline import build_processing_params, hash_sources
 from scanny_boy.probe import ProbeFailure, run_probe
-from scanny_boy.pipeline import build_processing_params
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     NEGATIVE_1,
@@ -565,7 +564,6 @@ def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
 
 
 def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
-    from scanny_boy import flatfield
     from scanny_boy.pipeline import build_processing_params
     from scanny_boy.roll_manifest import (
         RunRecord,
