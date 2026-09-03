@@ -673,6 +673,35 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
 # --- the CLAHE fallback ---------------------------------------------------
 
 
+def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeypatch):
+    """Blank intermediates — a blank or near-black scan is an ordinary
+    outcome, not an internal error — must fail the negative with a stable,
+    CLAHE-retry-eligible code, not an AttributeError from inside the
+    matcher."""
+    from scanny_boy.linear import encode_from_linear as _encode
+
+    def blank_frames(*, overlapping, seed, count=3, frame_gains=None):
+        blank = np.full(_FRAME_SIZE, 0.2, dtype=np.float32)
+        return [
+            _encode(np.stack([blank] * 3, axis=-1).astype(np.float32))
+            for _ in range(count)
+        ]
+
+    import scanny_boy.stitch_pipeline_test as this_module
+
+    monkeypatch.setattr(this_module, "_negative_frames", blank_frames)
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "partial"
+    failures = [e for e in events if isinstance(e, NegativeFailed)]
+    assert failures
+    assert failures[0].code in stitch_pipeline._CLAHE_RETRY_CODES
+
+
 def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypatch):
     """A negative whose plain-pass registration disconnects the pair graph
     is retried once with CLAHE; a graph that connects on that pass still
