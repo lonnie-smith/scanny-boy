@@ -42,6 +42,7 @@ from scanny_boy.sample_nef_support import (
     NEGATIVE_1,
     NEGATIVE_2,
     requires_real_samples,
+    stage_samples,
 )
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 
@@ -76,7 +77,7 @@ def _install_fast_registerable_decode(
         for name, frame in zip(files, frames, strict=True)
     }
 
-    def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         pixels = pixels_by_name[path.name]
         height, width = pixels.shape[0], pixels.shape[1]
         return raw_decode.DecodedFrame(pixels=pixels, width=width, height=height)
@@ -207,6 +208,7 @@ def test_user_supplied_work_directory_is_never_deleted(tmp_path, monkeypatch):
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch):
     """`NEGATIVE_1` and `NEGATIVE_2` are cut from one shared scene as six
     consecutive, overlapping frames, so both groups of three register and
@@ -216,6 +218,10 @@ def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch
     given non-overlapping content, which cannot register."""
     events: list = []
     files = NEGATIVE_1 + NEGATIVE_2
+    # Staged: the shared fixtures directory also holds the gate-B stitching
+    # scans and later sessions, so this six-file selection is only
+    # contiguous in a catalogue of its own.
+    input_dir = stage_samples(tmp_path, files)
 
     def install(monkeypatch):
         scene = synthetic_scene(*_SCENE_SIZE, seed=3)
@@ -239,7 +245,7 @@ def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch
                 np.stack([bad_scene, bad_scene, bad_scene], axis=-1)
             )
 
-        def _fake_decode(path: Path) -> raw_decode.DecodedFrame:
+        def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
             pixels = pixels_by_name[path.name]
             height, width = pixels.shape[0], pixels.shape[1]
             return raw_decode.DecodedFrame(pixels=pixels, width=width, height=height)
@@ -248,7 +254,7 @@ def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch
 
     install(monkeypatch)
     outcome = run_full(
-        FIXTURES_DIR,
+        input_dir,
         files,
         _out_dir(tmp_path),
         _PER_NEGATIVE,
@@ -429,6 +435,7 @@ def test_insufficient_output_volume_fails_before_stitching(tmp_path, monkeypatch
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_run_appends_to_an_existing_roll(tmp_path, monkeypatch):
     roll_dir = _out_dir(tmp_path)
 
@@ -513,6 +520,7 @@ def test_stitched_tiff_carries_real_capture_time(tmp_path, monkeypatch):
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_rerun_adopts_the_prior_negative_in_place(tmp_path, monkeypatch):
     """The replacement rule, executed: a rerun over the same selection
     yields one negative with the *same* `negative_id` and the same output
@@ -612,6 +620,7 @@ def test_merged_coverage_removes_the_other_record_and_file(tmp_path, monkeypatch
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_rerun_leaves_neighbours_sequence_unchanged(tmp_path, monkeypatch):
     """Replacing one negative in place must not disturb an unrelated
     neighbour's position in the roll's real sequence (Chunk P3-6's

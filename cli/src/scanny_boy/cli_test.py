@@ -20,6 +20,7 @@ from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     REAL_SAMPLE_FILES,
     requires_real_samples,
+    stage_samples,
 )
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
 from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
@@ -99,12 +100,16 @@ def test_probe_with_empty_input_folder_is_no_files(capsys, tmp_path):
 
 
 @requires_real_samples
-def test_probe_with_files_real_samples_emits_groups(capsys):
+def test_probe_with_files_real_samples_emits_groups(capsys, tmp_path):
+    # Staged: the shared fixtures directory also holds the gate-B stitching
+    # scans and later sessions, which would make this six-file selection
+    # non-contiguous in its catalogue.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
     status = main(
         [
             "probe",
             "--input",
-            str(FIXTURES_DIR),
+            str(input_dir),
             "--files",
             *REAL_SAMPLE_FILES,
             "--per-negative",
@@ -745,16 +750,18 @@ def test_convert_started_carries_a_run_id_even_when_validation_fails_immediately
     assert events[2]["exit_status"] == 1
 
 
+@pytest.mark.slow
 @requires_real_samples
 def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_path):
     out_dir = tmp_path / "out"
     out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
 
     status = main(
         [
             "convert",
             "--input",
-            str(FIXTURES_DIR),
+            str(input_dir),
             "--files",
             *REAL_SAMPLE_FILES,
             "--per-negative",
@@ -865,12 +872,12 @@ def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_
 # --- real subprocesses, driven by their own event stream -----------------
 
 
-def _spawn_convert(out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
+def _spawn_convert(input_dir: Path, out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
     argv = [
         sys.executable,
         "-m",
         "scanny_boy.cli",
-        *_convert_argv(FIXTURES_DIR, out_dir, files, **extra),
+        *_convert_argv(input_dir, out_dir, files, **extra),
     ]
     return subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
@@ -898,13 +905,15 @@ def _read_until(proc: subprocess.Popen, predicate, *, timeout: float = 120) -> d
     raise AssertionError("the child never emitted a matching event")
 
 
+@pytest.mark.slow
 @requires_real_samples
 def test_sigterm_during_a_real_conversion_exits_143(tmp_path):
     """End to end: a real child process, a real SIGTERM, exit 143, the
     first negative kept and the second discarded."""
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    proc = _spawn_convert(out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=1)
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    proc = _spawn_convert(input_dir, out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=1)
     try:
         # Wait until the first negative has been published in full, so
         # "completed groups remain" is actually being tested.
@@ -944,6 +953,7 @@ def test_sigterm_during_a_real_conversion_exits_143(tmp_path):
     assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
 
 
+@pytest.mark.slow
 @requires_real_samples
 def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_path):
     """Section 3.8: "A forced stop cannot clean files, update the
@@ -955,7 +965,8 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
     """
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    proc = _spawn_convert(out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=2)
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    proc = _spawn_convert(input_dir, out_dir, REAL_SAMPLE_FILES, per_negative=3, jobs=2)
     try:
         _read_until(proc, lambda e: e["event"] == "progress")
         proc.kill()
@@ -974,7 +985,7 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
     assert staging[0].name.startswith(abandoned.run_id)
 
     # The next run cleans it up and completes the incomplete group.
-    status = main(_convert_argv(FIXTURES_DIR, out_dir, REAL_SAMPLE_FILES))
+    status = main(_convert_argv(input_dir, out_dir, REAL_SAMPLE_FILES))
 
     assert status == 0
     recovered = load_manifest(out_dir)

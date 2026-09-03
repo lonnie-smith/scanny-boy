@@ -41,6 +41,11 @@ MEMORY_SAFETY_FACTOR = 3.5  # section 3.8.1; measured, not padding
 MAX_OVERLAP_MAD = 0.20
 INTERPOLATION = cv2.INTER_LANCZOS4
 
+# Rows of output corrected per cv2.remap call when a profile's geometry is
+# applied (docs/GEOMETRIC_PLAN.md section 5.3): the band map is generated
+# closed-form a band at a time, so no frame-sized base map ever exists.
+GEOMETRY_BAND_ROWS = 256
+
 # Provisional, unmeasured — see the module docstring.
 MIN_GAIN_OVERLAP_PX = 1000
 GAIN_DRIFT_WARN = 0.05
@@ -70,6 +75,9 @@ def estimate_peak_bytes(
     frame_size: tuple[int, int],
     frame_bbox_size: tuple[int, int],
     frame_count: int,
+    *,
+    geometry: bool = False,
+    ca_maps: bool = False,
 ) -> int:
     """Section 3.8's revised formula, exactly, including MEMORY_SAFETY_FACTOR.
 
@@ -80,6 +88,13 @@ def estimate_peak_bytes(
     resident until all frames are warped, because the pairwise photometric
     stats, the gain solve, and both overlap-MAD passes need any pair's two
     frames side by side.
+
+    With a profile's geometry applied (docs/GEOMETRIC_PLAN.md section 5.3)
+    the warp is a banded cv2.remap, which adds the band maps
+    (`3 * GEOMETRY_BAND_ROWS * bbox_width * 2 * 4` — the worst case, three
+    channels' maps in "maps" mode) and, in "maps" mode, one contiguous
+    single-channel source view held during each remap
+    (`frame_pixels * 4`). MEMORY_SAFETY_FACTOR is unchanged.
     """
     canvas_width, canvas_height = canvas_size
     frame_height, frame_width = frame_size
@@ -96,8 +111,20 @@ def estimate_peak_bytes(
     warped = bbox_pixels * 3 * 4  # one warped frame
     warp_aux = bbox_pixels * 4 + bbox_pixels * 2  # feather weight + warped/eroded masks
 
+    geometry_bytes = 0
+    if geometry:
+        geometry_bytes += 3 * GEOMETRY_BAND_ROWS * bbox_width * 2 * 4
+        if ca_maps:
+            geometry_bytes += frame_pixels * 4
+    elif ca_maps:
+        # "maps" mode never occurs without geometry; kept for completeness.
+        geometry_bytes += frame_pixels * 4
+
     all_warped = frame_count * (warped + warp_aux)
-    live_bytes = max(accum + weight + source + all_warped, accum + result)
+    live_bytes = max(
+        accum + weight + source + all_warped + geometry_bytes,
+        accum + result,
+    )
     return math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
 
 
@@ -152,6 +179,13 @@ def _frame_bbox(
     can disagree by a pixel at the canvas edge on floating-point rounding
     alone, so the result is clamped to the canvas bounds — never a true
     loss, since anything in that last pixel is inside MASK_ERODE_PX anyway.
+
+    Under pincushion distortion the frame's true content corners pull
+    inward by the corner-displacement amount (1-7 px at the magnitudes this
+    plan expects, section 1.1), so the rect computed here is off by that
+    much at the corners when a profile's geometry is applied. Accepted:
+    `MASK_ERODE_PX` already discards a comparable margin, and complicating
+    this function for it is not worth it.
     """
     canvas_width, canvas_height = canvas_size
     rotation, translation = matrix[:, :2], matrix[:, 2]
@@ -212,7 +246,146 @@ def _mean_level_mad(a_values: np.ndarray, b_values: np.ndarray) -> float:
     return mad / mean_level if mean_level > 0 else 0.0
 
 
-def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progress) -> CompositeResult:
+def _geometry_camera(geometry: dict) -> tuple[np.ndarray, np.ndarray]:
+    """K and D for a section 3.2 geometry object: the coefficients are in
+    the OpenCV forward convention, so they drop straight in."""
+    K = np.array(
+        [
+            [geometry["fx"], 0.0, geometry["cx"]],
+            [0.0, geometry["fy"], geometry["cy"]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    D = np.array([geometry["k1"], geometry["k2"], 0.0, 0.0, 0.0])
+    return K, D
+
+
+def _warp_bands(
+    linear: np.ndarray,
+    ones_mask: np.ndarray,
+    bbox_matrix: np.ndarray,
+    bbox_width: int,
+    bbox_height: int,
+    geometry: dict,
+    ca: dict | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The composed band map of section 5.3: warp through distortion (and,
+    in "maps" mode, the per-channel CA maps) with `cv2.remap`, a band of
+    GEOMETRY_BAND_ROWS output rows at a time.
+
+    The map is *forward* (undistorted -> distorted), which is closed form,
+    so it is generated per band for nothing — no `initUndistortRectifyMap`,
+    no cached frame-sized base map. In "scale" or no-CA mode the three
+    channels share one map, so the 3-channel source is remapped once; in
+    "maps" mode three maps are built per band and three single-channel
+    sources are remapped. Either way: exactly one interpolation pass per
+    output pixel. The validity mask is remapped with the green map at
+    INTER_NEAREST; the caller erodes it.
+
+    Returns `(warped_linear, warped_mask)` — clipping and erosion stay with
+    the caller."""
+    K, _ = _geometry_camera(geometry)
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+    k1, k2 = geometry["k1"], geometry["k2"]
+
+    rotation = bbox_matrix[:, :2]
+    translation = bbox_matrix[:, 2]
+    R_inv = np.linalg.inv(rotation)
+
+    ca_by_channel: dict[int, dict] = {}
+    if ca is not None and ca.get("mode") == "maps":
+        ca_by_channel = {0: ca["red"], 2: ca["blue"]}
+
+    warped = np.zeros((bbox_height, bbox_width, 3), dtype=np.float32)
+    warped_mask = np.zeros((bbox_height, bbox_width), dtype=np.uint8)
+    for v0 in range(0, bbox_height, GEOMETRY_BAND_ROWS):
+        v1 = min(v0 + GEOMETRY_BAND_ROWS, bbox_height)
+        rows = np.arange(v0, v1, dtype=np.float64)
+        cols = np.arange(bbox_width, dtype=np.float64)
+        uu, vv = np.meshgrid(cols, rows)
+
+        # 1. bbox output px -> undistorted frame px (inverted bbox_matrix).
+        du = uu - translation[0]
+        dv = vv - translation[1]
+        px = R_inv[0, 0] * du + R_inv[0, 1] * dv
+        py = R_inv[1, 0] * du + R_inv[1, 1] * dv
+
+        # 2. normalise.
+        x = (px - cx) / fx
+        y = (py - cy) / fy
+
+        if ca_by_channel:
+            channel_maps = {}
+            for channel in range(3):
+                fit = ca_by_channel.get(channel)
+                if fit is None:
+                    xc, yc = x, y
+                else:
+                    # 3. CA, "maps" mode only: scale about the channel's own
+                    # centre, in normalised coordinates.
+                    dx = x - fit["center_x"]
+                    dy = y - fit["center_y"]
+                    r = np.hypot(dx, dy)
+                    s = fit["c0"] + fit["c1"] * r**2 + fit["c2"] * r**4
+                    xc = fit["center_x"] + dx * s
+                    yc = fit["center_y"] + dy * s
+                # 4-5. forward radial distortion, denormalise.
+                r2 = xc * xc + yc * yc
+                k = 1.0 + k1 * r2 + k2 * (r2 * r2)
+                channel_maps[channel] = (
+                    (xc * k * fx + cx).astype(np.float32),
+                    (yc * k * fy + cy).astype(np.float32),
+                )
+            for channel in range(3):
+                map_x, map_y = channel_maps[channel]
+                # The map coordinates are absolute source-frame pixels, so
+                # remap reads the full source and writes the band. One
+                # contiguous single-channel view held at a time ("maps"
+                # mode's estimate_peak_bytes term).
+                source = np.ascontiguousarray(linear[:, :, channel])
+                warped[v0:v1, :, channel] = cv2.remap(
+                    source,
+                    map_x,
+                    map_y,
+                    INTERPOLATION,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+                del source
+            # The validity mask is remapped with the green map.
+            green_map = channel_maps[1]
+        else:
+            # 4-5. forward radial distortion, denormalise. Green, and every
+            # channel in "scale" mode: the CA step is skipped.
+            r2 = x * x + y * y
+            k = 1.0 + k1 * r2 + k2 * (r2 * r2)
+            map_x = (x * k * fx + cx).astype(np.float32)
+            map_y = (y * k * fy + cy).astype(np.float32)
+            # 6. one interpolation pass for all three channels.
+            warped[v0:v1] = cv2.remap(
+                linear,
+                map_x,
+                map_y,
+                INTERPOLATION,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            green_map = (map_x, map_y)
+
+        warped_mask[v0:v1] = cv2.remap(
+            ones_mask,
+            green_map[0],
+            green_map[1],
+            cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+    return warped, warped_mask
+
+
+def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progress, geometry: dict | None = None, ca: dict | None = None) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
     result released immediately, so the caller controls residency.
 
@@ -273,26 +446,41 @@ def composite(layout: Layout, load_frame, *, cancel: CancellationToken, on_progr
         bbox_matrix = matrix.copy()
         bbox_matrix[:, 2] -= (bbox_x, bbox_y)
 
-        warped = cv2.warpAffine(
-            linear,
-            bbox_matrix,
-            (bbox_width, bbox_height),
-            flags=INTERPOLATION,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
-        del linear
-        warped = np.clip(warped, 0.0, None)
-
         ones_mask = np.ones((source_height, source_width), dtype=np.uint8)
-        warped_mask = cv2.warpAffine(
-            ones_mask,
-            bbox_matrix,
-            (bbox_width, bbox_height),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
+        if geometry is not None:
+            # The composed band map (docs/GEOMETRIC_PLAN.md section 5.3):
+            # distortion — and, in "maps" mode, the per-channel CA maps —
+            # folded into the warp, one interpolation pass per pixel.
+            warped, warped_mask = _warp_bands(
+                linear,
+                ones_mask,
+                bbox_matrix,
+                bbox_width,
+                bbox_height,
+                geometry,
+                ca,
+            )
+            warped = np.clip(warped, 0.0, None)
+        else:
+            warped = cv2.warpAffine(
+                linear,
+                bbox_matrix,
+                (bbox_width, bbox_height),
+                flags=INTERPOLATION,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            warped = np.clip(warped, 0.0, None)
+
+            warped_mask = cv2.warpAffine(
+                ones_mask,
+                bbox_matrix,
+                (bbox_width, bbox_height),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+        del linear
         # cv2.erode's default border treats "outside the array" as fully
         # covered, so it would not erode a frame's own corners — exactly
         # where the bounding box array's edge coincides with real content.

@@ -262,6 +262,9 @@ class _GroupContext:
     # read-only across workers (docs/FLATFIELD_PLAN.md section 2.7). `None`
     # for a run without `--flatfield`.
     full_res_gain: np.ndarray | None
+    # The profile's CA scales in "scale" mode, merged into every decode
+    # (docs/GEOMETRIC_PLAN.md section 5.2). None otherwise.
+    ca_scales: tuple[float, float] | None
     progress: _ProgressReporter
     cancel: CancellationToken
 
@@ -432,7 +435,7 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
     path = ctx.input_dir / member
 
     _verify_source_unchanged(path, record)
-    pixels = raw_decode.decode_raw(path).pixels
+    pixels = raw_decode.decode_raw(path, chromatic_aberration=ctx.ca_scales).pixels
     # Flat-field correction sits inside the DECODE step boundary: after the
     # RAW decode, before the base TIFF, so the stitch stage's per-frame
     # photometric gain solve is asked to explain real exposure mismatch, not
@@ -622,12 +625,14 @@ def run_convert(
 
     profile = None
     gain_map = None
+    ca_scales: tuple[float, float] | None = None
     if flatfield_profile_id is not None:
         from scanny_boy.library import repo
 
         try:
             profile = repo.load_flatfield_profile(flatfield_profile_id)
             gain_map = flatfield.load_gain_map(profile)
+            ca_scales = flatfield.chromatic_aberration_scales(profile)
         except flatfield.FlatFieldError as exc:
             raise ConvertFailure(exc.code, exc.message) from exc
 
@@ -643,6 +648,13 @@ def run_convert(
     settings_list = _read_settings_and_check_consistency(input_dir, selected)
     source_records = hash_sources(input_dir, selected)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
+    if profile is not None:
+        # Section 1.2: a profile's geometry is only valid for the frame
+        # dimensions it was fitted at; fail before anything is written.
+        try:
+            flatfield.check_geometry_frame_size(profile, width, height)
+        except flatfield.FlatFieldError as exc:
+            raise ConvertFailure(exc.code, exc.message) from exc
     real_times = _read_real_times(input_dir, selected)
     digitized_fields = [choose_digitized_fields(read_digitization_fields(input_dir / n)) for n in selected]
     try:
@@ -670,11 +682,20 @@ def run_convert(
                 )
             )
 
-    processing_params = raw_decode.jsonable_raw_params()
+    processing_params = raw_decode.jsonable_raw_params(chromatic_aberration=ca_scales)
     if profile is not None:
         # Absent, not null, when no profile was given, so a no-profile run
         # still compares equal to a pre-flat-field roll (section 2.4).
         processing_params["flat_field"] = flatfield.profile_token(profile)
+        if ca_scales is not None:
+            # The second invariant bucket of section 3.6: the CA scales are
+            # decode parameters, so they belong in processing_params.
+            processing_params["chromatic_aberration"] = {
+                "profile_id": profile.profile_id,
+                "mode": "scale",
+                "red_scale": ca_scales[0],
+                "blue_scale": ca_scales[1],
+            }
 
     groups = build_groups(selected, per_negative)
     candidate = Manifest(
@@ -752,6 +773,7 @@ def run_convert(
             if gain_map is not None
             else None
         ),
+        "ca_scales": ca_scales,
         "progress": progress,
         "cancel": cancel,
     }

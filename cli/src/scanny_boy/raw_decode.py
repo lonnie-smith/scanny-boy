@@ -46,14 +46,22 @@ class DecodedFrame:
     height: int
 
 
-def jsonable_raw_params() -> dict:
+def jsonable_raw_params(
+    chromatic_aberration: tuple[float, float] | None = None,
+) -> dict:
     """`RAW_PARAMS` as a JSON-serialisable dict, for the manifest's
     `processing_params` (section 3.7: "all pixel-processing parameters").
     Enum values become their names (`"raw"`, `"AHD"`, `"Clip"`) and the
     `gamma` tuple becomes a list; everything else passes through unchanged.
-    """
+
+    `chromatic_aberration`, when given, is the CA scale pair this decode
+    actually ran with (docs/GEOMETRIC_PLAN.md section 5.2) — `processing_params`
+    must describe the decode that happened, not the default one."""
+    params: dict = RAW_PARAMS
+    if chromatic_aberration is not None:
+        params = {**RAW_PARAMS, "chromatic_aberration": tuple(chromatic_aberration)}
     result: dict = {}
-    for key, value in RAW_PARAMS.items():
+    for key, value in params.items():
         if hasattr(value, "name"):
             result[key] = value.name
         elif isinstance(value, tuple):
@@ -81,16 +89,33 @@ def read_active_size(path: Path) -> tuple[int, int]:
     return sizes.width, sizes.height
 
 
-def decode_raw(path: Path) -> DecodedFrame:
+def decode_raw(
+    path: Path,
+    *,
+    chromatic_aberration: tuple[float, float] | None = None,
+    params: dict | None = None,
+) -> DecodedFrame:
     """Decode `path` with `RAW_PARAMS`.
+
+    `chromatic_aberration`, when given, is the profile's CA scale pair
+    (docs/GEOMETRIC_PLAN.md section 5.2), merged into the params for this
+    call alone — the one rawpy knob that changes pixel geometry at decode
+    time, applied before flat-field touches the pixels.
+
+    `params`, when given, replaces the base parameter set outright; the CA
+    fit's `RAW_PARAMS_HALF_SIZE` derivation is the one intended use
+    (ca_fit.py documents why it deviates).
 
     Dimensions are derived from the returned array's shape, per section 3.4
     ("Record output dimensions from the final postprocess array shape."),
     not from rawpy's reported sensor sizes.
     """
+    merged = params if params is not None else RAW_PARAMS
+    if chromatic_aberration is not None:
+        merged = {**merged, "chromatic_aberration": tuple(chromatic_aberration)}
     try:
         with rawpy.imread(str(path)) as raw:
-            pixels = raw.postprocess(**RAW_PARAMS)
+            pixels = raw.postprocess(**merged)
     except rawpy.LibRawFileUnsupportedError as exc:
         raise UnsupportedRawError(str(path)) from exc
     except rawpy.LibRawError as exc:

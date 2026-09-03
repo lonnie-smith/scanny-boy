@@ -318,7 +318,80 @@ def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
     assert repo.rolls_using_flatfield("someone-else") == []
 
 
+def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
+    """docs/GEOMETRIC_PLAN.md section 3.6: a roll that names the profile
+    only in `stitch_params.geometry` locks the profile exactly as hard as
+    one named in `processing_params.flat_field`."""
+    profile = _flatfield_profile()
+    repo.save_flatfield_profile(profile)
+
+    locked = new_roll_manifest(roll_id="rid-geo", roll_name="Geo")
+    locked.stitch_params = {
+        "geometry": {"profile_id": profile.profile_id, "geometry": {"k1": 0.0}},
+    }
+    write_roll_manifest(tmp_roll_dir("geo"), locked)
+
+    assert repo.rolls_using_profile_geometry(profile.profile_id) == ["rid-geo"]
+    assert repo.rolls_using_profile_geometry("someone-else") == []
+    # The delete path's union sees both buckets.
+    assert set(repo.rolls_using_flatfield(profile.profile_id)) | set(
+        repo.rolls_using_profile_geometry(profile.profile_id)
+    ) == {"rid-geo"}
+
+
+def test_calibration_columns_round_trip():
+    profile = _flatfield_profile()
+    profile = FlatFieldProfile(
+        **{
+            **profile.__dict__,
+            "board_key": "35mm",
+            "geometry": {"format_version": 1, "k1": -0.001},
+            "chromatic_aberration": {"mode": "scale", "red_scale": 1.0004},
+            "calibration_report": {"frames_total": 20},
+        }
+    )
+
+    repo.save_flatfield_profile(profile)
+
+    loaded = repo.load_flatfield_profile(profile.profile_id)
+    assert loaded.board_key == "35mm"
+    assert loaded.geometry == {"format_version": 1, "k1": -0.001}
+    assert loaded.chromatic_aberration == {"mode": "scale", "red_scale": 1.0004}
+    assert loaded.calibration_report == {"frames_total": 20}
+
+
 def tmp_roll_dir(name: str) -> Path:
     directory = Path(db.library_db_path()).parent / name
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def test_pre_0004_row_reads_back_with_four_nones():
+    """A row written by migration 0003's shape (no calibration columns
+    populated) reads back with four Nones and drives every existing code
+    path unchanged (docs/GEOMETRIC_PLAN.md section 3.5)."""
+    import sqlalchemy as sa
+
+    profile = _flatfield_profile("Old build")
+    repo.save_flatfield_profile(profile)
+    # Rewrite the row the way the pre-0004 code would have: no calibration
+    # columns at all.
+    with sa.create_engine(f"sqlite:///{db.library_db_path()}").begin() as conn:
+        conn.execute(
+            sa.text(
+                "UPDATE flatfield_profiles SET board_key = NULL, geometry = NULL,"
+                " chromatic_aberration = NULL, calibration_report = NULL"
+                " WHERE profile_id = :pid"
+            ),
+            {"pid": profile.profile_id},
+        )
+
+    loaded = repo.load_flatfield_profile(profile.profile_id)
+    assert loaded.board_key is None
+    assert loaded.geometry is None
+    assert loaded.chromatic_aberration is None
+    assert loaded.calibration_report is None
+    # The token and summary the existing consumers build are unchanged.
+    assert flatfield.profile_token(loaded) == flatfield.profile_token(profile)
+    assert flatfield.flatfield_profile_summary(loaded).has_geometry is False
+    assert flatfield.flatfield_profile_summary(loaded).chromatic_aberration_mode is None

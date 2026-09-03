@@ -98,6 +98,7 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingRestitch) {
             RestitchSheet(
                 run: run,
+                flatField: flatField,
                 onStarted: handleRestitchStarted,
                 workDirectory: restitchWorkDirectory,
                 outputFolder: restitchOutputFolder

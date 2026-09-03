@@ -10,7 +10,7 @@ import Foundation
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
     /// anything else is rejected rather than guessed at.
-    public static let supportedProtocolVersion = 6
+    public static let supportedProtocolVersion = 7
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -42,6 +42,7 @@ public struct CLIEvent: Sendable, Hashable {
         case flatfieldCreated
         case flatfieldList
         case flatfieldDeleted
+        case flatfieldProgress
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -71,6 +72,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "flatfield_created": self = .flatfieldCreated
             case "flatfield_list": self = .flatfieldList
             case "flatfield_deleted": self = .flatfieldDeleted
+            case "flatfield_progress": self = .flatfieldProgress
             default: self = .unknown(name)
             }
         }
@@ -100,6 +102,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .flatfieldCreated: "flatfield_created"
             case .flatfieldList: "flatfield_list"
             case .flatfieldDeleted: "flatfield_deleted"
+            case .flatfieldProgress: "flatfield_progress"
             case .unknown(let name): name
             }
         }
@@ -217,6 +220,9 @@ extension CLIEvent {
     }
     // `flatfield_deleted`
     public var flatFieldProfileID: String? { fields["profile_id"]?.stringValue }
+
+    // `flatfield_progress`
+    public var flatFieldPhase: String? { fields["phase"]?.stringValue }
 }
 
 /// One pipeline step, from the plan's Vocabulary section. The last seven
@@ -327,6 +333,14 @@ public enum CLICode: Sendable, Hashable {
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
+    // Protocol version 7: geometric calibration.
+    case geometryInsufficientFrames
+    case geometryBoardNotDetected
+    case geometryFrameSizeMismatch
+    case geometryFitRejected
+    case geometryMagnitudeSuspect
+    case geometryFewFrames
+    case chromaticFitRejected
     case libraryDBUnsupported
     case internalError
     case unknown(String)
@@ -385,6 +399,13 @@ public enum CLICode: Sendable, Hashable {
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
+        case "GEOMETRY_INSUFFICIENT_FRAMES": self = .geometryInsufficientFrames
+        case "GEOMETRY_BOARD_NOT_DETECTED": self = .geometryBoardNotDetected
+        case "GEOMETRY_FRAME_SIZE_MISMATCH": self = .geometryFrameSizeMismatch
+        case "GEOMETRY_FIT_REJECTED": self = .geometryFitRejected
+        case "GEOMETRY_MAGNITUDE_SUSPECT": self = .geometryMagnitudeSuspect
+        case "GEOMETRY_FEW_FRAMES": self = .geometryFewFrames
+        case "CHROMATIC_FIT_REJECTED": self = .chromaticFitRejected
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
@@ -445,6 +466,13 @@ public enum CLICode: Sendable, Hashable {
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
+        case .geometryInsufficientFrames: "GEOMETRY_INSUFFICIENT_FRAMES"
+        case .geometryBoardNotDetected: "GEOMETRY_BOARD_NOT_DETECTED"
+        case .geometryFrameSizeMismatch: "GEOMETRY_FRAME_SIZE_MISMATCH"
+        case .geometryFitRejected: "GEOMETRY_FIT_REJECTED"
+        case .geometryMagnitudeSuspect: "GEOMETRY_MAGNITUDE_SUSPECT"
+        case .geometryFewFrames: "GEOMETRY_FEW_FRAMES"
+        case .chromaticFitRejected: "CHROMATIC_FIT_REJECTED"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name

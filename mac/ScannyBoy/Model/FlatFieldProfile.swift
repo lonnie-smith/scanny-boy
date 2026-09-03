@@ -17,15 +17,23 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
     /// Provenance only — the CLI never reads the reference again.
     let sourcePath: String?
     let createdAt: String?
+    /// The ChArUco board the calibration was fitted with ("35mm" | "6x9"),
+    /// or nil for a flat-field-only profile (protocol version 7).
+    let boardKey: String?
+    /// Whether the profile carries a distortion fit.
+    let hasGeometry: Bool
+    /// `"scale"` or `"maps"` when a CA fit is carried; nil otherwise.
+    let chromaticAberrationMode: String?
+    /// The CLI's calibration report, decoded whole for the UI to summarise
+    /// or disclose. Computation happens in the CLI, never here.
+    let calibrationReport: JSONValue?
 
     var id: String { profileID }
 
     /// Decodes one entry of `flatfield_list`'s `profiles` array or
-    /// `flatfield_created`'s `profile` object (`{profile_id, name,
-    /// reference_width, reference_height, source_path, created_at}`,
-    /// CONTRACT.md). `nil` for a malformed entry — a CLI this version
-    /// understands never sends one, but a stream is still read line by line
-    /// rather than trusted blindly.
+    /// `flatfield_created`'s `profile` object (CONTRACT.md). `nil` for a
+    /// malformed entry — a CLI this version understands never sends one,
+    /// but a stream is still read line by line rather than trusted blindly.
     init?(fields: [String: JSONValue]) {
         guard
             let profileID = fields["profile_id"]?.stringValue,
@@ -38,5 +46,37 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
         referenceHeight = fields["reference_height"]?.intValue
         sourcePath = fields["source_path"]?.stringValue
         createdAt = fields["created_at"]?.stringValue
+        boardKey = fields["board_key"]?.stringValue
+        hasGeometry = fields["has_geometry"]?.boolValue ?? false
+        chromaticAberrationMode = fields["chromatic_aberration_mode"]?.stringValue
+        calibrationReport = fields["calibration_report"]
+    }
+
+    /// One caption line summarising the calibration, per the plan's UI
+    /// requirement: the user has to be able to see that a correction was
+    /// dropped and why, or the automatic gates become invisible.
+    var calibrationSummary: String {
+        switch (hasGeometry, chromaticAberrationMode) {
+        case (false, nil):
+            "Flat-field only"
+        case (true, nil):
+            "Distortion \(summaryOfDistortion)"
+        case (true, .some):
+            "Distortion \(summaryOfDistortion) · CA corrected (\(chromaticAberrationMode!))"
+        case (false, .some):
+            "CA corrected (\(chromaticAberrationMode!))"
+        }
+    }
+
+    private var summaryOfDistortion: String {
+        guard let report = calibrationReport?.objectValue,
+            let distortion = report["distortion"]?.objectValue,
+            let displacement = distortion["corner_displacement_px"]?.doubleValue,
+            let percent = distortion["corner_displacement_percent"]?.doubleValue
+        else { return "applied" }
+        if distortion["accepted"]?.boolValue == false {
+            return "not applied"
+        }
+        return String(format: "%.1f px (%.2f%%)", displacement, percent)
     }
 }

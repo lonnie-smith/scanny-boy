@@ -11,6 +11,7 @@ dependencies = [
     "exifread>=3.5,<4",
     "tifftools>=1.7,<2",
     "opencv-python-headless>=4.14,<5",
+    "scipy>=1.14,<2",
     "sqlalchemy>=2.0,<3",
     "alembic>=1.13,<2",
 ]
@@ -35,3 +36,6 @@ packages = ["src/scanny_boy"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+markers = [
+    "slow: really decodes sample RAW frames, stitches real scans, or runs the packaged app (minutes); skipped unless pytest is passed --slow",
+]

@@ -145,7 +145,8 @@ final class ExportModel {
         case .started, .probeResult, .progress, .itemDone, .groupDone, .groupFailed,
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
             .rollInfo, .rollRenamed, .metadataApplied, .metadataSkipped,
-            .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .unknown:
+            .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+            .unknown:
             break
         }
     }

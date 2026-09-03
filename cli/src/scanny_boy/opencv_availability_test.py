@@ -16,5 +16,11 @@ def test_opencv_version_and_symbols():
         "distanceTransform",
         "warpAffine",
         "createCLAHE",
+        # Geometric calibration (docs/GEOMETRIC_PLAN.md section 8).
+        "undistortPoints",
+        "remap",
     ):
         assert hasattr(cv2, name), f"cv2.{name} is missing"
+
+    assert hasattr(cv2, "aruco"), "cv2.aruco is missing"
+    assert hasattr(cv2.aruco, "CharucoDetector"), "cv2.aruco.CharucoDetector is missing"

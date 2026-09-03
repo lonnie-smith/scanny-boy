@@ -48,10 +48,12 @@ from scanny_boy.sample_nef_support import (
     NEGATIVE_2,
     REAL_SAMPLE_FILES,
     requires_real_samples,
+    stage_samples,
 )
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
 pytestmark = [
+    pytest.mark.slow,
     requires_packaged_app,
     pytest.mark.skipif(
         sys.platform != "darwin",
@@ -186,6 +188,31 @@ def test_bundle_carries_the_vetted_icc_profile_and_its_own_metadata():
     assert any(name.startswith("scanny_boy-") for name in names), names
 
 
+def test_bundle_carries_scipy_optimize_and_opencv_aruco():
+    """Geometric calibration's two runtime dependencies, confirmed against
+    the frozen bundle rather than the spec's hooks (docs/GEOMETRIC_PLAN.md
+    sections 8–9): PyInstaller has a scipy hook, but a hook that silently
+    stops collecting is exactly the failure mode this file exists to catch.
+    The bundle cannot run arbitrary Python, so the check is on the shipped
+    artefacts: scipy.optimize's compiled extension modules and OpenCV's
+    native library, which is where cv2.aruco.CharucoDetector lives."""
+    optimize_binaries = list(BUNDLE_PATH.rglob("scipy/optimize/*.so"))
+    assert optimize_binaries, (
+        "scipy.optimize's compiled modules are missing from the bundle"
+    )
+    # `least_squares` reaches MINPACK through these extensions; a hook that
+    # collected only the pure-Python half would pass the glob above.
+    assert any("minpack" in path.name.lower() for path in optimize_binaries), (
+        [path.name for path in optimize_binaries]
+    )
+
+    cv2_binaries = list(BUNDLE_PATH.rglob("cv2/cv2.*so"))
+    assert cv2_binaries, "the OpenCV native module is missing from the bundle"
+    # aruco is compiled into the headless OpenCV module; the availability
+    # symbols themselves are pinned in opencv_availability_test.py, which
+    # runs against the development venv that built this bundle.
+
+
 def test_bundle_links_only_bundled_or_system_libraries():
     """Inspect the real Mach-O dependencies rather than assuming no hook is
     missing (section 5.2). LibRaw in particular is expected to be collected
@@ -232,9 +259,16 @@ def test_packaged_probe_returns_the_catalogue_in_canonical_order():
     assert result.returncode == 0, result.stderr
     events = _events(result.stdout)
     probe_result = next(e for e in events if e["event"] == "probe_result")
-    # A prefix, not the whole catalogue: the fixtures directory also holds
-    # Phase 2's gate-B stitching scans, captured 27 days later.
-    assert probe_result["catalogue"][: len(REAL_SAMPLE_FILES)] == REAL_SAMPLE_FILES
+    # In catalogue order, not the whole catalogue: the fixtures directory
+    # also holds the gate-B stitching scans and later sessions, before,
+    # between, and after the sample files. Finding each member after the
+    # previous one proves the canonical sort orders capture sessions by
+    # timestamp, not just one.
+    catalogue = probe_result["catalogue"]
+    search_from = 0
+    for name in REAL_SAMPLE_FILES:
+        found = catalogue.index(name, search_from)
+        search_from = found + 1
     assert probe_result["warnings"] == []
     assert events[-1]["event"] == "finished"
     assert events[-1]["exit_status"] == 0
@@ -300,8 +334,6 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         str(tmp_path),
         "--name",
         "packaged",
-        "--per-negative",
-        "3",
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
@@ -384,13 +416,17 @@ def test_packaged_cancellation_keeps_completed_groups_and_exits_143(tmp_path):
     place, discards the negative in progress, and exits 143."""
     out_dir = tmp_path / "cancelled"
     out_dir.mkdir()
+    # Staged: the shared fixtures directory also holds the gate-B stitching
+    # scans and later sessions, so the six-file selection is only contiguous
+    # in a catalogue of its own.
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
 
     process = subprocess.Popen(
         [
             str(BUNDLE_EXECUTABLE),
             "convert",
             "--input",
-            str(FIXTURES_DIR),
+            str(input_dir),
             "--files",
             *REAL_SAMPLE_FILES,
             "--out",

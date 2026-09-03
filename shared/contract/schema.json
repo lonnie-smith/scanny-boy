@@ -29,7 +29,8 @@
         "export_done",
         "flatfield_created",
         "flatfield_list",
-        "flatfield_deleted"
+        "flatfield_deleted",
+        "flatfield_progress"
       ]
     },
     "stage": {
@@ -112,6 +113,13 @@
         "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH",
         "FLATFIELD_HIGHLIGHT_CLIPPED",
+        "GEOMETRY_INSUFFICIENT_FRAMES",
+        "GEOMETRY_BOARD_NOT_DETECTED",
+        "GEOMETRY_FRAME_SIZE_MISMATCH",
+        "GEOMETRY_FIT_REJECTED",
+        "GEOMETRY_MAGNITUDE_SUSPECT",
+        "GEOMETRY_FEW_FRAMES",
+        "CHROMATIC_FIT_REJECTED",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -152,7 +160,11 @@
         "reference_width",
         "reference_height",
         "source_path",
-        "created_at"
+        "created_at",
+        "board_key",
+        "has_geometry",
+        "chromatic_aberration_mode",
+        "calibration_report"
       ],
       "properties": {
         "profile_id": { "type": "string" },
@@ -160,7 +172,14 @@
         "reference_width": { "type": "integer", "minimum": 1 },
         "reference_height": { "type": "integer", "minimum": 1 },
         "source_path": { "type": ["string", "null"] },
-        "created_at": { "type": "string" }
+        "created_at": { "type": "string" },
+        "board_key": { "type": ["string", "null"] },
+        "has_geometry": { "type": "boolean" },
+        "chromatic_aberration_mode": {
+          "type": ["string", "null"],
+          "enum": ["scale", "maps", null]
+        },
+        "calibration_report": { "type": ["object", "null"] }
       }
     },
     "rollListingEntry": {
@@ -182,7 +201,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 6
+      "const": 7
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -428,6 +447,20 @@
         "required": ["profile_id"],
         "properties": {
           "profile_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "flatfield_progress" } } },
+      "then": {
+        "required": ["phase", "completed", "total"],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": ["detect", "fit", "chromatic", "reference"]
+          },
+          "completed": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 }
         }
       }
     },

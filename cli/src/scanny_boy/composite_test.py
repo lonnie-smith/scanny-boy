@@ -356,3 +356,240 @@ def test_oversized_file_fails():
 
     assert exc_info.value.code is Code.STITCH_OUTPUT_TOO_LARGE
     assert warnings == []
+
+
+# --- geometric calibration (docs/GEOMETRIC_PLAN.md sections 5.3 and 8) -----
+
+from scanny_boy.composite import (
+    GEOMETRY_BAND_ROWS,
+    _geometry_camera,
+    _warp_bands,
+)
+
+
+def _geometry_dict(k1: float, frame_width: int, frame_height: int) -> dict:
+    """A section 3.2 geometry object with the identity gauge."""
+    return {
+        "format_version": 1,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "k1": k1,
+        "k2": 0.0,
+        "cx": (frame_width - 1) / 2,
+        "cy": (frame_height - 1) / 2,
+        "stage": "k1",
+        "gauge": "identity",
+        "board_key": "35mm",
+    }
+
+
+def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
+    """The section 5.1 regression guard: a profile without geometry must
+    keep `composite`'s `cv2.warpAffine` implementation byte-for-byte.
+
+    The reference reimplements the pre-geometry warp pass and blend. The
+    solved gains are taken from the result itself — the warp path is what
+    the geometry switch changes, and pinning it is the point."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    result = _composite(layout, uint16_frames)
+
+    canvas_width, canvas_height = layout.canvas_size
+    accum = np.zeros((canvas_height, canvas_width, 3), dtype=np.float32)
+    weight_canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+    warped_frames = []
+    for placement in layout.placements:
+        frame = uint16_frames[placement.name]
+        src_h, src_w = frame.shape[:2]
+        linear = decode_to_linear(frame).astype(np.float32)
+        matrix = placement.matrix()
+        from scanny_boy.composite import _EROSION_KERNEL, _frame_bbox
+
+        x, y, w, h = _frame_bbox(matrix, src_h, src_w, layout.canvas_size)
+        M = matrix.copy()
+        M[:, 2] -= (x, y)
+        warped = cv2.warpAffine(
+            linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        warped = np.clip(warped, 0.0, None)
+        mask = cv2.warpAffine(
+            np.ones((src_h, src_w), np.uint8), M, (w, h),
+            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        eroded = cv2.erode(
+            mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
+        )
+        weight = cv2.distanceTransform(eroded, cv2.DIST_L2, 5)
+        gain = np.asarray(result.gains[placement.name], dtype=np.float32)
+        warped_frames.append((x, y, w, h, warped * gain, weight))
+
+    for x, y, w, h, warped, weight in warped_frames:
+        accum[y : y + h, x : x + w] += warped * weight[:, :, np.newaxis]
+        weight_canvas[y : y + h, x : x + w] += weight
+
+    covered = weight_canvas > 0
+    out = np.zeros_like(accum)
+    out[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
+    encoded = encode_from_linear(out)
+    encoded[~covered] = FILL_COLOR
+    assert np.array_equal(result.image, encoded)
+
+
+def test_band_map_round_trips_a_distorted_frame():
+    """Distort the frames with known coefficients, composite through the
+    band-map path, and recover the undistorted composite to within
+    interpolation error."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    height, width = _FRAME_SIZE
+    geometry = _geometry_dict(-0.02, width, height)
+
+    distorted = {}
+    K = np.array(
+        [[geometry["fx"], 0, geometry["cx"]],
+         [0, geometry["fy"], geometry["cy"]],
+         [0, 0, 1.0]]
+    )
+    for name, frame in uint16_frames.items():
+        ys, xs = np.mgrid[0:height, 0:width]
+        grid = np.stack([xs, ys], axis=-1).reshape(-1, 1, 2).astype(np.float32)
+        # observed(q) = ideal(d^-1(q)): sample the source through the
+        # undistortion map to synthesise the distorted frame.
+        undistorted = cv2.undistortPoints(
+            grid, K, np.array([geometry["k1"], 0.0, 0, 0, 0]), P=K
+        ).reshape(height, width, 2)
+        distorted[name] = np.clip(
+            cv2.remap(
+                frame,
+                undistorted[:, :, 0].astype(np.float32),
+                undistorted[:, :, 1].astype(np.float32),
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            ),
+            0,
+            65535,
+        ).astype(np.uint16)
+
+    distorted_result = composite(
+        layout,
+        lambda name: distorted[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        geometry=geometry,
+    )
+    plain_result = _composite(layout, uint16_frames)
+
+    covered = plain_result.image != FILL_COLOR
+    err = np.abs(
+        decode_to_linear(distorted_result.image) - decode_to_linear(plain_result.image)
+    )[covered]
+    # Double resampling (synthetic distortion, then the band map's inverse)
+    # plus the border pixels the distortion pulls in at the frame edge.
+    assert float(np.mean(err)) < 0.02
+
+
+def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
+    """In "maps" mode the green channel's map is the plain forward
+    distortion, and red and blue move by their own fitted maps."""
+    height, width = 200, 260
+    geometry = _geometry_dict(0.0, width, height)  # no distortion
+    ca = {
+        "format_version": 1,
+        "mode": "maps",
+        "red": {"c0": 1.01, "c1": 0.0, "c2": 0.0, "center_x": 0.0, "center_y": 0.0},
+        "blue": {"c0": 0.99, "c1": 0.0, "c2": 0.0, "center_x": 0.0, "center_y": 0.0},
+    }
+
+    frame = encode_from_linear(
+        np.random.default_rng(0).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+    )
+    linear = decode_to_linear(frame).astype(np.float32)
+    ones = np.ones((height, width), dtype=np.uint8)
+    bbox_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    warped, mask = _warp_bands(
+        linear, ones, bbox_matrix, width, height, geometry, ca
+    )
+
+    # Green: the map is the identity, and Lanczos at exact integer
+    # coordinates is the delta function.
+    assert np.array_equal(mask, ones)
+    assert np.allclose(warped[:, :, 1], linear[:, :, 1], atol=1e-5)
+
+    # Red: sampled at radius * 1.01 about the centre.
+    ys, xs = np.mgrid[0:height, 0:width]
+    fx = geometry["fx"]
+    cx, cy = geometry["cx"], geometry["cy"]
+    dx = (xs - cx) / fx
+    dy = (ys - cy) / fx
+    r = np.hypot(dx, dy)
+    expected_x = (dx * 1.01 * fx + cx).astype(np.float32)
+    expected_y = (dy * 1.01 * fx + cy).astype(np.float32)
+    expected_red = cv2.remap(
+        linear[:, :, 0], expected_x, expected_y, cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    interior = (r < 0.4) & (r > 0.05)
+    assert np.allclose(warped[:, :, 0][interior], expected_red[interior], atol=1e-4)
+
+
+def test_warp_bands_matches_a_whole_frame_map():
+    """Banding must not change the result: the band-map output equals a
+    single whole-frame remap with the same formula (identity placement)."""
+    height, width = 300, 240
+    geometry = _geometry_dict(-0.015, width, height)
+    linear = decode_to_linear(
+        encode_from_linear(
+            np.random.default_rng(1).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+        )
+    ).astype(np.float32)
+    ones = np.ones((height, width), dtype=np.uint8)
+    identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    warped, _mask = _warp_bands(linear, ones, identity, width, height, geometry, None)
+
+    K, _ = _geometry_camera(geometry)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    ys, xs = np.mgrid[0:height, 0:width]
+    x = (xs - cx) / fx
+    y = (ys - cy) / fy
+    r2 = x * x + y * y
+    k = 1.0 + geometry["k1"] * r2
+    map_x = (x * k * fx + cx).astype(np.float32)
+    map_y = (y * k * fy + cy).astype(np.float32)
+    expected = cv2.remap(
+        linear, map_x, map_y, cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    assert np.allclose(warped, expected, atol=1e-4)
+
+
+def test_estimate_peak_bytes_grows_by_exactly_the_geometry_terms():
+    args = ((1000, 800), (500, 700), (1000, 800), 3)
+    base = estimate_peak_bytes(*args)
+    with_geometry = estimate_peak_bytes(*args, geometry=True)
+    with_maps = estimate_peak_bytes(*args, geometry=True, ca_maps=True)
+
+    frame_pixels = 500 * 700
+    band_maps = 3 * GEOMETRY_BAND_ROWS * 800 * 2 * 4
+
+    def live(extra: int) -> int:
+        canvas = 1000 * 800
+        bbox = 1000 * 800
+        count = 3
+        return max(
+            canvas * 3 * 4  # accum
+            + canvas * 4  # weight
+            + 500 * 700 * 3 * 2 + 500 * 700 * 3 * 4  # source
+            + count * (bbox * 3 * 4 + bbox * 4 + bbox * 2)  # all_warped
+            + extra,
+            canvas * 3 * 4 + canvas * 3 * 2,  # accum + result
+        )
+
+    assert with_geometry == math.ceil((live(0) + band_maps) * MEMORY_SAFETY_FACTOR)
+    assert base == math.ceil(live(0) * MEMORY_SAFETY_FACTOR)
+    assert with_maps == math.ceil(
+        (live(0) + band_maps + frame_pixels * 4) * MEMORY_SAFETY_FACTOR
+    )

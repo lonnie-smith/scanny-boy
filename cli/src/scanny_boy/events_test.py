@@ -13,6 +13,7 @@ from scanny_boy.events import (
     FlatFieldDeleted,
     FlatFieldList,
     FlatFieldProfileSummary,
+    FlatFieldProgress,
     GroupDone,
     GroupFailed,
     ItemDone,
@@ -215,10 +216,11 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_six():
-    """Protocol 5→6: the flat-field events and codes (docs/FLATFIELD_PLAN.md
-    section F-2)."""
-    assert PROTOCOL_VERSION == 6
+def test_protocol_version_is_seven():
+    """Protocol 6→7: geometric calibration (docs/GEOMETRIC_PLAN.md
+    section 6) — the `flatfield_progress` event, the extended profile
+    object, and the GEOMETRY_*/CHROMATIC_* codes."""
+    assert PROTOCOL_VERSION == 7
 
 
 def test_new_event_kinds_round_trip():
@@ -252,12 +254,14 @@ def test_new_event_kinds_round_trip():
         ),
         FlatFieldList(profiles=[]),
         FlatFieldDeleted(profile_id="pid-1"),
+        FlatFieldProgress(phase="detect", completed=3, total=12),
+        FlatFieldProgress(phase="chromatic", completed=12, total=12),
         NegativeDeleted(negative_id="neg-5", output="out.tif"),
         NegativeDeleted(negative_id="neg-6", output=None),
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 6
+        assert data["protocol_version"] == 7
         assert json.loads(json.dumps(data)) == data
 
 

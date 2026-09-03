@@ -42,7 +42,16 @@ warping, via the `opencv-python-headless` Python package.
 - Licence: Apache License 2.0.
 - No modifications have been made to OpenCV's source.
 
+## SciPy
+
+Used at runtime for the geometric calibration fit
+(`scipy.optimize.least_squares`), via the `scipy` Python package.
+
+- Project: <https://scipy.org/>
+- Licence: BSD 3-Clause.
+- No modifications have been made to SciPy's source.
+
 Python runtime dependencies (`rawpy`, `numpy`, `tifffile`, `imagecodecs`,
-`exifread`, `tifftools`, `opencv-python-headless`, and their own
+`exifread`, `tifftools`, `opencv-python-headless`, `scipy`, and their own
 dependencies) are used under their respective upstream licences and are not
 relicensed by this project.

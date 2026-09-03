@@ -19,9 +19,12 @@ from scanny_boy.linear import decode_to_linear
 DETECTION_LONG_EDGE = 2000
 USE_CLAHE = False
 
-_LUMINANCE_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
-_LOW_PERCENTILE = 0.5
-_HIGH_PERCENTILE = 99.5
+# Rec.709 luminance weights and the percentile stretch, shared with
+# charuco.py's full-resolution calibration detection image
+# (docs/GEOMETRIC_PLAN.md section 4.2).
+LUMINANCE_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
+LOW_PERCENTILE = 0.5
+HIGH_PERCENTILE = 99.5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -47,7 +50,7 @@ def build_detection_image(
     source_size = (height, width)
 
     linear = decode_to_linear(frame).astype(np.float64)
-    luminance = linear @ _LUMINANCE_WEIGHTS
+    luminance = linear @ LUMINANCE_WEIGHTS
 
     source_long_edge = max(height, width)
     target_long_edge = min(long_edge, source_long_edge)
@@ -62,7 +65,7 @@ def build_detection_image(
         interpolation=cv2.INTER_AREA,
     )
 
-    low, high = np.percentile(resized, [_LOW_PERCENTILE, _HIGH_PERCENTILE])
+    low, high = np.percentile(resized, [LOW_PERCENTILE, HIGH_PERCENTILE])
     clipped = np.clip(resized, low, high)
     if high > low:
         normalised = (clipped - low) / (high - low) * 255.0

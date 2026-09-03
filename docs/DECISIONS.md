@@ -736,3 +736,60 @@ Consequences, all intended:
 Deliberately **not** changed: the demosaic (AHD), `no_auto_bright`,
 `output_bps=16`, `highlight_mode=Clip`, the stitch and flat-field maths
 (already linear), and the export stage's pixels-only behaviour.
+
+## Geometric calibration (protocol version 7)
+
+`docs/GEOMETRIC_PLAN.md` is the plan; the decisions that shape the code it
+produced:
+
+- **A profile is the complete optical description of one rig
+  configuration.** The calibration is folded into the existing
+  `flatfield_profiles` record — one profile, one `--flatfield` flag, one
+  UI — rather than a second table or a second command family. The flag's
+  name is stale (it names a whole calibration profile now) and is left as
+  a cosmetic follow-up, because a rename would reach the contract, the
+  schema, and the app's stored defaults and bury the substance under
+  churn.
+- **The gauge convention is `K_new = K` and an output frame identical in
+  size to the source frame.** Plumb-line straightness is scale-invariant,
+  so `K` only sets the numeric scale of `k1`; holding it fixed
+  (dimension-derived, recorded in the profile) keeps coefficients
+  comparable across sessions and means nothing downstream — layout, disk
+  check, memory estimate, bounding boxes — ever learns about distortion.
+  The cost is a 1–7 px unsampled border at the frame edge, which
+  `MASK_ERODE_PX` already discards. A profile is valid only for the frame
+  dimensions it was fitted at; a dimension change means a different
+  decode, and a silently rescaled calibration would be worse than none
+  (`GEOMETRY_FRAME_SIZE_MISMATCH`).
+- **The distortion correction lives in the stitch warp, not the convert
+  stage.** Undistorting in convert would resample every frame an extra
+  time (a second interpolation pass and its softening) and would move
+  flat-field's per-sensor-pixel gain map onto the wrong pixels. Folding it
+  into the stitch warp gives one interpolation pass per output pixel, and
+  registration — which benefits most — gets it for free: matched points
+  are undistorted before RANSAC at zero resampling and zero memory cost.
+- **Points are undistorted, not images.** Feature detection runs on the
+  existing luminance detection image; the matched *points* go through
+  `cv2.undistortPoints` before RANSAC. Undistorting images before
+  detection would resample twice and move every gate-C-measured
+  detection constant onto new ground. The sub-pixel CA the keypoints
+  carry is bounded well under `RANSAC_REPROJ_PX`; it is measured
+  (`detection_channel_ca_px` in the calibration report) rather than acted
+  on, so the detect-on-green question can be settled later with a number.
+- **CA is fitted after undistortion, on half-size decodes, in normalised
+  coordinates.** Fitting the per-channel radial scale against raw observed
+  corners conflates CA with the (itself radial) distortion polynomial.
+  Each output pixel of a `half_size` decode comes from one Bayer quad, so
+  the per-channel geometry is true rather than demosaic-smeared; because
+  `K_half = K_full / 2`, normalised coordinates are identical at both
+  resolutions and nothing is ever scaled back up.
+- **The fit that does not measurably help is dropped, automatically.**
+  Held-out acceptance gates (relative and absolute improvement, a
+  plausible-magnitude band for distortion, residual + improvement for CA)
+  decide whether a correction is applied at all. A rejected fit is not an
+  error: the profile is still created, the correction is left out, and the
+  reason is recorded in `calibration_report` — where the app shows it, so
+  the discipline is visible instead of silent.
+- **SciPy is a runtime dependency** (`scipy.optimize.least_squares`, the
+  project's first nonlinear solver), added for the staged plumb-line fit;
+  the bundle carries `scipy/optimize` and excludes its test suites.
