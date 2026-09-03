@@ -126,8 +126,10 @@ struct RunIntegrationTests {
         throw CocoaError(.fileNoSuchFile)
     }
 
-    /// A configuration model pointed at the sample folder and a real roll,
-    /// with its catalogue probe already applied and a real profile chosen.
+    /// A configuration model pointed at a staged sample folder (only the
+    /// six sample files, so a selection is contiguous in its catalogue) and
+    /// a real roll, with its catalogue probe already applied and a real
+    /// profile chosen.
     private static func configuredModel(
         roll: URL,
         select: [String]
@@ -135,7 +137,7 @@ struct RunIntegrationTests {
         let model = ConfigurationModel(
             runner: try runner(), defaults: isolatedDefaults()
         )
-        model.inputFolder = SampleFixtures.directory
+        model.inputFolder = try SampleFixtures.stagedDirectory()
         await model.waitForPendingProbes()
         model.rollURL = roll
         model.flatFieldProfileID = try await Self.createFlatFieldProfile()
@@ -162,6 +164,7 @@ struct RunIntegrationTests {
     @Test(
         "six sample files at three per negative stitch both negatives",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(5))
     )
     func sixFilesStitchBothNegatives() async throws {
@@ -277,6 +280,7 @@ struct RunIntegrationTests {
     @Test(
         "a rerun over the same selection adopts the earlier negative in place",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(10))
     )
     func rerunAdoptsTheEarlierNegative() async throws {
@@ -335,6 +339,7 @@ struct RunIntegrationTests {
     @Test(
         "cancelling after the first negative keeps it and discards the second",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(10))
     )
     func cancelKeepsCompletedGroups() async throws {
@@ -346,9 +351,10 @@ struct RunIntegrationTests {
         // A plain `convert`, not `run` — this test is about `RunModel`'s own
         // cancellation bookkeeping over `item_done`/`group_done`, not about
         // rolls at all, so it keeps Phase 1's bare output folder rather than
-        // a roll `--out` no longer accepts for `run`.
-        let command = CLICommand.convert(
-            input: SampleFixtures.directory,
+        // a roll `--out` no longer accepts for `run`. The input is staged:
+        // only the six sample files, so the selection is contiguous.
+        let command = try CLICommand.convert(
+            input: SampleFixtures.stagedDirectory(),
             files: SampleFixtures.files,
             out: out,
             perNegative: 3,
@@ -411,6 +417,7 @@ struct RunIntegrationTests {
     @Test(
         "re-stitching a supplied work directory reuses its intermediates and stitches again",
         .enabled(if: RunIntegrationTests.canRun, RunIntegrationTests.unavailable),
+        .enabled(if: SlowTests.isEnabled, SlowTests.disabledComment),
         .timeLimit(.minutes(5))
     )
     func restitchReusesAKeptWorkDirectory() async throws {

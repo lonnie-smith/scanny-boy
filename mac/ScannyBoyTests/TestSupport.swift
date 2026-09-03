@@ -135,6 +135,33 @@ enum SampleFixtures {
         }
     }
 
+    /// A scratch input directory holding only `files`, copied from the
+    /// shared fixtures directory.
+    ///
+    /// The fixtures folder keeps growing — it now also holds the gate-B
+    /// stitching scans and later sessions — so the six appendix A sample
+    /// files are no longer contiguous in *its* catalogue, and the helper
+    /// refuses a selection with a gap in canonical order. Staging the
+    /// selection into a directory of its own gives a scenario the catalogue
+    /// it was written against. `FileManager.copyItem` clones on APFS, so
+    /// the copies cost no real space or time.
+    static func stagedDirectory() throws -> URL {
+        let staged = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+            .appending(path: "samples", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: staged, withIntermediateDirectories: true
+        )
+        for name in files {
+            try FileManager.default.copyItem(
+                at: directory.appending(path: name),
+                to: staged.appending(path: name)
+            )
+        }
+        return staged
+    }
+
     /// Why a test that needs them was skipped, naming what went untested.
     static let unavailableComment: Comment = """
         The real sample NEFs are not present at tests/fixtures/nef/ (see \
@@ -142,6 +169,30 @@ enum SampleFixtures {
         bundled helper — a forced stop, the `running` manifest and staging \
         directory it leaves behind, and the rerun that recovers them — did \
         not run.
+        """
+}
+
+/// The slow integration scenarios — real multi-minute conversions, runs,
+/// and forced-stop/recovery cycles against the bundled helper. They skip
+/// unless the run explicitly asks for them, so an ordinary `xcodebuild
+/// test` (an agent iterating, a quick local check) does not pay for them;
+/// set `SCANNY_BOY_SLOW_TESTS=1` to include them.
+enum SlowTests {
+    static let environmentKey = "SCANNY_BOY_SLOW_TESTS"
+
+    /// `xcodebuild` forwards only `TEST_RUNNER_`-prefixed variables to the
+    /// test process, so accept both spellings.
+    static var isEnabled: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment[environmentKey] == "1"
+            || environment["TEST_RUNNER_" + environmentKey] == "1"
+    }
+
+    static let disabledComment: Comment = """
+        This scenario drives real multi-minute conversions through the \
+        bundled helper, so it is skipped unless the environment sets \
+        \(environmentKey)=1 (or TEST_RUNNER_\(environmentKey)=1, which is \
+        the spelling xcodebuild forwards). The scenario did not run.
         """
 }
 

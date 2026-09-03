@@ -291,6 +291,7 @@ def _stitch(work_dir, out_dir, *, events=None, cancel=None, **kwargs):
 # --- the happy path ------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_end_to_end_on_real_samples(tmp_path):
     """The chunk's headline test. Real Phase 1 intermediates in, one
     stitched TIFF per negative out, named after each group's first frame,
@@ -515,6 +516,7 @@ def test_changed_intermediate_is_caught(tmp_path):
 # --- failure, cancellation, and the output folder ------------------------
 
 
+@pytest.mark.slow
 def test_failing_negative_does_not_stop_the_run(tmp_path):
     """Section 3.5: a negative that cannot be stitched fails alone, the run
     continues, and the run ends `partial`."""
@@ -705,6 +707,7 @@ def test_clahe_fallback_is_not_used_for_an_oversized_canvas(tmp_path, monkeypatc
 
 
 @requires_real_samples
+@pytest.mark.slow
 def test_real_underconstrained_negative_recovers_with_clahe(tmp_path):
     """`NEGATIVE_2` (`_DSC4644/45/46.NEF`) is a real low-texture scan: its
     plain-pass registration leaves the pair graph disconnected
@@ -824,6 +827,7 @@ def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
     assert not [p for p in out_dir.iterdir()]
 
 
+@pytest.mark.slow
 def test_changed_shots_per_negative_is_accepted(tmp_path):
     """`shots_per_negative` is each batch's own choice, never the roll's: a
     work directory stitched at 2 scans per negative publishes into a roll
@@ -911,6 +915,7 @@ def test_second_stitch_keeps_a_suffixed_name_it_adopted(tmp_path):
     assert roll.negatives[0].output["name"] == "IMG_00-2.tif"
 
 
+@pytest.mark.slow
 def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     """Section 3.5's `--negatives` re-stitch path: a work directory with two
     negatives, restricted to one already-published `negative_id`, publishes

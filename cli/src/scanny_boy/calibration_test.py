@@ -23,6 +23,8 @@ from scanny_boy import calibration, charuco, flatfield, geometry_fit
 from scanny_boy.raw_decode import DecodedFrame
 
 BOARD = charuco.BOARDS["35mm"]
+
+pytestmark = pytest.mark.slow
 # Mid-format dimensions: the plumb-line sag scales with fx while the
 # magnitude percentage does not, so a small synthetic frame cannot clear
 # the absolute 0.3 px gate at any distortion inside the hard magnitude
