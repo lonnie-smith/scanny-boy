@@ -39,3 +39,9 @@ select them must probe/convert a staged directory holding only those files
 (`stage_samples` in `cli/src/scanny_boy/sample_nef_support.py`,
 `SampleFixtures.stagedDirectory()` in `mac/ScannyBoyTests/TestSupport.swift`)
 rather than passing `tests/fixtures/nef/` itself.
+
+`tests/fixtures/flatfield/bare-light.dng` is a committed synthetic bare-light
+reference (regenerate with `cli/tools/generate_bare_light_dng.py`); the Swift
+integration scenarios build their flat-field profile from it. Never stand in
+a real film frame for it — the profile's gain map would carry the scene's
+content and break registration.

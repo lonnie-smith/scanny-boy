@@ -471,21 +471,13 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         M = matrix.copy()
         M[:, 2] -= (x, y)
         warped = cv2.warpAffine(
-            linear,
-            M,
-            (w, h),
-            flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+            linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
         )
         warped = np.clip(warped, 0.0, None)
         mask = cv2.warpAffine(
-            np.ones((src_h, src_w), np.uint8),
-            M,
-            (w, h),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+            np.ones((src_h, src_w), np.uint8), M, (w, h),
+            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
         )
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
@@ -526,11 +518,9 @@ def test_band_map_round_trips_a_distorted_frame():
 
     distorted = {}
     K = np.array(
-        [
-            [geometry["fx"], 0, geometry["cx"]],
-            [0, geometry["fy"], geometry["cy"]],
-            [0, 0, 1.0],
-        ]
+        [[geometry["fx"], 0, geometry["cx"]],
+         [0, geometry["fy"], geometry["cy"]],
+         [0, 0, 1.0]]
     )
     for name, frame in uint16_frames.items():
         ys, xs = np.mgrid[0:height, 0:width]
@@ -590,15 +580,15 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     }
 
     frame = encode_from_linear(
-        np.random.default_rng(0)
-        .uniform(0.1, 0.9, (height, width, 3))
-        .astype(np.float32)
+        np.random.default_rng(0).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
     )
     linear = decode_to_linear(frame).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
     bbox_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 
-    warped, mask = _warp_bands(linear, ones, bbox_matrix, width, height, geometry, ca)
+    warped, mask = _warp_bands(
+        linear, ones, bbox_matrix, width, height, geometry, ca
+    )
 
     # Green: the map is the identity, and Lanczos at exact integer
     # coordinates is the delta function.
@@ -615,12 +605,8 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     expected_x = (dx * 1.01 * fx + cx).astype(np.float32)
     expected_y = (dy * 1.01 * fx + cy).astype(np.float32)
     expected_red = cv2.remap(
-        linear[:, :, 0],
-        expected_x,
-        expected_y,
-        cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
+        linear[:, :, 0], expected_x, expected_y, cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
     interior = (r < 0.4) & (r > 0.05)
     assert np.allclose(warped[:, :, 0][interior], expected_red[interior], atol=1e-4)
@@ -633,9 +619,7 @@ def test_warp_bands_matches_a_whole_frame_map():
     geometry = _geometry_dict(-0.015, width, height)
     linear = decode_to_linear(
         encode_from_linear(
-            np.random.default_rng(1)
-            .uniform(0.1, 0.9, (height, width, 3))
-            .astype(np.float32)
+            np.random.default_rng(1).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
         )
     ).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
@@ -653,12 +637,8 @@ def test_warp_bands_matches_a_whole_frame_map():
     map_x = (x * k * fx + cx).astype(np.float32)
     map_y = (y * k * fy + cy).astype(np.float32)
     expected = cv2.remap(
-        linear,
-        map_x,
-        map_y,
-        cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
+        linear, map_x, map_y, cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
     assert np.allclose(warped, expected, atol=1e-4)
 

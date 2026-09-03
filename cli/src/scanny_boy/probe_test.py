@@ -133,9 +133,7 @@ def test_probe_with_files_six_sample_files_groups_by_three(tmp_path):
     # The staged directory holds only the six sample files, so the selection
     # is contiguous in its catalogue and the assertions are plain equality.
     input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
-    outcome, warnings = _run_probe_collecting_warnings(
-        input_dir, list(REAL_SAMPLE_FILES), 3
-    )
+    outcome, warnings = _run_probe_collecting_warnings(input_dir, list(REAL_SAMPLE_FILES), 3)
 
     assert outcome.catalogue == list(REAL_SAMPLE_FILES)
     assert outcome.groups == [

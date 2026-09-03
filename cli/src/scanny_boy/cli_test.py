@@ -872,9 +872,7 @@ def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_
 # --- real subprocesses, driven by their own event stream -----------------
 
 
-def _spawn_convert(
-    input_dir: Path, out_dir: Path, files: list[str], **extra
-) -> subprocess.Popen:
+def _spawn_convert(input_dir: Path, out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
     argv = [
         sys.executable,
         "-m",
