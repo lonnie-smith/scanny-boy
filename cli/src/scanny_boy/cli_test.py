@@ -610,6 +610,73 @@ def test_edit_delete_without_negative_id_returns_status_2(capsys):
     assert err != ""
 
 
+def test_edit_flip_records_the_flip_and_refreshes_the_preview(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(["edit", "flip", "--roll", str(roll_dir), "--negative", negative_id])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    assert events[0]["command"] == "edit flip"
+    assert events[1]["negative_id"] == negative_id
+    assert events[1]["edit"]["op"] == "flip"
+    assert events[1]["rotation_quarter_turns"] == 0
+    assert events[1]["flipped_horizontally"] is True
+    assert Path(events[1]["preview_path"]).exists()
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+
+def test_edit_rotate_accepts_a_selection(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=2)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_ids = [n.negative_id for n in load_roll_manifest(roll_dir).negatives]
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "rotate",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_ids[0],
+            "--negative",
+            negative_ids[1],
+            "--direction",
+            "cw",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    edit_recorded = [e for e in events if e["event"] == "edit_recorded"]
+    assert [e["negative_id"] for e in edit_recorded] == negative_ids
+    assert all(
+        e["rotation_quarter_turns"] == 1 and e["flipped_horizontally"] is False
+        for e in edit_recorded
+    )
+    assert events[-1]["status"] == "success"
+    assert err == ""
+
+
+def test_edit_flip_without_negative_id_returns_status_2(capsys):
+    status = main(["edit", "flip", "--roll", "/tmp/roll"])
+
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert err != ""
+
+
 def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
     work_dir = _make_work_dir(tmp_path, negatives=1)
     roll_dir = _roll_dir(tmp_path)

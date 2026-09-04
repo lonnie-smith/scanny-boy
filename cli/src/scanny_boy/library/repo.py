@@ -42,9 +42,12 @@ from scanny_boy.library.models import (
 if TYPE_CHECKING:
     from scanny_boy.roll_manifest import RollManifest
 
-# The only edit operation the proof of concept implements. Rotation params
-# are `{"direction": "cw" | "ccw"}`; quarter turns compose by replay.
+# The edit operations the app records. Rotation params are
+# `{"direction": "cw" | "ccw"}`; flip takes no params (horizontal only).
+# Both compose by ordered replay — a flip does not commute with rotation, so
+# the log reduces to a `(quarter_turns, flipped)` pair, not a single number.
 ROTATE_OP = "rotate"
+FLIP_OP = "flip"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
 # The gain a frame record carries when the row predates gain normalization
@@ -490,20 +493,39 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
         ]
 
 
-def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
-    """Replays the negative's rotate ops in order and reduces them to net
-    clockwise quarter turns, normalised to 0-3. The single number every
-    consumer needs: the preview generator's lossless `np.rot90` and the
-    exporter's `np.rot90(k=...)` are both driven from it."""
+def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool]:
+    """Replays the negative's edit ops in order and reduces them to the
+    canonical net transform: `(quarter_turns, flipped_horizontally)`, where
+    the pixels are the original mirrored horizontally first (when flipped)
+    and then rotated `quarter_turns` clockwise quarter turns.
+
+    Replay is closed-form because every op transforms the image as it
+    currently renders: a rotate adds to the turn count, and a horizontal
+    flip of an already-rotated image equals rotating the flipped image the
+    other way (`flip ∘ rot^t = rot^-t ∘ flip`), so a flip toggles the flag
+    and negates the turns. The single pair every consumer needs: the
+    preview generator's lossless mirror + `np.rot90` and the exporter's
+    identical replay are both driven from it. Unknown ops (an older build
+    reading a newer log) are skipped."""
     turns = 0
+    flipped = False
     for edit in edits_for(roll_dir, negative_id):
-        if edit["op"] != ROTATE_OP:
-            continue
-        direction = edit["params"].get("direction")
-        if direction not in _DIRECTIONS:
-            continue
-        turns += _DIRECTIONS[direction]
-    return turns % 4
+        op = edit["op"]
+        if op == ROTATE_OP:
+            direction = edit["params"].get("direction")
+            if direction not in _DIRECTIONS:
+                continue
+            turns += _DIRECTIONS[direction]
+        elif op == FLIP_OP:
+            flipped = not flipped
+            turns = -turns
+    return turns % 4, flipped
+
+
+def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
+    """The rotation half of `net_edit_state` — kept for callers that only
+    care about orientation."""
+    return net_edit_state(roll_dir, negative_id)[0]
 
 
 # --- flat-field profiles -----------------------------------------------------

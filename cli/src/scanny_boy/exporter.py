@@ -1,7 +1,8 @@
 """`export --roll DIR --output DIR`: the moment edits become pixels.
 
 The exporter replays each negative's ordered ops log over its published
-TIFF — rotation by `np.rot90` quarter turns for the proof of concept — and
+TIFF — the canonical `(quarter_turns, flipped)` net transform, applied as a
+horizontal mirror followed by `np.rot90` quarter turns — and
 writes the result, named after the negative, into the output folder. The
 roll's own TIFF is never opened for writing: exports land elsewhere, and a
 re-export after further edits simply runs again.
@@ -49,10 +50,16 @@ class ExportOutcome:
     failed: list[str]
 
 
-def apply_edits(image: np.ndarray, rotation_quarter_turns: int) -> np.ndarray:
+def apply_edits(
+    image: np.ndarray, rotation_quarter_turns: int, flipped_horizontally: bool = False
+) -> np.ndarray:
     """The single place an op log meets pixels: pure, ordered, and the same
-    replay the preview generator performs at thumbnail scale. Quarter turns
-    count clockwise; np.rot90 turns counter-clockwise, so negate."""
+    replay the preview generator performs at thumbnail scale. The canonical
+    net transform mirrors the original horizontally first (when flipped)
+    and then rotates: quarter turns count clockwise; np.rot90 turns
+    counter-clockwise, so negate."""
+    if flipped_horizontally:
+        image = np.ascontiguousarray(image[:, ::-1])
     return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
@@ -192,9 +199,10 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        rotated = apply_edits(
-            image, repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
+        quarter_turns, flipped = repo.net_edit_state(
+            roll_dir, negative.negative_id
         )
+        rotated = apply_edits(image, quarter_turns, flipped)
         destination = output_dir / negative.output["name"]
         _write_export(destination, rotated, negative)
     except Exception as exc:  # noqa: BLE001 — one bad negative never stops the export

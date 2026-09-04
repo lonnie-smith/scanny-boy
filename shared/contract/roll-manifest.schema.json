@@ -326,6 +326,10 @@
           "minimum": 0,
           "maximum": 3,
           "description": "Derived, not stored: present in `roll info` output only — the ops log's net clockwise quarter turns."
+        },
+        "flipped_horizontally": {
+          "type": ["boolean", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — whether the ops log's net transform includes a horizontal mirror."
         }
       }
     },

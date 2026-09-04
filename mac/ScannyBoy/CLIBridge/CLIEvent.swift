@@ -212,9 +212,12 @@ extension CLIEvent {
     public var maxOverlapMAD: Double? { fields["max_overlap_mad"]?.doubleValue }
 
     // `edit_recorded`: the appended ops-log row and the negative's net
-    // rotation after it.
+    // transform after it (quarter turns plus the horizontal-mirror flag —
+    // a flip and a rotation do not commute, so one number cannot carry
+    // both).
     public var edit: [String: JSONValue]? { fields["edit"]?.objectValue }
     public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
+    public var flippedHorizontally: Bool? { fields["flipped_horizontally"]?.boolValue }
     public var previewPath: String? { fields["preview_path"]?.stringValue }
 
     // `flatfield_created` and `flatfield_list`

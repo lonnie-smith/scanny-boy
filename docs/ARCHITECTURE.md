@@ -157,11 +157,17 @@ place, which needs no flag
 ([`stitch_pipeline.py`](../cli/src/scanny_boy/stitch_pipeline.py),
 `run_stitch` docstring).
 
-`edit rotate` appends a rotation op to the negative's ordered ops log in the
-library database and regenerates the CLI-rendered preview — it **never
-touches the published TIFF**. `edit delete` is the one destructive edit: it
-drops the negative's record (its edits log cascades away), unlinks its
-published TIFF and preview, and renumbers the survivors. `export` is the
+`edit rotate` and `edit flip` append a rotation or horizontal-mirror op to
+the negative's ordered ops log in the
+library database and regenerate the CLI-rendered preview — they **never
+touch the published TIFF**, and each accepts a selection of negatives
+validated up front. A flip does not commute with rotation, so the ops log
+replays into a `(quarter_turns, flipped_horizontally)` pair
+(`repo.net_edit_state`), the one shape every pixel consumer (preview
+regeneration, export) drives from. `edit delete` is the one destructive
+edit: it
+drops the negatives' records (their edits logs cascade away), unlinks their
+published TIFFs and previews, and renumbers the survivors. `export` is the
 moment edits become pixels: it
 replays each negative's ops log over the published TIFF and writes the
 result into a separate output folder, never opening the roll's own files
