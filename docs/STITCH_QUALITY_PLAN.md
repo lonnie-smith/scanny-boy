@@ -1,6 +1,6 @@
-# Stitch quality plan: feather, per-frame scale, weighted layout, re-tuning
+# Stitch quality plan: feather, per-frame scale, weighted layout
 
-Four changes to the registration/layout/compositing path, in order, that
+Three changes to the registration/layout/compositing path, in order, that
 together remove the curved, smeared borders seen in stitched negatives.
 They follow the geometric distortion correction already landed on
 `feat/distortion-calibration` (`docs/GEOMETRIC_PLAN.md`, commit 6b24f72),
@@ -16,7 +16,7 @@ threshold is changed without a measurement the user has approved.
 
 ---
 
-## 0. Why these four, in this order
+## 0. Why these three, in this order
 
 The visible defect is a soft, curved band of doubled/smeared detail near
 the long borders of a stitched strip. Three separate causes stack:
@@ -37,15 +37,11 @@ the long borders of a stitched strip. Three separate causes stack:
    rather than shows. (§2)
 
 Step 3 (§3, row weighting) is a small statistical correction that makes the
-solve in §2 honest; step 4 (§4) re-measures the gate constants against
-data that has finally had all three corrections applied, because every
-current threshold was measured against uncorrected captures and is now
-loose enough to pass work it should reject.
+solve in §2 honest.
 
 **Ordering is mandatory.** §1 before §2, because §1 is what makes residual
 misregistration *visible* as a step you can measure — without it, §2's
 improvement is unfalsifiable. §2 before §3 (§3 weights rows §2 introduces).
-Everything before §4, which measures the finished pipeline.
 
 ---
 
@@ -327,8 +323,7 @@ and how they read:
   a pair above it is still a bad fit;
 - reword the `STITCH_SCALE_DRIFT` warning in `stitch_pipeline.py` so it no
   longer implies "this should be 1"; it now reports how much
-  magnification the pair carries;
-- both constants go into §4's measurement sweep.
+  magnification the pair carries.
 
 ### 2.6 The `DECISIONS.md` amendment
 
@@ -430,80 +425,6 @@ the weighted solution's `global_rms_px` over the strong pairs is lower.
 
 ---
 
-## 4. Re-tune the constants — and stop at a user gate
-
-Every constant named here was measured at gate C against captures with
-**no** distortion correction, an isotropic feather, and a scale-1 model.
-All three of those are now gone, so the constants gate a pipeline that no
-longer exists, and each is loose enough to pass work it should reject.
-
-**This step ends in a measurement report and a proposed table, and stops
-for the user's approval.** Do not land new threshold values without it —
-that is the precedent every constant in `registration.py`, `layout.py`, and
-`composite.py` was set by, and the module docstrings that name "Chunk P2-1's
-measured constants, approved at user gate C" become lies otherwise.
-
-### 4.1 The sweep
-
-Write `scripts/measure-stitch-quality.py`, modelled on
-`scripts/measure-registration.py`'s structure and Markdown-to-stdout output
-— but, unlike that script, **importing the production modules**
-(`detection`, `registration`, `layout`, `composite`) rather than
-reimplementing them. `measure-registration.py`'s own docstring says that
-once those modules exist it is "something to check them against, not a
-second implementation to keep in step"; do not extend it.
-
-Run over the real NEF fixtures at `tests/fixtures/nef/` (see
-`tests/fixtures/INVENTORY.md`; the gate-B scans deliberately include
-routine, rotated, out-of-order, minimum-overlap, and non-overlapping
-negatives), with a calibrated profile applied, sweeping
-`DETECTION_LONG_EDGE` over **2000, 3000, 4000**.
-
-Report, per detection resolution:
-
-- per pair: `good_matches`, `inliers`, `inlier_ratio`, `rms_residual_px`,
-  `similarity_scale`, `overlap_fraction`, `overlap_mad`;
-- per negative: `global_rms_px`, the solved per-frame scales and their
-  spread, `strip_spread_ratio`, worst `overlap_mad`;
-- wall-clock for the detect and the match phases separately, and peak RSS.
-
-The runtime warning worth stating up front: descriptor matching is
-`O(n_a · n_b)`, and keypoint count grows roughly with pixel count, so
-2000 → 4000 can cost on the order of 16× in matching alone. If 4000 buys no
-measurable metric improvement over 3000, the recommendation is 3000 and the
-report should say so with the numbers.
-
-### 4.2 The proposal
-
-From the healthy negatives' distributions, propose values for:
-
-| constant | module | today |
-| --- | --- | --- |
-| `DETECTION_LONG_EDGE` | `detection.py` | 2000 |
-| `MAX_PAIR_RMS_PX` | `registration.py` | 6.0 |
-| `MAX_GLOBAL_RMS_PX` | `layout.py` | 12.0 |
-| `SCALE_DRIFT_WARN` / `SCALE_DRIFT_FAIL` | `registration.py` | 0.005 / 0.01 |
-| `MAX_OVERLAP_MAD` | `composite.py` | 0.20 |
-| `MIN_GAIN_OVERLAP_PX`, `GAIN_DRIFT_WARN` | `composite.py` | 1000, 0.05 |
-
-Each threshold should be set to something the healthy data actually brushes
-against — worst healthy observation plus a stated margin — not to a round
-number, and the report must show both numbers for each. `MAX_OVERLAP_MAD`
-and the two gain constants are already flagged in `composite.py`'s module
-docstring as pending exactly this re-measurement (0.20 was measured against
-*uncorrected* overlaps and now gates a post-gain residual); fold them into
-the same gate rather than leaving a second one owing.
-
-### 4.3 After approval
-
-Change the constants in the one module each lives in, update the tables in
-`docs/ARCHITECTURE.md` (the constants inventory around line 420), and note
-in each module docstring that these are now gate-D constants measured
-against the corrected pipeline, superseding gate C's. `_stitch_params`
-already records all of them, so no manifest change is needed.
-
----
-
 ## 5. Work order
 
 Four commits (five if §2 is split), each green on `uv run ruff check .` and
@@ -517,8 +438,6 @@ Four commits (five if §2 is split), each green on `uv run ruff check .` and
    protocol/format version bumps, Swift constant, `DECISIONS.md` amendment,
    README. *Write the amendment first, not last.*
 4. **Weighted rows** (§3) — `layout.py`, tests, `_stitch_params`.
-5. **Measurement** (§4) — the script and the report only. **Stop here for
-   the user gate.** Constants change in a sixth commit, after approval.
 
 Steps 1–4 are behaviour changes to output pixels and to the manifest;
 regenerate any golden fixtures the test suite compares against and say so

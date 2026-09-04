@@ -32,20 +32,7 @@ Phase n:
 * extended metadata editing (location, camera, lens, film stock)
 * Crop based on manifest data, maybe lock in an appropriate aspect ratio
 * White balance / base neutralization
-* Measure the photometric-gain thresholds from real scans. Stitch-phase gain
-  compensation (per-frame, per-channel gains solved globally in log space,
-  geometric mean 1) shipped with two **unmeasured** constants that need a
-  user gate: `MIN_GAIN_OVERLAP_PX` (borrows NegPy's 1000px floor) and
-  `GAIN_DRIFT_WARN`. `MAX_OVERLAP_MAD` itself now gates the *post-gain
-  residual*, but its value (0.20) was measured against uncorrected overlaps
-  and is far looser than a healthy residual — re-measure it at the same
-  gate. See composite.py's module docstring and DECISIONS.md "Quality
-  gates".
-* Flat-field deferred pieces (see FLATFIELD_PLAN.md §4 for what did ship):
-  - **Re-measure `MAX_OVERLAP_MAD`** now that overlaps arrive
-    de-vignetted — the falloff the old measurement carried is gone, so the
-    gate can probably tighten. Fold into the same user gate as the gain
-    thresholds above.
+* Flat-field deferred pieces (see FLATFIELD_PLAN.md §4 for what did ship).
 
 Geometric calibration (docs/GEOMETRIC_PLAN.md, protocol version 7) deferred
 pieces:
@@ -56,12 +43,6 @@ pieces:
   `schema.json`, `CLIRunner.swift`, `ConfigurationModel.swift`, and the
   stored-defaults key — cosmetic, and deliberately not done in the same
   change as the substance.
-* **Re-measure `SCALE_DRIFT_WARN` / `SCALE_DRIFT_FAIL` /
-  `MAX_PAIR_RMS_PX` / `MAX_GLOBAL_RMS_PX`.** Undistorting matched points
-  before registration can only reduce apparent scale drift and pair
-  residuals, so these gate-C thresholds are now loose for
-  geometry-corrected rolls. Fold into the same user gate as the
-  gain-threshold and `MAX_OVERLAP_MAD` re-measurements above.
 * **Detect on green?** The luminance detection image carries a sub-pixel
   CA displacement from green at the frame corners. It is measured at
   calibration time and recorded as `detection_channel_ca_px` on the

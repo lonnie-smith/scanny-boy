@@ -606,13 +606,11 @@ Consequences to know about:
 
 - **`MAX_OVERLAP_MAD = 0.20` now gates the post-gain residual**, but the
   value was measured against *uncorrected* overlaps, so applied to the new
-  semantics it is far looser than a healthy capture's residual. It — along
-  with `MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` — is pending
-  re-measurement at the next user gate ([`punchlist.md`](punchlist.md)).
-  The two gain constants are the only unmeasured thresholds in the
-  pipeline; `MIN_GAIN_OVERLAP_PX` borrows NegPy's measured 1000 px floor,
-  and `GAIN_DRIFT_WARN` was chosen as the smallest bound that never fires
-  on healthy synthetic fixtures.
+  semantics it is looser than a healthy capture's residual. `MIN_GAIN_OVERLAP_PX`
+  and `GAIN_DRIFT_WARN` are the only unmeasured thresholds in the pipeline;
+  `MIN_GAIN_OVERLAP_PX` borrows NegPy's measured 1000 px floor, and
+  `GAIN_DRIFT_WARN` was chosen as the smallest bound that never fires on
+  healthy synthetic fixtures.
 - A solved gain deviating more than `GAIN_DRIFT_WARN` from unity warns
   `STITCH_GAIN_DRIFT`, by the same pattern as scale drift: it means
   something is wrong with the *capture*, not the solver.

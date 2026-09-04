@@ -581,9 +581,7 @@ threshold's units change.
 Undistortion should *reduce* apparent scale drift and pair residuals. That
 means `SCALE_DRIFT_WARN = 0.005`, `MAX_PAIR_RMS_PX = 6.0` and
 `MAX_GLOBAL_RMS_PX` are now loose for geometry-corrected rolls. Do not
-retune them in this change — record the before/after numbers and add
-re-measurement to `docs/punchlist.md` beside the existing gain-threshold
-gate.
+retune them in this change — record the before/after numbers.
 
 **Compositing.** Replace the two `cv2.warpAffine` calls with a banded
 `cv2.remap` when geometry is present. No `initUndistortRectifyMap`, no

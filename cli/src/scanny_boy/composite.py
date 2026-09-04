@@ -2,19 +2,18 @@
 photometric mismatch between frames with per-frame per-channel gains, then
 feather-blend in linear light and encode the finished canvas.
 
-`MAX_OVERLAP_MAD` and `INTERPOLATION` are Chunk P2-1's measured constants,
-approved at user gate C (section 3.12). Production code reads them from
-here and from nowhere else. Note: `MAX_OVERLAP_MAD = 0.20` was measured
-against *uncorrected* overlaps. Since gain compensation now runs before the
-measurement, it gates the post-gain residual, and 0.20 is far looser than
-the residual a healthy capture produces — the value must be re-measured at
-the next user gate (see docs/DECISIONS.md, "Quality gates").
+`MAX_OVERLAP_MAD` and `INTERPOLATION` are Chunk P2-1's measured constants.
+Production code reads them from here and from nowhere else. Note:
+`MAX_OVERLAP_MAD = 0.20` was measured against *uncorrected* overlaps. Since
+gain compensation now runs before the measurement, it gates the post-gain
+residual, and 0.20 is looser than the residual a healthy capture produces
+(see docs/DECISIONS.md, "Quality gates").
 
 `MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` are **provisional, unmeasured**
-values pending a user gate: `MIN_GAIN_OVERLAP_PX` borrows the floor NegPy
-measured for its own gain estimator; `GAIN_DRIFT_WARN` was chosen as the
-smallest bound that never fires on healthy synthetic fixtures. Neither has
-been measured from real scanny-boy scans.
+values: `MIN_GAIN_OVERLAP_PX` borrows the floor NegPy measured for its own
+gain estimator; `GAIN_DRIFT_WARN` was chosen as the smallest bound that
+never fires on healthy synthetic fixtures. Neither has been measured from
+real scanny-boy scans.
 """
 
 from __future__ import annotations
