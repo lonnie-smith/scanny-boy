@@ -618,16 +618,20 @@ def observed_extrema(
     return mins, maxs
 
 
-def headroom_clip_fractions(normalized: np.ndarray) -> tuple[float, float, float]:
+def headroom_clip_fractions(
+    normalized: np.ndarray,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Per-channel fraction of normalized values the encode's headroom
-    clips (section 3.6): below `-NORMALIZED_HEADROOM_LOW` or above
-    `1.0 + NORMALIZED_HEADROOM_HIGH`."""
+    clips (section 3.6), split by which rail they clip against: below
+    `-NORMALIZED_HEADROOM_LOW` is the dense end (scene highlights), above
+    `1.0 + NORMALIZED_HEADROOM_HIGH` is the thin end (scene shadows) — see
+    the constants' own comments. Returns `(highlights, shadows)`."""
     low = -NORMALIZED_HEADROOM_LOW
     high = 1.0 + NORMALIZED_HEADROOM_HIGH
     flat = normalized.reshape(-1, 3)
-    return tuple(
-        float(np.mean((flat[:, ch] < low) | (flat[:, ch] > high))) for ch in range(3)
-    )
+    highlights = tuple(float(np.mean(flat[:, ch] < low)) for ch in range(3))
+    shadows = tuple(float(np.mean(flat[:, ch] > high)) for ch in range(3))
+    return highlights, shadows
 
 
 def encode_normalized(normalized: np.ndarray) -> np.ndarray:

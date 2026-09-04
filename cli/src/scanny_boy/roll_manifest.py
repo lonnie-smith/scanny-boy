@@ -441,13 +441,43 @@ def load_roll_manifest(output_dir: Path) -> RollManifest:
 
 # --- Section 3.4: invariants, additive runs, naming -----------------------
 
+# `flat_field`/`chromatic_aberration` name the flat-field profile a run
+# used. A roll does not lock to one profile: different runs into the same
+# roll may each choose a different profile, so these two keys are excluded
+# from the processing-params comparison below. Everything else in
+# `processing_params` (the raw decode settings, the normalization
+# constants) is still established by the first run and held invariant.
+ROLL_PROFILE_PROCESSING_PARAMS_KEYS = ("flat_field", "chromatic_aberration")
+
+# `stitch_params["geometry"]` (`_stitch_params` in stitch_pipeline.py) is
+# the same profile's optional geometric calibration bucket — excluded here
+# for the same reason.
+ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry",)
+
+
+def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in params.items()
+        if key not in ROLL_PROFILE_PROCESSING_PARAMS_KEYS
+    }
+
+
+def _stitch_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in params.items()
+        if key not in ROLL_PROFILE_STITCH_PARAMS_KEYS
+    }
+
 
 def check_roll_invariants(
     manifest: RollManifest, candidate_params: RollInvariants
 ) -> None:
     """Section 3.4's roll-invariant check, replacing Phase 2's
     `check_roll_rerun_matches` entirely. Input folder, source list, order,
-    grouping, and each batch's `shots_per_negative` are *expected* to differ
+    grouping, each batch's `shots_per_negative`, and the flat-field profile
+    (including its optional geometric calibration) are *expected* to differ
     between runs and are never compared.
 
     The other three invariants are established by the first run, so a roll
@@ -457,7 +487,9 @@ def check_roll_invariants(
     if not manifest.runs:
         return
 
-    if manifest.processing_params != candidate_params.processing_params:
+    if _processing_params_for_invariant_check(
+        manifest.processing_params
+    ) != _processing_params_for_invariant_check(candidate_params.processing_params):
         raise RollInvariantMismatchError(
             "this run's processing settings differ from the roll's"
         )
@@ -472,7 +504,9 @@ def check_roll_invariants(
         raise RollInvariantMismatchError(
             "this run's published ICC profile differs from the roll's"
         )
-    if manifest.stitch_params != candidate_params.stitch_params:
+    if _stitch_params_for_invariant_check(
+        manifest.stitch_params
+    ) != _stitch_params_for_invariant_check(candidate_params.stitch_params):
         raise RollInvariantMismatchError(
             "this run's stitch settings differ from the roll's"
         )

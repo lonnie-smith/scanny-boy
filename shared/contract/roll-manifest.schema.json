@@ -119,7 +119,8 @@
         "analysis_rect",
         "observed_min",
         "observed_max",
-        "headroom_clipped",
+        "headroom_clipped_highlights",
+        "headroom_clipped_shadows",
         "rebate",
         "source"
       ],
@@ -144,7 +145,10 @@
         "observed_max": {
           "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
         },
-        "headroom_clipped": {
+        "headroom_clipped_highlights": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "headroom_clipped_shadows": {
           "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
         },
         "rebate": {

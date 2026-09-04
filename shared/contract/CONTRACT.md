@@ -58,10 +58,11 @@ light source (`.NEF` only), stored beside the library database and managed
 through a new `flatfield` command family (`create`, `list`, `delete`). A
 profile chosen with `--flatfield` on `convert`, `run`, or `probe` is applied
 per frame in the convert stage and folded into `processing_params` under
-`flat_field`, so a roll locks to one profile with its first run — a run
-using a different profile (or none) is refused with
-`ROLL_INVARIANT_MISMATCH`. The key is absent, not null, when no profile is
-given, so pre-flat-field rolls still accept no-profile runs.
+`flat_field`. The profile is not a roll invariant — it is excluded from the
+`processing_params`/`stitch_params` comparison a roll's later runs are held
+to, so different runs into the same roll may each choose a different
+profile, or none. The key is absent, not null, when no profile is given, so
+pre-flat-field rolls still accept no-profile runs.
 
 Protocol version 5 kept version 4's roll model and added **nondestructive
 editing**: each roll's durable record moved from the roll folder's

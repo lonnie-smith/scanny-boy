@@ -81,7 +81,6 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
-            startRollFetch(rollURL: rollURL)
             scheduleValidation()
         }
     }
@@ -99,41 +98,23 @@ final class ConfigurationModel {
         }
     }
 
-    /// `roll info` for `rollURL` (section 3.1: Swift never parses
-    /// `scanny-boy-roll.json` itself), so the roll's locked flat-field
-    /// profile is only known once this finishes.
-    private(set) var roll: RollManifest?
-    @ObservationIgnored private var rollTask: Task<Void, Never>?
-
     // MARK: - Flat field
 
     /// The flat-field profile this run applies. Required before Stitch is
-    /// offered: a roll locks to one profile with its first run, so the
-    /// choice belongs to Add Scans, not to a hidden default. Persisted so
-    /// the last choice survives a relaunch, the same as the input folder.
+    /// offered. A roll does not lock to one profile — each run into it may
+    /// choose a different one (or none) — so this is purely a per-run
+    /// choice, defaulted from and persisted as the user's last one, the
+    /// same as the input folder.
     var flatFieldProfileID: String? {
         didSet {
             guard flatFieldProfileID != oldValue else { return }
-            // A lock assignment (`startRollFetch`) sets this flag first so a
-            // roll's locked profile does not get persisted as the user's own
-            // default and inherited by the next, unlocked roll.
-            if !isApplyingLockedFlatFieldProfile {
-                if let flatFieldProfileID {
-                    defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
-                } else {
-                    defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
-                }
+            if let flatFieldProfileID {
+                defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
+            } else {
+                defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
             }
             scheduleValidation()
         }
-    }
-
-    @ObservationIgnored private var isApplyingLockedFlatFieldProfile = false
-
-    /// Set once the roll's own record names a profile: Add Scans pre-selects
-    /// it and says so, since the user cannot choose differently anyway.
-    var isRollLockedToFlatFieldProfile: Bool {
-        roll?.processingParams.flatFieldProfileID != nil
     }
 
     /// A `probe --roll` failure specific to the roll itself — missing,
@@ -210,7 +191,8 @@ final class ConfigurationModel {
     /// does not yet describe a runnable one. `skipSources` is always empty:
     /// every group in the selection runs and adopts whatever it overlaps in
     /// the roll (the replacement rule). The flat-field profile rides along
-    /// as `--flatfield`; a locked roll has already pre-selected its own.
+    /// as `--flatfield`, freely chosen for this run — the roll does not
+    /// lock to one.
     func runCommand() -> CLICommand? {
         guard runEnabled, let inputFolder, let rollURL, let perNegative,
             let flatFieldProfileID
@@ -247,45 +229,6 @@ final class ConfigurationModel {
             self.catalogueError = result.error
             self.isCataloguing = false
         }
-    }
-
-    private func startRollFetch(rollURL: URL?) {
-        rollTask?.cancel()
-        guard let rollURL else { return }
-        rollTask = Task { [weak self, runner] in
-            let manifest = await Self.fetchRollManifest(runner: runner, roll: rollURL)
-            guard let self, !Task.isCancelled else { return }
-            self.roll = manifest
-            // A roll locked to a profile pins the picker to it
-            // unconditionally: the user cannot choose differently anyway (the
-            // run would be refused with `ROLL_INVARIANT_MISMATCH`), and an
-            // explicit choice left over from a *previous* roll must not win
-            // here. A roll that is not locked leaves the user's choice alone.
-            if let locked = manifest?.processingParams.flatFieldProfileID {
-                isApplyingLockedFlatFieldProfile = true
-                flatFieldProfileID = locked
-                isApplyingLockedFlatFieldProfile = false
-            }
-        }
-    }
-
-    private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
-        // Recorded rather than returned immediately (M4): see
-        // `RollLibrary.createRoll` — returning from inside the loop abandons
-        // the stream and can SIGTERM a helper that is in the middle of its
-        // own clean exit.
-        var manifest: RollManifest?
-        do {
-            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
-                guard case .event(let event) = output, event.kind == .rollInfo,
-                    let fields = event.manifest
-                else { continue }
-                manifest = RollManifest(fields: fields)
-            }
-        } catch {
-            return nil
-        }
-        return manifest
     }
 
     /// Debounces `probe --roll` calls: a drag-select across many catalogue
@@ -423,6 +366,5 @@ final class ConfigurationModel {
     func waitForPendingProbes() async {
         await catalogueTask?.value
         await validationTask?.value
-        await rollTask?.value
     }
 }

@@ -560,7 +560,7 @@ def test_covered_negatives_do_not_require_completed():
     assert [n.negative_id for n in covered] == ["old-negative-01"]
 
 
-# --- flat-field profiles as a roll invariant (section 2.4) -----------------
+# --- the flat-field profile is not a roll invariant -------------------------
 
 
 def _flat_field_token(profile_id: str) -> dict:
@@ -571,11 +571,46 @@ def _flat_field_token(profile_id: str) -> dict:
     }
 
 
-def test_check_roll_invariants_rejects_a_different_flatfield_profile():
-    """A roll locks to one profile with its first run; a run using a
-    different profile — or none — is refused. There is no new comparison
-    code: the token rides inside `processing_params`."""
-    locked = _manifest(
+def test_check_roll_invariants_allows_a_different_flatfield_profile():
+    """A roll does not lock to one profile with its first run: a later run
+    is free to use a different profile, or none, without tripping the
+    processing-params invariant. `flat_field`/`chromatic_aberration` are
+    excluded from that comparison; everything else is still checked."""
+    seeded = _manifest(
+        processing_params={
+            "gamma": [1.8, 16],
+            "flat_field": _flat_field_token("profile-a"),
+        }
+    )
+
+    check_roll_invariants(
+        seeded,
+        _invariants(
+            processing_params={
+                "gamma": [1.8, 16],
+                "flat_field": _flat_field_token("profile-b"),
+            }
+        ),
+    )
+    check_roll_invariants(
+        seeded, _invariants(processing_params={"gamma": [1.8, 16]})
+    )
+    check_roll_invariants(
+        seeded,
+        _invariants(
+            processing_params={
+                "gamma": [1.8, 16],
+                "flat_field": _flat_field_token("profile-a"),
+            }
+        ),
+    )
+
+
+def test_check_roll_invariants_still_rejects_other_processing_param_changes():
+    """Excluding the flat-field profile from the comparison must not widen
+    the hole any further: a change to an unrelated processing param is
+    still refused."""
+    seeded = _manifest(
         processing_params={
             "gamma": [1.8, 16],
             "flat_field": _flat_field_token("profile-a"),
@@ -584,25 +619,11 @@ def test_check_roll_invariants_rejects_a_different_flatfield_profile():
 
     with pytest.raises(RollInvariantMismatchError):
         check_roll_invariants(
-            locked,
+            seeded,
             _invariants(
                 processing_params={
-                    "gamma": [1.8, 16],
-                    "flat_field": _flat_field_token("profile-b"),
+                    "gamma": [2.2, 16],
+                    "flat_field": _flat_field_token("profile-a"),
                 }
             ),
         )
-    with pytest.raises(RollInvariantMismatchError):
-        check_roll_invariants(
-            locked, _invariants(processing_params={"gamma": [1.8, 16]})
-        )
-
-    check_roll_invariants(
-        locked,
-        _invariants(
-            processing_params={
-                "gamma": [1.8, 16],
-                "flat_field": _flat_field_token("profile-a"),
-            }
-        ),
-    )

@@ -26,10 +26,9 @@ struct RestitchSheet: View {
     /// while a rotate, delete, export, or flat-field calibration has its own
     /// helper busy (P4) — this menu-triggered sheet has no other gate on it.
     let activity: AppActivity
-    /// The profile list, for the optional `--flatfield` picker: a roll whose
-    /// first stitch ran with a calibrated profile has its geometry locked
-    /// into its invariants, and a re-stitch without the same profile is
-    /// refused (`ROLL_INVARIANT_MISMATCH`).
+    /// The profile list, for the optional `--flatfield` picker: the roll
+    /// does not lock to whichever profile its first stitch used, so this
+    /// re-stitch is free to choose a different one, or none.
     let flatField: FlatFieldModel
     /// Called immediately after `run.start(...)`, so the caller can wait for
     /// completion and refresh whatever else depends on the output folder —
@@ -96,6 +95,12 @@ struct RestitchSheet: View {
         .onAppear {
             workDirectory = initialWorkDirectory
             outputFolder = initialOutputFolder
+            // Suggests the last profile used anywhere in the app, the same
+            // default Add Scans seeds itself from — not persisted back, so
+            // choosing differently here does not change that default.
+            flatFieldProfileID = UserDefaults.standard.string(
+                forKey: ConfigurationModel.lastFlatFieldProfileKey
+            )
         }
     }
 

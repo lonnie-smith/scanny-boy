@@ -50,8 +50,26 @@ struct RunIntegrationTests {
         return Comment(rawValue: reasons.joined(separator: "\n"))
     }
 
+    /// One per-process temporary library database, shared by every session
+    /// this suite starts. Without this, the real bundled CLI helper falls
+    /// back to `SCANNY_BOY_LIBRARY_DB`'s default — the user's actual
+    /// `~/Library/Application Support/ScannyBoy/library.db` — and every run
+    /// of this suite would register real rolls and flatfield profiles into
+    /// it, which is how a developer ends up with a library full of
+    /// `"Integration <uuid>"` profiles from nothing but running tests.
+    private static let libraryDatabaseURL: URL = {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appending(path: "library.db")
+    }()
+
     private static func runner() throws -> CLIRunner {
-        CLIRunner(executable: try #require(HostBundle.helperExecutableURL))
+        CLIRunner(
+            executable: try #require(HostBundle.helperExecutableURL),
+            environmentOverrides: ["SCANNY_BOY_LIBRARY_DB": libraryDatabaseURL.path]
+        )
     }
 
     private static func makeTemporaryDirectory() throws -> URL {

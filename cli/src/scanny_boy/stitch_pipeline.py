@@ -112,6 +112,8 @@ from scanny_boy.registration import (
     register_pair,
 )
 from scanny_boy.roll_manifest import (
+    ROLL_PROFILE_PROCESSING_PARAMS_KEYS,
+    ROLL_PROFILE_STITCH_PARAMS_KEYS,
     CaptureTime,
     FrameRecord,
     NegativeRecord,
@@ -617,7 +619,8 @@ def _normalization_record(
         "analysis_rect": list(analysis_rect),
         "observed_min": list(result.observed_min),
         "observed_max": list(result.observed_max),
-        "headroom_clipped": list(result.headroom_clipped),
+        "headroom_clipped_highlights": list(result.headroom_clipped_highlights),
+        "headroom_clipped_shadows": list(result.headroom_clipped_shadows),
         "rebate": {
             "detected": result.rebate.detected,
             "mask_fraction": result.rebate.mask_fraction,
@@ -1035,7 +1038,11 @@ def _append_this_run(
 
     Section 5.4 decision 1: the first run establishes the three invariants an
     empty roll cannot know. `check_roll_invariants` has already passed, so
-    assigning them here is a seeding, never an overwrite.
+    assigning them here is a seeding, never an overwrite. The flat-field
+    profile is not one of those invariants (a roll may mix runs against
+    different profiles), so its processing-params keys and its stitch-params
+    geometry bucket are instead refreshed from every run, keeping the roll's
+    recorded params in step with whichever profile this run actually used.
 
     Returns the run record, this run's negatives keyed by work-manifest
     group id (because the group id is what the solving loop carries), and
@@ -1045,6 +1052,17 @@ def _append_this_run(
         roll.processing_params = invariants.processing_params
         roll.stitch_params = invariants.stitch_params
         roll.icc_profile = work_manifest.icc_profile
+    else:
+        for key in ROLL_PROFILE_PROCESSING_PARAMS_KEYS:
+            if key in invariants.processing_params:
+                roll.processing_params[key] = invariants.processing_params[key]
+            else:
+                roll.processing_params.pop(key, None)
+        for key in ROLL_PROFILE_STITCH_PARAMS_KEYS:
+            if key in invariants.stitch_params:
+                roll.stitch_params[key] = invariants.stitch_params[key]
+            else:
+                roll.stitch_params.pop(key, None)
 
     run_record = RunRecord(
         run_id=run_id,
@@ -1310,17 +1328,31 @@ def _composite_and_publish(
 
         # Section 3.6: the observed extrema are recorded so the two
         # headroom constants can be tuned from real scans; the warning is
-        # the signal that they are too tight for this film and scanner.
-        worst_headroom = max(result.headroom_clipped)
-        if worst_headroom > HEADROOM_CLIP_WARN_FRACTION:
+        # the signal that they are too tight for this film and scanner —
+        # named by side, since the highlight and shadow rails are tuned
+        # independently (`NORMALIZED_HEADROOM_LOW`/`_HIGH`).
+        worst_highlight = max(result.headroom_clipped_highlights)
+        worst_shadow = max(result.headroom_clipped_shadows)
+        clipped_sides = [
+            (side, worst)
+            for side, worst in (
+                ("highlights", worst_highlight),
+                ("shadows", worst_shadow),
+            )
+            if worst > HEADROOM_CLIP_WARN_FRACTION
+        ]
+        if clipped_sides:
+            detail = " and ".join(
+                f"{worst * 100:.2f}% of one channel's {side}"
+                for side, worst in clipped_sides
+            )
             emit(
                 WarningEvent(
                     run_id=run_id,
                     code=Code.NORMALIZE_HEADROOM_CLIPPED,
                     message=(
                         f"{record.negative_id}: the encode's headroom clipped "
-                        f"{worst_headroom * 100:.2f}% of one channel's pixels; "
-                        "the headroom constants are likely too tight"
+                        f"{detail}; the headroom constants are likely too tight"
                     ),
                 )
             )

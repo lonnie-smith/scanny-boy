@@ -270,22 +270,17 @@ struct ContentView: View {
     @ViewBuilder
     private var configurationSections: some View {
         Section("Flat Field") {
+            // Chosen fresh for every run: a roll does not lock to one
+            // profile, so different runs into the same roll may each pick
+            // a different one. Defaults to the last profile used, across
+            // any roll.
             Picker("Profile", selection: $model.flatFieldProfileID) {
                 Text("None").tag(String?.none)
                 ForEach(flatField.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
-            // The caption below says the choice is fixed; the control must
-            // agree, or the user can select a different profile that the
-            // CLI will then refuse with `ROLL_INVARIANT_MISMATCH`.
-            .disabled(model.isRollLockedToFlatFieldProfile)
-            if model.isRollLockedToFlatFieldProfile, let locked = model.roll?.processingParams.flatFieldProfileID {
-                let name = flatField.profiles.first { $0.profileID == locked }?.name ?? locked
-                Text("This roll is locked to “\(name)”.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if model.flatFieldProfileID == nil {
+            if model.flatFieldProfileID == nil {
                 Text("Choose the profile measured for this copy stand; it corrects the lens falloff every scan of the roll.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

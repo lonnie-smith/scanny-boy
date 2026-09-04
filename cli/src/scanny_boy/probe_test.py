@@ -513,7 +513,7 @@ def test_probe_accepts_changed_shots_per_negative(tmp_path):
     assert outcome.catalogue
 
 
-# --- flat-field: --roll surfaces a profile mismatch before any run ---------
+# --- flat-field: --roll does not lock a roll to one profile ----------------
 
 
 def _save_flatfield_profile(profile_id: str, name: str, *, geometry: dict | None = None):
@@ -563,7 +563,11 @@ def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
     assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
 
 
-def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
+def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
+    """A roll does not lock to the profile its first run used: probing the
+    same roll with a different profile — or none — still validates, since
+    `flat_field`/`chromatic_aberration` are excluded from the roll's
+    processing-params invariant."""
     from scanny_boy.pipeline import build_processing_params
     from scanny_boy.roll_manifest import (
         RunRecord,
@@ -593,18 +597,16 @@ def test_probe_with_roll_reports_a_flatfield_mismatch(tmp_path):
         input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id=profile_a.profile_id
     )
 
-    # ...a different one is the same refusal `run` will give, seen before
-    # Stitch is ever pressed.
-    with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(
-            input_dir,
-            None,
-            2,
-            roll_dir=roll_dir,
-            flatfield_profile_id=profile_b.profile_id,
-        )
-
-    assert excinfo.value.code == Code.ROLL_INVARIANT_MISMATCH
+    # ...and so does a different one, or none at all — the profile is a
+    # per-run choice, not a roll invariant.
+    run_probe(
+        input_dir,
+        None,
+        2,
+        roll_dir=roll_dir,
+        flatfield_profile_id=profile_b.profile_id,
+    )
+    run_probe(input_dir, None, 2, roll_dir=roll_dir)
 
 
 def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
