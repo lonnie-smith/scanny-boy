@@ -856,11 +856,23 @@ nothing keys off them.
 ## 11. Concurrency, memory, disk
 
 - `ThreadPoolExecutor` for RAW work — rawpy's LibRaw build releases the GIL.
-  Default workers `min(shots_per_negative, os.process_cpu_count() or 1, 4)`,
-  where `shots_per_negative` is the batch's own value; the cap of 4 exists
-  because neither CPU-count API distinguishes P-cores from E-cores on Apple
-  silicon. `--jobs 1` uses a fully serial path that never constructs an
+  Default workers `min(len(files), os.process_cpu_count() or 1, 4)`, where
+  `len(files)` is the run's total frame count, not one group's; the cap of 4
+  exists because neither CPU-count API distinguishes P-cores from E-cores on
+  Apple silicon. `--jobs 1` uses a fully serial path that never constructs an
   executor.
+- Concurrency spans the whole run, not just one group: `pipeline.py`'s
+  `run_convert` opens one pool for the entire run and submits every group's
+  frames to it up front, in canonical order (`_submit_all_groups`). The
+  pool's FIFO queue means `workers` frames run at a time and the run works
+  through groups roughly in order, so a run of many single-shot negatives
+  (`--per-negative 1`) — previously capped at one frame at a time no matter
+  what `--jobs` was, because each group only ever had one frame to give a
+  per-group pool — now actually uses the worker count. Publishing still
+  walks one group at a time, in canonical order, on the main thread; a
+  cancellation discards the group the loop is blocked on *and* any later
+  group the pool had already raced ahead and finished staging in the
+  background (`_discard_from`).
 - **640 MiB per worker**, and the total must not exceed half of physical RAM.
   The computed default is silently *reduced* to fit; an explicit `--jobs` that
   exceeds it is *rejected* with `INSUFFICIENT_MEMORY`, because the user asked
