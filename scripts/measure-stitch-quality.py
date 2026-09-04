@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
-"""Measure the corrected pipeline for docs/STITCH_QUALITY_PLAN.md section 4's
-re-tuning gate, on the real gate-B scans.
-
-Every constant `registration.py`, `layout.py`, and `composite.py` gate on was
-measured at user gate C against captures with **no** distortion correction,
-an isotropic feather, and a scale-1 layout model. All three of those are now
-gone (the strip-axis feather, the per-frame scale solve, and the weighted
-layout rows all landed on this branch already), so those constants gate a
-pipeline that no longer exists.
-
-**This script only measures and proposes. It changes nothing.** Read the
-report it prints, then land the new constants in a follow-up commit only
-after the user approves the proposed table — the same discipline every
-constant in this codebase was set by.
+"""Measure the stitching pipeline (detection, registration, layout,
+compositing) on the real gate-B scans.
 
 Unlike `scripts/measure-registration.py` (P2-1, written before `detection.py`,
 `registration.py`, `layout.py`, and `composite.py` existed, so it had to
@@ -20,12 +8,16 @@ reimplement their algorithms to predict them), this script **imports the
 production modules** and calls them directly. There is no second
 implementation to keep in step here.
 
+**This script only measures. It changes nothing** — it does not read or
+write any of `registration.py`'s, `layout.py`'s, or `composite.py`'s
+constants.
+
 Usage, from the repository root:
 
     uv run --project cli scripts/measure-stitch-quality.py
     uv run --project cli scripts/measure-stitch-quality.py --out /tmp/quality
     uv run --project cli scripts/measure-stitch-quality.py --long-edges 2000,3000
-    uv run --project cli scripts/measure-stitch-quality.py --profile /path/to/profile.json
+    uv run --project cli scripts/measure-stitch-quality.py --profile <profile-id>
 """
 
 from __future__ import annotations
@@ -45,13 +37,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
 
 # Imported after the path insert above, so this runs from a checkout without
 # the package installed, exactly as measure-registration.py does it. These
-# are the actual production modules docs/STITCH_QUALITY_PLAN.md section 4.1
-# requires this script to import rather than reimplement.
+# are the actual production modules, imported rather than reimplemented, so
+# this script cannot silently drift from what production actually does.
 from scanny_boy import composite as composite_module
 from scanny_boy import layout as layout_module
 from scanny_boy import registration as registration_module
 from scanny_boy.cancellation import CancellationToken
-from scanny_boy.detection import DETECTION_LONG_EDGE, build_detection_image
+from scanny_boy.detection import build_detection_image
+from scanny_boy.flatfield import FlatFieldProfile
+from scanny_boy.library import repo
 from scanny_boy.raw_decode import decode_raw
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,20 +85,6 @@ GOOD_NEGATIVES = ["normal", "wonky", "order", "tight"]
 BAD_NEGATIVES = ["mismatch"]
 
 SWEEP_LONG_EDGES = (2000, 3000, 4000)
-
-# Today's gate-C constants, for the "today" column of the proposal table
-# (section 4.2). Read from the modules themselves, not retyped, so this
-# script cannot silently drift from what production actually gates on.
-_TODAY = {
-    "DETECTION_LONG_EDGE": DETECTION_LONG_EDGE,
-    "MAX_PAIR_RMS_PX": registration_module.MAX_PAIR_RMS_PX,
-    "MAX_GLOBAL_RMS_PX": layout_module.MAX_GLOBAL_RMS_PX,
-    "SCALE_DRIFT_WARN": registration_module.SCALE_DRIFT_WARN,
-    "SCALE_DRIFT_FAIL": registration_module.SCALE_DRIFT_FAIL,
-    "MAX_OVERLAP_MAD": composite_module.MAX_OVERLAP_MAD,
-    "MIN_GAIN_OVERLAP_PX": composite_module.MIN_GAIN_OVERLAP_PX,
-    "GAIN_DRIFT_WARN": composite_module.GAIN_DRIFT_WARN,
-}
 
 
 @dataclasses.dataclass
@@ -160,13 +140,34 @@ def load_negative_frames(nef_dir: Path, negative: str) -> dict[str, np.ndarray]:
 
 
 def measure_negative(
-    negative: str, frames: dict[str, np.ndarray], *, long_edge: int, clahe: bool
+    negative: str,
+    frames: dict[str, np.ndarray],
+    *,
+    long_edge: int,
+    clahe: bool,
+    profile: FlatFieldProfile | None,
 ) -> NegativeMeasurement:
     """Detect, match, and lay out one negative's frames at one
     `DETECTION_LONG_EDGE`, calling `registration.py` and `layout.py`
     directly. Compositing (and its overlap-MAD measurement) only runs when
-    a layout actually solves."""
+    a layout actually solves.
+
+    `profile`, when given, is applied exactly as `stitch_pipeline.py` applies
+    it: its geometry undistorts correspondences before RANSAC and warps the
+    composite (docs/GEOMETRIC_PLAN.md section 5.3), and its chromatic
+    aberration maps (when in "maps" mode) are passed through to the
+    composite too."""
     names = frame_names(negative)
+
+    undistorter = None
+    geometry = None
+    ca_maps = None
+    if profile is not None and profile.geometry is not None:
+        geometry = profile.geometry
+        undistorter = registration_module.undistorter_from_geometry(geometry)
+        ca = profile.chromatic_aberration
+        if ca is not None and ca.get("mode") == "maps":
+            ca_maps = ca
 
     detect_started = time.monotonic()
     features = {}
@@ -181,7 +182,9 @@ def measure_negative(
     measurements = []
     for i, a in enumerate(names):
         for b in names[i + 1 :]:
-            result = registration_module.register_pair(features[a], features[b])
+            result = registration_module.register_pair(
+                features[a], features[b], undistorter
+            )
             pair_results.append(result)
             measurements.append(
                 PairMeasurement(
@@ -227,6 +230,8 @@ def measure_negative(
         lambda name: frames[name],
         cancel=CancellationToken(),
         on_progress=lambda: None,
+        geometry=geometry,
+        ca=ca_maps,
     )
     for m in measurements:
         key = (m.a, m.b)
@@ -350,79 +355,6 @@ def print_sweep_summary(by_long_edge: dict[int, list[NegativeMeasurement]]) -> N
     )
 
 
-def propose_constants(
-    by_long_edge: dict[int, list[NegativeMeasurement]], chosen_long_edge: int
-) -> None:
-    print("## Proposed gate-D constants\n")
-    print(
-        "Each threshold below is set to the healthy data's worst observation "
-        "plus a stated margin, not to a round number. **This table is a "
-        "proposal, not a change** — docs/STITCH_QUALITY_PLAN.md section 4 "
-        "stops here for the user's approval; the constants change in a "
-        "follow-up commit only after that.\n"
-    )
-    measurements = by_long_edge[chosen_long_edge]
-    good_pairs = [
-        p for nm in measurements for p in nm.pairs
-        if nm.negative in GOOD_NEGATIVES and p.truly_overlaps and p.accepted
-    ]
-    rms_values = [p.rms_residual_px for p in good_pairs]
-    scale_drift_values = [abs(p.similarity_scale - 1.0) for p in good_pairs]
-    overlap_mad_values = [
-        p.overlap_mad for p in good_pairs if p.overlap_mad is not None
-    ]
-    global_rms_values = [
-        nm.global_rms_px for nm in measurements
-        if nm.negative in GOOD_NEGATIVES and nm.global_rms_px is not None
-    ]
-
-    def worst_plus_margin(values: list[float], margin_ratio: float) -> float | None:
-        if not values:
-            return None
-        return max(values) * (1.0 + margin_ratio)
-
-    rows = [
-        [
-            "DETECTION_LONG_EDGE", "detection.py",
-            str(_TODAY["DETECTION_LONG_EDGE"]), str(chosen_long_edge),
-        ],
-        [
-            "MAX_PAIR_RMS_PX", "registration.py",
-            num(_TODAY["MAX_PAIR_RMS_PX"], 1),
-            num(worst_plus_margin(rms_values, 0.25), 2) if rms_values else "no healthy data",
-        ],
-        [
-            "MAX_GLOBAL_RMS_PX", "layout.py",
-            num(_TODAY["MAX_GLOBAL_RMS_PX"], 1),
-            num(worst_plus_margin(global_rms_values, 0.25), 2)
-            if global_rms_values else "no healthy data",
-        ],
-        [
-            "SCALE_DRIFT_WARN / SCALE_DRIFT_FAIL", "registration.py",
-            f"{num(_TODAY['SCALE_DRIFT_WARN'], 4)} / {num(_TODAY['SCALE_DRIFT_FAIL'], 4)}",
-            (
-                f"{num(worst_plus_margin(scale_drift_values, 0.5), 4)} / "
-                f"{num(worst_plus_margin(scale_drift_values, 1.0), 4)}"
-            ) if scale_drift_values else "no healthy data",
-        ],
-        [
-            "MAX_OVERLAP_MAD", "composite.py",
-            num(_TODAY["MAX_OVERLAP_MAD"], 3),
-            num(worst_plus_margin(overlap_mad_values, 0.25), 4)
-            if overlap_mad_values else "no healthy data",
-        ],
-    ]
-    table(["constant", "module", "today", "proposed"], rows)
-    print(
-        "`MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` need a gain-drift "
-        "distribution across healthy pairs, which this table does not "
-        "collect separately from `MAX_OVERLAP_MAD`'s pre/post-gain pairing; "
-        "fold them into the same gate rather than leaving a second one "
-        "owing, using `composite.CompositeResult.overlap_mad_pregain` "
-        "against `overlap_mad` on this same run's data.\n"
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nef-dir", type=Path, default=DEFAULT_NEF_DIR, dest="nef_dir")
@@ -432,9 +364,20 @@ def main() -> int:
         "--clahe", action="store_true",
         help="Use CLAHE-enhanced detection images (USE_CLAHE fallback path).",
     )
+    parser.add_argument(
+        "--profile", metavar="ID", default=None,
+        help=(
+            "Flat-field profile ID to load from the library (as with "
+            "`scanny-boy flatfield delete --profile ID`). When given, its "
+            "geometry and chromatic-aberration correction are applied "
+            "exactly as stitch_pipeline.py applies them. Omit to measure "
+            "the uncorrected pipeline."
+        ),
+    )
     args = parser.parse_args()
 
     long_edges = [int(v) for v in args.long_edges.split(",")]
+    profile = repo.load_flatfield_profile(args.profile) if args.profile else None
 
     files = [f for negative in NEGATIVES.values() for f in negative["frames"]]
     missing = [f for f in files if not (args.nef_dir / f).exists()]
@@ -443,20 +386,20 @@ def main() -> int:
             "Nothing was measured: the gate-B sample scans are not present "
             f"at {args.nef_dir}.\n\n"
             f"Missing {len(missing)} of {len(files)}: {', '.join(missing)}\n\n"
-            "docs/STITCH_QUALITY_PLAN.md section 4.1 requires the real gate-B "
-            "NEF fixtures (routine, rotated, out-of-order, minimum-overlap, "
-            "and non-overlapping negatives) — substitutes may not be "
-            "synthesised, the same rule scripts/measure-registration.py "
-            "follows.",
+            "The real gate-B NEF fixtures (routine, rotated, out-of-order, "
+            "minimum-overlap, and non-overlapping negatives) are required — "
+            "substitutes may not be synthesised, the same rule "
+            "scripts/measure-registration.py follows.",
             file=sys.stderr,
         )
         return 1
 
-    print("# Stitch quality measurements (docs/STITCH_QUALITY_PLAN.md section 4)\n")
+    print("# Stitch quality measurements\n")
     stamp = datetime.datetime.now(datetime.UTC).astimezone().isoformat(timespec="seconds")
     print(
         f"Generated {stamp} by `scripts/measure-stitch-quality.py` from "
-        f"`{args.nef_dir}`, OpenCV {cv2.__version__}.\n"
+        f"`{args.nef_dir}`, OpenCV {cv2.__version__}"
+        f"{f', profile {profile.profile_id} ({profile.name})' if profile else ', no profile'}.\n"
     )
     print(
         f"Negatives: {', '.join(GOOD_NEGATIVES)} (expected to stitch); "
@@ -474,7 +417,11 @@ def main() -> int:
         for negative in NEGATIVES:
             measurements.append(
                 measure_negative(
-                    negative, all_frames[negative], long_edge=long_edge, clahe=args.clahe
+                    negative,
+                    all_frames[negative],
+                    long_edge=long_edge,
+                    clahe=args.clahe,
+                    profile=profile,
                 )
             )
         by_long_edge[long_edge] = measurements
@@ -485,7 +432,6 @@ def main() -> int:
         print_pair_table(by_long_edge[long_edge])
 
     print_sweep_summary(by_long_edge)
-    propose_constants(by_long_edge, chosen_long_edge=long_edges[0])
 
     return 0
 

@@ -202,10 +202,14 @@ def register_pair(
        from here on is in full-resolution pixels — including
        RANSAC_REPROJ_PX.
     4. cv2.estimateAffinePartial2D(..., method=cv2.RANSAC,
-       ransacReprojThreshold=RANSAC_REPROJ_PX, maxIters=5000) for the
-       inlier mask and the similarity scale.
-    5. rigid_from_correspondences on the inliers only. This, not the
-       similarity, is the returned transform.
+       ransacReprojThreshold=RANSAC_REPROJ_PX, maxIters=5000) for the inlier
+       mask only — its own candidate matrix (fit before that final inlier
+       set was known) is otherwise discarded.
+    5. On the inliers alone: rigid_from_correspondences for the returned
+       transform, and similarity_from_correspondences for scale_drift and
+       similarity_scale, so every reported number — transform, residual,
+       and scale — comes from the same closed-form refit over the same
+       final inlier set, rather than mixing in cv2's own internal estimate.
     6. Apply the section 3.4 gates and set accepted/reject_code.
 
     `undistorter`, when given (docs/GEOMETRIC_PLAN.md section 5.3), pushes
@@ -310,11 +314,6 @@ def register_pair(
     inliers = int(inlier_bool.sum())
     inlier_ratio = inliers / good_matches
 
-    scale_from_similarity = float(
-        np.hypot(matrix[0, 0], matrix[1, 0])
-    )
-    scale_drift = abs(scale_from_similarity - 1.0)
-
     src_inliers = pts_b_full[inlier_bool]
     dst_inliers = pts_a_full[inlier_bool]
 
@@ -329,6 +328,15 @@ def register_pair(
         rms_residual_px = float("inf")
         similarity_transform = _IDENTITY_TRANSFORM
         similarity_scale = 1.0
+
+    # `matrix`'s own scale (cv2's internal RANSAC candidate, fit before the
+    # final inlier set was known) is discarded in favour of
+    # `similarity_scale`: the closed-form refit above, over the same final
+    # inliers `rigid_from_correspondences` uses. RANSAC still chooses which
+    # points are inliers under the similarity model (`matrix`'s reprojection),
+    # but every number reported from here on — the rigid transform, its rms
+    # residual, and now the scale — is refit on that final inlier set alone.
+    scale_drift = abs(similarity_scale - 1.0)
 
     if inliers < MIN_PAIR_INLIERS or inlier_ratio < MIN_PAIR_INLIER_RATIO:
         return PairResult(
