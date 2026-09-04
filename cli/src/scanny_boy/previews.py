@@ -26,8 +26,9 @@ and only here, and this path decodes through
 `normalization.decode_normalized`, never through the file's ICC profile
 (section 3.12's rule).
 
-For a 90-degree rotation the regeneration is a lossless pixel transpose of
-the cached preview, not a re-decode of a multi-megapixel TIFF. PNG, not
+For a 90-degree rotation or a horizontal flip the incremental update is a
+lossless pixel transpose or mirror of the cached preview, not a re-decode of
+a multi-megapixel TIFF. PNG, not
 JPEG: repeated edits would otherwise compound generational loss.
 """
 
@@ -100,12 +101,18 @@ def _write_downscaled(image: np.ndarray, destination: Path) -> None:
 
 
 def generate_preview(
-    roll_dir: Path, roll_id: str, negative, quarter_turns: int = 0
+    roll_dir: Path,
+    roll_id: str,
+    negative,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
-    `quarter_turns` applied — the published TIFF itself never carries edits,
-    so the rotation is folded in here. Returns the preview path, or None
-    when the negative has no published output to preview."""
+    transform applied — the published TIFF itself never carries edits, so
+    the transform is folded in here. The canonical replay mirrors the
+    original horizontally first (when flipped) and then rotates; returns
+    the preview path, or None when the negative has no published output to
+    preview."""
     if negative.output is None:
         return None
     import tifffile
@@ -116,6 +123,8 @@ def generate_preview(
         image = np.stack([image] * 3, axis=-1)
     elif image.shape[2] == 4:
         image = image[:, :, :3]
+    if flipped_horizontally:
+        image = np.ascontiguousarray(image[:, ::-1])
     if quarter_turns % 4:
         # np.rot90 turns counter-clockwise; the count is net clockwise
         # quarter turns.
@@ -126,40 +135,60 @@ def generate_preview(
     return destination
 
 
-def rotate_preview(current_path: Path, direction: str) -> Path:
-    """One lossless quarter turn of the cached preview, in place."""
+def transform_preview(current_path: Path, op: str) -> Path:
+    """One lossless transform of the cached preview, in place: `op` is one
+    of `"cw"`, `"ccw"`, or `"flip"` — the op just appended to the log,
+    applied to pixels that already reflect every earlier one."""
     image = cv2.imread(str(current_path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"could not read preview {current_path}")
-    # cv2 is BGR but a transpose is channel-agnostic.
+    # cv2 is BGR but a transpose or mirror is channel-agnostic.
     # np.rot90 turns counter-clockwise, so cw is k=3.
-    rotated = np.rot90(image, k=3 if direction == "cw" else 1)
-    ok, encoded = cv2.imencode(".png", rotated)
+    if op == "flip":
+        transformed = np.ascontiguousarray(image[:, ::-1])
+    else:
+        transformed = np.rot90(image, k=3 if op == "cw" else 1)
+    ok, encoded = cv2.imencode(".png", transformed)
     if not ok:
         raise ValueError(f"could not encode preview {current_path}")
     current_path.write_bytes(encoded.tobytes())
     return current_path
 
 
+# The preview ops `ensure_preview`/`transform_preview` understand, kept in
+# step with the repo's ops log: rotations by direction, plus the flip.
+PREVIEW_OPS = {"cw", "ccw", "flip"}
+
+
 def ensure_preview(
-    roll_dir: Path, roll_id: str, negative, direction: str | None = None
+    roll_dir: Path, roll_id: str, negative, op: str | None = None
 ) -> Path | None:
-    """The preview path `negative` should display after `direction`
+    """The preview path `negative` should display after `op`
     (None meaning: make sure one exists).
 
     - No preview yet: generate one from the published TIFF with the ops
-      log's *net* rotation applied — the incremental `direction` is already
-      in that net, and the cache may have been lost several edits ago, so
-      regenerating with only the latest turn would lie.
-    - Preview exists and a direction came in: rotate the cached preview,
-      which already reflects every earlier turn.
-    - Preview exists, no direction: leave it alone.
+      log's *net* transform applied — the incremental `op` is already in
+      that net, and the cache may have been lost several edits ago, so
+      regenerating with only the latest op would lie.
+    - Preview exists and an op came in: transform the cached preview, which
+      already reflects every earlier edit.
+    - Preview exists, no op: leave it alone.
     """
+    if op is not None and op not in PREVIEW_OPS:
+        raise ValueError(f"unknown preview op {op!r}")
     if negative.preview_path is None or not Path(negative.preview_path).exists():
-        net = repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
-        return generate_preview(roll_dir, roll_id, negative, quarter_turns=net)
-    if direction is not None:
-        return rotate_preview(Path(negative.preview_path), direction)
+        quarter_turns, flipped = repo.net_edit_state(
+            roll_dir, negative.negative_id
+        )
+        return generate_preview(
+            roll_dir,
+            roll_id,
+            negative,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped,
+        )
+    if op is not None:
+        return transform_preview(Path(negative.preview_path), op)
     return Path(negative.preview_path)
 
 
@@ -182,9 +211,15 @@ def sync_previews(
         has_preview = negative.preview_path and Path(negative.preview_path).exists()
         if has_preview and negative.output["name"] not in published:
             continue
-        turns = repo.net_rotation_quarter_turns(roll_dir, negative.negative_id)
+        quarter_turns, flipped = repo.net_edit_state(
+            roll_dir, negative.negative_id
+        )
         preview = generate_preview(
-            roll_dir, manifest.roll_id, negative, quarter_turns=turns
+            roll_dir,
+            manifest.roll_id,
+            negative,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped,
         )
         if preview is not None:
             negative.preview_path = str(preview)
@@ -195,11 +230,10 @@ def sync_previews(
         write_roll_manifest(roll_dir, manifest)
 
 
-def rotations_for(manifest, roll_dir: Path) -> dict[str, int]:
-    """Net quarter turns per negative id, for `roll info` augmentation."""
+def transforms_for(manifest, roll_dir: Path) -> dict[str, tuple[int, bool]]:
+    """Net transform per negative id — `(quarter_turns, flipped)` — for
+    `roll info` augmentation."""
     return {
-        negative.negative_id: repo.net_rotation_quarter_turns(
-            roll_dir, negative.negative_id
-        )
+        negative.negative_id: repo.net_edit_state(roll_dir, negative.negative_id)
         for negative in manifest.negatives
     }

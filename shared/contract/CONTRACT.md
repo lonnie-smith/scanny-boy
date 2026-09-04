@@ -71,8 +71,9 @@ negative, run, and source, plus an ordered per-negative **edits ops log**),
 the CLI renders each negative's preview, and `edit rotate` records a
 rotation without ever touching a published TIFF. `roll info`'s payload keeps
 the roll-manifest shape; each negative additionally carries
-`preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` (the
-ops log's net effect, derived rather than stored). A client that only
+`preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` +
+`flipped_horizontally` (the ops log's net effect, derived rather than
+stored). A client that only
 understands an earlier protocol version must reject a newer stream rather
 than guess at the new fields.
 
@@ -99,8 +100,9 @@ scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negat
 
 scanny-boy apply-metadata --roll DIR
 
-scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw
-scanny-boy edit delete --roll DIR --negative ID
+scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
+scanny-boy edit flip   --roll DIR --negative ID [ID ...]
+scanny-boy edit delete --roll DIR --negative ID [ID ...]
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
@@ -207,8 +209,9 @@ folder has vanished is reported as `"unreadable"` with `ROLL_NOT_FOUND`
 rather than silently disappearing.
 
 `roll info` loads one roll from the library database and emits it as a
-`roll_info` event, each negative augmented with `preview_path` and
-`rotation_quarter_turns`. Swift never reads the library database itself and
+`roll_info` event, each negative augmented with `preview_path`,
+`rotation_quarter_turns`, and `flipped_horizontally`. Swift never reads the
+library database itself and
 never enumerates the library itself — `roll list` and `roll info` are the
 only two ways in.
 
@@ -231,29 +234,47 @@ an unregistered roll.
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
 
-`edit rotate` records a 90-degree rotation of one negative — `cw` clockwise,
-`ccw` counter-clockwise — by appending to the negative's ordered edits ops
+`edit rotate` records a 90-degree rotation of one or more negatives —
+`cw` clockwise,
+`ccw` counter-clockwise — by appending to each negative's ordered edits ops
 log in the library database. The published TIFF is never modified. It
-regenerates the CLI-rendered preview (a lossless PNG under Application
-Support, path recorded on the negative) and emits `edit_recorded` carrying
+regenerates each CLI-rendered preview (a lossless PNG under Application
+Support, path recorded on the negative) and emits `edit_recorded` per
+negative carrying
 `negative_id`, the `edit` row (`id`, `negative_id`, `position`, `op`,
 `params`, `created_at`), `rotation_quarter_turns` (the ops log's net effect,
-0–3), and `preview_path`. It fails with `INVALID_EDIT` for an unknown
-direction, `ROLL_NOT_FOUND` for an unregistered roll, and
-`NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
+0–3), `flipped_horizontally` (whether the ops log's net transform includes a
+horizontal mirror), and `preview_path`. It fails with `INVALID_EDIT` for an
+unknown direction, `ROLL_NOT_FOUND` for an unregistered roll, and
+`NEGATIVE_NOT_FOUND` for an unknown or unstitched negative — the whole
+selection is validated before any op is appended, so a batch either records
+or fails without partial effects.
 
-`edit delete` removes one negative outright, whatever its status: its record
+`edit flip` records a horizontal mirror of one or more negatives — a flip of
+the pixels as they currently render, *after* any recorded rotations — by
+appending a `flip` op to each negative's ordered edits ops log. Like
+`edit rotate` it never touches the published TIFF; it regenerates the
+previews and emits `edit_recorded` per negative with the same fields. The
+ops log's net transform does not collapse to a rotation alone: a flip and a
+rotation do not commute, so consumers replay the log into a
+`(rotation_quarter_turns, flipped_horizontally)` pair. It fails with the
+same codes as `edit rotate`.
+
+`edit delete` removes one or more negatives outright, whatever their
+status: each record
 (and its edits ops log, by cascade) is deleted from the library database,
 its published TIFF is unlinked from the roll folder, and its rendered
-preview PNG is unlinked from Application Support. The record goes first, so
+preview PNG is unlinked from Application Support. The records go first, so
 a crash leaves an orphan file rather than a dangling record; a failed
 unlink warns with `ORPHAN_FILE_NOT_REMOVED` and never fails the command. It
-emits `negative_deleted` carrying `negative_id` and `output` (the deleted
+emits `negative_deleted` per negative carrying `negative_id` and `output`
+(the deleted
 TIFF's name, null when the negative had never been stitched). The
-surviving negatives' `sequence` values are renumbered. The negative's run
+surviving negatives' `sequence` values are renumbered. Each negative's run
 row and source rows are kept — a later run over the same NEFs re-creates
 the negative. It fails with `ROLL_NOT_FOUND` for an unregistered roll and
-`NEGATIVE_NOT_FOUND` for an unknown negative.
+`NEGATIVE_NOT_FOUND` for an unknown negative — again validating the whole
+selection before removing anything.
 
 `export` writes each negative's TIFF into `--output` with the negative's
 edits applied — the ops log replayed over the published pixels, named after
@@ -323,7 +344,7 @@ library database rather than a JSON file in the roll folder).
 | `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
-| `edit_recorded` | A rotation op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, and `preview_path`. |
+| `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
 | `flatfield_created` | A flat-field profile was created. Carries `profile`. |

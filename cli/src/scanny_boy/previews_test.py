@@ -1,6 +1,6 @@
-"""Tests for the preview cache: lossless quarter turns go the way labelled,
-and the 16→8-bit preview encode is decode-normalize-invert — no gamma, a
-positive-looking display of the normalized-density negative."""
+"""Tests for the preview cache: lossless quarter turns and mirrors go the
+way labelled, and the 16→8-bit preview encode is decode-normalize-invert —
+no gamma, a positive-looking display of the normalized-density negative."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from scanny_boy import normalization
-from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, rotate_preview
+from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, transform_preview
 
 
 def _write_preview(tmp_path: Path, image: np.ndarray) -> Path:
@@ -26,7 +26,7 @@ def test_rotate_preview_cw_is_clockwise(tmp_path):
     image = np.arange(12, dtype=np.uint8).reshape(3, 4, 1)
     path = _write_preview(tmp_path, image)
 
-    rotate_preview(path, "cw")
+    transform_preview(path, "cw")
 
     rotated = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(rotated, np.rot90(image, k=3).squeeze())
@@ -36,10 +36,20 @@ def test_rotate_preview_ccw_is_counter_clockwise(tmp_path):
     image = np.arange(12, dtype=np.uint8).reshape(3, 4, 1)
     path = _write_preview(tmp_path, image)
 
-    rotate_preview(path, "ccw")
+    transform_preview(path, "ccw")
 
     rotated = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(rotated, np.rot90(image, k=1).squeeze())
+
+
+def test_flip_preview_mirrors_horizontally(tmp_path):
+    image = np.arange(12, dtype=np.uint8).reshape(3, 4, 1)
+    path = _write_preview(tmp_path, image)
+
+    transform_preview(path, "flip")
+
+    flipped = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(flipped, image[:, ::-1].squeeze())
 
 
 def test_display_lut_is_monotonic_and_spans_the_range():
@@ -116,10 +126,14 @@ def _roll_with_published_negative(tmp_path: Path, image: np.ndarray):
     return roll_dir, manifest, negative
 
 
-def _expected_preview(image: np.ndarray, quarter_turns: int) -> np.ndarray:
+def _expected_preview(
+    image: np.ndarray, quarter_turns: int, flipped: bool = False
+) -> np.ndarray:
     """What `generate_preview` writes: the 16→8-bit display encode, the net
-    rotation, then RGB→BGR for storage."""
+    transform (mirror first, then rotation), then RGB→BGR for storage."""
     display = NORMALIZED_DISPLAY_LUT[image]
+    if flipped:
+        display = np.ascontiguousarray(display[:, ::-1])
     display = np.ascontiguousarray(np.rot90(display, k=(-quarter_turns) % 4))
     return cv2.cvtColor(display, cv2.COLOR_RGB2BGR)
 
@@ -152,6 +166,32 @@ def test_ensure_preview_regenerates_with_the_net_rotation(tmp_path):
 
     stored = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(stored, _expected_preview(image, 3))
+
+
+def test_ensure_preview_regenerates_with_the_net_flip(tmp_path):
+    """Same rule for a flip: a lost cache regenerates from the published
+    TIFF with the ops log's whole net transform — mirror included."""
+    from scanny_boy import previews
+    from scanny_boy.library import repo
+
+    # An asymmetric image, so the mirror is distinguishable from any turn.
+    image = np.repeat(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 3, axis=-1)
+    image = (image * 3000).astype(np.uint16)
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    repo.append_edit(
+        roll_dir, negative.negative_id, repo.ROTATE_OP, {"direction": "cw"}
+    )
+    preview = previews.ensure_preview(roll_dir, "rid-1", negative)
+    preview.unlink()  # the cache is lost
+
+    repo.append_edit(roll_dir, negative.negative_id, repo.FLIP_OP, {})
+    preview = previews.ensure_preview(roll_dir, "rid-1", negative, "flip")
+
+    stored = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
+    # flip applied to the already-rotated pixels: mirror of a 1-cw turn,
+    # which nets to (mirror first, then 3 cw turns).
+    np.testing.assert_array_equal(stored, _expected_preview(image, 3, flipped=True))
 
 
 def test_sync_previews_regenerates_a_stale_preview_after_a_restitch(tmp_path):

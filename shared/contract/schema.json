@@ -320,6 +320,7 @@
               "roll delete",
               "apply-metadata",
               "edit rotate",
+              "edit flip",
               "edit delete",
               "export",
               "flatfield create",
@@ -416,7 +417,7 @@
     {
       "if": { "properties": { "event": { "const": "edit_recorded" } } },
       "then": {
-        "required": ["negative_id", "edit", "rotation_quarter_turns", "preview_path"],
+        "required": ["negative_id", "edit", "rotation_quarter_turns", "flipped_horizontally", "preview_path"],
         "properties": {
           "negative_id": { "type": "string" },
           "edit": {
@@ -432,6 +433,7 @@
             }
           },
           "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "flipped_horizontally": { "type": "boolean" },
           "preview_path": { "type": ["string", "null"] }
         }
       }

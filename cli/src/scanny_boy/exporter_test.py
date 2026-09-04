@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy.edits import run_edit_rotate
+from scanny_boy.edits import run_edit_flip, run_edit_rotate
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.exporter import ExportFailure, apply_edits, run_export
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
@@ -74,6 +74,46 @@ def test_apply_edits_matches_clockwise_quarter_turns():
     # Quarter turns count clockwise; np.rot90 is counter-clockwise.
     for k in range(4):
         np.testing.assert_array_equal(apply_edits(_ORIGINAL, k), np.rot90(_ORIGINAL, k=-k))
+
+
+def test_apply_edits_mirrors_before_rotating_when_flipped():
+    """The canonical net transform is a horizontal mirror of the original
+    followed by the quarter turns — the flip composes under the rotation."""
+    mirrored = _ORIGINAL[:, ::-1]
+    for k in range(4):
+        np.testing.assert_array_equal(
+            apply_edits(_ORIGINAL, k, True), np.rot90(mirrored, k=-k)
+        )
+
+
+def test_export_applies_the_recorded_flip(stitched_roll, tmp_path):
+    run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+    output_dir = tmp_path / "export"
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)
+
+    assert outcome.failed == []
+    expected = _ORIGINAL[:, ::-1]
+    np.testing.assert_array_equal(
+        tifffile.imread(output_dir / "_DSC0001.tif"), expected
+    )
+
+
+def test_export_applies_a_flip_and_rotation_in_log_order(stitched_roll, tmp_path):
+    """Flip then one cw turn is the mirrored image rotated clockwise —
+    not the plain rotation of the original."""
+    run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+    run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    output_dir = tmp_path / "export"
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)
+
+    assert outcome.failed == []
+    expected = np.rot90(_ORIGINAL[:, ::-1], k=-1)
+    assert tifffile.imread(output_dir / "_DSC0001.tif").shape == expected.shape
+    np.testing.assert_array_equal(
+        tifffile.imread(output_dir / "_DSC0001.tif"), expected
+    )
 
 
 def test_export_applies_the_recorded_rotation(stitched_roll, tmp_path):

@@ -198,12 +198,60 @@ struct CLICommandTests {
 
     @Test("edit delete names the roll and the negative")
     func editDeleteArguments() {
-        let command = CLICommand.editDelete(roll: Self.out, negative: "a1b2c3-negative-01")
+        let command = CLICommand.editDelete(roll: Self.out, negatives: ["a1b2c3-negative-01"])
         #expect(
             command.arguments == [
                 "edit", "delete",
                 "--roll", "/Volumes/Scans/roll-12-tif",
                 "--negative", "a1b2c3-negative-01",
+            ]
+        )
+    }
+
+    // MARK: - Edit flip and batch selection
+
+    @Test("edit rotate repeats --negative for each selected frame")
+    func editRotateSelectionArguments() {
+        let command = CLICommand.editRotate(
+            roll: Self.out,
+            negatives: ["neg-01", "neg-02"],
+            clockwise: false
+        )
+        #expect(
+            command.arguments == [
+                "edit", "rotate",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--negative", "neg-02",
+                "--direction", "ccw",
+            ]
+        )
+    }
+
+    @Test("edit flip repeats --negative for each selected frame")
+    func editFlipSelectionArguments() {
+        let command = CLICommand.editFlip(roll: Self.out, negatives: ["neg-01"])
+        #expect(
+            command.arguments == [
+                "edit", "flip",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+            ]
+        )
+    }
+
+    @Test("edit delete repeats --negative for each selected frame")
+    func editDeleteSelectionArguments() {
+        let command = CLICommand.editDelete(
+            roll: Self.out, negatives: ["neg-01", "neg-02", "neg-03"]
+        )
+        #expect(
+            command.arguments == [
+                "edit", "delete",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--negative", "neg-02",
+                "--negative", "neg-03",
             ]
         )
     }
