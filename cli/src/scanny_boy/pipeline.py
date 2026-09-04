@@ -16,21 +16,31 @@ section 3.6 frames this move as the one place a real crash can leave a
 group half-published, and recovery for that is a rerun's job
 (`output_folder.plan_rerun` + `apply_recovery_cleanup`), not this run's.
 
-Concurrency (section 3.8) lives entirely inside one group. `_stage_group`
-either runs the frames serially — `--jobs 1`, which never constructs an
-executor at all — or submits them to a `ThreadPoolExecutor`. Workers return
-`_StagedFrame`, which carries a name, an index, and a path: "Do not return
-full image arrays to the parent." Publishing stays on the main thread and
-always walks the group in member order, so `item_done` order is stable even
-though frames finish out of order.
+Concurrency (section 3.8) spans the whole run, not just one group.
+`--jobs 1` runs every frame serially — `_stage_group_serial`, which never
+constructs an executor at all. Otherwise `run_convert` opens one
+`ThreadPoolExecutor` for the entire run, sized from the run's total frame
+count (not one group's), and `_submit_all_groups` submits every group's
+frames to it up front, in canonical order. The executor's queue is FIFO, so
+`workers` frames run at a time and the pool works through groups roughly in
+order — early groups finish and publish while later ones are still queued,
+rather than the whole run's frames landing in staging at once. Workers
+return `_StagedFrame`, which carries a name, an index, and a path: "Do not
+return full image arrays to the parent." Publishing stays on the main
+thread and always walks one group in member order, so `item_done` order is
+stable even though frames finish out of order — and groups themselves are
+still published in canonical order, one at a time, even though their
+staging now overlaps.
 
 Cancellation is cooperative. Workers check `CancellationToken` at the three
-step boundaries only (never mid-decode), and `_stage_group`'s `finally`
-shuts the pool down with `wait=True, cancel_futures=True` — queued frames
-are dropped, running frames are allowed to finish their current call, and
-only once every worker has stopped does the caller delete the staging
-directory. That ordering is section 3.8's "Never delete a directory while a
-worker may still write to it."
+step boundaries only (never mid-decode). On cancellation the run's pool
+shuts down with `wait=True, cancel_futures=True` — queued frames anywhere
+in the run are dropped, running frames anywhere in the run finish their
+current step, and only once every worker has stopped are the staging
+directories of the group being resolved *and every later group the pool had
+already raced ahead on* deleted (`_discard_from`). That ordering is section
+3.8's "Never delete a directory while a worker may still write to it",
+generalized from one group to every group this run had in flight.
 """
 
 from __future__ import annotations
@@ -41,7 +51,7 @@ import os
 import shutil
 import threading
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -539,38 +549,44 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
     )
 
 
-def _stage_group(
-    members: list[str], ctx: _GroupContext, workers: int
-) -> list[_StagedFrame]:
-    """Stage every frame of one group, serially or across threads.
+def _stage_group_serial(members: list[str], ctx: _GroupContext) -> list[_StagedFrame]:
+    """`--jobs 1`'s path: every frame on the calling thread, no executor
+    constructed at all, so a serial run has no thread-pool behaviour to go
+    wrong (section 3.8)."""
+    return [_stage_one_frame(member, ctx) for member in members]
 
-    Raises on the first frame that fails or on cancellation; either way
-    every worker has stopped by the time this returns, so the caller can
-    safely delete the staging directory.
+
+def _submit_all_groups(
+    pool: ThreadPoolExecutor,
+    groups: list[GroupRecord],
+    output_dir: Path,
+    run_id: str,
+    base_context: dict,
+) -> tuple[dict[str, Path], dict[str, list[Future[_StagedFrame]]]]:
+    """Create every group's staging directory and submit every frame of
+    every group, in canonical order, to one run-wide pool.
+
+    `ThreadPoolExecutor` runs its internal queue FIFO, so `workers` frames
+    run at a time and the pool works through the run roughly in canonical
+    group order — early groups finish and publish before later ones are
+    even dequeued, rather than the whole run's frames landing in staging
+    simultaneously. That is what keeps the disk-check's `largest_group_size
+    = max(per_negative, workers)` bound (see its call site) actually true.
     """
-    if workers <= 1:
-        # Section 3.8: "`--jobs 1` uses the serial path." No executor is
-        # constructed at all, so a serial run has no thread-pool
-        # behaviour to go wrong.
-        return [_stage_one_frame(member, ctx) for member in members]
-
-    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scanny-frame")
-    futures: dict[Future[_StagedFrame], str] = {}
-    try:
-        for member in members:
-            futures[pool.submit(_stage_one_frame, member, ctx)] = member
-        staged: list[_StagedFrame] = []
-        for future in as_completed(futures):
-            staged.append(future.result())
-        return staged
-    finally:
-        # `cancel_futures=True` drops frames that never started;
-        # `wait=True` blocks until frames that did start have finished
-        # their current step. Both halves of section 3.8's "Queued work
-        # is cancelled, running workers stop, and only then is the
-        # staging directory deleted" — the deletion is the caller's, and
-        # happens after this `finally`.
-        pool.shutdown(wait=True, cancel_futures=True)
+    staging_dirs: dict[str, Path] = {}
+    futures: dict[str, list[Future[_StagedFrame]]] = {}
+    for group_record in groups:
+        staging_dir = staging_dir_path(output_dir, run_id, group_record.group_id)
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True)
+        staging_dirs[group_record.group_id] = staging_dir
+        ctx = _GroupContext(staging_dir=staging_dir, **base_context)
+        futures[group_record.group_id] = [
+            pool.submit(_stage_one_frame, member, ctx)
+            for member in group_record.members
+        ]
+    return staging_dirs, futures
 
 
 def _verify_source_unchanged(path: Path, record: SourceRecord) -> None:
@@ -699,7 +715,7 @@ def run_convert(
     # the default is silently reduced to fit. The flat-field profile is
     # next for the same reason: loading it touches nothing the run writes.
     try:
-        workers = concurrency.resolve_worker_count(per_negative, jobs)
+        workers = concurrency.resolve_worker_count(len(files), jobs)
     except concurrency.MemoryBudgetError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
@@ -815,7 +831,10 @@ def run_convert(
         width=width,
         height=height,
         missing_output_count=missing_output_count,
-        largest_group_size=per_negative,
+        # Groups now stage concurrently (section 3.8): as many as `workers`
+        # frames, possibly spread across several groups, can be sitting in
+        # staging at once, not just one group's worth.
+        largest_group_size=max(per_negative, workers),
         manifest_size_estimate=estimate_manifest_size(candidate),
     )
     try:
@@ -854,80 +873,149 @@ def run_convert(
     }
 
     cancelled = False
-    for group_record in candidate.groups:
-        if cancel.cancelled:
-            cancelled = True
-            break
+    pool: ThreadPoolExecutor | None = None
+    staging_dirs: dict[str, Path] = {}
+    futures_by_group: dict[str, list[Future[_StagedFrame]]] = {}
 
-        staging_dir = staging_dir_path(output_dir, run_id, group_record.group_id)
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        staging_dir.mkdir(parents=True)
-
-        try:
-            staged_frames = _stage_group(
-                group_record.members,
-                _GroupContext(staging_dir=staging_dir, **base_context),
-                workers,
-            )
-        except CancelledError:
-            # Every worker has stopped by now (`_stage_group`'s finally),
-            # so deleting the directory cannot race a write.
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            cancelled = True
-            break
-        except GROUP_FAILURE_EXCEPTIONS + (_SourceChangedError,) as exc:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            code = _code_for_group_failure(exc)
-            group_record.status = "failed"
-            group_record.error_code = code.value
-            group_record.error_message = str(exc)
-            write_manifest(output_dir, candidate)
-            emit(
-                GroupFailed(
-                    run_id=run_id,
-                    group_id=group_record.group_id,
-                    code=code,
-                    message=str(exc),
-                )
-            )
-            continue
-
-        # Record each source's measured sensor-clip fractions on the
-        # manifest's source records, so they ride through `merge_sources`
-        # into the roll (docs/DECISIONS.md, "Normalization decisions").
-        clips_by_member = {f.member: f.scan_clip_fractions for f in staged_frames}
-        candidate.sources = [
-            (
-                dataclasses.replace(s, scan_clip_fractions=clips_by_member[s.filename])
-                if s.filename in clips_by_member
-                else s
-            )
-            for s in candidate.sources
-        ]
-        final_paths = {f.member: f.final_path for f in staged_frames}
-
-        if cancel.cancelled:
-            # Cancelled in the window between the last frame staging and
-            # the first publish. Section 3.6: "The group being processed
-            # is not published." A staged-but-unpublished group is still
-            # the group being processed.
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            cancelled = True
-            break
-
-        _publish_group(
-            output_dir=output_dir,
-            group_record=group_record,
-            final_paths=final_paths,
-            source_index_by_name=source_index_by_name,
-            emit=emit,
-            run_id=run_id,
+    if workers > 1:
+        # One pool for the whole run, not one per group (section 3.8):
+        # every group's frames are submitted up front, in canonical order,
+        # so groups that don't depend on each other stage concurrently
+        # instead of the run only ever using one group's worth of workers.
+        pool = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="scanny-frame"
         )
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        group_record.status = "completed"
-        write_manifest(output_dir, candidate)
-        emit(GroupDone(run_id=run_id, group_id=group_record.group_id))
+        try:
+            staging_dirs, futures_by_group = _submit_all_groups(
+                pool, candidate.groups, output_dir, run_id, base_context
+            )
+        except BaseException:
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+
+    def _discard_from(start_index: int) -> None:
+        # Every group from `start_index` on: the one being resolved plus
+        # any later group the pool had already raced ahead and finished
+        # staging in the background. None of them has published, so
+        # section 3.6's "the group being processed is not published"
+        # applies to all of them, not just the first.
+        for remaining in candidate.groups[start_index:]:
+            directory = staging_dirs.get(remaining.group_id)
+            if directory is not None:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    try:
+        for index, group_record in enumerate(candidate.groups):
+            if cancel.cancelled:
+                cancelled = True
+                break
+
+            if pool is not None:
+                staging_dir = staging_dirs[group_record.group_id]
+            else:
+                staging_dir = staging_dir_path(
+                    output_dir, run_id, group_record.group_id
+                )
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir)
+                staging_dir.mkdir(parents=True)
+
+            try:
+                if pool is not None:
+                    staged_frames = [
+                        future.result()
+                        for future in futures_by_group[group_record.group_id]
+                    ]
+                else:
+                    staged_frames = _stage_group_serial(
+                        group_record.members,
+                        _GroupContext(staging_dir=staging_dir, **base_context),
+                    )
+            except CancelledError:
+                if pool is not None:
+                    # `cancel_futures=True` drops every not-yet-started
+                    # frame of every group still queued; `wait=True` blocks
+                    # until frames that were mid-flight — in this group or
+                    # a later one already staging in the background — have
+                    # finished their current step. Only then is it safe to
+                    # delete any of their staging directories.
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    _discard_from(index)
+                else:
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                cancelled = True
+                break
+            except GROUP_FAILURE_EXCEPTIONS + (_SourceChangedError,) as exc:
+                if pool is not None:
+                    # Only this group's own frames. Cancel whichever never
+                    # started, wait for any still running so nothing writes
+                    # into the staging directory being deleted below; every
+                    # other group's futures are untouched and keep running.
+                    group_futures = futures_by_group[group_record.group_id]
+                    for future in group_futures:
+                        future.cancel()
+                    wait(group_futures)
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                code = _code_for_group_failure(exc)
+                group_record.status = "failed"
+                group_record.error_code = code.value
+                group_record.error_message = str(exc)
+                write_manifest(output_dir, candidate)
+                emit(
+                    GroupFailed(
+                        run_id=run_id,
+                        group_id=group_record.group_id,
+                        code=code,
+                        message=str(exc),
+                    )
+                )
+                continue
+
+            # Record each source's measured sensor-clip fractions on the
+            # manifest's source records, so they ride through `merge_sources`
+            # into the roll (docs/DECISIONS.md, "Normalization decisions").
+            clips_by_member = {f.member: f.scan_clip_fractions for f in staged_frames}
+            candidate.sources = [
+                (
+                    dataclasses.replace(
+                        s, scan_clip_fractions=clips_by_member[s.filename]
+                    )
+                    if s.filename in clips_by_member
+                    else s
+                )
+                for s in candidate.sources
+            ]
+            final_paths = {f.member: f.final_path for f in staged_frames}
+
+            if cancel.cancelled:
+                # Cancelled in the window between the last frame staging and
+                # the first publish. Section 3.6: "The group being processed
+                # is not published." A staged-but-unpublished group is still
+                # the group being processed — generalized by `_discard_from`
+                # to every group this run had staging in the background.
+                if pool is not None:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    _discard_from(index)
+                else:
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                cancelled = True
+                break
+
+            _publish_group(
+                output_dir=output_dir,
+                group_record=group_record,
+                final_paths=final_paths,
+                source_index_by_name=source_index_by_name,
+                emit=emit,
+                run_id=run_id,
+            )
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            group_record.status = "completed"
+            write_manifest(output_dir, candidate)
+            emit(GroupDone(run_id=run_id, group_id=group_record.group_id))
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
 
     if cancelled:
         final_status = "cancelled"
