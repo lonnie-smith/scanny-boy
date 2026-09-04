@@ -22,26 +22,21 @@ struct FlatFieldProfilesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Flat-Field Profiles").font(.title2.bold())
-            Text(
-                "A profile measures one copy stand's falloff from a shot of the bare light source — no negative in the holder — and evens it back out of every scan."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text("Manage Scanning Rig Profiles").font(.title2.bold())
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     profileList
-
-                    Divider()
-
-                    newProfile
 
                     if let deleteError {
                         Text(deleteError)
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+
+                    Divider()
+
+                    newProfile
                 }
             }
 
@@ -109,6 +104,8 @@ struct FlatFieldProfilesSheet: View {
                             profilePendingDeletion = profile
                         } label: {
                             Image(systemName: "trash")
+                                .frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Delete \(profile.name)")
