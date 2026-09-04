@@ -2,10 +2,12 @@ import AppKit
 import SwiftUI
 
 /// Live progress for a conversion in flight: the pipeline step, the file it
-/// names, the completed count, elapsed time, and estimated remaining time.
+/// names, and how many negatives have been completed so far.
 ///
-/// The bar is driven by `fractionComplete`, which comes from `progress`'s
-/// `completed`/`total` counts — never from a source index (section 4.2).
+/// The bar is driven by `fractionComplete`, which comes from
+/// `negativesCompleted`/`totalNegatives` — never from a source index
+/// (section 4.2) and never from elapsed time, which section 4.2's
+/// per-negative durations vary too much to extrapolate reliably.
 struct RunProgressView: View {
     let run: RunModel
 
@@ -22,20 +24,6 @@ struct RunProgressView: View {
                 Spacer()
                 if let totalNegatives = run.totalNegatives {
                     Text("\(run.negativesCompleted) of \(totalNegatives) negative(s)")
-                } else {
-                    Text("\(run.completedSteps) of \(run.totalSteps) steps")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            HStack {
-                Text("Elapsed \(RunTimeFormat.string(run.elapsed))")
-                Spacer()
-                if let remaining = run.estimatedRemaining {
-                    Text("About \(RunTimeFormat.string(remaining)) remaining")
-                } else {
-                    Text("Estimating…")
                 }
             }
             .font(.caption)
@@ -67,15 +55,6 @@ enum RunStepName {
         case .writeStitched: "Writing stitched TIFF"
         case .unknown(let name): name
         }
-    }
-}
-
-enum RunTimeFormat {
-    static func string(_ interval: TimeInterval) -> String {
-        let total = Int(interval.rounded())
-        let minutes = total / 60
-        let seconds = total % 60
-        return minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
     }
 }
 
