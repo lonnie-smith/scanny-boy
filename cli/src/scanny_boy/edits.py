@@ -14,8 +14,9 @@ without partial effects.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
 
 from scanny_boy import previews
 from scanny_boy.events import Code, WarningEvent
