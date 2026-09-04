@@ -32,10 +32,12 @@ from scanny_boy.linear import decode_to_linear
 from scanny_boy.normalization import (
     NORMALIZED_FILL,
     Bounds,
+    DenseBorder,
     Rebate,
     analysis_grid_block_sizes,
     analyze_bounds,
     block_median_grid,
+    clamp_bounds,
     detect_rebate,
     encode_normalized,
     headroom_clip_fractions,
@@ -46,6 +48,7 @@ from scanny_boy.normalization import (
     observed_extrema,
     resolve_analysis_region,
     to_log_density,
+    withhold_dense_border,
 )
 from scanny_boy.registration import StitchError
 
@@ -94,7 +97,8 @@ class CompositeResult:
     # The normalization meters (docs/DECISIONS.md, "Normalization decisions"
     # 3.7, 3.13): per-negative bounds, the recorded-not-acted-on print-stage
     # statistics, the observed pre-clip extrema (section 3.6), the fraction
-    # of pixels the encode's headroom clipped, and the rebate finding.
+    # of pixels the encode's headroom clipped, and the rebate and
+    # dense-border findings.
     bounds: Bounds
     shadow_refs: tuple[float, float, float]
     anchor: float
@@ -104,6 +108,12 @@ class CompositeResult:
     headroom_clipped_highlights: tuple[float, float, float]
     headroom_clipped_shadows: tuple[float, float, float]
     rebate: Rebate
+    dense_border: DenseBorder
+    # Section 3.4's clamp: whether the roll-population safety net pulled the
+    # bounds toward the run's reference population, and the bounds the
+    # frame's own meters measured before it did.
+    clamped: bool
+    unclamped_bounds: Bounds | None
 
 
 def estimate_peak_bytes(
@@ -477,6 +487,7 @@ def composite(
     geometry: dict | None = None,
     ca: dict | None = None,
     region: tuple[int, int, int, int] | None = None,
+    reference_bounds: list[Bounds] | None = None,
 ) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
     result released immediately, so the caller controls residency.
@@ -703,11 +714,24 @@ def composite(
     grid = block_median_grid(img_log)
     keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
     keep, rebate = detect_rebate(grid, keep)
+    keep, dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep)
     shadow_refs = measure_shadow_refs(grid, keep)
     anchor = measure_anchor(grid, keep)
     textural_range = measure_textural_range(grid, keep)
     del grid, keep
+
+    # Section 3.4's clamp: a frame whose own meters latched contamination
+    # the per-frame detectors missed is pulled back toward the roll's
+    # population, from references the already-composited negatives
+    # contribute.
+    unclamped_bounds: Bounds | None = None
+    clamped = False
+    if reference_bounds:
+        clamped_bounds, clamped = clamp_bounds(bounds, reference_bounds)
+        if clamped:
+            unclamped_bounds = bounds
+            bounds = clamped_bounds
 
     normalized = normalize_log_image(img_log, bounds)
     del img_log
@@ -743,6 +767,9 @@ def composite(
         headroom_clipped_highlights=headroom_clipped_highlights,
         headroom_clipped_shadows=headroom_clipped_shadows,
         rebate=rebate,
+        dense_border=dense_border,
+        clamped=clamped,
+        unclamped_bounds=unclamped_bounds,
     )
 
 
@@ -757,15 +784,19 @@ def _region_keep(
     leaks into the meters (section 1.5: the fill would otherwise drag the
     floor percentile to log10(1e-6) = -6.0 and garbage the whole stretch).
 
-    With no region known, the fallback restricts the meters to the blocks
-    the blend actually covered — the same protection, from the one
-    per-pixel fact the accumulator already knows. (Production always
-    passes the caller's `largest_valid_rect`.)"""
+    Inward rounding is not enough on its own: the blend's `covered` mask
+    can hold interior holes the layout's `largest_valid_rect` never saw,
+    so every candidate region is intersected with the blocks the blend
+    actually covered.
+
+    With no region known, the fallback restricts the meters to those same
+    covered blocks — the same protection, from the one per-pixel fact the
+    accumulator already knows. (Production always passes the caller's
+    `largest_valid_rect`.)"""
     if region is None:
-        covered_grid = block_median_grid(
-            np.where(covered, np.float32(1.0), np.float32(0.0))
+        keep = _intersect_with_coverage(
+            resolve_analysis_region(grid_shape, None), canvas_shape, covered
         )
-        keep = covered_grid >= 1.0
         if keep.any():
             return keep
         return resolve_analysis_region(grid_shape, None)
@@ -777,12 +808,37 @@ def _region_keep(
     gy1 = int(np.floor((y + height) / block_rows))
     grid_rect = (gx0, gy0, gx1 - gx0, gy1 - gy0)
     keep = resolve_analysis_region(grid_shape, grid_rect)
+    keep = _intersect_with_coverage(keep, canvas_shape, covered)
     if keep.any():
         return keep
-    # A rect that rounds away entirely: fall back outward, then to all.
+    # A rect that rounds away entirely: fall back outward, then to the
+    # covered blocks alone — never to the unfiltered grid, which would
+    # meter the fill again.
     gx1 = int(np.ceil((x + width) / block_cols))
     gy1 = int(np.ceil((y + height) / block_rows))
     keep = resolve_analysis_region(grid_shape, (gx0, gy0, gx1 - gx0, gy1 - gy0))
+    keep = _intersect_with_coverage(keep, canvas_shape, covered)
+    if keep.any():
+        return keep
+    keep = _intersect_with_coverage(
+        resolve_analysis_region(grid_shape, None), canvas_shape, covered
+    )
     if keep.any():
         return keep
     return resolve_analysis_region(grid_shape, None)
+
+
+def _intersect_with_coverage(
+    keep: np.ndarray,
+    canvas_shape: tuple[int, ...],
+    covered: np.ndarray,
+) -> np.ndarray:
+    """Withhold every block the blend did not fully cover, even inside the
+    caller's valid rect: the rect comes from the layout's coverage, and the
+    blend's `covered` can hold interior holes the layout never saw — a hole
+    would meter the fill (linear 0, log -6.0) and garbage the floor
+    percentile (docs/DECISIONS.md, "Normalization decisions")."""
+    covered_grid = block_median_grid(
+        np.where(covered, np.float32(1.0), np.float32(0.0))
+    )
+    return keep & (covered_grid >= 1.0)

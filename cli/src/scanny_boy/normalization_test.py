@@ -23,6 +23,7 @@ from scanny_boy.normalization import (
     analyze_bounds,
     block_median_grid,
     build_params,
+    clamp_bounds,
     decode_normalized,
     detect_rebate,
     encode_normalized,
@@ -35,6 +36,7 @@ from scanny_boy.normalization import (
     observed_extrema,
     resolve_analysis_region,
     to_log_density,
+    withhold_dense_border,
 )
 
 FILL_LOG = -6.0  # what an uncovered canvas pixel becomes: log10(1e-6)
@@ -510,6 +512,169 @@ def test_empty_keep_is_handled_cleanly():
     assert not new_keep.any()
 
 
+# --- the dense-border detector ------------------------------------------------
+
+
+def test_dense_stripe_along_one_edge_is_detected_and_excluded():
+    """The R1 failure: a featureless dense stripe along a border latched the
+    floor percentile (P0.01 luma, P1 colour) and darkened the whole frame.
+    The detector withholds it, and the bounds then match the same frame
+    with the stripe cropped away."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 8), "cols": slice(0, 200)}, -2.6)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, dense_border = withhold_dense_border(grid, keep)
+    assert dense_border.detected
+    assert not new_keep[:8].any()
+    assert new_keep.sum() == 200 * 192
+
+    bounds = analyze_bounds(grid, new_keep)
+    cropped = _scene_grid(192, 200)
+    cropped_bounds = analyze_bounds(cropped, np.ones((192, 200), dtype=bool))
+    assert bounds.floors == pytest.approx(cropped_bounds.floors, abs=0.05)
+    assert bounds.ceils == pytest.approx(cropped_bounds.ceils, abs=0.05)
+
+    # And without the detector, the stripe owns the floor percentile: the
+    # unguarded read latches the stripe's density.
+    unguarded = analyze_bounds(grid, keep)
+    assert unguarded.floors[0] < -2.4
+
+
+def test_fading_dense_stripe_is_eaten_band_by_band():
+    """Edge fog fades with distance from the edge: one pass withholds only
+    its densest band, the next pass re-anchors behind it, and the residue —
+    a gradient ending at the scene's own dense end, indistinguishable from
+    scene content — is what the separation gate correctly spares. The
+    latched floor error drops from ~0.6 D (unguarded) to ~0.15 D."""
+    grid = _scene_grid(200, 200)
+    fading = np.linspace(-2.6, -2.0, 24, dtype=np.float32)
+    for row, value in enumerate(fading):
+        _add_strip(grid, {"rows": slice(row, row + 1), "cols": slice(0, 200)}, float(value))
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, dense_border = withhold_dense_border(grid, keep)
+    assert dense_border.detected
+    assert not new_keep[:16].any()
+
+    bounds = analyze_bounds(grid, new_keep)
+    cropped = _scene_grid(176, 200)
+    cropped_bounds = analyze_bounds(cropped, np.ones((176, 200), dtype=bool))
+    assert bounds.floors == pytest.approx(cropped_bounds.floors, abs=0.2)
+    assert bounds.ceils == pytest.approx(cropped_bounds.ceils, abs=0.02)
+
+    # The unguarded read latches the gradient's dense core.
+    unguarded = analyze_bounds(grid, keep)
+    assert unguarded.floors[0] < -2.5
+    assert bounds.floors[0] > unguarded.floors[0]
+
+
+def test_no_dense_stripe_nothing_fires():
+    grid = _scene_grid(200, 200)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, dense_border = withhold_dense_border(grid, keep)
+    assert not dense_border.detected
+    assert dense_border.mask_fraction == 0.0
+    assert np.array_equal(new_keep, keep)
+
+
+def test_scene_dense_end_touching_a_border_does_not_fire():
+    """The false-positive guard: `_scene_grid`'s own dense end sits *at* the
+    left border — thin, featureless-ish, denser than the bulk — but it is
+    part of the scene's continuous distribution, so the separation gate
+    withholds nothing."""
+    grid = _scene_grid(200, 200)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, dense_border = withhold_dense_border(grid, keep)
+    assert not dense_border.detected
+    assert np.array_equal(new_keep, keep)
+
+
+def test_large_dense_border_region_does_not_fire():
+    """Bounded damage: a candidate larger than the area cap is scene content
+    (a night shot's black sky), not contamination, and is left alone."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 60), "cols": slice(0, 200)}, -2.6)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, dense_border = withhold_dense_border(grid, keep)
+    assert not dense_border.detected
+    assert np.array_equal(new_keep, keep)
+
+
+def test_dense_detector_is_deterministic_and_handles_empty_keep():
+    grid = _scene_grid(150, 150)
+    _add_strip(grid, {"rows": slice(0, 8), "cols": slice(0, 150)}, -2.6)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    first_keep, first_finding = withhold_dense_border(grid, keep)
+    second_keep, second_finding = withhold_dense_border(grid, keep)
+    assert np.array_equal(first_keep, second_keep)
+    assert first_finding == second_finding
+
+    empty = np.zeros((64, 64), dtype=bool)
+    new_keep, finding = withhold_dense_border(_scene_grid(64, 64), empty)
+    assert not finding.detected
+    assert np.array_equal(new_keep, empty)
+
+
+# --- section 3.4's clamp ------------------------------------------------------
+
+
+def _population(
+    floor_mean: float = -1.5,
+    ceil_mean: float = -0.4,
+    count: int = 4,
+    spread: float = 0.05,
+) -> list[Bounds]:
+    return [
+        Bounds(
+            floors=tuple(floor_mean + (i - count / 2) * spread for _ in range(3)),
+            ceils=tuple(ceil_mean + (i % 2) * spread for _ in range(3)),
+        )
+        for i in range(count)
+    ]
+
+
+def test_clamp_pulls_the_fill_outlier_back_to_the_population():
+    """The neg-08 safety net: floors at -6.0 are pulled to the population's
+    window — `max(CLAMP_K_MAD * MAD, CLAMP_MIN_WINDOW)` around the median."""
+    references = _population()
+    outlier = Bounds(
+        floors=(-6.0, -6.0, -6.0),
+        ceils=(-0.4, -0.4, -0.4),
+    )
+    clamped, did = clamp_bounds(outlier, references)
+    assert did
+    median_floor = float(np.median([b.floors[0] for b in references]))
+    assert clamped.floors[0] == pytest.approx(median_floor - nz.CLAMP_MIN_WINDOW)
+    # The thin end was fine and stays exactly where the frame measured it.
+    assert clamped.ceils == pytest.approx(outlier.ceils, abs=1e-9)
+
+
+def test_clamp_spares_frames_within_the_window():
+    references = _population(floor_mean=-1.5, spread=0.1)
+    # One stop denser than the median: legitimate per-frame exposure
+    # variation, inside the clamp window, must survive untouched.
+    legit = Bounds(floors=(-1.9, -1.9, -1.9), ceils=(-0.4, -0.4, -0.4))
+    clamped, did = clamp_bounds(legit, references)
+    assert not did
+    assert clamped == legit
+
+
+def test_clamp_needs_a_population():
+    outlier = Bounds(floors=(-6.0, -6.0, -6.0), ceils=(-0.4, -0.4, -0.4))
+    clamped, did = clamp_bounds(outlier, _population(count=nz.CLAMP_MIN_SAMPLES - 1))
+    assert not did
+    assert clamped == outlier
+
+
+def test_clamp_that_would_degenerate_a_channel_is_discarded():
+    """A safety net must never make things worse: a clamp that would leave a
+    channel with ceil <= floor returns the frame's own bounds."""
+    references = _population(floor_mean=-1.0, ceil_mean=-0.9, spread=0.0)
+    nonsense = Bounds(floors=(-1.2, -1.2, -1.2), ceils=(-2.0, -2.0, -2.0))
+    clamped, did = clamp_bounds(nonsense, references)
+    assert not did
+    assert clamped == nonsense
+
+
 # --- the resolution region ----------------------------------------------------
 
 
@@ -547,6 +712,26 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["normalized_fill"] == 1.0 + NORMALIZED_HEADROOM_HIGH
     assert params["scan_clip_level"] == nz.SCAN_CLIP_LEVEL
     assert params["scan_clip_warn"] == nz.SCAN_CLIP_WARN
+    assert params["dense_border_anchor_percentile"] == nz.DENSE_BORDER_ANCHOR_PERCENTILE
+    assert params["dense_border_tolerance"] == nz.DENSE_BORDER_TOLERANCE
+    assert (
+        params["dense_border_min_area_fraction"] == nz.DENSE_BORDER_MIN_AREA_FRACTION
+    )
+    assert (
+        params["dense_border_max_area_fraction"] == nz.DENSE_BORDER_MAX_AREA_FRACTION
+    )
+    assert (
+        params["dense_border_max_bbox_fraction"] == nz.DENSE_BORDER_MAX_BBOX_FRACTION
+    )
+    assert params["dense_border_min_separation"] == nz.DENSE_BORDER_MIN_SEPARATION
+    assert (
+        params["dense_border_outside_percentile"]
+        == nz.DENSE_BORDER_OUTSIDE_PERCENTILE
+    )
+    assert params["dense_border_max_passes"] == nz.DENSE_BORDER_MAX_PASSES
+    assert params["clamp_min_samples"] == nz.CLAMP_MIN_SAMPLES
+    assert params["clamp_k_mad"] == nz.CLAMP_K_MAD
+    assert params["clamp_min_window"] == nz.CLAMP_MIN_WINDOW
     # JSON-serialisable, since it folds into processing_params.
     import json
 

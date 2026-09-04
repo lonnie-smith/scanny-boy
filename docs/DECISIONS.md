@@ -972,3 +972,60 @@ file becomes a white border in the eventual positive, and the second one
 loses. The fill value is a cosmetic hint, not a sentinel, and nothing in
 the render path may key off it; the machine-readable coverage answer is
 `valid_rect` plus `coverage_fraction`.
+
+## The dense-end defenses, learned from roll R1 (protocol version 8, revised)
+
+Roll R1's frames 6-8 published nearly black previews, their negatives
+looking no denser than their neighbours'. The post-mortem found **two
+independent ways the max-density anchor (the `floors`) latches
+contamination instead of scene content**, and this decision adds one
+defense against each plus a safety net:
+
+**Coverage intersection (§1.5, revised).** Inward rounding of the valid
+rect is not enough: the blend's `covered` mask can hold *interior* holes
+the layout's `largest_valid_rect` never saw (a stitch's coverage is
+geometric, the blend's is per-pixel). Negative 8's meters read fill cells
+(log10(1e-6) = -6.0) inside its own valid rect and produced floors of
+exactly -6.0 — the failure §1.5's comment predicted, arriving through the
+gap between two coverage notions. Every candidate region — the rect's, the
+outward-rounded fallback's, and the whole grid's — is now intersected with
+the blocks the blend actually covered; a fully-uncovered candidate falls
+back to the covered blocks, never to the unfiltered grid.
+
+**The dense-border detector (the rebate detector's mirror).** Negative 7
+(and partially 6) carried a dark, featureless stripe along the canvas's
+top border — a partially-lit sliver beyond the film edge that stitching
+reported as covered. Raw dense-end percentiles have no defense: the block
+median only removes extremes smaller than one block, and the rebate
+detector withholds *thin* border junk only. The mirror gates on density,
+not geometry: candidates within tolerance of the region's dense-end anchor
+(P0.1 luma), border-touching components gated on area (both ways — too
+small is not a stripe, too large is scene content), thinness (a stripe's
+bounding box is thin perpendicular to its border; scene content spans the
+frame), flatness *along* its length (contamination is featureless along
+the border; edge fog fades across its thickness, so the test runs on the
+along-length medians), and separation from the scene's own dense tail (the
+gate that makes "no stripe at all" return cleanly). The detector
+re-anchors up to `DENSE_BORDER_MAX_PASSES`: a gradient stripe is eaten
+band by band, converging when the residue reaches scene density. The
+documented false positive is a genuinely dense, thin, featureless
+border-touching scene object: scene highlights map slightly brighter —
+mild degradation, never invented data. Withheld fractions are recorded per
+negative (`normalization.dense_border`).
+
+**The roll-population clamp (D-4's safety net, not a policy change).**
+Both detectors can miss a contaminant the per-frame statistics cannot see;
+the run's own already-published negatives are the corrective signal D-4
+recorded from day one and nothing read. Before encoding, a negative's
+bounds are clamped per channel toward its reference population — every
+completed negative's manifest block on the roll, plus this run's
+publishes — into `median ± max(CLAMP_K_MAD × MAD, CLAMP_MIN_WINDOW)`. The
+window floor is in log D, wide enough that a stop or two of legitimate
+per-frame exposure shift never clamps (percentile bounds are rank-based
+and self-normalize exposure only within a frame; across frames, density
+shifts are real), tight enough that a latched outlier cannot survive.
+Fewer than `CLAMP_MIN_SAMPLES` references clamps nothing; a clamp that
+would degenerate a channel is discarded whole. Clamping is recorded
+(`clamped`, `unclamped_floors`, `unclamped_ceils`) so a bad window is
+auditable, and the published pixels always reflect the bounds recorded in
+`floors`/`ceils`.

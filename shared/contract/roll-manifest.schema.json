@@ -171,6 +171,21 @@
             "clipped": { "type": "boolean" }
           }
         },
+        "dense_border": {
+          "type": "object",
+          "required": ["detected", "mask_fraction"],
+          "properties": {
+            "detected": { "type": "boolean" },
+            "mask_fraction": { "type": "number" }
+          }
+        },
+        "clamped": { "type": "boolean" },
+        "unclamped_floors": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "unclamped_ceils": {
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
         "source": { "type": "string" }
       }
     },
