@@ -102,7 +102,8 @@ class CompositeResult:
     textural_range: float
     observed_min: tuple[float, float, float]
     observed_max: tuple[float, float, float]
-    headroom_clipped: tuple[float, float, float]
+    headroom_clipped_highlights: tuple[float, float, float]
+    headroom_clipped_shadows: tuple[float, float, float]
     rebate: Rebate
 
 
@@ -714,7 +715,9 @@ def composite(
     # The observed extrema and headroom clipping are picture statistics:
     # measured over the covered pixels only, never the fill (section 3.6).
     observed_min, observed_max = observed_extrema(normalized[covered])
-    headroom_clipped = headroom_clip_fractions(normalized[covered])
+    headroom_clipped_highlights, headroom_clipped_shadows = headroom_clip_fractions(
+        normalized[covered]
+    )
     encoded = encode_normalized(normalized)
     del normalized
 
@@ -738,7 +741,8 @@ def composite(
         textural_range=textural_range,
         observed_min=observed_min,
         observed_max=observed_max,
-        headroom_clipped=headroom_clipped,
+        headroom_clipped_highlights=headroom_clipped_highlights,
+        headroom_clipped_shadows=headroom_clipped_shadows,
         rebate=rebate,
     )
 

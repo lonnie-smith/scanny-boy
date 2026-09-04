@@ -298,9 +298,16 @@ public struct CLICommand: Sendable, Hashable {
 /// helper is reported before any run is attempted rather than on each command.
 public struct CLIRunner: Sendable {
     public let executable: URL
+    /// Merged over this process's own environment for every session this
+    /// runner starts; empty by default, which reproduces the old
+    /// inherit-everything behaviour exactly. Tests that invoke the real
+    /// bundled helper use this to point `SCANNY_BOY_LIBRARY_DB` at a
+    /// per-test database, so they never touch the user's real library.
+    public let environmentOverrides: [String: String]
 
-    public init(executable: URL) {
+    public init(executable: URL, environmentOverrides: [String: String] = [:]) {
         self.executable = executable
+        self.environmentOverrides = environmentOverrides
     }
 
     public init(locator: CLILocator = .mainBundle()) throws {
@@ -308,10 +315,16 @@ public struct CLIRunner: Sendable {
     }
 
     public func session(for command: CLICommand) -> CLISession {
-        CLISession(
+        var environment: [String: String]?
+        if !environmentOverrides.isEmpty {
+            environment = ProcessInfo.processInfo.environment
+            environment!.merge(environmentOverrides) { _, override in override }
+        }
+        return CLISession(
             configuration: CLISession.Configuration(
                 executable: executable,
-                arguments: command.arguments
+                arguments: command.arguments,
+                environment: environment
             )
         )
     }

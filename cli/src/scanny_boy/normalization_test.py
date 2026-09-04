@@ -144,8 +144,9 @@ def test_headroom_clip_fractions_count_only_the_excursions():
     values = np.zeros((100, 100, 3), dtype=np.float32)
     values[0, 0] = (-0.5, 0.0, 2.0)  # R below the low rail, B above the high
     values[0, 1] = (-0.15, 1.10, 0.5)  # R and B exactly on the rails: kept
-    fractions = headroom_clip_fractions(values)
-    assert fractions == pytest.approx((1 / 10000, 0.0, 1 / 10000))
+    highlights, shadows = headroom_clip_fractions(values)
+    assert highlights == pytest.approx((1 / 10000, 0.0, 0.0))
+    assert shadows == pytest.approx((0.0, 0.0, 1 / 10000))
 
 
 # --- N-1: the block-median prefilter ----------------------------------------

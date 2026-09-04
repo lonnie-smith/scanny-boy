@@ -652,10 +652,21 @@ authoritative; this section only makes the decisions findable.
 
 ## The profile is a roll invariant
 
+**Reversed** (see below): the roll invariant this section describes made a
+roll refuse to mix profiles at all, including simply picking a different
+one on a later run — reported by users as "profiles get locked to a roll,"
+not as the "can't mix corrected and uncorrected negatives" guarantee this
+was meant to provide. `flat_field`/`chromatic_aberration` in
+`processing_params` and `geometry` in `stitch_params` are now excluded from
+`roll_manifest.check_roll_invariants`'s comparison
+(`ROLL_PROFILE_PROCESSING_PARAMS_KEYS`/`ROLL_PROFILE_STITCH_PARAMS_KEYS`),
+so a roll no longer locks to one profile. What follows is the original
+reasoning, kept for context.
+
 `flatfield.profile_token(profile)` — `{"profile_id", "gain_map_sha256",
 "params"}` — is folded into `processing_params` under `flat_field`, which
-`roll_manifest.check_roll_invariants` already compares. No new comparison
-code. Three consequences, all intended:
+`roll_manifest.check_roll_invariants` used to compare. No new comparison
+code. Three consequences, all intended at the time:
 
 - **A roll can never mix corrected and uncorrected negatives.** That is
   the point.

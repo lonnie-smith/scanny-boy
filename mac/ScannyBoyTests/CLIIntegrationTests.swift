@@ -25,8 +25,22 @@ struct CLIIntegrationTests {
         return Comment(rawValue: reasons.joined(separator: "\n"))
     }
 
+    /// A temporary library database, isolated from the user's real one, in
+    /// case any scenario here ever starts a command that touches it (see
+    /// `RunIntegrationTests.libraryDatabaseURL`).
+    private static let libraryDatabaseURL: URL = {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appending(path: "library.db")
+    }()
+
     private static func runner() throws -> CLIRunner {
-        CLIRunner(executable: try #require(HostBundle.helperExecutableURL))
+        CLIRunner(
+            executable: try #require(HostBundle.helperExecutableURL),
+            environmentOverrides: ["SCANNY_BOY_LIBRARY_DB": libraryDatabaseURL.path]
+        )
     }
 
     private static func stagingDirectories(in folder: URL) throws -> [URL] {

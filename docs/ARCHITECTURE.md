@@ -105,7 +105,9 @@ line.
 Version 6 added flat-field profiles: a `flatfield` command family
 (`create`/`list`/`delete`), gain maps stored beside the library database, and
 `--flatfield` on `convert`/`run`/`probe`, folded into `processing_params` as
-the profile token so a roll locks to one profile with its first run. Version
+the profile token. The profile is not a roll invariant: a roll does not lock
+to one, and different runs into the same roll may each choose a different
+profile (or none). Version
 5 moved each roll's durable record from the roll folder's
 `scanny-boy-roll.json` into a library SQLite database and added `edit rotate`
 / `export`. A client that only understands an earlier version must reject the
@@ -724,13 +726,16 @@ negative by taking over its identity, not by publishing a rival.
   never a lost folder; a deleted roll disappears from the next `roll list`.
 - **Roll invariants** (`RollInvariants`): `processing_params`, the ICC
   profile hash, `stitch_params`. Everything else — input folder, source
-  list, order, grouping, and the batch's `shots_per_negative` — is
-  *expected* to differ between runs and is **never compared**. A roll with
-  no runs yet is unseeded: the last three are established by the first run.
-  `processing_params` now carries the **flat-field profile token** under the
-  key `flat_field` when a profile was given, so a roll locks to one profile
-  with its first run — a run using a different profile (or none) is refused
-  with `ROLL_INVARIANT_MISMATCH`. The key is absent, not null, when no
+  list, order, grouping, the batch's `shots_per_negative`, and the
+  flat-field profile — is *expected* to differ between runs and is **never
+  compared**. A roll with no runs yet is unseeded: the last three are
+  established by the first run. `processing_params` carries the
+  **flat-field profile token** under the key `flat_field` when a profile
+  was given, and `stitch_params` carries its optional geometric calibration
+  under `geometry`; both keys are excluded from the invariant comparison
+  (`ROLL_PROFILE_PROCESSING_PARAMS_KEYS`/`ROLL_PROFILE_STITCH_PARAMS_KEYS`
+  in `roll_manifest.py`), so a roll does not lock to one profile — each run
+  may choose a different one, or none. The key is absent, not null, when no
   profile is given, so a no-profile run still compares equal to a
   pre-flat-field roll. `name` is deliberately not in the token: renaming a
   profile must not invalidate a roll. This needs no new comparison code —
@@ -966,7 +971,7 @@ export — one helper invocation at a time.
 | --- | --- |
 | `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for the delete's Trash move; create/rename/list/delete all go through the CLI. |
 | `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
-| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is each stitch batch's own choice, set on Add Scans and required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); a roll locked to a profile pre-selects it. |
+| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll`. `perNegative` is each stitch batch's own choice, set on Add Scans and required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); it is a per-run choice, not the roll's, defaulted from `UserDefaults` to whichever profile was used last. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives `edit rotate` and `edit delete` round trips (net rotation and `preview_path` come back in the event), derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
 | `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
