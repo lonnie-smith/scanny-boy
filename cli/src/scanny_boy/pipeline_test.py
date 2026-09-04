@@ -1023,6 +1023,120 @@ def test_cancelling_before_the_first_group_publishes_nothing(monkeypatch, tmp_pa
     assert all(g.status == "pending" for g in manifest.groups)
 
 
+# --- concurrency spans the whole run, not just one group -------------------
+
+
+@requires_real_samples
+def test_frames_from_different_groups_stage_concurrently(monkeypatch, tmp_path):
+    """The headline fix: with one shot per negative, the old per-group pool
+    could never run more than one frame at a time no matter how many
+    workers were requested, because each group only ever had one frame to
+    give it. A shared run-wide pool lets frames from *different* groups run
+    at once instead."""
+    started, release, _decoded = _install_gated_decode(
+        monkeypatch, gate_on=set(REAL_SAMPLE_FILES[:3]), parked_target=3
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    token = CancellationToken()
+
+    thread, result = _run_convert_in_thread(
+        input_dir=input_dir,
+        files=list(REAL_SAMPLE_FILES),
+        output_dir=out_dir,
+        per_negative=1,
+        run_id="r1",
+        jobs=3,
+        cancel=token,
+        emit=lambda e: None,
+    )
+
+    # Three separate one-frame groups genuinely decoding at once: impossible
+    # under the old "workers capped by this group's own frame count" policy.
+    assert started.wait(timeout=30), (
+        "three different groups' frames never decoded simultaneously"
+    )
+    release.set()
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["outcome"].status == "complete"
+
+
+@requires_real_samples
+def test_cancellation_discards_every_group_the_pool_had_already_raced_ahead_on(
+    monkeypatch, tmp_path
+):
+    """With a shared run-wide pool, later groups can finish staging in the
+    background before the main loop -- which still publishes one group at a
+    time, in canonical order -- reaches them. Cancelling while the loop is
+    blocked on an earlier group must discard every one of those
+    already-staged-but-unpublished later groups too, not just the one the
+    loop was waiting on."""
+    gate_file = REAL_SAMPLE_FILES[1]  # negative-02, the group the loop blocks on
+    last_file = REAL_SAMPLE_FILES[-1]  # negative-06, races ahead in the background
+    started, release, _decoded = _install_gated_decode(monkeypatch, gate_on=gate_file)
+
+    finished_last = threading.Event()
+    real_finalize = pipeline.finalize_tiff
+
+    def _finalize_and_flag(base_path, final_path, fields):
+        real_finalize(base_path, final_path, fields)
+        if final_path.name == f"{_stem(last_file)}.tif":
+            finished_last.set()
+
+    monkeypatch.setattr(pipeline, "finalize_tiff", _finalize_and_flag)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    token = CancellationToken()
+    events: list = []
+
+    thread, result = _run_convert_in_thread(
+        input_dir=input_dir,
+        files=list(REAL_SAMPLE_FILES),
+        output_dir=out_dir,
+        per_negative=1,
+        run_id="r1",
+        jobs=3,
+        cancel=token,
+        emit=events.append,
+    )
+
+    assert started.wait(timeout=30), "negative-02 never started decoding"
+    assert finished_last.wait(timeout=30), (
+        "negative-06 never finished staging in the background while the "
+        "loop was still blocked on negative-02"
+    )
+    # It finished staging into its own directory, but the loop has not
+    # reached it yet, so it must not be published yet.
+    assert not (out_dir / f"{_stem(last_file)}.tif").exists()
+
+    token.cancel()
+    release.set()
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+
+    outcome = result["outcome"]
+    assert outcome.status == "cancelled"
+
+    assert (out_dir / f"{_stem(REAL_SAMPLE_FILES[0])}.tif").exists()
+    for name in REAL_SAMPLE_FILES[1:]:
+        assert not (out_dir / f"{_stem(name)}.tif").exists()
+    assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
+
+    manifest = load_manifest(out_dir)
+    assert manifest.status == "cancelled"
+    assert manifest.groups[0].status == "completed"
+    assert all(g.status == "pending" for g in manifest.groups[1:])
+    assert [e.group_id for e in events if type(e).__name__ == "GroupDone"] == [
+        "negative-01"
+    ]
+
+
 # --- flat-field correction ------------------------------------------------
 
 
