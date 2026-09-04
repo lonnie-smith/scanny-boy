@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 import tifffile
 
-from scanny_boy.icc_profile import LINEAR_PROFILE_SHA256
+from scanny_boy.icc_profile import DENSITY_PROFILE_SHA256, LINEAR_PROFILE_SHA256
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.packaged_app_support import (
     BUNDLE_EXECUTABLE,
@@ -173,15 +173,20 @@ def test_helper_bundle_is_background_only_with_a_unique_identifier():
     assert BUNDLE_EXECUTABLE.exists()
 
 
-def test_bundle_carries_the_vetted_icc_profile_and_its_own_metadata():
-    """The profile is ordinary package data and the two `copy_metadata`
-    entries of section 5.2 are what keep `importlib.metadata` working in the
-    frozen program."""
-    profiles = list(BUNDLE_PATH.rglob("ScannyBoy-Linear-ProPhoto-v1.icc"))
-    assert profiles, "the vetted ICC profile is missing from the bundle"
+def test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata():
+    """Both bundled profiles are ordinary package data — the linear one for
+    prepare-stage intermediates, the density one for published TIFFs
+    (`icc_profile.py`) — and the two `copy_metadata` entries of section 5.2
+    are what keep `importlib.metadata` working in the frozen program."""
+    for filename, expected_sha256 in (
+        ("ScannyBoy-Linear-ProPhoto-v1.icc", LINEAR_PROFILE_SHA256),
+        ("ScannyBoy-Density-ProPhoto-v1.icc", DENSITY_PROFILE_SHA256),
+    ):
+        profiles = list(BUNDLE_PATH.rglob(filename))
+        assert profiles, f"{filename} is missing from the bundle"
 
-    for profile in profiles:
-        assert hashlib.sha256(profile.read_bytes()).hexdigest() == LINEAR_PROFILE_SHA256
+        for profile in profiles:
+            assert hashlib.sha256(profile.read_bytes()).hexdigest() == expected_sha256
 
     names = {path.name for path in BUNDLE_PATH.rglob("*.dist-info")}
     assert any(name.startswith("tifftools-") for name in names), names
