@@ -112,13 +112,15 @@ struct RunModelTests {
         executable: URL,
         outputFolder: URL,
         files: [String] = RunModelTests.sixFiles,
-        commandName: String = "prepare"
+        commandName: String = "prepare",
+        totalNegatives: Int? = nil
     ) async -> RunModel {
         let run = RunModel(runner: CLIRunner(executable: executable))
         run.start(
             command: CLICommand(arguments: [commandName]),
             files: files,
-            outputFolder: outputFolder
+            outputFolder: outputFolder,
+            totalNegatives: totalNegatives
         )
         await run.waitForCompletion()
         return run
@@ -148,16 +150,43 @@ struct RunModelTests {
 
         let run = await Self.runToCompletion(executable: executable, outputFolder: directory)
 
-        #expect(run.completedSteps == 4)
-        #expect(run.totalSteps == 18)
         // 4/18, not 3/3 — the largest source index seen says nothing about how
         // much work is done (section 4.2).
-        let fraction = try #require(run.fractionComplete)
-        #expect(abs(fraction - 4.0 / 18.0) < 1e-9)
+        #expect(run.completedSteps == 4)
+        #expect(run.totalSteps == 18)
         #expect(run.currentStep == .addMetadata)
         #expect(run.currentFilename == "a.NEF")
         #expect(run.runID == Self.runID)
         #expect(run.streamFailures.isEmpty)
+    }
+
+    @Test("fractionComplete tracks negatives finished, not pipeline steps")
+    func fractionCompleteTracksNegativesFinished() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Sixteen of eighteen steps are done, but only one of two negatives
+        // has actually published — the bar should read 1/2, not 16/18.
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.progress(sourceIndex: 0, step: "decode", completed: 16, total: 18),
+                Self.itemDone(sourceIndex: 0, output: "a.tif"),
+                Self.itemDone(sourceIndex: 1, output: "b.tif"),
+                Self.itemDone(sourceIndex: 2, output: "c.tif"),
+                Self.groupDone("negative-01"),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, totalNegatives: 2
+        )
+
+        #expect(run.negativesCompleted == 1)
+        let fraction = try #require(run.fractionComplete)
+        #expect(abs(fraction - 0.5) < 1e-9)
     }
 
     @Test("A source index outside the selection does not name a file or crash")
@@ -495,57 +524,6 @@ struct RunModelTests {
             return
         }
         #expect(report.manifest == nil)
-    }
-
-    // MARK: - Elapsed and remaining time
-
-    @Test(
-        "The remaining-time estimate scales the elapsed time by the work left",
-        arguments: [
-            (elapsed: 10.0, completed: 0, total: 18, expected: TimeInterval?.none),
-            (elapsed: 0.0, completed: 4, total: 18, expected: TimeInterval?.none),
-            (elapsed: 10.0, completed: 18, total: 18, expected: TimeInterval?.none),
-            (elapsed: 10.0, completed: 5, total: 10, expected: TimeInterval?.some(10)),
-            (elapsed: 9.0, completed: 3, total: 18, expected: TimeInterval?.some(45)),
-        ]
-    )
-    func remainingTimeEstimate(
-        _ scenario: (elapsed: TimeInterval, completed: Int, total: Int, expected: TimeInterval?)
-    ) throws {
-        let estimate = RunModel.estimatedRemaining(
-            elapsed: scenario.elapsed, completed: scenario.completed, total: scenario.total
-        )
-        if let expected = scenario.expected {
-            let value = try #require(estimate)
-            #expect(abs(value - expected) < 1e-9)
-        } else {
-            #expect(estimate == nil)
-        }
-    }
-
-    @Test("Elapsed time is measured from the start of the run")
-    func elapsedTimeIsMeasuredFromTheStart() async throws {
-        let directory = try Self.makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let executable = try Self.fakeConvertExecutable(
-            emitting: [Self.started, Self.finished(status: "success", exitStatus: 0)],
-            in: directory
-        )
-        // A clock that advances 30 seconds every time it is read, so the
-        // elapsed figure is exact rather than dependent on how fast the test
-        // machine runs a shell script.
-        let clock = SteppingClock(step: 30)
-        let run = RunModel(runner: CLIRunner(executable: executable), now: clock.next)
-        run.start(
-            command: CLICommand(arguments: ["prepare"]),
-            files: Self.sixFiles,
-            outputFolder: directory
-        )
-        await run.waitForCompletion()
-
-        #expect(run.elapsed >= 30)
-        #expect(run.elapsed.truncatingRemainder(dividingBy: 30) == 0)
     }
 
     // MARK: - Chunk 10's additions to the configuration model, reworked onto
@@ -1011,28 +989,5 @@ struct RunModelTests {
         #expect(skipped.code == .outputModifiedExternally)
         #expect(skipped.message == "a.tif no longer matches the roll")
         #expect(run.completionSummary == "Applied 1 negative(s); 1 skipped.")
-    }
-}
-
-/// A clock that advances by a fixed step every time it is read. Deterministic
-/// where a real one would make the assertion depend on machine speed.
-private final class SteppingClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private let step: TimeInterval
-    private var reading: Date
-
-    init(step: TimeInterval, start: Date = Date(timeIntervalSince1970: 0)) {
-        self.step = step
-        self.reading = start
-    }
-
-    var next: @Sendable () -> Date {
-        { [self] in
-            lock.lock()
-            defer { lock.unlock() }
-            let value = reading
-            reading = reading.addingTimeInterval(step)
-            return value
-        }
     }
 }

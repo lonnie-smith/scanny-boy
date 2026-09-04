@@ -91,7 +91,6 @@ final class RunModel {
 
     private let runner: CLIRunner
     private let gracePeriod: Duration
-    private let now: @Sendable () -> Date
 
     // MARK: - Observable state
 
@@ -156,15 +155,10 @@ final class RunModel {
     /// Read back after `run` or `stitch`. `nil` for `convert`.
     private(set) var rollManifestReport: RollManifestReport?
 
-    private(set) var startedAt: Date?
-    /// Refreshed on a timer while running, and frozen when the run ends.
-    private(set) var elapsed: TimeInterval = 0
-
     // MARK: - Private state
 
     @ObservationIgnored private var session: CLISession?
     @ObservationIgnored private var runTask: Task<Void, Never>?
-    @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var forceTask: Task<Void, Never>?
     @ObservationIgnored private var cancelRequested = false
     /// Which subcommand this invocation started, captured at `start()`.
@@ -185,12 +179,10 @@ final class RunModel {
 
     init(
         runner: CLIRunner,
-        gracePeriod: Duration = CLISession.defaultGracePeriod,
-        now: @escaping @Sendable () -> Date = Date.init
+        gracePeriod: Duration = CLISession.defaultGracePeriod
     ) {
         self.runner = runner
         self.gracePeriod = gracePeriod
-        self.now = now
     }
 
     // MARK: - Derived state
@@ -201,14 +193,14 @@ final class RunModel {
     /// second request is not one of those times.
     var canCancel: Bool { phase == .running && !cancelRequested }
 
-    /// Section 4.2: derived from counts, never from a source index.
+    /// Section 4.2: derived from counts, never from a source index. Tracks
+    /// `negativesCompleted`/`totalNegatives` rather than the pipeline's
+    /// `completedSteps`/`totalSteps`, so the bar and the "N of M negative(s)"
+    /// label next to it always agree — `nil` when the caller didn't supply a
+    /// `totalNegatives` to divide by.
     var fractionComplete: Double? {
-        guard totalSteps > 0 else { return nil }
-        return min(1, Double(completedSteps) / Double(totalSteps))
-    }
-
-    var estimatedRemaining: TimeInterval? {
-        Self.estimatedRemaining(elapsed: elapsed, completed: completedSteps, total: totalSteps)
+        guard let totalNegatives, totalNegatives > 0 else { return nil }
+        return min(1, Double(negativesCompleted) / Double(totalNegatives))
     }
 
     /// Negatives finished so far, counted the same way `completionSummary`
@@ -223,17 +215,6 @@ final class RunModel {
             return stitchedNegatives.count + failedNegatives.count
         }
         return completedGroups.count + failedGroups.count
-    }
-
-    /// Split out as a pure function so the estimate can be tested without a
-    /// real clock or a real subprocess.
-    static func estimatedRemaining(
-        elapsed: TimeInterval,
-        completed: Int,
-        total: Int
-    ) -> TimeInterval? {
-        guard completed > 0, total > completed, elapsed > 0 else { return nil }
-        return elapsed / Double(completed) * Double(total - completed)
     }
 
     /// `run` and `stitch` can reach the stitch stage; `convert` cannot. This
@@ -323,17 +304,9 @@ final class RunModel {
         self.totalNegatives = totalNegatives
         invocation = Invocation(commandName: command.arguments.first)
         phase = .running
-        startedAt = now()
 
         let session = runner.session(for: command)
         self.session = session
-        tickTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                self?.refreshElapsed()
-            }
-        }
         runTask = Task { [weak self] in
             await self?.consume(session)
         }
@@ -353,7 +326,6 @@ final class RunModel {
     }
 
     private func apply(_ output: CLISessionOutput) {
-        refreshElapsed()
         switch output {
         case .event(let event):
             apply(event)
@@ -444,11 +416,8 @@ final class RunModel {
     }
 
     private func finish() async {
-        tickTask?.cancel()
-        tickTask = nil
         forceTask?.cancel()
         forceTask = nil
-        refreshElapsed()
         phase = .finishing
         // `convert` writes `scanny-boy-manifest.json` into the output folder;
         // `run` and `stitch` write `scanny-boy-roll.json` there instead — the
@@ -500,10 +469,8 @@ final class RunModel {
 
     private func reset() {
         runTask?.cancel()
-        tickTask?.cancel()
         forceTask?.cancel()
         runTask = nil
-        tickTask = nil
         forceTask = nil
         session = nil
         cancelRequested = false
@@ -529,13 +496,6 @@ final class RunModel {
         outcome = nil
         manifestReport = nil
         rollManifestReport = nil
-        startedAt = nil
-        elapsed = 0
-    }
-
-    private func refreshElapsed() {
-        guard let startedAt else { return }
-        elapsed = max(0, now().timeIntervalSince(startedAt))
     }
 
     /// Reads the manifest off the main actor: it is small, but it is still
