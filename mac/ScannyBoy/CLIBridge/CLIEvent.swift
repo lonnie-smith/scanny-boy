@@ -9,11 +9,13 @@ import Foundation
 /// reaches the app intact rather than failing the stream.
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
-    /// anything else is rejected rather than guessed at. Protocol 9 (the
-    /// extended-metadata editing feature) adds the `metadata` command
-    /// family — `metadata_updated`, `metadata_values`, the
+/// anything else is rejected rather than guessed at. Protocol 9 adds two
+    /// features: the extended-metadata editing feature (the `metadata`
+    /// command family — `metadata_updated`, `metadata_values`, the
     /// `INVALID_METADATA` code — and the roll/negative extended-metadata
-    /// fields in the roll manifest.
+    /// fields in the roll manifest), and `edit render-region` with its
+    /// `region_rendered` event: a 1:1 PNG of one display-space region of a
+    /// published TIFF, for the 100% zoom.
     public static let supportedProtocolVersion = 9
 
     public let protocolVersion: Int
@@ -45,6 +47,7 @@ public struct CLIEvent: Sendable, Hashable {
         case metadataValues
         case editRecorded
         case negativeDeleted
+        case regionRendered
         case exportDone
         case flatfieldCreated
         case flatfieldList
@@ -78,6 +81,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "metadata_values": self = .metadataValues
             case "edit_recorded": self = .editRecorded
             case "negative_deleted": self = .negativeDeleted
+            case "region_rendered": self = .regionRendered
             case "export_done": self = .exportDone
             case "flatfield_created": self = .flatfieldCreated
             case "flatfield_list": self = .flatfieldList
@@ -111,6 +115,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .metadataValues: "metadata_values"
             case .editRecorded: "edit_recorded"
             case .negativeDeleted: "negative_deleted"
+            case .regionRendered: "region_rendered"
             case .exportDone: "export_done"
             case .flatfieldCreated: "flatfield_created"
             case .flatfieldList: "flatfield_list"
@@ -232,6 +237,12 @@ extension CLIEvent {
     public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
     public var flippedHorizontally: Bool? { fields["flipped_horizontally"]?.boolValue }
     public var previewPath: String? { fields["preview_path"]?.stringValue }
+
+    // `region_rendered`: the 1:1 PNG's path and the rect actually rendered,
+    // post-clamp, in display space.
+    public var regionPath: String? { fields["path"]?.stringValue }
+    public var regionX: Int? { fields["x"]?.intValue }
+    public var regionY: Int? { fields["y"]?.intValue }
 
     // `flatfield_created` and `flatfield_list`
     public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }

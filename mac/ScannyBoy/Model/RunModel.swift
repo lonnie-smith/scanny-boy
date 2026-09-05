@@ -596,7 +596,7 @@ final class RunModel {
             }
         case .started, .probeResult, .finished, .unknown,
              .rollCreated, .rollList, .rollInfo, .rollRenamed, .rollDeleted,
-             .editRecorded, .negativeDeleted, .exportDone,
+.editRecorded, .negativeDeleted, .exportDone, .regionRendered,
              .metadataUpdated, .metadataValues,
              .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress:
             break

@@ -88,6 +88,12 @@ def _write_downscaled(image: np.ndarray, destination: Path) -> None:
             (round(image.shape[1] * scale), round(image.shape[0] * scale)),
             interpolation=cv2.INTER_AREA,
         )
+    _encode_display_png(image, destination)
+
+
+def _encode_display_png(image: np.ndarray, destination: Path) -> None:
+    """16-bit normalized-density (or already-8-bit) RGB -> inverted 8-bit
+    lossless PNG on disk, no downscale, no gamma."""
     if image.dtype == np.uint16:
         # The TIFF holds normalized log density; decode, invert, encode
         # 8-bit with no gamma.
@@ -160,6 +166,186 @@ def transform_preview(current_path: Path, op: str) -> Path:
         raise ValueError(f"could not encode preview {current_path}")
     current_path.write_bytes(encoded.tobytes())
     return current_path
+
+
+# --- 1:1 region rendering ----------------------------------------------------
+# A display-space rectangle: (x, y, width, height) — display space is the
+# published TIFF's pixels with the net rotation folded in, i.e. what the
+# app shows. This matches the canvas-space rect convention of
+# `layout.largest_valid_rect` and `composite(region=...)`.
+Region = tuple[int, int, int, int]
+
+
+def _read_tiff_dimensions(tiff_path: Path) -> tuple[int, int]:
+    """`(height, width)` from the TIFF header alone, no pixel decoding."""
+    import tifffile
+
+    with tifffile.TiffFile(tiff_path) as tif:
+        page = tif.pages[0]
+        return int(page.imagelength), int(page.imagewidth)
+
+
+def _display_point_to_tiff(
+    i: int, j: int, tiff_h: int, tiff_w: int, r: int
+) -> tuple[int, int]:
+    """Display point (row, col) -> TIFF point (row, col), where the display
+    image is `np.rot90(tiff, k=r)`.
+
+    From `np.rot90`'s index algebra, for a display of shape
+    (DH, DW) over a TIFF of shape (tiff_h, tiff_w):
+    r=0 keeps (i, j); r=1 (one CCW turn) reads tiff[j, tiff_w-1-i];
+    r=2 reads tiff[tiff_h-1-i, tiff_w-1-j]; r=3 (one CW turn) reads
+    tiff[tiff_h-1-j, i].
+    """
+    if r == 0:
+        return i, j
+    if r == 1:
+        return j, tiff_w - 1 - i
+    if r == 2:
+        return tiff_h - 1 - i, tiff_w - 1 - j
+    return tiff_h - 1 - j, i  # r == 3
+
+
+def _clamp_display_region(
+    x: int, y: int, width: int, height: int, display_h: int, display_w: int
+) -> tuple[int, int, int, int]:
+    """Intersect the requested display-space rect with the image bounds.
+
+    Raises `ValueError` when the intersection is empty — the app only asks
+    for regions it is currently showing, so an empty one is a bug there,
+    not a clamping case."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"region must have positive size, got {width}x{height}")
+    x0 = min(max(x, 0), display_w)
+    y0 = min(max(y, 0), display_h)
+    x1 = min(max(x + width, 0), display_w)
+    y1 = min(max(y + height, 0), display_h)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(
+            f"region {x}x{y}+{width}+{height} is empty against a "
+            f"{display_w}x{display_h} image"
+        )
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _read_tiff_region(
+    tiff_path: Path, tiff_rect: tuple[int, int, int, int]
+) -> np.ndarray:
+    """The TIFF's pixels for a TIFF-space rect `(x, y, w, h)`, decoded
+    through tifffile's own codec pipeline — deflate strips with horizontal
+    prediction — for just the strips the rect overlaps, then full-image
+    decode as a fallback if a strip-level read ever misbehaves."""
+    import tifffile
+
+    x, y, w, h = tiff_rect
+    try:
+        with tifffile.TiffFile(tiff_path) as tif:
+            page = tif.pages[0]
+            page_w = int(page.imagewidth)
+            rows_per_strip = int(page.rowsperstrip or int(page.imagelength))
+            first_strip = y // rows_per_strip
+            last_strip = (y + h - 1) // rows_per_strip
+            filehandle = tif.filehandle
+            parts = []
+            for strip in range(first_strip, last_strip + 1):
+                filehandle.seek(int(page.dataoffsets[strip]))
+                raw = filehandle.read(int(page.databytecounts[strip]))
+                decoded, _shape, _dtype = page.decode(raw, strip)
+                parts.append(
+                    np.asarray(decoded).reshape(-1, page_w, page.samplesperpixel)
+                )
+            strip_image = parts[0] if len(parts) == 1 else np.concatenate(parts)
+            return strip_image[y - first_strip * rows_per_strip :][0:h, x : x + w]
+    except Exception:  # noqa: BLE001 — the strip path is an optimization
+        image = tifffile.imread(tiff_path)
+        return image[y : y + h, x : x + w]
+
+
+def _promote_to_rgb(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 2:
+        return np.stack([image] * 3, axis=-1)
+    if image.shape[2] == 4:
+        return image[:, :, :3]
+    return image
+
+
+def render_region(
+    tiff_path: Path,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    destination: Path | None = None,
+) -> Region:
+    """Encode the published TIFF's `(x, y, width, height)` display-space
+    region as a lossless 1:1 PNG — display space is the TIFF with the net
+    transform folded in, exactly as `generate_preview` shows it: mirrored
+    horizontally first (when flipped), then fine-rotated (the auto-seeded
+    `rotate_fine` angle, a warp about the canvas center with the fill
+    sentinel in the uncovered pixels), then rotated — and the encode is the
+    same inverted 8-bit display LUT with no downscale.
+
+    The region is clamped against the image bounds; the returned `Region`
+    is the rect actually rendered, post-clamp. Cropping first and
+    transforming the crop is exact for axis-aligned rects, so the same
+    pixels come back as a full decode would give —
+    `test_render_region_matches_full_decode` holds that equivalence, and
+    the strip-level reader (only the strips overlapping the rect are
+    decoded, since the published TIFF is strip-compressed, not tiled) is
+    held to the full read as well. The fine rotation's warp interpolates
+    across the crop boundary, so a nonzero angle takes the exact path
+    instead: decode the whole TIFF, replay the full transform on it, and
+    slice the rect out of the result — the same pixels the preview shows.
+    """
+    tiff_h, tiff_w = _read_tiff_dimensions(tiff_path)
+    r = (-int(quarter_turns)) % 4
+    # Odd net turns swap the display dimensions.
+    display_h, display_w = (tiff_w, tiff_h) if r % 2 else (tiff_h, tiff_w)
+    dx, dy, dw, dh = _clamp_display_region(x, y, width, height, display_h, display_w)
+
+    if abs(fine_angle_deg) >= 1e-9:
+        # The fine warp interpolates across its source's boundaries, so
+        # crop-then-transform is no longer exact: replay the transform on
+        # the full decode, the way `generate_preview` does, then slice.
+        import tifffile
+
+        image = _promote_to_rgb(tifffile.imread(tiff_path))
+        if flipped_horizontally:
+            image = np.ascontiguousarray(image[:, ::-1])
+        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
+        if r:
+            image = np.ascontiguousarray(np.rot90(image, k=r))
+        if destination is not None:
+            _encode_display_png(image[dy : dy + dh, dx : dx + dw], destination)
+        return dx, dy, dw, dh
+
+    # Invert the display transform on the clamped rect: the display image
+    # is `rot90(mirror(tiff), k=r)`, so the rect corners map through the
+    # inverse rotation into mirrored-tiff space (`_display_point_to_tiff`),
+    # and the mirror — its own inverse — flips the column bounds back into
+    # tiff space.
+    corners = (
+        _display_point_to_tiff(dy, dx, tiff_h, tiff_w, r),
+        _display_point_to_tiff(dy + dh - 1, dx + dw - 1, tiff_h, tiff_w, r),
+    )
+    ty0 = min(corners[0][0], corners[1][0])
+    ty1 = max(corners[0][0], corners[1][0]) + 1
+    tx0 = min(corners[0][1], corners[1][1])
+    tx1 = max(corners[0][1], corners[1][1]) + 1
+    if flipped_horizontally:
+        tx0, tx1 = tiff_w - tx1, tiff_w - tx0
+
+    crop = _read_tiff_region(tiff_path, (tx0, ty0, tx1 - tx0, ty1 - ty0))
+    if flipped_horizontally:
+        crop = np.ascontiguousarray(crop[:, ::-1])
+    if r:
+        crop = np.ascontiguousarray(np.rot90(crop, k=r))
+    if destination is not None:
+        _encode_display_png(_promote_to_rgb(crop), destination)
+    return dx, dy, dw, dh
 
 
 # The preview ops `ensure_preview`/`transform_preview` understand, kept in

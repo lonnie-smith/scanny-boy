@@ -255,6 +255,34 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH`
+    ///
+    /// Protocol version 9: renders one display-space region of the
+    /// negative's published TIFF at 1:1 — the net rotation folded in, the
+    /// same display encode as the cached preview — into `output` as a
+    /// lossless PNG. A pure rendering query backing the Edit tab's 100%
+    /// zoom: nothing is recorded, the TIFF is never touched.
+    public static func editRenderRegion(
+        roll: URL,
+        negative: String,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        output: URL
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "render-region",
+            "--roll", roll.path,
+            "--negative", negative,
+            "--x", String(x),
+            "--y", String(y),
+            "--width", String(width),
+            "--height", String(height),
+            "--output", output.path,
+        ])
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
     ///
     /// Applies each negative's recorded edits to its published pixels and

@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import ImageIO
 import Observation
 
 /// State for the Edit tab (section 3.10): the selected roll's negatives in
@@ -319,6 +321,71 @@ final class EditModel {
                 flippedHorizontally: event.flippedHorizontally
                     ?? negative.flippedHorizontally
             )
+        )
+    }
+
+    // MARK: - Region rendering
+
+    /// Renders one display-space region of `negative`'s published TIFF at
+    /// 1:1 — `edit render-region`, protocol version 9 — and loads the
+    /// result for drawing at `rect.width/height` image pixels per physical
+    /// screen pixel. A pure query backing the Edit tab's 100% zoom: the CLI
+    /// records nothing and touches no pixels.
+    func renderRegion(_ negative: RollManifest.Negative, rect: CGRect) async -> Thumbnail? {
+        guard let rollURL else { return nil }
+        let output = Self.regionCacheURL(
+            negativeID: negative.negativeID,
+            generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
+            rect: rect
+        )
+        let command = CLICommand.editRenderRegion(
+            roll: rollURL,
+            negative: negative.negativeID,
+            x: Int(rect.minX),
+            y: Int(rect.minY),
+            width: Int(rect.width),
+            height: Int(rect.height),
+            output: output
+        )
+        var rendered = false
+        do {
+            for await line in try await runner.session(for: command).start() {
+                if case .event(let event) = line, event.kind == .regionRendered {
+                    rendered = true
+                }
+            }
+        } catch {
+            return nil
+        }
+        guard rendered, let image = Self.fullResolutionImage(at: output) else {
+            return nil
+        }
+        return Thumbnail(image: image)
+    }
+
+    private static var regionCacheDirectory: URL {
+        URL.cachesDirectory.appending(path: "preview-regions", directoryHint: .isDirectory)
+    }
+
+    private static func regionCacheURL(
+        negativeID: String, generation: String, rect: CGRect
+    ) -> URL {
+        regionCacheDirectory.appending(
+            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
+        )
+    }
+
+    /// The PNG the CLI rendered, decoded at its native size — a pane-sized
+    /// crop, so a bounded decode, same rule as `ThumbnailLoader`'s preview
+    /// path.
+    static func fullResolutionImage(at url: URL) -> NSImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions),
+            let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { return nil }
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
         )
     }
 

@@ -11,10 +11,12 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-# Protocol 9 (the extended-metadata editing feature): the `metadata`
-# command family (`metadata_updated`, `metadata_values` events, the
-# `INVALID_METADATA` code), and the roll/negative extended-metadata fields
-# in the roll manifest.
+# Protocol 9 adds two features: the extended-metadata editing feature (the
+# `metadata` command family — `metadata_updated`, `metadata_values` events,
+# the `INVALID_METADATA` code — and the roll/negative extended-metadata
+# fields in the roll manifest), and the `edit render-region` command with
+# its `region_rendered` event: a 1:1 PNG of one display-space region of a
+# published TIFF, with the net rotation folded in, for the app's 100% zoom.
 PROTOCOL_VERSION = 9
 
 
@@ -41,6 +43,7 @@ class EventType(enum.StrEnum):
     METADATA_VALUES = "metadata_values"
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
+    REGION_RENDERED = "region_rendered"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -433,6 +436,25 @@ class NegativeDeleted(Event):
 
     negative_id: str
     output: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RegionRendered(Event):
+    """`edit render-region`'s confirmation: one display-space region of a
+    negative's published TIFF rendered at 1:1 — net rotation folded in,
+    display encode identical to `generate_preview` — as a lossless PNG at
+    `path`. `x`/`y`/`width`/`height` are the rect actually rendered,
+    post-clamp against the image bounds; no pixel data of the published
+    TIFF changes and nothing is recorded anywhere."""
+
+    event_type: ClassVar[EventType] = EventType.REGION_RENDERED
+
+    negative_id: str
+    path: str
+    x: int
+    y: int
+    width: int
+    height: int
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

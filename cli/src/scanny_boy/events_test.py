@@ -27,6 +27,7 @@ from scanny_boy.events import (
     PipelineStep,
     ProbeResult,
     Progress,
+    RegionRendered,
     RollCreated,
     RollInfo,
     RollList,
@@ -225,7 +226,10 @@ def test_protocol_version_is_nine():
     """Protocol 8→9: the extended-metadata editing feature — the `metadata`
     command family (`metadata_updated`, `metadata_values`, the
     `INVALID_METADATA` code) and the roll/negative extended-metadata fields
-    in the roll manifest."""
+    in the roll manifest — plus 1:1 region rendering for the app's 100%
+    zoom (the `edit render-region` command and its `region_rendered`
+    event, carrying the rendered path and the post-clamp display-space
+    rect)."""
     assert PROTOCOL_VERSION == 9
 
 
@@ -267,10 +271,18 @@ def test_new_event_kinds_round_trip():
         FlatFieldProgress(phase="chromatic", completed=12, total=12),
         NegativeDeleted(negative_id="neg-5", output="out.tif"),
         NegativeDeleted(negative_id="neg-6", output=None),
+        RegionRendered(
+            negative_id="neg-7",
+            path="/tmp/region.png",
+            x=4,
+            y=2,
+            width=10,
+            height=6,
+        ),
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 9
+        assert data["protocol_version"] == PROTOCOL_VERSION
         assert json.loads(json.dumps(data)) == data
 
 

@@ -15,6 +15,7 @@ from scanny_boy.edits import (
     EditFailure,
     run_edit_delete,
     run_edit_flip,
+    run_edit_render_region,
     run_edit_rotate,
 )
 from scanny_boy.events import (
@@ -31,6 +32,7 @@ from scanny_boy.events import (
     MetadataValues,
     NegativeDeleted,
     ProbeResult,
+    RegionRendered,
     RollCreated,
     RollDeleted,
     RollInfo,
@@ -301,6 +303,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="negative to delete; repeat for a selection",
     )
 
+    edit_render_region = edit_subparsers.add_parser(
+        "render-region",
+        help=(
+            "Render one display-space region of a negative's published TIFF "
+            "at 1:1 as a lossless PNG (net transform folded in)."
+        ),
+    )
+    edit_render_region.add_argument("--roll", required=True, metavar="DIR")
+    edit_render_region.add_argument("--negative", required=True, metavar="ID")
+    edit_render_region.add_argument("--x", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--y", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--width", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--height", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--output", required=True, metavar="PATH")
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -533,6 +550,18 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 emit=writer.write,
             )
             confirmation = NegativeDeleted
+        elif args.edit_command == "render-region":
+            results = [run_edit_render_region(
+                Path(args.roll),
+                args.negative,
+                args.x,
+                args.y,
+                args.width,
+                args.height,
+                Path(args.output),
+                emit=writer.write,
+            )]
+            confirmation = RegionRendered
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
     except EditFailure as exc:

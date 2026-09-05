@@ -9,6 +9,15 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 9 keeps version 8's roll model and adds **1:1 region
+rendering** for the app's 100% zoom: the new `edit render-region` command
+renders one display-space region of a negative's published TIFF at 1:1 — the
+ops log's net rotation folded in, the same inverted display encode as the
+cached preview, no downscale — into a caller-named path as a lossless PNG,
+emitting `region_rendered` with the rect actually rendered (post-clamp). It
+is a pure rendering query: nothing is recorded, the published TIFF is never
+modified. Only the TIFF strips the region overlaps are decoded.
+
 Protocol version 8 keeps version 7's roll model and makes two changes:
 it adds a **per-frame scale** to the layout solve
 (docs/STITCH_QUALITY_PLAN.md section 2) and **scan normalization**
@@ -37,7 +46,6 @@ block and `normalized_fill`, its runs a `normalization_aggregate`, and its
 sources `scan_clip_fractions`. Every existing roll refuses new runs with
 `ROLL_INVARIANT_MISMATCH` (the processing-params invariant now carries the
 `normalize` bucket); the remedy is a new roll.
->>>>>>> origin/main
 
 Protocol version 7 keeps version 6's roll model and adds **geometric
 calibration** (docs/GEOMETRIC_PLAN.md): `flatfield create` gains
@@ -106,6 +114,7 @@ scanny-boy metadata values --field FIELD
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
+scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
@@ -281,6 +290,21 @@ unknown direction, `ROLL_NOT_FOUND` for an unregistered roll, and
 selection is validated before any op is appended, so a batch either records
 or fails without partial effects.
 
+`edit render-region` renders one display-space region of a negative's
+published TIFF at 1:1 — the ops log's net transform (rotation, flip, and
+the auto-seeded fine angle) folded in, the same inverted 8-bit display
+encode as the cached preview, no
+downscale — into `--output` as a lossless PNG. Display space is the
+published TIFF's pixels with the net transform applied: what `roll info`'s
+`preview_path` shows, and the coordinate space the app's 100% zoom works
+in. The region is clamped against the image bounds, and the emitted
+`region_rendered` carries `negative_id`, `path`, and the rect actually
+rendered (`x`, `y`, `width`, `height`, post-clamp). A pure rendering query:
+nothing is recorded, the published TIFF and the ops log are untouched. It
+fails with `INVALID_EDIT` for a non-positive size or an empty region
+against the bounds, `ROLL_NOT_FOUND` for an unregistered roll, and
+`NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
+
 `edit flip` records a horizontal mirror of one or more negatives — a flip of
 the pixels as they currently render, *after* any recorded rotations — by
 appending a `flip` op to each negative's ordered edits ops log. Like
@@ -400,6 +424,7 @@ library database rather than a JSON file in the roll folder).
 | `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
+| `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
 | `flatfield_created` | A flat-field profile was created. Carries `profile`. |
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
