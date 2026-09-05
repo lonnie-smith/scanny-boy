@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import sys
 import uuid
 from collections.abc import Sequence
@@ -26,6 +27,8 @@ from scanny_boy.events import (
     FlatFieldCreated,
     FlatFieldDeleted,
     FlatFieldList,
+    MetadataUpdated,
+    MetadataValues,
     NegativeDeleted,
     ProbeResult,
     RollCreated,
@@ -47,6 +50,11 @@ from scanny_boy.library import repo
 from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+from scanny_boy.metadata_edit import (
+    MetadataEditFailure,
+    run_metadata_set,
+    run_metadata_values,
+)
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
@@ -200,6 +208,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write dirty negatives' intended capture times into their TIFFs.",
     )
     apply_metadata.add_argument("--roll", required=True, metavar="DIR")
+
+    metadata = subparsers.add_parser(
+        "metadata",
+        help="Edit the roll-level and per-negative metadata held in the library.",
+    )
+    metadata_subparsers = metadata.add_subparsers(dest="metadata_command", required=True)
+
+    metadata_set = metadata_subparsers.add_parser(
+        "set",
+        help="Apply one metadata payload (roll-level fields and/or per-negative fields).",
+    )
+    metadata_set.add_argument("--roll", required=True, metavar="DIR")
+    metadata_set.add_argument(
+        "--payload",
+        required=True,
+        metavar="JSON",
+        help=(
+            "JSON object: {\"roll\": {field: value}, \"negatives\": "
+            "{negative_id: {field: value}}}; absent keys are untouched, "
+            "null or \"\" clears"
+        ),
+    )
+
+    metadata_values = metadata_subparsers.add_parser(
+        "values",
+        help="List the catalog of previously-entered values for one metadata field.",
+    )
+    metadata_values.add_argument(
+        "--field",
+        required=True,
+        metavar="FIELD",
+        help="one of city, state, camera, lens",
+    )
 
     edit = subparsers.add_parser(
         "edit", help="Record nondestructive edits against a roll's negatives."
@@ -576,6 +617,46 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
     return 0
 
 
+def _run_metadata_command(args, writer: EventWriter) -> int:
+    """The `metadata set` / `metadata values` subcommands: bracket like
+    every other subcommand and carry no `run_id` — metadata edits are
+    database writes, not pipeline runs."""
+    if args.metadata_command == "set":
+        writer.write(Started(command="metadata set"))
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as exc:
+            writer.write(
+                ErrorEvent(
+                    code=Code.INVALID_METADATA,
+                    message=f"--payload is not valid JSON: {exc}",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            manifest = run_metadata_set(Path(args.roll), payload, emit=writer.write)
+        except MetadataEditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(MetadataUpdated(manifest=manifest))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    # values
+    writer.write(Started(command="metadata values"))
+    try:
+        values = run_metadata_values(args.field)
+    except MetadataEditFailure as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    writer.write(MetadataValues(field=args.field, values=values))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_export_command(args, writer: EventWriter) -> int:
     writer.write(Started(command="export"))
     try:
@@ -732,6 +813,9 @@ def _dispatch_command(
 
     if args.command == "edit":
         return _run_edit_command(args, writer)
+
+    if args.command == "metadata":
+        return _run_metadata_command(args, writer)
 
     if args.command == "flatfield":
         return _run_flatfield_command(args, writer)

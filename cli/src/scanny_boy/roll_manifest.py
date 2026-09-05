@@ -49,6 +49,11 @@ from scanny_boy.manifest import (
 ROLL_MANIFEST_FORMAT_VERSION = 6
 ROLL_MANIFEST_KIND = "roll"
 
+# The extended metadata fields, in display order. Every one lives on both
+# `RollMetadata` (the roll-level fallback) and `NegativeMetadata` (the
+# explicit per-image value); `effective_metadata` resolves the pair.
+METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+
 # Section 3.4: `short_id` starts at six characters of the run's UUID and
 # lengthens until it is free within the roll.
 SHORT_ID_LENGTHS = (6, 8, 10)
@@ -196,6 +201,25 @@ class RunRecord:
 
 
 @dataclasses.dataclass
+class NegativeMetadata:
+    """The extended metadata fields a negative carries *explicitly* (the
+    extended-metadata editing feature). A `None` means "inherit the roll's
+    fallback" — the effective value is the negative's own, else the roll's.
+    Serialized as the negative's nested `metadata` object; every key is
+    required-nullable in `roll-manifest.schema.json`, so rows written before
+    the feature existed (which carry five NULLs) read back unchanged."""
+
+    city: str | None = None
+    state: str | None = None
+    camera: str | None = None
+    lens: str | None = None
+    caption: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
 class NegativeRecord:
     negative_id: str
     run_id: str
@@ -207,6 +231,9 @@ class NegativeRecord:
     # `roll_sequence.py` (Chunk P3-6). Null while unranked (pending/failed).
     sequence: int | None = None
     capture_time: CaptureTime = dataclasses.field(default_factory=CaptureTime)
+    # The negative's explicit extended-metadata values (None = inherit the
+    # roll's fallback).
+    metadata: NegativeMetadata = dataclasses.field(default_factory=NegativeMetadata)
     # `{name, size, sha256, width, height}`; a plain dict rather than a
     # dataclass because Phase 1's `OutputRecord` has no dimensions and this
     # module's dataclass list is fixed by the plan.
@@ -267,17 +294,42 @@ class NegativeRecord:
             "error_code": self.error_code,
             "error_message": self.error_message,
             "capture_time": self.capture_time.to_dict(),
+            "metadata": self.metadata.to_dict(),
             "preview_path": self.preview_path,
         }
 
 
 @dataclasses.dataclass
 class RollMetadata:
+    """The roll's metadata stage record. `roll_capture_date` is the
+    section 3.7 fallback date every negative without a `date_override`
+    ranks on; the five extended-metadata fields are the roll-level
+    fallbacks each negative without its own value inherits."""
+
     roll_capture_date: str | None = None
     last_applied_at: str | None = None
+    city: str | None = None
+    state: str | None = None
+    camera: str | None = None
+    lens: str | None = None
+    caption: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def effective_metadata(
+    roll_metadata: RollMetadata, negative_metadata: NegativeMetadata
+) -> dict[str, str | None]:
+    """The extended-metadata live fallback: per field, the negative's own
+    explicit value when it has one, else the roll's. Nothing is copied
+    between rows — changing a roll-level value instantly covers every
+    negative without an explicit one, and a negative added later inherits
+    the roll's values without a write."""
+    return {
+        field: getattr(negative_metadata, field) or getattr(roll_metadata, field)
+        for field in METADATA_FIELDS
+    }
 
 
 @dataclasses.dataclass(frozen=True)

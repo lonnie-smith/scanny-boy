@@ -11,10 +11,11 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-# Protocol 8 (docs/DECISIONS.md, "Normalization decisions"): the `prepare` stage
-# rename (3.9), the `normalize` step (3.10), the new codes, and the
-# normalization record's new event/manifest fields, together.
-PROTOCOL_VERSION = 8
+# Protocol 9 (the extended-metadata editing feature): the `metadata`
+# command family (`metadata_updated`, `metadata_values` events, the
+# `INVALID_METADATA` code), and the roll/negative extended-metadata fields
+# in the roll manifest.
+PROTOCOL_VERSION = 9
 
 
 class EventType(enum.StrEnum):
@@ -36,6 +37,8 @@ class EventType(enum.StrEnum):
     ROLL_DELETED = "roll_deleted"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
+    METADATA_UPDATED = "metadata_updated"
+    METADATA_VALUES = "metadata_values"
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     EXPORT_DONE = "export_done"
@@ -118,6 +121,7 @@ class Code(enum.StrEnum):
     ORPHAN_FILE_NOT_REMOVED = "ORPHAN_FILE_NOT_REMOVED"
     NEGATIVE_NOT_FOUND = "NEGATIVE_NOT_FOUND"
     INVALID_EDIT = "INVALID_EDIT"
+    INVALID_METADATA = "INVALID_METADATA"
     EXPORT_FAILED = "EXPORT_FAILED"
     PREVIEW_FAILED = "PREVIEW_FAILED"
     FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
@@ -373,6 +377,30 @@ class MetadataSkipped(Event):
     negative_id: str
     code: Code
     message: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataUpdated(Event):
+    """`metadata set`'s confirmation: the updated roll manifest, whole, in
+    the same shape a `roll_info` event carries — so the app can swap its
+    in-memory roll without a `roll info` round trip, exactly as an
+    `edit_recorded` preview-path update lands in place."""
+
+    event_type: ClassVar[EventType] = EventType.METADATA_UPDATED
+
+    manifest: dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataValues(Event):
+    """`metadata values`' answer: the catalog of previously-entered values
+    for one extended-metadata field, most-recently-used first — the list the
+    app's typeahead offers."""
+
+    event_type: ClassVar[EventType] = EventType.METADATA_VALUES
+
+    field: str
+    values: list[str]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

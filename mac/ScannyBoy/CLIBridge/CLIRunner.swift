@@ -174,6 +174,31 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["apply-metadata", "--roll", roll.path])
     }
 
+    /// `scanny-boy metadata set --roll DIR --payload JSON`
+    ///
+    /// Protocol version 9's extended-metadata editing: applies one payload
+    /// of roll-level and/or per-negative metadata fields to the roll's
+    /// record in the library database. It never touches a TIFF — metadata
+    /// reaches those only at export. The whole payload is validated by the
+    /// CLI before anything is written, and the `metadata_updated`
+    /// confirmation carries the updated manifest.
+    public static func metadataSet(roll: URL, payload: String) -> CLICommand {
+        CLICommand(arguments: [
+            "metadata", "set",
+            "--roll", roll.path,
+            "--payload", payload,
+        ])
+    }
+
+    /// `scanny-boy metadata values --field FIELD`
+    ///
+    /// The catalog of previously-entered values for one canonical field
+    /// (city, state, camera, lens), most-recently-used first — the list the
+    /// Metadata tab's typeahead offers.
+    public static func metadataValues(field: String) -> CLICommand {
+        CLICommand(arguments: ["metadata", "values", "--field", field])
+    }
+
     /// `scanny-boy edit rotate --roll DIR --negative ID [--negative ID ...] --direction cw|ccw`
     ///
     /// Protocol version 5's nondestructive edit: appends one rotation op per

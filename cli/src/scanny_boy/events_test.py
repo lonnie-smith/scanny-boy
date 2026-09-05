@@ -19,6 +19,8 @@ from scanny_boy.events import (
     ItemDone,
     MetadataApplied,
     MetadataSkipped,
+    MetadataUpdated,
+    MetadataValues,
     NegativeDeleted,
     NegativeDone,
     NegativeFailed,
@@ -219,14 +221,12 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_eight():
-    """Protocol 7→8: the per-frame scale in the layout solve
-    (docs/STITCH_QUALITY_PLAN.md section 2) plus scan normalization
-    (docs/DECISIONS.md, "Normalization decisions") — FrameRecord gains
-    `scale`, the `prepare` stage is renamed, the `normalize` step, the
-    scan-clipping and normalization codes, and the normalization record's
-    new event and manifest fields are added."""
-    assert PROTOCOL_VERSION == 8
+def test_protocol_version_is_nine():
+    """Protocol 8→9: the extended-metadata editing feature — the `metadata`
+    command family (`metadata_updated`, `metadata_values`, the
+    `INVALID_METADATA` code) and the roll/negative extended-metadata fields
+    in the roll manifest."""
+    assert PROTOCOL_VERSION == 9
 
 
 def test_new_event_kinds_round_trip():
@@ -236,6 +236,8 @@ def test_new_event_kinds_round_trip():
         RollInfo(manifest={"manifest_kind": "roll"}),
         RollRenamed(roll_id="id", roll_name="new name", path="/tmp/roll-2"),
         MetadataApplied(negative_id="neg-1"),
+        MetadataUpdated(manifest={"manifest_kind": "roll"}),
+        MetadataValues(field="city", values=["Porto", "Lisbon"]),
         MetadataSkipped(
             negative_id="neg-2",
             code=Code.METADATA_WRITE_FAILED,
@@ -268,7 +270,7 @@ def test_new_event_kinds_round_trip():
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 8
+        assert data["protocol_version"] == 9
         assert json.loads(json.dumps(data)) == data
 
 

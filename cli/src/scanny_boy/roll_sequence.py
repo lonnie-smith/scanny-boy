@@ -73,3 +73,19 @@ def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
             datetime.datetime.combine(date, NOON) + datetime.timedelta(seconds=rank - 1)
         )
     return times
+
+
+def apply_intended_times(manifest: RollManifest) -> None:
+    """Writes `intended_times`' result back into the manifest, stamping each
+    negative's `intended_datetime_original` in `datetime.isoformat()` form
+    and clearing it when the roll has no `roll_capture_date` (there is no
+    date to intend). The metadata-editing stage calls this after every
+    change to `roll_capture_date` or a negative's `date_override`, so the
+    intended timestamps in the database are always the rank-based formula's
+    current answer — roll order preserved, noon + (rank − 1) seconds."""
+    times = intended_times(manifest)
+    for negative in manifest.negatives:
+        intended = times.get(negative.negative_id)
+        negative.capture_time.intended_datetime_original = (
+            intended.isoformat() if intended is not None else None
+        )
