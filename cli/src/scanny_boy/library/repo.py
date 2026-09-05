@@ -32,6 +32,7 @@ from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
     METADATA_FIELDS,
+    ROLL_ONLY_METADATA_FIELDS,
     EditRow,
     FlatFieldProfileRow,
     MetadataValueRow,
@@ -132,6 +133,8 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
+            setattr(roll, field, getattr(manifest.metadata, field))
+        for field in ROLL_ONLY_METADATA_FIELDS:
             setattr(roll, field, getattr(manifest.metadata, field))
 
         # Diff by key so re-saving an unchanged child is a no-op and removed
@@ -454,6 +457,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
                 roll_capture_date=roll.roll_capture_date,
                 last_applied_at=roll.last_applied_at,
                 **{field: getattr(roll, field) for field in METADATA_FIELDS},
+                **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
             ),
         )
 

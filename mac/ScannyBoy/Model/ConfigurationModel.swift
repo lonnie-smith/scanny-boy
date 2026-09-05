@@ -219,6 +219,16 @@ final class ConfigurationModel {
         catalogue.filter { selectedFiles.contains($0) }
     }
 
+    /// Cmd-A: every catalogue entry joins the selection.
+    func selectAll() {
+        selectedFiles = Set(catalogue)
+    }
+
+    /// Cmd-D: the selection empties out.
+    func deselectAll() {
+        selectedFiles = []
+    }
+
     /// The `run` invocation this configuration describes, or `nil` when it
     /// does not yet describe a runnable one. `skipSources` is always empty:
     /// every group in the selection runs and adopts whatever it overlaps in

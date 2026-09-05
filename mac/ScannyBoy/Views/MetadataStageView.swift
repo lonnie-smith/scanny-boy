@@ -255,13 +255,16 @@ struct MetadataStageView: View {
     /// date" — the caption says which date the image(s) effectively carry.
     private var negativeCaptureDateField: some View {
         VStack(alignment: .leading, spacing: 4) {
-            CommitDatePicker(
-                title: "Capture date",
-                committedValue: singleOverride
-            ) { date in
-                Task { await edit.setNegativeCaptureDate(targets, to: date) }
+            rollField("Capture date") {
+                CommitDatePicker(
+                    title: "Capture date",
+                    committedValue: singleOverride,
+                    showsTitle: false
+                ) { date in
+                    Task { await edit.setNegativeCaptureDate(targets, to: date) }
+                }
+                .disabled(targets.isEmpty)
             }
-            .disabled(targets.isEmpty)
             if let caption = captureDateCaption {
                 Text(caption)
                     .font(.caption)
@@ -299,7 +302,7 @@ struct MetadataStageView: View {
         let values = edit.effectiveValues(of: targets, field: field)
         let isMixed = values.count > 1
         let committed: String? = isMixed ? nil : values.first ?? nil
-        return LabeledContent(fieldLabel(field)) {
+        return rollField(fieldLabel(field)) {
             TypeaheadField(
                 title: fieldLabel(field),
                 committedValue: committed,
@@ -308,12 +311,13 @@ struct MetadataStageView: View {
             ) { value in
                 Task { await edit.setNegativeField(targets, field: field, to: value) }
             }
-            .frame(maxWidth: 200)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(targets.isEmpty)
     }
 
     private func fieldLabel(_ field: String) -> String {
-        field.prefix(1).uppercased() + field.dropFirst()
+        if field == "iso" { return "ISO" }
+        return field.prefix(1).uppercased() + field.dropFirst()
     }
 }

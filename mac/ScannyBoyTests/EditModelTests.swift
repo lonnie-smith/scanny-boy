@@ -63,7 +63,7 @@ struct EditModelTests {
     private static func rollInfoEvent(
         negatives: [String], metadata: String? = nil
     ) -> String {
-        let metadataJSON = metadata ?? #"{"roll_capture_date":null,"last_applied_at":null,"city":null,"state":null,"camera":null,"lens":null,"caption":null}"#
+        let metadataJSON = metadata ?? #"{"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,"city":null,"state":null,"camera":null,"lens":null,"caption":null}"#
         let manifest = """
             {"manifest_format_version":5,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
             "roll_id":"roll-1","roll_name":"Test Roll",\
@@ -81,7 +81,7 @@ struct EditModelTests {
     func testEffectiveMetadataResolvesLiveFallback() async throws {
         // The roll carries the fallback city; the second negative has its
         // own explicit value that must win.
-        let rollMetadata = #"{"roll_capture_date":null,"last_applied_at":null,"city":"Porto","state":null,"camera":null,"lens":null,"caption":null}"#
+        let rollMetadata = #"{"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,"city":"Porto","state":null,"camera":null,"lens":null,"caption":null}"#
         let inherited = Self.negativeJSON(
             negativeID: "n1", sequence: 1, intended: nil, applied: nil
         )
@@ -655,7 +655,14 @@ struct EditModelTests {
             flippedHorizontally: false,
             rectification: nil,
             toneGradeR: toneGradeR,
-            toneSnapGamma: toneSnapGamma
+            toneSnapGamma: toneSnapGamma,
+            errorCode: nil,
+            errorMessage: nil,
+            maxOverlapMAD: nil,
+            normalization: nil,
+            usedClaheFallback: false,
+            gridPitchRatio: nil,
+            gridAlignmentRatio: nil
         )
     }
 }

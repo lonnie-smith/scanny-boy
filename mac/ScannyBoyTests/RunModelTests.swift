@@ -944,7 +944,7 @@ struct RunModelTests {
             "rebate_deviation_px":null,"error_code":null,"error_message":null,\
             "capture_time":{"source_datetime_original":null,"intended_datetime_original":null,\
             "applied_datetime_original":null,"date_override":null}}],\
-            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
+            "metadata":{"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,"city":null,"state":null,"camera":null,"lens":null,"caption":null}}
             """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }

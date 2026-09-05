@@ -7,8 +7,8 @@ import SwiftUI
 struct RollSidebar: View {
     let library: RollLibrary
     @Binding var selection: Roll.ID?
-    /// Disables every mutating action while a run is active app-wide
-    /// (section 3.10).
+    /// Disables roll switching and every mutating action while a helper is
+    /// active app-wide (section 3.10).
     let runIsActive: Bool
     /// `ContentView` owns `NewRollSheet`'s presentation (L5): the sidebar's
     /// toolbar **+** and the empty-state's "New Roll…" button used to each
@@ -31,7 +31,7 @@ struct RollSidebar: View {
             ForEach(sortedRolls) { roll in
                 RollRow(roll: roll)
                     .tag(roll.id)
-                    .selectionDisabled(roll.status == .unreadable)
+                    .selectionDisabled(roll.status == .unreadable || runIsActive)
                     .contextMenu {
                         Button("Rename…") { beginRename(roll) }
                             .disabled(roll.status != .ok || runIsActive)

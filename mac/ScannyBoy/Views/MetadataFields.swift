@@ -209,14 +209,22 @@ struct CommitDatePicker: View {
     /// The date the field displays, as `YYYY-MM-DD`; `nil` leaves the
     /// picker empty rather than showing today's date.
     let committedValue: String?
+    /// When false, the parent supplies the label (stacked layout).
+    var showsTitle: Bool = true
     let onCommit: (String?) -> Void
 
     @State private var workingDate: Date
     @State private var isChoosingDate = false
 
-    init(title: String, committedValue: String?, onCommit: @escaping (String?) -> Void) {
+    init(
+        title: String,
+        committedValue: String?,
+        showsTitle: Bool = true,
+        onCommit: @escaping (String?) -> Void
+    ) {
         self.title = title
         self.committedValue = committedValue
+        self.showsTitle = showsTitle
         self.onCommit = onCommit
         _workingDate = State(
             initialValue: MetadataDate.date(fromISO: committedValue) ?? Date.now
@@ -227,7 +235,7 @@ struct CommitDatePicker: View {
         HStack {
             if committedValue != nil {
                 DatePicker(
-                    title,
+                    showsTitle ? title : "",
                     selection: Binding(
                         get: { workingDate },
                         set: { newDate in
@@ -240,7 +248,9 @@ struct CommitDatePicker: View {
                 Button("Clear") { onCommit(nil) }
                     .help("Clear this date")
             } else {
-                Text(title)
+                if showsTitle {
+                    Text(title)
+                }
                 Text("—")
                     .foregroundStyle(.tertiary)
                 Button("", systemImage: "calendar") {

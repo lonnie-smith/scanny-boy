@@ -316,25 +316,27 @@ published TIFFs. See Phase 3 section 3.8.
 `metadata set` applies one metadata payload to the roll's record in the
 library database — it never touches a TIFF. The payload is
 `{"roll": {field: value}, "negatives": {negative_id: {field: value}}}`:
-roll fields are `capture_date` (the roll capture date) plus `city`,
+roll fields are `capture_date` (the roll capture date), `film`, `iso`
+(roll-only — no negative columns, no per-image override), plus `city`,
 `state`, `camera`, `lens`, `caption`; negative fields are the same five
-plus `capture_date` (the negative's date override). A key that is absent
-leaves the field untouched; a key present with `null` or `""` clears it (a
-cleared negative field then inherits the roll-level fallback; the
-extended metadata uses live-fallback semantics, never copying roll values
-onto negatives). Every capture-date change recomputes each negative's
-intended capture time by the rank formula (noon + rank − 1 seconds on the
-negative's effective date, ranked within that date in roll order), so the
-stored intent always preserves roll order. Non-empty `city`, `state`,
-`camera`, and `lens` values are remembered in the metadata-values catalog
-(`caption` never is). It emits one `metadata_updated` event carrying the
-updated `manifest`, and fails with `INVALID_METADATA` for an unknown field,
-a non-`YYYY-MM-DD` date, or a malformed payload, `ROLL_NOT_FOUND` for an
-unregistered roll, and `NEGATIVE_NOT_FOUND` for an unknown negative id —
-the whole payload is validated before anything is written.
+shared extended-metadata fields plus `capture_date` (the negative's date
+override). A key that is absent leaves the field untouched; a key present
+with `null` or `""` clears it (a cleared negative field then inherits the
+roll-level fallback; the extended metadata uses live-fallback semantics,
+never copying roll values onto negatives). Every capture-date change
+recomputes each negative's intended capture time by the rank formula (noon
++ rank − 1 seconds on the negative's effective date, ranked within that
+date in roll order), so the stored intent always preserves roll order.
+Non-empty `film`, `iso`, `city`, `state`, `camera`, and `lens` values are
+remembered in the metadata-values catalog (`caption` never is). It emits
+one `metadata_updated` event carrying the updated `manifest`, and fails with
+`INVALID_METADATA` for an unknown field, a non-`YYYY-MM-DD` date, or a
+malformed payload, `ROLL_NOT_FOUND` for an unregistered roll, and
+`NEGATIVE_NOT_FOUND` for an unknown negative id — the whole payload is
+validated before anything is written.
 
 `metadata values` lists the catalog of previously-entered values for one
-field (`city`, `state`, `camera`, or `lens`), most-recently-used first, as
+field (`film`, `iso`, `city`, `state`, `camera`, or `lens`), most-recently-used first, as
 a `metadata_values` event. It fails with `INVALID_METADATA` for any other
 field.
 
