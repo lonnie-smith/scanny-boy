@@ -210,7 +210,7 @@ private struct PreviewPane: View {
     private var infoLine: String {
         var parts = [negative.expectedOutput]
         if let rms = negative.globalRMSPixels {
-            parts.append(String(format: "Global RMS: %.3f px", rms))
+            parts.append(String(format: "Stitch registration error (RMS): %.1f px", rms))
         }
         if let output = negative.output {
             let megapixels = Double(output.width * output.height) / 1_000_000
