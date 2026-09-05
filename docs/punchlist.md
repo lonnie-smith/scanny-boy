@@ -57,7 +57,9 @@ version 8) deferred pieces:
 * **Roll-consistent colour bounds (D-4).** The orange mask and the lamp are
   constant across a roll; the scene content is not. Record exists
   (`normalization_aggregate`); `--colour-bounds run-median` is the likely
-  shape of the fix.
+  shape of the fix. (Partially shipped: the clamp reads the per-negative
+  manifest blocks, not the aggregate; a user-facing run-median *mode*
+  would supersede the clamp.)
 * **Run-propagated film base (D-3's staging step 2).** Film base is a
   property of the *roll*; Dmin measured from whichever negatives do show
   rebate can set the ceiling and the thin-end colour reference for every
@@ -72,6 +74,11 @@ version 8) deferred pieces:
   detector over real rolls with a dump of `mask_fraction`, `base_density`,
   whether it fired, and the per-channel clip fraction inside the mask.
   Until then, a detector that never fires is the safe failure.
+* **The eight unmeasured dense-border constants** (`DENSE_BORDER_*`,
+  `CLAMP_*`) — provisional and unmeasured, shipped against one diagnosed
+  roll (R1). Same disposition as the rebate five: run over real rolls with
+  a dump of `dense_border.detected`/`mask_fraction` and
+  `clamped`/`unclamped_floors`, then measure.
 * **`rebate_deviation_px` retired via the rebate mask** (§3.13's bonus).
   Given the rebate mask, the edge's deviation from the solved strip axis
   falls out nearly for free.

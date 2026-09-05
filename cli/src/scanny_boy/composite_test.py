@@ -10,6 +10,7 @@ from scanny_boy.composite import (
     MAX_CANVAS_DIMENSION,
     MAX_STITCHED_BYTES,
     MEMORY_SAFETY_FACTOR,
+    _region_keep,
     check_memory_budget,
     check_output_size,
     composite,
@@ -511,6 +512,45 @@ def test_uncovered_pixels_take_the_normalized_fill():
         assert tuple(int(v) for v in result.image[y, x]) == tuple(
             int(v) for v in fill_code
         )
+
+
+def test_region_keep_withholds_uncovered_interior_blocks():
+    """Section 1.5's hole: the blend's `covered` mask can hold interior
+    holes the layout's valid rect never saw. `_region_keep` intersects
+    every candidate region with the blocks the blend actually covered, so
+    a hole's cells — linear 0, log -6.0 — can never reach the meters and
+    latch the floor percentile (the R1 negative-08 failure)."""
+    canvas_shape = (1200, 1200)  # block = 2: blocks, not cells, get gated
+    covered = np.ones(canvas_shape, dtype=bool)
+    covered[100:140, 100:140] = False  # an interior hole
+    keep = _region_keep((600, 600), canvas_shape, (0, 0, 1200, 1200), covered)
+
+    block = 2
+    # The hole's blocks — including the partially covered edge blocks — are
+    # withheld; everything else survives.
+    assert not keep[
+        100 // block : -(-140 // block), 100 // block : -(-140 // block)
+    ].any()
+    assert keep.any()
+    assert keep[0, 0]
+    assert keep[599, 599]
+
+
+def test_region_keep_with_a_fully_uncovered_region_falls_back_to_coverage():
+    """A rect the blend barely covered must not empty the meters — and must
+    not meter the fill again either: the last-resort fallback is the
+    covered blocks alone, never the unfiltered grid."""
+    canvas_shape = (1200, 1200)
+    covered = np.ones(canvas_shape, dtype=bool)
+    covered[400:800, 400:800] = False  # the middle of the rect is a hole
+    rect = (400, 400, 400, 400)
+    keep = _region_keep((600, 600), canvas_shape, rect, covered)
+    # Every block of the rect is at least partially uncovered, so both rect
+    # fallbacks are empty; the meters fall back to the covered blocks.
+    assert keep.any()
+    assert not keep[200:400, 200:400].any()
+    assert keep[0, 0] and keep[599, 599]
+    assert keep.sum() == 600 * 600 - 200 * 200
 
 
 def test_memory_estimate_rejects_an_impossible_canvas():
