@@ -27,6 +27,7 @@
         "metadata_skipped",
         "edit_recorded",
         "negative_deleted",
+        "region_rendered",
         "export_done",
         "flatfield_created",
         "flatfield_list",
@@ -206,7 +207,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 8
+      "const": 9
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -321,6 +322,7 @@
               "apply-metadata",
               "edit rotate",
               "edit delete",
+              "edit render-region",
               "export",
               "flatfield create",
               "flatfield list",
@@ -487,6 +489,20 @@
         "properties": {
           "negative_id": { "type": "string" },
           "output": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "region_rendered" } } },
+      "then": {
+        "required": ["negative_id", "path", "x", "y", "width", "height"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "path": { "type": "string" },
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
         }
       }
     },

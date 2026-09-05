@@ -196,3 +196,134 @@ def test_sync_previews_keeps_untouched_cached_previews(tmp_path):
     previews.sync_previews(roll_dir, manifest)
 
     assert Path(negative.preview_path).read_bytes() == original
+
+
+# --- 1:1 region rendering ----------------------------------------------------
+
+
+def _write_published_tiff(tmp_path: Path, image: np.ndarray) -> Path:
+    """A compressed single-page TIFF written the way `write_base_tiff` does
+    (Adobe Deflate + horizontal predictor), so the strip-level reader is
+    exercised against the real storage layout."""
+    import tifffile
+
+    path = tmp_path / "out.tif"
+    tifffile.imwrite(
+        path,
+        image,
+        photometric="rgb",
+        compression="deflate",
+        predictor=True,
+        maxworkers=1,
+        metadata=None,
+    )
+    return path
+
+
+def test_render_region_matches_full_decode_for_every_quarter_turn(tmp_path):
+    """The region PNG is pixel-identical to slicing a full decode of the
+    TIFF with the net rotation folded in — crop-then-rotate equals
+    rotate-then-crop for axis-aligned rects."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.previews import render_region
+
+    # An asymmetric image, so every quarter turn is distinguishable.
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    for quarter_turns in range(4):
+        display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+        display_h, display_w = display.shape[:2]
+        cases = [
+            (10, 5, 20, 12),
+            (0, 0, display_w, display_h),
+            (display_w - 7, display_h - 3, 7, 3),
+        ]
+        for x, y, w, h in cases:
+            destination = tmp_path / "region.png"
+            rect = render_region(
+                tiff_path,
+                x, y, w, h, quarter_turns=quarter_turns, destination=destination,
+            )
+            rx, ry, rw, rh = rect
+            assert (rx, ry, rw, rh) == (x, y, w, h)
+            stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+            expected = cv2.cvtColor(
+                NORMALIZED_DISPLAY_LUT[display[y : y + h, x : x + w]],
+                cv2.COLOR_RGB2BGR,
+            )
+            np.testing.assert_array_equal(stored, expected)
+
+
+def test_render_region_clamps_against_the_display_bounds(tmp_path):
+    """A region hanging off the image's edges is clamped, in display space
+    (which for odd net turns has swapped dimensions), and the returned rect
+    is the intersection."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.previews import render_region
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    # One cw turn: the display is 64 rows x 40 columns.
+    destination = tmp_path / "region.png"
+    rect = render_region(
+        tiff_path, -10, -5, 64, 40, quarter_turns=1, destination=destination
+    )
+    assert rect == (0, 0, 40, 35)
+    assert destination.exists()
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    assert stored.shape == (35, 40, 3)
+
+    # The far corner, hanging off the right and bottom.
+    rect = render_region(
+        tiff_path, 33, 61, 100, 100, quarter_turns=1, destination=destination
+    )
+    assert rect == (33, 61, 7, 3)
+
+
+def test_render_region_rejects_an_empty_region(tmp_path):
+    import pytest
+
+    from scanny_boy.previews import render_region
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    with pytest.raises(ValueError):
+        render_region(tiff_path, 64, 40, 10, 10)
+    with pytest.raises(ValueError):
+        render_region(tiff_path, 0, 0, 0, 10)
+
+
+def test_render_region_does_not_fall_back_to_full_decode(tmp_path, monkeypatch):
+    """The strip-level reader is the point: if it ever starts falling back
+    to a full `imread` on the real files, this test fails rather than the
+    optimization silently disappearing."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.previews import render_region
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+    real_imread = tifffile.imread
+    tifffile.imread(tiff_path)  # sanity: the file reads
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("render_region must not decode the full TIFF")
+
+    monkeypatch.setattr(tifffile, "imread", _boom)
+    destination = tmp_path / "region.png"
+    rect = render_region(tiff_path, 10, 5, 20, 12, destination=destination)
+    assert rect == (10, 5, 20, 12)
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    expected = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[image[5:17, 10:30]],
+        cv2.COLOR_RGB2BGR,
+    )
+    np.testing.assert_array_equal(stored, expected)

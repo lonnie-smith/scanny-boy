@@ -25,6 +25,7 @@ from scanny_boy.events import (
     PipelineStep,
     ProbeResult,
     Progress,
+    RegionRendered,
     RollCreated,
     RollInfo,
     RollList,
@@ -218,14 +219,11 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_eight():
-    """Protocol 7→8: the per-frame scale in the layout solve
-    (docs/STITCH_QUALITY_PLAN.md section 2) plus scan normalization
-    (docs/DECISIONS.md, "Normalization decisions") — FrameRecord gains
-    `scale`, the `prepare` stage is renamed, the `normalize` step, the
-    scan-clipping and normalization codes, and the normalization record's
-    new event and manifest fields are added."""
-    assert PROTOCOL_VERSION == 8
+def test_protocol_version_is_nine():
+    """Protocol 8→9: 1:1 region rendering for the app's 100% zoom — the
+    `edit render-region` command and its `region_rendered` event, carrying
+    the rendered path and the post-clamp display-space rect."""
+    assert PROTOCOL_VERSION == 9
 
 
 def test_new_event_kinds_round_trip():
@@ -263,10 +261,18 @@ def test_new_event_kinds_round_trip():
         FlatFieldProgress(phase="chromatic", completed=12, total=12),
         NegativeDeleted(negative_id="neg-5", output="out.tif"),
         NegativeDeleted(negative_id="neg-6", output=None),
+        RegionRendered(
+            negative_id="neg-7",
+            path="/tmp/region.png",
+            x=4,
+            y=2,
+            width=10,
+            height=6,
+        ),
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == 8
+        assert data["protocol_version"] == PROTOCOL_VERSION
         assert json.loads(json.dumps(data)) == data
 
 

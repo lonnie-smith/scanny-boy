@@ -10,7 +10,7 @@ from pathlib import Path
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
-from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
+from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_render_region, run_edit_rotate
 from scanny_boy.events import (
     Code,
     EditRecorded,
@@ -22,6 +22,7 @@ from scanny_boy.events import (
     FlatFieldList,
     NegativeDeleted,
     ProbeResult,
+    RegionRendered,
     RollCreated,
     RollDeleted,
     RollInfo,
@@ -217,6 +218,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     edit_delete.add_argument("--roll", required=True, metavar="DIR")
     edit_delete.add_argument("--negative", required=True, metavar="ID")
+
+    edit_render_region = edit_subparsers.add_parser(
+        "render-region",
+        help=(
+            "Render one display-space region of a negative's published TIFF "
+            "at 1:1 as a lossless PNG (net rotation folded in)."
+        ),
+    )
+    edit_render_region.add_argument("--roll", required=True, metavar="DIR")
+    edit_render_region.add_argument("--negative", required=True, metavar="ID")
+    edit_render_region.add_argument("--x", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--y", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--width", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--height", required=True, type=int, metavar="PX")
+    edit_render_region.add_argument("--output", required=True, metavar="PATH")
 
     export = subparsers.add_parser(
         "export",
@@ -448,6 +464,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         writer.write(NegativeDeleted(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.edit_command == "render-region":
+        try:
+            fields = run_edit_render_region(
+                Path(args.roll),
+                args.negative,
+                args.x,
+                args.y,
+                args.width,
+                args.height,
+                Path(args.output),
+                emit=writer.write,
+            )
+        except EditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(RegionRendered(**fields))
         writer.write(Finished(status="success", exit_status=0))
         return 0
     raise AssertionError(f"unhandled edit command {args.edit_command!r}")

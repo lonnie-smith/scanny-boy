@@ -105,6 +105,79 @@ def run_edit_rotate(
     }
 
 
+def run_edit_render_region(
+    roll_dir: Path,
+    negative_id: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    output_path: Path,
+    *,
+    emit: EmitFn,
+) -> dict:
+    """Render one display-space region of a negative's published TIFF at
+    1:1 — the ops log's net rotation folded in, the same display encode as
+    `generate_preview` — into `output_path` as a lossless PNG. A pure
+    rendering query: nothing is recorded, the published TIFF and the ops
+    log are untouched. Returns the `RegionRendered` event's field values
+    (the rect actually rendered, post-clamp). Raises `EditFailure` when the
+    roll, negative, or region is no good."""
+    if width <= 0 or height <= 0:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--width and --height must be positive, got {width}x{height}",
+        )
+
+    if not repo.roll_registered(roll_dir):
+        raise EditFailure(
+            Code.ROLL_NOT_FOUND,
+            f"{roll_dir} is not a registered roll; create the roll first",
+        )
+
+    try:
+        roll = load_roll_manifest(roll_dir)
+    except (BadManifestError, RollNotRegisteredError) as exc:
+        raise EditFailure(exc.code, exc.message) from exc
+
+    try:
+        negative = roll.negative(negative_id)
+    except KeyError:
+        raise EditFailure(
+            Code.NEGATIVE_NOT_FOUND,
+            f"{roll_dir} has no negative {negative_id!r}",
+        ) from None
+
+    if negative.output is None:
+        raise EditFailure(
+            Code.NEGATIVE_NOT_FOUND,
+            f"{negative_id} has not been stitched yet; nothing to render",
+        )
+
+    tiff_path = roll_dir / negative.output["name"]
+    quarter_turns = repo.net_rotation_quarter_turns(roll_dir, negative_id)
+    try:
+        rendered = previews.render_region(
+            tiff_path,
+            x,
+            y,
+            width,
+            height,
+            quarter_turns=quarter_turns,
+            destination=output_path,
+        )
+    except ValueError as exc:
+        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+    return {
+        "negative_id": negative_id,
+        "path": str(output_path),
+        "x": rendered[0],
+        "y": rendered[1],
+        "width": rendered[2],
+        "height": rendered[3],
+    }
+
+
 def run_edit_delete(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
     """Remove one negative outright: its record (and its edits ops log, by
     cascade) from the library database, its published TIFF from the roll

@@ -14,7 +14,10 @@ from typing import IO, Any, ClassVar
 # Protocol 8 (docs/DECISIONS.md, "Normalization decisions"): the `prepare` stage
 # rename (3.9), the `normalize` step (3.10), the new codes, and the
 # normalization record's new event/manifest fields, together.
-PROTOCOL_VERSION = 8
+# Protocol 9 adds the `edit render-region` command and its `region_rendered`
+# event: a 1:1 PNG of one display-space region of a published TIFF, with the
+# net rotation folded in, for the app's 100% zoom.
+PROTOCOL_VERSION = 9
 
 
 class EventType(enum.StrEnum):
@@ -38,6 +41,7 @@ class EventType(enum.StrEnum):
     METADATA_SKIPPED = "metadata_skipped"
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
+    REGION_RENDERED = "region_rendered"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -400,6 +404,25 @@ class NegativeDeleted(Event):
 
     negative_id: str
     output: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RegionRendered(Event):
+    """`edit render-region`'s confirmation: one display-space region of a
+    negative's published TIFF rendered at 1:1 — net rotation folded in,
+    display encode identical to `generate_preview` — as a lossless PNG at
+    `path`. `x`/`y`/`width`/`height` are the rect actually rendered,
+    post-clamp against the image bounds; no pixel data of the published
+    TIFF changes and nothing is recorded anywhere."""
+
+    event_type: ClassVar[EventType] = EventType.REGION_RENDERED
+
+    negative_id: str
+    path: str
+    x: int
+    y: int
+    width: int
+    height: int
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

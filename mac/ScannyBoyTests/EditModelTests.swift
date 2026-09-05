@@ -189,9 +189,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":8,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":8,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":8,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":9,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":9,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":9,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -261,9 +261,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":8,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":8,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":8,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":9,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":9,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":9,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi

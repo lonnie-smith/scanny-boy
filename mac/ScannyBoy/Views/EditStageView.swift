@@ -91,8 +91,9 @@ struct EditStageView: View {
     }
 }
 
-/// The selected negative: a preview sized to fill the available space, the
-/// rotation controls, and the one-line info strip.
+/// The selected negative: a preview sized to fill the available space (or,
+/// after a space+click, a 1:1 crop of it), the rotation controls, and the
+/// one-line info strip.
 private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
@@ -102,6 +103,7 @@ private struct PreviewPane: View {
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
     @State private var isConfirmingDelete = false
+    @State private var zoom = PreviewZoomModel()
 
     var body: some View {
         VStack(spacing: 8) {
@@ -173,6 +175,7 @@ private struct PreviewPane: View {
         }
         .task(id: previewIdentity) {
             thumbnail = nil
+            zoom.reset()
             guard let url = previewURL else {
                 return
             }
@@ -183,12 +186,22 @@ private struct PreviewPane: View {
                 scale: displayScale
             )
         }
+        .onChange(of: displayScale) {
+            // The 1:1 crop is sized in physical pixels; a moved window (or
+            // display change) resizes it.
+            zoom.invalidate()
+            if zoom.mode == .pixels100 { zoom.fetchCrop() }
+        }
     }
 
     private var infoLine: String {
         var parts = [negative.expectedOutput]
         if let rms = negative.globalRMSPixels {
             parts.append(String(format: "Global RMS: %.3f px", rms))
+        }
+        if let output = negative.output {
+            let megapixels = Double(output.width * output.height) / 1_000_000
+            parts.append(String(format: "%d × %d (%.1f MP)", output.width, output.height, megapixels))
         }
         return parts.joined(separator: "  ·  ")
     }
@@ -206,33 +219,88 @@ private struct PreviewPane: View {
 
     @ViewBuilder
     private var preview: some View {
-        if let thumbnail {
-            Image(nsImage: thumbnail.image)
-                .resizable()
-                .interpolation(.medium)
-                .aspectRatio(contentMode: .fit)
-        } else if negative.isCompleted {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary)
-                .overlay {
-                    Image(systemName: "photo")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
+        GeometryReader { geo in
+            ZStack {
+                if zoom.mode == .pixels100, negative.output != nil {
+                    zoomedCrop
+                } else if let thumbnail {
+                    Image(nsImage: thumbnail.image)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fit)
+                } else if negative.isCompleted {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(.quaternary)
+                        .overlay {
+                            Image(systemName: "photo")
+                                .font(.largeTitle)
+                                .foregroundStyle(.secondary)
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(.quaternary)
+                        .overlay {
+                            VStack(spacing: 6) {
+                                Image(systemName: "photo")
+                                    .font(.largeTitle)
+                                    .foregroundStyle(.secondary)
+                                Text("Status: \(negative.status)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                 }
-        } else {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary)
-                .overlay {
-                    VStack(spacing: 6) {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("Status: \(negative.status)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .overlay {
+                PreviewEventHost(zoom: zoom)
+            }
+            .onChange(of: geo.size, initial: true) {
+                zoom.update(
+                    paneSize: geo.size,
+                    displayScale: displayScale,
+                    displaySize: displaySize,
+                    loader: { rect in
+                        await edit.renderRegion(negative, rect: rect)
                     }
-                }
+                )
+                if zoom.mode == .pixels100 { zoom.fetchCrop() }
+            }
         }
+    }
+
+    /// The 1:1 crop the CLI rendered: one image pixel per physical screen
+    /// pixel, drawn hard-edged, translated by the live pan.
+    @ViewBuilder
+    private var zoomedCrop: some View {
+        Group {
+            if let crop = zoom.crop {
+                Image(nsImage: crop.image)
+                    .interpolation(.none)
+                    .frame(
+                        width: CGFloat(crop.rect.width) / crop.displayScale,
+                        height: CGFloat(crop.rect.height) / crop.displayScale
+                    )
+                    .offset(zoom.cropScreenOffset)
+                    .background(Color.black)
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .overlay {
+                        ProgressView()
+                    }
+            }
+        }
+        .clipped()
+    }
+
+    /// The current image's display-space size, when it has been stitched.
+    private var displaySize: CGSize {
+        guard let output = negative.output else { return .zero }
+        return PreviewZoomModel.displaySize(
+            tiffSize: CGSize(width: output.width, height: output.height),
+            quarterTurns: negative.rotationQuarterTurns
+        )
     }
 }
 

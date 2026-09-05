@@ -9,11 +9,10 @@ import Foundation
 /// reaches the app intact rather than failing the stream.
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
-    /// anything else is rejected rather than guessed at. Protocol 8
-    /// (docs/DECISIONS.md, "Normalization decisions") renames the prepare stage,
-    /// adds the `normalize` step, the scan-clipping and normalization
-    /// codes, and the normalization record fields.
-    public static let supportedProtocolVersion = 8
+    /// anything else is rejected rather than guessed at. Protocol 9 adds
+    /// `edit render-region` and its `region_rendered` event: a 1:1 PNG of
+    /// one display-space region of a published TIFF, for the 100% zoom.
+    public static let supportedProtocolVersion = 9
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -42,6 +41,7 @@ public struct CLIEvent: Sendable, Hashable {
         case metadataSkipped
         case editRecorded
         case negativeDeleted
+        case regionRendered
         case exportDone
         case flatfieldCreated
         case flatfieldList
@@ -73,6 +73,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "metadata_skipped": self = .metadataSkipped
             case "edit_recorded": self = .editRecorded
             case "negative_deleted": self = .negativeDeleted
+            case "region_rendered": self = .regionRendered
             case "export_done": self = .exportDone
             case "flatfield_created": self = .flatfieldCreated
             case "flatfield_list": self = .flatfieldList
@@ -104,6 +105,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .metadataSkipped: "metadata_skipped"
             case .editRecorded: "edit_recorded"
             case .negativeDeleted: "negative_deleted"
+            case .regionRendered: "region_rendered"
             case .exportDone: "export_done"
             case .flatfieldCreated: "flatfield_created"
             case .flatfieldList: "flatfield_list"
@@ -216,6 +218,12 @@ extension CLIEvent {
     public var edit: [String: JSONValue]? { fields["edit"]?.objectValue }
     public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
     public var previewPath: String? { fields["preview_path"]?.stringValue }
+
+    // `region_rendered`: the 1:1 PNG's path and the rect actually rendered,
+    // post-clamp, in display space.
+    public var regionPath: String? { fields["path"]?.stringValue }
+    public var regionX: Int? { fields["x"]?.intValue }
+    public var regionY: Int? { fields["y"]?.intValue }
 
     // `flatfield_created` and `flatfield_list`
     public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }

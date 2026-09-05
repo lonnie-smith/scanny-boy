@@ -610,6 +610,131 @@ def test_edit_delete_without_negative_id_returns_status_2(capsys):
     assert err != ""
 
 
+def test_edit_render_region_renders_the_requested_region(capsys, tmp_path):
+    import cv2
+    import tifffile
+
+    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    tiff = tifffile.imread(roll_dir / negative.output["name"])
+    capsys.readouterr()
+
+    destination = tmp_path / "region.png"
+    status = main(
+        [
+            "edit", "render-region",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "4", "--y", "2",
+            "--width", "10", "--height", "6",
+            "--output", str(destination),
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "region_rendered", "finished"
+    ]
+    assert events[0]["command"] == "edit render-region"
+    assert events[1]["negative_id"] == negative.negative_id
+    assert events[1]["path"] == str(destination)
+    assert (events[1]["x"], events[1]["y"], events[1]["width"], events[1]["height"]) == (
+        4, 2, 10, 6
+    )
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    display = NORMALIZED_DISPLAY_LUT[tiff[2:8, 4:14]]
+    np.testing.assert_array_equal(stored, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
+
+
+def test_edit_render_region_folds_in_the_net_rotation(capsys, tmp_path):
+    """The region comes back in display space — the net rotation applied —
+    so a region asked for in preview coordinates matches the preview."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.library import repo
+    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    roll = load_roll_manifest(roll_dir)
+    negative = roll.negatives[0]
+    repo.append_edit(
+        roll_dir, negative.negative_id, repo.ROTATE_OP, {"direction": "cw"}
+    )
+    capsys.readouterr()
+
+    destination = tmp_path / "region.png"
+    status = main(
+        [
+            "edit", "render-region",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "2", "--y", "3",
+            "--width", "8", "--height", "5",
+            "--output", str(destination),
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "region_rendered", "finished"]
+
+    # One cw turn: display space is the TIFF rotated clockwise. The pixels
+    # are what the cached preview shows at those display coordinates.
+    tiff = tifffile.imread(roll_dir / negative.output["name"])
+    display = np.ascontiguousarray(np.rot90(tiff, k=3))
+    expected = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[
+            display[
+                events[1]["y"] : events[1]["y"] + events[1]["height"],
+                events[1]["x"] : events[1]["x"] + events[1]["width"],
+            ]
+        ],
+        cv2.COLOR_RGB2BGR,
+    )
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_edit_render_region_rejects_a_bad_region(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    capsys.readouterr()
+
+    destination = tmp_path / "region.png"
+    status = main(
+        [
+            "edit", "render-region",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "0", "--y", "0",
+            "--width", "0", "--height", "6",
+            "--output", str(destination),
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INVALID_EDIT"
+    assert not destination.exists()
+
+
 def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
     work_dir = _make_work_dir(tmp_path, negatives=1)
     roll_dir = _roll_dir(tmp_path)

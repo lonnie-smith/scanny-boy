@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":8,"event":"negative_deleted",\
+                {"protocol_version":9,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -162,10 +162,29 @@ struct CLIEventTests {
         #expect(event.output == "_DSC4638.tif")
     }
 
+    @Test("region_rendered")
+    func regionRenderedDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"region_rendered","negative_id":"a1b2c3-negative-01",\
+                "path":"/tmp/region.png","x":4,"y":2,"width":10,"height":6}
+                """)
+        )
+        #expect(event.kind == .regionRendered)
+        #expect(event.kind.isKnown)
+        #expect(event.negativeID == "a1b2c3-negative-01")
+        #expect(event.regionPath == "/tmp/region.png")
+        #expect(event.regionX == 4)
+        #expect(event.regionY == 2)
+        #expect(event.width == 10)
+        #expect(event.height == 6)
+        #expect(event.runID == nil)
+    }
+
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":8,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":9,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -385,7 +404,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":8,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":9,"command":"probe"}"#)
         }
     }
 
