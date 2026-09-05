@@ -189,9 +189,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":9,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":9,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":9,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":10,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":10,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -261,9 +261,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":9,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":9,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":9,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":10,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":10,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":10,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi
@@ -382,7 +382,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":9,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":10,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -401,11 +401,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":9,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":10,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":9,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'

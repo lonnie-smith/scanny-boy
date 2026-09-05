@@ -99,7 +99,7 @@ struct CLIIntegrationTests {
             for: .probe(
                 input: SampleFixtures.stagedDirectory(),
                 files: SampleFixtures.files,
-                perNegative: 3
+                across: 3
             )
         )
         let collected = await TestSupport.drain(try await session.start())
@@ -147,7 +147,7 @@ struct CLIIntegrationTests {
                 input: SampleFixtures.stagedDirectory(),
                 files: SampleFixtures.files,
                 out: out,
-                perNegative: 3,
+                across: 3,
                 jobs: 2
             )
 

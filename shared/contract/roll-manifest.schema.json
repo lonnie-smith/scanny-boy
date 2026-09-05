@@ -348,6 +348,27 @@
           "type": ["number", "null"],
           "description": "Section 3.14's uncovered-canvas fill value, recorded so a file is interpretable without knowing which build wrote it."
         },
+        "grid": {
+          "type": ["object", "null"],
+          "required": ["across", "down"],
+          "properties": {
+            "across": { "type": "integer", "minimum": 1 },
+            "down": { "type": "integer", "minimum": 1 }
+          },
+          "description": "The negative's grid as declared (docs/GRID_STITCH_PLAN.md section 2.4); null for a pre-grid build."
+        },
+        "grid_cells": {
+          "type": ["object", "null"],
+          "description": "The solved cell assignment, member name -> [row, col]; null when no non-strip grid was declared or assignment failed."
+        },
+        "grid_pitch_ratio": {
+          "type": ["number", "null"],
+          "description": "Grid regularity check (a): min/max adjacent-cell-pitch ratio, worst axis; null when no axis has three positions."
+        },
+        "grid_alignment_ratio": {
+          "type": ["number", "null"],
+          "description": "Grid regularity check (b): worst cross-axis row/column spread over the median pitch; 0 for a perfect grid."
+        },
         "normalization": {
           "oneOf": [{ "$ref": "#/definitions/normalization" }, { "type": "null" }]
         },

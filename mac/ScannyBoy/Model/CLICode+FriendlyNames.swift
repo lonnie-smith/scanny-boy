@@ -9,6 +9,7 @@ extension CLICode {
     var friendlyTitle: String? {
         switch self {
         case .noFiles: "No files found"
+        case .invalidGrid: "That grid shape isn't supported"
         case .filenameSortUsed: "Files were sorted by filename"
         case .missingCaptureTime: "A file has no capture time"
         case .captureSettingsDiffer: "Capture settings differ across the selection"
@@ -29,6 +30,7 @@ extension CLICode {
         case .stitchFailed: "Stitching failed"
         case .stitchScaleDrift: "A frame changed size between shots"
         case .stitchLayoutUnexpected: "The frames' arrangement was not recognized"
+        case .stitchGridOrderUnexpected: "The scans were shot in a different order than expected"
         case .stitchRebateCheckFailed: "The stitched image failed its safety check"
         case .scanClipped: "Some highlights are clipped in the scan"
         case .normalizeHeadroomClipped: "Normalization clipped some highlights or shadows"

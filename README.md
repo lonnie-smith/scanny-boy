@@ -131,9 +131,13 @@ one. Renaming moves the roll's folder; deleting moves it to the Trash.
 1. **Choose an input folder** of `.NEF` files. The app lists them in
    canonical order (capture time, falling back to filename) and shows a
    thumbnail for each.
-2. **Select one contiguous range.** Shots per negative is the roll's own,
-   fixed when it was created; the selected count must divide evenly by it.
-   The grouping preview shows how the selection splits into negatives.
+2. **Select one contiguous range.** Scans per negative is each run's own
+   choice, set on the Add Scans stage as a grid: **Across** by **Down**
+   (Down defaults to 1, a plain strip). The selected count must divide
+   evenly by the product, and `min(across, down) <= 2` — every cell of the
+   grid must show film rebate, which only holds when every cell touches
+   the grid's outer boundary (the rule is stated in CONTRACT.md). The
+   grouping preview shows how the selection splits into negatives.
 3. **Choose a flat-field profile.** A copy-stand capture is darker at the
    corners than at the centre — lens falloff plus an uneven light source.
    **File > Flat-Field Profiles…** manages profiles, each measured once from

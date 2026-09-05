@@ -39,6 +39,7 @@ so this chunk implements no rebate detection.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 
 import cv2
@@ -46,9 +47,29 @@ import numpy as np
 
 from scanny_boy.events import Code
 from scanny_boy.registration import PairResult, StitchError
+from scanny_boy.selection import GridSpec
 
 MAX_GLOBAL_RMS_PX = 12.0
 STRIP_SPREAD_RATIO = 0.15
+
+# A grid whose adjacent cell pitch varies by more than this along an axis
+# with enough cells to measure it, or whose rows and columns are this far
+# out of alignment relative to the cell pitch, is not the grid that was
+# declared — most likely a frame solved into the wrong cell. Warnings, not
+# failures: the negative still publishes and the user can judge the canvas.
+# (Displacement of half a cell or more is caught earlier, by the bijection
+# check in §4.1; these govern sub-cell drift only.)
+#
+# **Unmeasured starting values** (docs/GRID_STITCH_PLAN.md section 4.2):
+# recorded in the roll manifest's `stitch_params` as
+# `grid_pitch_ratio_min`/`grid_alignment_ratio_max` and per-negative as
+# `grid_pitch_ratio`/`grid_alignment_ratio`, to be revisited at a user gate
+# once there are real scans to measure against. `GRID_ALIGNMENT_RATIO_MAX`
+# is the looser guess of the pair — a quarter of a cell of row-to-row drift
+# is visibly wrong but well clear of ordinary registration slop — and is
+# the more likely of the two to need moving.
+GRID_PITCH_RATIO_MIN = 0.6
+GRID_ALIGNMENT_RATIO_MAX = 0.25
 
 # Row weight for the layout solves: a pairwise transform from N inliers at
 # residual `rms` has parameter variance proportional to rms^2 / N, so the
@@ -103,6 +124,27 @@ class Layout:
     # arbitrary direction. The weight formula it feeds is symmetric under a
     # sign flip of the axis, so no sign canonicalisation is needed here.
     strip_axis: tuple[float, float] | None
+    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 3.1 and 4). All
+    # four are None unless a non-strip grid was passed to `solve_layout`
+    # and cell assignment succeeded; on assignment failure every field is
+    # None and the blend falls back to the distance transform.
+    grid_axes: tuple[tuple[float, float], tuple[float, float]] | None = None
+    cells: dict[str, tuple[int, int]] | None = None  # name -> (row, col)
+    grid_pitch_ratio: float | None = None  # None when no axis has 3+ positions
+    grid_alignment_ratio: float | None = None
+
+    def feather_axes(self) -> tuple[tuple[float, float], ...]:
+        """The axes the composite feather ramps along, normalised in one
+        place for composite.py: the two grid axes when this layout solved
+        into a grid, else the one strip axis, else nothing at all (the
+        distance-transform fallback). As with `strip_axis`, the weight
+        formula is symmetric under a sign flip, so neither axis carries a
+        canonical sign."""
+        if self.grid_axes is not None:
+            return self.grid_axes
+        if self.strip_axis is not None:
+            return (self.strip_axis,)
+        return ()
 
 
 def check_connectivity(names: list[str], pairs: list[PairResult]) -> None:
@@ -139,8 +181,15 @@ def solve_layout(
     names: list[str],
     frame_size: tuple[int, int],
     pairs: list[PairResult],
+    *,
+    grid: GridSpec | None = None,
 ) -> Layout:
-    """frame_size is (height, width), identical for every frame."""
+    """frame_size is (height, width), identical for every frame.
+
+    `grid`, when given and not a strip, runs the §4 cell-assignment and
+    regularity checks (docs/GRID_STITCH_PLAN.md) and populates the Layout's
+    grid fields; `strip_spread_ratio`/`strip_axis` are computed exactly as
+    before and remain meaningful for strips and for grid=None."""
     check_connectivity(names, pairs)
 
     accepted_pairs = [pair for pair in pairs if pair.accepted]
@@ -315,6 +364,16 @@ def solve_layout(
     if ratio > STRIP_SPREAD_RATIO:
         axis = None
 
+    grid_axes = None
+    cells = None
+    pitch_ratio = None
+    alignment_ratio = None
+    if grid is not None and not grid.is_strip:
+        assignment = _assign_grid_cells(shifted_placements, frame_size, grid)
+        if assignment is not None:
+            axes, cells, pitch_ratio, alignment_ratio = assignment
+            grid_axes = axes
+
     return Layout(
         placements=shifted_placements,
         canvas_size=canvas_size,
@@ -322,6 +381,10 @@ def solve_layout(
         used_pairs=accepted_pairs,
         strip_spread_ratio=ratio,
         strip_axis=axis,
+        grid_axes=grid_axes,
+        cells=cells,
+        grid_pitch_ratio=pitch_ratio,
+        grid_alignment_ratio=alignment_ratio,
     )
 
 
@@ -435,6 +498,20 @@ def global_rms(placements: list[FramePlacement], pairs: list[PairResult]) -> flo
     return float(np.sqrt(np.mean(np.concatenate(squared_errors))))
 
 
+def _placed_centers(
+    placements: list[FramePlacement], frame_size: tuple[int, int]
+) -> np.ndarray:
+    """Every frame's centre in canvas space, from its solved placement."""
+    height, width = frame_size
+    local_center = np.array([width / 2.0, height / 2.0])
+    centers = []
+    for placement in placements:
+        matrix = placement.matrix()
+        rotation, translation = matrix[:, :2], matrix[:, 2]
+        centers.append(rotation @ local_center + translation)
+    return np.array(centers)
+
+
 def _strip_geometry(
     placements: list[FramePlacement], frame_size: tuple[int, int]
 ) -> tuple[float, tuple[float, float] | None]:
@@ -444,15 +521,7 @@ def _strip_geometry(
     vector) that `solve_layout` publishes on `Layout` for composite.py's
     feather. The axis is None whenever the ratio is: fewer than two
     placements, or the largest singular value is 0 (coincident centres)."""
-    height, width = frame_size
-    local_center = np.array([width / 2.0, height / 2.0])
-
-    centers = []
-    for placement in placements:
-        matrix = placement.matrix()
-        rotation, translation = matrix[:, :2], matrix[:, 2]
-        centers.append(rotation @ local_center + translation)
-    centers = np.array(centers)
+    centers = _placed_centers(placements, frame_size)
 
     if len(centers) < 2:
         return 0.0, None
@@ -475,6 +544,194 @@ def strip_spread_ratio(
     singular value to the first. A strip is near 0."""
     ratio, _axis = _strip_geometry(placements, frame_size)
     return ratio
+
+
+# Beyond this the SVD's right-singular vectors stop agreeing with the
+# frames' own axes and the SVD cross-check is not applied: near-equal
+# singular values make the SVD basis arbitrary in direction, not merely in
+# ordering (docs/GRID_STITCH_PLAN.md section 4.1 step 1).
+_SVD_CROSSCHECK_MAX_SPREAD = 0.5
+# How many degrees the rotation-derived and SVD bases may disagree by on a
+# regular grid before the assignment is treated as failed.
+_SVD_CROSSCHECK_MAX_DEG = 5.0
+
+
+def _snap_to_positions(
+    projections: np.ndarray, n_positions: int
+) -> list[int] | None:
+    """Snap each projection to the nearest of `n_positions` positions one
+    pitch apart, the pitch estimated as the extent over `n_positions - 1`.
+    Snap-to-nearest, not gap-cutting, is deliberate (§4.1 step 2): a frame
+    displaced less than half a cell snaps to its true cell (sub-cell drift
+    stays measurable by the alignment check), and half a cell or more
+    snaps into a neighbour, which fails the bijection outright."""
+    span = float(projections.max() - projections.min())
+    if n_positions < 2 or span <= 0:
+        return None if n_positions > 1 else [0] * len(projections)
+    pitch = span / (n_positions - 1)
+    indices = np.round((projections - projections.min()) / pitch).astype(int)
+    if indices.max() > n_positions - 1:
+        return None
+    return [int(i) for i in indices]
+
+
+def _axes_from_rotations(placements: list[FramePlacement]) -> tuple[
+    tuple[float, float], tuple[float, float]
+]:
+    """The grid's (across, down) axes from the solved frame rotations: the
+    frames were stepped along the camera's own sensor axes, so the grid's
+    column and row directions *are* the frames' axes. Unconditional at any
+    grid shape, pitch, or cell count (§4.1 step 1)."""
+    angles = np.radians([placement.rotation_deg for placement in placements])
+    mean_angle = math.atan2(
+        float(np.sin(angles).sum()), float(np.cos(angles).sum())
+    )
+    cos_a, sin_a = math.cos(mean_angle), math.sin(mean_angle)
+    return (cos_a, sin_a), (-sin_a, cos_a)
+
+
+def _grid_regularity(
+    centers: np.ndarray,
+    cells: dict[str, tuple[int, int]],
+    placements: list[FramePlacement],
+    across_axis: tuple[float, float],
+    down_axis: tuple[float, float],
+    grid: GridSpec,
+) -> tuple[float | None, float | None]:
+    """§4.2's two regularity measures over a successful assignment:
+    `grid_pitch_ratio` (min/max adjacent-cell-pitch ratio, worst axis with
+    three or more positions — None otherwise) and `grid_alignment_ratio`
+    (the worst cross-axis row/column spread over the median pitch, 0 for a
+    perfect grid)."""
+    rows, cols = grid.down, grid.across
+    across_projections = centers @ np.asarray(across_axis)
+    down_projections = centers @ np.asarray(down_axis)
+
+    def axis_pitch_ratio(projections: np.ndarray, index_of, n: int) -> float | None:
+        """min/max gap between adjacent cell-centroid positions along one
+        axis; None with fewer than three positions (a single gap has
+        nothing to be compared against and the ratio is trivially 1.0)."""
+        if n < 3:
+            return None
+        per_index: dict[int, list[float]] = {i: [] for i in range(n)}
+        for projection, cell_index in zip(projections, index_of, strict=True):
+            per_index[cell_index].append(projection)
+        positions = sorted(float(np.mean(v)) for v in per_index.values() if v)
+        gaps = [b - a for a, b in itertools.pairwise(positions)]
+        if not gaps:
+            return None
+        return min(gaps) / max(gaps)
+
+    col_of = [cells[placement.name][1] for placement in placements]
+    row_of = [cells[placement.name][0] for placement in placements]
+    across_ratio = axis_pitch_ratio(across_projections, col_of, cols)
+    down_ratio = axis_pitch_ratio(down_projections, row_of, rows)
+    ratios = [r for r in (across_ratio, down_ratio) if r is not None]
+    pitch_ratio = min(ratios) if ratios else None
+
+    def alignment(projections: np.ndarray, index_of, n: int) -> float:
+        """The worst, over the n groups sharing an index on this axis, of
+        each group's spread over the axis divided by the median pitch
+        between adjacent positions."""
+        per_index: dict[int, list[float]] = {i: [] for i in range(n)}
+        for projection, cell_index in zip(projections, index_of, strict=True):
+            per_index[cell_index].append(projection)
+        positions = sorted(float(np.mean(v)) for v in per_index.values() if v)
+        gaps = [b - a for a, b in itertools.pairwise(positions)]
+        if not gaps:
+            return 0.0
+        median_pitch = float(np.median(gaps))
+        if median_pitch <= 0:
+            return 0.0
+        return max(
+            (max(v) - min(v) for v in per_index.values() if len(v) > 1),
+            default=0.0,
+        ) / median_pitch
+
+    across_alignment = alignment(across_projections, col_of, cols)
+    down_alignment = alignment(down_projections, row_of, rows)
+    alignment_ratio = max(across_alignment, down_alignment)
+    return pitch_ratio, alignment_ratio
+
+
+def _assign_grid_cells(
+    placements: list[FramePlacement],
+    frame_size: tuple[int, int],
+    grid: GridSpec,
+) -> tuple[
+    tuple[tuple[float, float], tuple[float, float]],
+    dict[str, tuple[int, int]],
+    float | None,
+    float | None,
+] | None:
+    """§4.1: assign each frame to its declared grid cell from the solved
+    geometry alone. Returns `(grid_axes, cells, grid_pitch_ratio,
+    grid_alignment_ratio)`, or None when the assignment fails — a failed
+    assignment costs blend quality, not just a diagnostic: with
+    `grid_axes` None and `strip_axis` already nulled by the spread ratio,
+    `Layout.feather_axes()` comes back empty and the blend falls back to
+    the distance transform."""
+    if len(placements) != grid.count:
+        return None
+
+    centers = _placed_centers(placements, frame_size)
+    across_axis_w, down_axis_h = _axes_from_rotations(placements)
+
+    # SVD cross-check (§4.1 step 1): for a regular grid the centre cloud's
+    # right-singular vectors span the same pair as the frames' own axes.
+    # Applied only while the singular values are well separated — near
+    # equality the SVD basis is arbitrary in direction, and disagreement
+    # there is not a signal.
+    if len(centers) >= 2:
+        centered = centers - centers.mean(axis=0)
+        _u, singular_values, vt = np.linalg.svd(centered)
+        if singular_values[0] > 0 and (
+            singular_values[1] / singular_values[0] < _SVD_CROSSCHECK_MAX_SPREAD
+        ):
+            svd_axes = [(float(vt[0, 0]), float(vt[0, 1])), (float(vt[1, 0]), float(vt[1, 1]))]
+            for candidate in (across_axis_w, down_axis_h):
+                best = max(
+                    abs(candidate[0] * svd_axes[0][0] + candidate[1] * svd_axes[0][1]),
+                    abs(candidate[0] * svd_axes[1][0] + candidate[1] * svd_axes[1][1]),
+                )
+                if math.degrees(math.acos(min(1.0, best))) > _SVD_CROSSCHECK_MAX_DEG:
+                    return None
+
+    # Brute force over the two ways to name the candidate axes (across,
+    # down) vs (down, across). Sign flips change nothing: the snapping
+    # groups are identical, and both the weight formula and the bijection
+    # are sign-symmetric. With R == C — only 2×2 under the rebate rule —
+    # both orderings succeed, and the tie-break is the frames' own width
+    # direction, tried first (§4.1 step 2).
+    for across_axis, down_axis in (
+        (across_axis_w, down_axis_h),
+        (down_axis_h, across_axis_w),
+    ):
+        col_indices = _snap_to_positions(
+            centers @ np.asarray(across_axis), grid.across
+        )
+        row_indices = _snap_to_positions(
+            centers @ np.asarray(down_axis), grid.down
+        )
+        if col_indices is None or row_indices is None:
+            continue
+        cells = {
+            placement.name: (row, col)
+            for placement, row, col in zip(
+                placements, row_indices, col_indices, strict=True
+            )
+        }
+        claimed = sorted(cells.values())
+        if claimed != [
+            (r, c) for r in range(grid.down) for c in range(grid.across)
+        ]:
+            continue  # not a bijection onto the R x C cells
+        pitch_ratio, alignment_ratio = _grid_regularity(
+            centers, cells, placements, across_axis, down_axis, grid
+        )
+        return (across_axis, down_axis), cells, pitch_ratio, alignment_ratio
+
+    return None
 
 
 def _largest_all_covered_rectangle(mask: np.ndarray) -> tuple[int, int, int, int]:

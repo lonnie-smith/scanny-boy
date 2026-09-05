@@ -1070,3 +1070,73 @@ would degenerate a channel is discarded whole. Clamping is recorded
 auditable, and the published pixels always reflect the bounds recorded in
 `floors`/`ceils`.
 
+
+# 2D grid stitching decisions (protocol version 10)
+
+Implemented per docs/GRID_STITCH_PLAN.md (kept, not deleted — the real-scan
+validation is still outstanding); this section is the durable record of the
+locked decisions.
+
+## Dims are required; capture order is not trusted
+
+The grid's dimensions (`--grid AxD`) are user-specified because they buy
+two things nothing else can supply: a defensible *separable* feather (a
+two-axis ramp needs to know which axis is which and how many cells sit on
+each — the placed centres alone tell neither), and a structural sanity gate
+(the solved centres must form a bijection onto the R×C cells with roughly
+uniform pitch, which catches a frame that slid half a cell or more — a
+failure mode `global_rms_px` is blind to, since a consistently-wrong
+layout can still fit its own pairs well). Capture order buys little — pair
+discovery is exhaustive and the solve needs no seed — and it is fragile: a
+rescan, a rename, or an out-of-order pick would feed a wrong cell map into
+the feather. So serpentine order is a *documented assumption used only for
+one warning* (`STITCH_GRID_ORDER_UNEXPECTED`): the solved geometry always
+wins, and the warning never changes behaviour. Cell assignment is derived
+from the solved geometry, never from member order.
+
+## The feather is a separable product of two ramps; axes come from the solved rotations
+
+A strip's feather ramps along one axis; a grid's is the *product* of two
+1-D ramps, one along each grid axis, each scaled to [0, 1] and the floor
+applied once to the product — so a pixel's crossfade profile across a
+vertical seam is the same at the top of the canvas as in the middle, and
+likewise for horizontal seams, and a four-way corner (7.3% of a 5×2 canvas
+at 1/3 overlap) blends smoothly instead of collapsing to the isotropic
+distance transform's 50/50 border. The axes are the frames' solved
+rotations (circular mean), not an SVD of the centre cloud: the frames were
+stepped along the camera's own sensor axes, so the rotation-derived axes
+are exact at any grid shape and cell count, where the SVD is conditional
+on a capture geometry nothing checks and yields no cell counts even when
+it holds. The SVD is kept as a cross-check only, applied while its
+singular values are well separated. Cell assignment snaps each centre to
+its nearest declared pitch (not gap-cutting): sub-cell drift keeps a clean
+bijection and stays measurable by the alignment check; half a cell or more
+snaps into a neighbour and fails the bijection outright. Rejected
+alternatives: a single axis fitted by SVD (conditional, no cell counts),
+and per-pair midline blend bands (needs overlap geometry the accumulate
+pass does not carry).
+
+## Unmeasured constants awaiting a real-scan gate
+
+`GRID_PITCH_RATIO_MIN = 0.6`, `GRID_ALIGNMENT_RATIO_MAX = 0.25` (layout.py)
+and `_FEATHER_FLOOR_FRACTION = 1e-3` (composite.py) are unmeasured starting
+values, recorded in the roll manifest's `stitch_params`
+(`grid_pitch_ratio_min`, `grid_alignment_ratio_max`,
+`feather_floor_fraction`) and per negative
+(`grid_pitch_ratio`/`grid_alignment_ratio`), to be revisited at a user gate
+once there are real scans to measure against — the same discipline the
+quality gates' constants follow. `GRID_ALIGNMENT_RATIO_MAX` is the looser
+guess of the pair and the more likely to need moving.
+
+## The memory estimate's frame_bbox_size is a per-frame box
+
+`_attempt_solve` passed the whole canvas to `estimate_peak_bytes` as every
+frame's `frame_bbox_size`, charging `frame_count × canvas` where the
+compositor allocates `frame_count` frame-sized boxes — a factor of nine at
+the 5×2 target workload (198 GB demanded of a 64 GB machine, refusing
+every grid above 2×2 before a single frame was warped). It now computes
+the real per-frame bounding boxes (via `composite.frame_bbox`, promoted
+from a private helper for exactly this use) and passes the per-axis max —
+an upper bound on every frame, which is what the `frame_count ×`
+multiplier assumes. A 5×2 now fits with 26% headroom. The bug was in the
+estimate's *inputs*, not its formula.

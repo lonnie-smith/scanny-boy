@@ -23,6 +23,7 @@ from scanny_boy.manifest_schema_test_support import (
     assert_matches_manifest_schema,
     load_manifest_schema,
 )
+from scanny_boy.selection import GridSpec
 
 SCHEMA = load_manifest_schema()
 
@@ -318,3 +319,64 @@ def test_check_rerun_compatible_ignores_a_different_film_date_or_processing_para
 def test_estimate_manifest_size_is_positive_and_reasonable():
     size = estimate_manifest_size(_manifest())
     assert 0 < size < 10_000
+
+
+# --- grid (docs/GRID_STITCH_PLAN.md section 2.3) ---------------------------
+
+
+def test_manifest_grid_defaults_to_none_and_grid_spec_falls_back_to_strip():
+    manifest = _manifest()
+    assert manifest.grid is None
+    assert manifest.grid_spec == GridSpec(across=3, down=1)
+
+
+def test_manifest_grid_round_trips(tmp_path):
+    manifest = _manifest(
+        shots_per_negative=6, grid={"across": 3, "down": 2}
+    )
+    write_manifest(tmp_path, manifest)
+    loaded = load_manifest(tmp_path)
+    assert loaded.grid == {"across": 3, "down": 2}
+    assert loaded.grid_spec == GridSpec(across=3, down=2)
+    assert loaded.shots_per_negative == 6
+
+
+def test_validate_manifest_dict_rejects_grid_product_mismatch():
+    data = _manifest(grid={"across": 3, "down": 2}).to_dict()
+    with pytest.raises(BadManifestError, match="across \\* down"):
+        validate_manifest_dict(data)
+
+
+def test_validate_manifest_dict_rejects_grid_without_both_dimensions():
+    data = _manifest().to_dict()
+    data["grid"] = {"across": 3}
+    with pytest.raises(BadManifestError):
+        validate_manifest_dict(data)
+
+
+def test_check_rerun_matches_rejects_a_changed_grid():
+    """A 3x2 and a 6x1 batch are not the same batch even though both are
+    six scans: the resume comparison compares the grid, not just the
+    count."""
+    existing = _manifest(grid={"across": 3, "down": 2}, shots_per_negative=6)
+    candidate = _manifest(grid={"across": 6, "down": 1}, shots_per_negative=6)
+    with pytest.raises(ManifestMismatchError, match="grid"):
+        check_rerun_matches(existing, candidate)
+
+
+def test_check_rerun_matches_accepts_the_same_grid():
+    existing = _manifest(grid={"across": 3, "down": 2}, shots_per_negative=6)
+    candidate = _manifest(
+        grid={"across": 3, "down": 2},
+        shots_per_negative=6,
+        run_id="new",
+        started_at="t",
+    )
+    check_rerun_matches(existing, candidate)  # must not raise
+
+
+def test_check_rerun_compatible_rejects_a_changed_grid():
+    existing = _manifest(grid={"across": 3, "down": 2}, shots_per_negative=6)
+    candidate = _manifest(grid={"across": 6, "down": 1}, shots_per_negative=6)
+    with pytest.raises(ManifestMismatchError, match="grid"):
+        check_rerun_compatible(existing, **_known_fields(candidate))

@@ -9,14 +9,41 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 9 keeps version 8's roll model and adds **1:1 region
+Protocol version 10 keeps version 9's roll model and adds **2D grid
+stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and `run` accept
+`--grid AxD` (e.g. `--grid 3x2`) — five across, two down — naming the 2D
+arrangement of one negative's scans, mutually exclusive with
+`--per-negative`. Exactly one of the two flags is required on `prepare` and
+`run`, and on `probe` when `--files` is given; omitting both is a usage
+error naming both flags. A strip is the `down == 1` case:
+`--per-negative N` and `--grid Nx1` declare the same batch. The batch shape
+is constrained by **`min(across, down) <= 2`**: every cell of the grid must
+show film rebate, which only holds when every cell touches the grid's outer
+boundary — a 3x3 or larger square cannot satisfy it. This rule is stated
+here once and referenced elsewhere. `across * down` remains capped at 12.
+Note that **`2x5` is legal and CLI-only**: the Mac app's Down picker caps at
+2, so `--grid 2x5` is reachable only on the command line. A well-formed
+grid that breaks a rule fails with `INVALID_GRID`; a malformed one
+(anything not of the `AxD` form) is a usage error. One new warning:
+`STITCH_GRID_ORDER_UNEXPECTED` — the solved cell assignment disagrees with
+the serpentine capture-order assumption (start at cell (0, 0), traverse
+`across`, reverse each row); warning only, the solved geometry always wins. The stitch-params record
+also changed (the feather is recorded as `axis-separable` for every roll,
+strip or grid, and three new threshold keys landed), so **every roll
+written by an earlier build refuses new runs with
+`ROLL_INVARIANT_MISMATCH`**; the remedy is to delete the old roll folders.
+
+Protocol version 9 added **1:1 region
 rendering** for the app's 100% zoom: the new `edit render-region` command
 renders one display-space region of a negative's published TIFF at 1:1 — the
 ops log's net rotation folded in, the same inverted display encode as the
 cached preview, no downscale — into a caller-named path as a lossless PNG,
 emitting `region_rendered` with the rect actually rendered (post-clamp). It
 is a pure rendering query: nothing is recorded, the published TIFF is never
-modified. Only the TIFF strips the region overlaps are decoded.
+modified. Only the TIFF strips the region overlaps are decoded. It also
+added the extended-metadata editing feature (the `metadata` command family
+— `metadata_updated`, `metadata_values`, the `INVALID_METADATA` code — and
+the roll/negative extended-metadata fields in the roll manifest).
 
 Protocol version 8 keeps version 7's roll model and makes two changes:
 it adds a **per-frame scale** to the layout solve
@@ -94,16 +121,18 @@ scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
 
-scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N] [--roll DIR]
+scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N | --grid AxD] [--roll DIR]
                       [--flatfield ID]
 
-scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR --per-negative N
+scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
+                      [--per-negative N | --grid AxD]
                       [--jobs N] [--overwrite] [--flatfield ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ...] [--flatfield ID]
 
-scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negative N
+scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
+                      [--per-negative N | --grid AxD]
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
 
 scanny-boy apply-metadata --roll DIR
@@ -212,8 +241,23 @@ no `run_id`; none is a pipeline run.
 `roll init` creates a folder under `--library` (slug + collision rule) and
 registers an empty v5 roll in the library database. It emits `roll_created`
 carrying `roll_id`, `roll_name`, and `path`. A roll records no grouping of
-its own: `--per-negative` is each stitch batch's choice, so one roll can
+its own: `--per-negative`/`--grid` is each stitch batch's choice, so one roll can
 hold negatives stitched from different scan counts.
+
+`--grid AxD` (protocol 10) names the 2D arrangement of one negative's
+scans: `across` frames left-to-right in capture space, `down`
+top-to-bottom, `across * down` scans per negative. It is accepted wherever
+`--per-negative` is (`probe` with `--files`, `prepare`, `run`) and is
+mutually exclusive with it; a strip is the `down == 1` case, so
+`--per-negative N` and `--grid Nx1` declare the same batch and the strip
+path is the R=1 case of the grid path, not a separate one. The shape
+constraints are the ones stated in the protocol-10 paragraph above:
+`min(across, down) <= 2` because every cell must show film rebate, and
+`across * down <= 12`. A batch declared with `--grid` records the grid on
+its work manifest alongside `shots_per_negative == across * down`, and the
+roll manifest's negatives record the declared grid, the solved per-frame
+cell assignment, and the solved grid's regularity measures. `stitch` takes
+neither flag — it reads the grouping from the work manifest.
 
 `roll list` reports the rolls registered under `--library` from the library
 database and emits a single `roll_list` event. A registered roll whose
@@ -374,7 +418,8 @@ invocation emits only JSON event lines on stdout.
 parallelism never spans negatives, because a negative is published all at
 once or not at all. Omitting it uses
 `min(shots_per_negative, logical CPUs, 4)` — where `shots_per_negative` is
-the batch's own value, from `--per-negative` or the work manifest — reduced
+the batch's own count, `across * down` from `--per-negative`/`--grid` or
+the work manifest — reduced
 silently if this machine's memory budget is smaller. An explicit value is
 accepted from 1 to 12; 1 uses the serial path. Values outside that range are
 a usage error (exit 2).
@@ -445,7 +490,7 @@ in canonical order — section 3.3 — regardless of whether `--files` was
 given), `warnings` (the stable codes of any `warning` events emitted during
 this probe, as a convenience rollup), and `groups` (present only when
 `--files` was given and validated: the selection's filenames in canonical
-order, chunked into `--per-negative`-sized negatives; empty otherwise).
+order, chunked into `across * down`-sized negatives; empty otherwise).
 
 When `--out` is also given alongside a validated `--files` selection,
 `probe_result` additionally carries `output_conflicts` (output filenames
@@ -499,6 +544,7 @@ staging directories, and reruns the incomplete negative.
 | `NON_CONTIGUOUS_SELECTION` | Selection has a gap in canonical order |
 | `NOT_DIVISIBLE` | Selected count not divisible by the batch's shots per negative |
 | `INVALID_PER_NEGATIVE` | Shots per negative outside 1–12 |
+| `INVALID_GRID` | A well-formed `--grid AxD` whose shape breaks `min(across, down) <= 2` (every cell must show rebate) or the 12-scan cap |
 | `MISSING_CAPTURE_TIME` | A catalogue file has no usable capture timestamp |
 | `FILENAME_SORT_USED` | Warning: whole catalogue fell back to filename order |
 | `UNSUPPORTED_RAW` | LibRaw cannot read the file, typically HE/HE\* |
@@ -527,7 +573,8 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_FAILED` | Any other failure while stitching one negative |
 | `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
 | `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
-| `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped |
+| `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped (strips), or does not match the declared grid / is not a regular grid (grids) |
+| `STITCH_GRID_ORDER_UNEXPECTED` | Warning: the solved grid cells disagree with the serpentine capture-order assumption; the solved geometry wins |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |

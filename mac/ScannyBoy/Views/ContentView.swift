@@ -293,22 +293,35 @@ struct ContentView: View {
             }
         }
         Section {
-            // Scans-per-negative belongs to this stitch batch, not the
-            // roll: each run picks its own grouping, so a roll can hold
-            // negatives stitched from different scan counts. It must be
-            // chosen before stitching — `runEnabled` gates the Stitch
-            // button on it, and choosing (or changing) it re-validates the
-            // selection, since grouping and divisibility depend on it.
-            Picker("Scans per negative", selection: $model.perNegative) {
-                Text("Choose scans per negative…").tag(Int?.none)
-                ForEach(1...12, id: \.self) { count in
+            // The batch's grid (protocol 10): two pickers, Across (1…12,
+            // clamped so across * down stays within the CLI's 12-scan cap)
+            // and Down (1…2). Down defaults to 1 and is not optional — a
+            // plain strip run needs one selection, not two — so only
+            // Across carries the "not chosen yet" state that gates the
+            // Convert button. `down == 1` emits `--per-negative`;
+            // `down > 1` emits `--grid AxD` (docs/GRID_STITCH_PLAN.md
+            // section 2.5).
+            Picker("Across", selection: $model.across) {
+                Text("Choose…").tag(Int?.none)
+                ForEach(1...(ConfigurationModel.maxPerNegative / model.down), id: \.self) { count in
                     Text("\(count)").tag(Int?.some(count))
                 }
             }
             .accessibilityIdentifier("perNegativePicker")
 
-            if model.perNegative == nil {
-                Text("How many scans are stitched into each negative. Choose one to enable Convert.")
+            Picker("Down", selection: $model.down) {
+                ForEach(1...2, id: \.self) { count in
+                    Text("\(count)").tag(count)
+                }
+            }
+            .accessibilityIdentifier("downPicker")
+
+            if let across = model.across {
+                Text("\(across * model.down) scans per negative")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("How the scans are arranged in each negative: Across by Down. Choose an Across count to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")

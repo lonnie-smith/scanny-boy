@@ -61,11 +61,20 @@ MEMORY_SAFETY_FACTOR = 3.5  # section 3.8.1; measured, not padding
 MAX_OVERLAP_MAD = 0.20
 INTERPOLATION = cv2.INTER_LANCZOS4
 
-FEATHER = "strip-axis"  # recorded in the roll manifest's stitch params
+FEATHER = "axis-separable"  # recorded in the roll manifest's stitch params
 # Numerical guard, not a measured threshold: every covered pixel keeps a
 # positive weight, the same invariant cv2.distanceTransform gave for free
 # (it never returns less than 1.0 inside a mask).
 _FEATHER_FLOOR = 1.0  # px
+# The two-axis (grid) feather's floor, as a *fraction* of full weight: the
+# separable product of the two axis ramps is dimensionless in [0, 1], so
+# the px-valued `_FEATHER_FLOOR` cannot govern it. **Unmeasured starting
+# value** (docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1): chosen as the
+# same order as the strip floor's relative magnitude (1.0 px against a
+# ~3000 px ramp is ~3e-4), recorded in `_stitch_params` as
+# `feather_floor_fraction`, and revisited at the same user gate as the
+# grid-pitch/alignment constants.
+_FEATHER_FLOOR_FRACTION = 1e-3
 
 # Rows of output corrected per cv2.remap call when a profile's geometry is
 # applied (docs/GEOMETRIC_PLAN.md section 5.3): the band map is generated
@@ -142,10 +151,12 @@ def estimate_peak_bytes(
     single-channel source view held during each remap
     (`frame_pixels * 4`). MEMORY_SAFETY_FACTOR is unchanged.
 
-    The strip-axis feather (`_feather_weight`) needs two bbox-sized float32
-    scratch buffers (the along-axis coordinate `s`, and the
-    `minimum`/`maximum` temporary), live for one frame at a time — one
-    additive term, not `frame_count` of them.
+    The feather (`_feather_weight`) needs bbox-sized float32 scratch — in
+    the two-axis case three buffers (one per axis ramp plus the product),
+    in the one-axis case two — live for one frame at a time in the
+    accumulate pass, since the weight is computed lazily there rather than
+    retained per frame (docs/GRID_STITCH_PLAN.md section 5.2): one additive
+    term, not `frame_count` of them.
     """
     canvas_width, canvas_height = canvas_size
     frame_height, frame_width = frame_size
@@ -165,8 +176,8 @@ def estimate_peak_bytes(
     normalized = canvas_pixels * 3 * 4
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4  # uint16 + linear decode
     warped = bbox_pixels * 3 * 4  # one warped frame
-    warp_aux = bbox_pixels * 4 + bbox_pixels * 2  # feather weight + warped/eroded masks
-    feather_scratch = bbox_pixels * 4 * 2  # strip-axis ramp's `s` + min/max temp
+    warp_aux = bbox_pixels * 2  # warped/eroded masks
+    feather_scratch = bbox_pixels * 4 * 3  # two ramps + the product
 
     geometry_bytes = 0
     if geometry:
@@ -224,7 +235,7 @@ def check_output_size(canvas_size: tuple[int, int], *, on_warning) -> None:
         )
 
 
-def _frame_bbox(
+def frame_bbox(
     matrix: np.ndarray, height: int, width: int, canvas_size: tuple[int, int]
 ) -> tuple[int, int, int, int]:
     """(x, y, width, height) of the frame's axis-aligned bounding box in
@@ -260,24 +271,17 @@ def _frame_bbox(
     return x, y, right - x, bottom - y
 
 
-def _feather_weight(
+def _axis_ramp(
     mask: np.ndarray,
     bbox_x: int,
     bbox_y: int,
-    axis: tuple[float, float] | None,
+    axis: tuple[float, float],
 ) -> np.ndarray:
-    """Blend weight for one warped frame, in its own bounding box.
-
-    With a strip axis, weight ramps only along that axis: the distance from
-    the nearer end of this frame's own along-axis extent, floored so a
-    covered pixel always contributes. Constant across the strip, so the
-    crossfade at the strip's long borders is identical to the crossfade
-    down its middle — the isotropic distance transform's border collapse to
-    50/50 is what smeared misregistration into a curve. Without an axis
-    (a layout that is not a strip), falls back to the distance transform.
-    """
-    if axis is None:
-        return cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    """One axis's ramp for `_feather_weight`, in pixels: the distance from
+    the nearer end of this frame's own extent along `axis`, floored at
+    `_FEATHER_FLOOR` px so a covered pixel always contributes. The
+    `if not covered.any()` early-out guards the projection arithmetic,
+    which is undefined on an all-empty mask."""
     ax, ay = axis
     height, width = mask.shape
     s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[np.newaxis, :]
@@ -292,12 +296,74 @@ def _feather_weight(
     return weight.astype(np.float32)
 
 
+def _feather_weight(
+    mask: np.ndarray,
+    bbox_x: int,
+    bbox_y: int,
+    axes: tuple[tuple[float, float], ...],
+) -> np.ndarray:
+    """Blend weight for one warped frame, in its own bounding box.
+
+    `axes` is a tuple of one or two unit vectors. Along each, the weight
+    ramps from the frame's own extent on that axis — distance from the
+    nearer end — and the returned weight is the *product* of the per-axis
+    ramps, floored once at the end. One axis is the strip case
+    (docs/STITCH_QUALITY_PLAN.md section 1.3), unchanged. Two axes is a
+    grid: the ramp is separable, so a pixel's crossfade profile across a
+    vertical seam is the same at the top of the canvas as in the middle,
+    and likewise for horizontal seams — the same guarantee the strip ramp
+    makes, in both directions at once. Empty `axes` (a layout that is
+    neither) falls back to the distance transform.
+
+    In the two-axis case each ramp is divided by its own
+    `(s_max - s_min) / 2`, so the product is dimensionless in [0, 1] and
+    the floor is a fixed *fraction* of full weight
+    (`_FEATHER_FLOOR_FRACTION`); the accumulate pass normalises by the
+    summed weight, so the per-frame constant cancels. The one-axis case
+    stays pixel-valued with the `_FEATHER_FLOOR` constant — the strip
+    weights must remain byte-identical to the pre-grid build's. The floor
+    and the `weight[~covered] = 0.0` are applied to the *product*, not
+    per-axis: a covered pixel keeps a positive weight, and a four-way
+    corner does not land on `floor²`.
+    """
+    if not axes:
+        return cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    if len(axes) == 1:
+        return _axis_ramp(mask, bbox_x, bbox_y, axes[0])
+
+    height, width = mask.shape
+    covered = mask > 0
+    product = np.ones(mask.shape, dtype=np.float32)
+    for axis in axes:
+        ax, ay = axis
+        s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[
+            np.newaxis, :
+        ] + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
+        if not covered.any():
+            return np.zeros(mask.shape, dtype=np.float32)
+        s_min = float(s[covered].min())
+        s_max = float(s[covered].max())
+        half_span = (s_max - s_min) / 2.0
+        if half_span <= 0:
+            return np.zeros(mask.shape, dtype=np.float32)
+        ramp = np.minimum(s - s_min, s_max - s) / half_span
+        ramp[~covered] = 0.0
+        product *= ramp.astype(np.float32)
+    weight = np.maximum(product, _FEATHER_FLOOR_FRACTION)
+    weight[~covered] = 0.0
+    return weight.astype(np.float32)
+
+
 @dataclasses.dataclass
 class _WarpedFrame:
     """One warped frame's residency between the warp pass and the
     accumulate pass: bounding-box sized, not canvas sized, so keeping all
     of them resident is cheap next to the two canvas-sized accumulators.
-    Mutable: the solved per-frame gain is applied in place to `linear`."""
+
+    Immutable-by-convention: the solved per-frame gain rides along as the
+    `gain` scalar array and is folded into the accumulate pass's term, not
+    multiplied through `linear` — multiplying a (possibly spilled) buffer
+    in place would rewrite every page for nothing."""
 
     x: int
     y: int
@@ -305,7 +371,7 @@ class _WarpedFrame:
     height: int
     linear: np.ndarray  # float32 (H, W, 3)
     mask: np.ndarray  # uint8 eroded validity mask
-    weight: np.ndarray  # float32 feather weight
+    gain: np.ndarray  # float32 (3,) per-channel solved gain
     source_size: tuple[int, int]  # full-resolution (height, width)
 
 
@@ -506,9 +572,12 @@ def composite(
       3. np.clip(warped, 0.0, None) — section 2.3's measured -0.088
          undershoot.
       4. Warp a ones-mask with INTER_NEAREST; cv2.erode by MASK_ERODE_PX.
-      5. weight = _feather_weight(mask, bbox_x, bbox_y, layout.strip_axis):
-         a ramp along the strip axis when the layout has one, else the
-         isotropic cv2.distanceTransform.
+      5. weight = _feather_weight(mask, bbox_x, bbox_y, axes): the
+         separable product of the layout's feather axes'
+         `Layout.feather_axes()` ramps when it has any (one axis is the
+         strip case), else the isotropic cv2.distanceTransform. The weight
+         is computed lazily in the accumulate pass — it is read nowhere
+         else, so it is not retained per frame.
       6. Check `cancel` between frames.
 
     Nothing is accumulated during the warp pass: the photometric gain solve
@@ -520,13 +589,16 @@ def composite(
         pair's shared valid area, rows below MIN_GAIN_OVERLAP_PX dropped)
         and the pre-gain overlap MAD;
       * solve_gains (geometric-mean-1 anchor, one solve per channel) and
-        apply the gains in place to the warped linear float32 — never to
-        encoded uint16, never to the composite canvas;
+        carry the gains as a per-frame scalar array — never multiplied
+        through into the warped buffers, and never applied to encoded
+        uint16, never to the composite canvas;
       * measure the post-gain overlap MAD — the residual the MAX_OVERLAP_MAD
         gate checks;
-      * accumulate weight * rgb into the canvas accumulator and weight into
-        the weight canvas, at each bounding box's offset, freeing each
-        warped frame as it is consumed.
+      * accumulate gain * weight * rgb into the canvas accumulator and
+        weight into the weight canvas, at each bounding box's offset,
+        freeing each warped frame as it is consumed. The feather weight is
+        computed here, once per frame, rather than held since the warp
+        pass.
 
     Finally: divide where weight > 0, and — blending, warping and the gain
     solve having stayed in linear light, which is where they are
@@ -556,6 +628,7 @@ def composite(
     weight_canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
 
     warped_by_name: dict[str, _WarpedFrame] = {}
+    feather_axes = layout.feather_axes()
 
     for placement in layout.placements:
         cancel.raise_if_cancelled()
@@ -566,7 +639,7 @@ def composite(
         del frame
 
         matrix = placement.matrix()
-        bbox_x, bbox_y, bbox_width, bbox_height = _frame_bbox(
+        bbox_x, bbox_y, bbox_width, bbox_height = frame_bbox(
             matrix, source_height, source_width, layout.canvas_size
         )
         bbox_matrix = matrix.copy()
@@ -616,8 +689,6 @@ def composite(
             warped_mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
         )
 
-        pair_weight = _feather_weight(eroded_mask, bbox_x, bbox_y, layout.strip_axis)
-
         warped_by_name[placement.name] = _WarpedFrame(
             x=bbox_x,
             y=bbox_y,
@@ -625,7 +696,7 @@ def composite(
             height=bbox_height,
             linear=warped,
             mask=eroded_mask,
-            weight=pair_weight,
+            gain=np.ones(3, dtype=np.float32),
             source_size=(source_height, source_width),
         )
 
@@ -673,9 +744,12 @@ def composite(
     names = [placement.name for placement in layout.placements]
     gains = solve_gains(names, stats)
     for name in names:
-        warped_by_name[name].linear *= np.asarray(gains[name], dtype=np.float32)
+        warped_by_name[name].gain = np.asarray(gains[name], dtype=np.float32)
 
-    # The post-gain residual, over the same shared areas as above.
+    # The post-gain residual, over the same shared areas as above. The gain
+    # is applied lazily to the overlap slice only — select `[shared]`
+    # first, then multiply, so the whole overlap rect is never
+    # materialised.
     overlap_mad: dict[tuple[str, str], float] = {}
     for pair in layout.used_pairs:
         a_frame = warped_by_name.get(pair.a)
@@ -688,17 +762,22 @@ def composite(
         a_sub, b_sub, shared = overlap
         if not shared.any():
             continue
-        overlap_mad[(pair.a, pair.b)] = _mean_level_mad(a_sub[shared], b_sub[shared])
+        overlap_mad[(pair.a, pair.b)] = _mean_level_mad(
+            a_sub[shared] * a_frame.gain, b_sub[shared] * b_frame.gain
+        )
 
-    # Accumulate, freeing each warped frame as it is consumed.
+    # Accumulate, freeing each warped frame as it is consumed. The feather
+    # weight is computed here — it is read nowhere else, so it is not held
+    # since the warp pass — and the per-frame gain folds into the term.
     for placement in layout.placements:
         entry = warped_by_name.pop(placement.name)
+        weight = _feather_weight(entry.mask, entry.x, entry.y, feather_axes)
         accum[entry.y : entry.y + entry.height, entry.x : entry.x + entry.width] += (
-            entry.linear * entry.weight[:, :, np.newaxis]
+            entry.linear * entry.gain * weight[:, :, np.newaxis]
         )
         weight_canvas[
             entry.y : entry.y + entry.height, entry.x : entry.x + entry.width
-        ] += entry.weight
+        ] += weight
 
     covered = weight_canvas > 0
     result_linear = np.zeros_like(accum)

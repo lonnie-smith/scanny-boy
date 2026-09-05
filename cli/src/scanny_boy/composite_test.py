@@ -31,6 +31,7 @@ from scanny_boy.normalization import (
     to_log_density,
 )
 from scanny_boy.registration import PairResult, StitchError
+from scanny_boy.selection import GridSpec
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 
 _SCENE_SIZE = (700, 1300)
@@ -256,10 +257,10 @@ def test_feather_contribution_is_constant_across_the_strip():
     from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
 
     mask_a, mask_b, b_offset, height, x_pick = _hand_built_strip_masks()
-    axis = (1.0, 0.0)
+    axes = ((1.0, 0.0),)
     canvas_a, canvas_b = _place_on_canvas(
-        _feather_weight(mask_a, 0, 0, axis),
-        _feather_weight(mask_b, b_offset, 0, axis),
+        _feather_weight(mask_a, 0, 0, axes),
+        _feather_weight(mask_b, b_offset, 0, axes),
         b_offset, height, mask_a.shape[1], mask_b.shape[1],
     )
 
@@ -281,8 +282,8 @@ def test_feather_contribution_is_constant_across_the_strip():
     # at the border while giving a position-dependent ratio in the middle —
     # exactly the curved smear this plan describes.
     old_canvas_a, old_canvas_b = _place_on_canvas(
-        _feather_weight(mask_a, 0, 0, None),
-        _feather_weight(mask_b, b_offset, 0, None),
+        _feather_weight(mask_a, 0, 0, ()),
+        _feather_weight(mask_b, b_offset, 0, ()),
         b_offset, height, mask_a.shape[1], mask_b.shape[1],
     )
     old_border = contribution(old_canvas_a, old_canvas_b, row_border)
@@ -295,10 +296,10 @@ def test_transition_band_width_does_not_grow_toward_the_border():
     from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
 
     mask_a, mask_b, b_offset, height, _x_pick = _hand_built_strip_masks()
-    axis = (1.0, 0.0)
+    axes = ((1.0, 0.0),)
     canvas_a, canvas_b = _place_on_canvas(
-        _feather_weight(mask_a, 0, 0, axis),
-        _feather_weight(mask_b, b_offset, 0, axis),
+        _feather_weight(mask_a, 0, 0, axes),
+        _feather_weight(mask_b, b_offset, 0, axes),
         b_offset, height, mask_a.shape[1], mask_b.shape[1],
     )
 
@@ -384,8 +385,186 @@ def test_strip_axis_none_reproduces_the_distance_transform_exactly():
     mask = np.zeros((80, 120), dtype=np.uint8)
     mask[10:70, 15:105] = 1
     expected = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    actual = _feather_weight(mask, bbox_x=3, bbox_y=7, axis=None)
+    actual = _feather_weight(mask, bbox_x=3, bbox_y=7, axes=())
     assert np.array_equal(actual, expected.astype(np.float32))
+
+
+# --- the separable (grid) feather (docs/GRID_STITCH_PLAN.md section 5) -----
+
+
+def _hand_built_grid_masks(overlap_px=100):
+    """Four axis-aligned frame masks in a 2x2 at the plan's 1/3 overlap
+    geometry (step = 2/3 of the frame in both directions), each eroded on
+    all four true edges as `composite` erodes a real warped mask. Frame
+    (row, col) sits at (col*step_x, row*step_y) on the canvas. Returns
+    (masks, offsets, height, width, step_x, step_y)."""
+    from scanny_boy.composite import MASK_ERODE_PX
+
+    height = width = 300
+    step = 200  # 2/3 of 300: 100 px overlap on both axes
+    masks = []
+    offsets = {}
+    for row in range(2):
+        for col in range(2):
+            mask = np.zeros((height, width), dtype=np.uint8)
+            mask[
+                MASK_ERODE_PX : height - MASK_ERODE_PX,
+                MASK_ERODE_PX : width - MASK_ERODE_PX,
+            ] = 1
+            masks.append(mask)
+            offsets[(row, col)] = (col * step, row * step)
+    return masks, offsets, height, width, step, step
+
+
+def _grid_weight_canvas(masks, offsets, height, width, axes):
+    """Each frame's feather weight placed at its canvas offset, in the
+    (A=(0,0), B=(0,1), C=(1,0), D=(1,1)) order of `masks`."""
+    from scanny_boy.composite import _feather_weight
+
+    canvas = np.zeros((height, width), dtype=np.float32)
+    placed = []
+    for (row, col), offset in sorted(offsets.items()):
+        weight = _feather_weight(masks[row * 2 + col], offsets[(row, col)][0], offsets[(row, col)][1], axes)
+        placed = np.zeros((height, width), dtype=np.float32)
+        placed[weight.shape[0] // 2 :]  # no-op; keep shape obvious
+        canvas[offsets[(row, col)][1] : offsets[(row, col)][1] + weight.shape[0],
+               offsets[(row, col)][0] : offsets[(row, col)][0] + weight.shape[1]] += weight
+        placed.append((row, col, weight))
+    return canvas, placed
+
+
+def test_two_axis_feather_ratio_is_y_invariant_across_a_vertical_seam():
+    """The 2D analogue of the strip regression (§5.3): for two frames in
+    the same row, w_A / (w_A + w_B) at a fixed position along the
+    across-axis is equal at the top, middle, and bottom of their vertical
+    overlap band — same-row frames share a down-extent, so their
+    along-down ramp factors cancel in the ratio."""
+    from scanny_boy.composite import _feather_weight
+
+    height, width = 200, 300
+    b_offset = 200  # 1/3 overlap: 100 px
+    mask_a = np.zeros((height, width), dtype=np.uint8)
+    mask_a[5 : height - 5, 5 : width - 5] = 1
+    mask_b = np.zeros((height, width), dtype=np.uint8)
+    mask_b[5 : height - 5, 5 : width - 5] = 1
+    axes = ((1.0, 0.0), (0.0, 1.0))  # across along x, down along y
+
+    wa = _feather_weight(mask_a, 0, 0, axes)
+    wb = _feather_weight(mask_b, b_offset, 0, axes)
+
+    # The band where both frames cover (x fixed inside the overlap).
+    x_pick = 250
+    top, mid, bottom = 20, height // 2, height - 21
+
+    def ratio(y):
+        a, b = wa[y, x_pick], wb[y, x_pick]
+        return a / (a + b)
+
+    assert ratio(top) == pytest.approx(ratio(mid), abs=1e-6)
+    assert ratio(mid) == pytest.approx(ratio(bottom), abs=1e-6)
+
+
+def test_grid_feather_ratio_is_x_invariant_across_a_horizontal_seam():
+    """Transposed: frames sharing an x-extent (same column) blend across a
+    horizontal seam, and the ratio is x-invariant."""
+    from scanny_boy.composite import _feather_weight
+
+    height, width = 300, 200
+    d_offset = 200  # vertical step, 100 px overlap
+    mask_c = np.zeros((height, width), dtype=np.uint8)
+    mask_c[5 : height - 5, 5 : width - 5] = 1
+    mask_d = np.zeros((height, width), dtype=np.uint8)
+    mask_d[5 : height - 5, 5 : width - 5] = 1
+    axes = ((1.0, 0.0), (0.0, 1.0))
+
+    wc = _feather_weight(mask_c, 0, 0, axes)
+    wd = _feather_weight(mask_d, 0, d_offset, axes)
+
+    y_pick = 250
+    left, mid, right = 20, width // 2, width - 21
+
+    def ratio(x):
+        c, d = wc[y_pick, x], wd[y_pick, x]
+        return c / (c + d)
+
+    assert ratio(left) == pytest.approx(ratio(mid), abs=1e-6)
+    assert ratio(mid) == pytest.approx(ratio(right), abs=1e-6)
+
+
+def test_one_axis_tuple_reproduces_the_strip_weights_byte_for_byte():
+    """The no-regression guarantee: the degenerate one-axis path produces
+    exactly today's strip weights."""
+    from scanny_boy.composite import MASK_ERODE_PX, _axis_ramp, _feather_weight
+
+    mask = np.zeros((200, 300), dtype=np.uint8)
+    mask[MASK_ERODE_PX : 200 - MASK_ERODE_PX, MASK_ERODE_PX : 300 - MASK_ERODE_PX] = 1
+    axis = (0.6, 0.8)
+    assert np.array_equal(
+        _feather_weight(mask, 17, 29, (axis,)), _axis_ramp(mask, 17, 29, axis)
+    )
+
+
+def test_empty_axes_reproduce_the_distance_transform_byte_for_byte():
+    from scanny_boy.composite import _feather_weight
+
+    mask = np.zeros((90, 140), dtype=np.uint8)
+    mask[12:78, 20:120] = 1
+    expected = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    assert np.array_equal(
+        _feather_weight(mask, 5, 9, ()), expected.astype(np.float32)
+    )
+
+
+def test_four_way_corner_weights_are_positive_smooth_and_normalized():
+    """The §7.3 case the isotropic transform gets wrong: at 1/3 overlap,
+    over the region all four frames of a 2x2 cover, every weight is
+    strictly positive (the floor is applied to the product, not per-axis),
+    the four normalized weights sum to 1, and the blend is smooth — no
+    interior pixel's weight vector jumps by more than a small bound
+    between neighbouring pixels."""
+    from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
+
+    height = width = 300
+    step = 200
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    axes = ((1.0, 0.0), (0.0, 1.0))
+
+    offsets = [(0, 0), (step, 0), (0, step), (step, step)]
+    weights = [
+        _feather_weight(mask, x, y, axes) for x, y in offsets
+    ]
+
+    # The four-way region: where every frame's mask overlaps in canvas
+    # space. Frame (x, y) covers canvas [x, x+300) x [y, y+300), eroded by
+    # MASK_ERODE_PX; the intersection starts at (step, step) minus erosion.
+    canvas_h = canvas_w = height + step
+    placed = np.zeros((4, canvas_h, canvas_w), dtype=np.float32)
+    for i, (x, y) in enumerate(offsets):
+        placed[i, y : y + height, x : x + width] = weights[i]
+
+    region = np.ones((canvas_h, canvas_w), dtype=bool)
+    for i, (x, y) in enumerate(offsets):
+        covered = placed[i] > 0
+        region &= covered
+    assert region.sum() > 1000
+
+    # 1. strictly positive everywhere in the four-way region.
+    assert np.all(placed[:, region] > 0)
+
+    # 2. the four normalized weights sum to 1 — the convex-combination
+    # property any positive weights give, checked here over the region.
+    sums = np.where(region, placed.sum(axis=0), 1.0)
+    norm = placed / sums[np.newaxis]
+    assert np.allclose(norm[:, region].sum(axis=0), 1.0)
+
+    # 3. smooth: no interior pixel's normalized weight vector jumps between
+    # neighbouring pixels by more than a small bound. Interior = pixels of
+    # the region whose horizontal neighbours are also in the region.
+    interior_x = region & np.roll(region, 1, axis=1) & np.roll(region, -1, axis=1)
+    interior_cols = interior_x.any(axis=0)[:-1]
+    jumps = np.abs(np.diff(norm, axis=2))[:, :, interior_cols]
+    assert np.all(jumps <= 0.05)
 
 
 def test_gain_correction_reconciles_a_known_brightness_offset():
@@ -559,6 +738,47 @@ def test_memory_estimate_rejects_an_impossible_canvas():
     assert exc_info.value.code is Code.INSUFFICIENT_MEMORY
 
 
+# --- frame_bbox (docs/GRID_STITCH_PLAN.md section 1a) ----------------------
+
+
+def test_frame_bbox_is_frame_sized_for_an_unrotated_placement():
+    from scanny_boy.composite import frame_bbox
+
+    matrix = np.array([[1.0, 0.0, 100.0], [0.0, 1.0, 50.0]])
+    x, y, width, height = frame_bbox(matrix, 200, 300, (1000, 1000))
+    assert (x, y, width, height) == (100, 50, 300, 200)
+
+
+def test_frame_bbox_is_larger_for_a_rotated_placement():
+    from scanny_boy.composite import frame_bbox
+
+    angle = np.radians(30.0)
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    matrix = np.array([[cos_a, -sin_a, 500.0], [sin_a, cos_a, 500.0]])
+    _x, _y, width, height = frame_bbox(matrix, 200, 300, (2000, 2000))
+    # A 300x200 frame at 30 degrees: the box must exceed 300x200 on the
+    # long axis but stay well under the diagonal (which a canvas-sized
+    # bbox would effectively be).
+    assert width > 300
+    assert height > 200
+    assert width < 400
+    assert height < 350
+    # And the (width, height) pair is in (x, y, W, H) pixel ordering, not
+    # the (height, width) `estimate_peak_bytes` ordering — getting that
+    # backwards is silent, so pin it: W is the transformed long dimension.
+    assert width == max(width, height)
+
+
+def test_frame_bbox_clamps_to_the_canvas():
+    from scanny_boy.composite import frame_bbox
+
+    # Frame extending past the canvas's right and bottom edges.
+    matrix = np.array([[1.0, 0.0, 900.0], [0.0, 1.0, 900.0]])
+    x, y, width, height = frame_bbox(matrix, 200, 300, (1000, 1000))
+    assert x == 900 and y == 900
+    assert x + width == 1000 and y + height == 1000
+
+
 def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     canvas_size = (4000, 3000)
     bbox_size = (1200, 1600)  # (height, width)
@@ -587,8 +807,8 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
     normalized = canvas_pixels * 3 * 4
     source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4
     warped = bbox_pixels * 3 * 4
-    warp_aux = bbox_pixels * 4 + bbox_pixels * 2
-    feather_scratch = bbox_pixels * 4 * 2
+    warp_aux = bbox_pixels * 2
+    feather_scratch = bbox_pixels * 4 * 3
 
     all_warped = 2 * (warped + warp_aux)
     live_bytes = max(
@@ -676,9 +896,9 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         src_h, src_w = frame.shape[:2]
         linear = decode_to_linear(frame).astype(np.float32)
         matrix = placement.matrix()
-        from scanny_boy.composite import _EROSION_KERNEL, _feather_weight, _frame_bbox
+        from scanny_boy.composite import _EROSION_KERNEL, _feather_weight, frame_bbox
 
-        x, y, w, h = _frame_bbox(matrix, src_h, src_w, layout.canvas_size)
+        x, y, w, h = frame_bbox(matrix, src_h, src_w, layout.canvas_size)
         M = matrix.copy()
         M[:, 2] -= (x, y)
         warped = cv2.warpAffine(
@@ -693,7 +913,9 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
         )
-        weight = _feather_weight(eroded, x, y, layout.strip_axis)
+        weight = _feather_weight(
+            eroded, x, y, layout.feather_axes()
+        )
         gain = np.asarray(result.gains[placement.name], dtype=np.float32)
         warped_frames.append((x, y, w, h, warped * gain, weight))
 
@@ -867,13 +1089,13 @@ def test_estimate_peak_bytes_grows_by_exactly_the_geometry_terms():
         canvas = 1000 * 800
         bbox = 1000 * 800
         count = 3
-        feather_scratch = bbox * 4 * 2
+        feather_scratch = bbox * 4 * 3
         return max(
             canvas * 3 * 4  # accum
             + canvas * 4  # weight
             + 500 * 700 * 3 * 2
             + 500 * 700 * 3 * 4  # source
-            + count * (bbox * 3 * 4 + bbox * 4 + bbox * 2)  # all_warped
+            + count * (bbox * 3 * 4 + bbox * 2)  # all_warped
             + feather_scratch
             + extra,
             canvas * 3 * 4  # accum
@@ -888,3 +1110,201 @@ def test_estimate_peak_bytes_grows_by_exactly_the_geometry_terms():
     assert with_maps == math.ceil(
         (live(0) + band_maps + frame_pixels * 4) * MEMORY_SAFETY_FACTOR
     )
+
+
+def _build_two_by_two_scene(*, overlap=1.0 / 3.0, seed=11):
+    """A known scene cut into a 2x2 grid of overlapping frames at the
+    plan's target geometry (step = 2/3 of the frame on both axes), plus
+    the ground-truth pairs and solved layout needed to composite them —
+    the 2D analogue of `_build_two_frame_scene`."""
+    frame_height, frame_width = _FRAME_SIZE
+    step_x = round(frame_width * (1.0 - overlap))
+    step_y = round(frame_height * (1.0 - overlap))
+    scene = synthetic_scene(
+        frame_height + step_y, frame_width + step_x, seed=seed
+    )
+    names = ["f0", "f1", "f2", "f3"]
+    uint16_frames = {
+        name: encode_from_linear(np.stack([frame, frame, frame], axis=-1))
+        for name, frame in zip(
+            names,
+            [
+                scene[0:frame_height, 0:frame_width],
+                scene[0:frame_height, step_x : step_x + frame_width],
+                scene[step_y : step_y + frame_height, 0:frame_width],
+                scene[step_y : step_y + frame_height, step_x : step_x + frame_width],
+            ],
+            strict=True,
+        )
+    }
+
+    poses = {
+        name: np.hstack(
+            [np.eye(2), np.array([i % 2 * step_x, i // 2 * step_y], dtype=np.float64).reshape(2, 1)]
+        )
+        for i, name in enumerate(names)
+    }
+    pairs = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            pairs.append(
+                _ground_truth_similarity_pair_composite(
+                    names[i], names[j], poses[names[i]], poses[names[j]], seed=i * 10 + j
+                )
+            )
+    layout = solve_layout(
+        names, _FRAME_SIZE, pairs, grid=GridSpec(across=2, down=2)
+    )
+    return scene, names, uint16_frames, layout, poses
+
+
+def _ground_truth_similarity_pair_composite(name_a, name_b, pose_a, pose_b, *, seed=0):
+    """PairResult for two axis-aligned poses, for the 2x2 fixture."""
+    rng = np.random.default_rng(seed)
+    height, width = _FRAME_SIZE
+    u_ab = pose_b[:, 2] - pose_a[:, 2]
+    transform = np.hstack([np.eye(2), u_ab.reshape(2, 1)])
+    pts_b = rng.uniform([0, 0], [width, height], size=(100, 2))
+    pts_a = pts_b + u_ab
+    return PairResult(
+        a=name_a,
+        b=name_b,
+        transform=transform,
+        good_matches=100,
+        inliers=100,
+        inlier_ratio=1.0,
+        rms_residual_px=0.0,
+        scale_drift=0.0,
+        accepted=True,
+        reject_code=None,
+        reject_message=None,
+        inlier_points_a=pts_a,
+        inlier_points_b=pts_b,
+        overlap_fraction=None,
+        overlap_mad=None,
+        overlap_mad_pregain=None,
+        similarity_transform=transform,
+        similarity_scale=1.0,
+    )
+
+
+def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
+    """§5.3: a synthetic 2x2 scene with a known pattern reconstructs it
+    through the separable feather, and a deliberate 3 px misregistration
+    in one cell produces a bounded step rather than a widening blur toward
+    the canvas corners.
+
+    The misregistration metric isolates the across-seam profile, because
+    the defect's amplitude legitimately tapers with the product ramp:
+    diff = frac3 * err, where frac3 is f3's normalized weight fraction and
+    err the 3 px content-shift error. f2 and f3 share their down-extent,
+    so their down-ramp factors cancel in frac3 and the across-seam profile
+    is y-invariant below the four-way band — that y-invariance is the
+    section 5.1 guarantee, measured row by row. Inside the four-way band
+    (the vertical overlap between the rows) frac3 is suppressed by f3's
+    down-ramp, so the defect fades out toward the corner; the test asserts
+    that taper rather than being confused by it."""
+    _scene, _names, uint16_frames, layout, _poses = _build_two_by_two_scene()
+    assert layout.grid_axes is not None  # solved into a grid
+
+    result = composite(
+        layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+    )
+    linear_result = _unnormalize(result.image, result.bounds)
+
+    # Map canvas coordinates back to the scene through f0's solved
+    # placement (f0 is unrotated in this fixture).
+    matrix_solved = layout.placements[0].matrix()
+    rotation_solved_inv = matrix_solved[:, :2].T
+    canvas_to_scene = np.hstack(
+        [rotation_solved_inv, (-rotation_solved_inv @ matrix_solved[:, 2]).reshape(2, 1)]
+    )
+    scene_height, scene_width = _scene.shape
+    reconstructed = cv2.warpAffine(
+        linear_result,
+        canvas_to_scene,
+        (scene_width, scene_height),
+        flags=cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )[:, :, 0]
+
+    # Compare over f0's interior (an axis-aligned rect in scene space),
+    # shrunk past the erosion margin. The overlap bands are inside it.
+    frame_height, frame_width = _FRAME_SIZE
+    margin = 25
+    mean_absolute_error = float(
+        np.mean(
+            np.abs(
+                _scene[
+                    margin : frame_height - margin, margin : frame_width - margin
+                ]
+                - reconstructed[
+                    margin : frame_height - margin, margin : frame_width - margin
+                ]
+            )
+        )
+    )
+    assert mean_absolute_error < 0.02
+
+    # A deliberate 3 px misregistration of one cell: the solved placement
+    # of f3 shifts 3 px along the across axis.
+    misplaced = dataclasses.replace(
+        layout.placements[3],
+        translation=(
+            layout.placements[3].translation[0] + 3.0,
+            layout.placements[3].translation[1],
+        ),
+    )
+    mis_layout = dataclasses.replace(
+        layout, placements=layout.placements[:3] + [misplaced]
+    )
+    mis_result = composite(
+        mis_layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+    )
+    fill_code = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
+    covered = np.any(result.image != fill_code, axis=-1) & np.any(
+        mis_result.image != fill_code, axis=-1
+    )
+    # Compare in linear space against *common* bounds — each composite's
+    # own meters shift slightly, which would otherwise double-count as
+    # defect.
+    diff = np.mean(
+        np.abs(
+            _unnormalize(mis_result.image, result.bounds)
+            - np.asarray(linear_result)
+        ),
+        axis=-1,
+    )
+
+    def defect_width(y: int, threshold: float = 0.005) -> int:
+        return int(np.count_nonzero(covered[y] & (diff[y] > threshold)))
+
+    # The four-way band is the vertical overlap between the rows:
+    # [step_y, frame_height) = [333, 500). Below it, only the bottom row's
+    # frames cover, and their shared down-extent makes the across-seam
+    # profile y-invariant.
+    step_y = round(frame_height * 2 / 3)
+    four_way_rows = list(range(step_y + 7, frame_height - 7, 24))
+    below_band_rows = list(range(frame_height + 10, layout.canvas_size[1] - 10, 24))
+    assert four_way_rows and below_band_rows
+
+    # The taper: inside the four-way band the defect is suppressed — every
+    # row's width there stays at or below the smallest below-band width.
+    taper_widths = [defect_width(y) for y in four_way_rows]
+    band_widths = [defect_width(y) for y in below_band_rows]
+    assert max(taper_widths) <= min(band_widths) + max(
+        0.1 * min(band_widths), 3
+    )
+
+    # The guarantee: below the four-way band the across-seam defect band's
+    # width is constant up to content variation — the same tolerance shape
+    # the strip analogue (0.3 * max) grants.
+    assert min(band_widths) > 0
+    assert max(band_widths) - min(band_widths) < 0.3 * max(band_widths)

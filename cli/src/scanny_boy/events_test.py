@@ -222,15 +222,12 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_nine():
-    """Protocol 8→9: the extended-metadata editing feature — the `metadata`
-    command family (`metadata_updated`, `metadata_values`, the
-    `INVALID_METADATA` code) and the roll/negative extended-metadata fields
-    in the roll manifest — plus 1:1 region rendering for the app's 100%
-    zoom (the `edit render-region` command and its `region_rendered`
-    event, carrying the rendered path and the post-clamp display-space
-    rect)."""
-    assert PROTOCOL_VERSION == 9
+def test_protocol_version_is_ten():
+    """Protocol 9→10: 2D grid stitching — `--grid AxD` on `probe`,
+    `prepare`, and `run` (mutually exclusive with `--per-negative`), the
+    `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
+    warning code (docs/GRID_STITCH_PLAN.md section 2.0)."""
+    assert PROTOCOL_VERSION == 10
 
 
 def test_new_event_kinds_round_trip():
