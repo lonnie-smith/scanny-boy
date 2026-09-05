@@ -1317,3 +1317,48 @@ def test_a_re_stitch_never_re_seeds_the_auto_rotation(tmp_path, monkeypatch):
 
     assert second.status == "complete"
     assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1
+
+
+# --- MONOCHROME_PLAN section 1: the detector pre-pass ---------------------------
+
+
+def test_mono_statistic_is_recorded_for_every_sampled_negative(tmp_path):
+    """§1: the pre-pass samples up to MONO_DETECT_MAX_SAMPLES negatives and
+    records the statistic in each one's normalization block — sampled,
+    acted on by nothing. The synthetic scenes are three copies of one
+    plane, so the chroma is near zero, which is the evidence the roll
+    would carry into §2's threshold decision."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    assert len(roll.negatives) == 1
+    block = roll.negatives[0].normalization
+    assert block is not None
+    mono = block["mono"]
+    assert mono["sampled"] is True
+    assert isinstance(mono["chroma"], float)
+    assert mono["chroma"] < 0.01
+    assert len(mono["channel_correlation"]) == 2
+
+
+def test_mono_sampling_spreads_across_the_run_and_caps_at_max_samples(tmp_path):
+    """§1.2: six bounded reads, spread evenly across canonical order —
+    with more groups than MONO_DETECT_MAX_SAMPLES, exactly that many
+    distinct groups are sampled, first and last among them. Driven
+    directly against a real work directory; the statistic itself is
+    covered by the tests above."""
+    work_dir = _make_work_dir(tmp_path, negatives=8, overlapping=False)
+    manifest = load_manifest(work_dir)
+
+    samples = stitch_pipeline._measure_mono_samples(
+        work_dir, manifest.groups, CancellationToken()
+    )
+
+    assert len(samples) == stitch_pipeline.MONO_DETECT_MAX_SAMPLES
+    group_ids = [g.group_id for g in manifest.groups]
+    assert group_ids[0] in samples
+    assert group_ids[-1] in samples
+    assert set(samples) <= set(group_ids)

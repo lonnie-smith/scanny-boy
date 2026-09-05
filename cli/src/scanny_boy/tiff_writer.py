@@ -57,11 +57,14 @@ class BaseTiffTags:
 
 
 def write_base_tiff(path: Path, pixels: np.ndarray, tags: BaseTiffTags) -> None:
-    """Write `pixels` (`(height, width, 3)` `uint16`) to `path`."""
-    if pixels.dtype != np.uint16 or pixels.ndim != 3 or pixels.shape[2] != 3:
+    """Write `pixels` (`(height, width, 3)` or, on a mono roll, `(height,
+    width)` `uint16`) to `path`."""
+    if pixels.dtype != np.uint16 or pixels.ndim not in (2, 3) or (
+        pixels.ndim == 3 and pixels.shape[2] != 3
+    ):
         raise ValueError(
-            f"expected (height, width, 3) uint16 pixels, got shape "
-            f"{pixels.shape} dtype {pixels.dtype}"
+            f"expected (height, width) or (height, width, 3) uint16 pixels, "
+            f"got shape {pixels.shape} dtype {pixels.dtype}"
         )
     if not tags.icc_profile:
         # Never silently write untagged linear data (see icc_profile.py).
@@ -75,10 +78,13 @@ def write_base_tiff(path: Path, pixels: np.ndarray, tags: BaseTiffTags) -> None:
     if tags.model is not None:
         extratags.append((Tag.Model.value, tifffile.DATATYPE.ASCII, 0, tags.model, True))
 
+    # MONOCHROME_PLAN section 4: a single-channel (collapsed mono) image is
+    # grayscale data and must not be tagged rgb.
+    photometric = "minisblack" if pixels.ndim == 2 else "rgb"
     tifffile.imwrite(
         path,
         pixels,
-        photometric="rgb",
+        photometric=photometric,
         compression="deflate",
         predictor=True,
         maxworkers=1,

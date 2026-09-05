@@ -1,6 +1,7 @@
 """Loads and verifies the bundled ICC colour profiles.
 
-Two profiles, one claim each (docs/DECISIONS.md, "Normalization decisions"):
+Three profiles, one claim each (docs/DECISIONS.md, "Normalization
+decisions"; MONOCHROME_PLAN section 4):
 
 - `ScannyBoy-Linear-ProPhoto-v1.icc` tags the **prepare stage's
   intermediates**, and its linear TRC is the truth about those pixels
@@ -16,6 +17,11 @@ Two profiles, one claim each (docs/DECISIONS.md, "Normalization decisions"):
   `icc_profile_test.py`'s guard test keeps the profile from creeping into
   the render path where a wrong TRC could corrupt pixels instead of merely
   looking odd.
+- `ScannyBoy-Density-Grey-v1.icc` is the single-channel companion of the
+  density profile, for a mono roll's collapsed published TIFF — the same
+  viewing convention and the same caveat, in a GRAY-class profile a
+  1-channel file can actually carry (the DENSITY profile is ProPhoto RGB
+  and cannot).
 
 Every TIFF this program writes must carry the profile its stage dictates —
 never untagged data — so the SHA-256 is checked before every use, not just
@@ -32,6 +38,7 @@ from scanny_boy.events import Code
 
 LINEAR_PROFILE_FILENAME = "ScannyBoy-Linear-ProPhoto-v1.icc"
 DENSITY_PROFILE_FILENAME = "ScannyBoy-Density-ProPhoto-v1.icc"
+DENSITY_GREY_PROFILE_FILENAME = "ScannyBoy-Density-Grey-v1.icc"
 
 # Verified against the generated files (`cli/tools/generate_icc_profile.py`).
 LINEAR_PROFILE_SHA256 = (
@@ -40,18 +47,38 @@ LINEAR_PROFILE_SHA256 = (
 DENSITY_PROFILE_SHA256 = (
     "26d966d7dcc748eecd618f082cf6e4294a95a4e4a38d9ec2693c741b70f1ee0c"
 )
+DENSITY_GREY_PROFILE_SHA256 = (
+    "b90e8d9c2ba1796f1e33850725d85620c4a331d9babf0b5117ed3e71b942d6ad"
+)
 
 
 class ProfileKind(enum.StrEnum):
     LINEAR = "linear"  # prepare-stage intermediates
-    DENSITY = "density"  # published, normalized TIFFs
+    DENSITY = "density"  # published, normalized TIFFs (colour)
+    DENSITY_GREY = "density-grey"  # published mono TIFFs (MONOCHROME_PLAN §4)
 
 
 # kind -> (filename, sha256)
 PROFILES: dict[ProfileKind, tuple[str, str]] = {
     ProfileKind.LINEAR: (LINEAR_PROFILE_FILENAME, LINEAR_PROFILE_SHA256),
     ProfileKind.DENSITY: (DENSITY_PROFILE_FILENAME, DENSITY_PROFILE_SHA256),
+    ProfileKind.DENSITY_GREY: (
+        DENSITY_GREY_PROFILE_FILENAME,
+        DENSITY_GREY_PROFILE_SHA256,
+    ),
 }
+
+
+def published_profile_kind(film_kind: str = "colour") -> ProfileKind:
+    """The published-TIFF profile a roll's frozen film kind dictates
+    (MONOCHROME_PLAN §2.3/§4): DENSITY_GREY on a mono roll, DENSITY on a
+    colour one. The invariant seed (`stitch_pipeline`'s RollInvariants)
+    and the published-TIFF tag site both go through here, so §2 wires the
+    frozen kind in at exactly one call shape. Until §2 lands, every roll
+    is colour."""
+    if film_kind == "monochrome":
+        return ProfileKind.DENSITY_GREY
+    return ProfileKind.DENSITY
 
 # ICC parametricCurveType function type 0 (pure gamma), in s15Fixed16. The
 # linear profile's g = 1.0 is the identity curve, because the decode is

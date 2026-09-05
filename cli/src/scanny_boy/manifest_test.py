@@ -318,3 +318,44 @@ def test_check_rerun_compatible_ignores_a_different_film_date_or_processing_para
 def test_estimate_manifest_size_is_positive_and_reasonable():
     size = estimate_manifest_size(_manifest())
     assert 0 < size < 10_000
+
+
+# --- MONOCHROME_PLAN section 5.1: the forward shim at the rerun compare ----
+
+
+def test_rerun_matches_a_v1_normalize_block_against_a_v2_build():
+    """§5.1: a work manifest whose stored `normalize` block predates the
+    mono feature (format_version 1) must not read as "processing settings
+    differ" against a v2 build's candidate."""
+    from scanny_boy.normalization import build_params
+
+    existing = _manifest(
+        processing_params={
+            "output_bps": 16,
+            "normalize": {**build_params(), "format_version": 1},
+        }
+    )
+    candidate = _manifest(
+        processing_params={"output_bps": 16, "normalize": build_params()},
+        status="complete",
+    )
+
+    check_rerun_matches(existing, candidate)
+
+
+def test_rerun_still_rejects_a_genuinely_different_normalize_block():
+    from scanny_boy.normalization import build_params
+
+    existing = _manifest(
+        processing_params={
+            "output_bps": 16,
+            "normalize": {**build_params(), "format_version": 1, "analysis_grid": 512},
+        }
+    )
+    candidate = _manifest(
+        processing_params={"output_bps": 16, "normalize": build_params()},
+        status="complete",
+    )
+
+    with pytest.raises(ManifestMismatchError):
+        check_rerun_matches(existing, candidate)
