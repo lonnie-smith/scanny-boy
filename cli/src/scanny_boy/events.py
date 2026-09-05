@@ -11,12 +11,17 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-# Protocol 9 adds two features: the extended-metadata editing feature (the
+# Protocol 9 added two features: the extended-metadata editing feature (the
 # `metadata` command family — `metadata_updated`, `metadata_values` events,
 # the `INVALID_METADATA` code — and the roll/negative extended-metadata
 # fields in the roll manifest), and the `edit render-region` command with
 # its `region_rendered` event: a 1:1 PNG of one display-space region of a
 # published TIFF, with the net rotation folded in, for the app's 100% zoom.
+#
+# Protocol 10 (2D grid stitching) adds `--grid AxD` on `probe`, `prepare`,
+# and `run` (mutually exclusive with `--per-negative`; a strip is the
+# down=1 case), the `INVALID_GRID` error code, and the
+# `STITCH_GRID_ORDER_UNEXPECTED` warning code.
 # Protocol 10 adds the preview's nondestructive tone adjustment: the `edit
 # tone` command (paper grade + midtone snap, recorded as a `tone` op in the
 # ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
@@ -86,6 +91,7 @@ class Code(enum.StrEnum):
     NON_CONTIGUOUS_SELECTION = "NON_CONTIGUOUS_SELECTION"
     NOT_DIVISIBLE = "NOT_DIVISIBLE"
     INVALID_PER_NEGATIVE = "INVALID_PER_NEGATIVE"
+    INVALID_GRID = "INVALID_GRID"
     MISSING_CAPTURE_TIME = "MISSING_CAPTURE_TIME"
     FILENAME_SORT_USED = "FILENAME_SORT_USED"
     UNSUPPORTED_RAW = "UNSUPPORTED_RAW"
@@ -115,6 +121,7 @@ class Code(enum.StrEnum):
     STITCH_SCALE_DRIFT = "STITCH_SCALE_DRIFT"
     STITCH_GAIN_DRIFT = "STITCH_GAIN_DRIFT"
     STITCH_LAYOUT_UNEXPECTED = "STITCH_LAYOUT_UNEXPECTED"
+    STITCH_GRID_ORDER_UNEXPECTED = "STITCH_GRID_ORDER_UNEXPECTED"
     STITCH_REBATE_CHECK_FAILED = "STITCH_REBATE_CHECK_FAILED"
     STITCH_CLAHE_FALLBACK_USED = "STITCH_CLAHE_FALLBACK_USED"
     OUTPUT_DIMENSIONS_LARGE = "OUTPUT_DIMENSIONS_LARGE"

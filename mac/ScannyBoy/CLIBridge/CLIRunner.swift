@@ -53,7 +53,22 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
     }
 
-    /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--roll DIR] [--per-negative N]`
+    /// Appends the grouping flags for one CLI invocation (protocol 10's
+    /// rule): `--grid AxD` whenever `down > 1`, `--per-negative N` when
+    /// `down == 1` — so a strip run's command line is byte-identical to a
+    /// pre-grid one. Exactly one of the two flags is emitted, matching the
+    /// CLI's exactly-one-of rule on `prepare` and `run`.
+    private static func groupingArguments(
+        across: Int?, down: Int
+    ) -> [String] {
+        guard let across else { return [] }
+        if down > 1 {
+            return ["--grid", "\(across)x\(down)"]
+        }
+        return ["--per-negative", String(across)]
+    }
+
+    /// `scanny-boy probe --input DIR [--files ...] [--out DIR] [--roll DIR] [--per-negative N | --grid AxD]`
     ///
     /// With `--input` alone this returns the catalogue in canonical order.
     /// Adding `--files` also validates the selection; adding `--out` on top of
@@ -66,7 +81,8 @@ public struct CLICommand: Sendable, Hashable {
         files: [String] = [],
         out: URL? = nil,
         roll: URL? = nil,
-        perNegative: Int? = nil,
+        across: Int? = nil,
+        down: Int = 1,
         flatfield: String? = nil
     ) -> CLICommand {
         var arguments = ["probe", "--input", input.path]
@@ -80,9 +96,7 @@ public struct CLICommand: Sendable, Hashable {
         if let roll {
             arguments.append(contentsOf: ["--roll", roll.path])
         }
-        if let perNegative {
-            arguments.append(contentsOf: ["--per-negative", String(perNegative)])
-        }
+        arguments.append(contentsOf: groupingArguments(across: across, down: down))
         if let flatfield {
             arguments.append(contentsOf: ["--flatfield", flatfield])
         }
@@ -99,7 +113,8 @@ public struct CLICommand: Sendable, Hashable {
         input: URL,
         files: [String],
         out: URL,
-        perNegative: Int? = nil,
+        across: Int? = nil,
+        down: Int = 1,
         jobs: Int? = nil,
         overwrite: Bool = false,
         flatfield: String? = nil
@@ -108,9 +123,7 @@ public struct CLICommand: Sendable, Hashable {
         arguments.append("--files")
         arguments.append(contentsOf: files)
         arguments.append(contentsOf: ["--out", out.path])
-        if let perNegative {
-            arguments.append(contentsOf: ["--per-negative", String(perNegative)])
-        }
+        arguments.append(contentsOf: groupingArguments(across: across, down: down))
         if let jobs {
             arguments.append(contentsOf: ["--jobs", String(jobs)])
         }
@@ -137,7 +150,8 @@ public struct CLICommand: Sendable, Hashable {
         input: URL,
         files: [String],
         roll: URL,
-        perNegative: Int? = nil,
+        across: Int? = nil,
+        down: Int = 1,
         jobs: Int? = nil,
         skipSources: [String] = [],
         work: URL? = nil,
@@ -147,9 +161,7 @@ public struct CLICommand: Sendable, Hashable {
         arguments.append("--files")
         arguments.append(contentsOf: files)
         arguments.append(contentsOf: ["--roll", roll.path])
-        if let perNegative {
-            arguments.append(contentsOf: ["--per-negative", String(perNegative)])
-        }
+        arguments.append(contentsOf: groupingArguments(across: across, down: down))
         if let jobs {
             arguments.append(contentsOf: ["--jobs", String(jobs)])
         }

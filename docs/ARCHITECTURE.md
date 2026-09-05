@@ -101,17 +101,23 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **6** ([`events.py`](../cli/src/scanny_boy/events.py)).
-Version 6 added flat-field profiles: a `flatfield` command family
+`PROTOCOL_VERSION` is **10** ([`events.py`](../cli/src/scanny_boy/events.py)).
+Version 10 added 2D grid stitching: `--grid AxD` on `probe`/`prepare`/`run`
+(mutually exclusive with `--per-negative`; a strip is the down=1 case, and
+`min(across, down) <= 2` because every cell must show film rebate — the
+rule's home is CONTRACT.md), the `INVALID_GRID` error code, and the
+`STITCH_GRID_ORDER_UNEXPECTED` warning. Version 9 added the extended
+metadata editing and 1:1 region rendering; version 8 added normalization
+and the per-frame scale; version 7 added geometric calibration; version 6
+added flat-field profiles: a `flatfield` command family
 (`create`/`list`/`delete`), gain maps stored beside the library database, and
 `--flatfield` on `convert`/`run`/`probe`, folded into `processing_params` as
 the profile token. The profile is not a roll invariant: a roll does not lock
 to one, and different runs into the same roll may each choose a different
-profile (or none). Version
-5 moved each roll's durable record from the roll folder's
-`scanny-boy-roll.json` into a library SQLite database and added `edit rotate`
-/ `export`. A client that only understands an earlier version must reject the
-stream rather than guess.
+profile (or none). Version 5 moved each roll's durable record from the roll
+folder's `scanny-boy-roll.json` into a library SQLite database and added
+`edit rotate` / `export`. A client that only understands an earlier version
+must reject the stream rather than guess.
 
 ---
 
@@ -123,10 +129,10 @@ roll list   --library DIR
 roll info   --roll DIR
 roll rename --roll DIR --name NAME
 
-probe   --input DIR [--files ...] [--per-negative N] [--out DIR] [--roll DIR] [--flatfield ID]
-prepare --input DIR --files ... --out DIR --per-negative N [--jobs N] [--overwrite] [--flatfield ID]
+probe   --input DIR [--files ...] [--per-negative N | --grid AxD] [--out DIR] [--roll DIR] [--flatfield ID]
+prepare --input DIR --files ... --out DIR [--per-negative N | --grid AxD] [--jobs N] [--overwrite] [--flatfield ID]
 stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--negatives ID ...]
-run     --input DIR --files ... --roll DIR --per-negative N [--jobs N]
+run     --input DIR --files ... --roll DIR [--per-negative N | --grid AxD] [--jobs N]
         [--work DIR] [--skip-sources FILE ...] [--flatfield ID]
 apply-metadata --roll DIR
 edit rotate --roll DIR --negative ID --direction cw|ccw

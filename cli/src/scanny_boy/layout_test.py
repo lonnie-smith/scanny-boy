@@ -610,6 +610,265 @@ def test_largest_all_covered_rectangle_finds_the_true_maximum():
     assert np.all(mask[y : y + height, x : x + width] == 1)
 
 
+
+
+# --- 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 3 and 4) ---------
+
+from scanny_boy.layout import GRID_ALIGNMENT_RATIO_MAX, GRID_PITCH_RATIO_MIN
+from scanny_boy.selection import GridSpec
+
+_GRID_FRAME_SIZE = (400, 600)  # (height, width)
+_STEP_ACROSS = 400  # 2/3 of 600: 1/3 overlap on the long axis
+_STEP_DOWN = 267  # 2/3 of 400: 1/3 overlap on the short axis
+
+
+def _grid_placements(across, down, *, rotation_deg=0.0, displace=None):
+    """Placements for an across x down grid: frame (row, col) centred at
+    (col * _STEP_ACROSS, row * _STEP_DOWN), all at `rotation_deg`.
+    `displace`, when given, is `(name, dx, dy)` shifting one frame's
+    ground-truth translation by that many pixels."""
+    placements = []
+    for row in range(down):
+        for col in range(across):
+            name = f"f{row * across + col}"
+            placements.append(
+                FramePlacement(
+                    name, rotation_deg, (col * _STEP_ACROSS, row * _STEP_DOWN)
+                )
+            )
+    if displace is not None:
+        name, dx, dy = displace
+        placements = [
+            dataclasses.replace(
+                p, translation=(p.translation[0] + dx, p.translation[1] + dy)
+            )
+            if p.name == name
+            else p
+            for p in placements
+        ]
+    return placements
+
+
+def _grid_pairs(ground_truth, frame_size):
+    """Every accepted pair between the placements, exactly as all-pairs
+    registration would produce."""
+    pairs = []
+    for i in range(len(ground_truth)):
+        for j in range(i + 1, len(ground_truth)):
+            pairs.append(
+                _ground_truth_pair(
+                    ground_truth[i].name,
+                    ground_truth[j].name,
+                    ground_truth[i],
+                    ground_truth[j],
+                    frame_size,
+                    seed=i * 100 + j,
+                )
+            )
+    return pairs
+
+
+@pytest.mark.parametrize(("across", "down"), [(5, 2), (3, 2), (2, 2), (2, 5)])
+def test_grid_cells_assign_from_geometry_alone(across, down):
+    grid = GridSpec(across=across, down=down)
+    ground_truth = _grid_placements(across, down)
+    names = [p.name for p in ground_truth]
+    layout = solve_layout(
+        names,
+        _GRID_FRAME_SIZE,
+        _grid_pairs(ground_truth, _GRID_FRAME_SIZE),
+        grid=grid,
+    )
+
+    assert layout.cells is not None
+    expected = {
+        f"f{i}": (i // across, i % across) for i in range(len(ground_truth))
+    }
+    assert layout.cells == expected
+    assert sorted(layout.cells.values()) == sorted(
+        (r, c) for r in range(down) for c in range(across)
+    )
+
+
+def test_grid_cells_assign_in_shuffled_input_order():
+    across, down = 5, 2
+    grid = GridSpec(across=across, down=down)
+    ground_truth = _grid_placements(across, down)
+    names = [p.name for p in ground_truth]
+    pairs = _grid_pairs(ground_truth, _GRID_FRAME_SIZE)
+    baseline = solve_layout(names, _GRID_FRAME_SIZE, pairs, grid=grid)
+
+    rng = np.random.default_rng(9)
+    order = list(range(len(names)))
+    rng.shuffle(order)
+    scrambled_names = [names[i] for i in order]
+    scrambled_pairs = [
+        _reversed_pair(p) if i % 3 == 0 else p for i, p in enumerate(pairs)
+    ]
+    scrambled = solve_layout(
+        scrambled_names, _GRID_FRAME_SIZE, scrambled_pairs, grid=grid
+    )
+
+    assert scrambled.cells is not None
+    assert scrambled.cells == baseline.cells
+
+
+def test_grid_axes_are_orthogonal_and_point_the_expected_way():
+    across, down = 5, 2
+    grid = GridSpec(across=across, down=down)
+    for rotation in (0.0, 3.0):
+        ground_truth = _grid_placements(across, down, rotation_deg=rotation)
+        names = [p.name for p in ground_truth]
+        layout = solve_layout(
+            names,
+            _GRID_FRAME_SIZE,
+            _grid_pairs(ground_truth, _GRID_FRAME_SIZE),
+            grid=grid,
+        )
+        assert layout.grid_axes is not None
+        (ax, ay), (dx, dy) = layout.grid_axes
+        assert ax * dx + ay * dy == pytest.approx(0.0, abs=1e-9)
+        assert math.isclose(math.hypot(ax, ay), 1.0, abs_tol=1e-9)
+        assert math.isclose(math.hypot(dx, dy), 1.0, abs_tol=1e-9)
+        # The axes are the circular mean of the *solved* rotations — the
+        # solve's gauge pins theta_0 = 0, so a uniform true rotation is
+        # shifted away and the solved mean sits at 0; assert against the
+        # solved placements, not the ground truth.
+        angles = np.radians([p.rotation_deg for p in layout.placements])
+        mean_angle = math.atan2(
+            float(np.sin(angles).sum()), float(np.cos(angles).sum())
+        )
+        assert ax == pytest.approx(math.cos(mean_angle), abs=1e-9)
+        assert ay == pytest.approx(math.sin(mean_angle), abs=1e-9)
+
+
+def test_grid_pitch_ratio_is_none_for_2x2_and_set_for_5x2():
+    two = _grid_placements(2, 2)
+    layout2 = solve_layout(
+        [p.name for p in two],
+        _GRID_FRAME_SIZE,
+        _grid_pairs(two, _GRID_FRAME_SIZE),
+        grid=GridSpec(across=2, down=2),
+    )
+    assert layout2.grid_pitch_ratio is None  # no axis has three positions
+
+    five = _grid_placements(5, 2)
+    layout5 = solve_layout(
+        [p.name for p in five],
+        _GRID_FRAME_SIZE,
+        _grid_pairs(five, _GRID_FRAME_SIZE),
+        grid=GridSpec(across=5, down=2),
+    )
+    assert layout5.grid_pitch_ratio is not None
+    assert layout5.grid_pitch_ratio > GRID_PITCH_RATIO_MIN
+    assert layout5.grid_alignment_ratio < GRID_ALIGNMENT_RATIO_MAX
+
+
+def test_grid_frames_at_45_degrees_to_the_declared_grid_fail_assignment():
+    """The steps run 45 degrees away from the frames' own sensor axes: the
+    rotation-derived axes and the centre cloud disagree, the SVD
+    cross-check catches it, and all four grid fields come back None
+    (docs/GRID_STITCH_PLAN.md sections 4.1 and 4.5)."""
+    across, down = 5, 2
+    grid = GridSpec(across=across, down=down)
+    # The solve's gauge pins theta_0 = 0, so the disagreement that matters
+    # is the one between the frames' axes and the steps, which is gauge
+    # invariant: frames at rotation 0, steps diagonal to their axes —
+    # across at +45 degrees, down at -45, so the centres form a true 2D
+    # grid rotated away from the frames' own axes.
+    angle = np.radians(45.0)
+    across_step = _STEP_ACROSS * np.array([np.cos(angle), np.sin(angle)])
+    down_step = _STEP_DOWN * np.array([-np.sin(angle), np.cos(angle)])
+    ground_truth = []
+    for row in range(down):
+        for col in range(across):
+            t = col * across_step + row * down_step
+            ground_truth.append(
+                FramePlacement(f"f{row * across + col}", 0.0, tuple(t))
+            )
+    names = [p.name for p in ground_truth]
+    layout = solve_layout(
+        names,
+        _GRID_FRAME_SIZE,
+        _grid_pairs(ground_truth, _GRID_FRAME_SIZE),
+        grid=grid,
+    )
+
+    assert layout.cells is None
+    assert layout.grid_axes is None
+    assert layout.grid_pitch_ratio is None
+    assert layout.grid_alignment_ratio is None
+    # And the blend falls back: with grid_axes None and strip_axis nulled
+    # by the spread ratio, feather_axes() is empty — the distance
+    # transform's path.
+    assert layout.feather_axes() == ()
+
+
+def test_a_full_cell_displacement_fails_the_bijection():
+    """Half a cell or more snaps into a neighbouring cell, the bijection
+    fails outright, and all four grid fields are None (§4.1's magnitude
+    boundary)."""
+    across, down = 5, 2
+    grid = GridSpec(across=across, down=down)
+    ground_truth = _grid_placements(
+        across, down, displace=("f7", float(_STEP_ACROSS), 0.0)
+    )
+    layout = solve_layout(
+        [p.name for p in ground_truth],
+        _GRID_FRAME_SIZE,
+        _grid_pairs(ground_truth, _GRID_FRAME_SIZE),
+        grid=grid,
+    )
+    assert layout.cells is None
+    assert layout.grid_axes is None
+    assert layout.grid_pitch_ratio is None
+    assert layout.grid_alignment_ratio is None
+    assert layout.feather_axes() == ()
+
+
+def test_a_0_4_cell_displacement_keeps_its_cell_and_trips_alignment_only():
+    """Sub-cell drift keeps a clean bijection, so all four grid fields are
+    populated — a gap-cutting implementation would return None here — and
+    the asymmetry the two checks exist for: the alignment check fires
+    (0.4 > 0.25) while the pitch check does not (the displaced column's
+    centroid moves by only half the displacement, leaving
+    grid_pitch_ratio ~ 0.67, above the 0.6 floor) (§4.5)."""
+    across, down = 5, 2
+    grid = GridSpec(across=across, down=down)
+    drift = 0.4 * _STEP_ACROSS
+    ground_truth = _grid_placements(across, down, displace=("f7", drift, 0.0))
+    layout = solve_layout(
+        [p.name for p in ground_truth],
+        _GRID_FRAME_SIZE,
+        _grid_pairs(ground_truth, _GRID_FRAME_SIZE),
+        grid=grid,
+    )
+    assert layout.cells is not None
+    # The displaced frame kept its true cell: bottom row, same column.
+    assert layout.cells["f7"] == (1, 7 % across)
+
+    assert layout.grid_alignment_ratio == pytest.approx(0.4, abs=0.02)
+    assert layout.grid_alignment_ratio > GRID_ALIGNMENT_RATIO_MAX
+    assert layout.grid_pitch_ratio is not None
+    assert layout.grid_pitch_ratio == pytest.approx(320.0 / 480.0, abs=0.02)
+    assert layout.grid_pitch_ratio > GRID_PITCH_RATIO_MIN
+
+
+def test_solve_layout_grid_defaults_to_none():
+    """The default preserves every existing call and every existing
+    test."""
+    ground_truth = [
+        FramePlacement("f0", 0.0, (0.0, 0.0)),
+        FramePlacement("f1", 0.0, (600.0, 0.0)),
+    ]
+    pair = _ground_truth_pair(
+        "f0", "f1", ground_truth[0], ground_truth[1], _GRID_FRAME_SIZE, seed=1
+    )
+    layout = solve_layout(["f0", "f1"], _GRID_FRAME_SIZE, [pair])
+    assert layout.cells is None
+    assert layout.grid_axes is None
+    assert layout.grid_pitch_ratio is None
+    assert layout.grid_alignment_ratio is None
 # --- rectified-space canvas (docs/RECTIFICATION_PLAN.md section 5) ---------
 
 

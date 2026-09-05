@@ -565,7 +565,7 @@ struct RunModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
-        model.perNegative = 3
+        model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
@@ -619,7 +619,7 @@ struct RunModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
-        model.perNegative = 3
+        model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
