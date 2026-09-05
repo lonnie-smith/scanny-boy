@@ -50,7 +50,7 @@ from scanny_boy.normalization import (
     to_log_density,
     withhold_dense_border,
 )
-from scanny_boy.registration import StitchError
+from scanny_boy.registration import Rectification, StitchError, rectify
 
 FILL_COLOR: tuple[int, int, int] = (0, 0, 0)  # section 3.3: one constant, one place
 MASK_ERODE_PX = 5  # Lanczos4 support radius 4, plus one
@@ -133,6 +133,7 @@ def estimate_peak_bytes(
     *,
     geometry: bool = False,
     ca_maps: bool = False,
+    rectification: bool = False,
 ) -> int:
     """Section 3.8's revised formula, exactly, including MEMORY_SAFETY_FACTOR.
 
@@ -150,6 +151,13 @@ def estimate_peak_bytes(
     channels' maps in "maps" mode) and, in "maps" mode, one contiguous
     single-channel source view held during each remap
     (`frame_pixels * 4`). MEMORY_SAFETY_FACTOR is unchanged.
+
+    A rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 6) routes
+    the warp through the same banded remap even without geometry, so with
+    `rectification=True` and no geometry the band-map term applies too.
+    With geometry already active there is no additional term: the maps are
+    counted once either way. The per-worker budget is not re-measured, per
+    the docs/STITCH_QUALITY_PLAN.md section 1.4 precedent.
 
     The feather (`_feather_weight`) needs bbox-sized float32 scratch — in
     the two-axis case three buffers (one per axis ramp plus the product),
@@ -184,6 +192,10 @@ def estimate_peak_bytes(
         geometry_bytes += 3 * GEOMETRY_BAND_ROWS * bbox_width * 2 * 4
         if ca_maps:
             geometry_bytes += frame_pixels * 4
+    elif rectification:
+        # Rectification without geometry still warps through the banded
+        # remap; the band maps are the only geometry-shaped cost it adds.
+        geometry_bytes += 3 * GEOMETRY_BAND_ROWS * bbox_width * 2 * 4
     elif ca_maps:
         # "maps" mode never occurs without geometry; kept for completeness.
         geometry_bytes += frame_pixels * 4
@@ -236,10 +248,18 @@ def check_output_size(canvas_size: tuple[int, int], *, on_warning) -> None:
 
 
 def frame_bbox(
-    matrix: np.ndarray, height: int, width: int, canvas_size: tuple[int, int]
+    matrix: np.ndarray,
+    height: int,
+    width: int,
+    canvas_size: tuple[int, int],
+    rectification: Rectification | None = None,
 ) -> tuple[int, int, int, int]:
     """(x, y, width, height) of the frame's axis-aligned bounding box in
     canvas space, from its four corners transformed by `matrix`.
+
+    With a rectification the corners first map through `W`: the frame's
+    canvas footprint is the rectified keystone quad, not the affine image
+    of the raw rectangle (docs/RECTIFICATION_PLAN.md section 6.2).
 
     `layout.py` computes the canvas size from the *aggregate* min/max
     corner across every frame (`ceil(global_max - global_min)`), while this
@@ -256,10 +276,16 @@ def frame_bbox(
     this function for it is not worth it.
     """
     canvas_width, canvas_height = canvas_size
-    rotation, translation = matrix[:, :2], matrix[:, 2]
     corners_local = np.array(
         [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
     )
+    if rectification is not None:
+        # The frame's canvas footprint is the rectified keystone quad, not
+        # the affine image of the raw rectangle
+        # (docs/RECTIFICATION_PLAN.md section 6.2) — `layout.frame_corners`
+        # does the same for the canvas bounds and the valid rect.
+        corners_local = rectify(corners_local, rectification)
+    rotation, translation = matrix[:, :2], matrix[:, 2]
     corners_canvas = corners_local @ rotation.T + translation
     min_xy = corners_canvas.min(axis=0)
     max_xy = corners_canvas.max(axis=0)
@@ -422,12 +448,27 @@ def _warp_bands(
     bbox_matrix: np.ndarray,
     bbox_width: int,
     bbox_height: int,
-    geometry: dict,
+    geometry: dict | None,
     ca: dict | None,
+    rectification: Rectification | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """The composed band map of section 5.3: warp through distortion (and,
     in "maps" mode, the per-channel CA maps) with `cv2.remap`, a band of
     GEOMETRY_BAND_ROWS output rows at a time.
+
+    With a rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 6.1),
+    the placement lives in rectified space, so an inverse-rectification
+    step sits between the affine inverse and the distortion steps:
+
+        1.   q = R⁻¹ . ([u, v] - t) / s   # bbox output px -> rectified frame px
+        1.5  p = centre + (q - centre) / (1 - l . (q - centre))
+                                           # -> undistorted frame px
+        2-5. unchanged
+
+    Step 1.5 is closed form — one weight and one divide per band pixel, no
+    new interpolation pass. With `geometry=None` steps 2-5 reduce to the
+    identity and the map is `p` directly: a rectification can be active
+    without a profile, and the banded remap serves both.
 
     The map is *forward* (undistorted -> distorted), which is closed form,
     so it is generated per band for nothing — no `initUndistortRectifyMap`,
@@ -440,10 +481,11 @@ def _warp_bands(
 
     Returns `(warped_linear, warped_mask)` — clipping and erosion stay with
     the caller."""
-    K, _ = _geometry_camera(geometry)
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-    k1, k2 = geometry["k1"], geometry["k2"]
+    if geometry is not None:
+        K, _ = _geometry_camera(geometry)
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        k1, k2 = geometry["k1"], geometry["k2"]
 
     rotation = bbox_matrix[:, :2]
     translation = bbox_matrix[:, 2]
@@ -452,6 +494,9 @@ def _warp_bands(
     # scale * R, not R), so this undoes both the rotation and the per-frame
     # scale in one step.
     scaled_rotation_inv = np.linalg.inv(rotation)
+
+    centre = rectification.centre if rectification is not None else None
+    l = rectification.l if rectification is not None else None
 
     ca_by_channel: dict[int, dict] = {}
     if ca is not None and ca.get("mode") == "maps":
@@ -465,64 +510,26 @@ def _warp_bands(
         cols = np.arange(bbox_width, dtype=np.float64)
         uu, vv = np.meshgrid(cols, rows)
 
-        # 1. bbox output px -> undistorted frame px (inverted bbox_matrix).
+        # 1. bbox output px -> rectified frame px (inverted bbox_matrix).
         du = uu - translation[0]
         dv = vv - translation[1]
         px = scaled_rotation_inv[0, 0] * du + scaled_rotation_inv[0, 1] * dv
         py = scaled_rotation_inv[1, 0] * du + scaled_rotation_inv[1, 1] * dv
 
-        # 2. normalise.
-        x = (px - cx) / fx
-        y = (py - cy) / fy
+        if rectification is not None:
+            # 1.5. inverse rectification, rectified -> undistorted frame px
+            # (docs/RECTIFICATION_PLAN.md section 6.1). Closed form; the
+            # weight is bounded away from zero by the fit's excursion gate.
+            qx = px - centre[0]
+            qy = py - centre[1]
+            w = 1.0 - l[0] * qx - l[1] * qy
+            px = centre[0] + qx / w
+            py = centre[1] + qy / w
 
-        if ca_by_channel:
-            channel_maps = {}
-            for channel in range(3):
-                fit = ca_by_channel.get(channel)
-                if fit is None:
-                    xc, yc = x, y
-                else:
-                    # 3. CA, "maps" mode only: scale about the channel's own
-                    # centre, in normalised coordinates.
-                    dx = x - fit["center_x"]
-                    dy = y - fit["center_y"]
-                    r = np.hypot(dx, dy)
-                    s = fit["c0"] + fit["c1"] * r**2 + fit["c2"] * r**4
-                    xc = fit["center_x"] + dx * s
-                    yc = fit["center_y"] + dy * s
-                # 4-5. forward radial distortion, denormalise.
-                r2 = xc * xc + yc * yc
-                k = 1.0 + k1 * r2 + k2 * (r2 * r2)
-                channel_maps[channel] = (
-                    (xc * k * fx + cx).astype(np.float32),
-                    (yc * k * fy + cy).astype(np.float32),
-                )
-            for channel in range(3):
-                map_x, map_y = channel_maps[channel]
-                # The map coordinates are absolute source-frame pixels, so
-                # remap reads the full source and writes the band. One
-                # contiguous single-channel view held at a time ("maps"
-                # mode's estimate_peak_bytes term).
-                source = np.ascontiguousarray(linear[:, :, channel])
-                warped[v0:v1, :, channel] = cv2.remap(
-                    source,
-                    map_x,
-                    map_y,
-                    INTERPOLATION,
-                    borderMode=cv2.BORDER_CONSTANT,
-                    borderValue=0,
-                )
-                del source
-            # The validity mask is remapped with the green map.
-            green_map = channel_maps[1]
-        else:
-            # 4-5. forward radial distortion, denormalise. Green, and every
-            # channel in "scale" mode: the CA step is skipped.
-            r2 = x * x + y * y
-            k = 1.0 + k1 * r2 + k2 * (r2 * r2)
-            map_x = (x * k * fx + cx).astype(np.float32)
-            map_y = (y * k * fy + cy).astype(np.float32)
-            # 6. one interpolation pass for all three channels.
+        if geometry is None:
+            # 6. no distortion to undo: the map is the source px directly.
+            map_x = px.astype(np.float32)
+            map_y = py.astype(np.float32)
             warped[v0:v1] = cv2.remap(
                 linear,
                 map_x,
@@ -532,6 +539,68 @@ def _warp_bands(
                 borderValue=0,
             )
             green_map = (map_x, map_y)
+        else:
+            # 2. normalise.
+            x = (px - cx) / fx
+            y = (py - cy) / fy
+
+            if ca_by_channel:
+                channel_maps = {}
+                for channel in range(3):
+                    fit = ca_by_channel.get(channel)
+                    if fit is None:
+                        xc, yc = x, y
+                    else:
+                        # 3. CA, "maps" mode only: scale about the channel's own
+                        # centre, in normalised coordinates.
+                        dx = x - fit["center_x"]
+                        dy = y - fit["center_y"]
+                        r = np.hypot(dx, dy)
+                        s = fit["c0"] + fit["c1"] * r**2 + fit["c2"] * r**4
+                        xc = fit["center_x"] + dx * s
+                        yc = fit["center_y"] + dy * s
+                    # 4-5. forward radial distortion, denormalise.
+                    r2 = xc * xc + yc * yc
+                    k = 1.0 + k1 * r2 + k2 * (r2 * r2)
+                    channel_maps[channel] = (
+                        (xc * k * fx + cx).astype(np.float32),
+                        (yc * k * fy + cy).astype(np.float32),
+                    )
+                for channel in range(3):
+                    map_x, map_y = channel_maps[channel]
+                    # The map coordinates are absolute source-frame pixels, so
+                    # remap reads the full source and writes the band. One
+                    # contiguous single-channel view held at a time ("maps"
+                    # mode's estimate_peak_bytes term).
+                    source = np.ascontiguousarray(linear[:, :, channel])
+                    warped[v0:v1, :, channel] = cv2.remap(
+                        source,
+                        map_x,
+                        map_y,
+                        INTERPOLATION,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0,
+                    )
+                    del source
+                # The validity mask is remapped with the green map.
+                green_map = channel_maps[1]
+            else:
+                # 4-5. forward radial distortion, denormalise. Green, and every
+                # channel in "scale" mode: the CA step is skipped.
+                r2 = x * x + y * y
+                k = 1.0 + k1 * r2 + k2 * (r2 * r2)
+                map_x = (x * k * fx + cx).astype(np.float32)
+                map_y = (y * k * fy + cy).astype(np.float32)
+                # 6. one interpolation pass for all three channels.
+                warped[v0:v1] = cv2.remap(
+                    linear,
+                    map_x,
+                    map_y,
+                    INTERPOLATION,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+                green_map = (map_x, map_y)
 
         warped_mask[v0:v1] = cv2.remap(
             ones_mask,
@@ -552,6 +621,7 @@ def composite(
     on_progress,
     geometry: dict | None = None,
     ca: dict | None = None,
+    rectification: Rectification | None = None,
     region: tuple[int, int, int, int] | None = None,
     reference_bounds: list[Bounds] | None = None,
 ) -> CompositeResult:
@@ -565,10 +635,18 @@ def composite(
     only; the canvas stays the full union bounding box and nothing
     captured is discarded.
 
+    `rectification`, when given, is the negative's fitted rig-tilt
+    rectification (docs/RECTIFICATION_PLAN.md section 6): the placements
+    live in rectified space, so the warp undoes the rectification per
+    output pixel through the banded remap — with or without a profile's
+    geometry. The plain cv2.warpAffine path runs only when neither is
+    present.
+
     Warp pass, per frame:
       1. decode_to_linear -> float32.
       2. cv2.warpAffine into the frame's OWN bounding box (not the canvas)
-         with INTERPOLATION, BORDER_CONSTANT, borderValue 0.
+         with INTERPOLATION, BORDER_CONSTANT, borderValue 0 — or, when
+         geometry or rectification is present, the composed banded remap.
       3. np.clip(warped, 0.0, None) — section 2.3's measured -0.088
          undershoot.
       4. Warp a ones-mask with INTER_NEAREST; cv2.erode by MASK_ERODE_PX.
@@ -640,16 +718,17 @@ def composite(
 
         matrix = placement.matrix()
         bbox_x, bbox_y, bbox_width, bbox_height = frame_bbox(
-            matrix, source_height, source_width, layout.canvas_size
+            matrix, source_height, source_width, layout.canvas_size, rectification
         )
         bbox_matrix = matrix.copy()
         bbox_matrix[:, 2] -= (bbox_x, bbox_y)
 
         ones_mask = np.ones((source_height, source_width), dtype=np.uint8)
-        if geometry is not None:
-            # The composed band map (docs/GEOMETRIC_PLAN.md section 5.3):
-            # distortion — and, in "maps" mode, the per-channel CA maps —
-            # folded into the warp, one interpolation pass per pixel.
+        if geometry is not None or rectification is not None:
+            # The composed band map (docs/GEOMETRIC_PLAN.md section 5.3;
+            # docs/RECTIFICATION_PLAN.md section 6): distortion, CA, and the
+            # inverse rectification folded into the warp, one interpolation
+            # pass per pixel.
             warped, warped_mask = _warp_bands(
                 linear,
                 ones_mask,
@@ -658,6 +737,7 @@ def composite(
                 bbox_height,
                 geometry,
                 ca,
+                rectification,
             )
             warped = np.clip(warped, 0.0, None)
         else:
@@ -823,8 +903,10 @@ def composite(
     encoded = encode_normalized(normalized)
     del normalized
 
+    # Sized to the published channel count: three on a colour roll, one on
+    # a mono roll's collapsed image (MONOCHROME_PLAN section 4).
     fill_code = encode_normalized(
-        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+        np.full((1, 1, encoded.shape[-1]), NORMALIZED_FILL, dtype=np.float32)
     )[0, 0]
     encoded[~covered] = fill_code
 

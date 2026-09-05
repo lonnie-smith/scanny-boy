@@ -154,6 +154,9 @@ class NegativeRow(Base):
     # build predates normalization or the negative never published.
     normalization: Mapped[dict | None] = mapped_column(JSONText)
     normalized_fill: Mapped[float | None] = mapped_column(SQLFloat)
+    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
+    # section 7); null when the fit was rejected or this build predates it.
+    rectification: Mapped[dict | None] = mapped_column(JSONText)
     rebate_deviation_px: Mapped[float | None] = mapped_column(SQLFloat)
     used_clahe_fallback: Mapped[bool] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)

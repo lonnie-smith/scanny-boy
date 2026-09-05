@@ -22,6 +22,10 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
+# Protocol 10 adds the preview's nondestructive tone adjustment: the `edit
+# tone` command (paper grade + midtone snap, recorded as a `tone` op in the
+# ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
+# manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
 PROTOCOL_VERSION = 10
 
 

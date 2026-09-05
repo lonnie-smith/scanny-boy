@@ -206,27 +206,21 @@ def test_net_edit_state_tracks_flips_and_rotations(roll_dir):
     append = repo.append_edit
     negative = "rid-1-negative-01"
 
-    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0, None)
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == (0, True, 0.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (0, True, 0.0, None)
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
-    assert repo.net_edit_state(roll_dir, negative) == (1, True, 0.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, 0.0, None)
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == (3, False, 0.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (3, False, 0.0, None)
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "ccw"})
-    assert repo.net_edit_state(roll_dir, negative) == (2, False, 0.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (2, False, 0.0, None)
 
 def test_net_edit_state_ignores_unknown_ops(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
 
-    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0)
-
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0, None)
 
 def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     """The stitch stage's auto-seeded `rotate_fine` op adds to the net fine
@@ -240,22 +234,17 @@ def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     append(
         roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 3.5, "source": "auto"}
     )
-    assert repo.net_edit_state(roll_dir, negative) == (0, False, 3.5)
-
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 3.5, None)
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == (0, True, -3.5)
-
+    assert repo.net_edit_state(roll_dir, negative) == (0, True, -3.5, None)
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
-    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.5)
-
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.5, None)
     # Fine rotations applied after a flip still add, whatever the flag is:
     # the canonical angle already carries the flip's negation.
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": -1.5})
-    assert repo.net_edit_state(roll_dir, negative) == (1, True, -5.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -5.0, None)
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 2.0})
-    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.0)
-
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.0, None)
 
 def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
@@ -266,8 +255,95 @@ def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {})
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": True})
 
-    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0)
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0, None)
 
+
+def test_append_tone_edit_records_the_state(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    edit = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+
+    assert edit["op"] == repo.TONE_OP
+    assert edit["params"] == {"grade_r": 90.0, "snap_gamma": 0.2}
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (
+        0,
+        False,
+        0.0,
+        {"grade_r": 90.0, "snap_gamma": 0.2},
+    )
+
+
+def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
+    """The tone op is a state, not a transform, so a repeated commit
+    updates the trailing `tone` op in place instead of piling up dead
+    rows — the one coalescing exception to the log's append-only rule."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    first = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 115.0, 0.0)
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+    second = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 80.0, 0.3)
+
+    # A rotate landed between the two tone ops, so the second appends
+    # after it rather than coalescing into the first.
+    assert first["position"] == 1
+    assert second["position"] == 3
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (
+        1,
+        False,
+        0.0,
+        {"grade_r": 80.0, "snap_gamma": 0.3},
+    )
+
+    third = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 60.0, -0.1)
+    # Now the trailing op *is* a tone op: coalesced in place, same row.
+    assert third["id"] == second["id"]
+    assert third["position"] == second["position"] == 3
+    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
+        "tone",
+        "rotate",
+        "tone",
+    ]
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (
+        1,
+        False,
+        0.0,
+        {"grade_r": 60.0, "snap_gamma": -0.1},
+    )
+
+
+def test_append_tone_edit_reset_records_null_params(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", None, None)
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0, None)
+
+
+def test_append_tone_edit_validates_its_params(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    for grade, snap in [
+        (49.0, 0.0),
+        (181.0, 0.0),
+        (115.0, -0.6),
+        (115.0, 0.6),
+        (None, 0.0),  # one without the other
+        (115.0, None),
+        ("hard", 0.0),
+    ]:
+        with pytest.raises(ValueError):
+            repo.append_tone_edit(roll_dir, "rid-1-negative-01", grade, snap)
+
+    assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
+
+
+def test_net_edit_state_degrades_a_malformed_tone_op_to_no_adjustment(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.TONE_OP, {"grade_r": "hard"})
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0, None)
 
 def test_edits_survive_re_saving_the_manifest(roll_dir):
     """Re-stitching keeps a negative's `negative_id`, so its edit history

@@ -1308,3 +1308,253 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     # the strip analogue (0.3 * max) grants.
     assert min(band_widths) > 0
     assert max(band_widths) - min(band_widths) < 0.3 * max(band_widths)
+# --- rectified-space compositing (docs/RECTIFICATION_PLAN.md section 6) -----
+
+_RECT_SCENE_SIZE = (1100, 1900)
+_RECT_FRAME_SIZE = (800, 1200)
+_RECT_SHIFT = (400.0, 0.0)
+_RECT_TILT_DEG = (12.0, 8.0)
+_RECT_FOCAL_PX = 9000.0
+
+
+def _rectification():
+    from scanny_boy.registration import Rectification
+
+    height, width = _RECT_FRAME_SIZE
+    return Rectification(
+        l=np.array(
+            [
+                np.tan(np.deg2rad(_RECT_TILT_DEG[0])) / _RECT_FOCAL_PX,
+                np.tan(np.deg2rad(_RECT_TILT_DEG[1])) / _RECT_FOCAL_PX,
+            ]
+        ),
+        centre=np.array([width / 2.0, height / 2.0]),
+        frame_size=_RECT_FRAME_SIZE,
+        rms_before_px=1.0,
+        rms_after_px=0.5,
+        relative_improvement=0.5,
+        pair_count=2,
+    )
+
+
+def _build_rectified_scene():
+    """A rectified-space scene; each frame is a *tilted capture* of it —
+    frame pixel p samples the scene at W(p) + shift·k — so the ground-truth
+    placement in rectified space is a pure translation and the canvas is
+    the scene itself. The scene is deliberately smooth: a sharp one would
+    put the capture's own resample error where the misregistration signal
+    belongs. Returns (scene, rectification, uint16 frames, layout,
+    min_xy) where canvas px c corresponds to scene px c + min_xy."""
+    from scanny_boy.layout import FramePlacement, Layout
+    from scanny_boy.registration import rectified_frame_corners, rectify
+
+    rect = _rectification()
+    rng = np.random.default_rng(5)
+    scene = cv2.GaussianBlur(
+        rng.uniform(0.0, 1.0, size=_RECT_SCENE_SIZE), (0, 0), 12
+    )
+
+    height, width = _RECT_FRAME_SIZE
+    ys, xs = np.mgrid[0:height, 0:width]
+    pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
+    uint16_frames = {}
+    for k, name in enumerate(["f0", "f1"]):
+        scene_xy = rectify(pts, rect) + np.asarray(_RECT_SHIFT) * k
+        map_x = scene_xy[:, 0].reshape(height, width).astype(np.float32)
+        map_y = scene_xy[:, 1].reshape(height, width).astype(np.float32)
+        sampled = cv2.remap(
+            scene,
+            map_x,
+            map_y,
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        uint16_frames[name] = encode_from_linear(
+            np.stack([sampled, sampled, sampled], axis=-1)
+        )
+
+    quads = np.vstack(
+        [
+            rectified_frame_corners(rect) + np.asarray(_RECT_SHIFT) * k
+            for k in range(2)
+        ]
+    )
+    min_xy = quads.min(axis=0)
+    canvas_size = (
+        math.ceil(quads[:, 0].max() - min_xy[0]),
+        math.ceil(quads[:, 1].max() - min_xy[1]),
+    )
+    placements = [
+        FramePlacement(
+            name=f"f{k}",
+            rotation_deg=0.0,
+            translation=tuple(np.asarray(_RECT_SHIFT) * k - min_xy),
+            scale=1.0,
+        )
+        for k in range(2)
+    ]
+    layout = Layout(
+        placements=placements,
+        canvas_size=canvas_size,
+        global_rms_px=0.0,
+        used_pairs=[],
+        strip_spread_ratio=0.0,
+        strip_axis=None,
+    )
+    return scene, rect, uint16_frames, layout, min_xy
+
+
+def _rectified_composite(layout, uint16_frames, rectification):
+    def load_frame(name):
+        return uint16_frames[name]
+
+    return composite(
+        layout,
+        load_frame,
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        rectification=rectification,
+    )
+
+
+def _rectified_error(result, scene, min_xy):
+    """Mean absolute error over a window measured in *scene* coordinates —
+    canvas px c corresponds to scene px c + min_xy — and inside both."""
+    linear_result = _unnormalize(result.image, result.bounds)
+    margin = 30
+    sx0 = margin
+    sy0 = margin
+    frame_height, frame_width = _RECT_FRAME_SIZE
+    window_w = frame_width - 2 * margin
+    window_h = frame_height - 2 * margin
+    cx0 = round(sx0 - min_xy[0])
+    cy0 = round(sy0 - min_xy[1])
+    crop = linear_result[cy0 : cy0 + window_h, cx0 : cx0 + window_w, 0]
+    scene_crop = scene[sy0 : sy0 + window_h, sx0 : sx0 + window_w]
+    return float(np.mean(np.abs(crop - scene_crop)))
+
+
+def test_rectified_composite_reconstructs_the_scene():
+    scene, rect, uint16_frames, layout, min_xy = _build_rectified_scene()
+
+    result = _rectified_composite(layout, uint16_frames, rect)
+
+    error = _rectified_error(result, scene, min_xy)
+    assert error < 0.02
+
+
+def test_the_same_scene_without_the_rectification_misaligns():
+    """The control: the same tilted captures composited without the
+    rectification sample the source at p instead of W(p), a systematic
+    misregistration that grows toward the frame corners — the seam smear
+    the fit exists to remove."""
+    scene, rect, uint16_frames, layout, min_xy = _build_rectified_scene()
+
+    without = _rectified_composite(layout, uint16_frames, None)
+    with_rect = _rectified_composite(layout, uint16_frames, rect)
+
+    error_without = _rectified_error(without, scene, min_xy)
+    error_with = _rectified_error(with_rect, scene, min_xy)
+    assert error_without > 3.0 * error_with
+
+
+def test_warp_bands_rectification_samples_the_unrectified_source():
+    """Step 1.5 pinned directly: with an identity placement and no
+    geometry, the band map must read the source at unrectify(output px)."""
+    from scanny_boy.composite import _warp_bands
+    from scanny_boy.registration import Rectification, unrectify
+
+    height, width = 60, 80
+    # Strong enough that the displacement clears cv2.remap's 1/32-px map
+    # quantization: the interior deviation must be well above the
+    # quantization noise and far below the signal.
+    rect = Rectification(
+        l=np.array([3e-4, -2e-4]),
+        centre=np.array([width / 2.0, height / 2.0]),
+        frame_size=(height, width),
+        rms_before_px=1.0,
+        rms_after_px=0.5,
+        relative_improvement=0.5,
+        pair_count=2,
+    )
+    xs = np.tile(np.arange(width, dtype=np.float64), (height, 1))
+    linear = np.repeat((xs / width)[..., None], 3, axis=-1).astype(np.float32)
+    ones = np.ones((height, width), dtype=np.uint8)
+    identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    warped, warped_mask = _warp_bands(
+        linear, ones, identity, width, height, None, None, rect
+    )
+
+    ys, xs = np.mgrid[0:height, 0:width]
+    pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
+    expected_x = unrectify(pts, rect)[:, 0].reshape(height, width) / width
+    deviation = np.abs(
+        warped[8 : height - 8, 8 : width - 8, 0]
+        - expected_x[8 : height - 8, 8 : width - 8]
+    )
+    # cv2.remap quantizes its map to 1/32 px: 1/64 px of position error on
+    # this 1/80-slope ramp is ~3.1e-4 — the deviation must sit at that
+    # level, not grow with the displacement.
+    assert deviation.max() < 5e-4
+    # ...and the warp must genuinely differ from the identity map the
+    # no-rectification path would produce.
+    plain, _ = _warp_bands(linear, ones, identity, width, height, None, None, None)
+    assert np.abs(plain - warped).max() > 1e-3
+    assert np.all(warped_mask[8 : height - 8, 8 : width - 8] == 1)
+
+
+def test_warp_bands_rectification_matches_zero_coefficient_geometry():
+    """Two code paths, one answer: rectification with geometry=None must be
+    bit-identical to rectification with a zero-coefficient geometry, since
+    the normalise/distort steps reduce to the identity there."""
+    from scanny_boy.composite import _warp_bands
+
+    height, width = 60, 80
+    rect = _rectification()
+    linear = np.random.default_rng(3).uniform(
+        0.0, 1.0, size=(height, width, 3)
+    ).astype(np.float32)
+    ones = np.ones((height, width), dtype=np.uint8)
+    identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    without_geometry, mask_without = _warp_bands(
+        linear, ones, identity, width, height, None, None, rect
+    )
+    zero_geometry, mask_zero = _warp_bands(
+        linear,
+        ones,
+        identity,
+        width,
+        height,
+        {"fx": 1.0, "fy": 1.0, "cx": 0.0, "cy": 0.0, "k1": 0.0, "k2": 0.0},
+        None,
+        rect,
+    )
+
+    assert np.array_equal(without_geometry, zero_geometry)
+    assert np.array_equal(mask_without, mask_zero)
+
+
+def test_peak_estimate_counts_band_maps_for_rectification_without_geometry():
+    # Enough frames that the warp-residency branch of the max() dominates
+    # the normalization branch — otherwise the band-map term is invisible.
+    canvas = (2000, 1500)
+    frame = (400, 600)
+    bbox = (500, 600)
+
+    base = estimate_peak_bytes(canvas, frame, bbox, 30)
+    with_rect = estimate_peak_bytes(
+        canvas, frame, bbox, 30, rectification=True
+    )
+    with_geometry = estimate_peak_bytes(canvas, frame, bbox, 30, geometry=True)
+    with_both = estimate_peak_bytes(
+        canvas, frame, bbox, 30, geometry=True, rectification=True
+    )
+
+    # The band maps are counted once, whichever feature routed the warp.
+    assert with_rect == with_geometry
+    assert with_rect > base
+    # Geometry already accounts for the maps; rectification adds nothing.
+    assert with_both == with_geometry

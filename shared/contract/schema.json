@@ -330,6 +330,7 @@
               "edit rotate",
               "edit flip",
               "edit delete",
+              "edit tone",
               "edit render-region",
               "export",
               "flatfield create",

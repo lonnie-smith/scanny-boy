@@ -227,6 +227,12 @@ def test_protocol_version_is_ten():
     `prepare`, and `run` (mutually exclusive with `--per-negative`), the
     `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
     warning code (docs/GRID_STITCH_PLAN.md section 2.0)."""
+    """Protocol 9→10: the preview's nondestructive tone adjustment — the
+    `edit tone` command (an ISO-R paper grade plus a midtone snap,
+    recorded as a `tone` op in the ops log and coalesced there) and the
+    net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
+    negatives. The published TIFF never carries the adjustment
+    (docs/DECISIONS.md, "The preview's tone adjustment")."""
     assert PROTOCOL_VERSION == 10
 
 

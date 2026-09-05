@@ -168,14 +168,16 @@ def _completed_negative(**overrides) -> NegativeRecord:
 # --- shape, round trip, and the published contract ------------------------
 
 
-def test_v6_round_trips(tmp_path):
+def test_v7_round_trips(tmp_path):
+    """v7 adds the per-negative rig-tilt rectification record
+    (docs/RECTIFICATION_PLAN.md section 7)."""
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 6
+    assert loaded.manifest_format_version == 7
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id
@@ -233,6 +235,55 @@ def test_schema_rejects_a_frame_record_missing_scale():
     manifest = _manifest(negatives=[_completed_negative()])
     data = manifest.to_dict()
     del data["negatives"][0]["frames"][0]["scale"]
+
+    with pytest.raises(AssertionError):
+        assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
+
+
+def test_rectification_round_trips(tmp_path):
+    """The per-negative rig-tilt rectification block
+    (docs/RECTIFICATION_PLAN.md section 7) survives the library round trip
+    and matches the schema."""
+    rectification = {
+        "l": [3.1e-07, -3.8e-07],
+        "centre": [3032.0, 2020.0],
+        "frame_size": [4040, 6064],
+        "rms_before_px": 1.41,
+        "rms_after_px": 0.83,
+        "relative_improvement": 0.41,
+        "pair_count": 3,
+    }
+    manifest = _manifest(negatives=[_completed_negative(rectification=rectification)])
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+    assert loaded.negatives[0].rectification == rectification
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_rectification_is_null_when_the_fit_was_rejected(tmp_path):
+    """A fit-rejected negative omits the block entirely — absent, not a
+    stub object, the same convention normalization follows."""
+    manifest = _manifest(negatives=[_completed_negative()])
+    write_roll_manifest(tmp_path, manifest)
+
+    for negative in load_roll_manifest(tmp_path).negatives:
+        assert negative.rectification is None
+
+
+def test_schema_rejects_a_rectification_block_missing_fields():
+    rectification = {
+        "l": [3.1e-07, -3.8e-07],
+        "centre": [3032.0, 2020.0],
+        "frame_size": [4040, 6064],
+        "rms_before_px": 1.41,
+        "rms_after_px": 0.83,
+        "relative_improvement": 0.41,
+        "pair_count": 3,
+    }
+    manifest = _manifest(negatives=[_completed_negative(rectification=rectification)])
+    data = manifest.to_dict()
+    del data["negatives"][0]["rectification"]["relative_improvement"]
 
     with pytest.raises(AssertionError):
         assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
@@ -592,9 +643,7 @@ def test_check_roll_invariants_allows_a_different_flatfield_profile():
             }
         ),
     )
-    check_roll_invariants(
-        seeded, _invariants(processing_params={"gamma": [1.8, 16]})
-    )
+    check_roll_invariants(seeded, _invariants(processing_params={"gamma": [1.8, 16]}))
     check_roll_invariants(
         seeded,
         _invariants(

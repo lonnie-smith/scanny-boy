@@ -45,6 +45,16 @@ DENSITY_DESCRIPTION = (
     "values."
 )
 
+DENSITY_GREY_DESCRIPTION = (
+    "ScannyBoy Normalized Density Grey (viewing gamma 2.2). The "
+    "single-channel companion of the Density profile: a mono roll's "
+    "published TIFF is one grayscale channel of the same normalized log "
+    "density, which a ProPhoto RGB profile cannot tag. Same viewing "
+    "convention, same caveat - decode through "
+    "scanny_boy.normalization.decode_normalized, never through this "
+    "profile (MONOCHROME_PLAN section 4)."
+)
+
 # ICC parametricCurveType function type 0: pure gamma. g = 1.0 in s15Fixed16
 # — the identity curve, because the decode is linear. The density profile's
 # g = 2.2 is `round(2.2 * 65536) = 144179`, a viewing convention, not a
@@ -120,16 +130,31 @@ def prophoto_source_bytes() -> bytes:
 def generate_profile(
     description: str = LINEAR_DESCRIPTION,
     trc_params: tuple[int, ...] = TRC_PARAMS,
+    *,
+    trc_signatures: tuple[bytes, ...] = (),
+    drop_tag_signatures: tuple[bytes, ...] = (),
+    header_colorspace: bytes | None = None,
 ) -> bytes:
+    """Rebuild the source profile with `description` and `trc_params`.
+
+    The keyword arguments exist for the grey profile (MONOCHROME_PLAN
+    section 4): `trc_signatures` replaces the source's rTRC/gTRC/bTRC
+    registrations (a gray-class profile carries a single `kTRC`),
+    `drop_tag_signatures` drops the RGB matrix tags, and
+    `header_colorspace` rewrites the header's data colour space ('RGB '
+    -> 'GRAY'). The defaults reproduce the two RGB profiles exactly."""
     source = base64.b64decode(_PROPHOTO_V4_ICC_B64)
     entries = _parse_tag_table(source)
 
     tag_payloads: list[tuple[bytes, bytes]] = []
-    trc_signatures: list[bytes] = []
+    kept_trc_signatures: list[bytes] = []
 
     for sig, tag_offset, size in entries:
         if sig in TRC_SIGNATURES:
-            trc_signatures.append(sig)
+            if sig not in drop_tag_signatures:
+                kept_trc_signatures.append(sig)
+            continue
+        if sig in drop_tag_signatures:
             continue
         if sig == b"desc":
             tag_payloads.append((sig, _build_desc_tag(description)))
@@ -137,8 +162,7 @@ def generate_profile(
             tag_payloads.append((sig, source[tag_offset : tag_offset + size]))
 
     trc_bytes = _build_trc_tag(trc_params)
-    if not trc_signatures:
-        trc_signatures = list(TRC_SIGNATURES)
+    trc_signatures = list(trc_signatures) or kept_trc_signatures or list(TRC_SIGNATURES)
 
     tag_count = len(tag_payloads) + len(trc_signatures)
     table_size = 128 + 4 + tag_count * 12
@@ -164,6 +188,8 @@ def generate_profile(
         rebuilt_entries.append((sig, trc_offset, trc_size))
 
     header = bytearray(source[:128])
+    if header_colorspace is not None:
+        header[16:20] = header_colorspace
     struct.pack_into(">I", header, 0, current)
 
     table = bytearray()
@@ -190,6 +216,19 @@ def generate_density_profile() -> bytes:
     return generate_profile(DENSITY_DESCRIPTION, DENSITY_TRC_PARAMS)
 
 
+def generate_density_grey_profile() -> bytes:
+    """The gray-class companion of the density profile (MONOCHROME_PLAN
+    section 4): same gamma-2.2 viewing TRC, one kTRC instead of the RGB
+    matrix + three TRCs, header data colour space GRAY."""
+    return generate_profile(
+        DENSITY_GREY_DESCRIPTION,
+        DENSITY_TRC_PARAMS,
+        trc_signatures=(b"kTRC",),
+        drop_tag_signatures=(b"rXYZ", b"gXYZ", b"bXYZ"),
+        header_colorspace=b"GRAY",
+    )
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(f"usage: {argv[0]} OUTPUT_DIR", file=sys.stderr)
@@ -199,6 +238,9 @@ def main(argv: list[str]) -> int:
     (output / "ScannyBoy-Linear-ProPhoto-v1.icc").write_bytes(generate_linear_profile())
     (output / "ScannyBoy-Density-ProPhoto-v1.icc").write_bytes(
         generate_density_profile()
+    )
+    (output / "ScannyBoy-Density-Grey-v1.icc").write_bytes(
+        generate_density_grey_profile()
     )
     return 0
 

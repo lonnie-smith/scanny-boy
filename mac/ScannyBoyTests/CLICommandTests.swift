@@ -299,6 +299,34 @@ struct CLICommandTests {
         )
     }
 
+    // MARK: - Edit tone
+
+    @Test("edit tone carries the grade and snap, or --reset")
+    func editToneArguments() {
+        let command = CLICommand.editTone(
+            roll: Self.out, negatives: ["neg-01"], gradeR: 90, snapGamma: 0.2
+        )
+        #expect(
+            command.arguments == [
+                "edit", "tone",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--grade", "90.0",
+                "--snap", "0.2",
+            ]
+        )
+    }
+
+    @Test("edit tone with no grade and no snap is a reset")
+    func editToneResetArguments() {
+        let command = CLICommand.editTone(
+            roll: Self.out, negatives: ["neg-01"], gradeR: nil, snapGamma: nil
+        )
+        #expect(command.arguments.last == "--reset")
+        #expect(!command.arguments.contains("--grade"))
+        #expect(!command.arguments.contains("--snap"))
+    }
+
     // MARK: - Protocol version 6: flat field
 
     @Test("run carries --flatfield when a profile is chosen")

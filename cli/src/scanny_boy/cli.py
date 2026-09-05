@@ -17,6 +17,7 @@ from scanny_boy.edits import (
     run_edit_flip,
     run_edit_render_region,
     run_edit_rotate,
+    run_edit_tone,
 )
 from scanny_boy.events import (
     Code,
@@ -346,6 +347,39 @@ def build_parser() -> argparse.ArgumentParser:
     edit_render_region.add_argument("--height", required=True, type=int, metavar="PX")
     edit_render_region.add_argument("--output", required=True, metavar="PATH")
 
+    edit_tone = edit_subparsers.add_parser(
+        "tone",
+        help=(
+            "Record a preview tone adjustment (paper grade + midtone snap) "
+            "for one or more negatives."
+        ),
+    )
+    edit_tone.add_argument("--roll", required=True, metavar="DIR")
+    edit_tone.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to adjust; repeat for a selection",
+    )
+    edit_tone.add_argument(
+        "--grade",
+        type=float,
+        metavar="R",
+        help="ISO-R paper grade, 50-180 (lower is harder); with --snap",
+    )
+    edit_tone.add_argument(
+        "--snap",
+        type=float,
+        metavar="G",
+        help="midtone snap, -0.5..0.5; with --grade",
+    )
+    edit_tone.add_argument(
+        "--reset",
+        action="store_true",
+        help="reset to the flat linear preview, removing the adjustment",
+    )
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -534,15 +568,19 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
     info = manifest.to_dict()
-    # Net transform is derived state — the ops log's replay — so it is
+    # Net state is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        quarter_turns, flipped, fine_angle = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
             roll_dir, negative["negative_id"]
         )
         negative["rotation_quarter_turns"] = quarter_turns
         negative["flipped_horizontally"] = flipped
         negative["fine_rotation_deg"] = fine_angle
+        negative["tone_grade_r"] = None if tone_params is None else tone_params["grade_r"]
+        negative["tone_snap_gamma"] = (
+            None if tone_params is None else tone_params["snap_gamma"]
+        )
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -568,6 +606,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             results = run_edit_flip(
                 Path(args.roll),
                 args.negative,
+                emit=writer.write,
+            )
+            confirmation = EditRecorded
+        elif args.edit_command == "tone":
+            grade = None if args.reset else args.grade
+            snap = None if args.reset else args.snap
+            if not args.reset and (args.grade is None or args.snap is None):
+                writer.write(
+                    ErrorEvent(
+                        code=Code.INVALID_EDIT,
+                        message="edit tone needs --grade and --snap together, or --reset",
+                    )
+                )
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
+            results = run_edit_tone(
+                Path(args.roll),
+                args.negative,
+                grade,
+                snap,
                 emit=writer.write,
             )
             confirmation = EditRecorded

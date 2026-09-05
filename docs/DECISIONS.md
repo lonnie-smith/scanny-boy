@@ -225,6 +225,34 @@ hiding rather than showing. It could not be modelled honestly before radial
 distortion was corrected, because distortion produced a position-dependent
 apparent scale that a per-frame constant would have fitted wrongly.
 
+**Amendment (roll manifest format version 7): the stitch stage rectifies
+a measured rig tilt.** The pairwise fit is still rigid and the layout is
+still a similarity — both unchanged, both still what the acceptance gates
+measure. Before the layout solves, the stitch stage fits one rectifying
+homography `W = [[1,0,0],[0,1,0],[l1,l2,1]]` per negative, shared by every
+pair, from the accepted pairs' own inliers — two parameters,
+`scipy.optimize.least_squares` with each pair's similarity re-fit in closed
+form inside the residual. If it passes its acceptance gates (support,
+plausibility, measured improvement), all downstream geometry works in
+`W`-rectified coordinates and the canvas is rectified space. This is not a
+homographic placement: no pair and no frame is ever placed by a homography.
+`W` is a measured property of the rig applied in the same slot as the
+radial undistortion — a re-parameterisation of image coordinates under
+which the inter-frame maps really are the similarities the layout already
+solves.
+
+Why: the film plane is not fronto-parallel — measured at −0.10° to −0.38°
+across the strip on every manually-shot negative examined
+(`scripts/measure-tilt.py`), varying between sessions and absent in a
+burst — so the true frame-to-frame map is a homography, and a similarity
+fitted to it leaves a systematic residual per pair that accumulates along a
+strip into visibly curved film edges. The per-pair homography alternative
+was measured and rejected: eight free parameters per pair, fitted from a
+thin overlap band and extrapolated across the frame, degrade as overlap
+narrows, where the two-parameter rig model holds. The residual a single
+global tilt does not explain (~0.2 px, per-pair film-height variation) is
+recorded in the manifest, not corrected.
+
 ## Colour, resampling, and blending
 
 - All geometric and photometric work happens in **linear light** — decode to
@@ -1140,3 +1168,34 @@ from a private helper for exactly this use) and passes the per-axis max —
 an upper bound on every frame, which is what the `frame_count ×`
 multiplier assumes. A 5×2 now fits with 26% headroom. The bug was in the
 estimate's *inputs*, not its formula.
+## The preview's tone adjustment: a preview-only `tone` op (protocol version 10)
+
+The Edit tab's flat preview — decode, `1 - val`, bare 8-bit scaling — is
+honest but hard to judge a print by, so the tab offers a nondestructive
+tone adjustment: an ISO-R paper grade (50–180; lower is harder, matching
+NegPy's print-module vocabulary) plus a midtone snap trim (−0.5…0.5,
+NegPy's variable midtone gamma). It is recorded as a `tone` op in the
+negative's ops log (`repo.TONE_OP`) and composed into the preview's
+display LUT (`tone.py`) — a simplified port of NegPy's H&D print curve:
+a straight slope about the midtone pivot with softplus toe/shoulder
+knees, endpoints pinned to display black and white.
+
+Three deliberate boundaries:
+
+- **The published TIFF never carries it.** The op is a state the display
+  encode consumes, not a transform: the exporter's replay ignores it, and
+  the Phase 4 print stage — which will own pixel-level tone at export —
+  inherits the vocabulary (grade, snap) without inheriting this
+  implementation. `roll info` reports the net tone per negative so Swift
+  can key its preview caches.
+- **The op is a state, not a transform**, so unlike the geometric ops it
+  is not append-only: the latest `tone` op wins, and a trailing one is
+  coalesced in place (`append_tone_edit`). Slider commits would otherwise
+  pile up dozens of dead rows per frame. This is the log's one sanctioned
+  exception.
+- **The grade's reference slope is not NegPy's.** NegPy's R115 is a real
+  paper grade against a paper-white baseline; our baseline is already the
+  flat linear mapping of the normalized density, so the slope reference
+  (`GRADE_SLOPE_REF`, at R115) is chosen to land the default grade at a
+  print-like midtone contrast with the softest end of the range near the
+  flat look. The numbers are a judgement aid, not a calibrated paper.

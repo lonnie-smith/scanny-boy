@@ -72,7 +72,11 @@ from scanny_boy.events import (
     Stage,
     WarningEvent,
 )
-from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
+from scanny_boy.icc_profile import (
+    load_icc_profile,
+    profile_record,
+    published_profile_kind,
+)
 from scanny_boy.layout import (
     MAX_GLOBAL_RMS_PX,
     RMS_WEIGHT_FLOOR_PX,
@@ -90,8 +94,11 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.normalization import (
     HEADROOM_CLIP_WARN_FRACTION,
+    MONO_DETECT_MAX_SAMPLES,
     NORMALIZED_FILL,
     Bounds,
+    MonoStatistic,
+    measure_mono_statistic,
 )
 from scanny_boy.output_folder import (
     ROLL_RULES,
@@ -100,6 +107,12 @@ from scanny_boy.output_folder import (
     plan_rerun,
     staging_dir_path,
     validate_writable,
+)
+from scanny_boy.rectification_fit import (
+    MAX_WEIGHT_EXCURSION,
+    MIN_ACCEPTED_PAIRS,
+    MIN_RELATIVE_IMPROVEMENT,
+    fit_rectification,
 )
 from scanny_boy.registration import (
     DETECTOR,
@@ -111,6 +124,7 @@ from scanny_boy.registration import (
     SCALE_DRIFT_FAIL,
     SCALE_DRIFT_WARN,
     PairResult,
+    Rectification,
     StitchError,
     detect_features,
     register_pair,
@@ -169,6 +183,10 @@ class _SolvedNegative:
     group: GroupRecord
     record: NegativeRecord
     pairs: list[PairResult]
+    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
+    # section 4), or None when the fit was rejected. When present, the
+    # layout and the composite work in rectified space.
+    rectification: Rectification | None = None
     # Covered negatives this run removes when this group publishes: records
     # dropped from the manifest, TIFFs unlinked best-effort.
     covered_to_remove: list[NegativeRecord] = dataclasses.field(default_factory=list)
@@ -257,6 +275,13 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
         "feather": composite_module.FEATHER,
+        # The rig-tilt rectification in force (docs/RECTIFICATION_PLAN.md):
+        # the model name is fixed policy; whether a given negative actually
+        # carried a correction is that negative's own `rectification` block.
+        "rectification_model": "global-2-param",
+        "rectification_min_accepted_pairs": MIN_ACCEPTED_PAIRS,
+        "rectification_min_improvement": MIN_RELATIVE_IMPROVEMENT,
+        "rectification_max_excursion": MAX_WEIGHT_EXCURSION,
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {
@@ -401,6 +426,51 @@ def _intermediate_paths(work_dir: Path, group: GroupRecord) -> list[Path]:
     through the same rule."""
     by_name = {output.name: work_dir / output.name for output in group.outputs}
     return [by_name[_intermediate_name(member)] for member in group.members]
+
+
+def _sample_mono_statistic(
+    path: Path, cancel: CancellationToken
+) -> MonoStatistic | None:
+    """One §1.2 sample: read the intermediate and measure it. Recorded
+    evidence must never fail the run, so a read failure — an intermediate
+    `_verify_intermediates` would refuse anyway — leaves the negative
+    unsampled rather than raising."""
+    try:
+        cancel.raise_if_cancelled()
+        return measure_mono_statistic(_read_intermediate(path))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _measure_mono_samples(
+    work_dir: Path, groups: list[GroupRecord], cancel: CancellationToken
+) -> dict[str, MonoStatistic]:
+    """MONOCHROME_PLAN section 1.2's detector pre-pass: sample up to
+    `MONO_DETECT_MAX_SAMPLES` negatives, one frame each (the group's first
+    member), spread evenly across the run's canonical order — six bounded
+    reads, not one per negative. The whole frame is measured, rebate
+    included, because on colour film the rebate is the orange mask at full
+    strength: the single strongest mono/colour discriminator available.
+
+    Recorded evidence only, acted on by nothing."""
+    if not groups:
+        return {}
+    count = min(MONO_DETECT_MAX_SAMPLES, len(groups))
+    indexes = sorted(
+        {
+            round(i * (len(groups) - 1) / (count - 1)) if count > 1 else 0
+            for i in range(count)
+        }
+    )
+    samples: dict[str, MonoStatistic] = {}
+    for index in indexes:
+        group = groups[index]
+        statistic = _sample_mono_statistic(
+            _intermediate_paths(work_dir, group)[0], cancel
+        )
+        if statistic is not None:
+            samples[group.group_id] = statistic
+    return samples
 
 
 def _detect_all(
@@ -557,7 +627,14 @@ def _attempt_solve(
 
     With a calibrated profile, matched points are undistorted before RANSAC
     (docs/GEOMETRIC_PLAN.md section 5.3) and the memory estimate includes
-    the band-map terms."""
+    the band-map terms. Registration runs twice when the rig-tilt
+    rectification is accepted (docs/RECTIFICATION_PLAN.md section 4.2):
+    pass 1 as always, the fit on pass 1's accepted pairs, then pass 2
+    re-registers every pair with the rectifier composed into the
+    undistorter's slot, so the gates, the layout, and the composite all
+    work in rectified space under the model that actually fits them. Pass 2
+    re-runs the ratio test and RANSAC per pair — detection is not repeated
+    — and rides inside the existing MATCH step budget."""
     if progress is not None:
         for _ in paths:
             progress.advance(source_index, PipelineStep.LOAD)
@@ -578,12 +655,29 @@ def _attempt_solve(
             progress.advance(source_index, PipelineStep.DETECT)
     cancel.raise_if_cancelled()
 
-    pairs: list[PairResult] = []
-    for i in range(len(features)):
-        for j in range(i + 1, len(features)):
-            cancel.raise_if_cancelled()
-            pairs.append(register_pair(features[i], features[j], undistorter))
+    def register_all(point_map) -> list[PairResult]:
+        return [
+            register_pair(features[i], features[j], point_map)
+            for i in range(len(features))
+            for j in range(i + 1, len(features))
+        ]
+
+    pairs = register_all(undistorter)
     entry.pairs = pairs
+    cancel.raise_if_cancelled()
+
+    rectification = fit_rectification(pairs, frame_size)
+    entry.rectification = rectification
+    if rectification is not None:
+        record_rectification(entry.record, rectification)
+
+        def undistort_then_rectify(points: np.ndarray) -> np.ndarray:
+            undistorted = undistorter(points) if undistorter is not None else points
+            return registration.rectify(undistorted, rectification)
+
+        pairs = register_all(undistort_then_rectify)
+        entry.pairs = pairs
+        cancel.raise_if_cancelled()
     entry.record.pairs = _pair_records(pairs)
     if progress is not None:
         progress.advance(source_index, PipelineStep.MATCH)
@@ -603,7 +697,7 @@ def _attempt_solve(
             )
 
     names = [path.name for path in paths]
-    layout = solve_layout(names, frame_size, pairs, grid=grid)
+    layout = solve_layout(names, frame_size, pairs, rectification, grid=grid)
     # §4.4: the solved assignment and the regularity measures are recorded
     # per negative regardless of the order warning's outcome.
     entry.record.grid_cells = (
@@ -710,10 +804,29 @@ def _attempt_solve(
             len(paths),
             geometry=geometry is not None,
             ca_maps=ca_maps is not None,
+            rectification=rectification is not None,
         )
     )
 
     return layout, frame_size, ca_maps
+
+
+def record_rectification(
+    record: NegativeRecord, rectification: Rectification
+) -> None:
+    """The per-negative `rectification` manifest block
+    (docs/RECTIFICATION_PLAN.md section 7): `l` in 1/px about `centre`,
+    with the fit's own before/after diagnostics. Interpretable without a
+    focal length, like the gauge rule requires."""
+    record.rectification = {
+        "l": [float(rectification.l[0]), float(rectification.l[1])],
+        "centre": [float(rectification.centre[0]), float(rectification.centre[1])],
+        "frame_size": [rectification.frame_size[0], rectification.frame_size[1]],
+        "rms_before_px": float(rectification.rms_before_px),
+        "rms_after_px": float(rectification.rms_after_px),
+        "relative_improvement": float(rectification.relative_improvement),
+        "pair_count": rectification.pair_count,
+    }
 
 
 def _finite(value: float) -> float:
@@ -728,6 +841,7 @@ def _finite(value: float) -> float:
 def _normalization_record(
     result: composite_module.CompositeResult,
     analysis_rect: tuple[int, int, int, int],
+    mono_statistic: MonoStatistic | None = None,
 ) -> dict[str, Any]:
     """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
     decisions"): the bounds the published pixels were stretched with, the
@@ -736,7 +850,11 @@ def _normalization_record(
     finding (section 3.13, recorded but not yet consumed), and the
     dense-border finding and clamp outcome. `source` names D-4's
     per-negative policy; the clamp is a safety net on top of it, not a
-    policy change."""
+    policy change.
+
+    `mono_statistic`, when the negative was one of the detector pre-pass's
+    samples, records §1's evidence beside the other meters — sampled,
+    never acted on (MONOCHROME_PLAN §1.3)."""
     bounds = result.bounds
     record: dict[str, Any] = {
         "floors": list(bounds.floors),
@@ -766,6 +884,12 @@ def _normalization_record(
         "clamped": result.clamped,
         "source": "per-negative",
     }
+    if mono_statistic is not None:
+        record["mono"] = {
+            "chroma": mono_statistic.chroma,
+            "channel_correlation": list(mono_statistic.channel_correlation),
+            "sampled": True,
+        }
     if result.unclamped_bounds is not None:
         record["unclamped_floors"] = list(result.unclamped_bounds.floors)
         record["unclamped_ceils"] = list(result.unclamped_bounds.ceils)
@@ -974,8 +1098,13 @@ def run_stitch(
         # The density profile the published TIFFs are tagged with is a
         # second invariant (section 3.12's split), sourced from
         # `icc_profile.PROFILES` — not from the work manifest, which only
-        # knows the intermediates'.
-        published_icc_profile_sha256=profile_record(ProfileKind.DENSITY)["sha256"],
+        # knows the intermediates'. It is film-kind-dependent
+        # (MONOCHROME_PLAN §2.3/§4): a mono roll seeds DENSITY_GREY. §2
+        # passes the roll's frozen film kind here; until it lands every
+        # roll is colour.
+        published_icc_profile_sha256=profile_record(published_profile_kind())[
+            "sha256"
+        ],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -1008,6 +1137,13 @@ def run_stitch(
                 Code.WORK_MANIFEST_UNUSABLE,
                 "none of the requested --negatives match a group in this work manifest",
             )
+
+    # MONOCHROME_PLAN section 1.2: the film-kind detector pre-pass, at the
+    # top of the stitch run and before the solve loop. §1 records and acts
+    # on nothing; §2.3 will need it here anyway — ahead of the
+    # roll-invariant seed, whose published-profile record becomes
+    # film-kind-dependent — which is why it sits before `_append_this_run`.
+    mono_by_group = _measure_mono_samples(work_dir, groups, cancel)
 
     run_record, records_by_group, removals_by_group, new_negative_ids = (
         _append_this_run(roll, work_manifest, groups, run_id, invariants, work_dir)
@@ -1120,6 +1256,7 @@ def run_stitch(
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
                 reference_bounds=reference_bounds,
+                mono_statistic=mono_by_group.get(entry.group.group_id),
                 seed_rotation=(
                     auto_rotate
                     and entry.record.negative_id in new_negative_ids
@@ -1487,6 +1624,7 @@ def _composite_and_publish(
     source_index: int,
     profile=None,
     reference_bounds: list[Bounds] | None = None,
+    mono_statistic: MonoStatistic | None = None,
     seed_rotation: bool = False,
 ) -> dict | None:
     """Composite one negative, apply the remaining section 3.4 gates, and
@@ -1535,7 +1673,9 @@ def _composite_and_publish(
         # 1.5): it takes only `layout` and `entry.frame_size`, both of which
         # exist at solve time. It restricts the meters only — it never crops
         # the output.
-        valid_rect = largest_valid_rect(layout, entry.frame_size)
+        valid_rect = largest_valid_rect(
+            layout, entry.frame_size, rectification=entry.rectification
+        )
 
         geometry = profile.geometry if profile is not None else None
         ca = entry.ca_maps if profile is not None else None
@@ -1546,6 +1686,7 @@ def _composite_and_publish(
             on_progress=on_frame_warped,
             geometry=geometry,
             ca=ca,
+            rectification=entry.rectification,
             region=valid_rect,
             reference_bounds=reference_bounds,
         )
@@ -1645,7 +1786,8 @@ def _composite_and_publish(
             )
 
         record.valid_rect = valid_rect
-        record.normalization = _normalization_record(result, valid_rect)
+        record.normalization = _normalization_record(result, valid_rect, mono_statistic)
+        record.normalized_fill = NORMALIZED_FILL
         record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])
@@ -1682,7 +1824,11 @@ def _composite_and_publish(
                 model=model,
             ),
             exif=exif,
-            icc_bytes=load_icc_profile(ProfileKind.DENSITY),  # section 3.12
+            # The primary published-TIFF tag site (MONOCHROME_PLAN §4): the profile
+            # is film-kind-dependent — DENSITY_GREY on a mono roll — and
+            # §2 passes the frozen kind here, exactly as the invariant
+            # seed above does.
+            icc_bytes=load_icc_profile(published_profile_kind()),  # section 3.12
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -1722,7 +1868,7 @@ def _composite_and_publish(
                 repo.ROTATE_FINE_OP,
                 {"angle_deg": auto_rotation_deg, "source": "auto"},
             )
-            quarter_turns, flipped, fine_angle = repo.net_edit_state(
+            quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
                 out_dir, record.negative_id
             )
             auto_edit_fields = {

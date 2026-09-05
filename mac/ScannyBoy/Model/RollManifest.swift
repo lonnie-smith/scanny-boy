@@ -130,6 +130,28 @@ struct RollManifest: Sendable, Hashable {
         /// the CLI. A flip and a rotation do not commute, so the pair — not
         /// the turn count alone — is what identifies the rendered state.
         let flippedHorizontally: Bool
+        /// The negative's fitted rig-tilt rectification
+        /// (docs/RECTIFICATION_PLAN.md section 7). `nil` when the fit was
+        /// rejected, the negative failed before it ran, or the roll's record
+        /// predates the field. Swift displays it; it never re-fits or
+        /// recomputes anything.
+        let rectification: Rectification?
+
+        /// The measured rig tilt: `l` in 1/px acting on coordinates centred
+        /// at the frame centre, and the RMS improvement the shared model
+        /// measured over the per-pair similarity fits.
+        struct Rectification: Sendable, Hashable {
+            let lX: Double
+            let lY: Double
+            let relativeImprovement: Double
+        }
+
+        /// The ops log's net preview tone adjustment (protocol 10's `tone`
+        /// op): an ISO-R paper grade and a midtone snap composed into the
+        /// CLI's preview display encode. `nil` = no adjustment recorded —
+        /// the flat linear look. The published TIFF never carries it.
+        let toneGradeR: Double?
+        let toneSnapGamma: Double?
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -327,7 +349,32 @@ struct RollManifest: Sendable, Hashable {
             // whose record predates the augmentation reads as unrotated.
             rotationQuarterTurns: fields["rotation_quarter_turns"]?.intValue ?? 0,
             // Likewise absent before the flip op existed: unmirrored.
-            flippedHorizontally: fields["flipped_horizontally"]?.boolValue ?? false
+            flippedHorizontally: fields["flipped_horizontally"]?.boolValue ?? false,
+            // Absent when the fit was rejected or the roll's record
+            // predates format version 7: no rectification was applied.
+            rectification: fields["rectification"]?.objectValue
+                .flatMap(Self.decodeRectification),
+            // Absent before the tone op existed (or an explicit null from
+            // a reset): no adjustment, the flat look.
+            toneGradeR: fields["tone_grade_r"]?.doubleValue,
+            toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue
+        )
+    }
+
+    private static func decodeRectification(
+        _ fields: [String: JSONValue]
+    ) -> Negative.Rectification? {
+        guard
+            let l = fields["l"]?.arrayValue,
+            l.count == 2,
+            let lX = l[0].doubleValue,
+            let lY = l[1].doubleValue,
+            let relativeImprovement = fields["relative_improvement"]?.doubleValue
+        else { return nil }
+        return Negative.Rectification(
+            lX: lX,
+            lY: lY,
+            relativeImprovement: relativeImprovement
         )
     }
 

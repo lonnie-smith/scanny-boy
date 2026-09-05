@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from scanny_boy.icc_profile import (
+    DENSITY_GREY_PROFILE_SHA256,
     DENSITY_PROFILE_SHA256,
     LINEAR_PROFILE_SHA256,
     PROFILES,
@@ -18,6 +19,7 @@ from scanny_boy.icc_profile import (
     IccProfileError,
     ProfileKind,
     load_icc_profile,
+    published_profile_kind,
     verify_icc_profile,
 )
 from scanny_boy.linear import MAX_CODE
@@ -27,6 +29,7 @@ GENERATOR = REPO_ROOT / "cli" / "tools" / "generate_icc_profile.py"
 RESOURCES = Path(__file__).resolve().parent / "resources"
 COMMITTED_LINEAR = RESOURCES / "ScannyBoy-Linear-ProPhoto-v1.icc"
 COMMITTED_DENSITY = RESOURCES / "ScannyBoy-Density-ProPhoto-v1.icc"
+COMMITTED_DENSITY_GREY = RESOURCES / "ScannyBoy-Density-Grey-v1.icc"
 
 _spec = importlib.util.spec_from_file_location("generate_icc_profile", GENERATOR)
 _generator = importlib.util.module_from_spec(_spec)
@@ -111,6 +114,9 @@ def test_generator_reproduces_the_committed_profiles(tmp_path):
     assert (
         generated / COMMITTED_DENSITY.name
     ).read_bytes() == COMMITTED_DENSITY.read_bytes()
+    assert (
+        generated / COMMITTED_DENSITY_GREY.name
+    ).read_bytes() == COMMITTED_DENSITY_GREY.read_bytes()
 
 
 def test_generator_is_deterministic(tmp_path):
@@ -118,7 +124,11 @@ def test_generator_is_deterministic(tmp_path):
     second = tmp_path / "second"
     for directory in (first, second):
         subprocess.run([sys.executable, str(GENERATOR), str(directory)], check=True)
-    for name in (COMMITTED_LINEAR.name, COMMITTED_DENSITY.name):
+    for name in (
+        COMMITTED_LINEAR.name,
+        COMMITTED_DENSITY.name,
+        COMMITTED_DENSITY_GREY.name,
+    ):
         assert (first / name).read_bytes() == (second / name).read_bytes()
 
 
@@ -127,6 +137,7 @@ def test_generator_is_deterministic(tmp_path):
     [
         (COMMITTED_LINEAR, LINEAR_PROFILE_SHA256),
         (COMMITTED_DENSITY, DENSITY_PROFILE_SHA256),
+        (COMMITTED_DENSITY_GREY, DENSITY_GREY_PROFILE_SHA256),
     ],
 )
 def test_committed_profile_hash_matches_the_constant(path, expected_sha):
@@ -146,14 +157,16 @@ def test_density_trc_is_parametric_type_zero_with_viewing_gamma_2_2():
 
 
 @pytest.mark.parametrize("kind", list(ProfileKind))
-def test_three_trc_tags_share_one_offset(kind):
+def test_trc_tags_share_one_offset(kind):
     data = load_icc_profile(kind)
+    grey = kind is ProfileKind.DENSITY_GREY
+    signatures = (b"kTRC",) if grey else TRC_SIGNATURES
     trc_entries = [
         (sig, off, size)
         for sig, off, size in _tag_entries(data)
-        if sig in TRC_SIGNATURES
+        if sig in signatures
     ]
-    assert len(trc_entries) == 3
+    assert len(trc_entries) == (1 if grey else 3)
     offsets = {entry[1] for entry in trc_entries}
     sizes = {entry[2] for entry in trc_entries}
     assert len(offsets) == 1
@@ -163,7 +176,14 @@ def test_three_trc_tags_share_one_offset(kind):
 @pytest.mark.parametrize("kind", list(ProfileKind))
 def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
     data = load_icc_profile(kind)
-    for tag_name in (b"wtpt", b"chad", b"rXYZ", b"gXYZ", b"bXYZ"):
+    # The grey profile is a gray-class profile: it carries no RGB matrix,
+    # by construction (MONOCHROME_PLAN section 4).
+    matrix_tags = (
+        ()
+        if kind is ProfileKind.DENSITY_GREY
+        else (b"rXYZ", b"gXYZ", b"bXYZ")
+    )
+    for tag_name in (b"wtpt", b"chad", *matrix_tags):
         src = next(
             PROPHOTO_BYTES[off : off + size]
             for sig, off, size in _tag_entries(PROPHOTO_BYTES)
@@ -175,6 +195,18 @@ def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
             if sig == tag_name
         )
         assert new == src, tag_name
+
+
+def test_density_grey_is_a_gray_class_profile():
+    """MONOCHROME_PLAN section 4: a mono roll's published TIFF is a
+    1-channel (minisblack) file, which an RGB-colorspace profile cannot
+    tag. The grey profile declares the GRAY data colour space, carries one
+    kTRC with the density viewing gamma, and drops the RGB matrix."""
+    data = load_icc_profile(ProfileKind.DENSITY_GREY)
+    assert data[16:20] == b"GRAY"
+    signatures = {sig for sig, _off, _size in _tag_entries(data)}
+    assert signatures == {b"desc", b"cprt", b"wtpt", b"chad", b"kTRC"}
+    assert _parametric_curve_params(data, b"kTRC") == list(DENSITY_TRC_PARAMS)
 
 
 def test_linear_profile_id_is_the_specified_md5():
@@ -217,6 +249,9 @@ def test_load_icc_profile_still_verifies_and_returns_bytes():
     density = load_icc_profile(ProfileKind.DENSITY)
     assert len(density) == 1232
     assert hashlib.sha256(density).hexdigest() == DENSITY_PROFILE_SHA256
+    grey = load_icc_profile(ProfileKind.DENSITY_GREY)
+    assert len(grey) == 1124
+    assert hashlib.sha256(grey).hexdigest() == DENSITY_GREY_PROFILE_SHA256
 
 
 def test_the_two_profiles_are_never_silently_swappable():
@@ -230,6 +265,24 @@ def test_the_two_profiles_are_never_silently_swappable():
         verify_icc_profile(linear, ProfileKind.DENSITY)
     verify_icc_profile(linear, ProfileKind.LINEAR)
     verify_icc_profile(density, ProfileKind.DENSITY)
+    # And the grey profile is a third, distinct byte string (MONOCHROME_PLAN
+    # section 4): it fails both RGB verifications, they fail its own.
+    grey = load_icc_profile(ProfileKind.DENSITY_GREY)
+    with pytest.raises(IccProfileError):
+        verify_icc_profile(grey, ProfileKind.DENSITY)
+    with pytest.raises(IccProfileError):
+        verify_icc_profile(density, ProfileKind.DENSITY_GREY)
+    verify_icc_profile(grey, ProfileKind.DENSITY_GREY)
+
+
+def test_published_profile_kind_selects_by_film_kind():
+    """MONOCHROME_PLAN §2.3/§4: the invariant seed and the published-TIFF
+    tag site both select through `published_profile_kind` — DENSITY_GREY on
+    a mono roll, DENSITY otherwise; unknown kinds fall to colour (the
+    pre-§2 default)."""
+    assert published_profile_kind("colour") is ProfileKind.DENSITY
+    assert published_profile_kind("monochrome") is ProfileKind.DENSITY_GREY
+    assert published_profile_kind() is ProfileKind.DENSITY
 
 
 def test_verify_icc_profile_rejects_corrupted_data():
@@ -238,8 +291,12 @@ def test_verify_icc_profile_rejects_corrupted_data():
     assert exc_info.value.code.value == "ICC_PROFILE_INVALID"
 
 
-def test_profiles_record_covers_both_kinds():
-    assert set(PROFILES) == {ProfileKind.LINEAR, ProfileKind.DENSITY}
+def test_profiles_record_covers_every_kind():
+    assert set(PROFILES) == {
+        ProfileKind.LINEAR,
+        ProfileKind.DENSITY,
+        ProfileKind.DENSITY_GREY,
+    }
     for filename, _sha in PROFILES.values():
         assert (RESOURCES / filename).exists()
 

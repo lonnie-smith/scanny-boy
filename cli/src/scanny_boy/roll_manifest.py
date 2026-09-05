@@ -46,7 +46,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 6
+ROLL_MANIFEST_FORMAT_VERSION = 7
 ROLL_MANIFEST_KIND = "roll"
 
 # The extended metadata fields, in display order. Every one lives on both
@@ -248,6 +248,11 @@ class NegativeRecord:
     # and the rebate finding. Null when this build predates normalization
     # or the negative never published.
     normalization: dict[str, Any] | None = None
+    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
+    # section 7): `l` in 1/px, the centre it acts about, and the fit's
+    # before/after diagnostics. Null when the fit was rejected, the
+    # negative failed before it ran, or this build predates it.
+    rectification: dict[str, Any] | None = None
     # Section 3.14's fill value, recorded beside `fill_color` for the same
     # reason: a file is interpretable without knowing which build wrote it.
     normalized_fill: float | None = None
@@ -297,6 +302,7 @@ class NegativeRecord:
             "fill_color": list(self.fill_color),
             "normalized_fill": self.normalized_fill,
             "normalization": self.normalization,
+            "rectification": self.rectification,
             "rebate_deviation_px": self.rebate_deviation_px,
             "used_clahe_fallback": self.used_clahe_fallback,
             "error_code": self.error_code,
@@ -520,9 +526,18 @@ ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry",)
 
 
 def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:
+    """MONOCHROME_PLAN section 5.1: the stored `normalize` block is upgraded
+    through `normalization.upgrade_normalize_params` before comparison, so
+    a v1 roll compares equal to a v2 build whose new constants sit at their
+    defaults. Idempotent; a no-op for v2+ blocks."""
+    from scanny_boy.normalization import upgrade_normalize_params
+
+    compared = dict(params)
+    if "normalize" in compared:
+        compared["normalize"] = upgrade_normalize_params(compared["normalize"])
     return {
         key: value
-        for key, value in params.items()
+        for key, value in compared.items()
         if key not in ROLL_PROFILE_PROCESSING_PARAMS_KEYS
     }
 

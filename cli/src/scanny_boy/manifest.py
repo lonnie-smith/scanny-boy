@@ -550,6 +550,19 @@ def check_rerun_compatible(
         raise ManifestMismatchError("the ICC profile differs from the previous run")
 
 
+def _processing_params_for_comparison(params: dict[str, Any]) -> dict[str, Any]:
+    """MONOCHROME_PLAN section 5.1: the stored `normalize` block is upgraded
+    through `normalization.upgrade_normalize_params` before the exact-dict
+    comparison, so a v1 roll compares equal to a v2 build whose new
+    constants sit at their defaults. Idempotent; a no-op for v2+ blocks."""
+    from scanny_boy.normalization import upgrade_normalize_params
+
+    compared = dict(params)
+    if "normalize" in compared:
+        compared["normalize"] = upgrade_normalize_params(compared["normalize"])
+    return compared
+
+
 def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
     """Section 3.6: "A rerun in the same folder must match the previous
     source filenames and hashes, order, grouping, film date, processing
@@ -572,5 +585,7 @@ def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
             "since the previous run"
         )
 
-    if existing.processing_params != candidate.processing_params:
+    if _processing_params_for_comparison(
+        existing.processing_params
+    ) != _processing_params_for_comparison(candidate.processing_params):
         raise ManifestMismatchError("processing settings differ from the previous run")

@@ -9,10 +9,11 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 10 keeps version 9's roll model and adds **2D grid
-stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and `run` accept
-`--grid AxD` (e.g. `--grid 3x2`) — five across, two down — naming the 2D
-arrangement of one negative's scans, mutually exclusive with
+Protocol version 10 keeps version 9's roll model and adds two features.
+
+**2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
+`run` accept `--grid AxD` (e.g. `--grid 3x2`) — five across, two down —
+naming the 2D arrangement of one negative's scans, mutually exclusive with
 `--per-negative`. Exactly one of the two flags is required on `prepare` and
 `run`, and on `probe` when `--files` is given; omitting both is a usage
 error naming both flags. A strip is the `down == 1` case:
@@ -27,13 +28,33 @@ grid that breaks a rule fails with `INVALID_GRID`; a malformed one
 (anything not of the `AxD` form) is a usage error. One new warning:
 `STITCH_GRID_ORDER_UNEXPECTED` — the solved cell assignment disagrees with
 the serpentine capture-order assumption (start at cell (0, 0), traverse
-`across`, reverse each row); warning only, the solved geometry always wins. The stitch-params record
-also changed (the feather is recorded as `axis-separable` for every roll,
-strip or grid, and three new threshold keys landed), so **every roll
-written by an earlier build refuses new runs with
-`ROLL_INVARIANT_MISMATCH`**; the remedy is to delete the old roll folders.
+`across`, reverse each row); warning only, the solved geometry always wins.
 
-Protocol version 9 added **1:1 region
+**The preview's nondestructive tone adjustment**: the new `edit tone`
+command records an ISO-R paper grade (`--grade`, 50–180) plus a midtone
+snap (`--snap`, −0.5…0.5) — or `--reset` — as a `tone` op in the negative's
+ops log (a state, not a transform: the latest op wins and a trailing one
+coalesces in place). The op lives only in the preview's display encode;
+the published TIFF and export are untouched. `roll info` reports the net
+tone per negative as `tone_grade_r`/`tone_snap_gamma` (both `null` when
+flat).
+
+Roll manifest format version 7 keeps version 6's shape and adds one
+optional per-negative field: `rectification`, the fitted rig-tilt
+rectification (docs/RECTIFICATION_PLAN.md section 7) — `l` (two numbers,
+1/px, acting on coordinates centred at `centre`), `centre`, `frame_size`,
+the fit's `rms_before_px`/`rms_after_px`/`relative_improvement` diagnostics,
+and `pair_count`. It is `null` when the fit was rejected, the negative
+failed before it ran, or the build predates the field. The stitch-params
+record also changed — the feather is recorded as `axis-separable` for
+every roll, strip or grid, three new grid threshold keys landed, and
+`stitch_params` gains `rectification_model` (always `"global-2-param"`)
+plus the three rectification gate constants — and it remains a roll
+invariant, so **every roll written by an earlier build refuses new runs
+with `ROLL_INVARIANT_MISMATCH`**; there is no migration, and the remedy is
+to delete the old roll folders.
+
+Protocol version 9 keeps version 8's roll model and adds **1:1 region
 rendering** for the app's 100% zoom: the new `edit render-region` command
 renders one display-space region of a negative's published TIFF at 1:1 — the
 ops log's net rotation folded in, the same inverted display encode as the
@@ -142,6 +163,7 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
+scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R --snap G | --reset)
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
 
@@ -360,6 +382,20 @@ rotation do not commute, so consumers replay the log into a
 It fails with the
 same codes as `edit rotate`.
 
+`edit tone` records a preview tone adjustment for one or more negatives: an
+ISO-R paper grade (`--grade`, 50–180; lower is harder) plus a midtone snap
+(`--snap`, −0.5…0.5), or `--reset` for the flat linear look. The op is a
+state, not a transform — the latest `tone` op wins, and a trailing `tone` op
+is updated in place rather than appended behind. The published TIFF is never
+touched (export ignores the op); each preview is regenerated from its TIFF
+with the tone curve composed into the display encode, and `edit_recorded` is
+emitted per negative — the `edit` row's `params` carry
+`{"grade_r": number | null, "snap_gamma": number | null}` (both `null` for a
+reset). It fails with `INVALID_EDIT` for out-of-range or mismatched
+parameters and with the same roll/negative codes as `edit rotate`. `roll
+info` reports the net tone state per negative as `tone_grade_r` /
+`tone_snap_gamma` (both `null` when no adjustment is recorded).
+
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density
 discriminator (film base is the thinnest thing on the film) locates the
@@ -443,7 +479,7 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
-record as delivered by `roll info` (format version 6; now persisted in the
+record as delivered by `roll info` (format version 7; now persisted in the
 library database rather than a JSON file in the roll folder).
 
 ### Event types
@@ -579,7 +615,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 6` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 7` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |

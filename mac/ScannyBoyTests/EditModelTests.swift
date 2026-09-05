@@ -32,13 +32,17 @@ struct EditModelTests {
         rotation: Int = 0,
         flipped: Bool = false,
         previewPath: String? = nil,
-        metadata: String? = nil
+        metadata: String? = nil,
+        toneGradeR: Double? = nil,
+        toneSnapGamma: Double? = nil
     ) -> String {
-        let sequenceJSON = sequence.map(String.init) ?? "null"
+        let sequenceJSON = sequence.map { "\($0)" } ?? "null"
         let intendedJSON = intended.map { "\"\($0)\"" } ?? "null"
         let appliedJSON = applied.map { "\"\($0)\"" } ?? "null"
         let previewJSON = previewPath.map { "\"\($0)\"" } ?? "null"
         let metadataJSON = metadata ?? "null"
+        let toneGradeJSON = toneGradeR.map { "\($0)" } ?? "null"
+        let toneSnapJSON = toneSnapGamma.map { "\($0)" } ?? "null"
         return """
             {"negative_id":"\(negativeID)","run_id":"r","sequence":\(sequenceJSON),\
             "members":["a.NEF"],\
@@ -51,7 +55,8 @@ struct EditModelTests {
             "applied_datetime_original":\(appliedJSON),"date_override":null},\
             "metadata":\(metadataJSON),\
             "preview_path":\(previewJSON),\
-            "rotation_quarter_turns":\(rotation),"flipped_horizontally":\(flipped)}
+            "rotation_quarter_turns":\(rotation),"flipped_horizontally":\(flipped),\
+            "tone_grade_r":\(toneGradeJSON),"tone_snap_gamma":\(toneSnapJSON)}
             """
     }
 
@@ -115,6 +120,43 @@ struct EditModelTests {
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n2", "n1"])
+    }
+
+    @Test("The rectification block decodes tolerantly: present, absent, and malformed")
+    func testRectificationDecodesTolerantly() async throws {
+        let withRect = Self.negativeJSON(
+            negativeID: "n1", sequence: 1, intended: nil, applied: nil
+        ).replacingOccurrences(
+            of: "\"rebate_deviation_px\":null",
+            with: """
+            "rebate_deviation_px":null,\
+            "rectification":{"l":[3.1e-07,-3.8e-07],"centre":[3032.0,2020.0],\
+            "frame_size":[4040,6064],"rms_before_px":1.41,"rms_after_px":0.83,\
+            "relative_improvement":0.41,"pair_count":3}
+            """
+        )
+        let withMalformed = Self.negativeJSON(
+            negativeID: "n2", sequence: 2, intended: nil, applied: nil
+        ).replacingOccurrences(
+            of: "\"rebate_deviation_px\":null",
+            with: "\"rebate_deviation_px\":null,\"rectification\":{\"l\":[1.0]}"
+        )
+        let runner = try Self.isolatedRunner(
+            rollInfoLines: [
+                Self.rollInfoEvent(negatives: [withRect, withMalformed])
+            ]
+        )
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+
+        let rectified = model.visibleNegatives.first { $0.negativeID == "n1" }
+        #expect(rectified?.rectification?.lX == 3.1e-07)
+        #expect(rectified?.rectification?.relativeImprovement == 0.41)
+        // A malformed block is no block: nil, never a crash.
+        let rejected = model.visibleNegatives.first { $0.negativeID == "n2" }
+        #expect(rejected?.rectification == nil)
     }
 
     @Test("Refresh re-reads the manifest a run just rewrote")
@@ -437,5 +479,183 @@ struct EditModelTests {
         // The refresh reconciled both negatives to one cw turn.
         #expect(model.visibleNegatives.map(\.rotationQuarterTurns) == [1, 1, 1])
         #expect(model.selectionTargets.map(\.negativeID) == ["n1", "n3"])
+    }
+
+    // MARK: - Edit tone
+
+    /// A helper whose `edit tone` emits one `edit_recorded` per
+    /// `--negative` argument carrying the tone op's params, and whose
+    /// `roll info` flips to a manifest with the tone state after the edit.
+    private static func editToneRunner(
+        _ directory: URL, negativeIDs: [String], gradeR: Double?, snapGamma: Double?
+    ) throws -> CLIRunner {
+        let gradeJSON = gradeR.map { "\($0)" } ?? "null"
+        let snapJSON = snapGamma.map { "\($0)" } ?? "null"
+        let events = negativeIDs.map { id in
+            """
+            {"protocol_version":10,"event":"edit_recorded","negative_id":"\(id)",\
+            "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"tone",\
+            "params":{"grade_r":\(gradeJSON),"snap_gamma":\(snapJSON)},"created_at":"2026-09-01T00:00:00Z"},\
+            "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}
+            """
+        }
+        let initial = rollInfoEvent(negatives: negativeIDs.enumerated().map { index, id in
+            negativeJSON(negativeID: id, sequence: index + 1, intended: nil, applied: nil)
+        })
+        let toned = rollInfoEvent(negatives: negativeIDs.enumerated().map { index, id in
+            negativeJSON(
+                negativeID: id, sequence: index + 1, intended: nil, applied: nil,
+                toneGradeR: gradeR, toneSnapGamma: snapGamma
+            )
+        })
+        let marker = directory.appending(path: "toned").path
+        let script = """
+            if [ "$1" = "edit" ]; then
+              echo '{"protocol_version":10,"event":"started","command":"edit tone"}'
+              for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
+                echo "$event"
+              done
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
+            else
+              if [ -f '\(marker)' ]; then
+                echo '\(toned)'
+              else
+                : > '\(marker)'
+                echo '\(initial)'
+              fi
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    @Test("setTone records the adjustment on the whole selection")
+    func testSetToneAppliesToTheWholeSelection() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.editToneRunner(directory, negativeIDs: ["n1", "n2"], gradeR: 90, snapGamma: 0.2)
+        let model = try await Self.multiSelectModel(runner)
+
+        await model.setTone(model.selectionTargets, gradeR: 90, snapGamma: 0.2)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives.map(\.toneGradeR) == [90.0, 90.0])
+        #expect(model.visibleNegatives.map(\.toneSnapGamma) == [0.2, 0.2])
+    }
+
+    @Test("setTone with nils resets to the flat look")
+    func testSetToneReset() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.editToneRunner(directory, negativeIDs: ["n1"], gradeR: nil, snapGamma: nil)
+        let model = try await Self.multiSelectModel(runner)
+
+        await model.setTone(model.selectionTargets, gradeR: nil, snapGamma: nil)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives[0].toneGradeR == nil)
+        #expect(model.visibleNegatives[0].toneSnapGamma == nil)
+        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat"))
+    }
+
+    @Test("A rotate event leaves the tone state alone")
+    func testRotateLeavesToneAlone() async throws {
+        // A manifest with tone recorded; the rotate event carries no tone
+        // keys, so the in-place update must keep them.
+        let initial = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(
+                negativeID: "n1", sequence: 1, intended: nil, applied: nil,
+                toneGradeR: 90, toneSnapGamma: 0.2
+            ),
+        ])
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let event =
+            """
+            {"protocol_version":10,"event":"edit_recorded","negative_id":"n1",\
+            "edit":{"id":2,"negative_id":"n1","position":2,"op":"rotate",\
+            "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:01Z"},\
+            "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
+            """
+        let rotated = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(
+                negativeID: "n1", sequence: 1, intended: nil, applied: nil,
+                rotation: 1, toneGradeR: 90, toneSnapGamma: 0.2
+            ),
+        ])
+        let marker = directory.appending(path: "rotated").path
+        let script = """
+            if [ "$1" = "edit" ]; then
+              echo '{"protocol_version":10,"event":"started","command":"edit rotate"}'
+              echo '\(event)'
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
+            else
+              if [ -f '\(marker)' ]; then
+                echo '\(rotated)'
+              else
+                : > '\(marker)'
+                echo '\(initial)'
+              fi
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = try await Self.multiSelectModel(CLIRunner(executable: executable))
+
+        await model.rotate(model.selectionTargets, clockwise: true)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives[0].rotationQuarterTurns == 1)
+        #expect(model.visibleNegatives[0].toneGradeR == 90)
+        #expect(model.visibleNegatives[0].toneSnapGamma == 0.2)
+    }
+
+    @Test("The render generation token carries the tone state")
+    func testRenderGenerationCarriesTone() {
+        let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+        let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
+        let other = Self.multiNegative(id: "n1", toneGradeR: 70, toneSnapGamma: 0.2)
+
+        #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
+        #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
+        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat"))
+    }
+
+    private static func multiNegative(
+        id: String, toneGradeR: Double?, toneSnapGamma: Double?
+    ) -> RollManifest.Negative {
+        RollManifest.Negative(
+            negativeID: id,
+            runID: "r",
+            sequence: 1,
+            members: ["a.NEF"],
+            expectedOutput: "\(id).tif",
+            status: "completed",
+            output: RollManifest.Output(
+                name: "\(id).tif", size: 1, sha256: String(repeating: "a", count: 64),
+                width: 1, height: 1
+            ),
+            captureTime: RollManifest.CaptureTime(
+                sourceDatetimeOriginal: nil, intendedDatetimeOriginal: nil,
+                appliedDatetimeOriginal: nil, dateOverride: nil
+            ),
+            metadata: .empty,
+            globalRMSPixels: nil,
+            rebateDeviationPixels: nil,
+            previewPath: nil,
+            rotationQuarterTurns: 0,
+            flippedHorizontally: false,
+            rectification: nil,
+            toneGradeR: toneGradeR,
+            toneSnapGamma: toneSnapGamma
+        )
     }
 }

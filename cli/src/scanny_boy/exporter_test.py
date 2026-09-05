@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy.edits import run_edit_flip, run_edit_rotate
+from scanny_boy.edits import run_edit_flip, run_edit_rotate, run_edit_tone
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.exporter import ExportFailure, apply_edits, run_export
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
@@ -237,6 +237,20 @@ def test_export_leaves_the_rolls_own_tiff_untouched(stitched_roll, tmp_path):
     run_export(stitched_roll, tmp_path / "export", [], emit=lambda event: None)
 
     assert (stitched_roll / "_DSC0001.tif").read_bytes() == before
+
+
+def test_export_ignores_the_tone_op(stitched_roll, tmp_path):
+    """The tone op is a preview-only judgement aid (`tone.py`): the exported
+    pixels are the published TIFF's, un-curved."""
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+    output_dir = tmp_path / "export"
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)
+
+    assert outcome.failed == []
+    np.testing.assert_array_equal(
+        tifffile.imread(output_dir / "_DSC0001.tif"), _ORIGINAL
+    )
 
 
 def test_export_emits_export_done_per_negative(stitched_roll, tmp_path):
