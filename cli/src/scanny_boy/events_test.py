@@ -222,15 +222,14 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_nine():
-    """Protocol 8→9: the extended-metadata editing feature — the `metadata`
-    command family (`metadata_updated`, `metadata_values`, the
-    `INVALID_METADATA` code) and the roll/negative extended-metadata fields
-    in the roll manifest — plus 1:1 region rendering for the app's 100%
-    zoom (the `edit render-region` command and its `region_rendered`
-    event, carrying the rendered path and the post-clamp display-space
-    rect)."""
-    assert PROTOCOL_VERSION == 9
+def test_protocol_version_is_ten():
+    """Protocol 9→10: the preview's nondestructive tone adjustment — the
+    `edit tone` command (an ISO-R paper grade plus a midtone snap,
+    recorded as a `tone` op in the ops log and coalesced there) and the
+    net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
+    negatives. The published TIFF never carries the adjustment
+    (docs/DECISIONS.md, "The preview's tone adjustment")."""
+    assert PROTOCOL_VERSION == 10
 
 
 def test_new_event_kinds_round_trip():

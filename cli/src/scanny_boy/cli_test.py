@@ -10,6 +10,7 @@ import pytest
 
 from scanny_boy import concurrency
 from scanny_boy.cli import MAX_SELECTION_FILES, main
+from scanny_boy.library import repo
 from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.manifest import load_manifest
@@ -800,6 +801,91 @@ def test_edit_flip_without_negative_id_returns_status_2(capsys):
     events, err = _stdout_events(capsys)
     assert events == []
     assert err != ""
+
+
+def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "tone",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--grade", "90",
+            "--snap", "0.2",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    assert events[0]["command"] == "edit tone"
+    assert events[1]["edit"]["op"] == "tone"
+    assert events[1]["edit"]["params"] == {"grade_r": 90.0, "snap_gamma": 0.2}
+    assert Path(events[1]["preview_path"]).exists()
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+
+def test_edit_tone_reset_records_null_params(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    assert main(
+        [
+            "edit", "tone",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--grade", "90",
+            "--snap", "0.2",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    status = main(
+        ["edit", "tone", "--roll", str(roll_dir), "--negative", negative_id, "--reset"]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    edit_recorded = events[1]
+    assert edit_recorded["edit"]["params"] == {"grade_r": None, "snap_gamma": None}
+    # The trailing tone op was updated in place: the log holds the single
+    # coalesced op, not one per commit.
+    edits = repo.edits_for(roll_dir, negative_id)
+    assert len(edits) == 1
+    assert edits[0]["op"] == "tone"
+    assert edits[0]["params"] == {"grade_r": None, "snap_gamma": None}
+
+
+def test_edit_tone_needs_grade_and_snap_together(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "tone",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--grade", "90",
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INVALID_EDIT"
 
 
 def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):

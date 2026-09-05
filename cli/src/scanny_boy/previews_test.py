@@ -221,6 +221,31 @@ def test_ensure_preview_regenerates_with_the_fine_rotation(tmp_path):
     np.testing.assert_array_equal(stored, expected)
 
 
+def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
+    """A `tone` op cannot ride the lossless incremental path — an 8-bit PNG
+    cannot be re-curved — so it regenerates from the published TIFF with
+    the net tone state composed into the display LUT."""
+    from scanny_boy import previews, tone
+    from scanny_boy.library import repo
+
+    image = np.repeat(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 3, axis=-1)
+    image = (image * 3000).astype(np.uint16)
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    flat = previews.ensure_preview(roll_dir, "rid-1", negative)
+    flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
+    repo.append_tone_edit(roll_dir, negative.negative_id, 70.0, 0.3)
+    # The same canonical path is rewritten in place.
+    toned = previews.ensure_preview(roll_dir, "rid-1", negative, repo.TONE_OP)
+
+    toned_pixels = cv2.imread(str(toned), cv2.IMREAD_UNCHANGED)
+    assert not np.array_equal(toned_pixels, flat_pixels)
+    lut = tone.build_display_lut(70.0, 0.3)
+    np.testing.assert_array_equal(
+        toned_pixels, cv2.cvtColor(lut[image], cv2.COLOR_RGB2BGR)
+    )
+
+
 def test_sync_previews_regenerates_a_stale_preview_after_a_restitch(tmp_path):
     """A re-stitch adopts the negative — same id, same preview path, new
     TIFF — so the cached preview of the old pixels must be regenerated, with

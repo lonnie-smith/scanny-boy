@@ -87,6 +87,7 @@ private struct PreviewPane: View {
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
     @State private var isConfirmingDelete = false
+    @State private var isTonePanelPresented = false
     @State private var zoom = PreviewZoomModel()
 
         /// The negatives the controls act on, read once per invocation.
@@ -104,7 +105,7 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "rotate.left")
                 }
-                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help("Rotate 90° counter-clockwise")
                 .accessibilityLabel("Rotate 90° counter-clockwise")
 
@@ -113,7 +114,7 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "rotate.right")
                 }
-                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help("Rotate 90° clockwise")
                 .accessibilityLabel("Rotate 90° clockwise")
 
@@ -122,9 +123,32 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
                 }
-                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help("Flip horizontally")
                 .accessibilityLabel("Flip horizontally")
+
+                Button {
+                    isTonePanelPresented = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+                .help("Tone: paper grade and midtone snap (preview only)")
+                .accessibilityLabel("Tone adjustment")
+                .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
+                    ToneAdjustmentPanel(
+                        toneGradeR: negative.toneGradeR,
+                        toneSnapGamma: negative.toneSnapGamma,
+                        isBusy: edit.isSettingTone || edit.isRotating || edit.isDeleting,
+                        onCommit: { grade, snap in
+                            Task { await edit.setTone(targets, gradeR: grade, snapGamma: snap) }
+                        },
+                        onReset: {
+                            Task { await edit.setTone(targets, gradeR: nil, snapGamma: nil) }
+                        }
+                    )
+                    .frame(width: 280)
+                }
 
                 if edit.isRotating {
                     ProgressView()
@@ -144,7 +168,7 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "trash")
                 }
-                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help(deleteButtonHelp)
                 .accessibilityLabel(deleteButtonHelp)
             }
@@ -231,7 +255,7 @@ private struct PreviewPane: View {
     }
 
     private var previewGeneration: String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)"
+        EditModel.renderGeneration(of: negative)
     }
 
     private var previewURL: URL? {
@@ -323,5 +347,95 @@ private struct PreviewPane: View {
             tiffSize: CGSize(width: output.width, height: output.height),
             quarterTurns: negative.rotationQuarterTurns
         )
+    }
+}
+
+/// The Edit tab's tone adjustment panel: an ISO-R paper-grade slider
+/// (50–180, lower is harder — the vocabulary the Phase 4 print stage will
+/// use) plus a midtone-snap slider (−0.5…0.5), both recorded
+/// nondestructively through `edit tone`. Sliders commit on release: one
+/// CLI round trip per gesture, and repeated commits coalesce into the
+/// trailing `tone` op. Reset removes the op entirely, returning to the
+/// flat linear preview the unadjusted display encode gives.
+private struct ToneAdjustmentPanel: View {
+    /// The anchor negative's recorded tone — what the sliders sync to when
+    /// the panel opens. `nil` = the flat look.
+    let toneGradeR: Double?
+    let toneSnapGamma: Double?
+    let isBusy: Bool
+    let onCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onReset: () -> Void
+
+    @State private var grade: Double = 115
+    @State private var snap: Double = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Paper Grade")
+                        .font(.callout)
+                    Spacer()
+                    Text("R\(Int(grade))")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: $grade,
+                    in: 50...180,
+                    onEditingChanged: { editing in
+                        guard !editing else { return }
+                        onCommit(grade, snap)
+                    }
+                )
+                .accessibilityLabel("Paper grade")
+                Text("50–180, lower is harder")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Snap")
+                        .font(.callout)
+                    Spacer()
+                    Text(String(format: "%+.2f", snap))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: $snap,
+                    in: -0.5...0.5,
+                    onEditingChanged: { editing in
+                        guard !editing else { return }
+                        onCommit(grade, snap)
+                    }
+                )
+                .accessibilityLabel("Midtone snap")
+                Text("Midtone contrast trim")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Reset", action: onReset)
+                    .disabled(isBusy)
+                    .help("Remove the adjustment and return to the flat linear preview")
+                Spacer()
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(16)
+        .onAppear {
+            if let toneGradeR, let toneSnapGamma {
+                grade = toneGradeR
+                snap = toneSnapGamma
+            }
+        }
     }
 }

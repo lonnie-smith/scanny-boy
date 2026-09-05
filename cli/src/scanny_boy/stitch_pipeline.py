@@ -1598,7 +1598,7 @@ def _composite_and_publish(
                 repo.ROTATE_FINE_OP,
                 {"angle_deg": auto_rotation_deg, "source": "auto"},
             )
-            quarter_turns, flipped, fine_angle = repo.net_edit_state(
+            quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
                 out_dir, record.negative_id
             )
             auto_edit_fields = {
