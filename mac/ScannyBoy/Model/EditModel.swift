@@ -83,26 +83,10 @@ final class EditModel {
         }
     }
 
-    /// Section 3.8: dirty negatives eligible for Apply — completed, with an
-    /// intended capture time that differs from what was last written.
-    var dirtyNegatives: [RollManifest.Negative] {
-        (roll?.negatives ?? []).filter { $0.isCompleted && $0.captureTime.isDirty }
-    }
-
-    var dirtyCount: Int { dirtyNegatives.count }
-
-    /// Apply is offered only while there is something for it to do, and
-    /// only while nothing else is already using the shared `RunModel`
-    /// (section 3.10: one active run app-wide) — the caller is expected to
-    /// also gate on `run.isActive`, exactly as the Run button does.
-    var canApply: Bool { dirtyCount > 0 }
-
-    /// `apply-metadata --roll DIR` for the selected roll, or `nil` when
-    /// there is nothing to apply or no roll is selected.
-    var applyCommand: CLICommand? {
-        guard canApply, let rollURL else { return nil }
-        return .applyMetadata(roll: rollURL)
-    }
+    /// Section 3.8's dirty-count / Apply machinery is retired: metadata
+    /// reaches TIFFs only at export now, and the export writes the intended
+    /// capture time straight from the database's intent. Nothing applies
+    /// into published TIFFs from this model any more.
 
     /// The selected negative, or the first visible one when nothing (or
     /// something stale, e.g. after a roll switch) is selected.
@@ -327,6 +311,7 @@ final class EditModel {
                 status: negative.status,
                 output: negative.output,
                 captureTime: negative.captureTime,
+                metadata: negative.metadata,
                 globalRMSPixels: negative.globalRMSPixels,
                 rebateDeviationPixels: negative.rebateDeviationPixels,
                 previewPath: event.previewPath ?? negative.previewPath,
@@ -337,7 +322,138 @@ final class EditModel {
         )
     }
 
-    // MARK: - Fetching
+    // MARK: - Metadata editing
+
+    /// Set while one `metadata set` round trip is in flight, with the same
+    /// one-helper-at-a-time discipline as `isRotating`/`isDeleting`.
+    private(set) var isSettingMetadata = false
+
+    /// The metadata-fields catalog: previously-entered values per field,
+    /// most-recently-used first — the typeahead's suggestions. `caption` is
+    /// deliberately absent: it is prose, not a canonical value, so the CLI
+    /// never catalogs it.
+    static let catalogedFields = ["city", "state", "camera", "lens"]
+
+    var catalog: [String: [String]] = [:]
+    @ObservationIgnored private var catalogTask: Task<Void, Never>?
+
+    /// Fetches the whole catalog through `metadata values`, one field at a
+    /// time. Cheap (a handful of rows each) and only re-run on demand.
+    func refreshCatalog() {
+        catalogTask?.cancel()
+        catalogTask = Task { [weak self, runner] in
+            for field in Self.catalogedFields {
+                var values: [String] = []
+                do {
+                    for await output in try await runner
+                        .session(for: .metadataValues(field: field)).start()
+                    {
+                        if case .event(let event) = output,
+                            event.kind == .metadataValues,
+                            let fieldValues = event.metadataFieldValues
+                        {
+                            values = fieldValues
+                        }
+                    }
+                } catch {
+                    continue
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.catalog[field] = values
+            }
+        }
+    }
+
+    /// The negative's effective value for one field: its own explicit
+    /// value, else the roll's fallback.
+    func effectiveValue(of negative: RollManifest.Negative, field: String) -> String? {
+        guard let roll else { return nil }
+        return RollManifest.ImageMetadata.effective(
+            negative.metadata, roll: roll.metadata, field: field
+        )
+    }
+
+    /// The effective values a selection shows for one field. More than one
+    /// distinct value (counting nils) means the form shows "<mixed values>".
+    func effectiveValues(of targets: [RollManifest.Negative], field: String) -> Set<String?> {
+        Set(targets.map { effectiveValue(of: $0, field: field) })
+    }
+
+    // The `metadata set` payloads below all funnel through one session
+    // runner: the whole payload is validated by the CLI before anything is
+    // written, and its `metadata_updated` confirmation carries the updated
+    // manifest, which lands in memory the way an `edit_recorded` does — no
+    // `roll info` round trip.
+
+    /// Sets (or clears, with `nil`) the roll's capture date.
+    func setRollCaptureDate(_ date: String?) async {
+        await runMetadataSet(payload: ["roll": ["capture_date": date as String?]])
+    }
+
+    /// Sets (or clears, with `nil`) one roll-level metadata field.
+    func setRollField(_ field: String, to value: String?) async {
+        await runMetadataSet(payload: ["roll": [field: value as String?]])
+        rememberCatalogValue(value, for: field)
+    }
+
+    /// Sets (or clears, with `nil`) one metadata field on every selected
+    /// negative — one batched CLI invocation for the whole selection.
+    func setNegativeField(
+        _ targets: [RollManifest.Negative], field: String, to value: String?
+    ) async {
+        guard !targets.isEmpty else { return }
+        var negatives: [String: [String: String?]] = [:]
+        for target in targets {
+            negatives[target.negativeID] = [field: value as String?]
+        }
+        await runMetadataSet(payload: ["negatives": negatives])
+        rememberCatalogValue(value, for: field)
+    }
+
+    /// Sets (or clears, with `nil`) one negative's date override.
+    func setNegativeCaptureDate(
+        _ targets: [RollManifest.Negative], to date: String?
+    ) async {
+        guard !targets.isEmpty else { return }
+        var negatives: [String: [String: String?]] = [:]
+        for target in targets {
+            negatives[target.negativeID] = ["capture_date": date as String?]
+        }
+        await runMetadataSet(payload: ["negatives": negatives])
+    }
+
+    private func runMetadataSet(payload: [String: Any]) async {
+        guard let rollURL, !isSettingMetadata else { return }
+        isSettingMetadata = true
+        defer { isSettingMetadata = false }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+            let json = String(data: data, encoding: .utf8)
+        else { return }
+        do {
+            for await output in try await runner
+                .session(for: .metadataSet(roll: rollURL, payload: json)).start()
+            {
+                if case .event(let event) = output, event.kind == .metadataUpdated,
+                    let fields = event.manifest
+                {
+                    roll = RollManifest(fields: fields)
+                }
+            }
+        } catch {
+            return
+        }
+    }
+
+    /// Moves a just-committed value to the catalog's head so the typeahead
+    /// offers it immediately; the next full refresh re-orders from the
+    /// CLI's most-recently-used record.
+    private func rememberCatalogValue(_ value: String?, for field: String) {
+        guard let value, !value.isEmpty, Self.catalogedFields.contains(field) else { return }
+        var values = catalog[field] ?? []
+        values.removeAll { $0 == value }
+        values.insert(value, at: 0)
+        catalog[field] = values
+    }
 
     // MARK: - Fetching
 

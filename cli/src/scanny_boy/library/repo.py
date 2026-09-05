@@ -31,8 +31,10 @@ from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
+    METADATA_FIELDS,
     EditRow,
     FlatFieldProfileRow,
+    MetadataValueRow,
     NegativeRow,
     RollRow,
     RunRow,
@@ -116,6 +118,8 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.stitch_params = manifest.stitch_params
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
+        for field in METADATA_FIELDS:
+            setattr(roll, field, getattr(manifest.metadata, field))
 
         # Diff by key so re-saving an unchanged child is a no-op and removed
         # children (an adopted negative's removal) actually go away.
@@ -216,6 +220,10 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     error_message=negative.error_message,
                     capture_time=negative.capture_time.to_dict(),
                     preview_path=negative.preview_path,
+                    **{
+                        field: getattr(negative.metadata, field)
+                        for field in METADATA_FIELDS
+                    },
                 )
             )
 
@@ -278,6 +286,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
         CaptureTime,
         FrameRecord,
+        NegativeMetadata,
         NegativeRecord,
         PairRecord,
         RollManifest,
@@ -411,6 +420,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     error_code=n.error_code,
                     error_message=n.error_message,
                     capture_time=CaptureTime(**n.capture_time),
+                    metadata=NegativeMetadata(
+                        **{field: getattr(n, field) for field in METADATA_FIELDS}
+                    ),
                     preview_path=n.preview_path,
                 )
                 for n in negatives
@@ -418,6 +430,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             metadata=RollMetadata(
                 roll_capture_date=roll.roll_capture_date,
                 last_applied_at=roll.last_applied_at,
+                **{field: getattr(roll, field) for field in METADATA_FIELDS},
             ),
         )
 
@@ -650,3 +663,47 @@ def rolls_using_profile_geometry(profile_id: str) -> list[str]:
             if (roll.stitch_params or {}).get("geometry", {}).get("profile_id")
             == profile_id
         )
+
+
+# --- the extended-metadata value catalog -------------------------------------
+
+# Bounded so a long-typed history cannot make the typeahead unbounded work;
+# the most-recently-used head of the list is what matters anyway.
+METADATA_VALUES_LIMIT = 200
+
+
+def upsert_metadata_values(field: str, values: list[str]) -> None:
+    """Remembers each value as a catalog entry for `field`, bumping
+    `last_used_at` for entries that already exist. Idempotent per (field,
+    value) pair — the catalog records *that* a value was used, not how
+    often."""
+    from scanny_boy.roll_manifest import _now_iso
+
+    with _session() as session:
+        for value in values:
+            row = session.scalar(
+                select(MetadataValueRow).where(
+                    MetadataValueRow.field == field,
+                    MetadataValueRow.value == value,
+                )
+            )
+            if row is None:
+                session.add(
+                    MetadataValueRow(
+                        field=field, value=value, last_used_at=_now_iso()
+                    )
+                )
+            else:
+                row.last_used_at = _now_iso()
+
+
+def list_metadata_values(field: str) -> list[str]:
+    """The catalog's values for `field`, most-recently-used first."""
+    with _session() as session:
+        rows = session.scalars(
+            select(MetadataValueRow)
+            .where(MetadataValueRow.field == field)
+            .order_by(MetadataValueRow.last_used_at.desc(), MetadataValueRow.id.desc())
+            .limit(METADATA_VALUES_LIMIT)
+        ).all()
+        return [row.value for row in rows]

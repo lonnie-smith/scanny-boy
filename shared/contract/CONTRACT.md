@@ -100,6 +100,9 @@ scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negat
 
 scanny-boy apply-metadata --roll DIR
 
+scanny-boy metadata set    --roll DIR --payload JSON
+scanny-boy metadata values --field FIELD
+
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
@@ -235,6 +238,31 @@ an unregistered roll.
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
 
+`metadata set` applies one metadata payload to the roll's record in the
+library database — it never touches a TIFF. The payload is
+`{"roll": {field: value}, "negatives": {negative_id: {field: value}}}`:
+roll fields are `capture_date` (the roll capture date) plus `city`,
+`state`, `camera`, `lens`, `caption`; negative fields are the same five
+plus `capture_date` (the negative's date override). A key that is absent
+leaves the field untouched; a key present with `null` or `""` clears it (a
+cleared negative field then inherits the roll-level fallback; the
+extended metadata uses live-fallback semantics, never copying roll values
+onto negatives). Every capture-date change recomputes each negative's
+intended capture time by the rank formula (noon + rank − 1 seconds on the
+negative's effective date, ranked within that date in roll order), so the
+stored intent always preserves roll order. Non-empty `city`, `state`,
+`camera`, and `lens` values are remembered in the metadata-values catalog
+(`caption` never is). It emits one `metadata_updated` event carrying the
+updated `manifest`, and fails with `INVALID_METADATA` for an unknown field,
+a non-`YYYY-MM-DD` date, or a malformed payload, `ROLL_NOT_FOUND` for an
+unregistered roll, and `NEGATIVE_NOT_FOUND` for an unknown negative id —
+the whole payload is validated before anything is written.
+
+`metadata values` lists the catalog of previously-entered values for one
+field (`city`, `state`, `camera`, or `lens`), most-recently-used first, as
+a `metadata_values` event. It fails with `INVALID_METADATA` for any other
+field.
+
 `edit rotate` records a 90-degree rotation of one or more negatives —
 `cw` clockwise,
 `ccw` counter-clockwise — by appending to each negative's ordered edits ops
@@ -368,6 +396,8 @@ library database rather than a JSON file in the roll folder).
 | `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
+| `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
+| `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
@@ -486,6 +516,7 @@ staging directories, and reruns the incomplete negative.
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 | `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
+| `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
 | `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |

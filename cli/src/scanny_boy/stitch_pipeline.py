@@ -90,6 +90,7 @@ from scanny_boy.manifest import (
 from scanny_boy.normalization import (
     HEADROOM_CLIP_WARN_FRACTION,
     NORMALIZED_FILL,
+    Bounds,
 )
 from scanny_boy.output_folder import (
     ROLL_RULES,
@@ -614,11 +615,13 @@ def _normalization_record(
     """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
     decisions"): the bounds the published pixels were stretched with, the
     recorded-not-acted-on metering, the observed pre-clip extrema and
-    headroom clipping (section 3.6), the analysis region, and the rebate
-    finding (section 3.13, recorded but not yet consumed). `source` names
-    D-4's per-negative policy; a future run-median mode attaches there."""
+    headroom clipping (section 3.6), the analysis region, the rebate
+    finding (section 3.13, recorded but not yet consumed), and the
+    dense-border finding and clamp outcome. `source` names D-4's
+    per-negative policy; the clamp is a safety net on top of it, not a
+    policy change."""
     bounds = result.bounds
-    return {
+    record: dict[str, Any] = {
         "floors": list(bounds.floors),
         "ceils": list(bounds.ceils),
         "shadow_refs": list(result.shadow_refs),
@@ -639,8 +642,38 @@ def _normalization_record(
             ),
             "clipped": result.rebate.clipped,
         },
+        "dense_border": {
+            "detected": result.dense_border.detected,
+            "mask_fraction": result.dense_border.mask_fraction,
+        },
+        "clamped": result.clamped,
         "source": "per-negative",
     }
+    if result.unclamped_bounds is not None:
+        record["unclamped_floors"] = list(result.unclamped_bounds.floors)
+        record["unclamped_ceils"] = list(result.unclamped_bounds.ceils)
+    return record
+
+
+def _reference_bounds(roll: RollManifest) -> list[Bounds]:
+    """The clamp's reference population: every already-completed negative
+    on the roll whose manifest carries a normalization block — prior runs'
+    negatives (the same film, the same processing) plus, as the run
+    progresses, the negatives published before the current one. The
+    per-negative blocks, not the run aggregate: the aggregate is a single
+    point and the clamp needs a spread to measure a MAD against."""
+    references = []
+    for negative in roll.negatives:
+        block = negative.normalization
+        if not block or "floors" not in block or "ceils" not in block:
+            continue
+        references.append(
+            Bounds(
+                floors=tuple(float(v) for v in block["floors"]),
+                ceils=tuple(float(v) for v in block["ceils"]),
+            )
+        )
+    return references
 
 
 def _normalization_aggregate(
@@ -935,6 +968,11 @@ def run_stitch(
     published: list[str] = []
     failed: list[str] = []
 
+    # Section 3.4's clamp: the reference population the per-negative bounds
+    # are pulled back toward — prior runs' negatives, extended by each
+    # negative this run publishes.
+    reference_bounds = _reference_bounds(roll)
+
     # 8. Composite and publish, negative by negative, in canonical order.
     # Auto-rotation seeds only the negatives this run created fresh: an
     # adopted one's ops log already reflects its first publish, and
@@ -963,6 +1001,7 @@ def run_stitch(
                 progress=progress,
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
+                reference_bounds=reference_bounds,
                 seed_rotation=(
                     auto_rotate
                     and entry.record.negative_id in new_negative_ids
@@ -985,6 +1024,16 @@ def run_stitch(
             continue
 
         published.append(entry.record.expected_output)
+        # The published negative joins the clamp's reference population for
+        # the negatives still to come.
+        block = entry.record.normalization
+        if block:
+            reference_bounds.append(
+                Bounds(
+                    floors=tuple(float(v) for v in block["floors"]),
+                    ceils=tuple(float(v) for v in block["ceils"]),
+                )
+            )
         if auto_edit_fields is not None:
             auto_edits.append(auto_edit_fields)
 
@@ -1313,6 +1362,7 @@ def _composite_and_publish(
     progress: _StitchProgress,
     source_index: int,
     profile=None,
+    reference_bounds: list[Bounds] | None = None,
     seed_rotation: bool = False,
 ) -> dict | None:
     """Composite one negative, apply the remaining section 3.4 gates, and
@@ -1373,6 +1423,7 @@ def _composite_and_publish(
             geometry=geometry,
             ca=ca,
             region=valid_rect,
+            reference_bounds=reference_bounds,
         )
         progress.advance(source_index, PipelineStep.BLEND)
         progress.advance(source_index, PipelineStep.NORMALIZE)

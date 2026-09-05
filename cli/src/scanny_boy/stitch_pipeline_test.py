@@ -35,6 +35,7 @@ from scanny_boy.manifest import (
     load_manifest,
     write_manifest,
 )
+from scanny_boy.normalization import Bounds
 from scanny_boy.output_folder import (
     PREPARE_RULES,
     ROLL_RULES,
@@ -43,6 +44,7 @@ from scanny_boy.output_folder import (
 )
 from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
+    NegativeRecord,
     RollInvariants,
     load_roll_manifest,
     new_roll_manifest,
@@ -937,6 +939,53 @@ def test_changed_shots_per_negative_is_accepted(tmp_path):
 
     roll = load_roll_manifest(out_dir)
     assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
+
+
+def _negative_with_normalization(negative_id: str, run_id: str, floors, ceils):
+    return NegativeRecord(
+        negative_id=negative_id,
+        run_id=run_id,
+        members=[f"{negative_id}-f0.NEF"],
+        expected_output=f"{negative_id}.tif",
+        fill_color=(0, 0, 0),
+        status="completed",
+        normalization=None
+        if floors is None
+        else {
+            "floors": list(floors),
+            "ceils": list(ceils),
+            "source": "per-negative",
+        },
+    )
+
+
+def test_reference_bounds_collects_completed_negatives_blocks():
+    """The clamp's reference population: every completed negative's
+    normalization block, in manifest order — prior runs' negatives first,
+    then this run's publishes as they land. Blocks without bounds (a
+    pre-normalization record) are skipped, and an empty roll yields an
+    empty population, which clamps nothing."""
+    roll = new_roll_manifest(roll_id="r", roll_name="r")
+    assert stitch_pipeline._reference_bounds(roll) == []
+
+    roll.negatives.append(
+        _negative_with_normalization(
+            "neg-01", "run-1", (-1.5, -1.6, -1.7), (-0.4, -0.3, -0.5)
+        )
+    )
+    roll.negatives.append(
+        _negative_with_normalization(
+            "neg-02", "run-1", (-1.6, -1.5, -1.8), (-0.35, -0.32, -0.48)
+        )
+    )
+    roll.negatives.append(
+        _negative_with_normalization("neg-03", "run-1", None, None)
+    )
+    references = stitch_pipeline._reference_bounds(roll)
+    assert len(references) == 2
+    assert references[0].floors == (-1.5, -1.6, -1.7)
+    assert references[1].ceils == (-0.35, -0.32, -0.48)
+    assert all(isinstance(b, Bounds) for b in references)
 
 
 def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
