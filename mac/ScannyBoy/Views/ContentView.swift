@@ -333,35 +333,46 @@ struct ContentView: View {
             }
         }
         Section {
-            // The batch's grid (protocol 10): two pickers, Across (1…12,
-            // clamped so across * down stays within the CLI's 12-scan cap)
-            // and Down (1…2). Down defaults to 1 and is not optional — a
+            // The batch's grid (protocol 10): width × height pickers (1…12
+            // clamped so across * down stays within the CLI's 12-scan cap,
+            // and 1…2 rows). Down defaults to 1 and is not optional — a
             // plain strip run needs one selection, not two — so only
-            // Across carries the "not chosen yet" state that gates the
+            // across carries the "not chosen yet" state that gates the
             // Convert button. `down == 1` emits `--per-negative`;
             // `down > 1` emits `--grid AxD` (docs/GRID_STITCH_PLAN.md
             // section 2.5).
-            Picker("Across", selection: $model.across) {
-                Text("Choose…").tag(Int?.none)
-                ForEach(1...(ConfigurationModel.maxPerNegative / model.down), id: \.self) { count in
-                    Text("\(count)").tag(Int?.some(count))
-                }
-            }
-            .accessibilityIdentifier("perNegativePicker")
+            LabeledContent("Grid size") {
+                HStack(spacing: 8) {
+                    Picker("", selection: $model.across) {
+                        Text("Choose…").tag(Int?.none)
+                        ForEach(1...(ConfigurationModel.maxPerNegative / model.down), id: \.self) { count in
+                            Text("\(count)").tag(Int?.some(count))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 72)
+                    .accessibilityIdentifier("perNegativePicker")
 
-            Picker("Down", selection: $model.down) {
-                ForEach(1...2, id: \.self) { count in
-                    Text("\(count)").tag(count)
+                    Text("×")
+                        .foregroundStyle(.secondary)
+
+                    Picker("", selection: $model.down) {
+                        ForEach(1...2, id: \.self) { count in
+                            Text("\(count)").tag(count)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 72)
+                    .accessibilityIdentifier("downPicker")
                 }
             }
-            .accessibilityIdentifier("downPicker")
 
             if let across = model.across {
                 Text("\(across * model.down) scans per negative")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("How the scans are arranged in each negative: Across by Down. Choose an Across count to enable Convert.")
+                Text("How the scans are arranged in each negative. Choose a grid size to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")
