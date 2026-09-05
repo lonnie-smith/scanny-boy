@@ -101,7 +101,11 @@ def _write_export(
             tmp_path,
             image,
             description=export_image_description(negative),
-            iccprofile=load_icc_profile(ProfileKind.DENSITY),
+            # MONOCHROME_PLAN section 4: a mono roll's published TIFF is
+            # single-channel and carries the grey density profile.
+            iccprofile=load_icc_profile(
+                ProfileKind.DENSITY_GREY if image.ndim == 2 else ProfileKind.DENSITY
+            ),
         )
         tmp_path.replace(destination)
     except BaseException:

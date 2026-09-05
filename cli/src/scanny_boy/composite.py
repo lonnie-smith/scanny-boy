@@ -744,8 +744,10 @@ def composite(
     encoded = encode_normalized(normalized)
     del normalized
 
+    # Sized to the published channel count: three on a colour roll, one on
+    # a mono roll's collapsed image (MONOCHROME_PLAN section 4).
     fill_code = encode_normalized(
-        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+        np.full((1, 1, encoded.shape[-1]), NORMALIZED_FILL, dtype=np.float32)
     )[0, 0]
     encoded[~covered] = fill_code
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy.icc_profile import load_icc_profile
+from scanny_boy.icc_profile import ProfileKind, load_icc_profile
 from scanny_boy.tiff_writer import (
     DEFLATE_COMPRESSION_CODE,
     HORIZONTAL_PREDICTOR,
@@ -147,3 +147,39 @@ def test_image_description_names_source_and_marks_unstitched():
     text = image_description("_DSC4638.NEF")
     assert "_DSC4638.NEF" in text
     assert "unstitched scan frame" in text
+
+
+# --- MONOCHROME_PLAN section 4: one-channel writes ------------------------------
+
+
+def _grey_pixels(height: int = 8, width: int = 12) -> np.ndarray:
+    rng = np.random.default_rng(1)
+    y = np.linspace(0, 65535, height)[:, None]
+    x = np.linspace(0, 65535, width)[None, :]
+    return np.clip((y + x) / 2 + rng.normal(scale=200, size=(height, width)), 0, 65535).astype(
+        np.uint16
+    )
+
+
+def test_mono_pixels_write_minisblack_and_round_trip(tmp_path):
+    """MONOCHROME_PLAN §4: a single-channel published TIFF is grayscale
+    data — `photometric="minisblack"`, never `"rgb"` — and round-trips."""
+    pixels = _grey_pixels()
+    path = tmp_path / "mono.tif"
+
+    write_base_tiff(path, pixels, _tags(icc_profile=load_icc_profile(ProfileKind.DENSITY_GREY)))
+
+    with tifffile.TiffFile(path) as tf:
+        page = tf.pages[0]
+        assert page.photometric == tifffile.PHOTOMETRIC.MINISBLACK
+        assert page.samplesperpixel == 1
+    read_back = tifffile.imread(path)
+    assert read_back.shape == pixels.shape
+    np.testing.assert_array_equal(read_back, pixels)
+
+
+def test_colour_pixels_still_write_rgb(tmp_path):
+    path = tmp_path / "colour.tif"
+    write_base_tiff(path, _gradient_pixels(), _tags())
+    with tifffile.TiffFile(path) as tf:
+        assert tf.pages[0].photometric == tifffile.PHOTOMETRIC.RGB
