@@ -277,12 +277,15 @@ def render_region(
     height: int,
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
     destination: Path | None = None,
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
     transform folded in, exactly as `generate_preview` shows it: mirrored
-    horizontally first (when flipped), then rotated — and the encode is the
+    horizontally first (when flipped), then fine-rotated (the auto-seeded
+    `rotate_fine` angle, a warp about the canvas center with the fill
+    sentinel in the uncovered pixels), then rotated — and the encode is the
     same inverted 8-bit display LUT with no downscale.
 
     The region is clamped against the image bounds; the returned `Region`
@@ -292,13 +295,32 @@ def render_region(
     `test_render_region_matches_full_decode` holds that equivalence, and
     the strip-level reader (only the strips overlapping the rect are
     decoded, since the published TIFF is strip-compressed, not tiled) is
-    held to the full read as well.
+    held to the full read as well. The fine rotation's warp interpolates
+    across the crop boundary, so a nonzero angle takes the exact path
+    instead: decode the whole TIFF, replay the full transform on it, and
+    slice the rect out of the result — the same pixels the preview shows.
     """
     tiff_h, tiff_w = _read_tiff_dimensions(tiff_path)
     r = (-int(quarter_turns)) % 4
     # Odd net turns swap the display dimensions.
     display_h, display_w = (tiff_w, tiff_h) if r % 2 else (tiff_h, tiff_w)
     dx, dy, dw, dh = _clamp_display_region(x, y, width, height, display_h, display_w)
+
+    if abs(fine_angle_deg) >= 1e-9:
+        # The fine warp interpolates across its source's boundaries, so
+        # crop-then-transform is no longer exact: replay the transform on
+        # the full decode, the way `generate_preview` does, then slice.
+        import tifffile
+
+        image = _promote_to_rgb(tifffile.imread(tiff_path))
+        if flipped_horizontally:
+            image = np.ascontiguousarray(image[:, ::-1])
+        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
+        if r:
+            image = np.ascontiguousarray(np.rot90(image, k=r))
+        if destination is not None:
+            _encode_display_png(image[dy : dy + dh, dx : dx + dw], destination)
+        return dx, dy, dw, dh
 
     # Invert the display transform on the clamped rect: the display image
     # is `rot90(mirror(tiff), k=r)`, so the rect corners map through the

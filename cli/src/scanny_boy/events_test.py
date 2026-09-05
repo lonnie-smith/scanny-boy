@@ -223,7 +223,7 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_nine():
-"""Protocol 8→9: the extended-metadata editing feature — the `metadata`
+    """Protocol 8→9: the extended-metadata editing feature — the `metadata`
     command family (`metadata_updated`, `metadata_values`, the
     `INVALID_METADATA` code) and the roll/negative extended-metadata fields
     in the roll manifest — plus 1:1 region rendering for the app's 100%
@@ -282,7 +282,7 @@ def test_new_event_kinds_round_trip():
     ]
     for event in events:
         data = event.to_dict()
-assert data["protocol_version"] == PROTOCOL_VERSION
+        assert data["protocol_version"] == PROTOCOL_VERSION
         assert json.loads(json.dumps(data)) == data
 
 

@@ -291,8 +291,9 @@ selection is validated before any op is appended, so a batch either records
 or fails without partial effects.
 
 `edit render-region` renders one display-space region of a negative's
-published TIFF at 1:1 — the ops log's net transform (rotation and flip)
-folded in, the same inverted 8-bit display encode as the cached preview, no
+published TIFF at 1:1 — the ops log's net transform (rotation, flip, and
+the auto-seeded fine angle) folded in, the same inverted 8-bit display
+encode as the cached preview, no
 downscale — into `--output` as a lossless PNG. Display space is the
 published TIFF's pixels with the net transform applied: what `roll info`'s
 `preview_path` shows, and the coordinate space the app's 100% zoom works

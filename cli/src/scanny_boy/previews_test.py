@@ -323,6 +323,39 @@ def test_render_region_matches_full_decode_for_every_quarter_turn(tmp_path):
             np.testing.assert_array_equal(stored, expected)
 
 
+def test_render_region_folds_in_the_fine_rotation(tmp_path):
+    """A nonzero fine angle takes the exact path — full decode, the whole
+    transform replayed on it, then the rect sliced out — so the region PNG
+    is pixel-identical to the same slice of the full display image (the
+    crop-then-transform shortcut is not exact under the warp)."""
+    import cv2
+
+    from scanny_boy.auto_rotate import rotate_with_fill
+    from scanny_boy.previews import render_region
+
+    image = np.repeat(np.arange(1200, dtype=np.uint16).reshape(30, 40, 1), 3, axis=-1)
+    image = (image * 50).astype(np.uint16)
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    display = rotate_with_fill(image, 30.0)
+    cases = [(4, 6, 20, 12), (0, 0, 40, 30), (33, 21, 7, 9)]
+    for x, y, w, h in cases:
+        destination = tmp_path / "region.png"
+        rect = render_region(
+            tiff_path,
+            x, y, w, h,
+            fine_angle_deg=30.0,
+            destination=destination,
+        )
+        assert rect == (x, y, w, h)
+        stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+        expected = cv2.cvtColor(
+            NORMALIZED_DISPLAY_LUT[display[y : y + h, x : x + w]],
+            cv2.COLOR_RGB2BGR,
+        )
+        np.testing.assert_array_equal(stored, expected)
+
+
 def test_render_region_clamps_against_the_display_bounds(tmp_path):
     """A region hanging off the image's edges is clamped, in display space
     (which for odd net turns has swapped dimensions), and the returned rect

@@ -244,7 +244,7 @@ def run_edit_render_region(
         )
 
     tiff_path = roll_dir / negative.output["name"]
-    quarter_turns, flipped = repo.net_edit_state(roll_dir, negative_id)
+    quarter_turns, flipped, fine_angle = repo.net_edit_state(roll_dir, negative_id)
     try:
         rendered = previews.render_region(
             tiff_path,
@@ -254,6 +254,7 @@ def run_edit_render_region(
             height,
             quarter_turns=quarter_turns,
             flipped_horizontally=flipped,
+            fine_angle_deg=fine_angle,
             destination=output_path,
         )
     except ValueError as exc:
