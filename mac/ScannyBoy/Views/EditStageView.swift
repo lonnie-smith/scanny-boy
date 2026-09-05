@@ -98,7 +98,7 @@ struct EditStageView: View {
 }
 
 /// The selected negative: a preview sized to fill the available space (or,
-/// after a space+click, a 1:1 crop of it), the rotate/flip controls, and
+/// after space+click, a 1:1 crop of it), the rotate/flip controls, and
 /// the one-line info strip. The controls act on the whole multi-selection
 /// when one exists — `edit.selectionTargets` falls back to the anchor
 /// frame otherwise.
@@ -114,6 +114,7 @@ private struct PreviewPane: View {
     @State private var isConfirmingDelete = false
     @State private var isTonePanelPresented = false
     @State private var zoom = PreviewZoomModel()
+    @State private var paneSize: CGSize = .zero
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
@@ -155,6 +156,18 @@ private struct PreviewPane: View {
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help("Flip horizontally")
                 .accessibilityLabel("Flip horizontally")
+
+                Button {
+                    zoom.toggle(at: previewCenter)
+                } label: {
+                    Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
+                }
+                .disabled(
+                    negative.output == nil
+                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                )
+                .help(zoomButtonHelp)
+                .accessibilityLabel(zoomButtonHelp)
 
                 Button {
                     isTonePanelPresented = true
@@ -228,9 +241,12 @@ private struct PreviewPane: View {
         } message: {
             Text(deleteDialogMessage)
         }
+        .onChange(of: previewIdentity) {
+            zoom.reset()
+            refreshZoomContext(paneSize: paneSize)
+        }
         .task(id: previewIdentity) {
             thumbnail = nil
-            zoom.reset()
             guard let url = previewURL else {
                 return
             }
@@ -247,6 +263,17 @@ private struct PreviewPane: View {
             zoom.invalidate()
             if zoom.mode == .pixels100 { zoom.fetchCrop() }
         }
+    }
+
+    private var zoomButtonHelp: String {
+        zoom.mode == .fit
+            ? "Zoom to 100% (Space+click)"
+            : "Zoom to fit (Space+click)"
+    }
+
+    /// The centre of the preview pane — where the toolbar zoom button anchors.
+    private var previewCenter: CGPoint {
+        CGPoint(x: paneSize.width / 2, y: paneSize.height / 2)
     }
 
     private var deleteButtonHelp: String {
@@ -346,17 +373,23 @@ private struct PreviewPane: View {
                 PreviewEventHost(zoom: zoom)
             }
             .onChange(of: geo.size, initial: true) {
-                zoom.update(
-                    paneSize: geo.size,
-                    displayScale: displayScale,
-                    displaySize: displaySize,
-                    loader: { rect in
-                        await edit.renderRegion(negative, rect: rect)
-                    }
-                )
-                if zoom.mode == .pixels100 { zoom.fetchCrop() }
+                paneSize = geo.size
+                refreshZoomContext(paneSize: geo.size)
             }
         }
+    }
+
+    private func refreshZoomContext(paneSize: CGSize) {
+        guard paneSize.width > 0, paneSize.height > 0 else { return }
+        zoom.update(
+            paneSize: paneSize,
+            displayScale: displayScale,
+            displaySize: displaySize,
+            loader: { rect in
+                await edit.renderRegion(negative, rect: rect)
+            }
+        )
+        if zoom.mode == .pixels100 { zoom.fetchCrop() }
     }
 
     /// The 1:1 crop the CLI rendered: one image pixel per physical screen

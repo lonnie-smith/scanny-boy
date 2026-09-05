@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// The Edit tab preview's AppKit event host: tracks the spacebar, swaps the
-/// cursor to a magnifier while it is held, and translates space+click /
+/// cursor to a magnifier (fit) or a hand (100%), and translates space+click /
 /// space+drag into zoom toggles and pans.
 ///
 /// SwiftUI cannot filter a drag on a *held* key the way it filters on
@@ -21,6 +21,7 @@ struct PreviewEventHost: NSViewRepresentable {
 
     func updateNSView(_ view: PreviewEventView, context: Context) {
         view.model = zoom
+        view.window?.invalidateCursorRects(for: view)
     }
 }
 
@@ -39,7 +40,8 @@ final class PreviewEventView: NSView {
         fatalError("PreviewEventView is created by PreviewEventHost only")
     }
 
-    private var eventMonitor: Any?
+    /// Match SwiftUI's top-left coordinate space for mouse points.
+    override var isFlipped: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -103,7 +105,8 @@ final class PreviewEventView: NSView {
             return
         }
         gestureIsActive = true
-        model.mouseDown(at: point(for: event))
+        window?.invalidateCursorRects(for: self)
+        model.mouseDown(at: point(for: event), kind: .space)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -120,23 +123,29 @@ final class PreviewEventView: NSView {
             return
         }
         gestureIsActive = false
+        window?.invalidateCursorRects(for: self)
         model.mouseUp(at: point(for: event))
     }
 
     // MARK: - Cursor
 
-    /// A magnifier while space is held — zoom-in when the preview is fitted,
-    /// zoom-out at 100% — and the plain arrow otherwise. Both magnifier
-    /// cursors arrived in macOS 15; on 14 the plain arrow stays.
+    /// Fit + space → magnifier (macOS 15+); 100% + space → open/closed hand;
+    /// otherwise the plain arrow.
     override func resetCursorRects() {
-        guard model.spaceHeld, #available(macOS 15.0, *) else {
+        guard model.spaceHeld else {
             super.resetCursorRects()
             return
         }
-        addCursorRect(
-            bounds,
-            cursor: model.mode == .fit ? NSCursor.zoomIn : NSCursor.zoomOut
-        )
+        if model.mode == .fit, #available(macOS 15.0, *) {
+            addCursorRect(bounds, cursor: NSCursor.zoomIn)
+            return
+        }
+        if model.mode == .pixels100 {
+            let hand = gestureIsActive ? NSCursor.closedHand : NSCursor.openHand
+            addCursorRect(bounds, cursor: hand)
+            return
+        }
+        super.resetCursorRects()
     }
 
     private func point(for event: NSEvent) -> CGPoint {
