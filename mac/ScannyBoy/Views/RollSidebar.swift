@@ -40,6 +40,16 @@ struct RollSidebar: View {
                     }
             }
         }
+        .overlay {
+            if library.isScanning, sortedRolls.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading rolls…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
         .navigationTitle("Rolls")
         .safeAreaInset(edge: .bottom) {
             // A failed scan leaves `rolls` at its last successful snapshot —
@@ -62,13 +72,19 @@ struct RollSidebar: View {
         }
         .toolbar {
             ToolbarItem {
-                Button {
-                    isPresentingNewRollSheet = true
-                } label: {
-                    Label("New Roll", systemImage: "plus")
+                HStack(spacing: 8) {
+                    if library.isScanning, !sortedRolls.isEmpty {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button {
+                        isPresentingNewRollSheet = true
+                    } label: {
+                        Label("New Roll", systemImage: "plus")
+                    }
+                    .disabled(runIsActive)
+                    .accessibilityIdentifier("newRollButton")
                 }
-                .disabled(runIsActive)
-                .accessibilityIdentifier("newRollButton")
             }
         }
         .task { library.scan() }
