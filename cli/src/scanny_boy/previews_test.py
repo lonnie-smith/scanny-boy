@@ -265,7 +265,6 @@ def test_render_region_matches_full_decode_for_every_quarter_turn(tmp_path):
     TIFF with the net rotation folded in — crop-then-rotate equals
     rotate-then-crop for axis-aligned rects."""
     import cv2
-    import tifffile
 
     from scanny_boy.previews import render_region
 
@@ -302,7 +301,6 @@ def test_render_region_clamps_against_the_display_bounds(tmp_path):
     (which for odd net turns has swapped dimensions), and the returned rect
     is the intersection."""
     import cv2
-    import tifffile
 
     from scanny_boy.previews import render_region
 
@@ -351,7 +349,6 @@ def test_render_region_does_not_fall_back_to_full_decode(tmp_path, monkeypatch):
 
     image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
     tiff_path = _write_published_tiff(tmp_path, image)
-    real_imread = tifffile.imread
     tifffile.imread(tiff_path)  # sanity: the file reads
 
     def _boom(*args, **kwargs):
