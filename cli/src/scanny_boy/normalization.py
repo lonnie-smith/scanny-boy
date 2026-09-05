@@ -583,6 +583,263 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
     return new_keep, rebate
 
 
+# --- section 3.13's dense mirror: the dense-border detector -------------------
+
+# All provisional and unmeasured, like the REBATE_* five. The failure that
+# shaped them: a dark, partially-lit sliver beyond the film edge (light-panel
+# falloff) that stitching reports as covered on some frames — a featureless
+# dense stripe along one border. Raw dense-end percentiles (P0.01 luma, P1.0
+# colour) have no defense against it: the block median only removes extremes
+# smaller than one block, and the rebate detector withholds *thin* border
+# junk only. The mirrored gates: candidates near the dense anchor, border
+# connectivity, area and thinness bounds, and separation from the scene's
+# own dense tail.
+
+# Robust dense-end anchor for the candidate band.
+DENSE_BORDER_ANCHOR_PERCENTILE = 0.1
+# Log10 D above that anchor a cell may sit. Wider than the rebate
+# detector's tolerance: a gradient stripe's core must be reachable in one
+# band, and the area cap bounds what a wide band can withhold.
+DENSE_BORDER_TOLERANCE = 0.2
+# Of the region; a smaller candidate is not a stripe.
+DENSE_BORDER_MIN_AREA_FRACTION = 0.005
+# Of the region; a larger candidate is scene content, not contamination.
+DENSE_BORDER_MAX_AREA_FRACTION = 0.05
+# A border stripe's bounding box is thin along at least one axis: at most
+# this fraction of that axis. Scene content dense enough to matter for the
+# meters spans the frame.
+DENSE_BORDER_MAX_BBOX_FRACTION = 0.05
+# Log10 D along the stripe's length: contamination is featureless.
+DENSE_BORDER_MAX_SPREAD = 0.05
+# Log10 D between the stripe and the scene's own dense tail.
+DENSE_BORDER_MIN_SEPARATION = 0.08
+# Outside reference percentile for the separation gate: the scene's
+# densest half-percent, outside every gated component.
+DENSE_BORDER_OUTSIDE_PERCENTILE = 0.5
+# Edge fog fades with distance from the edge, so one pass withholds only
+# its densest band; the next pass re-anchors on what is left. A gradient
+# ending at the scene's own dense end converges with nothing left to
+# withhold.
+DENSE_BORDER_MAX_PASSES = 4
+
+
+@dataclasses.dataclass(frozen=True)
+class DenseBorder:
+    """The dense-border detector's finding for one negative. Dense, flat
+    contamination along a region border (edge fog, a dark sliver beyond the
+    film edge) is the max-density mirror of the rebate: `mask_fraction` is
+    the fraction of region cells withheld."""
+
+    detected: bool
+    mask_fraction: float
+
+
+def withhold_dense_border(
+    grid_log: np.ndarray, keep: np.ndarray
+) -> tuple[np.ndarray, DenseBorder]:
+    """Withhold dense, featureless, border-touching contamination from
+    `keep` (the dense-end mirror of the rebate detector).
+
+    On a **negative**, scene content denser than the film's characteristic
+    maximum does not exist — a dense stripe along a border is contamination
+    (edge fog, a dark gap between film and light panel), which gives a
+    discriminator that does not depend on geometry:
+
+    1. candidates are cells within `DENSE_BORDER_TOLERANCE` of the
+       region's `DENSE_BORDER_ANCHOR_PERCENTILE` dense-end luma anchor;
+    2. connected components of the candidate mask survive only when they
+       touch the region border;
+    3. each survivor is gated on area (both ways: too small is not a
+       stripe, too large is scene content), thinness — a border stripe is
+       thin perpendicular to its border, while scene content dense enough
+       to matter spans the frame — and flatness along its length: a stripe
+       is featureless *along* the border, while a photograph's dark edge
+       (vignette, a wall's shading) varies along it. Edge fog fades across
+       its thickness, so the flatness test runs on the medians along the
+       length, not on the cells;
+    4. separation is the gate that makes "no stripe at all" return
+       cleanly: a survivor fires only when its median is at least
+       `DENSE_BORDER_MIN_SEPARATION` denser than the P
+       `DENSE_BORDER_OUTSIDE_PERCENTILE` of everything outside the gated
+       union. Scene content sits inside the distribution's continuous
+       dense tail and never clears it; a separated stripe always does;
+    5. survivors' union is withheld from `keep`.
+
+    The detector runs up to `DENSE_BORDER_MAX_PASSES`, re-anchoring after
+    each pass: an edge-fog gradient is flat *along* the border but falls
+    off across it, so one pass catches only the separated core and the
+    next pass catches the band behind it. A frame with no separated
+    population exits after one pass with nothing withheld.
+
+    The known false positive: a genuinely dense, featureless, thin
+    border-touching scene object (a roofline along the edge) denser than
+    the scene's dense tail by the separation margin. When it fires
+    wrongly the failure is mild — scene highlights map slightly brighter.
+    It never invents data.
+    """
+    empty = DenseBorder(detected=False, mask_fraction=0.0)
+    if not keep.any():
+        return keep, empty
+
+    lum = luma_of_log(grid_log)
+    region_cells = int(np.count_nonzero(keep))
+    total_mask = np.zeros(keep.shape, dtype=bool)
+    passes = 0
+    while passes < DENSE_BORDER_MAX_PASSES:
+        passes += 1
+        current = keep & ~total_mask
+        if not current.any():
+            break
+        # The border of what is left to meter: after a pass withholds the
+        # stripe's core, the band behind it borders the withheld mask, not
+        # the grid edge, and must still count as border-touching.
+        border = _region_border(current)
+        anchor = _percentile(lum[current], DENSE_BORDER_ANCHOR_PERCENTILE)
+        candidates = current & (lum <= anchor + DENSE_BORDER_TOLERANCE)
+        if not candidates.any():
+            break
+
+        count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+            candidates.astype(np.uint8), connectivity=8
+        )
+
+        gated: list[np.ndarray] = []
+        for label in range(1, count):
+            component = labels == label
+            if not (component & border).any():
+                continue
+            area = int(np.count_nonzero(component))
+            if area < DENSE_BORDER_MIN_AREA_FRACTION * region_cells:
+                continue
+            if area > DENSE_BORDER_MAX_AREA_FRACTION * region_cells:
+                continue
+            if not _is_thin(component, grid_log.shape[:2]):
+                continue
+            if not _is_featureless(component, lum):
+                continue
+            gated.append(component)
+
+        if not gated:
+            break
+
+        gated_union = np.zeros(keep.shape, dtype=bool)
+        for component in gated:
+            gated_union |= component
+
+        mask = np.zeros(keep.shape, dtype=bool)
+        outside = keep & ~total_mask & ~gated_union
+        for component in gated:
+            # No outside left to separate from (the gated union is the
+            # whole region): there is no scene population to be dense
+            # *relative to*, so this cannot be established as
+            # contamination.
+            if not outside.any():
+                continue
+            if _percentile(lum[component], 50.0) >= _percentile(
+                lum[outside], DENSE_BORDER_OUTSIDE_PERCENTILE
+            ) - DENSE_BORDER_MIN_SEPARATION:
+                continue
+            mask |= component
+
+        if not mask.any():
+            break
+        total_mask |= mask
+
+    if not total_mask.any():
+        return keep, empty
+
+    new_keep = keep & ~total_mask
+    dense_border = DenseBorder(
+        detected=True,
+        mask_fraction=float(np.count_nonzero(total_mask)) / region_cells,
+    )
+    return new_keep, dense_border
+
+
+def _is_thin(component: np.ndarray, grid_shape: tuple[int, int]) -> bool:
+    """A border stripe's bounding box is thin along at least one axis:
+    scene content dense enough to matter for the meters spans the frame."""
+    rows, cols = np.nonzero(component)
+    height = rows.max() - rows.min() + 1
+    width = cols.max() - cols.min() + 1
+    grid_rows, grid_cols = grid_shape
+    return (
+        height <= DENSE_BORDER_MAX_BBOX_FRACTION * grid_rows
+        or width <= DENSE_BORDER_MAX_BBOX_FRACTION * grid_cols
+    )
+
+
+def _is_featureless(component: np.ndarray, lum: np.ndarray) -> bool:
+    """Contamination is featureless *along* its length: the medians of the
+    component's cells along the long axis do not vary much. Edge fog fades
+    across its thickness, so the test runs on the medians — the stripe's
+    interior gradient never reaches them."""
+    rows, cols = np.nonzero(component)
+    height = rows.max() - rows.min() + 1
+    width = cols.max() - cols.min() + 1
+    if height >= width:
+        vals = [
+            float(np.median(lum[component][rows == row_index]))
+            for row_index in range(rows.min(), rows.max() + 1)
+        ]
+    else:
+        vals = [
+            float(np.median(lum[component][cols == col_index]))
+            for col_index in range(cols.min(), cols.max() + 1)
+        ]
+    return _percentile(np.asarray(vals), 90.0) - _percentile(
+        np.asarray(vals), 10.0
+    ) <= DENSE_BORDER_MAX_SPREAD
+
+
+# --- section 3.4's clamp: the roll-population safety net ----------------------
+
+# The per-negative bounds a clamp needs before it will act.
+CLAMP_MIN_SAMPLES = 3
+# Clamp window half-width, in multiples of the population's MAD.
+CLAMP_K_MAD = 4.0
+# Clamp window floor, in log10 D — one and a half stops of legitimate
+# per-frame exposure shift must never be clamped; the population's MAD is
+# sometimes far tighter than real rolls are.
+CLAMP_MIN_WINDOW = 0.5
+
+
+def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool]:
+    """D-4's safety net, from data the pipeline already records: pull
+    per-channel bounds back toward the roll's population when a negative's
+    own meters latched contamination the per-frame detectors missed.
+
+    Per channel, floors and ceils are clamped independently into
+    `median(references) +/- max(CLAMP_K_MAD * MAD, CLAMP_MIN_WINDOW)` —
+    wide enough for a stop or two of legitimate per-frame exposure shift,
+    tight enough that a latched outlier (the fill's -6.0, an edge fog
+    band) cannot survive. Returns `(bounds, clamped)`; with fewer than
+    `CLAMP_MIN_SAMPLES` references nothing is clamped, and a clamp that
+    would ever degenerate a channel (`ceil <= floor`) is discarded whole —
+    a safety net must never make things worse."""
+    if len(references) < CLAMP_MIN_SAMPLES:
+        return bounds, False
+
+    def clamp_axis(
+        values: tuple[float, ...], references_by_channel: list[list[float]]
+    ) -> tuple[float, ...]:
+        clamped = []
+        for channel in range(3):
+            column = references_by_channel[channel]
+            median = float(np.median(column))
+            mad = float(np.median(np.abs(np.asarray(column) - median)))
+            window = max(CLAMP_K_MAD * mad, CLAMP_MIN_WINDOW)
+            clamped.append(min(max(values[channel], median - window), median + window))
+        return tuple(clamped)
+
+    floors = clamp_axis(bounds.floors, [[b.floors[ch] for b in references] for ch in range(3)])
+    ceils = clamp_axis(bounds.ceils, [[b.ceils[ch] for b in references] for ch in range(3)])
+    for channel in range(3):
+        if ceils[channel] <= floors[channel]:
+            return bounds, False
+    return Bounds(floors=floors, ceils=ceils), floors != bounds.floors or ceils != bounds.ceils
+
+
 # --- section 3.2 / 3.6: normalize, encode, decode -----------------------------
 
 
@@ -688,6 +945,17 @@ def build_params() -> dict:
         "textural_range_clip": TEXTURAL_RANGE_CLIP,
         "scan_clip_level": SCAN_CLIP_LEVEL,
         "scan_clip_warn": SCAN_CLIP_WARN,
+        "dense_border_anchor_percentile": DENSE_BORDER_ANCHOR_PERCENTILE,
+        "dense_border_tolerance": DENSE_BORDER_TOLERANCE,
+        "dense_border_min_area_fraction": DENSE_BORDER_MIN_AREA_FRACTION,
+        "dense_border_max_area_fraction": DENSE_BORDER_MAX_AREA_FRACTION,
+        "dense_border_max_bbox_fraction": DENSE_BORDER_MAX_BBOX_FRACTION,
+        "dense_border_min_separation": DENSE_BORDER_MIN_SEPARATION,
+        "dense_border_outside_percentile": DENSE_BORDER_OUTSIDE_PERCENTILE,
+        "dense_border_max_passes": DENSE_BORDER_MAX_PASSES,
+        "clamp_min_samples": CLAMP_MIN_SAMPLES,
+        "clamp_k_mad": CLAMP_K_MAD,
+        "clamp_min_window": CLAMP_MIN_WINDOW,
         "normalized_headroom_low": NORMALIZED_HEADROOM_LOW,
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,

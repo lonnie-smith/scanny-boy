@@ -126,6 +126,7 @@ ALL_EVENTS: list[Event] = [
             "created_at": "2026-08-31T12:00:00Z",
         },
         rotation_quarter_turns=1,
+        flipped_horizontally=False,
         preview_path="/Users/me/Library/Application Support/ScannyBoy/previews/roll/a1b2c3-negative-03.png",
     ),
     ExportDone(
@@ -242,6 +243,7 @@ def test_new_event_kinds_round_trip():
             negative_id="neg-3",
             edit={"position": 1, "op": "rotate", "params": {"direction": "cw"}},
             rotation_quarter_turns=1,
+            flipped_horizontally=True,
             preview_path=None,
         ),
         ExportDone(negative_id="neg-4", output="out.tif", width=4, height=3),

@@ -28,6 +28,7 @@ final class EditModel {
             guard rollURL != oldValue else { return }
             roll = nil
             selectedNegativeID = nil
+            selectedNegativeIDs = []
             startRollFetch(rollURL: rollURL)
         }
     }
@@ -37,10 +38,16 @@ final class EditModel {
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
 
-    /// The Edit tab's selection: the negative shown large above the
+    /// The Edit tab's anchor selection: the negative shown large above the
     /// filmstrip. `nil` means "fall back to the first visible negative",
     /// which is also how a freshly loaded roll starts out.
     var selectedNegativeID: String?
+
+    /// The full multi-selection the edit controls act on: shift-click
+    /// extends a range, command-click toggles frames, Cmd-A selects all,
+    /// Cmd-D deselects all. Empty means "just the anchor" — the controls
+    /// then act on the single negative the preview pane shows.
+    var selectedNegativeIDs: Set<String> = []
 
     /// Set while one `edit rotate` round trip is in flight. Rotate is its
     /// own short CLI session, deliberately not `RunModel`'s — but the
@@ -111,9 +118,82 @@ final class EditModel {
         return negatives.first
     }
 
+    /// The negatives the rotate/flip/delete controls act on: the whole
+    /// selection when one exists, else the single negative the preview
+    /// pane shows. Filmstrip order, whatever order the clicks came in.
+    var selectionTargets: [RollManifest.Negative] {
+        let negatives = visibleNegatives
+        if !selectedNegativeIDs.isEmpty {
+            return negatives.filter { selectedNegativeIDs.contains($0.negativeID) }
+        }
+        return selectedNegative.map { [$0] } ?? []
+    }
+
+    /// Whether the filmstrip should highlight `negativeID`: a member of the
+    /// multi-selection, or — when the selection is empty — the negative the
+    /// preview pane resolves to (the anchor, or the first visible one on a
+    /// freshly loaded roll, exactly as the single-selection tab always
+    /// showed).
+    func isSelected(_ negativeID: String) -> Bool {
+        if !selectedNegativeIDs.isEmpty {
+            return selectedNegativeIDs.contains(negativeID)
+        }
+        return selectedNegative?.negativeID == negativeID
+    }
+
+    /// Filmstrip clicks land here. A plain click selects one frame; a
+    /// shift-click extends a contiguous range from the anchor (last
+    /// clicked, else first visible); a command-click toggles the frame in
+    /// or out of the selection. The anchor always ends on the clicked
+    /// frame, except for a range extension, which keeps it so the user can
+    /// widen or shrink the same range.
+    func select(
+        _ negativeID: String, additive: Bool = false, extendingRange: Bool = false
+    ) {
+        let negatives = visibleNegatives
+        guard let targetIndex = negatives.firstIndex(where: { $0.negativeID == negativeID })
+        else { return }
+
+        if extendingRange {
+            let anchorIndex = selectedNegativeID.flatMap { anchor in
+                negatives.firstIndex { $0.negativeID == anchor }
+            } ?? negatives.startIndex
+            let lower = min(anchorIndex, targetIndex)
+            let upper = max(anchorIndex, targetIndex)
+            selectedNegativeIDs = Set(negatives[lower...upper].map(\.negativeID))
+            return
+        }
+
+        if additive {
+            if selectedNegativeIDs.contains(negativeID) {
+                selectedNegativeIDs.remove(negativeID)
+            } else {
+                selectedNegativeIDs.insert(negativeID)
+            }
+        } else {
+            selectedNegativeIDs = [negativeID]
+        }
+        selectedNegativeID = negativeID
+    }
+
+    /// Cmd-A: every visible frame joins the selection. The anchor (and so
+    /// the preview pane) stays where it was.
+    func selectAll() {
+        selectedNegativeIDs = Set(visibleNegatives.map(\.negativeID))
+    }
+
+    /// Cmd-D: the multi-selection empties out. The anchor stays — the
+    /// preview pane keeps showing the frame the user was looking at — so
+    /// the next rotate/flip/delete acts on that one, exactly as the tab
+    /// behaved before multi-select existed.
+    func deselectAll() {
+        selectedNegativeIDs = []
+    }
+
     /// Option-left/Option-right and filmstrip clicks land here. The filmstrip
     /// shows every negative in `visibleNegatives` order, so selection moves
-    /// through that same order.
+    /// through that same order. Keyboard navigation is single-frame: it
+    /// collapses any multi-selection to the frame landed on.
     func selectNext() {
         moveSelection(+1)
     }
@@ -130,63 +210,90 @@ final class EditModel {
         } ?? negatives.startIndex
         let next = max(negatives.startIndex, min(negatives.index(before: negatives.endIndex), current + delta))
         selectedNegativeID = negatives[next].negativeID
+        selectedNegativeIDs = [selectedNegativeID!]
     }
 
     // MARK: - Editing
 
-    /// Records one 90-degree rotation for `negative` through the CLI and
-    /// refreshes the roll when the edit is confirmed. The published TIFF is
-    /// never touched — only the ops log and the CLI-rendered preview.
-    func rotate(_ negative: RollManifest.Negative, clockwise: Bool) async {
-        guard let rollURL, !isRotating else { return }
+    /// Records one 90-degree rotation per selected negative through the CLI
+    /// and refreshes the roll when the edits are confirmed. The published
+    /// TIFFs are never touched — only the ops logs and the CLI-rendered
+    /// previews. One CLI session for the whole selection; the CLI validates
+    /// it up front, so a bad frame fails the batch before anything records.
+    func rotate(_ targets: [RollManifest.Negative], clockwise: Bool) async {
+        guard !targets.isEmpty else { return }
+        await recordTransform(targets) { rollURL in
+            .editRotate(roll: rollURL, negatives: targets.map(\.negativeID), clockwise: clockwise)
+        }
+    }
+
+    /// Records a horizontal mirror of the pixels as they currently render —
+    /// *after* any recorded rotations — per selected negative. Same
+    /// contract as `rotate(_:clockwise:)`.
+    func flip(_ targets: [RollManifest.Negative]) async {
+        guard !targets.isEmpty else { return }
+        await recordTransform(targets) { rollURL in
+            .editFlip(roll: rollURL, negatives: targets.map(\.negativeID))
+        }
+    }
+
+    /// One `edit` session per selection: streams the confirmation events,
+    /// applying each `edit_recorded` to the in-memory roll as it arrives so
+    /// the previews update progressively, then reconciles with a refresh.
+    private func recordTransform(
+        _ targets: [RollManifest.Negative], command: (URL) -> CLICommand
+    ) async {
+        guard let rollURL, !isRotating, !isDeleting else { return }
         isRotating = true
         defer { isRotating = false }
-        let command = CLICommand.editRotate(
-            roll: rollURL, negative: negative.negativeID, clockwise: clockwise
-        )
         do {
-            for await output in try await runner.session(for: command).start() {
-                if case .event(let event) = output, event.kind == .editRecorded {
-                    applyEditRecorded(event, negativeID: negative.negativeID)
+            for await output in try await runner.session(for: command(rollURL)).start() {
+                if case .event(let event) = output, event.kind == .editRecorded,
+                    let negativeID = event.negativeID
+                {
+                    applyEditRecorded(event, negativeID: negativeID)
                 }
             }
         } catch {
             return
         }
-        // The in-place update above is what the user sees; the refresh
-        // reconciles anything the event's fields did not carry.
+        // The in-place updates above are what the user sees; the refresh
+        // reconciles anything the events' fields did not carry.
         refresh()
     }
 
-    /// Deletes `negative` through the CLI and refreshes the roll when the
-    /// deletion is confirmed: the record (and its ops log) leaves the
-    /// library database, the published TIFF leaves the roll folder, and
-    /// the rendered preview leaves Application Support. The selection
-    /// moves to the deleted negative's neighbour — the next one, else the
-    /// previous — so the user is left looking at something sensible
-    /// instead of a stale id.
-    func delete(_ negative: RollManifest.Negative) async {
-        guard let rollURL, !isDeleting, !isRotating else { return }
+    /// Deletes the selected negatives through the CLI and refreshes the
+    /// roll when the deletion is confirmed: each record (and its ops log)
+    /// leaves the library database, each published TIFF leaves the roll
+    /// folder, and each rendered preview leaves Application Support. The
+    /// anchor moves to the neighbour after the last-deleted selection
+    /// member — the next one, else the previous — so the user is left
+    /// looking at something sensible instead of a stale id.
+    func delete(_ targets: [RollManifest.Negative]) async {
+        guard let rollURL, !isDeleting, !isRotating, !targets.isEmpty else { return }
         isDeleting = true
         defer { isDeleting = false }
 
         // Computed before the manifest changes anywhere: the neighbour in
-        // `visibleNegatives` order.
+        // `visibleNegatives` order, past the last-deleted selection member.
         let negatives = visibleNegatives
-        let neighbour: String? = negatives.firstIndex { $0.negativeID == negative.negativeID }
-            .flatMap { index in
-                if index + 1 < negatives.count {
-                    return negatives[index + 1].negativeID
-                }
-                return index > 0 ? negatives[index - 1].negativeID : nil
+        let targetIDs = Set(targets.map(\.negativeID))
+        let lastIndex = negatives.lastIndex { targetIDs.contains($0.negativeID) }
+        let neighbour: String? = lastIndex.flatMap { index in
+            if index + 1 < negatives.count {
+                return negatives[index + 1].negativeID
             }
+            return index > 0 ? negatives[index - 1].negativeID : nil
+        }
 
-        let command = CLICommand.editDelete(roll: rollURL, negative: negative.negativeID)
-        var deleted = false
+        let command = CLICommand.editDelete(roll: rollURL, negatives: targets.map(\.negativeID))
+        var deletedIDs = Set<String>()
         do {
             for await output in try await runner.session(for: command).start() {
-                if case .event(let event) = output, event.kind == .negativeDeleted {
-                    deleted = true
+                if case .event(let event) = output, event.kind == .negativeDeleted,
+                    let negativeID = event.negativeID
+                {
+                    deletedIDs.insert(negativeID)
                 }
             }
         } catch {
@@ -195,14 +302,17 @@ final class EditModel {
         // The refresh reconciles the roll either way; the selection only
         // moves when the deletion actually happened.
         refresh()
-        if deleted {
-            selectedNegativeID = neighbour
+        if !deletedIDs.isEmpty {
+            selectedNegativeIDs.subtract(deletedIDs)
+            if targetIDs.contains(selectedNegativeID ?? "") {
+                selectedNegativeID = neighbour
+            }
         }
     }
 
     /// Applies an `edit_recorded` event to the in-memory roll without a
-    /// round trip: preview path and net rotation are exactly what the event
-    /// carries.
+    /// round trip: preview path and net transform (turns plus the mirror
+    /// flag) are exactly what the event carries.
     private func applyEditRecorded(_ event: CLIEvent, negativeID: String) {
         guard let manifest = roll,
             let index = manifest.negatives.firstIndex(where: { $0.negativeID == negativeID }),
@@ -222,7 +332,9 @@ final class EditModel {
                 globalRMSPixels: negative.globalRMSPixels,
                 rebateDeviationPixels: negative.rebateDeviationPixels,
                 previewPath: event.previewPath ?? negative.previewPath,
-                rotationQuarterTurns: turns
+                rotationQuarterTurns: turns,
+                flippedHorizontally: event.flippedHorizontally
+                    ?? negative.flippedHorizontally
             )
         )
     }
@@ -238,7 +350,7 @@ final class EditModel {
         guard let rollURL else { return nil }
         let output = Self.regionCacheURL(
             negativeID: negative.negativeID,
-            quarterTurns: negative.rotationQuarterTurns,
+            generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
             rect: rect
         )
         let command = CLICommand.editRenderRegion(
@@ -271,10 +383,10 @@ final class EditModel {
     }
 
     private static func regionCacheURL(
-        negativeID: String, quarterTurns: Int, rect: CGRect
+        negativeID: String, generation: String, rect: CGRect
     ) -> URL {
         regionCacheDirectory.appending(
-            path: "\(negativeID)-g\(quarterTurns)-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
+            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
         )
     }
 

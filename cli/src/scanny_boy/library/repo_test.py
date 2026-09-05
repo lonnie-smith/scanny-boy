@@ -198,6 +198,36 @@ def test_net_rotation_ignores_unknown_ops_and_directions(roll_dir):
     assert repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01") == 0
 
 
+def test_net_edit_state_tracks_flips_and_rotations(roll_dir):
+    """A flip toggles the mirror flag and negates the turns (a horizontal
+    flip of a rotated image equals the flipped image rotated the other
+    way), so the canonical replay is closed-form."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+    append = repo.append_edit
+    negative = "rid-1-negative-01"
+
+    assert repo.net_edit_state(roll_dir, negative) == (0, False)
+
+    append(roll_dir, negative, repo.FLIP_OP, {})
+    assert repo.net_edit_state(roll_dir, negative) == (0, True)
+
+    append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
+    assert repo.net_edit_state(roll_dir, negative) == (1, True)
+
+    append(roll_dir, negative, repo.FLIP_OP, {})
+    assert repo.net_edit_state(roll_dir, negative) == (3, False)
+
+    append(roll_dir, negative, repo.ROTATE_OP, {"direction": "ccw"})
+    assert repo.net_edit_state(roll_dir, negative) == (2, False)
+
+
+def test_net_edit_state_ignores_unknown_ops(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False)
+
+
 def test_edits_survive_re_saving_the_manifest(roll_dir):
     """Re-stitching keeps a negative's `negative_id`, so its edit history
     must survive the diff-and-merge save."""

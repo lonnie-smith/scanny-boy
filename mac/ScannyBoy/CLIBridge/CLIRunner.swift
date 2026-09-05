@@ -174,33 +174,60 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["apply-metadata", "--roll", roll.path])
     }
 
-    /// `scanny-boy edit rotate --roll DIR --negative ID --direction cw|ccw`
+    /// `scanny-boy edit rotate --roll DIR --negative ID [--negative ID ...] --direction cw|ccw`
     ///
-    /// Protocol version 5's nondestructive edit: appends one rotation op to
-    /// the negative's ordered ops log in the library database, regenerates
-    /// the CLI-rendered preview, and never touches the published TIFF.
-    public static func editRotate(roll: URL, negative: String, clockwise: Bool) -> CLICommand {
-        CLICommand(arguments: [
+    /// Protocol version 5's nondestructive edit: appends one rotation op per
+    /// selected negative's ordered ops log in the library database,
+    /// regenerates the CLI-rendered previews, and never touches the
+    /// published TIFFs. The whole selection is validated by the CLI before
+    /// anything is recorded.
+    public static func editRotate(
+        roll: URL, negatives: [String], clockwise: Bool
+    ) -> CLICommand {
+        var arguments = [
             "edit", "rotate",
             "--roll", roll.path,
-            "--negative", negative,
-            "--direction", clockwise ? "cw" : "ccw",
-        ])
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        arguments.append(contentsOf: ["--direction", clockwise ? "cw" : "ccw"])
+        return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy edit delete --roll DIR --negative ID`
+    /// `scanny-boy edit flip --roll DIR --negative ID [--negative ID ...]`
     ///
-    /// The one destructive edit: removes the negative's record (and its
-    /// ops log, by cascade) from the library database, unlinks its
+    /// Records a horizontal mirror of the pixels as they currently render —
+    /// *after* any recorded rotations — per selected negative, appending a
+    /// `flip` op to each one's ordered ops log. Never touches the published
+    /// TIFFs.
+    public static func editFlip(roll: URL, negatives: [String]) -> CLICommand {
+        var arguments = [
+            "edit", "flip",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy edit delete --roll DIR --negative ID [--negative ID ...]`
+    ///
+    /// The one destructive edit: removes each selected negative's record
+    /// (and its ops log, by cascade) from the library database, unlinks its
     /// published TIFF from the roll folder, and unlinks its rendered
     /// preview. The confirmation dialog lives in the view layer; by the
     /// time this command is built the user has already agreed.
-    public static func editDelete(roll: URL, negative: String) -> CLICommand {
-        CLICommand(arguments: [
+    public static func editDelete(roll: URL, negatives: [String]) -> CLICommand {
+        var arguments = [
             "edit", "delete",
             "--roll", roll.path,
-            "--negative", negative,
-        ])
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH`

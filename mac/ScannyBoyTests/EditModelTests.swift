@@ -28,11 +28,15 @@ struct EditModelTests {
         sequence: Int?,
         status: String = "completed",
         intended: String?,
-        applied: String?
+        applied: String?,
+        rotation: Int = 0,
+        flipped: Bool = false,
+        previewPath: String? = nil
     ) -> String {
         let sequenceJSON = sequence.map(String.init) ?? "null"
         let intendedJSON = intended.map { "\"\($0)\"" } ?? "null"
         let appliedJSON = applied.map { "\"\($0)\"" } ?? "null"
+        let previewJSON = previewPath.map { "\"\($0)\"" } ?? "null"
         return """
             {"negative_id":"\(negativeID)","run_id":"r","sequence":\(sequenceJSON),\
             "members":["a.NEF"],\
@@ -42,7 +46,9 @@ struct EditModelTests {
             "fill_color":[0,0,0],"rebate_deviation_px":null,"error_code":null,"error_message":null,\
             "capture_time":{"source_datetime_original":null,\
             "intended_datetime_original":\(intendedJSON),\
-            "applied_datetime_original":\(appliedJSON),"date_override":null}}
+            "applied_datetime_original":\(appliedJSON),"date_override":null},\
+            "preview_path":\(previewJSON),\
+            "rotation_quarter_turns":\(rotation),"flipped_horizontally":\(flipped)}
             """
     }
 
@@ -219,7 +225,7 @@ struct EditModelTests {
         await model.waitForPendingFetch()
         let first = model.selectedNegative
 
-        await model.delete(first!)
+        await model.delete([first!])
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n2", "n3"])
@@ -241,7 +247,7 @@ struct EditModelTests {
         // Select the last negative explicitly before deleting it.
         model.selectedNegativeID = "n2"
 
-        await model.delete(model.selectedNegative!)
+        await model.delete([model.selectedNegative!])
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n1"])
@@ -275,11 +281,167 @@ struct EditModelTests {
         await model.waitForPendingFetch()
         let selected = model.selectedNegative
 
-        await model.delete(selected!)
+        await model.delete([selected!])
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n1"])
         #expect(model.selectedNegative?.negativeID == "n1")
         #expect(!model.isDeleting)
+    }
+
+    // MARK: - Multi-select
+
+    /// Three ranked negatives n1..n3 in every test below.
+    private static func multiSelectModel(
+        _ runner: CLIRunner
+    ) async throws -> EditModel {
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        return model
+    }
+
+    private static func threeNegativeRunner() throws -> CLIRunner {
+        try isolatedRunner(rollInfoLines: [
+            rollInfoEvent(negatives: [
+                negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil),
+                negativeJSON(negativeID: "n2", sequence: 2, intended: nil, applied: nil),
+                negativeJSON(negativeID: "n3", sequence: 3, intended: nil, applied: nil),
+            ])
+        ])
+    }
+
+    @Test("A plain click selects one frame; shift-click extends a range from the anchor")
+    func testPlainAndShiftClickSelection() async throws {
+        let model = try await Self.multiSelectModel(try Self.threeNegativeRunner())
+
+        model.select("n2")
+        #expect(model.isSelected("n2"))
+        #expect(!model.isSelected("n1") && !model.isSelected("n3"))
+
+        // Shift extends from the anchor (n2, last clicked) backwards.
+        model.select("n1", extendingRange: true)
+        #expect(model.isSelected("n1") && model.isSelected("n2") && !model.isSelected("n3"))
+
+        // The anchor never moved, so another shift re-extends from n2.
+        model.select("n3", extendingRange: true)
+        #expect(!model.isSelected("n1") && model.isSelected("n2") && model.isSelected("n3"))
+
+        // A fresh anchor lets one shift span everything.
+        model.select("n1")
+        model.select("n3", extendingRange: true)
+        #expect(model.isSelected("n1") && model.isSelected("n2") && model.isSelected("n3"))
+    }
+
+    @Test("Command-click toggles frames in and out of the selection")
+    func testCommandClickToggles() async throws {
+        let model = try await Self.multiSelectModel(try Self.threeNegativeRunner())
+
+        model.select("n1")
+        model.select("n3", additive: true)
+        #expect(model.isSelected("n1") && model.isSelected("n3") && !model.isSelected("n2"))
+
+        // Toggling n3 again removes it.
+        model.select("n3", additive: true)
+        #expect(model.isSelected("n1") && !model.isSelected("n2") && !model.isSelected("n3"))
+    }
+
+    @Test("Cmd-A selects all, Cmd-D deselects all but keeps the anchor")
+    func testSelectAllAndDeselectAll() async throws {
+        let model = try await Self.multiSelectModel(try Self.threeNegativeRunner())
+        model.select("n2")
+
+        model.selectAll()
+        #expect(model.selectionTargets.map(\.negativeID) == ["n1", "n2", "n3"])
+        #expect(model.selectedNegative?.negativeID == "n2")
+
+        model.deselectAll()
+        #expect(model.selectionTargets.map(\.negativeID) == ["n2"])
+    }
+
+    @Test("Arrow navigation collapses a multi-selection to one frame")
+    func testKeyboardNavigationCollapsesSelection() async throws {
+        let model = try await Self.multiSelectModel(try Self.threeNegativeRunner())
+        model.select("n1")
+        model.selectAll()
+
+        model.selectNext()
+
+        #expect(model.selectionTargets.map(\.negativeID) == ["n2"])
+    }
+
+    @Test("An empty selection acts on the previewed frame alone")
+    func testEmptySelectionFallsBackToAnchor() async throws {
+        let model = try await Self.multiSelectModel(try Self.threeNegativeRunner())
+
+        #expect(model.selectionTargets.map(\.negativeID) == ["n1"])
+    }
+
+    // MARK: - Batch rotate
+
+    /// A helper whose `edit rotate` emits one `edit_recorded` per `--negative`
+    /// argument it received (echoing them back so the test can assert the
+    /// batch reached the CLI), and whose `roll info` flips to a rotated
+    /// manifest after the first edit.
+    private static func batchRotateRunner(
+        _ directory: URL, negativeIDs: [String]
+    ) throws -> CLIRunner {
+        let events = negativeIDs.map { id in
+            """
+            {"protocol_version":8,"event":"edit_recorded","negative_id":"\(id)",\
+            "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
+            "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
+            "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
+            """
+        }
+        let initial = rollInfoEvent(negatives: negativeIDs.enumerated().map { index, id in
+            negativeJSON(negativeID: id, sequence: index + 1, intended: nil, applied: nil)
+        })
+        // After the edit the CLI's own manifest would carry the net turns.
+        let rotated = rollInfoEvent(negatives: negativeIDs.enumerated().map { index, id in
+            negativeJSON(
+                negativeID: id, sequence: index + 1, intended: nil, applied: nil,
+                rotation: 1, flipped: false
+            )
+        })
+        let marker = directory.appending(path: "rotated").path
+        let script = """
+            if [ "$1" = "edit" ]; then
+              echo '{"protocol_version":8,"event":"started","command":"edit rotate"}'
+              for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
+                echo "$event"
+              done
+              echo '{"protocol_version":8,"event":"finished","status":"success","exit_status":0}'
+            else
+              if [ -f '\(marker)' ]; then
+                echo '\(rotated)'
+              else
+                : > '\(marker)'
+                echo '\(initial)'
+              fi
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    @Test("Batch rotate acts on the whole selection and applies each event")
+    func testBatchRotateActsOnTheWholeSelection() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.batchRotateRunner(directory, negativeIDs: ["n1", "n2", "n3"])
+        let model = try await Self.multiSelectModel(runner)
+        model.select("n1")
+        model.select("n3", additive: true)
+
+        await model.rotate(model.selectionTargets, clockwise: true)
+        await model.waitForPendingFetch()
+
+        // The refresh reconciled both negatives to one cw turn.
+        #expect(model.visibleNegatives.map(\.rotationQuarterTurns) == [1, 1, 1])
+        #expect(model.selectionTargets.map(\.negativeID) == ["n1", "n3"])
     }
 }

@@ -1,6 +1,8 @@
-"""Tests for `edit rotate` and `edit delete`: the ops log gets the op, the
-preview refreshes, and the published TIFF is never touched by rotate;
-delete removes the record, the TIFF, and the preview."""
+"""Tests for `edit rotate`, `edit flip`, and `edit delete`: the ops log
+gets the op, the preview refreshes, and the published TIFF is never touched
+by rotate/flip; delete removes the record, the TIFF, and the preview.
+Rotations and flips accept a selection; the whole selection is validated
+before anything is recorded."""
 
 from __future__ import annotations
 
@@ -10,7 +12,12 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_rotate
+from scanny_boy.edits import (
+    EditFailure,
+    run_edit_delete,
+    run_edit_flip,
+    run_edit_rotate,
+)
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_test import _negative, _run
@@ -51,6 +58,32 @@ def stitched_roll(tmp_path: Path) -> Path:
     return roll_dir
 
 
+def _append_stitched_negative(roll_dir: Path, negative_id: str, output_name: str) -> None:
+    """A second completed negative, so selection-level tests have something
+    to select."""
+    from scanny_boy.roll_manifest import CaptureTime
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.negatives.append(
+        _negative(
+            negative_id=negative_id,
+            run_id="stitch-run",
+            status="completed",
+            sequence=2,
+            capture_time=CaptureTime(source_datetime_original="2026-08-01T12:00:00"),
+            output={
+                "name": output_name,
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / output_name, np.arange(12, dtype=np.uint16).reshape(3, 4))
+
+
 def _tiff_bytes(roll_dir: Path) -> bytes:
     return (roll_dir / "_DSC0001.tif").read_bytes()
 
@@ -58,11 +91,12 @@ def _tiff_bytes(roll_dir: Path) -> bytes:
 def test_rotate_records_the_edit_and_reports_net_turns(stitched_roll):
     events: list = []
 
-    fields = run_edit_rotate(
+    (fields,) = run_edit_rotate(
         stitched_roll, _NEGATIVE_ID, "cw", emit=events.append
     )
 
     assert fields["rotation_quarter_turns"] == 1
+    assert fields["flipped_horizontally"] is False
     assert fields["edit"]["op"] == "rotate"
     assert fields["edit"]["params"] == {"direction": "cw"}
     assert fields["preview_path"] is not None and Path(fields["preview_path"]).exists()
@@ -81,11 +115,113 @@ def test_rotate_never_touches_the_published_tiff(stitched_roll):
 
 def test_two_rotations_compose_and_the_preview_tracks_them(stitched_roll):
     run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
-    fields = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    (fields,) = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
 
     assert fields["rotation_quarter_turns"] == 2
+    assert fields["flipped_horizontally"] is False
     manifest = load_roll_manifest(stitched_roll)
     assert manifest.negative(_NEGATIVE_ID).preview_path == fields["preview_path"]
+
+
+def test_flip_records_the_edit_and_reports_the_net_state(stitched_roll):
+    (fields,) = run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    assert fields["edit"]["op"] == "flip"
+    assert fields["edit"]["params"] == {}
+    assert fields["rotation_quarter_turns"] == 0
+    assert fields["flipped_horizontally"] is True
+    assert fields["preview_path"] is not None and Path(fields["preview_path"]).exists()
+
+
+def test_flip_never_touches_the_published_tiff(stitched_roll):
+    before = _tiff_bytes(stitched_roll)
+
+    run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    assert _tiff_bytes(stitched_roll) == before
+
+
+def test_flip_and_rotate_do_not_commute(stitched_roll):
+    """A flip applies to the pixels as they currently render, so flip-then-
+   -rotate and rotate-then-flip are different images — the reason the ops
+    log reduces to a (turns, flipped) pair rather than a single number."""
+    from scanny_boy.library import repo
+
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+
+    run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+    run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+
+    run_edit_rotate(stitched_roll, "stitch-negative-02", "cw", emit=lambda event: None)
+    run_edit_flip(stitched_roll, "stitch-negative-02", emit=lambda event: None)
+
+    # flip∘rot-cw ≠ rot-cw∘flip: the mirrored image ends up turned the other
+    # way relative to the mirror.
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (1, True)
+    assert repo.net_edit_state(stitched_roll, "stitch-negative-02") == (3, True)
+
+
+def test_two_flips_cancel(stitched_roll):
+    run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+    (fields,) = run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    assert fields["rotation_quarter_turns"] == 0
+    assert fields["flipped_horizontally"] is False
+
+
+def test_selection_rotate_records_one_edit_per_negative(stitched_roll):
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+
+    results = run_edit_rotate(
+        stitched_roll,
+        [_NEGATIVE_ID, "stitch-negative-02"],
+        "cw",
+        emit=lambda event: None,
+    )
+
+    from scanny_boy.library import repo
+
+    assert [r["negative_id"] for r in results] == [
+        _NEGATIVE_ID,
+        "stitch-negative-02",
+    ]
+    assert all(r["rotation_quarter_turns"] == 1 for r in results)
+    assert all(
+        repo.net_rotation_quarter_turns(stitched_roll, nid) == 1
+        for nid in (_NEGATIVE_ID, "stitch-negative-02")
+    )
+
+
+def test_selection_flip_records_one_edit_per_negative(stitched_roll):
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+
+    results = run_edit_flip(
+        stitched_roll,
+        ["stitch-negative-02", _NEGATIVE_ID],
+        emit=lambda event: None,
+    )
+
+    assert [r["negative_id"] for r in results] == [
+        "stitch-negative-02",
+        _NEGATIVE_ID,
+    ]
+    assert all(r["flipped_horizontally"] is True for r in results)
+
+
+def test_a_bad_selection_records_nothing(stitched_roll):
+    """The whole selection is validated before any op is appended, so one
+    bad id means the good negatives are not half-edited either."""
+    from scanny_boy.library import repo
+
+    with pytest.raises(EditFailure):
+        run_edit_rotate(
+            stitched_roll,
+            [_NEGATIVE_ID, "nope-negative-99"],
+            "cw",
+            emit=lambda event: None,
+        )
+
+    assert repo.edits_for(stitched_roll, _NEGATIVE_ID) == []
 
 
 def test_rotate_the_wrong_direction_is_a_usage_failure(stitched_roll):
@@ -163,12 +299,12 @@ def test_delete_removes_the_record_the_tiff_and_the_preview(stitched_roll):
     events: list = []
     # A rotation first, so a preview PNG exists to be removed too.
     rotated = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
-    preview_path = Path(rotated["preview_path"])
+    preview_path = Path(rotated[0]["preview_path"])
     assert preview_path.exists()
     tiff_path = stitched_roll / "_DSC0001.tif"
     assert tiff_path.exists()
 
-    fields = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
+    (fields,) = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
 
     assert fields == {"negative_id": _NEGATIVE_ID, "output": "_DSC0001.tif"}
     assert not tiff_path.exists()
@@ -229,11 +365,44 @@ def test_delete_a_pending_negative_succeeds_without_files(stitched_roll):
     )
     write_roll_manifest(stitched_roll, manifest)
 
-    fields = run_edit_delete(
+    (fields,) = run_edit_delete(
         stitched_roll, "stitch-negative-02", emit=lambda event: None
     )
 
     assert fields == {"negative_id": "stitch-negative-02", "output": None}
+
+
+def test_selection_delete_removes_every_selected_negative(stitched_roll):
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+
+    results = run_edit_delete(
+        stitched_roll,
+        [_NEGATIVE_ID, "stitch-negative-02"],
+        emit=lambda event: None,
+    )
+
+    assert [r["negative_id"] for r in results] == [
+        _NEGATIVE_ID,
+        "stitch-negative-02",
+    ]
+    assert not (stitched_roll / "_DSC0001.tif").exists()
+    assert not (stitched_roll / "_DSC0004.tif").exists()
+    assert load_roll_manifest(stitched_roll).negatives == []
+
+
+def test_selection_delete_validates_the_whole_selection_first(stitched_roll):
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+
+    with pytest.raises(EditFailure):
+        run_edit_delete(
+            stitched_roll,
+            [_NEGATIVE_ID, "nope-negative-99"],
+            emit=lambda event: None,
+        )
+
+    # Nothing was removed: the good negative and both TIFFs survive.
+    assert load_roll_manifest(stitched_roll).negative(_NEGATIVE_ID) is not None
+    assert (stitched_roll / "_DSC0001.tif").exists()
 
 
 def test_delete_an_unknown_negative_fails(stitched_roll):
@@ -255,7 +424,7 @@ def test_delete_survives_a_stuck_tiff(stitched_roll, monkeypatch):
     monkeypatch.setattr(Path, "unlink", stuck_unlink)
     events: list = []
 
-    fields = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
+    (fields,) = run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=events.append)
 
     # The record is gone regardless; the file left behind is reported, not fatal.
     assert fields == {"negative_id": _NEGATIVE_ID, "output": "_DSC0001.tif"}

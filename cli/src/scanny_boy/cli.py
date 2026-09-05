@@ -10,11 +10,18 @@ from pathlib import Path
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
-from scanny_boy.edits import EditFailure, run_edit_delete, run_edit_render_region, run_edit_rotate
+from scanny_boy.edits import (
+    EditFailure,
+    run_edit_delete,
+    run_edit_flip,
+    run_edit_render_region,
+    run_edit_rotate,
+)
 from scanny_boy.events import (
     Code,
     EditRecorded,
     ErrorEvent,
+    Event,
     EventWriter,
     Finished,
     FlatFieldCreated,
@@ -202,10 +209,16 @@ def build_parser() -> argparse.ArgumentParser:
     edit_subparsers = edit.add_subparsers(dest="edit_command", required=True)
 
     edit_rotate = edit_subparsers.add_parser(
-        "rotate", help="Record a 90-degree rotation of one negative."
+        "rotate", help="Record a 90-degree rotation of one or more negatives."
     )
     edit_rotate.add_argument("--roll", required=True, metavar="DIR")
-    edit_rotate.add_argument("--negative", required=True, metavar="ID")
+    edit_rotate.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to rotate; repeat for a selection",
+    )
     edit_rotate.add_argument(
         "--direction",
         required=True,
@@ -213,17 +226,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="cw rotates the image 90 degrees clockwise, ccw counter-clockwise",
     )
 
+    edit_flip = edit_subparsers.add_parser(
+        "flip", help="Record a horizontal mirror of one or more negatives."
+    )
+    edit_flip.add_argument("--roll", required=True, metavar="DIR")
+    edit_flip.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to flip; repeat for a selection",
+    )
+
     edit_delete = edit_subparsers.add_parser(
-        "delete", help="Delete one negative's record, TIFF, and preview."
+        "delete", help="Delete negatives' records, TIFFs, and previews."
     )
     edit_delete.add_argument("--roll", required=True, metavar="DIR")
-    edit_delete.add_argument("--negative", required=True, metavar="ID")
+    edit_delete.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to delete; repeat for a selection",
+    )
 
     edit_render_region = edit_subparsers.add_parser(
         "render-region",
         help=(
             "Render one display-space region of a negative's published TIFF "
-            "at 1:1 as a lossless PNG (net rotation folded in)."
+            "at 1:1 as a lossless PNG (net transform folded in)."
         ),
     )
     edit_render_region.add_argument("--roll", required=True, metavar="DIR")
@@ -421,55 +452,51 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
     info = manifest.to_dict()
-    # Net rotation is derived state — the ops log's replay — so it is
+    # Net transform is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        negative["rotation_quarter_turns"] = repo.net_rotation_quarter_turns(
+        quarter_turns, flipped = repo.net_edit_state(
             roll_dir, negative["negative_id"]
         )
+        negative["rotation_quarter_turns"] = quarter_turns
+        negative["flipped_horizontally"] = flipped
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
 
 def _run_edit_command(args, writer: EventWriter) -> int:
-    """The `edit rotate` subcommand: records the op and refreshes the
-    preview; brackets like every other subcommand."""
+    """The `edit rotate` / `edit flip` / `edit delete` subcommands: record
+    or remove per selected negative and refresh the previews; bracket like
+    every other subcommand. Each event the run produced is written before
+    the `finished` line."""
     writer.write(Started(command=f"edit {args.edit_command}"))
-    if args.edit_command == "rotate":
-        try:
-            fields = run_edit_rotate(
+    confirmation: type[Event]
+    try:
+        if args.edit_command == "rotate":
+            results = run_edit_rotate(
                 Path(args.roll),
                 args.negative,
                 args.direction,
                 emit=writer.write,
             )
-        except EditFailure as exc:
-            writer.write(ErrorEvent(code=exc.code, message=exc.message))
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        writer.write(EditRecorded(**fields))
-        writer.write(Finished(status="success", exit_status=0))
-        return 0
-
-    if args.edit_command == "delete":
-        try:
-            fields = run_edit_delete(
+            confirmation = EditRecorded
+        elif args.edit_command == "flip":
+            results = run_edit_flip(
                 Path(args.roll),
                 args.negative,
                 emit=writer.write,
             )
-        except EditFailure as exc:
-            writer.write(ErrorEvent(code=exc.code, message=exc.message))
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        writer.write(NegativeDeleted(**fields))
-        writer.write(Finished(status="success", exit_status=0))
-        return 0
-
-    if args.edit_command == "render-region":
-        try:
-            fields = run_edit_render_region(
+            confirmation = EditRecorded
+        elif args.edit_command == "delete":
+            results = run_edit_delete(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )
+            confirmation = NegativeDeleted
+        elif args.edit_command == "render-region":
+            results = [run_edit_render_region(
                 Path(args.roll),
                 args.negative,
                 args.x,
@@ -478,15 +505,18 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.height,
                 Path(args.output),
                 emit=writer.write,
-            )
-        except EditFailure as exc:
-            writer.write(ErrorEvent(code=exc.code, message=exc.message))
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        writer.write(RegionRendered(**fields))
-        writer.write(Finished(status="success", exit_status=0))
-        return 0
-    raise AssertionError(f"unhandled edit command {args.edit_command!r}")
+            )]
+            confirmation = RegionRendered
+        else:
+            raise AssertionError(f"unhandled edit command {args.edit_command!r}")
+    except EditFailure as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    for fields in results:
+        writer.write(confirmation(**fields))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
 
 
 def _run_flatfield_command(args, writer: EventWriter) -> int:

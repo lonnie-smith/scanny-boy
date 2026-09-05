@@ -75,6 +75,10 @@ struct RollManifest: Sendable, Hashable {
         /// Swift rotates nothing itself; the preview file already shows the
         /// edited orientation.
         let rotationQuarterTurns: Int
+        /// The ops log's net transform's horizontal-mirror half, derived by
+        /// the CLI. A flip and a rotation do not commute, so the pair — not
+        /// the turn count alone — is what identifies the rendered state.
+        let flippedHorizontally: Bool
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -226,7 +230,9 @@ struct RollManifest: Sendable, Hashable {
             previewPath: fields["preview_path"]?.stringValue,
             // Protocol version 4's CLI did not augment this field; a roll
             // whose record predates the augmentation reads as unrotated.
-            rotationQuarterTurns: fields["rotation_quarter_turns"]?.intValue ?? 0
+            rotationQuarterTurns: fields["rotation_quarter_turns"]?.intValue ?? 0,
+            // Likewise absent before the flip op existed: unmirrored.
+            flippedHorizontally: fields["flipped_horizontally"]?.boolValue ?? false
         )
     }
 

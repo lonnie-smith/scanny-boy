@@ -59,13 +59,18 @@ struct EditStageView: View {
     }
 
     /// Option-left / Option-right move the selection, whether or not the
-    /// filmstrip has keyboard focus.
+    /// filmstrip has keyboard focus; Cmd-A selects every frame, Cmd-D
+    /// deselects them all.
     private var selectionShortcuts: some View {
         Group {
             Button("Previous Negative") { edit.selectPrevious() }
                 .keyboardShortcut(.leftArrow, modifiers: .option)
             Button("Next Negative") { edit.selectNext() }
                 .keyboardShortcut(.rightArrow, modifiers: .option)
+            Button("Select All Negatives") { edit.selectAll() }
+                .keyboardShortcut("a", modifiers: .command)
+            Button("Deselect All Negatives") { edit.deselectAll() }
+                .keyboardShortcut("d", modifiers: .command)
         }
         .allowsHitTesting(false)
         .opacity(0)
@@ -78,9 +83,13 @@ struct EditStageView: View {
                 ForEach(edit.visibleNegatives, id: \.negativeID) { negative in
                     FilmstripCell(
                         negative: negative,
-                        isSelected: negative.negativeID == edit.selectedNegative?.negativeID
-                    ) {
-                        edit.selectedNegativeID = negative.negativeID
+                        isSelected: edit.isSelected(negative.negativeID)
+                    ) { additive, extendingRange in
+                        edit.select(
+                            negative.negativeID,
+                            additive: additive,
+                            extendingRange: extendingRange
+                        )
                     }
                 }
             }
@@ -92,8 +101,10 @@ struct EditStageView: View {
 }
 
 /// The selected negative: a preview sized to fill the available space (or,
-/// after a space+click, a 1:1 crop of it), the rotation controls, and the
-/// one-line info strip.
+/// after a space+click, a 1:1 crop of it), the rotate/flip controls, and
+/// the one-line info strip. The controls act on the whole multi-selection
+/// when one exists — `edit.selectionTargets` falls back to the anchor
+/// frame otherwise.
 private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
@@ -105,6 +116,9 @@ private struct PreviewPane: View {
     @State private var isConfirmingDelete = false
     @State private var zoom = PreviewZoomModel()
 
+        /// The negatives the controls act on, read once per invocation.
+    private var targets: [RollManifest.Negative] { edit.selectionTargets }
+
     var body: some View {
         VStack(spacing: 8) {
             preview
@@ -113,7 +127,7 @@ private struct PreviewPane: View {
 
             HStack(spacing: 12) {
                 Button {
-                    Task { await edit.rotate(negative, clockwise: false) }
+                    Task { await edit.rotate(targets, clockwise: false) }
                 } label: {
                     Image(systemName: "rotate.left")
                 }
@@ -122,13 +136,22 @@ private struct PreviewPane: View {
                 .accessibilityLabel("Rotate 90° counter-clockwise")
 
                 Button {
-                    Task { await edit.rotate(negative, clockwise: true) }
+                    Task { await edit.rotate(targets, clockwise: true) }
                 } label: {
                     Image(systemName: "rotate.right")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || runIsActive)
                 .help("Rotate 90° clockwise")
                 .accessibilityLabel("Rotate 90° clockwise")
+
+                Button {
+                    Task { await edit.flip(targets) }
+                } label: {
+                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help("Flip horizontally")
+                .accessibilityLabel("Flip horizontally")
 
                 if edit.isRotating {
                     ProgressView()
@@ -149,29 +172,24 @@ private struct PreviewPane: View {
                     Image(systemName: "trash")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || runIsActive)
-                .help("Delete Negative…")
-                .accessibilityLabel("Delete Negative…")
+                .help(deleteButtonHelp)
+                .accessibilityLabel(deleteButtonHelp)
             }
             .padding([.horizontal, .bottom], 16)
         }
         .confirmationDialog(
-            "Delete “\(negative.expectedOutput)”?",
+            deleteDialogTitle,
             isPresented: $isConfirmingDelete
         ) {
             Button("Delete", role: .destructive) {
                 Task {
-                    await edit.delete(negative)
+                    await edit.delete(targets)
                     onNegativeDeleted()
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
-                """
-                Its published TIFF is removed from the roll folder and its \
-                record is removed from the library. This cannot be undone.
-                """
-            )
+            Text(deleteDialogMessage)
         }
         .task(id: previewIdentity) {
             thumbnail = nil
@@ -181,7 +199,7 @@ private struct PreviewPane: View {
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
                 forPreview: url,
-                generation: String(negative.rotationQuarterTurns),
+                generation: previewGeneration,
                 pointSize: CGSize(width: 1200, height: 1200),
                 scale: displayScale
             )
@@ -194,6 +212,28 @@ private struct PreviewPane: View {
         }
     }
 
+    private var deleteButtonHelp: String {
+        targets.count > 1 ? "Delete \(targets.count) Negatives…" : "Delete Negative…"
+    }
+
+    private var deleteDialogTitle: String {
+        targets.count == 1
+            ? "Delete “\(negative.expectedOutput)”?"
+            : "Delete \(targets.count) Negatives?"
+    }
+
+    private var deleteDialogMessage: String {
+        targets.count == 1
+            ? """
+            Its published TIFF is removed from the roll folder and its \
+            record is removed from the library. This cannot be undone.
+            """
+            : """
+            Their published TIFFs are removed from the roll folder and \
+            their records are removed from the library. This cannot be \
+            undone.
+            """
+    }
     private var infoLine: String {
         var parts = [negative.expectedOutput]
         if let rms = negative.globalRMSPixels {
@@ -203,13 +243,22 @@ private struct PreviewPane: View {
             let megapixels = Double(output.width * output.height) / 1_000_000
             parts.append(String(format: "%d × %d (%.1f MP)", output.width, output.height, megapixels))
         }
+        let selectionCount = edit.selectionTargets.count
+        if selectionCount > 1 {
+            parts.append("\(selectionCount) selected")
+        }
         return parts.joined(separator: "  ·  ")
     }
 
-    /// Path plus rotation: the CLI rewrites the preview file in place, so
-    /// the pair is what tells the thumbnail cache the contents changed.
+    /// Path plus net transform: the CLI rewrites the preview file in
+    /// place, so the pair is what tells the thumbnail cache the
+    /// contents changed.
     private var previewIdentity: String {
-        "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)"
+        "\(negative.previewPath ?? "none")#\(previewGeneration)"
+    }
+
+    private var previewGeneration: String {
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)"
     }
 
     private var previewURL: URL? {
@@ -305,11 +354,12 @@ private struct PreviewPane: View {
 }
 
 /// One cell of the filmstrip: a small thumbnail, highlighted when selected,
-/// clickable to select its negative.
+/// clickable to select its negative. Clicks carry their modifier flags to
+/// the model: shift extends a range, command toggles a frame.
 private struct FilmstripCell: View {
     let negative: RollManifest.Negative
     let isSelected: Bool
-    let onSelect: () -> Void
+    let onSelect: (_ additive: Bool, _ extendingRange: Bool) -> Void
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
@@ -317,7 +367,15 @@ private struct FilmstripCell: View {
     private static let cellSize = CGSize(width: 80, height: 80)
 
     var body: some View {
-        Button(action: onSelect) {
+        Button {
+            // NSEvent.pressedMouseButtons style probing is not needed here:
+            // the click's own modifier flags are on the current event.
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            onSelect(
+                flags.contains(.command),
+                flags.contains(.shift)
+            )
+        } label: {
             preview
                 .frame(width: Self.cellSize.width, height: Self.cellSize.height)
                 .background(isSelected ? Color.accentColor.opacity(0.18) : .clear)
@@ -332,14 +390,14 @@ private struct FilmstripCell: View {
         }
         .buttonStyle(.plain)
         .help(negative.expectedOutput)
-        .task(id: "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)") {
+        .task(id: "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)") {
             thumbnail = nil
             guard let previewPath = negative.previewPath else {
                 return
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
                 forPreview: URL(filePath: previewPath),
-                generation: String(negative.rotationQuarterTurns),
+                generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
                 pointSize: Self.cellSize,
                 scale: displayScale
             )
