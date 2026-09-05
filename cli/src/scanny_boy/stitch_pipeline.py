@@ -100,6 +100,12 @@ from scanny_boy.output_folder import (
     staging_dir_path,
     validate_writable,
 )
+from scanny_boy.rectification_fit import (
+    MAX_WEIGHT_EXCURSION,
+    MIN_ACCEPTED_PAIRS,
+    MIN_RELATIVE_IMPROVEMENT,
+    fit_rectification,
+)
 from scanny_boy.registration import (
     DETECTOR,
     MAX_PAIR_RMS_PX,
@@ -110,6 +116,7 @@ from scanny_boy.registration import (
     SCALE_DRIFT_FAIL,
     SCALE_DRIFT_WARN,
     PairResult,
+    Rectification,
     StitchError,
     detect_features,
     register_pair,
@@ -167,6 +174,10 @@ class _SolvedNegative:
     group: GroupRecord
     record: NegativeRecord
     pairs: list[PairResult]
+    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
+    # section 4), or None when the fit was rejected. When present, the
+    # layout and the composite work in rectified space.
+    rectification: Rectification | None = None
     # Covered negatives this run removes when this group publishes: records
     # dropped from the manifest, TIFFs unlinked best-effort.
     covered_to_remove: list[NegativeRecord] = dataclasses.field(default_factory=list)
@@ -245,6 +256,13 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
         "feather": composite_module.FEATHER,
+        # The rig-tilt rectification in force (docs/RECTIFICATION_PLAN.md):
+        # the model name is fixed policy; whether a given negative actually
+        # carried a correction is that negative's own `rectification` block.
+        "rectification_model": "global-2-param",
+        "rectification_min_accepted_pairs": MIN_ACCEPTED_PAIRS,
+        "rectification_min_improvement": MIN_RELATIVE_IMPROVEMENT,
+        "rectification_max_excursion": MAX_WEIGHT_EXCURSION,
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {
@@ -518,7 +536,14 @@ def _attempt_solve(
 
     With a calibrated profile, matched points are undistorted before RANSAC
     (docs/GEOMETRIC_PLAN.md section 5.3) and the memory estimate includes
-    the band-map terms."""
+    the band-map terms. Registration runs twice when the rig-tilt
+    rectification is accepted (docs/RECTIFICATION_PLAN.md section 4.2):
+    pass 1 as always, the fit on pass 1's accepted pairs, then pass 2
+    re-registers every pair with the rectifier composed into the
+    undistorter's slot, so the gates, the layout, and the composite all
+    work in rectified space under the model that actually fits them. Pass 2
+    re-runs the ratio test and RANSAC per pair — detection is not repeated
+    — and rides inside the existing MATCH step budget."""
     if progress is not None:
         for _ in paths:
             progress.advance(source_index, PipelineStep.LOAD)
@@ -539,12 +564,29 @@ def _attempt_solve(
             progress.advance(source_index, PipelineStep.DETECT)
     cancel.raise_if_cancelled()
 
-    pairs: list[PairResult] = []
-    for i in range(len(features)):
-        for j in range(i + 1, len(features)):
-            cancel.raise_if_cancelled()
-            pairs.append(register_pair(features[i], features[j], undistorter))
+    def register_all(point_map) -> list[PairResult]:
+        return [
+            register_pair(features[i], features[j], point_map)
+            for i in range(len(features))
+            for j in range(i + 1, len(features))
+        ]
+
+    pairs = register_all(undistorter)
     entry.pairs = pairs
+    cancel.raise_if_cancelled()
+
+    rectification = fit_rectification(pairs, frame_size)
+    entry.rectification = rectification
+    if rectification is not None:
+        record_rectification(entry.record, rectification)
+
+        def undistort_then_rectify(points: np.ndarray) -> np.ndarray:
+            undistorted = undistorter(points) if undistorter is not None else points
+            return registration.rectify(undistorted, rectification)
+
+        pairs = register_all(undistort_then_rectify)
+        entry.pairs = pairs
+        cancel.raise_if_cancelled()
     entry.record.pairs = _pair_records(pairs)
     if progress is not None:
         progress.advance(source_index, PipelineStep.MATCH)
@@ -564,7 +606,7 @@ def _attempt_solve(
             )
 
     names = [path.name for path in paths]
-    layout = solve_layout(names, frame_size, pairs)
+    layout = solve_layout(names, frame_size, pairs, rectification)
     if progress is not None:
         progress.advance(source_index, PipelineStep.SOLVE)
     cancel.raise_if_cancelled()
@@ -593,10 +635,29 @@ def _attempt_solve(
             len(paths),
             geometry=geometry is not None,
             ca_maps=ca_maps is not None,
+            rectification=rectification is not None,
         )
     )
 
     return layout, frame_size, ca_maps
+
+
+def record_rectification(
+    record: NegativeRecord, rectification: Rectification
+) -> None:
+    """The per-negative `rectification` manifest block
+    (docs/RECTIFICATION_PLAN.md section 7): `l` in 1/px about `centre`,
+    with the fit's own before/after diagnostics. Interpretable without a
+    focal length, like the gauge rule requires."""
+    record.rectification = {
+        "l": [float(rectification.l[0]), float(rectification.l[1])],
+        "centre": [float(rectification.centre[0]), float(rectification.centre[1])],
+        "frame_size": [rectification.frame_size[0], rectification.frame_size[1]],
+        "rms_before_px": float(rectification.rms_before_px),
+        "rms_after_px": float(rectification.rms_after_px),
+        "relative_improvement": float(rectification.relative_improvement),
+        "pair_count": rectification.pair_count,
+    }
 
 
 def _finite(value: float) -> float:
@@ -1411,7 +1472,9 @@ def _composite_and_publish(
         # 1.5): it takes only `layout` and `entry.frame_size`, both of which
         # exist at solve time. It restricts the meters only — it never crops
         # the output.
-        valid_rect = largest_valid_rect(layout, entry.frame_size)
+        valid_rect = largest_valid_rect(
+            layout, entry.frame_size, rectification=entry.rectification
+        )
 
         geometry = profile.geometry if profile is not None else None
         ca = entry.ca_maps if profile is not None else None
@@ -1422,6 +1485,7 @@ def _composite_and_publish(
             on_progress=on_frame_warped,
             geometry=geometry,
             ca=ca,
+            rectification=entry.rectification,
             region=valid_rect,
             reference_bounds=reference_bounds,
         )

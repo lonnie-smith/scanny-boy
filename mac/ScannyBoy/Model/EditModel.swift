@@ -319,7 +319,8 @@ final class EditModel {
                 previewPath: event.previewPath ?? negative.previewPath,
                 rotationQuarterTurns: turns,
                 flippedHorizontally: event.flippedHorizontally
-                    ?? negative.flippedHorizontally
+                    ?? negative.flippedHorizontally,
+                rectification: negative.rectification
             )
         )
     }

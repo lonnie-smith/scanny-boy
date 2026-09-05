@@ -117,6 +117,43 @@ struct EditModelTests {
         #expect(model.visibleNegatives.map(\.negativeID) == ["n2", "n1"])
     }
 
+    @Test("The rectification block decodes tolerantly: present, absent, and malformed")
+    func testRectificationDecodesTolerantly() async throws {
+        let withRect = Self.negativeJSON(
+            negativeID: "n1", sequence: 1, intended: nil, applied: nil
+        ).replacingOccurrences(
+            of: "\"rebate_deviation_px\":null",
+            with: """
+            "rebate_deviation_px":null,\
+            "rectification":{"l":[3.1e-07,-3.8e-07],"centre":[3032.0,2020.0],\
+            "frame_size":[4040,6064],"rms_before_px":1.41,"rms_after_px":0.83,\
+            "relative_improvement":0.41,"pair_count":3}
+            """
+        )
+        let withMalformed = Self.negativeJSON(
+            negativeID: "n2", sequence: 2, intended: nil, applied: nil
+        ).replacingOccurrences(
+            of: "\"rebate_deviation_px\":null",
+            with: "\"rebate_deviation_px\":null,\"rectification\":{\"l\":[1.0]}"
+        )
+        let runner = try Self.isolatedRunner(
+            rollInfoLines: [
+                Self.rollInfoEvent(negatives: [withRect, withMalformed])
+            ]
+        )
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+
+        let rectified = model.visibleNegatives.first { $0.negativeID == "n1" }
+        #expect(rectified?.rectification?.lX == 3.1e-07)
+        #expect(rectified?.rectification?.relativeImprovement == 0.41)
+        // A malformed block is no block: nil, never a crash.
+        let rejected = model.visibleNegatives.first { $0.negativeID == "n2" }
+        #expect(rejected?.rectification == nil)
+    }
+
     @Test("Refresh re-reads the manifest a run just rewrote")
     func testRefreshPicksUpNegativesAddedAfterTheFirstFetch() async throws {
         let directory = FileManager.default.temporaryDirectory

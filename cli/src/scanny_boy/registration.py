@@ -433,3 +433,109 @@ def register_pair(
         similarity_transform=similarity_transform,
         similarity_scale=similarity_scale,
     )
+
+
+# --- tilt rectification (docs/RECTIFICATION_PLAN.md sections 2 and 4) -------
+#
+# The closed-form core of the rig-tilt rectification: the coordinate maps,
+# the record the fit produces, and the per-pair re-fit onto rectified
+# points. Everything here is NumPy; the nonlinear fit over the two shared
+# parameters lives in `rectification_fit.py`, because SciPy may not enter
+# this module or `layout.py`. The rectification is a re-parameterisation of
+# image coordinates in the same slot as `undistorter_from_geometry` — no
+# pair and no frame is ever placed by a homography.
+
+
+@dataclasses.dataclass(frozen=True)
+class Rectification:
+    """One negative's fitted rig-tilt rectification.
+
+    `W(l) = [[1,0,0],[0,1,0],[l1,l2,1]]` acts on points centred at
+    `centre` (the frame centre; every frame of a negative is the same
+    size), so `l` is in 1/px and carries no gauge freedom. The
+    `rms_before_px`/`rms_after_px`/`relative_improvement`/`pair_count`
+    fields are the fit's own diagnostics — the same inlier correspondences
+    measured under the pass-1 per-pair similarity fits and under the
+    shared-`l` model — and are what the roll manifest's per-negative
+    `rectification` block records. Producing degrees needs an effective
+    focal length in pixels, which production deliberately does not have;
+    `l` in 1/px is the record."""
+
+    l: np.ndarray  # (2,), 1/px, acts on centred coordinates
+    centre: np.ndarray  # (2,), px
+    frame_size: tuple[int, int]  # (height, width)
+    rms_before_px: float
+    rms_after_px: float
+    relative_improvement: float
+    pair_count: int
+
+
+def rectify(points: np.ndarray, rectification: Rectification) -> np.ndarray:
+    """Image px -> rectified px through W. The rectified coordinates keep
+    the image origin (they are absolute px, not centred), so transforms
+    re-fitted on them compose with the existing placement arithmetic
+    unchanged; the centring is only how `l`'s weight is evaluated:
+
+        q = p - centre;  p' = centre + q / (1 + l . q)
+    """
+    q = points - rectification.centre
+    w = 1.0 + q @ rectification.l
+    return rectification.centre + q / w[:, np.newaxis]
+
+
+def unrectify(points: np.ndarray, rectification: Rectification) -> np.ndarray:
+    """The inverse map, W⁻¹ — the direction compositing evaluates per
+    output pixel: p' -> centre + q' / (1 - l . q')."""
+    q = points - rectification.centre
+    w = 1.0 - q @ rectification.l
+    return rectification.centre + q / w[:, np.newaxis]
+
+
+def rectified_frame_corners(rectification: Rectification) -> np.ndarray:
+    """The frame's four corners in rectified space: the footprint a
+    placement maps to canvas is this keystone quad, not the affine image
+    of the raw rectangle (docs/RECTIFICATION_PLAN.md section 5)."""
+    height, width = rectification.frame_size
+    corners = np.array(
+        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
+    )
+    return rectify(corners, rectification)
+
+
+def rectified_pairs(
+    pairs: list[PairResult], rectification: Rectification
+) -> list[PairResult]:
+    """Every pair's transforms re-fitted on its rectified inlier points, so
+    a layout solved from the result places frames in rectified space.
+
+    Acceptance and every match statistic are carried over unchanged — the
+    gates were evaluated on the pass-1 pairs and `rectified_pairs` never
+    re-evaluates them. A pair without enough inliers to re-fit keeps its
+    original transforms (they are meaningless to the layout anyway; only
+    accepted pairs are consumed). Post-rectification `scale_drift`
+    collapsing toward 1 is expected and is the fit's physical evidence: the
+    tilt was what the similarity scale was absorbing."""
+    re_fitted = []
+    for pair in pairs:
+        if len(pair.inlier_points_b) < _MIN_INLIERS_FOR_RIGID_FIT:
+            re_fitted.append(pair)
+            continue
+        src = rectify(pair.inlier_points_b, rectification)
+        dst = rectify(pair.inlier_points_a, rectification)
+        transform = rigid_from_correspondences(src, dst)
+        similarity_transform, similarity_scale = similarity_from_correspondences(
+            src, dst
+        )
+        re_fitted.append(
+            dataclasses.replace(
+                pair,
+                transform=transform,
+                rms_residual_px=_rms_residual(transform, src, dst),
+                scale_drift=abs(similarity_scale - 1.0),
+                similarity_transform=similarity_transform,
+                similarity_scale=similarity_scale,
+                inlier_points_a=dst,
+                inlier_points_b=src,
+            )
+        )
+    return re_fitted

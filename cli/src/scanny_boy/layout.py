@@ -14,7 +14,13 @@ the same idiom as `solve_gains`'s geometric-mean-1 anchor), then rotations
 (linear in `t` once `s` and `theta` are known). This three-step formulation
 is why section 4.1 forbids SciPy — do not replace it with a nonlinear
 bundle adjustment. The model is a similarity — rigid plus one isotropic
-scale — never an affine, never a homography.
+scale — never an affine, never a homography. When the stitch stage has
+fitted a rig-tilt rectification (`registration.Rectification`,
+docs/RECTIFICATION_PLAN.md), the pairs and points these solves consume are
+already rectified and the canvas is rectified space: the placement model
+itself is unchanged, and only the frame's canvas footprint is the
+rectified keystone quad rather than the affine image of the raw rectangle
+(`frame_corners`).
 
 `solve_layout` places frames geometrically; `solve_gains` is its photometric
 counterpart: per-channel gains reconciling lamp drift between frames, from
@@ -45,7 +51,12 @@ import cv2
 import numpy as np
 
 from scanny_boy.events import Code
-from scanny_boy.registration import PairResult, StitchError
+from scanny_boy.registration import (
+    PairResult,
+    Rectification,
+    StitchError,
+    rectify,
+)
 
 MAX_GLOBAL_RMS_PX = 12.0
 STRIP_SPREAD_RATIO = 0.15
@@ -135,12 +146,42 @@ def check_connectivity(names: list[str], pairs: list[PairResult]) -> None:
         )
 
 
+def frame_corners(
+    placement: FramePlacement,
+    frame_size: tuple[int, int],
+    rectification: Rectification | None = None,
+) -> np.ndarray:
+    """The frame's four corners in canvas space, (4, 2).
+
+    With a rectification, the corners first map through `W`: the frame's
+    canvas footprint is the rectified keystone quad, not the affine image
+    of the raw rectangle. Without one this is exactly the pre-rectification
+    computation, bit for bit — the regression the rectification=None path
+    pins."""
+    height, width = frame_size
+    corners_local = np.array(
+        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
+    )
+    if rectification is not None:
+        corners_local = rectify(corners_local, rectification)
+
+    matrix = placement.matrix()
+    rotation, translation = matrix[:, :2], matrix[:, 2]
+    return corners_local @ rotation.T + translation
+
+
 def solve_layout(
     names: list[str],
     frame_size: tuple[int, int],
     pairs: list[PairResult],
+    rectification: Rectification | None = None,
 ) -> Layout:
-    """frame_size is (height, width), identical for every frame."""
+    """frame_size is (height, width), identical for every frame.
+
+    `rectification`, when given, is the stitch stage's fitted rig-tilt
+    rectification: `pairs` are already rectified (the caller re-registered
+    them — docs/RECTIFICATION_PLAN.md section 4), and it is used only for
+    the canvas-bounds corner mapping here."""
     check_connectivity(names, pairs)
 
     accepted_pairs = [pair for pair in pairs if pair.accepted]
@@ -277,17 +318,12 @@ def solve_layout(
     ]
 
     # Canvas bounds: transform each frame's four corners, union bounding box.
-    height, width = frame_size
-    corners_local = np.array(
-        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
+    all_corners = np.vstack(
+        [
+            frame_corners(placement, frame_size, rectification)
+            for placement in placements
+        ]
     )
-
-    all_corners = []
-    for placement in placements:
-        matrix = placement.matrix()
-        rotation, translation = matrix[:, :2], matrix[:, 2]
-        all_corners.append(corners_local @ rotation.T + translation)
-    all_corners = np.vstack(all_corners)
 
     min_xy = all_corners.min(axis=0)
     max_xy = all_corners.max(axis=0)
@@ -510,7 +546,11 @@ def _largest_all_covered_rectangle(mask: np.ndarray) -> tuple[int, int, int, int
 
 
 def largest_valid_rect(
-    layout: Layout, frame_size: tuple[int, int], *, probe_long_edge: int = 2000
+    layout: Layout,
+    frame_size: tuple[int, int],
+    *,
+    probe_long_edge: int = 2000,
+    rectification: Rectification | None = None,
 ) -> tuple[int, int, int, int]:
     """Returns (x, y, width, height) in canvas pixels.
 
@@ -521,7 +561,9 @@ def largest_valid_rect(
     back up, then shrink it by one probe cell on every side, so the
     recorded rectangle is always inside the true valid area and never
     larger than it.
-    """
+
+    `rectification` reaches the corner mapping exactly as it does
+    `solve_layout` (docs/RECTIFICATION_PLAN.md section 5)."""
     canvas_width, canvas_height = layout.canvas_size
     probe_scale = min(1.0, probe_long_edge / max(canvas_width, canvas_height))
 
@@ -530,14 +572,8 @@ def largest_valid_rect(
 
     mask = np.zeros((probe_height, probe_width), dtype=np.uint8)
 
-    height, width = frame_size
-    corners_local = np.array(
-        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
-    )
     for placement in layout.placements:
-        matrix = placement.matrix()
-        rotation, translation = matrix[:, :2], matrix[:, 2]
-        corners_canvas = corners_local @ rotation.T + translation
+        corners_canvas = frame_corners(placement, frame_size, rectification)
         corners_probe = np.round(corners_canvas * probe_scale).astype(np.int32)
         cv2.fillConvexPoly(mask, corners_probe, 1)
 

@@ -157,9 +157,14 @@ def _make_work_dir(
     film_date: str = _FILM_DATE,
     shots_per_negative: int = 3,
     frame_gains: list[tuple[float, float, float]] | None = None,
+    frame_hook=None,
 ) -> Path:
     """A work directory holding real Phase 1 intermediates and a real
-    Phase 1 manifest, built without paying for RAW decoding."""
+    Phase 1 manifest, built without paying for RAW decoding.
+
+    `frame_hook`, when given, is applied to every uint16 frame after the
+    gains — the tilt-injection tests use it to warp each frame through a
+    known W, making the true inter-frame map `W⁻¹·S·W`."""
     work_dir = tmp_path / "work"
     work_dir.mkdir()
 
@@ -173,6 +178,8 @@ def _make_work_dir(
             seed=11 + negative_index * 7,
             frame_gains=frame_gains,
         )
+        if frame_hook is not None:
+            frames = [frame_hook(frame) for frame in frames]
         members: list[str] = []
         outputs: list[OutputRecord] = []
         for frame_index, pixels in enumerate(frames):
@@ -367,6 +374,78 @@ def test_end_to_end_on_real_samples(tmp_path):
 
     # No staging directory survives a successful run.
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
+
+
+# --- the rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 4.2) ---
+
+
+def _tilt_hook(l_x, l_y):
+    """Warps every frame through W(l), making the true inter-frame map
+    `W⁻¹·S·W` — the capture a tilted rig actually produces."""
+    import cv2
+
+    from scanny_boy.registration import Rectification, rectify
+
+    rect = Rectification(
+        l=np.array([l_x, l_y]),
+        centre=np.array([_FRAME_SIZE[1] / 2.0, _FRAME_SIZE[0] / 2.0]),
+        frame_size=_FRAME_SIZE,
+        rms_before_px=1.0,
+        rms_after_px=0.5,
+        relative_improvement=0.5,
+        pair_count=2,
+    )
+    height, width = _FRAME_SIZE
+    ys, xs = np.mgrid[0:height, 0:width]
+    pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
+    mapped = rectify(pts, rect).reshape(height, width, 2)
+
+    def hook(pixels: np.ndarray) -> np.ndarray:
+        return cv2.remap(
+            pixels,
+            mapped[..., 0].astype(np.float32),
+            mapped[..., 1].astype(np.float32),
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        ).astype(np.uint16)
+
+    return hook, rect
+
+
+def test_a_tilted_capture_rectifies_end_to_end(tmp_path):
+    """The two-pass flow on a genuine run: pass 1 registers the tilted
+    captures, the fit accepts, pass 2 re-registers in rectified space, and
+    the manifest records the correction."""
+    hook, rect = _tilt_hook(1.2e-5, -8e-6)
+    work_dir = _make_work_dir(tmp_path, frame_hook=hook)
+    out_dir = _roll_dir(tmp_path)
+
+    outcome = _stitch(work_dir, out_dir)
+
+    assert outcome.status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    negative = manifest.negatives[0]
+    assert negative.rectification is not None
+    block = negative.rectification
+    assert np.allclose(block["l"], rect.l, rtol=0.25)
+    assert block["pair_count"] >= 2
+    assert block["relative_improvement"] > 0.15
+    assert block["rms_after_px"] < block["rms_before_px"]
+
+
+def test_a_healthy_capture_stitches_without_a_rectification(tmp_path):
+    """The additive guarantee: a similarity-consistent synthetic negative
+    must not grow a tilt. The fit runs and is rejected by the improvement
+    gate; no second pass, no manifest block."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    outcome = _stitch(work_dir, out_dir)
+
+    assert outcome.status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    assert manifest.negatives[0].rectification is None
 
 
 def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
