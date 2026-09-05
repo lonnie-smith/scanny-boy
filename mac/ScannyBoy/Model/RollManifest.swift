@@ -11,11 +11,12 @@ import Foundation
 /// definition; this type deliberately decodes only the fields the app
 /// actually uses — the roll's own identity, each run's `run_id`/`status`
 /// (read by `RollManifestReport` for cleanup-incomplete detection), and each
-/// negative's identity, sequence, output, capture-time state, preview, and
-/// rotation — and ignores the rest (`sources`, `processing_params`,
-/// `icc_profile`, `stitch_params`, and every per-negative registration
-/// detail: `frames`, `pairs`, `canvas`, `valid_rect`, `fill_color`,
-/// `rebate_deviation_px`). A manifest that grows a field must not stop the
+/// negative's identity, sequence, output, capture-time state, preview,
+/// rotation, stitch diagnostics (error codes, alignment numbers derived
+/// from `pairs`, normalization headroom, grid regularity) — and ignores
+/// the rest (`sources`, `processing_params`, `icc_profile`, `stitch_params`,
+/// and the bulk of per-negative registration detail: `frames`, full
+/// `pairs`, `canvas`, `valid_rect`, `fill_color`). A manifest that grows a field must not stop the
 /// app reading the ones it needs.
 ///
 /// `processing_params` in particular is never read: the flat-field profile
@@ -152,6 +153,28 @@ struct RollManifest: Sendable, Hashable {
         /// the flat linear look. The published TIFF never carries it.
         let toneGradeR: Double?
         let toneSnapGamma: Double?
+        /// The stitch-stage failure code, when `status` is `failed`.
+        let errorCode: String?
+        let errorMessage: String?
+        /// Worst post-gain overlap MAD across accepted pairs — scanned from
+        /// the manifest's `pairs` array at decode time rather than stored
+        /// as its own field.
+        let maxOverlapMAD: Double?
+        /// Headroom clipping recorded during normalization — enough to derive
+        /// the Edit tab's normalization warning without reading the full
+        /// normalization object.
+        let normalization: NormalizationSummary?
+        /// Whether registration needed the CLAHE retry to solve this negative.
+        let usedClaheFallback: Bool
+        /// Grid regularity measures (docs/GRID_STITCH_PLAN.md section 4.2).
+        let gridPitchRatio: Double?
+        let gridAlignmentRatio: Double?
+
+        /// The normalization meters the Edit tab needs from the stored record.
+        struct NormalizationSummary: Sendable, Hashable {
+            let maxHeadroomClippedHighlight: Double
+            let maxHeadroomClippedShadow: Double
+        }
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -328,6 +351,7 @@ struct RollManifest: Sendable, Hashable {
         else { return nil }
 
         let output = fields["output"]?.objectValue.flatMap(Self.decodeOutput)
+        let pairs = fields["pairs"]?.arrayValue ?? []
 
         return Negative(
             negativeID: negativeID,
@@ -357,7 +381,45 @@ struct RollManifest: Sendable, Hashable {
             // Absent before the tone op existed (or an explicit null from
             // a reset): no adjustment, the flat look.
             toneGradeR: fields["tone_grade_r"]?.doubleValue,
-            toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue
+            toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue,
+            errorCode: fields["error_code"]?.stringValue,
+            errorMessage: fields["error_message"]?.stringValue,
+            maxOverlapMAD: Self.maxOverlapMAD(from: pairs),
+            normalization: fields["normalization"]?.objectValue
+                .flatMap(Self.decodeNormalizationSummary),
+            usedClaheFallback: fields["used_clahe_fallback"]?.boolValue ?? false,
+            gridPitchRatio: fields["grid_pitch_ratio"]?.doubleValue,
+            gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue
+        )
+    }
+
+    private static func maxOverlapMAD(from pairs: [JSONValue]) -> Double? {
+        let values = pairs.compactMap { pair -> Double? in
+            guard
+                let fields = pair.objectValue,
+                fields["accepted"]?.boolValue == true,
+                let mad = fields["overlap_mad"]?.doubleValue
+            else { return nil }
+            return mad
+        }
+        return values.max()
+    }
+
+    private static func decodeNormalizationSummary(
+        _ fields: [String: JSONValue]
+    ) -> Negative.NormalizationSummary? {
+        guard
+            let highlight = fields["headroom_clipped_highlights"]?.arrayValue,
+            let shadow = fields["headroom_clipped_shadows"]?.arrayValue,
+            highlight.count == 3,
+            shadow.count == 3
+        else { return nil }
+        let highlights = highlight.compactMap(\.doubleValue)
+        let shadows = shadow.compactMap(\.doubleValue)
+        guard highlights.count == 3, shadows.count == 3 else { return nil }
+        return Negative.NormalizationSummary(
+            maxHeadroomClippedHighlight: highlights.max() ?? 0,
+            maxHeadroomClippedShadow: shadows.max() ?? 0
         )
     }
 

@@ -313,11 +313,7 @@ final class RunModel {
         /// composite.py/layout.py). A published negative is always below
         /// those gates, so `.poor` should not occur; it is a guard, not a
         /// diagnosis.
-        enum Quality: Hashable {
-            case good
-            case fair
-            case poor
-        }
+        typealias Quality = NegativeDiagnostics.AlignmentQuality
 
         let id: String
         let status: Status
@@ -398,7 +394,7 @@ final class RunModel {
                 output: stitchedNegative?.output,
                 dimensions: stitchedNegative.map { "\($0.width)×\($0.height)" },
                 quality: stitchedNegative.map {
-                    Self.quality(rms: $0.globalRMS, mad: $0.maxOverlapMAD)
+                    NegativeDiagnostics.quality(rms: $0.globalRMS, mad: $0.maxOverlapMAD)
                 },
                 qualityDetail: stitchedNegative.map {
                     String(
@@ -412,6 +408,11 @@ final class RunModel {
         }
     }
 
+    /// The merged result for one negative, if this run touched it.
+    func negativeResult(for negativeID: String) -> NegativeResult? {
+        negativeResults.first { $0.id == negativeID }
+    }
+
     /// Warnings that name no negative the run touched. The convert stage
     /// prefixes its warnings with a source filename rather than a group id,
     /// and some codes prefix with nothing at all, so attribution is
@@ -421,23 +422,6 @@ final class RunModel {
         return warnings.filter { warning in
             !ids.contains { id in warning.message.hasPrefix("\(id): ") }
         }
-    }
-
-    /// Judged against the same gates the CLI enforces before publishing
-    /// (12 px global RMS, 0.20 overlap MAD — composite.py/layout.py, not
-    /// part of the event protocol, so mirrored here as constants): good is
-    /// a quarter of the gate, fair is anything the gate admitted.
-    private static let globalRMSGate = 12.0
-    private static let overlapMADGate = 0.20
-
-    private static func quality(rms: Double, mad: Double) -> NegativeResult.Quality {
-        if rms <= globalRMSGate / 4 && mad <= overlapMADGate / 4 {
-            return .good
-        }
-        if rms <= globalRMSGate && mad <= overlapMADGate {
-            return .fair
-        }
-        return .poor
     }
 
     /// The full conversion log as copyable plain text — every negative with

@@ -101,6 +101,32 @@ struct ConfigurationModelTests {
     private static let sixFileTwoGroups =
         TestEvents.line(#"{"event":"probe_result","catalogue":["n1.NEF","n2.NEF","n3.NEF","n4.NEF","n5.NEF","n6.NEF"],"warnings":[],"groups":[["n1.NEF","n2.NEF","n3.NEF"],["n4.NEF","n5.NEF","n6.NEF"]]}"#)
 
+    // MARK: - Selection shortcuts
+
+    @Test("Cmd-A selects all catalogue entries, Cmd-D clears the selection")
+    func testSelectAllAndDeselectAll() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["b.NEF"]
+
+        model.selectAll()
+        #expect(model.selectedFiles == Set(["a.NEF", "b.NEF", "c.NEF"]))
+
+        model.deselectAll()
+        #expect(model.selectedFiles.isEmpty)
+    }
+
     // MARK: - Model state follows probe results
 
     @Test("The catalogue reflects probe's order verbatim; nothing here re-sorts it")

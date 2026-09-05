@@ -25,6 +25,7 @@ struct EditStageView: View {
                 PreviewPane(
                     negative: negative,
                     edit: edit,
+                    run: run,
                     runIsActive: activity.isBusy,
                     onNegativeDeleted: onNegativeDeleted
                 )
@@ -35,6 +36,16 @@ struct EditStageView: View {
                     description: Text("Convert scans into this roll to see them here.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if showsRunLevelWarnings {
+                Text(rollLevelWarningCaption)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
             }
             Divider()
             FilmstripView(
@@ -71,6 +82,19 @@ struct EditStageView: View {
             if phase == .finished { edit.refresh() }
         }
     }
+
+    private var showsRunLevelWarnings: Bool {
+        guard run.phase == .finished,
+              !run.runLevelWarnings.isEmpty,
+              let rollURL = edit.rollURL,
+              let outputFolder = run.outputFolder
+        else { return false }
+        return rollURL.standardizedFileURL == outputFolder.standardizedFileURL
+    }
+
+    private var rollLevelWarningCaption: String {
+        NegativeDiagnostics.rollLevelWarningCaption(run.runLevelWarnings)
+    }
 }
 
 /// The selected negative: a preview sized to fill the available space (or,
@@ -81,6 +105,7 @@ struct EditStageView: View {
 private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
+    let run: RunModel
     let runIsActive: Bool
     let onNegativeDeleted: () -> Void
 
@@ -157,7 +182,7 @@ private struct PreviewPane: View {
 
                 Text(infoLine)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(negative.isFailed ? .red : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -232,29 +257,23 @@ private struct PreviewPane: View {
             """
     }
     private var infoLine: String {
-        var parts = [negative.expectedOutput]
-        if let rms = negative.globalRMSPixels {
-            parts.append(String(format: "Stitch registration error (RMS): %.1f px", rms))
-        }
-        // The CLI's fitted rig-tilt rectification: displayed, never
-        // recomputed (docs/RECTIFICATION_PLAN.md section 7).
-        if let rectification = negative.rectification {
-            parts.append(
-                String(
-                    format: "Rig tilt corrected (%.0f%% fit improvement)",
-                    rectification.relativeImprovement * 100
-                )
-            )
-        }
-        if let output = negative.output {
-            let megapixels = Double(output.width * output.height) / 1_000_000
-            parts.append(String(format: "%d × %d (%.1f MP)", output.width, output.height, megapixels))
-        }
-        let selectionCount = edit.selectionTargets.count
-        if selectionCount > 1 {
-            parts.append("\(selectionCount) selected")
-        }
-        return parts.joined(separator: "  ·  ")
+        let overlay = runOverlay
+        return NegativeDiagnostics.infoParts(
+            for: negative,
+            runOverlay: overlay,
+            selectionCount: edit.selectionTargets.count
+        ).joined(separator: "  ·  ")
+    }
+
+    /// Fresh per-negative diagnostics from the most recent finished run into
+    /// this roll, when the session still holds them.
+    private var runOverlay: RunModel.NegativeResult? {
+        guard run.phase == .finished,
+              let rollURL = edit.rollURL,
+              let outputFolder = run.outputFolder,
+              rollURL.standardizedFileURL == outputFolder.standardizedFileURL
+        else { return nil }
+        return run.negativeResult(for: negative.negativeID)
     }
 
     /// Path plus net transform: the CLI rewrites the preview file in

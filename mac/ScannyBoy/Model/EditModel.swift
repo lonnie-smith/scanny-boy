@@ -375,7 +375,14 @@ final class EditModel {
                     ?? negative.flippedHorizontally,
                 rectification: negative.rectification,
                 toneGradeR: toneGradeR,
-                toneSnapGamma: toneSnapGamma
+                toneSnapGamma: toneSnapGamma,
+                errorCode: negative.errorCode,
+                errorMessage: negative.errorMessage,
+                maxOverlapMAD: negative.maxOverlapMAD,
+                normalization: negative.normalization,
+                usedClaheFallback: negative.usedClaheFallback,
+                gridPitchRatio: negative.gridPitchRatio,
+                gridAlignmentRatio: negative.gridAlignmentRatio
             )
         )
     }

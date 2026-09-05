@@ -655,7 +655,14 @@ struct EditModelTests {
             flippedHorizontally: false,
             rectification: nil,
             toneGradeR: toneGradeR,
-            toneSnapGamma: toneSnapGamma
+            toneSnapGamma: toneSnapGamma,
+            errorCode: nil,
+            errorMessage: nil,
+            maxOverlapMAD: nil,
+            normalization: nil,
+            usedClaheFallback: false,
+            gridPitchRatio: nil,
+            gridAlignmentRatio: nil
         )
     }
 }

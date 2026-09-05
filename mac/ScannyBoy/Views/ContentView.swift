@@ -212,6 +212,13 @@ struct ContentView: View {
         // only the compact empty state otherwise — and the detail pane then
         // vertically centers that short stack instead of pinning it to the top.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            SelectAllDeselectAllShortcutButtons(
+                onSelectAll: model.selectAll,
+                onDeselectAll: model.deselectAll
+            )
+        }
+        .disabled(activity.isBusy)
     }
 
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
