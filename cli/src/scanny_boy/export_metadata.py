@@ -60,6 +60,8 @@ class ExportMetadata:
     city: str | None = None
     state: str | None = None
     caption: str | None = None
+    film: str | None = None
+    iso: str | None = None
     # The intended capture time, parsed from the manifest's ISO string.
     date_time_original: datetime.datetime | None = None
 
@@ -87,6 +89,8 @@ def export_metadata_for(manifest: RollManifest, negative: NegativeRecord) -> Exp
         city=effective.get("city"),
         state=effective.get("state"),
         caption=effective.get("caption"),
+        film=effective.get("film"),
+        iso=effective.get("iso"),
         date_time_original=date_time_original,
     )
 

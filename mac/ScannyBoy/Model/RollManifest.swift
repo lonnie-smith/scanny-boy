@@ -38,6 +38,9 @@ struct RollManifest: Sendable, Hashable {
         let height: Int
     }
 
+    /// Roll-only extended metadata fields (no per-image override).
+    static let rollOnlyMetadataFields = ["film", "iso"]
+
     /// The extended metadata fields, in display order. Each lives on both
     /// the roll (the fallback) and each negative (the explicit value); the
     /// effective value is the negative's own, else the roll's.
@@ -184,6 +187,9 @@ struct RollManifest: Sendable, Hashable {
         /// `YYYY-MM-DD`.
         let rollCaptureDate: String?
         let lastAppliedAt: String?
+        // Roll-only film stock and ISO rating.
+        var film: String?
+        var iso: String?
         // The roll-level extended-metadata fallbacks: what every negative
         // without its own explicit value displays and exports.
         var city: String?
@@ -195,6 +201,8 @@ struct RollManifest: Sendable, Hashable {
         subscript(field: String) -> String? {
             get {
                 switch field {
+                case "film": film
+                case "iso": iso
                 case "city": city
                 case "state": state
                 case "camera": camera
@@ -205,6 +213,8 @@ struct RollManifest: Sendable, Hashable {
             }
             set {
                 switch field {
+                case "film": film = newValue
+                case "iso": iso = newValue
                 case "city": city = newValue
                 case "state": state = newValue
                 case "camera": camera = newValue
@@ -444,6 +454,8 @@ struct RollManifest: Sendable, Hashable {
         Metadata(
             rollCaptureDate: fields["roll_capture_date"]?.stringValue,
             lastAppliedAt: fields["last_applied_at"]?.stringValue,
+            film: fields["film"]?.stringValue,
+            iso: fields["iso"]?.stringValue,
             city: fields["city"]?.stringValue,
             state: fields["state"]?.stringValue,
             camera: fields["camera"]?.stringValue,

@@ -42,11 +42,11 @@ if TYPE_CHECKING:
 
 # The fields the catalog remembers — every extended-metadata field except
 # `caption`, which is prose rather than a canonical value.
-CATALOG_FIELDS = ("city", "state", "camera", "lens")
+CATALOG_FIELDS = ("film", "iso", "city", "state", "camera", "lens")
 
 # The payload's roll-level keys. `capture_date` is the roll_capture_date;
-# the rest are the extended-metadata fallbacks.
-ROLL_KEYS = ("capture_date", "city", "state", "camera", "lens", "caption")
+# the rest are the extended-metadata fallbacks plus roll-only `film`/`iso`.
+ROLL_KEYS = ("capture_date", "film", "iso", "city", "state", "camera", "lens", "caption")
 # The payload's per-negative keys, plus `capture_date` (the negative's
 # `date_override`).
 NEGATIVE_KEYS = ("capture_date",) + METADATA_FIELDS

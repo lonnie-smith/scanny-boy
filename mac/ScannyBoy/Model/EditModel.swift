@@ -476,7 +476,7 @@ final class EditModel {
     /// most-recently-used first — the typeahead's suggestions. `caption` is
     /// deliberately absent: it is prose, not a canonical value, so the CLI
     /// never catalogs it.
-    static let catalogedFields = ["city", "state", "camera", "lens"]
+    static let catalogedFields = ["film", "iso", "city", "state", "camera", "lens"]
 
     var catalog: [String: [String]] = [:]
     @ObservationIgnored private var catalogTask: Task<Void, Never>?

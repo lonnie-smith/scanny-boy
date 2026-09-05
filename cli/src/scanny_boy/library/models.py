@@ -34,6 +34,7 @@ from sqlalchemy.types import TypeDecorator
 # `negatives` (the explicit per-image value that wins). Everything except
 # `caption` is also a `metadata_values` catalog field the typeahead offers.
 METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
 
 
 class JSONText(TypeDecorator):
@@ -75,6 +76,10 @@ class RollRow(Base):
     # `metadata`: two nullable strings rather than a nested object.
     roll_capture_date: Mapped[str | None] = mapped_column(Text)
     last_applied_at: Mapped[str | None] = mapped_column(Text)
+    # Roll-only extended metadata: film stock and ISO rating. Nullable
+    # throughout — pre-0009 rows read back with NULLs.
+    film: Mapped[str | None] = mapped_column(Text)
+    iso: Mapped[str | None] = mapped_column(Text)
     # The roll-level extended-metadata fallbacks: what every negative
     # without its own explicit value displays and exports. Nullable
     # throughout — pre-0006 rows (and a roll nothing was typed into) are

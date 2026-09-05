@@ -56,7 +56,17 @@ def empty_v5_manifest(
         "runs": [],
         "sources": [],
         "negatives": [],
-        "metadata": {"roll_capture_date": None, "last_applied_at": None},
+        "metadata": {
+            "roll_capture_date": None,
+            "last_applied_at": None,
+            "film": None,
+            "iso": None,
+            "city": None,
+            "state": None,
+            "camera": None,
+            "lens": None,
+            "caption": None,
+        },
     }
 
 
