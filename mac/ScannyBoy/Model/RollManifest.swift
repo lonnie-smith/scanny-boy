@@ -37,6 +37,54 @@ struct RollManifest: Sendable, Hashable {
         let height: Int
     }
 
+    /// The extended metadata fields, in display order. Each lives on both
+    /// the roll (the fallback) and each negative (the explicit value); the
+    /// effective value is the negative's own, else the roll's.
+    static let metadataFields = ["city", "state", "camera", "lens", "caption"]
+
+    struct ImageMetadata: Sendable, Hashable {
+        var city: String?
+        var state: String?
+        var camera: String?
+        var lens: String?
+        var caption: String?
+
+        static let empty = ImageMetadata()
+
+        subscript(field: String) -> String? {
+            get {
+                switch field {
+                case "city": city
+                case "state": state
+                case "camera": camera
+                case "lens": lens
+                case "caption": caption
+                default: nil
+                }
+            }
+            set {
+                switch field {
+                case "city": city = newValue
+                case "state": state = newValue
+                case "camera": camera = newValue
+                case "lens": lens = newValue
+                case "caption": caption = newValue
+                default: break
+                }
+            }
+        }
+
+        /// The live-fallback resolution: the negative's own explicit value
+        /// when it has one, else the roll-level value. Nothing is copied —
+        /// a roll-level change covers every negative without an explicit
+        /// one, instantly.
+        static func effective(
+            _ negative: ImageMetadata, roll fallback: RollManifest.Metadata, field: String
+        ) -> String? {
+            negative[field] ?? fallback[field]
+        }
+    }
+
     struct CaptureTime: Sendable, Hashable {
         let sourceDatetimeOriginal: String?
         let intendedDatetimeOriginal: String?
@@ -61,6 +109,9 @@ struct RollManifest: Sendable, Hashable {
         let status: String
         let output: Output?
         let captureTime: CaptureTime
+        /// The negative's explicit extended-metadata values (`nil` = inherit
+        /// the roll's fallback).
+        let metadata: ImageMetadata
         /// The registration quality numbers Chunk P2-9 already reports on
         /// `negative_done` (section 3.4), read back here for the Edit tab's
         /// display: RMS pixel error across every accepted pair, and the
@@ -88,6 +139,36 @@ struct RollManifest: Sendable, Hashable {
         /// `YYYY-MM-DD`.
         let rollCaptureDate: String?
         let lastAppliedAt: String?
+        // The roll-level extended-metadata fallbacks: what every negative
+        // without its own explicit value displays and exports.
+        var city: String?
+        var state: String?
+        var camera: String?
+        var lens: String?
+        var caption: String?
+
+        subscript(field: String) -> String? {
+            get {
+                switch field {
+                case "city": city
+                case "state": state
+                case "camera": camera
+                case "lens": lens
+                case "caption": caption
+                default: nil
+                }
+            }
+            set {
+                switch field {
+                case "city": city = newValue
+                case "state": state = newValue
+                case "camera": camera = newValue
+                case "lens": lens = newValue
+                case "caption": caption = newValue
+                default: break
+                }
+            }
+        }
     }
 
     let rollID: String
@@ -204,6 +285,16 @@ struct RollManifest: Sendable, Hashable {
         )
     }
 
+    private static func decodeImageMetadata(_ fields: [String: JSONValue]) -> ImageMetadata {
+        ImageMetadata(
+            city: fields["city"]?.stringValue,
+            state: fields["state"]?.stringValue,
+            camera: fields["camera"]?.stringValue,
+            lens: fields["lens"]?.stringValue,
+            caption: fields["caption"]?.stringValue
+        )
+    }
+
     private static func decodeNegative(_ fields: [String: JSONValue]) -> Negative? {
         guard
             let negativeID = fields["negative_id"]?.stringValue,
@@ -225,6 +316,10 @@ struct RollManifest: Sendable, Hashable {
             status: status,
             output: output,
             captureTime: Self.decodeCaptureTime(captureTimeFields),
+            // Pre-protocol-9 manifests carry no nested metadata object; a
+            // missing one is all-nil, which is exactly the inherit state.
+            metadata: fields["metadata"]?.objectValue.map(Self.decodeImageMetadata)
+                ?? .empty,
             globalRMSPixels: fields["global_rms_px"]?.doubleValue,
             rebateDeviationPixels: fields["rebate_deviation_px"]?.doubleValue,
             previewPath: fields["preview_path"]?.stringValue,
@@ -239,7 +334,12 @@ struct RollManifest: Sendable, Hashable {
     private static func decodeMetadata(_ fields: [String: JSONValue]) -> Metadata? {
         Metadata(
             rollCaptureDate: fields["roll_capture_date"]?.stringValue,
-            lastAppliedAt: fields["last_applied_at"]?.stringValue
+            lastAppliedAt: fields["last_applied_at"]?.stringValue,
+            city: fields["city"]?.stringValue,
+            state: fields["state"]?.stringValue,
+            camera: fields["camera"]?.stringValue,
+            lens: fields["lens"]?.stringValue,
+            caption: fields["caption"]?.stringValue
         )
     }
 }

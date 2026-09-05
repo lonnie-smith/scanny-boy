@@ -31,7 +31,9 @@
         "flatfield_created",
         "flatfield_list",
         "flatfield_deleted",
-        "flatfield_progress"
+        "flatfield_progress",
+        "metadata_updated",
+        "metadata_values"
       ]
     },
     "stage": {
@@ -107,6 +109,7 @@
         "ORPHAN_FILE_NOT_REMOVED",
         "NEGATIVE_NOT_FOUND",
         "INVALID_EDIT",
+        "INVALID_METADATA",
         "EXPORT_FAILED",
         "PREVIEW_FAILED",
         "FLATFIELD_PROFILE_NOT_FOUND",
@@ -206,7 +209,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 8
+      "const": 9
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -319,6 +322,8 @@
               "roll rename",
               "roll delete",
               "apply-metadata",
+              "metadata set",
+              "metadata values",
               "edit rotate",
               "edit flip",
               "edit delete",
@@ -501,6 +506,32 @@
           "output": { "type": "string" },
           "width": { "type": "integer", "minimum": 1 },
           "height": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "metadata_updated" } } },
+      "then": {
+        "required": ["manifest"],
+        "properties": {
+          "manifest": {
+            "type": "object",
+            "description": "The updated roll manifest, in the roll-manifest schema's shape."
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "metadata_values" } } },
+      "then": {
+        "required": ["field", "values"],
+        "properties": {
+          "field": { "type": "string" },
+          "values": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Previously-entered values, most-recently-used first."
+          }
         }
       }
     }

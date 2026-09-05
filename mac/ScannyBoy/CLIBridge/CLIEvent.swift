@@ -9,11 +9,12 @@ import Foundation
 /// reaches the app intact rather than failing the stream.
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
-    /// anything else is rejected rather than guessed at. Protocol 8
-    /// (docs/DECISIONS.md, "Normalization decisions") renames the prepare stage,
-    /// adds the `normalize` step, the scan-clipping and normalization
-    /// codes, and the normalization record fields.
-    public static let supportedProtocolVersion = 8
+    /// anything else is rejected rather than guessed at. Protocol 9 (the
+    /// extended-metadata editing feature) adds the `metadata` command
+    /// family — `metadata_updated`, `metadata_values`, the
+    /// `INVALID_METADATA` code — and the roll/negative extended-metadata
+    /// fields in the roll manifest.
+    public static let supportedProtocolVersion = 9
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -40,6 +41,8 @@ public struct CLIEvent: Sendable, Hashable {
         case rollDeleted
         case metadataApplied
         case metadataSkipped
+        case metadataUpdated
+        case metadataValues
         case editRecorded
         case negativeDeleted
         case exportDone
@@ -71,6 +74,8 @@ public struct CLIEvent: Sendable, Hashable {
             case "roll_deleted": self = .rollDeleted
             case "metadata_applied": self = .metadataApplied
             case "metadata_skipped": self = .metadataSkipped
+            case "metadata_updated": self = .metadataUpdated
+            case "metadata_values": self = .metadataValues
             case "edit_recorded": self = .editRecorded
             case "negative_deleted": self = .negativeDeleted
             case "export_done": self = .exportDone
@@ -102,6 +107,8 @@ public struct CLIEvent: Sendable, Hashable {
             case .rollDeleted: "roll_deleted"
             case .metadataApplied: "metadata_applied"
             case .metadataSkipped: "metadata_skipped"
+            case .metadataUpdated: "metadata_updated"
+            case .metadataValues: "metadata_values"
             case .editRecorded: "edit_recorded"
             case .negativeDeleted: "negative_deleted"
             case .exportDone: "export_done"
@@ -178,6 +185,12 @@ extension CLIEvent {
 
     // `roll_info`
     public var manifest: [String: JSONValue]? { fields["manifest"]?.objectValue }
+
+    // `metadata_values`
+    public var metadataField: String? { fields["field"]?.stringValue }
+    public var metadataFieldValues: [String]? {
+        fields["values"]?.arrayValue?.compactMap { $0.stringValue }
+    }
 
     // `progress` and `item_done`
     public var sourceIndex: Int? { fields["source_index"]?.intValue }
@@ -336,6 +349,8 @@ public enum CLICode: Sendable, Hashable {
     case orphanFileNotRemoved
     case negativeNotFound
     case invalidEdit
+    // Protocol version 9: the extended-metadata editing feature.
+    case invalidMetadata
     case exportFailed
     case previewFailed
     // Protocol version 6: flat-field profiles.
@@ -406,6 +421,7 @@ public enum CLICode: Sendable, Hashable {
         case "ORPHAN_FILE_NOT_REMOVED": self = .orphanFileNotRemoved
         case "NEGATIVE_NOT_FOUND": self = .negativeNotFound
         case "INVALID_EDIT": self = .invalidEdit
+        case "INVALID_METADATA": self = .invalidMetadata
         case "EXPORT_FAILED": self = .exportFailed
         case "PREVIEW_FAILED": self = .previewFailed
         case "FLATFIELD_PROFILE_NOT_FOUND": self = .flatFieldProfileNotFound
@@ -476,6 +492,7 @@ public enum CLICode: Sendable, Hashable {
         case .orphanFileNotRemoved: "ORPHAN_FILE_NOT_REMOVED"
         case .negativeNotFound: "NEGATIVE_NOT_FOUND"
         case .invalidEdit: "INVALID_EDIT"
+        case .invalidMetadata: "INVALID_METADATA"
         case .exportFailed: "EXPORT_FAILED"
         case .previewFailed: "PREVIEW_FAILED"
         case .flatFieldProfileNotFound: "FLATFIELD_PROFILE_NOT_FOUND"

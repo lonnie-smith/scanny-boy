@@ -174,6 +174,19 @@
         "source": { "type": "string" }
       }
     },
+    "negativeMetadata": {
+      "type": "object",
+      "required": ["city", "state", "camera", "lens", "caption"],
+      "properties": {
+        "city": { "type": ["string", "null"] },
+        "state": { "type": ["string", "null"] },
+        "camera": { "type": ["string", "null"] },
+        "lens": { "type": ["string", "null"] },
+        "caption": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false,
+      "description": "The negative's explicit extended-metadata values; null means inherit the roll-level fallback."
+    },
     "captureTime": {
       "type": "object",
       "required": [
@@ -244,6 +257,7 @@
         "error_code",
         "error_message",
         "capture_time",
+        "metadata",
         "preview_path",
         "normalized_fill",
         "normalization"
@@ -310,6 +324,7 @@
         "error_code": { "type": ["string", "null"] },
         "error_message": { "type": ["string", "null"] },
         "capture_time": { "$ref": "#/definitions/captureTime" },
+        "metadata": { "$ref": "#/definitions/negativeMetadata" },
         "preview_path": {
           "type": ["string", "null"],
           "description": "CLI-generated preview of the negative as its edits render so far; null until first generated."
@@ -335,14 +350,28 @@
     },
     "metadata": {
       "type": "object",
-      "required": ["roll_capture_date", "last_applied_at"],
+      "required": [
+        "roll_capture_date",
+        "last_applied_at",
+        "city",
+        "state",
+        "camera",
+        "lens",
+        "caption"
+      ],
       "properties": {
         "roll_capture_date": {
           "type": ["string", "null"],
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
         },
-        "last_applied_at": { "type": ["string", "null"] }
-      }
+        "last_applied_at": { "type": ["string", "null"] },
+        "city": { "type": ["string", "null"] },
+        "state": { "type": ["string", "null"] },
+        "camera": { "type": ["string", "null"] },
+        "lens": { "type": ["string", "null"] },
+        "caption": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
     }
   },
   "required": [
