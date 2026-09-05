@@ -483,9 +483,8 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
             ctx.progress.warn(
                 Code.SCAN_CLIPPED,
                 f"{member}: {fraction * 100:.2f}% of the channel-{channel} "
-                f"pixels are at or above sensor white "
-                f"({normalization.SCAN_CLIP_LEVEL:.2f}); their highlights "
-                "are clipped and no reconstruction is attempted",
+                "pixels are at the sensor's maximum; their highlights are "
+                "clipped and no reconstruction is attempted",
             )
     # Flat-field correction sits inside the DECODE step boundary: after the
     # RAW decode, before the base TIFF, so the stitch stage's per-frame
