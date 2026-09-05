@@ -72,8 +72,8 @@ the CLI renders each negative's preview, and `edit rotate` records a
 rotation without ever touching a published TIFF. `roll info`'s payload keeps
 the roll-manifest shape; each negative additionally carries
 `preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` +
-`flipped_horizontally` (the ops log's net effect, derived rather than
-stored). A client that only
+`flipped_horizontally` + `fine_rotation_deg` (the ops log's net effect,
+derived rather than stored). A client that only
 understands an earlier protocol version must reject a newer stream rather
 than guess at the new fields.
 
@@ -210,7 +210,8 @@ rather than silently disappearing.
 
 `roll info` loads one roll from the library database and emits it as a
 `roll_info` event, each negative augmented with `preview_path`,
-`rotation_quarter_turns`, and `flipped_horizontally`. Swift never reads the
+`rotation_quarter_turns`, `flipped_horizontally`, and `fine_rotation_deg`.
+Swift never reads the
 library database itself and
 never enumerates the library itself — `roll list` and `roll info` are the
 only two ways in.
@@ -244,7 +245,9 @@ negative carrying
 `negative_id`, the `edit` row (`id`, `negative_id`, `position`, `op`,
 `params`, `created_at`), `rotation_quarter_turns` (the ops log's net effect,
 0–3), `flipped_horizontally` (whether the ops log's net transform includes a
-horizontal mirror), and `preview_path`. It fails with `INVALID_EDIT` for an
+horizontal mirror), `fine_rotation_deg` (the ops log's net clockwise fine
+rotation in degrees, from the auto-seeded `rotate_fine` op below composed
+with any user ops), and `preview_path`. It fails with `INVALID_EDIT` for an
 unknown direction, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative — the whole
 selection is validated before any op is appended, so a batch either records
@@ -257,8 +260,29 @@ appending a `flip` op to each negative's ordered edits ops log. Like
 previews and emits `edit_recorded` per negative with the same fields. The
 ops log's net transform does not collapse to a rotation alone: a flip and a
 rotation do not commute, so consumers replay the log into a
-`(rotation_quarter_turns, flipped_horizontally)` pair. It fails with the
+`(rotation_quarter_turns, flipped_horizontally, fine_rotation_deg)` triple.
+It fails with the
 same codes as `edit rotate`.
+
+**Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
+rebate tilt of each *newly published* negative's composite — the density
+discriminator (film base is the thinnest thing on the film) locates the
+rebate, and one minimum-area enclosing rectangle of the picture area gives
+a single clockwise angle that squares the rebate's frame boundary with the
+canvas, splitting the difference across the rebate's not-quite-parallel
+edges (`scanny_boy/auto_rotate.py` owns every threshold). When the
+estimate survives the clamps, the stitch seeds one `rotate_fine` op —
+params `{"angle_deg": number, "source": "auto"}` — to the negative's
+ordered edits ops log, exactly like a user edit, and emits `edit_recorded`
+for it (with `run_id`). The published TIFF is never rotated by the stitch:
+like every edit, the rotation's pixels are transformed only at preview
+generation and export, replayed through the same net-state triple. A
+re-stitch adopts the existing negative and never re-seeds (no double
+rotation); `stitch --no-auto-rotate` (and `run --no-auto-rotate`) turns
+the seeding off. A user quarter-turn composes with the fine angle through
+the ordinary ops-log replay — a flip negates the fine angle along with the
+turn count, because `flip ∘ rot = rot^-1 ∘ flip` for rotations of any
+angle.
 
 `edit delete` removes one or more negatives outright, whatever their
 status: each record

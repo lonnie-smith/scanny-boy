@@ -39,7 +39,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import normalization
+from scanny_boy import auto_rotate, normalization
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -106,13 +106,18 @@ def generate_preview(
     negative,
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
     transform applied — the published TIFF itself never carries edits, so
     the transform is folded in here. The canonical replay mirrors the
-    original horizontally first (when flipped) and then rotates; returns
-    the preview path, or None when the negative has no published output to
-    preview."""
+    original horizontally first (when flipped), then applies the ops log's
+    fine auto-rotation (a warp with the stitching fill sentinel in the
+    uncovered pixels, `auto_rotate.rotate_with_fill`), then rotates; the
+    fine angle is negated by a flip exactly as `repo.net_edit_state`'s
+    replay says, so the caller passes the canonical angle through
+    untouched. Returns the preview path, or None when the negative has no
+    published output to preview."""
     if negative.output is None:
         return None
     import tifffile
@@ -125,6 +130,8 @@ def generate_preview(
         image = image[:, :, :3]
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
+    if abs(fine_angle_deg) >= 1e-9:
+        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
     if quarter_turns % 4:
         # np.rot90 turns counter-clockwise; the count is net clockwise
         # quarter turns.
@@ -177,7 +184,7 @@ def ensure_preview(
     if op is not None and op not in PREVIEW_OPS:
         raise ValueError(f"unknown preview op {op!r}")
     if negative.preview_path is None or not Path(negative.preview_path).exists():
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         return generate_preview(
@@ -186,6 +193,7 @@ def ensure_preview(
             negative,
             quarter_turns=quarter_turns,
             flipped_horizontally=flipped,
+            fine_angle_deg=fine_angle,
         )
     if op is not None:
         return transform_preview(Path(negative.preview_path), op)
@@ -211,7 +219,7 @@ def sync_previews(
         has_preview = negative.preview_path and Path(negative.preview_path).exists()
         if has_preview and negative.output["name"] not in published:
             continue
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         preview = generate_preview(
@@ -220,6 +228,7 @@ def sync_previews(
             negative,
             quarter_turns=quarter_turns,
             flipped_horizontally=flipped,
+            fine_angle_deg=fine_angle,
         )
         if preview is not None:
             negative.preview_path = str(preview)
@@ -230,9 +239,9 @@ def sync_previews(
         write_roll_manifest(roll_dir, manifest)
 
 
-def transforms_for(manifest, roll_dir: Path) -> dict[str, tuple[int, bool]]:
-    """Net transform per negative id — `(quarter_turns, flipped)` — for
-    `roll info` augmentation."""
+def transforms_for(manifest, roll_dir: Path) -> dict[str, tuple[int, bool, float]]:
+    """Net transform per negative id — `(quarter_turns, flipped,
+    fine_angle_deg)` — for `roll info` augmentation."""
     return {
         negative.negative_id: repo.net_edit_state(roll_dir, negative.negative_id)
         for negative in manifest.negatives

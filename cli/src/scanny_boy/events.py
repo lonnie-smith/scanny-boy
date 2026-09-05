@@ -379,9 +379,10 @@ class MetadataSkipped(Event):
 class EditRecorded(Event):
     """`edit rotate`/`edit flip`'s confirmation: the ops log entry as
     appended, the negative's net transform after it (quarter turns plus the
-    horizontal-mirror flag — a flip and a rotation do not commute, so one
-    number cannot carry both), and the regenerated preview the app should
-    now display. No pixel data of the published TIFF changes."""
+    horizontal-mirror flag plus the net fine angle — a flip and a rotation
+    do not commute, so one number cannot carry them), and the regenerated
+    preview the app should now display. No pixel data of the published TIFF
+    changes."""
 
     event_type: ClassVar[EventType] = EventType.EDIT_RECORDED
 
@@ -390,6 +391,7 @@ class EditRecorded(Event):
     rotation_quarter_turns: int
     flipped_horizontally: bool
     preview_path: str | None
+    fine_rotation_deg: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

@@ -43,11 +43,15 @@ if TYPE_CHECKING:
     from scanny_boy.roll_manifest import RollManifest
 
 # The edit operations the app records. Rotation params are
-# `{"direction": "cw" | "ccw"}`; flip takes no params (horizontal only).
-# Both compose by ordered replay — a flip does not commute with rotation, so
-# the log reduces to a `(quarter_turns, flipped)` pair, not a single number.
+# `{"direction": "cw" | "ccw"}`; flip takes no params (horizontal only);
+# `rotate_fine` params are `{"angle_deg": number, "source": "auto"}` — the
+# stitch stage's auto-seeded rebate squaring (see `auto_rotate.py`). All
+# compose by ordered replay — a flip does not commute with rotation, so the
+# log reduces to a `(quarter_turns, flipped, fine_angle_deg)` triple, not a
+# single number.
 ROTATE_OP = "rotate"
 FLIP_OP = "flip"
+ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
 # The gain a frame record carries when the row predates gain normalization
@@ -493,22 +497,28 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
         ]
 
 
-def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool]:
+def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool, float]:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net transform: `(quarter_turns, flipped_horizontally)`, where
-    the pixels are the original mirrored horizontally first (when flipped)
-    and then rotated `quarter_turns` clockwise quarter turns.
+    canonical net transform: `(quarter_turns, flipped_horizontally,
+    fine_angle_degrees)`, where the pixels are the original mirrored
+    horizontally first (when flipped), then rotated clockwise by
+    `fine_angle_degrees`, then rotated `quarter_turns` clockwise quarter
+    turns.
 
     Replay is closed-form because every op transforms the image as it
-    currently renders: a rotate adds to the turn count, and a horizontal
-    flip of an already-rotated image equals rotating the flipped image the
-    other way (`flip ∘ rot^t = rot^-t ∘ flip`), so a flip toggles the flag
-    and negates the turns. The single pair every consumer needs: the
-    preview generator's lossless mirror + `np.rot90` and the exporter's
+    currently renders: a rotate adds to the turn count, a fine rotation
+    adds to the angle, and a horizontal flip of an already-rotated image
+    equals rotating the flipped image the other way
+    (`flip ∘ rot = rot^-1 ∘ flip` — true for quarter turns and fine angles
+    alike), so a flip toggles the flag and negates *both* the turn count
+    and the fine angle. Fine angles and quarter turns commute, both being
+    rotations. The single triple every consumer needs: the preview
+    generator's mirror + fine warp + `np.rot90` and the exporter's
     identical replay are both driven from it. Unknown ops (an older build
     reading a newer log) are skipped."""
     turns = 0
     flipped = False
+    fine_deg = 0.0
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -519,7 +529,13 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool]:
         elif op == FLIP_OP:
             flipped = not flipped
             turns = -turns
-    return turns % 4, flipped
+            fine_deg = -fine_deg
+        elif op == ROTATE_FINE_OP:
+            angle = edit["params"].get("angle_deg")
+            if isinstance(angle, bool) or not isinstance(angle, (int, float)):
+                continue
+            fine_deg += float(angle)
+    return turns % 4, flipped, fine_deg
 
 
 def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:

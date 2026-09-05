@@ -972,3 +972,43 @@ file becomes a white border in the eventual positive, and the second one
 loses. The fill value is a cosmetic hint, not a sentinel, and nothing in
 the render path may key off it; the machine-readable coverage answer is
 `valid_rect` plus `coverage_fraction`.
+
+## Auto-rotation: the rebate squared, as an edit (protocol version 7)
+
+A stitched canvas comes out in whatever orientation the strip was scanned.
+**Auto-rotation is a nondestructive edit, never a pixel change at stitch
+time**: the stitch stage measures one rebate-squaring angle on the encoded
+composite (`scanny_boy/auto_rotate.py`), seeds one `rotate_fine` ops-log
+entry — params `{"angle_deg": number, "source": "auto"}`, emitted as
+`edit_recorded` — on each *newly published* negative, and stops there. The
+published TIFF is never rotated; the pixels are transformed only where the
+ops log meets pixels, at preview generation and export, exactly like a
+user's quarter turns. A re-stitch adopts the existing negative and never
+re-seeds (no double rotation, no trampling of user edits), and
+`--no-auto-rotate` turns the seeding off.
+
+**The angle is density-based, not edge-detection-based**: the rebate is
+strictly the thinnest thing on the film (D-3's discriminator, reused in
+normalized space — the published file's per-image stretch puts the rebate
+at the thin rail and the empty-canvas fill above it, both separable from
+scene), and one minimum-area enclosing rectangle of the picture area gives
+a single clockwise angle that squares the rebate's frame boundary with the
+canvas. That rectangle *is* the "split the difference": the rebate's four
+edges are neither straight nor parallel, and the minimum-area compromise
+across all four sides is the best estimate of what square means. The
+detector refuses to invent a rotation — no rebate, too little scene, or a
+tilt beyond the clamps seeds nothing.
+
+**What the rotation uncovers fills the way stitching fills**: the fine
+rotation keeps the canvas dimensions, and pixels whose source falls
+outside get the `NORMALIZED_FILL` sentinel — the same code, the same thin
+rail, rendered black in previews, nothing new downstream.
+
+**The ops log's net state becomes a triple**:
+`(rotation_quarter_turns, flipped_horizontally, fine_rotation_deg)`, the
+canonical replay being mirror, then fine warp, then quarter turns. A flip
+negates the fine angle along with the turn count, because `flip ∘ rot =
+rot^-1 ∘ flip` holds for rotations of any angle; quarter turns commute
+with the fine warp. The seeded angle is recorded nowhere else — the ops
+log is the single source of truth, and `roll info` derives the net angle
+the same way it derives the turns.

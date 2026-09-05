@@ -651,13 +651,14 @@ def test_thread_workers_never_return_image_arrays_to_the_parent(monkeypatch, tmp
         "member",
         "source_index",
         "final_path",
+        "scan_clip_fractions",
     }
     for frame in returned:
         assert isinstance(frame, pipeline._StagedFrame)
         for field in dataclasses.fields(frame):
             value = getattr(frame, field.name)
             assert not isinstance(value, np.ndarray)
-            assert isinstance(value, (str, int, Path))
+            assert isinstance(value, (str, int, Path, tuple))
 
 
 # --- inner TIFF compression stays at one worker ---------------------------

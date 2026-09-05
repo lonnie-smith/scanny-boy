@@ -128,7 +128,7 @@ def _append_transform_op(
     for negative in negatives:
         edit = repo.append_edit(roll_dir, negative.negative_id, op, params)
         _refresh_preview(roll_dir, roll, negative, preview_op, what=what, emit=emit)
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         results.append(
@@ -137,6 +137,7 @@ def _append_transform_op(
                 "edit": edit,
                 "rotation_quarter_turns": quarter_turns,
                 "flipped_horizontally": flipped,
+                "fine_rotation_deg": fine_angle,
                 "preview_path": negative.preview_path,
             }
         )

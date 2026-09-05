@@ -281,7 +281,7 @@ def test_work_directory_is_removed_after_cancellation(tmp_path, monkeypatch):
 
     def emit(event) -> None:
         events.append(event)
-        if isinstance(event, Progress) and event.stage is Stage.CONVERT:
+        if isinstance(event, Progress) and event.stage is Stage.PREPARE:
             cancel.cancel()
 
     outcome = run_full(
@@ -409,7 +409,7 @@ def test_cancellation_during_convert_skips_stitch_entirely(tmp_path, monkeypatch
 
     def emit(event) -> None:
         events.append(event)
-        if isinstance(event, Progress) and event.stage is Stage.CONVERT:
+        if isinstance(event, Progress) and event.stage is Stage.PREPARE:
             cancel.cancel()
 
     outcome = run_full(
@@ -466,7 +466,7 @@ def test_stage_transitions_exactly_once(tmp_path, monkeypatch):
     assert stages
     transitions = sum(1 for a, b in itertools.pairwise(stages) if a != b)
     assert transitions == 1
-    assert stages[0] is Stage.CONVERT
+    assert stages[0] is Stage.PREPARE
     assert stages[-1] is Stage.STITCH
 
 

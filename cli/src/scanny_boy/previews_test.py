@@ -194,6 +194,33 @@ def test_ensure_preview_regenerates_with_the_net_flip(tmp_path):
     np.testing.assert_array_equal(stored, _expected_preview(image, 3, flipped=True))
 
 
+def test_ensure_preview_regenerates_with_the_fine_rotation(tmp_path):
+    """The stitch stage's auto-seeded `rotate_fine` op reaches the preview
+    pixels through the same canonical replay: mirror, then the fine warp
+    (fill sentinel in what it uncovers), then quarter turns."""
+    from scanny_boy import previews
+    from scanny_boy.auto_rotate import rotate_with_fill
+    from scanny_boy.library import repo
+
+    image = np.repeat(np.arange(1200, dtype=np.uint16).reshape(30, 40, 1), 3, axis=-1)
+    image = (image * 50).astype(np.uint16)
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    repo.append_edit(
+        roll_dir,
+        negative.negative_id,
+        repo.ROTATE_FINE_OP,
+        {"angle_deg": 30.0, "source": "auto"},
+    )
+    preview = previews.ensure_preview(roll_dir, "rid-1", negative)
+
+    display = NORMALIZED_DISPLAY_LUT[rotate_with_fill(image, 30.0)]
+    expected = cv2.cvtColor(np.ascontiguousarray(display), cv2.COLOR_RGB2BGR)
+    stored = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
+    assert stored.shape == expected.shape
+    np.testing.assert_array_equal(stored, expected)
+
+
 def test_sync_previews_regenerates_a_stale_preview_after_a_restitch(tmp_path):
     """A re-stitch adopts the negative — same id, same preview path, new
     TIFF — so the cached preview of the old pixels must be regenerated, with

@@ -157,8 +157,8 @@ def test_flip_and_rotate_do_not_commute(stitched_roll):
 
     # flip∘rot-cw ≠ rot-cw∘flip: the mirrored image ends up turned the other
     # way relative to the mirror.
-    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (1, True)
-    assert repo.net_edit_state(stitched_roll, "stitch-negative-02") == (3, True)
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (1, True, 0.0)
+    assert repo.net_edit_state(stitched_roll, "stitch-negative-02") == (3, True, 0.0)
 
 
 def test_two_flips_cancel(stitched_roll):
