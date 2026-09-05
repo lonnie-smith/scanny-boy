@@ -130,6 +130,12 @@ struct RollManifest: Sendable, Hashable {
         /// the CLI. A flip and a rotation do not commute, so the pair — not
         /// the turn count alone — is what identifies the rendered state.
         let flippedHorizontally: Bool
+        /// The ops log's net preview tone adjustment (protocol 10's `tone`
+        /// op): an ISO-R paper grade and a midtone snap composed into the
+        /// CLI's preview display encode. `nil` = no adjustment recorded —
+        /// the flat linear look. The published TIFF never carries it.
+        let toneGradeR: Double?
+        let toneSnapGamma: Double?
 
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
@@ -327,7 +333,11 @@ struct RollManifest: Sendable, Hashable {
             // whose record predates the augmentation reads as unrotated.
             rotationQuarterTurns: fields["rotation_quarter_turns"]?.intValue ?? 0,
             // Likewise absent before the flip op existed: unmirrored.
-            flippedHorizontally: fields["flipped_horizontally"]?.boolValue ?? false
+            flippedHorizontally: fields["flipped_horizontally"]?.boolValue ?? false,
+            // Absent before the tone op existed (or an explicit null from
+            // a reset): no adjustment, the flat look.
+            toneGradeR: fields["tone_grade_r"]?.doubleValue,
+            toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue
         )
     }
 

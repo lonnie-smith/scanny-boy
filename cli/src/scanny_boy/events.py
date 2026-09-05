@@ -17,7 +17,11 @@ from typing import IO, Any, ClassVar
 # fields in the roll manifest), and the `edit render-region` command with
 # its `region_rendered` event: a 1:1 PNG of one display-space region of a
 # published TIFF, with the net rotation folded in, for the app's 100% zoom.
-PROTOCOL_VERSION = 9
+# Protocol 10 adds the preview's nondestructive tone adjustment: the `edit
+# tone` command (paper grade + midtone snap, recorded as a `tone` op in the
+# ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
+# manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
+PROTOCOL_VERSION = 10
 
 
 class EventType(enum.StrEnum):
