@@ -16,21 +16,23 @@ Bundled inside the packaged `scanny-boy` program as a shared library
   satisfies the redistribution terms of both licences.
 - No modifications have been made to LibRaw's source.
 
-## ScannyBoy-Linear-ProPhoto-v1.icc (linear ProPhoto ICC colour profile)
+## ScannyBoy-Linear-v1.icc (linear ICC colour profile with wide-container colorants)
 
 Embedded in every TIFF Scanny Boy writes, at
-`cli/src/scanny_boy/resources/ScannyBoy-Linear-ProPhoto-v1.icc`.
+`cli/src/scanny_boy/resources/ScannyBoy-Linear-v1.icc`.
 
 - Derived from the CC0 `ProPhoto-v4.icc` profile in Compact ICC Profiles
   (<https://github.com/saucecontrol/Compact-ICC-Profiles/blob/master/profiles/ProPhoto-v4.icc>):
-  primaries, white point, and `chad` are copied byte for byte; only the
-  transfer curve (`rTRC`/`gTRC`/`bTRC`) is replaced with a parametric
-  type 0 curve of g = 1.0 — the identity — so the profile declares the
-  linear pixels the decode writes. Generated deterministically
+  primaries, white point, and `chad` are copied byte for byte and used as a
+  deliberately **wide container** — not a measurement of any camera's
+  primaries, whose camera-native pixels the container keeps a viewer from
+  clipping; only the transfer curve (`rTRC`/`gTRC`/`bTRC`) is replaced with
+  a parametric type 0 curve of g = 1.0 — the identity — so the profile
+  declares the linear pixels the decode writes. Generated deterministically
   by `cli/tools/generate_icc_profile.py`.
 - Licence: CC0 1.0 Universal for the upstream profile; Scanny Boy's derivation
   is all rights reserved (see [`LICENSE`](LICENSE)).
-- SHA-256: `a739982a10dc1b9de27dd262c4d7a8269c2a48ec42c4eb3743e1a108c6a8d744`
+- SHA-256: `f2253a1355ad41246c5126a601d147290e5efd04fb2bca6fa44e24179c525536`
   (verified at startup by `scanny_boy.icc_profile`).
 
 ## OpenCV

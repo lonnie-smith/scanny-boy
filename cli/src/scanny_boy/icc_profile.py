@@ -3,25 +3,32 @@
 Three profiles, one claim each (docs/DECISIONS.md, "Normalization
 decisions"; MONOCHROME_PLAN section 4):
 
-- `ScannyBoy-Linear-ProPhoto-v1.icc` tags the **prepare stage's
-  intermediates**, and its linear TRC is the truth about those pixels
+- `ScannyBoy-Linear-v1.icc` tags the **prepare stage's intermediates**,
+  and its linear TRC is the truth about those pixels
   (`raw_decode.RAW_PARAMS` decodes linear — `output_color=raw`,
   `gamma=(1, 1)`, unity white balance).
-- `ScannyBoy-Density-ProPhoto-v1.icc` tags the **published, normalized
-  TIFF**. Its g = 2.2 TRC is a *viewing convention*, not a colorimetric
-  claim: the pixels are normalized log density, which no ICC TRC expresses.
-  It exists so external viewers show approximately the code values; every
+- `ScannyBoy-Density-v1.icc` tags the **published, normalized TIFF**.
+  Its g = 2.2 TRC is a *viewing convention*, not a colorimetric claim:
+  the pixels are normalized log density, which no ICC TRC expresses. It
+  exists so external viewers show approximately the code values; every
   internal consumer — previews, the edit stage, export, the future print
-  stage — decodes through `normalization.decode_normalized`, never through
-  an ICC transform. That rule is the load-bearing one, and
+  stage — decodes through `normalization.decode_normalized`, never
+  through an ICC transform. That rule is the load-bearing one, and
   `icc_profile_test.py`'s guard test keeps the profile from creeping into
-  the render path where a wrong TRC could corrupt pixels instead of merely
-  looking odd.
+  the render path where a wrong TRC could corrupt pixels instead of
+  merely looking odd.
 - `ScannyBoy-Density-Grey-v1.icc` is the single-channel companion of the
   density profile, for a mono roll's collapsed published TIFF — the same
   viewing convention and the same caveat, in a GRAY-class profile a
-  1-channel file can actually carry (the DENSITY profile is ProPhoto RGB
-  and cannot).
+  1-channel file can actually carry (the DENSITY profile is RGB and
+  cannot).
+
+All three carry the RGB profiles' colorants as a **deliberately wide
+container**, not a measurement: `raw_decode.RAW_PARAMS` decodes the
+camera's own filter responses, so no primaries could be true of the
+pixels (docs/PROFILE_HONESTY_PLAN.md; docs/DECISIONS.md D-2). The wide
+container keeps a viewer applying the profile from clipping
+camera-native values.
 
 Every TIFF this program writes must carry the profile its stage dictates —
 never untagged data — so the SHA-256 is checked before every use, not just
@@ -36,19 +43,19 @@ import importlib.resources
 
 from scanny_boy.events import Code
 
-LINEAR_PROFILE_FILENAME = "ScannyBoy-Linear-ProPhoto-v1.icc"
-DENSITY_PROFILE_FILENAME = "ScannyBoy-Density-ProPhoto-v1.icc"
+LINEAR_PROFILE_FILENAME = "ScannyBoy-Linear-v1.icc"
+DENSITY_PROFILE_FILENAME = "ScannyBoy-Density-v1.icc"
 DENSITY_GREY_PROFILE_FILENAME = "ScannyBoy-Density-Grey-v1.icc"
 
 # Verified against the generated files (`cli/tools/generate_icc_profile.py`).
 LINEAR_PROFILE_SHA256 = (
-    "a739982a10dc1b9de27dd262c4d7a8269c2a48ec42c4eb3743e1a108c6a8d744"
+    "f2253a1355ad41246c5126a601d147290e5efd04fb2bca6fa44e24179c525536"
 )
 DENSITY_PROFILE_SHA256 = (
-    "26d966d7dcc748eecd618f082cf6e4294a95a4e4a38d9ec2693c741b70f1ee0c"
+    "c4153d6c198d8b18f009814574c3167635d4ec42ff57f627688e4ce68536fb85"
 )
 DENSITY_GREY_PROFILE_SHA256 = (
-    "b90e8d9c2ba1796f1e33850725d85620c4a331d9babf0b5117ed3e71b942d6ad"
+    "4ab76544009b34358eabb74cc83ec09e5a47278f531a7ed80293ba5dce8dad6c"
 )
 
 

@@ -339,11 +339,13 @@ Consequences, all live in the code today:
   holds plain fixed-point scaling: `decode_to_linear` is `code / 65535`,
   `encode_from_linear` is clip-and-round. The round trip is exact for every
   code — proved by a test, not assumed.
-- The prepare stage's intermediates carry `ScannyBoy-Linear-ProPhoto-v1.icc`:
-  ProPhoto primaries (byte-identical to the upstream ProPhoto-v4 source)
-  with a **linear** TRC (parametric type 0, g = 1.0) — the truth about
-  those pixels. Both profiles are generated deterministically by
-  `cli/tools/generate_icc_profile.py`.
+- The prepare stage's intermediates carry `ScannyBoy-Linear-v1.icc`:
+  a **linear** TRC (parametric type 0, g = 1.0) — the truth about
+  those pixels — over wide-container colorants (byte-identical to the
+  upstream ProPhoto-v4 source, but labelled as a deliberately wide
+  container, not a measurement of this camera's primaries;
+  docs/PROFILE_HONESTY_PLAN.md). All three profiles are generated
+  deterministically by `cli/tools/generate_icc_profile.py`.
 - `icc_profile.py` verifies each profile's SHA-256 on every load, and
   `tiff_writer.write_base_tiff` refuses to write a TIFF with an empty
   profile. An untagged file is never produced.
@@ -417,10 +419,11 @@ Three properties to hold onto:
   before compositing, restricts the meters only. It never crops the output.
 
 The published TIFF carries a **second** ICC profile,
-`ScannyBoy-Density-ProPhoto-v1.icc`: ProPhoto primaries, parametric type 0
-at g = 2.2 — a *viewing convention*, explicitly not a colorimetric claim
-(a correct profile would decode the file back to un-normalized linear,
-undoing the one thing this stage does). Every internal consumer —
+`ScannyBoy-Density-v1.icc`: parametric type 0 at g = 2.2 over the same
+wide-container colorants — a *viewing convention*, explicitly not a
+colorimetric claim (a correct profile would decode the file back to
+un-normalized linear, undoing the one thing this stage does). Every
+internal consumer —
 previews, the edit stage, export, the future print stage — decodes through
 `normalization.decode_normalized`, never through an ICC transform; a
 grep-shaped guard test keeps the loader out of everything but the write

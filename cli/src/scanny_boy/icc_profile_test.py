@@ -27,8 +27,8 @@ from scanny_boy.linear import MAX_CODE
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GENERATOR = REPO_ROOT / "cli" / "tools" / "generate_icc_profile.py"
 RESOURCES = Path(__file__).resolve().parent / "resources"
-COMMITTED_LINEAR = RESOURCES / "ScannyBoy-Linear-ProPhoto-v1.icc"
-COMMITTED_DENSITY = RESOURCES / "ScannyBoy-Density-ProPhoto-v1.icc"
+COMMITTED_LINEAR = RESOURCES / "ScannyBoy-Linear-v1.icc"
+COMMITTED_DENSITY = RESOURCES / "ScannyBoy-Density-v1.icc"
 COMMITTED_DENSITY_GREY = RESOURCES / "ScannyBoy-Density-Grey-v1.icc"
 
 _spec = importlib.util.spec_from_file_location("generate_icc_profile", GENERATOR)
@@ -40,7 +40,7 @@ PROPHOTO_BYTES = _generator.prophoto_source_bytes()
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
 LINEAR_TRC_PARAMS = (TRC_G_LINEAR,)
 DENSITY_TRC_PARAMS = (TRC_G_DENSITY,)
-LINEAR_PROFILE_ID = bytes.fromhex("a1108f985e63b5fa50788c48fad2ddd0")
+LINEAR_PROFILE_ID = bytes.fromhex("18cfa8234c46e4b8e766fab30d2a86d7")
 
 # The guard test's exception set (docs/DECISIONS.md, "Normalization decisions"):
 # the profile must never become load-bearing for the render, so only the
@@ -174,7 +174,7 @@ def test_trc_tags_share_one_offset(kind):
 
 
 @pytest.mark.parametrize("kind", list(ProfileKind))
-def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
+def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source(kind):
     data = load_icc_profile(kind)
     # The grey profile is a gray-class profile: it carries no RGB matrix,
     # by construction (MONOCHROME_PLAN section 4).
@@ -195,6 +195,43 @@ def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
             if sig == tag_name
         )
         assert new == src, tag_name
+
+
+def _profile_description(data: bytes) -> str:
+    """The en-US string of the profile's `desc` (`mluc`) tag."""
+    sig, tag_offset, _size = next(
+        entry for entry in _tag_entries(data) if entry[0] == b"desc"
+    )
+    assert sig == b"desc"
+    assert data[tag_offset : tag_offset + 4] == b"mluc"
+    record_count = struct.unpack(">I", data[tag_offset + 8 : tag_offset + 12])[0]
+    record_size = struct.unpack(">I", data[tag_offset + 12 : tag_offset + 16])[0]
+    for index in range(record_count):
+        base = tag_offset + 16 + index * record_size
+        string_length = struct.unpack(">I", data[base + 4 : base + 8])[0]
+        string_offset = struct.unpack(">I", data[base + 8 : base + 12])[0]
+        return (
+            data[tag_offset + string_offset : tag_offset + string_offset + string_length]
+            .decode("utf-16-be")
+            .rstrip("\x00")
+        )
+    raise AssertionError("desc tag carries no records")
+
+
+@pytest.mark.parametrize("kind", list(ProfileKind))
+def test_no_filename_or_description_claims_prophoto(kind):
+    data = load_icc_profile(kind)
+    filename = PROFILES[kind][0]
+    assert "ProPhoto" not in filename
+    assert "ProPhoto" not in _profile_description(data)
+
+
+@pytest.mark.parametrize("kind", list(ProfileKind))
+def test_every_description_declares_a_wide_container_not_a_measurement(kind):
+    data = load_icc_profile(kind)
+    description = _profile_description(data).lower()
+    assert "wide container" in description
+    assert "not a measurement" in description
 
 
 def test_density_grey_is_a_gray_class_profile():
@@ -244,13 +281,13 @@ def test_decoded_density_curve_is_monotonic_and_spans_zero_to_one():
 
 def test_load_icc_profile_still_verifies_and_returns_bytes():
     data = load_icc_profile(ProfileKind.LINEAR)
-    assert len(data) == 568
+    assert len(data) == 1140
     assert hashlib.sha256(data).hexdigest() == LINEAR_PROFILE_SHA256
     density = load_icc_profile(ProfileKind.DENSITY)
-    assert len(density) == 1232
+    assert len(density) == 1776
     assert hashlib.sha256(density).hexdigest() == DENSITY_PROFILE_SHA256
     grey = load_icc_profile(ProfileKind.DENSITY_GREY)
-    assert len(grey) == 1124
+    assert len(grey) == 1508
     assert hashlib.sha256(grey).hexdigest() == DENSITY_GREY_PROFILE_SHA256
 
 

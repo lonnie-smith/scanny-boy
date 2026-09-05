@@ -179,8 +179,8 @@ def test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata():
     (`icc_profile.py`) — and the two `copy_metadata` entries of section 5.2
     are what keep `importlib.metadata` working in the frozen program."""
     for filename, expected_sha256 in (
-        ("ScannyBoy-Linear-ProPhoto-v1.icc", LINEAR_PROFILE_SHA256),
-        ("ScannyBoy-Density-ProPhoto-v1.icc", DENSITY_PROFILE_SHA256),
+        ("ScannyBoy-Linear-v1.icc", LINEAR_PROFILE_SHA256),
+        ("ScannyBoy-Density-v1.icc", DENSITY_PROFILE_SHA256),
     ):
         profiles = list(BUNDLE_PATH.rglob(filename))
         assert profiles, f"{filename} is missing from the bundle"

@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """Deterministic generator for the bundled Scanny Boy ICC profiles.
 
-Derived from the committed ProPhoto-v4.icc bytes: primaries, white point and
-chromatic-adaptation tag are carried over byte-identical, the description is
-rewritten, and the TRC tags become a parametric function type 0 (pure
-gamma). Two profiles (docs/DECISIONS.md, "Normalization decisions"):
+The colorants are carried over byte-identical from the vendored
+ProPhoto-v4.icc source (white point and chromatic-adaptation tag with
+them) and are a **deliberately wide container**, not a measurement:
+`raw_decode.RAW_PARAMS` decodes the camera's own filter responses
+(`output_color=raw`, `user_wb=[1, 1, 1, 1]`), so the pixels have never
+been converted into any colorimetric space and no profile primaries could
+be true of them. A wide container keeps a viewer applying the profile
+from clipping camera-native values; ICC has no "unknown primaries"
+encoding, so the wide container is the honest choice (docs/
+PROFILE_HONESTY_PLAN.md). Three profiles:
 
-- `ScannyBoy-Linear-ProPhoto-v1.icc`, g = 1.0 — the identity, declaring
-  that the prepare stage's intermediate pixels are linear
-  (`raw_decode.RAW_PARAMS` decodes linear).
-- `ScannyBoy-Density-ProPhoto-v1.icc`, g = 2.2 — a **viewing convention**
-  for the published, normalized log-density TIFF, not a colorimetric
-  claim. A normalized log encoding over ~2 decades is closer to gamma 3.3
-  than 2.2, and no ICC parametric type expresses it exactly anyway; but a
+- `ScannyBoy-Linear-v1.icc`, g = 1.0 — the identity, declaring that the
+  prepare stage's intermediate pixels are linear (`raw_decode.RAW_PARAMS`
+  decodes linear).
+- `ScannyBoy-Density-v1.icc`, g = 2.2 — a **viewing convention** for the
+  published, normalized log-density TIFF, not a colorimetric claim. A
+  normalized log encoding over ~2 decades is closer to gamma 3.3 than
+  2.2, and no ICC parametric type expresses it exactly anyway; but a
   *correct* profile would decode the file back to un-normalized linear —
   it would show the orange-masked raw scan, undoing the one thing the
   normalization stage does. The tag exists to make the file legible in an
   external viewer while debugging the edit stage. Every internal consumer
   decodes through `normalization.decode_normalized`, never through an ICC
   transform.
+- `ScannyBoy-Density-Grey-v1.icc`, the grey-class companion of the
+  density profile (MONOCHROME_PLAN section 4).
 """
 
 from __future__ import annotations
@@ -33,13 +41,24 @@ from pathlib import Path
 # after that file is deleted.
 _PROPHOTO_V4_ICC_B64 = "AAAB4GxjbXMEIAAAbW50clJHQiBYWVogB+IAAwAUAAkADgAdYWNzcE1TRlQAAAAAc2F3c2N0cmwAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1oYW5kH9ZD3wQwsLzdCGIbXzs4jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKZGVzYwAAAPwAAAAkY3BydAAAASAAAAAid3RwdAAAAUQAAAAUY2hhZAAAAVgAAAAsclhZWgAAAYQAAAAUZ1hZWgAAAZgAAAAUYlhZWgAAAawAAAAUclRSQwAAAcAAAAAgZ1RSQwAAAcAAAAAgYlRSQwAAAcAAAAAgbWx1YwAAAAAAAAABAAAADGVuVVMAAAAIAAAAHABSAE8ATQBNbWx1YwAAAAAAAAABAAAADGVuVVMAAAAGAAAAHABDAEMAMAAAWFlaIAAAAAAAAPbWAAEAAAAA0y1zZjMyAAAAAAAA//3////+/////v////0AAQAD//////////8AAAABAAD/71hZWiAAAAAAAADMNwAASb4AAAAAWFlaIAAAAAAAACKaAAC2PQAAAAFYWVogAAAAAAAACAUAAAAFAADTLHBhcmEAAAAAAAMAAAABzM0AAQAAAAAAAAAAEAAAAAgA"
 
-LINEAR_DESCRIPTION = "Scanny Boy Linear RGB (ProPhoto primaries, linear TRC)"
+LINEAR_DESCRIPTION = (
+    "Scanny Boy Linear RGB. The colorants are a deliberately wide "
+    "container, chosen so a viewer applying this profile does not clip "
+    "camera-native values, and not a measurement of this camera's "
+    "primaries: raw_decode.RAW_PARAMS decodes raw camera channels, never "
+    "converted into any colorimetric space. The linear TRC is the truth "
+    "about the pixels."
+)
 
 DENSITY_DESCRIPTION = (
-    "ScannyBoy Normalized Density (viewing gamma 2.2). A viewing convention "
-    "for normalized log-density working files, not a colorimetric claim: "
-    "the pixels are per-channel affine-stretched log10 density, which no "
-    "ICC TRC expresses exactly. Decode through "
+    "ScannyBoy Normalized Density (viewing gamma 2.2). The colorants are "
+    "a deliberately wide container, chosen so a viewer applying this "
+    "profile does not clip camera-native values, and not a measurement "
+    "of this camera's primaries: raw_decode.RAW_PARAMS decodes raw "
+    "camera channels, never converted into any colorimetric space. A "
+    "viewing convention for normalized log-density working files, not a "
+    "colorimetric claim: the pixels are per-channel affine-stretched "
+    "log10 density, which no ICC TRC expresses exactly. Decode through "
     "scanny_boy.normalization.decode_normalized, never through this "
     "profile - it exists so external viewers show approximately the code "
     "values."
@@ -49,7 +68,10 @@ DENSITY_GREY_DESCRIPTION = (
     "ScannyBoy Normalized Density Grey (viewing gamma 2.2). The "
     "single-channel companion of the Density profile: a mono roll's "
     "published TIFF is one grayscale channel of the same normalized log "
-    "density, which a ProPhoto RGB profile cannot tag. Same viewing "
+    "density, which an RGB profile cannot tag - this profile carries no "
+    "colorants at all, while its RGB siblings carry a deliberately wide "
+    "container, not a measurement of this camera's primaries "
+    "(raw_decode.RAW_PARAMS decodes raw camera channels). Same viewing "
     "convention, same caveat - decode through "
     "scanny_boy.normalization.decode_normalized, never through this "
     "profile (MONOCHROME_PLAN section 4)."
@@ -235,8 +257,8 @@ def main(argv: list[str]) -> int:
         return 2
     output = Path(argv[1])
     output.mkdir(parents=True, exist_ok=True)
-    (output / "ScannyBoy-Linear-ProPhoto-v1.icc").write_bytes(generate_linear_profile())
-    (output / "ScannyBoy-Density-ProPhoto-v1.icc").write_bytes(
+    (output / "ScannyBoy-Linear-v1.icc").write_bytes(generate_linear_profile())
+    (output / "ScannyBoy-Density-v1.icc").write_bytes(
         generate_density_profile()
     )
     (output / "ScannyBoy-Density-Grey-v1.icc").write_bytes(
