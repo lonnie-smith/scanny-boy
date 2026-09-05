@@ -21,7 +21,7 @@ struct CLICommandTests {
         let command = CLICommand.probe(
             input: Self.input,
             files: ["_DSC4638.NEF", "_DSC4639.NEF"],
-            perNegative: 3
+            across: 3
         )
         #expect(
             command.arguments == [
@@ -31,6 +31,49 @@ struct CLICommandTests {
             ]
         )
         #expect(!command.arguments.contains { $0.hasPrefix("/Volumes/Scans/roll-12/_DSC") })
+    }
+
+    // MARK: - Grid grouping emission (protocol 10)
+
+    @Test("down > 1 emits --grid AxD, not --per-negative")
+    func gridEmittedWhenDownAboveOne() {
+        let probe = CLICommand.probe(input: Self.input, files: ["a.NEF"], across: 3, down: 2)
+        #expect(probe.arguments.contains("--grid"))
+        #expect(probe.arguments.contains("3x2"))
+        #expect(!probe.arguments.contains("--per-negative"))
+
+        let run = CLICommand.run(
+            input: Self.input, files: ["a.NEF"], roll: Self.out, across: 5, down: 2
+        )
+        #expect(run.arguments.contains("--grid"))
+        #expect(run.arguments.contains("5x2"))
+        #expect(!run.arguments.contains("--per-negative"))
+
+        let prepare = CLICommand.prepare(
+            input: Self.input, files: ["a.NEF"], out: Self.out, across: 6, down: 2
+        )
+        #expect(prepare.arguments.contains("--grid"))
+        #expect(prepare.arguments.contains("6x2"))
+        #expect(!prepare.arguments.contains("--per-negative"))
+    }
+
+    @Test("down == 1 keeps the strip command byte-identical: --per-negative N")
+    func stripRunStaysPerNegative() throws {
+        let run = CLICommand.run(
+            input: Self.input, files: ["a.NEF"], roll: Self.out, across: 3, down: 1
+        )
+        let index = try #require(run.arguments.firstIndex(of: "--per-negative"))
+        #expect(run.arguments[index + 1] == "3")
+        #expect(!run.arguments.contains("--grid"))
+    }
+
+    @Test("no across chosen emits neither grouping flag")
+    func noGroupingFlagsWithoutAcross() {
+        let run = CLICommand.run(
+            input: Self.input, files: ["a.NEF"], roll: Self.out
+        )
+        #expect(!run.arguments.contains("--per-negative"))
+        #expect(!run.arguments.contains("--grid"))
     }
 
     @Test("probe can include the output folder for the conflict preview")
@@ -79,7 +122,7 @@ struct CLICommandTests {
             input: Self.input,
             files: ["a.NEF"],
             out: Self.out,
-            perNegative: 1,
+            across: 1,
             jobs: 4,
             overwrite: true
         )
@@ -128,7 +171,7 @@ struct CLICommandTests {
             input: Self.input,
             files: ["a.NEF"],
             roll: Self.out,
-            perNegative: 1,
+            across: 1,
             jobs: 4,
             skipSources: ["a.NEF"],
             work: work
@@ -316,7 +359,7 @@ struct CLICommandTests {
             input: Self.input,
             files: ["a.NEF"],
             roll: Self.out,
-            perNegative: 3,
+            across: 3,
             flatfield: "pid-1"
         )
         #expect(command.arguments.contains("--flatfield"))

@@ -279,6 +279,7 @@ def plan_rerun_preview(
     shots_per_negative: int,
     groups: list[tuple[str, list[str]]],
     icc_sha256: str | None,
+    grid: dict[str, int] | None = None,
 ) -> RerunPlan:
     """The `probe --out` counterpart to `plan_rerun` (section 4.1:
     "output-folder validation and the overwrite-conflict preview"). Compares
@@ -294,6 +295,7 @@ def plan_rerun_preview(
             shots_per_negative=shots_per_negative,
             groups=groups,
             icc_sha256=icc_sha256,
+            grid=grid,
         ),
         rules=rules,
     )

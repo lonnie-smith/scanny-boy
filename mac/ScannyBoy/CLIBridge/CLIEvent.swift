@@ -9,15 +9,18 @@ import Foundation
 /// reaches the app intact rather than failing the stream.
 public struct CLIEvent: Sendable, Hashable {
     /// The only protocol version this app understands. A stream announcing
-/// anything else is rejected rather than guessed at. Protocol 9 added two
-/// features: the extended-metadata editing feature (the `metadata`
-/// command family — `metadata_updated`, `metadata_values`, the
-/// `INVALID_METADATA` code — and the roll/negative extended-metadata
-/// fields in the roll manifest), and `edit render-region` with its
-/// `region_rendered` event: a 1:1 PNG of one display-space region of a
-/// published TIFF, for the 100% zoom. Protocol 10 adds the preview's
-/// nondestructive tone adjustment: the `edit tone` command and the
-/// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest.
+    /// anything else is rejected rather than guessed at. Protocol 9 added
+    /// two features: the extended-metadata editing feature (the `metadata`
+    /// command family — `metadata_updated`, `metadata_values`, the
+    /// `INVALID_METADATA` code — and the roll/negative extended-metadata
+    /// fields in the roll manifest), and `edit render-region` with its
+    /// `region_rendered` event: a 1:1 PNG of one display-space region of a
+    /// published TIFF, for the 100% zoom. Protocol 10 adds 2D grid
+    /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
+    /// the `INVALID_GRID` error code, and the
+    /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
+    /// nondestructive tone adjustment (the `edit tone` command and the
+    /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
     public static let supportedProtocolVersion = 10
 
     public let protocolVersion: Int
@@ -332,6 +335,7 @@ public enum CLICode: Sendable, Hashable {
     case nonContiguousSelection
     case notDivisible
     case invalidPerNegative
+    case invalidGrid
     case missingCaptureTime
     case filenameSortUsed
     case unsupportedRAW
@@ -361,6 +365,7 @@ public enum CLICode: Sendable, Hashable {
     case stitchFailed
     case stitchScaleDrift
     case stitchLayoutUnexpected
+    case stitchGridOrderUnexpected
     case stitchRebateCheckFailed
     case outputDimensionsLarge
     case rollNotFound
@@ -405,6 +410,7 @@ public enum CLICode: Sendable, Hashable {
         case "NON_CONTIGUOUS_SELECTION": self = .nonContiguousSelection
         case "NOT_DIVISIBLE": self = .notDivisible
         case "INVALID_PER_NEGATIVE": self = .invalidPerNegative
+        case "INVALID_GRID": self = .invalidGrid
         case "MISSING_CAPTURE_TIME": self = .missingCaptureTime
         case "FILENAME_SORT_USED": self = .filenameSortUsed
         case "UNSUPPORTED_RAW": self = .unsupportedRAW
@@ -433,6 +439,7 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_FAILED": self = .stitchFailed
         case "STITCH_SCALE_DRIFT": self = .stitchScaleDrift
         case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
+        case "STITCH_GRID_ORDER_UNEXPECTED": self = .stitchGridOrderUnexpected
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
         case "ROLL_NOT_FOUND": self = .rollNotFound
@@ -476,6 +483,7 @@ public enum CLICode: Sendable, Hashable {
         case .nonContiguousSelection: "NON_CONTIGUOUS_SELECTION"
         case .notDivisible: "NOT_DIVISIBLE"
         case .invalidPerNegative: "INVALID_PER_NEGATIVE"
+        case .invalidGrid: "INVALID_GRID"
         case .missingCaptureTime: "MISSING_CAPTURE_TIME"
         case .filenameSortUsed: "FILENAME_SORT_USED"
         case .unsupportedRAW: "UNSUPPORTED_RAW"
@@ -504,6 +512,7 @@ public enum CLICode: Sendable, Hashable {
         case .stitchFailed: "STITCH_FAILED"
         case .stitchScaleDrift: "STITCH_SCALE_DRIFT"
         case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
+        case .stitchGridOrderUnexpected: "STITCH_GRID_ORDER_UNEXPECTED"
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
         case .rollNotFound: "ROLL_NOT_FOUND"

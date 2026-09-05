@@ -51,6 +51,7 @@ from scanny_boy.sample_nef_support import (
     requires_real_samples,
     stage_samples,
 )
+from scanny_boy.selection import GridSpec
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
 MANIFEST_SCHEMA = load_manifest_schema()
@@ -1296,3 +1297,76 @@ def test_missing_lens_model_emits_the_consistency_warning(monkeypatch, tmp_path)
     assert [w.code for w in warnings] == [Code.CAPTURE_METADATA_MISSING] * 2
     assert all("lens" in w.message.lower() for w in warnings)
     assert all(w.run_id == "run-1" for w in warnings)
+
+
+# --- grid plumbing (docs/GRID_STITCH_PLAN.md section 2.2) -----------------
+
+
+@requires_real_samples
+def test_run_convert_records_the_declared_grid_on_the_work_manifest(
+    monkeypatch, tmp_path
+):
+    _install_fast_decode(monkeypatch)
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    outcome = run_convert(
+        input_dir,
+        list(REAL_SAMPLE_FILES),
+        out_dir,
+        6,
+        run_id="r1",
+        emit=lambda e: None,
+        grid=GridSpec(across=3, down=2),
+    )
+
+    assert outcome.status == "complete"
+    manifest = load_manifest(out_dir)
+    assert manifest.grid == {"across": 3, "down": 2}
+    assert manifest.shots_per_negative == 6
+    assert manifest.grid_spec == GridSpec(across=3, down=2)
+
+
+@requires_real_samples
+def test_run_convert_rejects_a_grid_whose_product_is_not_per_negative(
+    monkeypatch, tmp_path
+):
+    _install_fast_decode(monkeypatch)
+    input_dir = stage_samples(tmp_path, list(NEGATIVE_1))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(ConvertFailure) as exc_info:
+        run_convert(
+            input_dir,
+            list(NEGATIVE_1),
+            out_dir,
+            3,
+            run_id="r1",
+            emit=lambda e: None,
+            grid=GridSpec(across=3, down=2),
+        )
+
+    assert exc_info.value.code is Code.INVALID_GRID
+
+
+@requires_real_samples
+def test_run_convert_without_grid_records_a_none_grid_and_a_strip_spec(
+    monkeypatch, tmp_path
+):
+    """Without `grid`, the manifest's `grid` key stays None — the pre-grid
+    shape — and `grid_spec` falls back to the strip `across=per_negative,
+    down=1`."""
+    _install_fast_decode(monkeypatch)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    outcome = run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
+    )
+
+    assert outcome.status == "complete"
+    manifest = load_manifest(out_dir)
+    assert manifest.grid is None
+    assert manifest.grid_spec == GridSpec(across=3, down=1)

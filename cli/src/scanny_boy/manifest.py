@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from scanny_boy.events import Code
+from scanny_boy.selection import GridSpec
 
 MANIFEST_FILENAME = "scanny-boy-manifest.json"
 MANIFEST_FORMAT_VERSION = 1
@@ -141,6 +142,18 @@ class Manifest:
     started_at: str
     finished_at: str | None = None
     manifest_format_version: int = MANIFEST_FORMAT_VERSION
+    # The batch's grid as declared (`{"across": A, "down": D}`), or None
+    # for a pre-grid manifest — read back as `grid_spec` below, which is
+    # what every consumer sees (docs/GRID_STITCH_PLAN.md section 2.3).
+    grid: dict[str, int] | None = None
+
+    @property
+    def grid_spec(self) -> GridSpec:
+        """The batch's grid as a `GridSpec`. A pre-grid manifest (grid is
+        None) declares the strip `across=shots_per_negative, down=1`."""
+        if self.grid is None:
+            return GridSpec(across=self.shots_per_negative, down=1)
+        return GridSpec.from_dict(self.grid)
 
     def group(self, group_id: str) -> GroupRecord:
         for g in self.groups:
@@ -168,6 +181,7 @@ class Manifest:
             "groups": [g.to_dict() for g in self.groups],
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "grid": self.grid,
         }
 
 
@@ -319,6 +333,25 @@ def validate_manifest_dict(data: Any) -> None:
         isinstance(data["shots_per_negative"], int),
         "shots_per_negative is not an integer",
     )
+    grid = data.get("grid")
+    if grid is not None:
+        _require(isinstance(grid, dict), "grid is not an object")
+        _require(
+            set(grid) == {"across", "down"},
+            "grid must have exactly 'across' and 'down'",
+        )
+        _require(
+            isinstance(grid["across"], int) and grid["across"] >= 1,
+            "grid across is invalid",
+        )
+        _require(
+            isinstance(grid["down"], int) and grid["down"] >= 1,
+            "grid down is invalid",
+        )
+        _require(
+            grid["across"] * grid["down"] == data["shots_per_negative"],
+            "grid across * down must equal shots_per_negative",
+        )
     _require(
         isinstance(data["processing_params"], dict),
         "processing_params is not an object",
@@ -452,6 +485,7 @@ def _manifest_from_dict(data: dict[str, Any]) -> Manifest:
         ],
         started_at=data["started_at"],
         finished_at=data["finished_at"],
+        grid=data.get("grid"),
     )
 
 
@@ -470,13 +504,14 @@ def check_rerun_compatible(
     shots_per_negative: int,
     groups: list[tuple[str, list[str]]],
     icc_sha256: str | None,
+    grid: dict[str, int] | None = None,
 ) -> None:
     """The subset of `check_rerun_matches`'s comparison available before a
-    film date is known: source order and hashes, grouping, and the ICC
-    profile. `probe --out` uses this for its overwrite-conflict preview
-    (section 4.1); `convert` still runs the complete `check_rerun_matches`
-    below before it writes anything, so a film date entered differently from
-    what was previewed is still caught."""
+    film date is known: source order and hashes, grouping, the grid, and
+    the ICC profile. `probe --out` uses this for its overwrite-conflict
+    preview (section 4.1); `convert` still runs the complete
+    `check_rerun_matches` below before it writes anything, so a film date
+    entered differently from what was previewed is still caught."""
     if existing.source_order != source_order:
         raise ManifestMismatchError(
             "the selection's source order differs from the previous run "
@@ -493,6 +528,18 @@ def check_rerun_compatible(
         raise ManifestMismatchError(
             f"shots per negative changed from {existing.shots_per_negative} "
             f"to {shots_per_negative} since the previous run"
+        )
+
+    # The grid, not just the count: a 3x2 and a 6x1 batch are not the same
+    # batch even though both are six scans (docs/GRID_STITCH_PLAN.md
+    # section 2.3). A pre-grid manifest's grid is None.
+    if existing.grid != grid:
+        raise ManifestMismatchError(
+            "the negative grid changed from "
+            f"{existing.grid if existing.grid is not None else 'none (strip)'} "
+            "to "
+                f"{grid if grid is not None else 'none (strip)'}"
+            " since the previous run"
         )
 
     existing_groups = [(g.group_id, g.members) for g in existing.groups]
@@ -529,6 +576,7 @@ def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
         shots_per_negative=candidate.shots_per_negative,
         groups=[(g.group_id, g.members) for g in candidate.groups],
         icc_sha256=candidate.icc_profile.get("sha256"),
+        grid=candidate.grid,
     )
 
     if existing.film_date != candidate.film_date:

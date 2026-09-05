@@ -168,7 +168,7 @@ struct RunIntegrationTests {
         model.selectedFiles = Set(select)
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
-        model.perNegative = 3
+        model.across = 3
         // The roll fetch pre-selects the profile a first run locked the roll
         // to — the app does not let the user choose differently. Only a roll
         // with no profile yet (the first run into it) gets a fresh one.
@@ -389,7 +389,7 @@ struct RunIntegrationTests {
             input: SampleFixtures.stagedDirectory(),
             files: SampleFixtures.files,
             out: out,
-            perNegative: 3,
+            across: 3,
             jobs: 1
         )
         // A grace period long enough that this test is about cooperative
@@ -466,7 +466,7 @@ struct RunIntegrationTests {
                 input: SampleFixtures.directory,
                 files: model.selectedFilesInCanonicalOrder,
                 roll: firstRoll,
-                perNegative: model.perNegative,
+                across: model.across,
                 skipSources: [],
                 work: workDirectory
             ),

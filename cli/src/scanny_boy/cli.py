@@ -70,11 +70,16 @@ from scanny_boy.roll_folder import (
 )
 from scanny_boy.roll_manifest import load_roll_manifest
 from scanny_boy.run_pipeline import RunFailure, run_full
+from scanny_boy.selection import (
+    MAX_PER_NEGATIVE,
+    MIN_PER_NEGATIVE,
+    GridSpec,
+    InvalidGridError,
+    validate_grid,
+)
 from scanny_boy.stitch_pipeline import run_stitch
 
 MAX_SELECTION_FILES = 5000
-MIN_PER_NEGATIVE = 1
-MAX_PER_NEGATIVE = 12
 MIN_JOBS = 1
 MAX_JOBS = 12
 
@@ -136,6 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="per_negative",
         help="required with --files: the scans stitched into each negative",
     )
+    probe.add_argument(
+        "--grid",
+        metavar="AxD",
+        default=None,
+        help=(
+            "with --files: the grid each negative was scanned in, e.g. 3x2; "
+            "mutually exclusive with --per-negative"
+        ),
+    )
     probe.add_argument("--flatfield", metavar="PROFILE_ID")
 
     prepare = subparsers.add_parser(
@@ -146,7 +160,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--files", nargs="+", required=True, metavar="FILE")
     prepare.add_argument("--out", required=True, metavar="DIR")
     prepare.add_argument(
-        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
+        "--per-negative", type=int, default=None, metavar="N", dest="per_negative"
+    )
+    prepare.add_argument(
+        "--grid",
+        metavar="AxD",
+        default=None,
+        help="the grid each negative was scanned in, e.g. 3x2; exactly one "
+        "of --grid / --per-negative is required",
     )
     prepare.add_argument("--jobs", type=int, metavar="N")
     prepare.add_argument("--overwrite", action="store_true")
@@ -177,7 +198,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--files", nargs="+", required=True, metavar="FILE")
     run.add_argument("--roll", required=True, metavar="DIR")
     run.add_argument(
-        "--per-negative", type=int, required=True, metavar="N", dest="per_negative"
+        "--per-negative", type=int, default=None, metavar="N", dest="per_negative"
+    )
+    run.add_argument(
+        "--grid",
+        metavar="AxD",
+        default=None,
+        help="the grid each negative was scanned in, e.g. 3x2; exactly one "
+        "of --grid / --per-negative is required",
     )
     run.add_argument("--jobs", type=int, metavar="N")
     run.add_argument("--work", metavar="DIR")
@@ -782,7 +810,11 @@ def _run_export_command(args, writer: EventWriter) -> int:
 
 
 def _run_run_command(
-    args, writer: EventWriter, files: list[str] | None, jobs: int | None
+    args,
+    writer: EventWriter,
+    files: list[str] | None,
+    jobs: int | None,
+    spec: GridSpec | None,
 ) -> int:
     """The `run` subcommand: mirrors `convert`'s and `stitch`'s event and
     exit-status shape exactly, over `run_full` instead of `run_convert` or
@@ -796,7 +828,7 @@ def _run_run_command(
                 Path(args.input),
                 files,
                 Path(args.roll),
-                args.per_negative,
+                spec.count,
                 run_id=run_id,
                 work_dir=Path(args.work) if args.work else None,
                 skip_sources=args.skip_sources,
@@ -805,6 +837,7 @@ def _run_run_command(
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
+                grid=spec,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -857,25 +890,67 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{MAX_SELECTION_FILES}",
         )
 
-    # `stitch` takes no --per-negative: it reads the grouping from the work
-    # manifest, which already recorded it. `probe` needs one only when it
-    # has a selection to group — a catalogue-only probe has no negatives.
+    # `stitch` takes neither --grid nor --per-negative: it reads the
+    # grouping from the work manifest, which already recorded it. `probe`
+    # needs one only when it has a selection to group — a catalogue-only
+    # probe has no negatives. `prepare` and `run` require exactly one of
+    # the two flags (docs/GRID_STITCH_PLAN.md section 2.2).
     per_negative = getattr(args, "per_negative", None)
-    if args.command == "probe" and files is not None and per_negative is None:
-        return _usage_error(parser, "probe --files requires --per-negative")
-    if per_negative is not None and not (
-        MIN_PER_NEGATIVE <= per_negative <= MAX_PER_NEGATIVE
-    ):
-        writer.write(
-            ErrorEvent(
-                code=Code.INVALID_PER_NEGATIVE,
-                message=(
-                    f"--per-negative must be between {MIN_PER_NEGATIVE} and "
-                    f"{MAX_PER_NEGATIVE}, got {per_negative}"
-                ),
-            )
+    grid_text = getattr(args, "grid", None)
+
+    if grid_text is not None and per_negative is not None:
+        return _usage_error(
+            parser,
+            "--grid and --per-negative are mutually exclusive; use one",
         )
-        return 2
+    if args.command in ("prepare", "run") and grid_text is None and per_negative is None:
+        return _usage_error(
+            parser,
+            "one of the following arguments is required: --grid, --per-negative",
+        )
+    if args.command == "probe" and files is not None and per_negative is None and grid_text is None:
+        return _usage_error(
+            parser, "probe --files requires --per-negative or --grid"
+        )
+
+    # `spec` is the single source of the scans-per-negative count from
+    # here down: `--per-negative N` becomes `GridSpec(across=N, down=1)`,
+    # so every downstream call reads `spec.count` rather than
+    # `args.per_negative`, which is None whenever `--grid` was used. It
+    # stays None only for a catalogue-only `probe`, which has no
+    # negatives to group.
+    spec: GridSpec | None = None
+    if grid_text is not None:
+        parts = str(grid_text).lower().split("x")
+        malformed = (
+            len(parts) != 2
+            or not all(part.isdigit() for part in parts)
+        )
+        if malformed:
+            return _usage_error(
+                parser, f"--grid must be of the form AxD (e.g. 3x2), got {grid_text!r}"
+            )
+        spec = GridSpec(across=int(parts[0]), down=int(parts[1]))
+        try:
+            validate_grid(spec)
+        except InvalidGridError as exc:
+            writer.write(ErrorEvent(code=Code.INVALID_GRID, message=str(exc)))
+            writer.write(Finished(status="failed", exit_status=2))
+            return 2
+        per_negative = spec.count
+    elif per_negative is not None:
+        if not (MIN_PER_NEGATIVE <= per_negative <= MAX_PER_NEGATIVE):
+            writer.write(
+                ErrorEvent(
+                    code=Code.INVALID_PER_NEGATIVE,
+                    message=(
+                        f"--per-negative must be between {MIN_PER_NEGATIVE} and "
+                        f"{MAX_PER_NEGATIVE}, got {per_negative}"
+                    ),
+                )
+            )
+            return 2
+        spec = GridSpec(across=per_negative, down=1)
 
     jobs = getattr(args, "jobs", None)
     if jobs is not None and not (MIN_JOBS <= jobs <= MAX_JOBS):
@@ -884,7 +959,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
-        return _dispatch_command(args, writer, files, jobs)
+        return _dispatch_command(args, writer, files, jobs, spec)
     except LibraryDBError as exc:
         # A database this helper cannot open is the one failure that can
         # strike every command alike, so it gets its own sentence rather
@@ -908,7 +983,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch_command(
-    args, writer: EventWriter, files: list[str] | None, jobs: int | None
+    args,
+    writer: EventWriter,
+    files: list[str] | None,
+    jobs: int | None,
+    spec: GridSpec | None,
 ) -> int:
     if args.command == "roll":
         return _run_roll_command(args, writer)
@@ -954,11 +1033,12 @@ def _dispatch_command(
             outcome = run_probe(
                 Path(args.input),
                 files,
-                args.per_negative,
+                spec.count if spec is not None else None,
                 out_dir=Path(args.out) if args.out else None,
                 roll_dir=Path(args.roll) if args.roll else None,
                 flatfield_profile_id=args.flatfield,
                 on_warning=on_warning,
+                grid=spec,
             )
         except ProbeFailure as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
@@ -982,7 +1062,7 @@ def _dispatch_command(
         return _run_stitch_command(args, writer, jobs)
 
     if args.command == "run":
-        return _run_run_command(args, writer, files, jobs)
+        return _run_run_command(args, writer, files, jobs, spec)
 
     # prepare — stage 1 of the pipeline, renamed from `convert`
     # (docs/DECISIONS.md, "Normalization decisions"): "Convert" is reserved,
@@ -1000,13 +1080,14 @@ def _dispatch_command(
                 Path(args.input),
                 files,
                 Path(args.out),
-                args.per_negative,
+                spec.count,
                 run_id=run_id,
                 overwrite=args.overwrite,
                 jobs=jobs,
                 cancel=cancel,
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
+                grid=spec,
             )
     except ConvertFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
