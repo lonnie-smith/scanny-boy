@@ -31,3 +31,5 @@ out/
 
 # macOS
 .DS_Store
+
+NegPy/

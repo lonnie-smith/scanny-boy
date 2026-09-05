@@ -56,6 +56,19 @@ FLIP_OP = "flip"
 ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
+# `tone` params are `{"grade_r": number | None, "snap_gamma": number | None}`
+# — the preview's paper-grade contrast and midtone-snap adjustment (see
+# `tone.py`). Unlike the geometric ops it is a state, not a transform: the
+# latest op wins, and both params `None` records the reset to the flat
+# linear look. `append_tone_edit` coalesces a trailing `tone` op in place,
+# the one sanctioned exception to the log's append-only discipline — slider
+# commits would otherwise pile up dozens of dead rows per frame.
+TONE_OP = "tone"
+TONE_GRADE_MIN = 50.0
+TONE_GRADE_MAX = 180.0
+TONE_SNAP_MIN = -0.5
+TONE_SNAP_MAX = 0.5
+
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
 _UNITY_GAIN = (1.0, 1.0, 1.0)
@@ -491,6 +504,97 @@ def append_edit(
         }
 
 
+def validated_tone_params(
+    grade_r: float | None, snap_gamma: float | None
+) -> dict[str, float | None]:
+    """The `tone` op's params, validated as a pair: both set, or both
+    `None` (the reset). Anything else is a caller bug."""
+    for name, value in (("grade_r", grade_r), ("snap_gamma", snap_gamma)):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"tone {name} must be a number, got {value!r}")  # noqa: TRY004
+    if grade_r is None and snap_gamma is None:
+        return {"grade_r": None, "snap_gamma": None}
+    if grade_r is None or snap_gamma is None:
+        raise ValueError("tone grade_r and snap_gamma must be set together")
+    if not TONE_GRADE_MIN <= grade_r <= TONE_GRADE_MAX:
+        raise ValueError(
+            f"tone grade_r must be within [{TONE_GRADE_MIN}, {TONE_GRADE_MAX}], got {grade_r}"
+        )
+    if not TONE_SNAP_MIN <= snap_gamma <= TONE_SNAP_MAX:
+        raise ValueError(
+            f"tone snap_gamma must be within [{TONE_SNAP_MIN}, {TONE_SNAP_MAX}], got {snap_gamma}"
+        )
+    return {"grade_r": float(grade_r), "snap_gamma": float(snap_gamma)}
+
+
+def append_tone_edit(
+    roll_dir: Path,
+    negative_id: str,
+    grade_r: float | None,
+    snap_gamma: float | None,
+) -> dict:
+    """Records the negative's preview tone adjustment (see `tone.py`):
+    `grade_r` ISO-R paper grade plus `snap_gamma` midtone trim, or both
+    `None` for the reset to the flat linear look.
+
+    The op is a state, not a transform — the latest one wins — so when the
+    log's last entry is already a `tone` op it is updated in place rather
+    than appended behind (the one coalescing exception to the log's
+    append-only discipline; slider commits would otherwise pile up dead
+    rows). Returns the row as a dict, same shape as `append_edit`'s.
+    Raises `ValueError` on out-of-range or mismatched params."""
+    from scanny_boy.roll_manifest import _now_iso
+
+    params = validated_tone_params(grade_r, snap_gamma)
+    with _session() as session:
+        negative = _negative_row(session, roll_dir, negative_id)
+        last = session.scalar(
+            select(EditRow)
+            .where(EditRow.negative_id == negative.negative_id)
+            .order_by(EditRow.position.desc())
+            .limit(1)
+        )
+        if last is not None and last.op == TONE_OP:
+            last.params = params
+            last.created_at = _now_iso()
+            session.flush()
+            return {
+                "id": last.id,
+                "negative_id": last.negative_id,
+                "position": last.position,
+                "op": last.op,
+                "params": last.params,
+                "created_at": last.created_at,
+            }
+        position = (
+            session.scalar(
+                select(func.max(EditRow.position)).where(
+                    EditRow.negative_id == negative.negative_id
+                )
+            )
+            or 0
+        ) + 1
+        row = EditRow(
+            negative_id=negative.negative_id,
+            position=position,
+            op=TONE_OP,
+            params=params,
+            created_at=_now_iso(),
+        )
+        session.add(row)
+        session.flush()
+        return {
+            "id": row.id,
+            "negative_id": row.negative_id,
+            "position": row.position,
+            "op": row.op,
+            "params": row.params,
+            "created_at": row.created_at,
+        }
+
+
 def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
     with _session() as session:
         negative = _negative_row(session, roll_dir, negative_id)
@@ -512,28 +616,36 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
         ]
 
 
-def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool, float]:
+def net_edit_state(
+    roll_dir: Path, negative_id: str
+) -> tuple[int, bool, float, dict[str, float] | None]:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net transform: `(quarter_turns, flipped_horizontally,
-    fine_angle_degrees)`, where the pixels are the original mirrored
+    canonical net state: `(quarter_turns, flipped_horizontally,
+    fine_angle_degrees, tone)`, where the pixels are the original mirrored
     horizontally first (when flipped), then rotated clockwise by
     `fine_angle_degrees`, then rotated `quarter_turns` clockwise quarter
-    turns.
+    turns. `tone` is the latest `tone` op's validated params —
+    `{"grade_r", "snap_gamma"}` — or `None` when no tone op has been
+    recorded (or the last one is the reset).
 
-    Replay is closed-form because every op transforms the image as it
-    currently renders: a rotate adds to the turn count, a fine rotation
-    adds to the angle, and a horizontal flip of an already-rotated image
-    equals rotating the flipped image the other way
+    Replay is closed-form because every geometric op transforms the image
+    as it currently renders: a rotate adds to the turn count, a fine
+    rotation adds to the angle, and a horizontal flip of an
+    already-rotated image equals rotating the flipped image the other way
     (`flip ∘ rot = rot^-1 ∘ flip` — true for quarter turns and fine angles
     alike), so a flip toggles the flag and negates *both* the turn count
     and the fine angle. Fine angles and quarter turns commute, both being
-    rotations. The single triple every consumer needs: the preview
-    generator's mirror + fine warp + `np.rot90` and the exporter's
-    identical replay are both driven from it. Unknown ops (an older build
-    reading a newer log) are skipped."""
+    rotations. `tone` is not part of that composition — it is a state the
+    display encode consumes, so only the latest op matters. The single
+    state every consumer needs: the preview generator's mirror + fine warp
+    + `np.rot90` + tone LUT and the exporter's identical geometric replay
+    (which ignores `tone` — the published TIFF carries no display curve)
+    are both driven from it. Unknown ops (an older build reading a newer
+    log) are skipped; a malformed `tone` op degrades to no adjustment."""
     turns = 0
     flipped = False
     fine_deg = 0.0
+    tone: dict[str, float] | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -550,7 +662,24 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool, float]:
             if isinstance(angle, bool) or not isinstance(angle, (int, float)):
                 continue
             fine_deg += float(angle)
-    return turns % 4, flipped, fine_deg
+        elif op == TONE_OP:
+            params = edit["params"]
+            grade = params.get("grade_r")
+            snap = params.get("snap_gamma")
+            if isinstance(grade, bool) or not isinstance(grade, (int, float)):
+                tone = None
+                continue
+            if isinstance(snap, bool) or not isinstance(snap, (int, float)):
+                tone = None
+                continue
+            if (
+                not TONE_GRADE_MIN <= grade <= TONE_GRADE_MAX
+                or not TONE_SNAP_MIN <= snap <= TONE_SNAP_MAX
+            ):
+                tone = None
+                continue
+            tone = {"grade_r": float(grade), "snap_gamma": float(snap)}
+    return turns % 4, flipped, fine_deg, tone
 
 
 def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:

@@ -75,7 +75,12 @@ LUMA_B = 0.0722
 NORMALIZED_HEADROOM_LOW = 0.15  # dense end (scene highlights)
 NORMALIZED_HEADROOM_HIGH = 0.10  # thin end (film base / scene shadows)
 NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH  # section 3.14
-NORMALIZE_FORMAT_VERSION = 1
+# MONOCHROME_PLAN section 5.1: v1 predates the mono feature. §1's detector
+# constants stay out of `build_params()` (they shape recorded evidence,
+# never published output); §2's thresholds and §3's merge weights join in
+# their own steps, and `upgrade_normalize_params` absorbs the invariant
+# break each addition would otherwise cause.
+NORMALIZE_FORMAT_VERSION = 2
 
 # The fraction of pixels the headroom clips past which
 # NORMALIZE_HEADROOM_CLIPPED warns (section 3.6's "the signal that the
@@ -101,12 +106,14 @@ class NormalizationError(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class Bounds:
-    """Per-channel (R, G, B) log-density bounds of one negative's
-    composite: `floors` are the dense ends (scene highlights), `ceils` the
-    thin ends (film base / scene shadows)."""
+    """Per-channel log-density bounds of one negative's composite:
+    `floors` are the dense ends (scene highlights), `ceils` the thin ends
+    (film base / scene shadows). One entry per published channel — three
+    (R, G, B) for a colour roll, one merged channel on a mono roll
+    (MONOCHROME_PLAN §4)."""
 
-    floors: tuple[float, float, float]
-    ceils: tuple[float, float, float]
+    floors: tuple[float, ...]
+    ceils: tuple[float, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -119,7 +126,7 @@ class Rebate:
 
     detected: bool
     mask_fraction: float
-    base_density: tuple[float, float, float] | None
+    base_density: tuple[float, ...] | None
     clipped: bool
 
 
@@ -142,7 +149,11 @@ def to_log_density(linear: np.ndarray) -> np.ndarray:
 
 def luma_of_log(img_log: np.ndarray) -> np.ndarray:
     """Rec.709-weighted luma of a log-density image. Log values are
-    negative; **thinner is larger**."""
+    negative; **thinner is larger**. On a single channel (a mono roll's
+    collapsed image, MONOCHROME_PLAN §4) there is no weighting to do and
+    the channel is its own luma."""
+    if img_log.shape[-1] == 1:
+        return np.asarray(img_log[..., 0], dtype=np.float32)
     return (
         LUMA_R * img_log[..., 0] + LUMA_G * img_log[..., 1] + LUMA_B * img_log[..., 2]
     ).astype(np.float32)
@@ -311,7 +322,8 @@ def _same_pixel_color_floor_refs(
         return None
 
     return [
-        _percentile(g_flat[final, channel], BASE_COLOR_CLIP) for channel in range(3)
+        _percentile(g_flat[final, channel], BASE_COLOR_CLIP)
+        for channel in range(g_flat.shape[-1])
     ]
 
 
@@ -336,8 +348,17 @@ def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
     channel and mistake coloured highlights for film cast).
 
     Identical channels (a mono negative) give zero deviation at any clip.
+
+    On a **single channel** — the collapsed image of a mono roll — the two
+    axes degenerate correctly and by construction: the luma percentile pair
+    *is* the channel's percentile pair, `c_floors[0] == mean_cf`, so the
+    colour deviation vanishes and `floors`/`ceils` are the luma percentile
+    pair unchanged. That is the collapse's point (MONOCHROME_PLAN §0.2),
+    not a special case: with no colour there is no colour deviation to add
+    back, and the generalised arithmetic below reaches it on its own.
     """
-    g_flat = grid_log.reshape(-1, 3)
+    channels = grid_log.shape[-1]
+    g_flat = grid_log.reshape(-1, channels)
     keep_flat = keep.reshape(-1)
     if not keep_flat.any():
         raise NormalizationError("the analysis region is empty; nothing to meter")
@@ -354,7 +375,8 @@ def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
     # Colour pass. Thin end: plain per-channel percentiles — physically
     # anchored at film base.
     c_ceils = [
-        _percentile(values[:, channel], 100.0 - BASE_COLOR_CLIP) for channel in range(3)
+        _percentile(values[:, channel], 100.0 - BASE_COLOR_CLIP)
+        for channel in range(channels)
     ]
     # Dense end: the shared, chroma-gated pixel set, falling back to plain
     # per-channel percentiles when the band holds no trustworthy neutrals.
@@ -362,15 +384,18 @@ def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
     c_floors = _same_pixel_color_floor_refs(g_flat, keep_flat, lum_full, base)
     if c_floors is None:
         c_floors = [
-            _percentile(values[:, channel], BASE_COLOR_CLIP) for channel in range(3)
+            _percentile(values[:, channel], BASE_COLOR_CLIP)
+            for channel in range(channels)
         ]
 
-    mean_cf = sorted(c_floors)[1]
-    mean_cc = sorted(c_ceils)[1]
-    floors = tuple(mean_lf + (c_floors[channel] - mean_cf) for channel in range(3))
-    ceils = tuple(mean_lc + (c_ceils[channel] - mean_cc) for channel in range(3))
+    # The median per-channel reference, generalising NegPy's
+    # `sorted(...)[1]` (the middle of three) to any channel count.
+    mean_cf = float(np.median(c_floors))
+    mean_cc = float(np.median(c_ceils))
+    floors = tuple(mean_lf + (c_floors[channel] - mean_cf) for channel in range(channels))
+    ceils = tuple(mean_lc + (c_ceils[channel] - mean_cc) for channel in range(channels))
 
-    for channel in range(3):
+    for channel in range(channels):
         if not np.isfinite(floors[channel]) or not np.isfinite(ceils[channel]):
             raise NormalizationError(
                 "bounds analysis produced a non-finite channel bound"
@@ -388,13 +413,14 @@ def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
 
 def measure_shadow_refs(
     grid_log: np.ndarray, keep: np.ndarray
-) -> tuple[float, float, float]:
+) -> tuple[float, ...]:
     """Per-channel shadow references: the `SHADOW_NEUTRAL_PERCENTILE`
     percentile of each channel over the analysis region. Recorded for the
     print stage; nothing in this plan reads them back (section 3.7)."""
-    values = grid_log.reshape(-1, 3)[keep.reshape(-1)]
+    channels = grid_log.shape[-1]
+    values = grid_log.reshape(-1, channels)[keep.reshape(-1)]
     return tuple(
-        _percentile(values[:, ch], SHADOW_NEUTRAL_PERCENTILE) for ch in range(3)
+        _percentile(values[:, ch], SHADOW_NEUTRAL_PERCENTILE) for ch in range(channels)
     )
 
 
@@ -426,6 +452,96 @@ def measure_clip_fractions(linear: np.ndarray) -> tuple[float, float, float]:
     else:
         values = values.astype(np.float32)
     return tuple(float(np.mean(values[..., ch] >= SCAN_CLIP_LEVEL)) for ch in range(3))
+
+
+# --- MONOCHROME_PLAN section 1: the mono detector, recorded, never acted on ---
+
+# The chroma percentile the detector reads (§1.1). A high percentile, not a
+# mean: a colour negative of a mostly-neutral scene still has colour
+# somewhere, and the mean drowns it.
+MONO_CHROMA_PERCENTILE = 90.0
+# How many negatives the detector pre-pass samples per roll, one frame each
+# (§1.2) — six bounded reads, not one per negative.
+MONO_DETECT_MAX_SAMPLES = 6
+# Log10 density. The MAD floor (§1.1): a channel whose MAD sits below it
+# carries no usable spread. A genuinely flat channel has a flat numerator
+# too and contributes no chroma; a channel with real structure under a
+# vanishing MAD has its residual inflated — pushing the statistic *up*,
+# toward "colour", the lossless direction for a misclassification. Likely
+# to matter, because §1.2 deliberately samples the rebate, and a dense or
+# heavily rebate-dominated frame can leave a channel near-constant.
+MONO_MAD_FLOOR = 1e-3
+
+
+@dataclasses.dataclass(frozen=True)
+class MonoStatistic:
+    """§1.3's per-negative detector evidence, recorded beside the other
+    section 3.7 meters and acted on by nothing. `channel_correlation` is
+    the per-pair channel correlation against green — `[corr(R, G), corr(B,
+    G)]`, the diagnostic the plan considered and declined to decide on."""
+
+    sampled: bool
+    chroma: float
+    channel_correlation: tuple[float, float]
+
+
+def measure_mono_statistic(linear: np.ndarray) -> MonoStatistic:
+    """§1: is this frame a silver B&W negative or a colour one?
+
+    A silver B&W negative photographed through a Bayer CFA under white
+    light gives three channels recording *the same* image, differing only
+    by a per-channel gain and offset — the CFA passband times the light
+    times silver's near-neutral absorption. Removing that affine first is
+    load-bearing: without it, the orange mask is an enormous per-channel
+    offset that swamps everything and the statistic says nothing. What
+    survives the removal is, on a silver negative, noise; on a colour
+    negative, the picture.
+
+    Per channel: subtract its median, divide by its MAD (floored at
+    `MONO_MAD_FLOOR`, see the constant's comment), take the per-pixel
+    spread across channels, and read the `MONO_CHROMA_PERCENTILE`
+    percentile of that spread. The input is one staged **linear**
+    intermediate, as `_read_intermediate` returns it (uint16 codes or
+    float linear); the function does its own `to_log_density` and
+    block-median decimation. The whole frame is measured, rebate included
+    — on colour film the rebate is the orange mask at full strength, the
+    single strongest mono/colour discriminator available (§1.2).
+    """
+    values = np.asarray(linear)
+    if values.dtype == np.uint16:
+        values = values.astype(np.float32) / 65535.0
+    else:
+        values = values.astype(np.float32)
+    grid = block_median_grid(to_log_density(values))
+
+    median_ch = np.median(grid, axis=(0, 1))
+    mad_ch = np.median(np.abs(grid - median_ch), axis=(0, 1))
+    resid = (grid - median_ch) / np.maximum(mad_ch, np.float32(MONO_MAD_FLOOR))
+    chroma = resid.max(axis=-1) - resid.min(axis=-1)
+    statistic = _percentile(chroma, MONO_CHROMA_PERCENTILE)
+
+    # The diagnostic, not the decision: per-pair correlation against green
+    # (scale-invariant, so it needs no affine removal — but it measures
+    # shape agreement only, and a low-colour-variance colour scene
+    # correlates near 1.0 too; the chroma percentile above measures
+    # magnitude and decides).
+    flat = grid.reshape(-1, grid.shape[-1])
+    correlations = tuple(_pair_correlation(flat[:, i], flat[:, j]) for i, j in ((0, 1), (2, 1)))
+    return MonoStatistic(
+        sampled=True, chroma=statistic, channel_correlation=correlations
+    )
+
+
+def _pair_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation of two flattened channel grids; 0.0 for a
+    constant channel (no variance — the correlation is undefined, and a
+    flat channel carries no evidence either way)."""
+    a = a - a.mean()
+    b = b - b.mean()
+    denominator = float(np.sqrt(np.sum(a * a) * np.sum(b * b)))
+    if denominator == 0.0:
+        return 0.0
+    return float(np.sum(a * b) / denominator)
 
 
 # --- section 3.13: the rebate detector ---------------------------------------
@@ -565,14 +681,15 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
         return keep, empty
 
     new_keep = keep & ~mask
+    channels = grid_log.shape[-1]
     base_density = tuple(
-        float(np.median(grid_log[..., channel][mask])) for channel in range(3)
+        float(np.median(grid_log[..., channel][mask])) for channel in range(channels)
     )
     grid_linear = np.power(10.0, grid_log.astype(np.float64))
     clipped = any(
         float(np.mean(grid_linear[..., channel][mask] >= SCAN_CLIP_LEVEL))
         > SCAN_CLIP_WARN
-        for channel in range(3)
+        for channel in range(channels)
     )
     rebate = Rebate(
         detected=True,
@@ -820,11 +937,13 @@ def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool
     if len(references) < CLAMP_MIN_SAMPLES:
         return bounds, False
 
+    channels = len(bounds.floors)
+
     def clamp_axis(
         values: tuple[float, ...], references_by_channel: list[list[float]]
     ) -> tuple[float, ...]:
         clamped = []
-        for channel in range(3):
+        for channel in range(channels):
             column = references_by_channel[channel]
             median = float(np.median(column))
             mad = float(np.median(np.abs(np.asarray(column) - median)))
@@ -832,9 +951,15 @@ def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool
             clamped.append(min(max(values[channel], median - window), median + window))
         return tuple(clamped)
 
-    floors = clamp_axis(bounds.floors, [[b.floors[ch] for b in references] for ch in range(3)])
-    ceils = clamp_axis(bounds.ceils, [[b.ceils[ch] for b in references] for ch in range(3)])
-    for channel in range(3):
+    floors = clamp_axis(
+        bounds.floors,
+        [[b.floors[ch] for b in references] for ch in range(channels)],
+    )
+    ceils = clamp_axis(
+        bounds.ceils,
+        [[b.ceils[ch] for b in references] for ch in range(channels)],
+    )
+    for channel in range(channels):
         if ceils[channel] <= floors[channel]:
             return bounds, False
     return Bounds(floors=floors, ceils=ceils), floors != bounds.floors or ceils != bounds.ceils
@@ -863,31 +988,33 @@ def normalize_log_image(img_log: np.ndarray, bounds: Bounds) -> np.ndarray:
 
 def observed_extrema(
     normalized: np.ndarray,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """The per-channel minimum and maximum normalized value of the input
     (section 3.6): recorded per negative so the two headroom constants can
     be tuned from real scans instead of estimated — `observed_min` pinned
     at `-NORMALIZED_HEADROOM_LOW` means the headroom is clipping and
     tones have been lost."""
-    flat = normalized.reshape(-1, 3)
-    mins = tuple(float(flat[:, ch].min()) for ch in range(3))
-    maxs = tuple(float(flat[:, ch].max()) for ch in range(3))
+    channels = normalized.shape[-1]
+    flat = normalized.reshape(-1, channels)
+    mins = tuple(float(flat[:, ch].min()) for ch in range(channels))
+    maxs = tuple(float(flat[:, ch].max()) for ch in range(channels))
     return mins, maxs
 
 
 def headroom_clip_fractions(
     normalized: np.ndarray,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """Per-channel fraction of normalized values the encode's headroom
     clips (section 3.6), split by which rail they clip against: below
     `-NORMALIZED_HEADROOM_LOW` is the dense end (scene highlights), above
     `1.0 + NORMALIZED_HEADROOM_HIGH` is the thin end (scene shadows) — see
     the constants' own comments. Returns `(highlights, shadows)`."""
+    channels = normalized.shape[-1]
     low = -NORMALIZED_HEADROOM_LOW
     high = 1.0 + NORMALIZED_HEADROOM_HIGH
-    flat = normalized.reshape(-1, 3)
-    highlights = tuple(float(np.mean(flat[:, ch] < low)) for ch in range(3))
-    shadows = tuple(float(np.mean(flat[:, ch] > high)) for ch in range(3))
+    flat = normalized.reshape(-1, channels)
+    highlights = tuple(float(np.mean(flat[:, ch] < low)) for ch in range(channels))
+    shadows = tuple(float(np.mean(flat[:, ch] > high)) for ch in range(channels))
     return highlights, shadows
 
 
@@ -960,3 +1087,28 @@ def build_params() -> dict:
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,
     }
+
+
+def upgrade_normalize_params(params: dict) -> dict:
+    """MONOCHROME_PLAN section 5.1's forward shim, for the exact-dict
+    comparison `manifest.py` and `roll_manifest.py` run over
+    `processing_params`: a stored `normalize` block from format_version 1
+    is upgraded in memory by injecting the current defaults for every key
+    it lacks, then compared. A v1 roll then compares equal to a v2 build
+    as long as the new constants sit at their defaults — which for an
+    existing colour roll they do. Because the injected defaults are read
+    from the live `build_params()`, keys added later (§2's thresholds, §3's
+    weights) are covered by this same shim without a second migration.
+
+    v2 and later blocks pass through unchanged; the function is idempotent
+    (applying it to an upgraded block is a no-op) and it is the only place
+    that knows v1 existed."""
+    upgraded = dict(params)
+    if upgraded.get("format_version") != 1:
+        return upgraded
+    for key, value in build_params().items():
+        if key == "format_version":
+            continue
+        upgraded.setdefault(key, value)
+    upgraded["format_version"] = NORMALIZE_FORMAT_VERSION
+    return upgraded

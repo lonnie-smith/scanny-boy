@@ -9,6 +9,15 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 10 keeps version 9's roll model and adds the **preview's
+nondestructive tone adjustment**: the new `edit tone` command records an
+ISO-R paper grade (`--grade`, 50–180) plus a midtone snap (`--snap`,
+−0.5…0.5) — or `--reset` — as a `tone` op in the negative's ops log (a
+state, not a transform: the latest op wins and a trailing one coalesces in
+place). The op lives only in the preview's display encode; the published
+TIFF and export are untouched. `roll info` reports the net tone per
+negative as `tone_grade_r`/`tone_snap_gamma` (both `null` when flat).
+
 Roll manifest format version 7 keeps version 6's shape and adds one
 optional per-negative field: `rectification`, the fitted rig-tilt
 rectification (docs/RECTIFICATION_PLAN.md section 7) — `l` (two numbers,
@@ -18,8 +27,7 @@ and `pair_count`. It is `null` when the fit was rejected, the negative
 failed before it ran, or the build predates the field. `stitch_params`
 gains `rectification_model` (always `"global-2-param"`) and the three gate
 constants in force; it remains a roll invariant, so rolls recorded by
-earlier builds refuse new runs and there is no migration. No event changed,
-so the event protocol stays at version 9.
+earlier builds refuse new runs and there is no migration. No event changed.
 
 Protocol version 9 keeps version 8's roll model and adds **1:1 region
 rendering** for the app's 100% zoom: the new `edit render-region` command
@@ -125,6 +133,7 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
+scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R --snap G | --reset)
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
 
@@ -327,6 +336,20 @@ rotation do not commute, so consumers replay the log into a
 `(rotation_quarter_turns, flipped_horizontally, fine_rotation_deg)` triple.
 It fails with the
 same codes as `edit rotate`.
+
+`edit tone` records a preview tone adjustment for one or more negatives: an
+ISO-R paper grade (`--grade`, 50–180; lower is harder) plus a midtone snap
+(`--snap`, −0.5…0.5), or `--reset` for the flat linear look. The op is a
+state, not a transform — the latest `tone` op wins, and a trailing `tone` op
+is updated in place rather than appended behind. The published TIFF is never
+touched (export ignores the op); each preview is regenerated from its TIFF
+with the tone curve composed into the display encode, and `edit_recorded` is
+emitted per negative — the `edit` row's `params` carry
+`{"grade_r": number | null, "snap_gamma": number | null}` (both `null` for a
+reset). It fails with `INVALID_EDIT` for out-of-range or mismatched
+parameters and with the same roll/negative codes as `edit rotate`. `roll
+info` reports the net tone state per negative as `tone_grade_r` /
+`tone_snap_gamma` (both `null` when no adjustment is recorded).
 
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density

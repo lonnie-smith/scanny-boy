@@ -514,9 +514,18 @@ ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry",)
 
 
 def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:
+    """MONOCHROME_PLAN section 5.1: the stored `normalize` block is upgraded
+    through `normalization.upgrade_normalize_params` before comparison, so
+    a v1 roll compares equal to a v2 build whose new constants sit at their
+    defaults. Idempotent; a no-op for v2+ blocks."""
+    from scanny_boy.normalization import upgrade_normalize_params
+
+    compared = dict(params)
+    if "normalize" in compared:
+        compared["normalize"] = upgrade_normalize_params(compared["normalize"])
     return {
         key: value
-        for key, value in params.items()
+        for key, value in compared.items()
         if key not in ROLL_PROFILE_PROCESSING_PARAMS_KEYS
     }
 

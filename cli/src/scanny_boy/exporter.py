@@ -101,7 +101,11 @@ def _write_export(
             tmp_path,
             image,
             description=export_image_description(negative),
-            iccprofile=load_icc_profile(ProfileKind.DENSITY),
+            # MONOCHROME_PLAN section 4: a mono roll's published TIFF is
+            # single-channel and carries the grey density profile.
+            iccprofile=load_icc_profile(
+                ProfileKind.DENSITY_GREY if image.ndim == 2 else ProfileKind.DENSITY
+            ),
         )
         tmp_path.replace(destination)
     except BaseException:
@@ -215,7 +219,7 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        quarter_turns, flipped, fine_angle = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle)

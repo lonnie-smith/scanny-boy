@@ -1098,3 +1098,35 @@ would degenerate a channel is discarded whole. Clamping is recorded
 auditable, and the published pixels always reflect the bounds recorded in
 `floors`/`ceils`.
 
+
+## The preview's tone adjustment: a preview-only `tone` op (protocol version 10)
+
+The Edit tab's flat preview — decode, `1 - val`, bare 8-bit scaling — is
+honest but hard to judge a print by, so the tab offers a nondestructive
+tone adjustment: an ISO-R paper grade (50–180; lower is harder, matching
+NegPy's print-module vocabulary) plus a midtone snap trim (−0.5…0.5,
+NegPy's variable midtone gamma). It is recorded as a `tone` op in the
+negative's ops log (`repo.TONE_OP`) and composed into the preview's
+display LUT (`tone.py`) — a simplified port of NegPy's H&D print curve:
+a straight slope about the midtone pivot with softplus toe/shoulder
+knees, endpoints pinned to display black and white.
+
+Three deliberate boundaries:
+
+- **The published TIFF never carries it.** The op is a state the display
+  encode consumes, not a transform: the exporter's replay ignores it, and
+  the Phase 4 print stage — which will own pixel-level tone at export —
+  inherits the vocabulary (grade, snap) without inheriting this
+  implementation. `roll info` reports the net tone per negative so Swift
+  can key its preview caches.
+- **The op is a state, not a transform**, so unlike the geometric ops it
+  is not append-only: the latest `tone` op wins, and a trailing one is
+  coalesced in place (`append_tone_edit`). Slider commits would otherwise
+  pile up dozens of dead rows per frame. This is the log's one sanctioned
+  exception.
+- **The grade's reference slope is not NegPy's.** NegPy's R115 is a real
+  paper grade against a paper-white baseline; our baseline is already the
+  flat linear mapping of the normalized density, so the slope reference
+  (`GRADE_SLOPE_REF`, at R115) is chosen to land the default grade at a
+  print-like midtone contrast with the softest end of the range near the
+  flat look. The numbers are a judgement aid, not a calibrated paper.

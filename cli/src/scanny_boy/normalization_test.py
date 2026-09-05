@@ -10,6 +10,8 @@ equivalent).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,11 @@ from scanny_boy.normalization import (
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
+)
+from scanny_boy.sample_nef_support import (
+    REAL_SAMPLE_FILES,
+    requires_real_samples,
+    stage_samples,
 )
 
 FILL_LOG = -6.0  # what an uncovered canvas pixel becomes: log10(1e-6)
@@ -703,7 +710,7 @@ def test_resolve_analysis_region_clamps_and_falls_back_on_degenerate_rects():
 
 def test_build_params_carries_every_constant_and_the_format_version():
     params = build_params()
-    assert params["format_version"] == 1
+    assert params["format_version"] == 2
     assert params["analysis_grid"] == ANALYSIS_GRID
     assert params["base_luma_clip"] == nz.BASE_LUMA_CLIP
     assert params["base_color_clip"] == nz.BASE_COLOR_CLIP
@@ -737,6 +744,264 @@ def test_build_params_carries_every_constant_and_the_format_version():
 
     assert json.loads(json.dumps(params)) == params
 
+    # §1's detector constants stay out of build_params(): they shape
+    # recorded evidence, never published output (MONOCHROME_PLAN §1.4).
+    assert "mono_chroma_percentile" not in params
+    assert "mono_detect_max_samples" not in params
+    assert "mono_mad_floor" not in params
+
+
+# --- MONOCHROME_PLAN section 5.1: the forward shim -----------------------------
+
+
+def test_upgrade_normalize_params_injects_missing_v1_keys():
+    """A stored v1 block is upgraded in memory: stored values are kept,
+    missing keys get the current defaults, and the version reads v2."""
+    v1 = {"format_version": 1, "analysis_grid": 512, "base_luma_clip": 0.02}
+    upgraded = nz.upgrade_normalize_params(v1)
+    assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
+    assert upgraded["analysis_grid"] == 512
+    assert upgraded["base_luma_clip"] == 0.02
+    assert upgraded["base_color_clip"] == nz.BASE_COLOR_CLIP
+    assert upgraded["normalized_fill"] == nz.NORMALIZED_FILL
+    assert v1["format_version"] == 1  # the stored block is never mutated
+
+
+def test_upgrade_normalize_params_leaves_v2_blocks_alone():
+    block = build_params()
+    assert nz.upgrade_normalize_params(block) == block
+    assert nz.upgrade_normalize_params(nz.upgrade_normalize_params(block)) == block
+
+
+def test_upgrade_normalize_params_covers_keys_added_later(monkeypatch):
+    """The forward property the plan demands: a key a later step (§2's
+    thresholds, §3's weights) adds to build_params() is absorbed by the
+    same shim, with no second migration. Proved by faking such a key."""
+    v1 = {"format_version": 1, "analysis_grid": ANALYSIS_GRID}
+    monkeypatch.setattr(
+        nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
+    )
+    upgraded = nz.upgrade_normalize_params(v1)
+    assert upgraded["future_threshold"] == 1.5
+    assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
+
+
+def test_v1_roll_invariant_survives_the_v2_build():
+    """The integration property §5.1 exists for: a roll whose stored
+    `normalize` block is v1 does not raise ROLL_INVARIANT_MISMATCH against
+    a v2 candidate, through the real comparison in `roll_manifest`."""
+    from scanny_boy.roll_manifest import (
+        RollInvariants,
+        RollManifest,
+        RunRecord,
+        check_roll_invariants,
+    )
+
+    manifest = RollManifest(
+        scanny_boy_version="0.3.0",
+        roll_id="8f14e45f-ea2e-4b3f-9c1d-2b7a6c5d4e3f",
+        roll_name="Tri-X, Portland 1998",
+        created_at="2026-08-02T00:00:00Z",
+        updated_at="2026-08-02T00:00:00Z",
+        processing_params={"normalize": {**build_params(), "format_version": 1}},
+        icc_profile={"sha256": "a" * 64},
+        published_icc_profile={"sha256": "a" * 64},
+        runs=[
+            RunRecord(
+                run_id="run-1",
+                short_id="aaaaaa",
+                kind="stitch",
+                status="complete",
+                started_at="2026-08-02T00:00:00Z",
+                convert_run_id="convert-1",
+                input_folder=None,
+                source_order=["_DSC4638.NEF"],
+                work_dir="/tmp/work",
+                finished_at="2026-08-02T00:10:00Z",
+            )
+        ],
+    )
+    candidate = RollInvariants(
+        processing_params={"normalize": build_params()},
+        icc_profile_sha256="a" * 64,
+        published_icc_profile_sha256="a" * 64,
+        stitch_params={},
+    )
+    check_roll_invariants(manifest, candidate)
+
+
+# --- MONOCHROME_PLAN section 1: the mono detector -------------------------------
+
+
+def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
+    """One log-density plane, in linear light: a smooth ramp plus noise,
+    spanning the range a real negative's composite occupies."""
+    rng = np.random.default_rng(seed)
+    ys, xs = np.mgrid[0:side, 0:side]
+    plane_log = (
+        -1.5
+        + 0.8 * (xs + ys) / (2 * side)
+        + 0.05 * rng.standard_normal((side, side))
+    )
+    return np.power(10.0, plane_log.astype(np.float32))
+
+
+def _affine_stack(
+    plane_linear: np.ndarray,
+    gains: tuple[float, ...] = (1.0, 1.25, 0.8),
+    offsets: tuple[float, ...] = (0.0, 0.1, -0.15),
+) -> np.ndarray:
+    """Three channels that are one plane under a per-channel affine *in
+    log density* (the CFA gain and the film-base offset), linearised back
+    to the light the statistic reads. `offsets` stands in for the orange
+    mask; `gains` for the CFA passband."""
+    log = np.log10(np.clip(plane_linear, 1e-6, None))
+    return np.power(
+        10.0,
+        np.stack(
+            [log * g + o for g, o in zip(gains, offsets, strict=True)], axis=-1
+        ).astype(np.float32),
+    )
+
+
+def test_mono_statistic_is_near_zero_for_one_plane_under_affines():
+    plane = _mono_plane()
+    for gains, offsets in (
+        ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
+        ((1.0, 1.25, 0.8), (0.0, 0.1, -0.15)),
+        # A strong offset that stands in for the orange mask at full
+        # strength — the load-bearing case of §1.1.
+        ((1.0, 1.4, 0.7), (0.0, 0.5, -0.3)),
+        ((0.6, 1.0, 1.9), (0.2, 0.0, -0.25)),
+    ):
+        statistic = nz.measure_mono_statistic(_affine_stack(plane, gains, offsets))
+        assert statistic.sampled
+        assert statistic.chroma == pytest.approx(0.0, abs=1e-4), (gains, offsets)
+
+
+def test_mono_statistic_is_invariant_to_a_per_channel_gain_and_offset():
+    """The property the whole design rests on, asserted directly (§1.5)."""
+    plane = _mono_plane()
+    stack = _affine_stack(plane)
+    reference = nz.measure_mono_statistic(stack).chroma
+    # Re-affine the stack's channels: the statistic may not move.
+    for gains, offsets in (
+        ((1.1, 0.9, 1.3), (0.05, -0.05, 0.12)),
+        ((0.7, 1.6, 1.0), (-0.1, 0.2, 0.0)),
+    ):
+        log = np.log10(np.clip(stack, 1e-6, None))
+        re_affined = np.power(
+            10.0,
+            np.stack(
+                [log[..., i] * g + o for i, (g, o) in enumerate(zip(gains, offsets, strict=True))],
+                axis=-1,
+            ).astype(np.float32),
+        )
+        assert nz.measure_mono_statistic(re_affined).chroma == pytest.approx(
+            reference, abs=1e-4
+        )
+
+
+def test_mono_statistic_with_independent_noise_stays_below_the_colour_band():
+    """Noise is O(1) in MAD-normalized units — the statistic cannot be
+    near zero with independent per-channel noise, whatever its magnitude;
+    what separates the classes is that noise stays in a small band while
+    colour content towers over it. Assert the ordering §1.5 asks for:
+    noise rides above the exact case but far below genuine per-channel
+    content."""
+    plane = _mono_plane(seed=3)
+    exact = nz.measure_mono_statistic(_affine_stack(plane)).chroma
+    # Independent per-channel noise on top of the shared plane.
+    rng = np.random.default_rng(11)
+    log = np.log10(np.clip(plane, 1e-6, None))
+    noisy = np.power(
+        10.0,
+        np.stack(
+            [
+                log + 0.05 * rng.standard_normal(plane.shape),
+                log + 0.05 * rng.standard_normal(plane.shape),
+                log + 0.05 * rng.standard_normal(plane.shape),
+            ],
+            axis=-1,
+        ).astype(np.float32),
+    )
+    noisy_statistic = nz.measure_mono_statistic(noisy).chroma
+    assert noisy_statistic > exact  # noise contributes chroma the exact case lacks
+    assert noisy_statistic < 4.0  # three standardized samples spread O(1), P90 ≈ 2.5
+
+    # Genuine per-channel content: a colour negative's channels are not
+    # affine copies of one plane, whatever affine you remove.
+    xs, ys = np.mgrid[0:plane.shape[0], 0:plane.shape[1]]
+    colour_log = np.stack(
+        [
+            log + 1.2 * np.sin(2 * np.pi * xs / 16.0),
+            log,
+            log + 0.9 * np.cos(2 * np.pi * ys / 16.0),
+        ],
+        axis=-1,
+    ).astype(np.float32)
+    colour = nz.measure_mono_statistic(np.power(10.0, colour_log)).chroma
+    assert colour > 2.0 * noisy_statistic
+    assert colour > 10.0 * exact
+
+
+def test_mono_statistic_mad_floor_keeps_a_flat_channel_quiet_and_structure_loud():
+    """§1.1's floor and its defined behaviour when it trips: a genuinely
+    near-constant channel contributes no chroma (numerator flat too); a
+    channel with real structure under a vanishing MAD inflates the
+    statistic toward colour — the lossless direction."""
+    # A rebate-dominated, near-constant frame: every channel the same
+    # constant. Statistic ~0 — the floor costs nothing here.
+    flat = np.full((64, 64, 3), 0.02, dtype=np.float32)
+    assert nz.measure_mono_statistic(flat).chroma == pytest.approx(0.0, abs=1e-4)
+
+    # Structure on one channel only: the chroma is real, and the near-zero
+    # MAD of the flat pair cannot mute it — it reads as colour.
+    log = np.full((64, 64, 3), -1.5, dtype=np.float32)
+    xs, _ys = np.mgrid[0:64, 0:64]
+    log[..., 0] += 0.5 * np.sin(2 * np.pi * xs / 16.0)
+    structured = np.power(10.0, log).astype(np.float32)
+    assert nz.measure_mono_statistic(structured).chroma > 1.0
+
+
+@pytest.mark.slow
+@requires_real_samples
+def test_real_colour_negatives_score_above_every_synthetic_mono_fixture(tmp_path):
+    """§1.5's slow check, relative per the plan: each real sample NEF —
+    colour — scores above every synthetic mono fixture under the same
+    statistic. No threshold is asserted: none is pinned until §2."""
+    from scanny_boy.pipeline import run_convert
+
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    out_dir = tmp_path / "convert"
+    out_dir.mkdir()
+    outcome = run_convert(
+        input_dir,
+        list(REAL_SAMPLE_FILES),
+        out_dir,
+        3,
+        run_id="mono-detect",
+        jobs=4,
+        emit=lambda event: None,
+    )
+    assert outcome.status == "complete"
+
+    plane = _mono_plane(seed=7)
+    fixtures = [
+        nz.measure_mono_statistic(_affine_stack(plane, gains, offsets)).chroma
+        for gains, offsets in (
+            ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
+            ((1.0, 1.4, 0.7), (0.0, 0.3, -0.2)),
+        )
+    ]
+    floor = max(fixtures)
+    import tifffile
+
+    for name in REAL_SAMPLE_FILES:
+        pixels = tifffile.imread(out_dir / f"{Path(name).stem}.tif")
+        statistic = nz.measure_mono_statistic(pixels)
+        assert statistic.chroma > floor, name
+
 
 # --- golden values against NegPy (requires the reference implementation) -------
 
@@ -755,3 +1020,125 @@ def test_golden_values_match_negpy():
     )
     assert bounds.floors == pytest.approx(reference.floors, abs=1e-5)
     assert bounds.ceils == pytest.approx(reference.ceils, abs=1e-5)
+
+
+# --- MONOCHROME_PLAN section 4: one-channel plumbing ----------------------------
+
+
+def _ramp_scene_1ch(side: int = 64) -> np.ndarray:
+    ys, xs = np.mgrid[0:side, 0:side]
+    return (-2.5 + 1.8 * (xs + ys) / (2 * side)).astype(np.float32)[..., np.newaxis]
+
+
+def test_luma_of_log_on_one_channel_is_the_channel_itself():
+    img = _ramp_scene(8, 8, -2.0, -0.2, (0.0, 0.1, -0.1))
+    img1 = img[..., 1:2]
+    assert nz.luma_of_log(img1) == pytest.approx(img1[..., 0], abs=1e-6)
+
+
+def test_analyze_bounds_on_one_channel_reduces_to_the_luma_percentile_pair():
+    """MONOCHROME_PLAN §4: the two-axis recombination degenerates on one
+    channel — the colour deviation vanishes and the bounds are the luma
+    percentile pair. The correct answer, reached by the generalised
+    arithmetic, not a special case."""
+    grid = _ramp_scene_1ch()
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    bounds = analyze_bounds(grid, keep)
+    assert len(bounds.floors) == 1
+    assert len(bounds.ceils) == 1
+    lum = nz.luma_of_log(grid).reshape(-1)
+    luma_floor = float(np.percentile(lum, nz.BASE_LUMA_CLIP))
+    luma_ceil = float(np.percentile(lum, 100.0 - nz.BASE_LUMA_CLIP))
+    assert bounds.floors[0] == pytest.approx(luma_floor, abs=1e-5)
+    assert bounds.ceils[0] == pytest.approx(luma_ceil, abs=1e-5)
+
+
+def test_analyze_bounds_three_channel_unchanged_by_the_generalisation():
+    """The percentile recombination generalised `sorted(...)[1]` to
+    `np.median`; on three channels the two agree exactly, so the ported
+    behaviour is untouched."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    bounds = analyze_bounds(img, keep)
+    c_floors = [
+        float(np.percentile(img.reshape(-1, 3)[:, ch], nz.BASE_COLOR_CLIP))
+        for ch in range(3)
+    ]
+    c_ceils = [
+        float(np.percentile(img.reshape(-1, 3)[:, ch], 100.0 - nz.BASE_COLOR_CLIP))
+        for ch in range(3)
+    ]
+    mean_lf = float(np.percentile(nz.luma_of_log(img).reshape(-1), nz.BASE_LUMA_CLIP))
+    mean_lc = float(
+        np.percentile(nz.luma_of_log(img).reshape(-1), 100.0 - nz.BASE_LUMA_CLIP)
+    )
+    mean_cf = sorted(c_floors)[1]
+    mean_cc = sorted(c_ceils)[1]
+    assert bounds.floors == pytest.approx(
+        tuple(mean_lf + (c_floors[ch] - mean_cf) for ch in range(3)), abs=1e-5
+    )
+    assert bounds.ceils == pytest.approx(
+        tuple(mean_lc + (c_ceils[ch] - mean_cc) for ch in range(3)), abs=1e-5
+    )
+
+
+def test_measure_shadow_refs_and_extrema_on_one_channel():
+    grid = _ramp_scene_1ch()
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    refs = measure_shadow_refs(grid, keep)
+    assert len(refs) == 1
+    flat = np.linspace(0.0, 1.0, 8, dtype=np.float32).reshape(2, 2, 2)
+    mins, maxs = observed_extrema(flat[..., np.newaxis])
+    assert len(mins) == 1 and len(maxs) == 1
+    assert mins[0] == pytest.approx(float(flat.min()), abs=1e-6)
+    assert maxs[0] == pytest.approx(float(flat.max()), abs=1e-6)
+
+
+def test_headroom_clip_fractions_on_one_channel():
+    values = np.array([[[-0.2], [0.5], [1.2], [0.5]]], dtype=np.float32)
+    highlights, shadows = headroom_clip_fractions(values)
+    assert len(highlights) == 1 and len(shadows) == 1
+    assert highlights[0] == pytest.approx(0.25, abs=1e-6)
+    assert shadows[0] == pytest.approx(0.25, abs=1e-6)
+
+
+def test_clamp_bounds_on_one_channel():
+    references = [
+        Bounds(floors=(-1.5,), ceils=(-0.4,)),
+        Bounds(floors=(-1.5,), ceils=(-0.4,)),
+        Bounds(floors=(-1.5,), ceils=(-0.4,)),
+    ]
+    outlier = Bounds(floors=(-6.0,), ceils=(-0.4,))
+    clamped, did = clamp_bounds(outlier, references)
+    assert did
+    assert clamped.floors == pytest.approx(
+        (-1.5 - nz.CLAMP_MIN_WINDOW,), abs=1e-6
+    )
+
+
+def test_detect_rebate_base_density_on_one_channel():
+    """The rebate detector's base_density records one entry per published
+    channel (MONOCHROME_PLAN §4)."""
+    grid = np.full((16, 16, 1), -2.0, dtype=np.float32)
+    grid[:2, :] = -0.3  # a thin band touching the border: rebate-like
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    keep, rebate = detect_rebate(grid, keep)
+    assert rebate.detected
+    assert rebate.base_density is not None
+    assert len(rebate.base_density) == 1
+    assert rebate.base_density[0] == pytest.approx(-0.3, abs=1e-5)
+
+
+def test_encode_decode_round_trip_with_one_element_bounds():
+    """A mono composite's recorded 1-element floors/ceils stretch the one
+    channel exactly as a colour roll's three do (§3.4's round-trip
+    property, at the unit level): encode then decode returns the
+    normalized values within quantization."""
+    grid = _ramp_scene_1ch()
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    bounds = analyze_bounds(grid, keep)
+    assert len(bounds.floors) == 1
+    normalized = normalize_log_image(grid, bounds)
+    codes = encode_normalized(normalized)
+    # The uint16 code quantizes to ~1e-5 of the 1.25-wide normalized span.
+    assert decode_normalized(codes) == pytest.approx(normalized, abs=2e-5)

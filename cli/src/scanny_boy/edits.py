@@ -1,11 +1,12 @@
 """`edit` subcommands: the nondestructive editing entry points.
 
-**Edits live in the ops log; the TIFF is the artefact.** `edit rotate` and
-`edit flip` append ops to the negatives' ordered log in the library
-database, regenerate the CLI-rendered previews so the app can show the
-results, and emit `edit_recorded` per negative — they never touch the
-published TIFFs. The pixels are transformed only at export time, when the
-exporter replays each negative's ops log over the published TIFF.
+**Edits live in the ops log; the TIFF is the artefact.** `edit rotate`,
+`edit flip`, and `edit tone` append ops to the negatives' ordered log in
+the library database, regenerate the CLI-rendered previews so the app can
+show the results, and emit `edit_recorded` per negative — they never touch
+the published TIFFs. The pixels are transformed only at export time, when
+the exporter replays each negative's ops log over the published TIFF (the
+`tone` op is preview-only judgement aid, so the exporter ignores it).
 
 Every subcommand accepts a *selection* of negatives: the whole selection is
 validated before anything is written, so a batch either records or fails
@@ -128,7 +129,7 @@ def _append_transform_op(
     for negative in negatives:
         edit = repo.append_edit(roll_dir, negative.negative_id, op, params)
         _refresh_preview(roll_dir, roll, negative, preview_op, what=what, emit=emit)
-        quarter_turns, flipped, fine_angle = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         results.append(
@@ -194,6 +195,52 @@ def run_edit_flip(
     )
 
 
+def run_edit_tone(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    grade_r: float | None,
+    snap_gamma: float | None,
+    *,
+    emit: EmitFn,
+) -> list[dict]:
+    """Records each selected negative's preview tone adjustment — a paper
+    grade (`grade_r`, ISO-R 50–180) plus a midtone snap (`snap_gamma`,
+    −0.5…0.5), or both `None` for the reset to the flat linear look (see
+    `tone.py`). The op is a state, not a transform: the latest one wins and
+    a trailing `tone` op is coalesced in place, so slider commits do not
+    pile up dead rows.
+
+    The preview is regenerated from the published TIFF (the display LUT is
+    where the curve lives — a cached 8-bit PNG cannot be re-curved
+    losslessly); the TIFFs themselves are untouched, and export ignores
+    the tone op. Same contract as `run_edit_rotate` otherwise."""
+    try:
+        repo.validated_tone_params(grade_r, snap_gamma)
+    except ValueError as exc:
+        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+
+    results: list[dict] = []
+    for negative in negatives:
+        edit = repo.append_tone_edit(roll_dir, negative.negative_id, grade_r, snap_gamma)
+        _refresh_preview(roll_dir, roll, negative, repo.TONE_OP, what="tone", emit=emit)
+        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
+            roll_dir, negative.negative_id
+        )
+        results.append(
+            {
+                "negative_id": negative.negative_id,
+                "edit": edit,
+                "rotation_quarter_turns": quarter_turns,
+                "flipped_horizontally": flipped,
+                "fine_rotation_deg": fine_angle,
+                "preview_path": negative.preview_path,
+            }
+        )
+    return results
+
+
 def run_edit_render_region(
     roll_dir: Path,
     negative_id: str,
@@ -244,7 +291,9 @@ def run_edit_render_region(
         )
 
     tiff_path = roll_dir / negative.output["name"]
-    quarter_turns, flipped, fine_angle = repo.net_edit_state(roll_dir, negative_id)
+    quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
+        roll_dir, negative_id
+    )
     try:
         rendered = previews.render_region(
             tiff_path,
@@ -255,6 +304,7 @@ def run_edit_render_region(
             quarter_turns=quarter_turns,
             flipped_horizontally=flipped,
             fine_angle_deg=fine_angle,
+            tone_params=tone_params,
             destination=output_path,
         )
     except ValueError as exc:

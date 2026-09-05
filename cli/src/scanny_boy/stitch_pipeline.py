@@ -71,7 +71,11 @@ from scanny_boy.events import (
     Stage,
     WarningEvent,
 )
-from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
+from scanny_boy.icc_profile import (
+    load_icc_profile,
+    profile_record,
+    published_profile_kind,
+)
 from scanny_boy.layout import (
     MAX_GLOBAL_RMS_PX,
     RMS_WEIGHT_FLOOR_PX,
@@ -89,8 +93,11 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.normalization import (
     HEADROOM_CLIP_WARN_FRACTION,
+    MONO_DETECT_MAX_SAMPLES,
     NORMALIZED_FILL,
     Bounds,
+    MonoStatistic,
+    measure_mono_statistic,
 )
 from scanny_boy.output_folder import (
     ROLL_RULES,
@@ -409,6 +416,51 @@ def _intermediate_paths(work_dir: Path, group: GroupRecord) -> list[Path]:
     return [by_name[_intermediate_name(member)] for member in group.members]
 
 
+def _sample_mono_statistic(
+    path: Path, cancel: CancellationToken
+) -> MonoStatistic | None:
+    """One §1.2 sample: read the intermediate and measure it. Recorded
+    evidence must never fail the run, so a read failure — an intermediate
+    `_verify_intermediates` would refuse anyway — leaves the negative
+    unsampled rather than raising."""
+    try:
+        cancel.raise_if_cancelled()
+        return measure_mono_statistic(_read_intermediate(path))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _measure_mono_samples(
+    work_dir: Path, groups: list[GroupRecord], cancel: CancellationToken
+) -> dict[str, MonoStatistic]:
+    """MONOCHROME_PLAN section 1.2's detector pre-pass: sample up to
+    `MONO_DETECT_MAX_SAMPLES` negatives, one frame each (the group's first
+    member), spread evenly across the run's canonical order — six bounded
+    reads, not one per negative. The whole frame is measured, rebate
+    included, because on colour film the rebate is the orange mask at full
+    strength: the single strongest mono/colour discriminator available.
+
+    Recorded evidence only, acted on by nothing."""
+    if not groups:
+        return {}
+    count = min(MONO_DETECT_MAX_SAMPLES, len(groups))
+    indexes = sorted(
+        {
+            round(i * (len(groups) - 1) / (count - 1)) if count > 1 else 0
+            for i in range(count)
+        }
+    )
+    samples: dict[str, MonoStatistic] = {}
+    for index in indexes:
+        group = groups[index]
+        statistic = _sample_mono_statistic(
+            _intermediate_paths(work_dir, group)[0], cancel
+        )
+        if statistic is not None:
+            samples[group.group_id] = statistic
+    return samples
+
+
 def _detect_all(
     paths: list[Path], workers: int, cancel: CancellationToken, *, use_clahe: bool
 ) -> list[registration.FrameFeatures]:
@@ -672,6 +724,7 @@ def _finite(value: float) -> float:
 def _normalization_record(
     result: composite_module.CompositeResult,
     analysis_rect: tuple[int, int, int, int],
+    mono_statistic: MonoStatistic | None = None,
 ) -> dict[str, Any]:
     """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
     decisions"): the bounds the published pixels were stretched with, the
@@ -680,7 +733,11 @@ def _normalization_record(
     finding (section 3.13, recorded but not yet consumed), and the
     dense-border finding and clamp outcome. `source` names D-4's
     per-negative policy; the clamp is a safety net on top of it, not a
-    policy change."""
+    policy change.
+
+    `mono_statistic`, when the negative was one of the detector pre-pass's
+    samples, records §1's evidence beside the other meters — sampled,
+    never acted on (MONOCHROME_PLAN §1.3)."""
     bounds = result.bounds
     record: dict[str, Any] = {
         "floors": list(bounds.floors),
@@ -710,6 +767,12 @@ def _normalization_record(
         "clamped": result.clamped,
         "source": "per-negative",
     }
+    if mono_statistic is not None:
+        record["mono"] = {
+            "chroma": mono_statistic.chroma,
+            "channel_correlation": list(mono_statistic.channel_correlation),
+            "sampled": True,
+        }
     if result.unclamped_bounds is not None:
         record["unclamped_floors"] = list(result.unclamped_bounds.floors)
         record["unclamped_ceils"] = list(result.unclamped_bounds.ceils)
@@ -918,8 +981,13 @@ def run_stitch(
         # The density profile the published TIFFs are tagged with is a
         # second invariant (section 3.12's split), sourced from
         # `icc_profile.PROFILES` — not from the work manifest, which only
-        # knows the intermediates'.
-        published_icc_profile_sha256=profile_record(ProfileKind.DENSITY)["sha256"],
+        # knows the intermediates'. It is film-kind-dependent
+        # (MONOCHROME_PLAN §2.3/§4): a mono roll seeds DENSITY_GREY. §2
+        # passes the roll's frozen film kind here; until it lands every
+        # roll is colour.
+        published_icc_profile_sha256=profile_record(published_profile_kind())[
+            "sha256"
+        ],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -952,6 +1020,13 @@ def run_stitch(
                 Code.WORK_MANIFEST_UNUSABLE,
                 "none of the requested --negatives match a group in this work manifest",
             )
+
+    # MONOCHROME_PLAN section 1.2: the film-kind detector pre-pass, at the
+    # top of the stitch run and before the solve loop. §1 records and acts
+    # on nothing; §2.3 will need it here anyway — ahead of the
+    # roll-invariant seed, whose published-profile record becomes
+    # film-kind-dependent — which is why it sits before `_append_this_run`.
+    mono_by_group = _measure_mono_samples(work_dir, groups, cancel)
 
     run_record, records_by_group, removals_by_group, new_negative_ids = (
         _append_this_run(roll, work_manifest, groups, run_id, invariants, work_dir)
@@ -1063,6 +1138,7 @@ def run_stitch(
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
                 reference_bounds=reference_bounds,
+                mono_statistic=mono_by_group.get(entry.group.group_id),
                 seed_rotation=(
                     auto_rotate
                     and entry.record.negative_id in new_negative_ids
@@ -1424,6 +1500,7 @@ def _composite_and_publish(
     source_index: int,
     profile=None,
     reference_bounds: list[Bounds] | None = None,
+    mono_statistic: MonoStatistic | None = None,
     seed_rotation: bool = False,
 ) -> dict | None:
     """Composite one negative, apply the remaining section 3.4 gates, and
@@ -1585,7 +1662,8 @@ def _composite_and_publish(
             )
 
         record.valid_rect = valid_rect
-        record.normalization = _normalization_record(result, valid_rect)
+        record.normalization = _normalization_record(result, valid_rect, mono_statistic)
+        record.normalized_fill = NORMALIZED_FILL
         record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])
@@ -1622,7 +1700,11 @@ def _composite_and_publish(
                 model=model,
             ),
             exif=exif,
-            icc_bytes=load_icc_profile(ProfileKind.DENSITY),  # section 3.12
+            # The primary published-TIFF tag site (MONOCHROME_PLAN §4): the profile
+            # is film-kind-dependent — DENSITY_GREY on a mono roll — and
+            # §2 passes the frozen kind here, exactly as the invariant
+            # seed above does.
+            icc_bytes=load_icc_profile(published_profile_kind()),  # section 3.12
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -1662,7 +1744,7 @@ def _composite_and_publish(
                 repo.ROTATE_FINE_OP,
                 {"angle_deg": auto_rotation_deg, "source": "auto"},
             )
-            quarter_turns, flipped, fine_angle = repo.net_edit_state(
+            quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
                 out_dir, record.negative_id
             )
             auto_edit_fields = {

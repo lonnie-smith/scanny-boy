@@ -60,6 +60,11 @@ final class EditModel {
     /// one-helper-at-a-time discipline as `isRotating`.
     private(set) var isDeleting = false
 
+    /// Set while one `edit tone` round trip is in flight — the tone
+    /// panel's slider commits, with the same one-helper-at-a-time
+    /// discipline as `isRotating`/`isDeleting`.
+    private(set) var isSettingTone = false
+
     init(runner: CLIRunner) {
         self.runner = runner
     }
@@ -227,7 +232,7 @@ final class EditModel {
     private func recordTransform(
         _ targets: [RollManifest.Negative], command: (URL) -> CLICommand
     ) async {
-        guard let rollURL, !isRotating, !isDeleting else { return }
+        guard let rollURL, !isRotating, !isDeleting, !isSettingTone else { return }
         isRotating = true
         defer { isRotating = false }
         do {
@@ -246,6 +251,39 @@ final class EditModel {
         refresh()
     }
 
+    /// Records the selected negatives' preview tone adjustment through the
+    /// CLI — a paper grade plus a midtone snap, or `nil`/`nil` for the
+    /// reset to the flat look — and refreshes the roll as the
+    /// `edit_recorded` events confirm. The published TIFFs are never
+    /// touched; the CLI regenerates each preview with the tone curve
+    /// composed into its display encode. One CLI session per commit.
+    func setTone(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) async {
+        guard let rollURL, !isSettingTone, !isRotating, !isDeleting, !targets.isEmpty
+        else { return }
+        isSettingTone = true
+        defer { isSettingTone = false }
+        let command = CLICommand.editTone(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID),
+            gradeR: gradeR,
+            snapGamma: snapGamma
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .editRecorded,
+                    let negativeID = event.negativeID
+                {
+                    applyEditRecorded(event, negativeID: negativeID)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
     /// Deletes the selected negatives through the CLI and refreshes the
     /// roll when the deletion is confirmed: each record (and its ops log)
     /// leaves the library database, each published TIFF leaves the roll
@@ -254,7 +292,7 @@ final class EditModel {
     /// member — the next one, else the previous — so the user is left
     /// looking at something sensible instead of a stale id.
     func delete(_ targets: [RollManifest.Negative]) async {
-        guard let rollURL, !isDeleting, !isRotating, !targets.isEmpty else { return }
+        guard let rollURL, !isDeleting, !isRotating, !isSettingTone, !targets.isEmpty else { return }
         isDeleting = true
         defer { isDeleting = false }
 
@@ -295,14 +333,29 @@ final class EditModel {
     }
 
     /// Applies an `edit_recorded` event to the in-memory roll without a
-    /// round trip: preview path and net transform (turns plus the mirror
-    /// flag) are exactly what the event carries.
+    /// round trip: preview path, net transform (turns plus the mirror
+    /// flag), and — for a `tone` op — the tone state are exactly what the
+    /// event carries. The tone state rides the recorded op's `params`: a
+    /// `tone` op always names both keys (explicit nulls for a reset),
+    /// while the geometric ops carry none, leaving the state alone.
     private func applyEditRecorded(_ event: CLIEvent, negativeID: String) {
         guard let manifest = roll,
             let index = manifest.negatives.firstIndex(where: { $0.negativeID == negativeID }),
             let turns = event.rotationQuarterTurns
         else { return }
         let negative = manifest.negatives[index]
+        var toneGradeR = negative.toneGradeR
+        var toneSnapGamma = negative.toneSnapGamma
+        if let tone = event.recordedTone {
+            // Both nulls is the reset; the CLI validates them as a pair.
+            if let grade = tone.gradeR, let snap = tone.snapGamma {
+                toneGradeR = grade
+                toneSnapGamma = snap
+            } else {
+                toneGradeR = nil
+                toneSnapGamma = nil
+            }
+        }
         roll = manifest.replacingNegative(
             RollManifest.Negative(
                 negativeID: negative.negativeID,
@@ -320,7 +373,9 @@ final class EditModel {
                 rotationQuarterTurns: turns,
                 flippedHorizontally: event.flippedHorizontally
                     ?? negative.flippedHorizontally,
-                rectification: negative.rectification
+                rectification: negative.rectification,
+                toneGradeR: toneGradeR,
+                toneSnapGamma: toneSnapGamma
             )
         )
     }
@@ -336,7 +391,7 @@ final class EditModel {
         guard let rollURL else { return nil }
         let output = Self.regionCacheURL(
             negativeID: negative.negativeID,
-            generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
+            generation: Self.renderGeneration(of: negative),
             rect: rect
         )
         let command = CLICommand.editRenderRegion(
@@ -366,6 +421,20 @@ final class EditModel {
 
     private static var regionCacheDirectory: URL {
         URL.cachesDirectory.appending(path: "preview-regions", directoryHint: .isDirectory)
+    }
+
+    /// Everything the CLI's display encode folds into a rendered frame —
+    /// the net transform plus the tone state — as one cache-generation
+    /// token. The preview PNG and the 1:1 region renders are both keyed on
+    /// it, so a new tone commit invalidates the old crops.
+    static func renderGeneration(of negative: RollManifest.Negative) -> String {
+        let tone: String
+        if let grade = negative.toneGradeR, let snap = negative.toneSnapGamma {
+            tone = String(format: "g%.1f-s%.2f", grade, snap)
+        } else {
+            tone = "flat"
+        }
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)"
     }
 
     private static func regionCacheURL(

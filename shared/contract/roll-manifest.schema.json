@@ -20,6 +20,23 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "channelArray": {
+      "description": "Per-channel values: one entry per published channel - 3 on a colour roll, 1 on a mono roll's collapsed image (MONOCHROME_PLAN section 4). Existing colour rolls carry 3 and validate unchanged.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      ]
+    },
     "source": {
       "type": "object",
       "required": ["filename", "absolute_path", "size", "mtime", "sha256", "run_id"],
@@ -158,31 +175,32 @@
         "source"
       ],
       "properties": {
-        "floors": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "ceils": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "shadow_refs": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
+        "floors": { "$ref": "#/definitions/channelArray" },
+        "ceils": { "$ref": "#/definitions/channelArray" },
+        "shadow_refs": { "$ref": "#/definitions/channelArray" },
         "anchor": { "type": "number" },
         "textural_range": { "type": "number" },
         "analysis_rect": {
           "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4
         },
-        "observed_min": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "observed_max": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "headroom_clipped_highlights": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "headroom_clipped_shadows": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        "observed_min": { "$ref": "#/definitions/channelArray" },
+        "observed_max": { "$ref": "#/definitions/channelArray" },
+        "headroom_clipped_highlights": { "$ref": "#/definitions/channelArray" },
+        "headroom_clipped_shadows": { "$ref": "#/definitions/channelArray" },
+        "mono": {
+          "type": "object",
+          "required": ["chroma", "channel_correlation", "sampled"],
+          "properties": {
+            "chroma": { "type": "number" },
+            "channel_correlation": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "sampled": { "type": "boolean" }
+          },
+          "description": "MONOCHROME_PLAN section 1: the film-kind detector's evidence for this negative, recorded beside the other section 3.7 meters and acted on by nothing. Present only on sampled negatives."
         },
         "rebate": {
           "type": "object",
@@ -191,14 +209,10 @@
             "detected": { "type": "boolean" },
             "mask_fraction": { "type": "number" },
             "base_density": {
+              "description": "Three-way on purpose: null (clipped base or nothing detected), or the per-channel median log density at 1 or 3 entries.",
               "oneOf": [
-                {
-                  "type": "array",
-                  "items": { "type": "number" },
-                  "minItems": 3,
-                  "maxItems": 3
-                },
-                { "type": "null" }
+                { "type": "null" },
+                { "$ref": "#/definitions/channelArray" }
               ]
             },
             "clipped": { "type": "boolean" }
@@ -213,12 +227,8 @@
           }
         },
         "clamped": { "type": "boolean" },
-        "unclamped_floors": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
-        "unclamped_ceils": {
-          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-        },
+        "unclamped_floors": { "$ref": "#/definitions/channelArray" },
+        "unclamped_ceils": { "$ref": "#/definitions/channelArray" },
         "source": { "type": "string" }
       }
     },

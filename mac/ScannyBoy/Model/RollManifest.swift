@@ -146,6 +146,13 @@ struct RollManifest: Sendable, Hashable {
             let relativeImprovement: Double
         }
 
+        /// The ops log's net preview tone adjustment (protocol 10's `tone`
+        /// op): an ISO-R paper grade and a midtone snap composed into the
+        /// CLI's preview display encode. `nil` = no adjustment recorded —
+        /// the flat linear look. The published TIFF never carries it.
+        let toneGradeR: Double?
+        let toneSnapGamma: Double?
+
         var isCompleted: Bool { status == "completed" }
         var isFailed: Bool { status == "failed" }
     }
@@ -346,7 +353,11 @@ struct RollManifest: Sendable, Hashable {
             // Absent when the fit was rejected or the roll's record
             // predates format version 7: no rectification was applied.
             rectification: fields["rectification"]?.objectValue
-                .flatMap(Self.decodeRectification)
+                .flatMap(Self.decodeRectification),
+            // Absent before the tone op existed (or an explicit null from
+            // a reset): no adjustment, the flat look.
+            toneGradeR: fields["tone_grade_r"]?.doubleValue,
+            toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue
         )
     }
 
