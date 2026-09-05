@@ -129,6 +129,28 @@ struct SelectAllDeselectAllShortcutButtons: View {
     }
 }
 
+/// Cmd-[ / Cmd-] rotate the selection 90° counter-clockwise / clockwise.
+/// Invisible, hit-test-transparent buttons — same pattern as
+/// `SelectionShortcutButtons`.
+struct RotationShortcutButtons: View {
+    let isEnabled: Bool
+    let onRotateCounterClockwise: () -> Void
+    let onRotateClockwise: () -> Void
+
+    var body: some View {
+        Group {
+            Button("Rotate Counter-Clockwise") { onRotateCounterClockwise() }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("Rotate Clockwise") { onRotateClockwise() }
+                .keyboardShortcut("]", modifiers: .command)
+        }
+        .disabled(!isEnabled)
+        .allowsHitTesting(false)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The browser's keyboard shortcuts: Option-left / Option-right move the
 /// selection (collapsing any multi-selection, exactly as the filmstrip's
 /// order defines "next"), Cmd-A selects every frame, Cmd-D deselects them

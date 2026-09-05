@@ -115,8 +115,12 @@ private struct PreviewPane: View {
     @State private var isTonePanelPresented = false
     @State private var zoom = PreviewZoomModel()
 
-        /// The negatives the controls act on, read once per invocation.
+    /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
+
+    private var rotationShortcutsEnabled: Bool {
+        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -131,7 +135,7 @@ private struct PreviewPane: View {
                     Image(systemName: "rotate.left")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° counter-clockwise")
+                .help("Rotate 90° counter-clockwise (⌘[)")
                 .accessibilityLabel("Rotate 90° counter-clockwise")
 
                 Button {
@@ -140,7 +144,7 @@ private struct PreviewPane: View {
                     Image(systemName: "rotate.right")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° clockwise")
+                .help("Rotate 90° clockwise (⌘])")
                 .accessibilityLabel("Rotate 90° clockwise")
 
                 Button {
@@ -198,6 +202,17 @@ private struct PreviewPane: View {
                 .accessibilityLabel(deleteButtonHelp)
             }
             .padding([.horizontal, .bottom], 16)
+        }
+        .background {
+            RotationShortcutButtons(
+                isEnabled: rotationShortcutsEnabled,
+                onRotateCounterClockwise: {
+                    Task { await edit.rotate(targets, clockwise: false) }
+                },
+                onRotateClockwise: {
+                    Task { await edit.rotate(targets, clockwise: true) }
+                }
+            )
         }
         .confirmationDialog(
             deleteDialogTitle,
