@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import sys
 import uuid
 from collections.abc import Sequence
@@ -27,6 +28,8 @@ from scanny_boy.events import (
     FlatFieldCreated,
     FlatFieldDeleted,
     FlatFieldList,
+    MetadataUpdated,
+    MetadataValues,
     NegativeDeleted,
     ProbeResult,
     RegionRendered,
@@ -49,6 +52,11 @@ from scanny_boy.library import repo
 from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+from scanny_boy.metadata_edit import (
+    MetadataEditFailure,
+    run_metadata_set,
+    run_metadata_values,
+)
 from scanny_boy.pipeline import ConvertFailure, run_convert
 from scanny_boy.probe import ProbeFailure, run_probe
 from scanny_boy.registration import StitchError
@@ -154,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
     stitch.add_argument("--negatives", nargs="+", metavar="ID")
     stitch.add_argument("--flatfield", metavar="PROFILE_ID")
+    stitch.add_argument(
+        "--no-auto-rotate",
+        action="store_false",
+        dest="auto_rotate",
+        help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
 
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
@@ -170,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
     run.add_argument("--flatfield", metavar="PROFILE_ID")
+    run.add_argument(
+        "--no-auto-rotate",
+        action="store_false",
+        dest="auto_rotate",
+        help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
 
     flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
     flatfield_subparsers = flatfield.add_subparsers(
@@ -202,6 +222,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write dirty negatives' intended capture times into their TIFFs.",
     )
     apply_metadata.add_argument("--roll", required=True, metavar="DIR")
+
+    metadata = subparsers.add_parser(
+        "metadata",
+        help="Edit the roll-level and per-negative metadata held in the library.",
+    )
+    metadata_subparsers = metadata.add_subparsers(dest="metadata_command", required=True)
+
+    metadata_set = metadata_subparsers.add_parser(
+        "set",
+        help="Apply one metadata payload (roll-level fields and/or per-negative fields).",
+    )
+    metadata_set.add_argument("--roll", required=True, metavar="DIR")
+    metadata_set.add_argument(
+        "--payload",
+        required=True,
+        metavar="JSON",
+        help=(
+            "JSON object: {\"roll\": {field: value}, \"negatives\": "
+            "{negative_id: {field: value}}}; absent keys are untouched, "
+            "null or \"\" clears"
+        ),
+    )
+
+    metadata_values = metadata_subparsers.add_parser(
+        "values",
+        help="List the catalog of previously-entered values for one metadata field.",
+    )
+    metadata_values.add_argument(
+        "--field",
+        required=True,
+        metavar="FIELD",
+        help="one of city, state, camera, lens",
+    )
 
     edit = subparsers.add_parser(
         "edit", help="Record nondestructive edits against a roll's negatives."
@@ -307,6 +360,7 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 emit=writer.write,
                 negatives=args.negatives,
                 flatfield_profile_id=args.flatfield,
+                auto_rotate=args.auto_rotate,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -455,11 +509,12 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     # Net transform is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative["negative_id"]
         )
         negative["rotation_quarter_turns"] = quarter_turns
         negative["flipped_horizontally"] = flipped
+        negative["fine_rotation_deg"] = fine_angle
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -605,6 +660,46 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
     return 0
 
 
+def _run_metadata_command(args, writer: EventWriter) -> int:
+    """The `metadata set` / `metadata values` subcommands: bracket like
+    every other subcommand and carry no `run_id` — metadata edits are
+    database writes, not pipeline runs."""
+    if args.metadata_command == "set":
+        writer.write(Started(command="metadata set"))
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as exc:
+            writer.write(
+                ErrorEvent(
+                    code=Code.INVALID_METADATA,
+                    message=f"--payload is not valid JSON: {exc}",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            manifest = run_metadata_set(Path(args.roll), payload, emit=writer.write)
+        except MetadataEditFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(MetadataUpdated(manifest=manifest))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    # values
+    writer.write(Started(command="metadata values"))
+    try:
+        values = run_metadata_values(args.field)
+    except MetadataEditFailure as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    writer.write(MetadataValues(field=args.field, values=values))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_export_command(args, writer: EventWriter) -> int:
     writer.write(Started(command="export"))
     try:
@@ -651,6 +746,7 @@ def _run_run_command(
                 cancel=cancel,
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
+                auto_rotate=args.auto_rotate,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -761,6 +857,9 @@ def _dispatch_command(
 
     if args.command == "edit":
         return _run_edit_command(args, writer)
+
+    if args.command == "metadata":
+        return _run_metadata_command(args, writer)
 
     if args.command == "flatfield":
         return _run_flatfield_command(args, writer)

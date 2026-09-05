@@ -11,10 +11,12 @@ The export *is* a normalized digital negative: the pixels replay straight
 through, carrying the same density profile the published TIFF carries
 (docs/DECISIONS.md, "Normalization decisions"), and the negative's
 `normalization` block is written into the `ImageDescription` so the file is
-interpretable without the database. Full EXIF carry-over stays the deferred
-item it already is. What this does *not* settle is the profile the
-eventual positive export carries — that is the first colourimetric
-question that belongs to the export work itself.
+interpretable without the database. The database's metadata — capture time,
+camera, lens, city, state, caption — is also written here, by
+`export_metadata.write_export_metadata`'s second pass: export is the only
+place metadata reaches a TIFF. A metadata write that fails downgrades to a
+`METADATA_WRITE_FAILED` warning and the export still counts — the pixels
+are good, and re-exporting after fixing the metadata is cheap.
 """
 
 from __future__ import annotations
@@ -27,12 +29,17 @@ from typing import Any
 import numpy as np
 import tifffile
 
+from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
+from scanny_boy.export_metadata import (
+    export_metadata_for,
+    write_export_metadata,
+)
 from scanny_boy.icc_profile import ProfileKind, load_icc_profile
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError
-from scanny_boy.roll_manifest import NegativeRecord, load_roll_manifest
+from scanny_boy.roll_manifest import NegativeRecord, RollManifest, load_roll_manifest
 
 EmitFn = Any
 
@@ -51,15 +58,23 @@ class ExportOutcome:
 
 
 def apply_edits(
-    image: np.ndarray, rotation_quarter_turns: int, flipped_horizontally: bool = False
+    image: np.ndarray,
+    rotation_quarter_turns: int,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
 ) -> np.ndarray:
     """The single place an op log meets pixels: pure, ordered, and the same
     replay the preview generator performs at thumbnail scale. The canonical
-    net transform mirrors the original horizontally first (when flipped)
-    and then rotates: quarter turns count clockwise; np.rot90 turns
+    net transform mirrors the original horizontally first (when flipped),
+    then applies the fine auto-rotation (`auto_rotate.rotate_with_fill`:
+    the rotation keeps the canvas dimensions and fills what it uncovers
+    with the stitching fill sentinel), then rotates. Quarter turns count
+    clockwise, the fine angle counts clockwise too; np.rot90 turns
     counter-clockwise, so negate."""
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
+    if abs(fine_angle_deg) >= 1e-9:
+        image = rotate_with_fill(image, fine_angle_deg)
     return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
@@ -154,7 +169,7 @@ def run_export(
 
     for negative in negatives:
         assert isinstance(negative, NegativeRecord)
-        result = _export_negative(roll_dir, output_dir, negative, emit)
+        result = _export_negative(roll_dir, output_dir, roll, negative, emit)
         if result is None:
             failed.append(negative.negative_id)
         else:
@@ -175,6 +190,7 @@ def run_export(
 def _export_negative(
     roll_dir: Path,
     output_dir: Path,
+    roll: RollManifest,
     negative: NegativeRecord,
     emit: EmitFn,
 ) -> tuple[str, int, int] | None:
@@ -199,12 +215,13 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
-        rotated = apply_edits(image, quarter_turns, flipped)
+        rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
         destination = output_dir / negative.output["name"]
         _write_export(destination, rotated, negative)
+        _write_metadata(destination, roll, negative, emit)
     except Exception as exc:  # noqa: BLE001 — one bad negative never stops the export
         emit(
             WarningEvent(
@@ -216,3 +233,29 @@ def _export_negative(
 
     height, width = rotated.shape[0], rotated.shape[1]
     return destination.name, width, height
+
+
+def _write_metadata(
+    destination: Path,
+    roll: RollManifest,
+    negative: NegativeRecord,
+    emit: EmitFn,
+) -> None:
+    """The second pass that puts the database's metadata into the exported
+    TIFF. A failure here downgrades to a `METADATA_WRITE_FAILED` warning —
+    it must not lose the export that already succeeded above."""
+    metadata = export_metadata_for(roll, negative)
+    if not metadata.has_any:
+        return
+    try:
+        write_export_metadata(destination, metadata)
+    except Exception as exc:  # noqa: BLE001 — metadata never loses pixels
+        emit(
+            WarningEvent(
+                code=Code.METADATA_WRITE_FAILED,
+                message=(
+                    f"exported {negative.negative_id} but could not write its "
+                    f"metadata: {exc}"
+                ),
+            )
+        )

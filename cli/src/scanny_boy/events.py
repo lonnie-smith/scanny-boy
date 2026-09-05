@@ -11,12 +11,12 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-# Protocol 8 (docs/DECISIONS.md, "Normalization decisions"): the `prepare` stage
-# rename (3.9), the `normalize` step (3.10), the new codes, and the
-# normalization record's new event/manifest fields, together.
-# Protocol 9 adds the `edit render-region` command and its `region_rendered`
-# event: a 1:1 PNG of one display-space region of a published TIFF, with the
-# net rotation folded in, for the app's 100% zoom.
+# Protocol 9 adds two features: the extended-metadata editing feature (the
+# `metadata` command family — `metadata_updated`, `metadata_values` events,
+# the `INVALID_METADATA` code — and the roll/negative extended-metadata
+# fields in the roll manifest), and the `edit render-region` command with
+# its `region_rendered` event: a 1:1 PNG of one display-space region of a
+# published TIFF, with the net rotation folded in, for the app's 100% zoom.
 PROTOCOL_VERSION = 9
 
 
@@ -39,6 +39,8 @@ class EventType(enum.StrEnum):
     ROLL_DELETED = "roll_deleted"
     METADATA_APPLIED = "metadata_applied"
     METADATA_SKIPPED = "metadata_skipped"
+    METADATA_UPDATED = "metadata_updated"
+    METADATA_VALUES = "metadata_values"
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     REGION_RENDERED = "region_rendered"
@@ -122,6 +124,7 @@ class Code(enum.StrEnum):
     ORPHAN_FILE_NOT_REMOVED = "ORPHAN_FILE_NOT_REMOVED"
     NEGATIVE_NOT_FOUND = "NEGATIVE_NOT_FOUND"
     INVALID_EDIT = "INVALID_EDIT"
+    INVALID_METADATA = "INVALID_METADATA"
     EXPORT_FAILED = "EXPORT_FAILED"
     PREVIEW_FAILED = "PREVIEW_FAILED"
     FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
@@ -380,12 +383,37 @@ class MetadataSkipped(Event):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataUpdated(Event):
+    """`metadata set`'s confirmation: the updated roll manifest, whole, in
+    the same shape a `roll_info` event carries — so the app can swap its
+    in-memory roll without a `roll info` round trip, exactly as an
+    `edit_recorded` preview-path update lands in place."""
+
+    event_type: ClassVar[EventType] = EventType.METADATA_UPDATED
+
+    manifest: dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MetadataValues(Event):
+    """`metadata values`' answer: the catalog of previously-entered values
+    for one extended-metadata field, most-recently-used first — the list the
+    app's typeahead offers."""
+
+    event_type: ClassVar[EventType] = EventType.METADATA_VALUES
+
+    field: str
+    values: list[str]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class EditRecorded(Event):
     """`edit rotate`/`edit flip`'s confirmation: the ops log entry as
     appended, the negative's net transform after it (quarter turns plus the
-    horizontal-mirror flag — a flip and a rotation do not commute, so one
-    number cannot carry both), and the regenerated preview the app should
-    now display. No pixel data of the published TIFF changes."""
+    horizontal-mirror flag plus the net fine angle — a flip and a rotation
+    do not commute, so one number cannot carry them), and the regenerated
+    preview the app should now display. No pixel data of the published TIFF
+    changes."""
 
     event_type: ClassVar[EventType] = EventType.EDIT_RECORDED
 
@@ -394,6 +422,7 @@ class EditRecorded(Event):
     rotation_quarter_turns: int
     flipped_horizontally: bool
     preview_path: str | None
+    fine_rotation_deg: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

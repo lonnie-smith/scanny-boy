@@ -80,8 +80,8 @@ the CLI renders each negative's preview, and `edit rotate` records a
 rotation without ever touching a published TIFF. `roll info`'s payload keeps
 the roll-manifest shape; each negative additionally carries
 `preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` +
-`flipped_horizontally` (the ops log's net effect, derived rather than
-stored). A client that only
+`flipped_horizontally` + `fine_rotation_deg` (the ops log's net effect,
+derived rather than stored). A client that only
 understands an earlier protocol version must reject a newer stream rather
 than guess at the new fields.
 
@@ -107,6 +107,9 @@ scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR --per-negat
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
 
 scanny-boy apply-metadata --roll DIR
+
+scanny-boy metadata set    --roll DIR --payload JSON
+scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
@@ -219,7 +222,8 @@ rather than silently disappearing.
 
 `roll info` loads one roll from the library database and emits it as a
 `roll_info` event, each negative augmented with `preview_path`,
-`rotation_quarter_turns`, and `flipped_horizontally`. Swift never reads the
+`rotation_quarter_turns`, `flipped_horizontally`, and `fine_rotation_deg`.
+Swift never reads the
 library database itself and
 never enumerates the library itself — `roll list` and `roll info` are the
 only two ways in.
@@ -243,6 +247,31 @@ an unregistered roll.
 `apply-metadata` writes intended capture times from the roll's record into
 published TIFFs. See Phase 3 section 3.8.
 
+`metadata set` applies one metadata payload to the roll's record in the
+library database — it never touches a TIFF. The payload is
+`{"roll": {field: value}, "negatives": {negative_id: {field: value}}}`:
+roll fields are `capture_date` (the roll capture date) plus `city`,
+`state`, `camera`, `lens`, `caption`; negative fields are the same five
+plus `capture_date` (the negative's date override). A key that is absent
+leaves the field untouched; a key present with `null` or `""` clears it (a
+cleared negative field then inherits the roll-level fallback; the
+extended metadata uses live-fallback semantics, never copying roll values
+onto negatives). Every capture-date change recomputes each negative's
+intended capture time by the rank formula (noon + rank − 1 seconds on the
+negative's effective date, ranked within that date in roll order), so the
+stored intent always preserves roll order. Non-empty `city`, `state`,
+`camera`, and `lens` values are remembered in the metadata-values catalog
+(`caption` never is). It emits one `metadata_updated` event carrying the
+updated `manifest`, and fails with `INVALID_METADATA` for an unknown field,
+a non-`YYYY-MM-DD` date, or a malformed payload, `ROLL_NOT_FOUND` for an
+unregistered roll, and `NEGATIVE_NOT_FOUND` for an unknown negative id —
+the whole payload is validated before anything is written.
+
+`metadata values` lists the catalog of previously-entered values for one
+field (`city`, `state`, `camera`, or `lens`), most-recently-used first, as
+a `metadata_values` event. It fails with `INVALID_METADATA` for any other
+field.
+
 `edit rotate` records a 90-degree rotation of one or more negatives —
 `cw` clockwise,
 `ccw` counter-clockwise — by appending to each negative's ordered edits ops
@@ -253,7 +282,9 @@ negative carrying
 `negative_id`, the `edit` row (`id`, `negative_id`, `position`, `op`,
 `params`, `created_at`), `rotation_quarter_turns` (the ops log's net effect,
 0–3), `flipped_horizontally` (whether the ops log's net transform includes a
-horizontal mirror), and `preview_path`. It fails with `INVALID_EDIT` for an
+horizontal mirror), `fine_rotation_deg` (the ops log's net clockwise fine
+rotation in degrees, from the auto-seeded `rotate_fine` op below composed
+with any user ops), and `preview_path`. It fails with `INVALID_EDIT` for an
 unknown direction, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative — the whole
 selection is validated before any op is appended, so a batch either records
@@ -274,6 +305,38 @@ against the bounds, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
 
 `edit flip` records a horizontal mirror of one or more negatives — a flip of
+the pixels as they currently render, *after* any recorded rotations — by
+appending a `flip` op to each negative's ordered edits ops log. Like
+`edit rotate` it never touches the published TIFF; it regenerates the
+previews and emits `edit_recorded` per negative with the same fields. The
+ops log's net transform does not collapse to a rotation alone: a flip and a
+rotation do not commute, so consumers replay the log into a
+`(rotation_quarter_turns, flipped_horizontally, fine_rotation_deg)` triple.
+It fails with the
+same codes as `edit rotate`.
+
+**Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
+rebate tilt of each *newly published* negative's composite — the density
+discriminator (film base is the thinnest thing on the film) locates the
+rebate, and one minimum-area enclosing rectangle of the picture area gives
+a single clockwise angle that squares the rebate's frame boundary with the
+canvas, splitting the difference across the rebate's not-quite-parallel
+edges (`scanny_boy/auto_rotate.py` owns every threshold). When the
+estimate survives the clamps, the stitch seeds one `rotate_fine` op —
+params `{"angle_deg": number, "source": "auto"}` — to the negative's
+ordered edits ops log, exactly like a user edit, and emits `edit_recorded`
+for it (with `run_id`). The published TIFF is never rotated by the stitch:
+like every edit, the rotation's pixels are transformed only at preview
+generation and export, replayed through the same net-state triple. A
+re-stitch adopts the existing negative and never re-seeds (no double
+rotation); `stitch --no-auto-rotate` (and `run --no-auto-rotate`) turns
+the seeding off. A user quarter-turn composes with the fine angle through
+the ordinary ops-log replay — a flip negates the fine angle along with the
+turn count, because `flip ∘ rot = rot^-1 ∘ flip` for rotations of any
+angle.
+
+`edit delete` removes one or more negatives outright, whatever their
+status: each record
 (and its edits ops log, by cascade) is deleted from the library database,
 its published TIFF is unlinked from the roll folder, and its rendered
 preview PNG is unlinked from Application Support. The records go first, so
@@ -356,6 +419,8 @@ library database rather than a JSON file in the roll folder).
 | `roll_deleted` | A roll was unregistered. Carries `roll_id` and `path`. |
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
+| `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
+| `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
@@ -475,6 +540,7 @@ staging directories, and reruns the incomplete negative.
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 | `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
+| `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
 | `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |

@@ -116,6 +116,7 @@ def run_full(
     cancel: CancellationToken,
     emit: EmitFn,
     flatfield_profile_id: str | None = None,
+    auto_rotate: bool = True,
 ) -> RunOutcome:
     """Convert `files` into a work directory, then stitch it into `out_dir`
     (a roll).
@@ -198,6 +199,7 @@ def run_full(
                     cancel=cancel,
                     emit=stitch_emit,
                     flatfield_profile_id=flatfield_profile_id,
+                    auto_rotate=auto_rotate,
                 )
             except StitchError as exc:
                 raise RunFailure(exc.code, exc.message) from exc

@@ -171,6 +171,7 @@ final class ExportModel {
         case .started, .probeResult, .progress, .itemDone, .groupDone, .groupFailed,
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
             .rollInfo, .rollRenamed, .rollDeleted, .metadataApplied, .metadataSkipped,
+            .metadataUpdated, .metadataValues,
             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
             .unknown:
             break

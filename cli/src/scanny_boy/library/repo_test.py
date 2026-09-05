@@ -206,26 +206,67 @@ def test_net_edit_state_tracks_flips_and_rotations(roll_dir):
     append = repo.append_edit
     negative = "rid-1-negative-01"
 
-    assert repo.net_edit_state(roll_dir, negative) == (0, False)
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0)
 
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == (0, True)
+    assert repo.net_edit_state(roll_dir, negative) == (0, True, 0.0)
 
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
-    assert repo.net_edit_state(roll_dir, negative) == (1, True)
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, 0.0)
 
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == (3, False)
+    assert repo.net_edit_state(roll_dir, negative) == (3, False, 0.0)
 
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "ccw"})
-    assert repo.net_edit_state(roll_dir, negative) == (2, False)
+    assert repo.net_edit_state(roll_dir, negative) == (2, False, 0.0)
 
 
 def test_net_edit_state_ignores_unknown_ops(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
 
-    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False)
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0)
+
+
+def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
+    """The stitch stage's auto-seeded `rotate_fine` op adds to the net fine
+    angle; a flip negates it along with the turn count (`flip o rot =
+    rot^-1 o flip` holds for fine angles too); quarter turns leave it
+    alone, both being rotations."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+    append = repo.append_edit
+    negative = "rid-1-negative-01"
+
+    append(
+        roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 3.5, "source": "auto"}
+    )
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 3.5)
+
+    append(roll_dir, negative, repo.FLIP_OP, {})
+    assert repo.net_edit_state(roll_dir, negative) == (0, True, -3.5)
+
+    append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.5)
+
+    # Fine rotations applied after a flip still add, whatever the flag is:
+    # the canonical angle already carries the flip's negation.
+    append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": -1.5})
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -5.0)
+
+    append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 2.0})
+    assert repo.net_edit_state(roll_dir, negative) == (1, True, -3.0)
+
+
+def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    append = repo.append_edit
+    negative = "rid-1-negative-01"
+
+    append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": "north"})
+    append(roll_dir, negative, repo.ROTATE_FINE_OP, {})
+    append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": True})
+
+    assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0)
 
 
 def test_edits_survive_re_saving_the_manifest(roll_dir):

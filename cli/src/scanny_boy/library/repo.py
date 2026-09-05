@@ -31,8 +31,10 @@ from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
+    METADATA_FIELDS,
     EditRow,
     FlatFieldProfileRow,
+    MetadataValueRow,
     NegativeRow,
     RollRow,
     RunRow,
@@ -43,11 +45,15 @@ if TYPE_CHECKING:
     from scanny_boy.roll_manifest import RollManifest
 
 # The edit operations the app records. Rotation params are
-# `{"direction": "cw" | "ccw"}`; flip takes no params (horizontal only).
-# Both compose by ordered replay — a flip does not commute with rotation, so
-# the log reduces to a `(quarter_turns, flipped)` pair, not a single number.
+# `{"direction": "cw" | "ccw"}`; flip takes no params (horizontal only);
+# `rotate_fine` params are `{"angle_deg": number, "source": "auto"}` — the
+# stitch stage's auto-seeded rebate squaring (see `auto_rotate.py`). All
+# compose by ordered replay — a flip does not commute with rotation, so the
+# log reduces to a `(quarter_turns, flipped, fine_angle_deg)` triple, not a
+# single number.
 ROTATE_OP = "rotate"
 FLIP_OP = "flip"
+ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
 # The gain a frame record carries when the row predates gain normalization
@@ -112,6 +118,8 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.stitch_params = manifest.stitch_params
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
+        for field in METADATA_FIELDS:
+            setattr(roll, field, getattr(manifest.metadata, field))
 
         # Diff by key so re-saving an unchanged child is a no-op and removed
         # children (an adopted negative's removal) actually go away.
@@ -212,6 +220,10 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     error_message=negative.error_message,
                     capture_time=negative.capture_time.to_dict(),
                     preview_path=negative.preview_path,
+                    **{
+                        field: getattr(negative.metadata, field)
+                        for field in METADATA_FIELDS
+                    },
                 )
             )
 
@@ -274,6 +286,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
         CaptureTime,
         FrameRecord,
+        NegativeMetadata,
         NegativeRecord,
         PairRecord,
         RollManifest,
@@ -407,6 +420,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     error_code=n.error_code,
                     error_message=n.error_message,
                     capture_time=CaptureTime(**n.capture_time),
+                    metadata=NegativeMetadata(
+                        **{field: getattr(n, field) for field in METADATA_FIELDS}
+                    ),
                     preview_path=n.preview_path,
                 )
                 for n in negatives
@@ -414,6 +430,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             metadata=RollMetadata(
                 roll_capture_date=roll.roll_capture_date,
                 last_applied_at=roll.last_applied_at,
+                **{field: getattr(roll, field) for field in METADATA_FIELDS},
             ),
         )
 
@@ -493,22 +510,28 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
         ]
 
 
-def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool]:
+def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool, float]:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net transform: `(quarter_turns, flipped_horizontally)`, where
-    the pixels are the original mirrored horizontally first (when flipped)
-    and then rotated `quarter_turns` clockwise quarter turns.
+    canonical net transform: `(quarter_turns, flipped_horizontally,
+    fine_angle_degrees)`, where the pixels are the original mirrored
+    horizontally first (when flipped), then rotated clockwise by
+    `fine_angle_degrees`, then rotated `quarter_turns` clockwise quarter
+    turns.
 
     Replay is closed-form because every op transforms the image as it
-    currently renders: a rotate adds to the turn count, and a horizontal
-    flip of an already-rotated image equals rotating the flipped image the
-    other way (`flip ∘ rot^t = rot^-t ∘ flip`), so a flip toggles the flag
-    and negates the turns. The single pair every consumer needs: the
-    preview generator's lossless mirror + `np.rot90` and the exporter's
+    currently renders: a rotate adds to the turn count, a fine rotation
+    adds to the angle, and a horizontal flip of an already-rotated image
+    equals rotating the flipped image the other way
+    (`flip ∘ rot = rot^-1 ∘ flip` — true for quarter turns and fine angles
+    alike), so a flip toggles the flag and negates *both* the turn count
+    and the fine angle. Fine angles and quarter turns commute, both being
+    rotations. The single triple every consumer needs: the preview
+    generator's mirror + fine warp + `np.rot90` and the exporter's
     identical replay are both driven from it. Unknown ops (an older build
     reading a newer log) are skipped."""
     turns = 0
     flipped = False
+    fine_deg = 0.0
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -519,7 +542,13 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> tuple[int, bool]:
         elif op == FLIP_OP:
             flipped = not flipped
             turns = -turns
-    return turns % 4, flipped
+            fine_deg = -fine_deg
+        elif op == ROTATE_FINE_OP:
+            angle = edit["params"].get("angle_deg")
+            if isinstance(angle, bool) or not isinstance(angle, (int, float)):
+                continue
+            fine_deg += float(angle)
+    return turns % 4, flipped, fine_deg
 
 
 def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
@@ -634,3 +663,47 @@ def rolls_using_profile_geometry(profile_id: str) -> list[str]:
             if (roll.stitch_params or {}).get("geometry", {}).get("profile_id")
             == profile_id
         )
+
+
+# --- the extended-metadata value catalog -------------------------------------
+
+# Bounded so a long-typed history cannot make the typeahead unbounded work;
+# the most-recently-used head of the list is what matters anyway.
+METADATA_VALUES_LIMIT = 200
+
+
+def upsert_metadata_values(field: str, values: list[str]) -> None:
+    """Remembers each value as a catalog entry for `field`, bumping
+    `last_used_at` for entries that already exist. Idempotent per (field,
+    value) pair — the catalog records *that* a value was used, not how
+    often."""
+    from scanny_boy.roll_manifest import _now_iso
+
+    with _session() as session:
+        for value in values:
+            row = session.scalar(
+                select(MetadataValueRow).where(
+                    MetadataValueRow.field == field,
+                    MetadataValueRow.value == value,
+                )
+            )
+            if row is None:
+                session.add(
+                    MetadataValueRow(
+                        field=field, value=value, last_used_at=_now_iso()
+                    )
+                )
+            else:
+                row.last_used_at = _now_iso()
+
+
+def list_metadata_values(field: str) -> list[str]:
+    """The catalog's values for `field`, most-recently-used first."""
+    with _session() as session:
+        rows = session.scalars(
+            select(MetadataValueRow)
+            .where(MetadataValueRow.field == field)
+            .order_by(MetadataValueRow.last_used_at.desc(), MetadataValueRow.id.desc())
+            .limit(METADATA_VALUES_LIMIT)
+        ).all()
+        return [row.value for row in rows]

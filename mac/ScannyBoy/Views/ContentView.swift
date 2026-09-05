@@ -150,7 +150,9 @@ struct ContentView: View {
                     onNegativeDeleted: { library.scan() }
                 )
             case .metadata:
-                MetadataStageView(edit: edit, run: run, activity: activity)
+                MetadataStageView(
+                    library: library, edit: edit, run: run, activity: activity
+                )
             case .export:
                 ExportStageView(export: export, edit: edit, run: run, activity: activity)
             }

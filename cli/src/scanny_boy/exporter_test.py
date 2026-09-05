@@ -22,6 +22,57 @@ _ORIGINAL = np.arange(12, dtype=np.uint16).reshape(3, 4)
 
 
 @pytest.fixture()
+def two_negative_roll_with_metadata(tmp_path: Path) -> Path:
+    """A roll whose metadata is populated at both levels, ready to export:
+    the roll carries the fallbacks and a capture date; the second negative
+    overrides its capture date."""
+    from scanny_boy.metadata_edit import run_metadata_set
+
+    roll_dir = _roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.roll_manifest import CaptureTime, append_run
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    for index, negative_id in enumerate((_NEGATIVE_ID, _OTHER_ID), start=1):
+        manifest.negatives.append(
+            _negative(
+                negative_id=negative_id,
+                run_id="stitch-run",
+                status="completed",
+                sequence=index,
+                capture_time=CaptureTime(
+                    source_datetime_original=f"2026-08-01T10:00:0{index}"
+                ),
+                output={
+                    "name": f"_DSC000{index}.tif",
+                    "size": 0,
+                    "sha256": "0" * 64,
+                    "width": 4,
+                    "height": 3,
+                },
+            )
+        )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", _ORIGINAL)
+    tifffile.imwrite(roll_dir / "_DSC0002.tif", _ORIGINAL)
+    run_metadata_set(
+        roll_dir,
+        {
+            "roll": {
+                "city": "Porto",
+                "state": "Oregon",
+                "camera": "Nikon F3",
+                "lens": "50mm f/1.4",
+                "caption": "harbor morning",
+                "capture_date": "2026-08-01",
+            },
+            "negatives": {_OTHER_ID: {"capture_date": "2026-08-02"}},
+        },
+    )
+    return roll_dir
+
+
+@pytest.fixture()
 def stitched_roll(tmp_path: Path) -> Path:
     roll_dir = _roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
@@ -86,6 +137,28 @@ def test_apply_edits_mirrors_before_rotating_when_flipped():
         )
 
 
+def test_apply_edits_applies_the_fine_rotation_and_its_fill():
+    """The fine auto-rotation keeps the canvas dimensions and fills what it
+    uncovers with the stitching fill sentinel — the same empty-pixel
+    semantics the stitched canvas already has."""
+    image = np.zeros((40, 60), dtype=np.uint16)
+
+    rotated = apply_edits(image, 0, False, 45.0)
+
+    assert rotated.shape == (40, 60)
+    from scanny_boy.normalization import NORMALIZED_FILL, encode_normalized
+
+    fill_code = encode_normalized(
+        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+    )[0, 0, 0]
+    assert rotated[0, 0] == fill_code
+    assert rotated[20, 30] == 0
+
+
+def test_apply_edits_zero_fine_angle_changes_nothing():
+    np.testing.assert_array_equal(apply_edits(_ORIGINAL, 0, False, 0.0), _ORIGINAL)
+
+
 def test_export_applies_the_recorded_flip(stitched_roll, tmp_path):
     run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
     output_dir = tmp_path / "export"
@@ -96,6 +169,28 @@ def test_export_applies_the_recorded_flip(stitched_roll, tmp_path):
     expected = _ORIGINAL[:, ::-1]
     np.testing.assert_array_equal(
         tifffile.imread(output_dir / "_DSC0001.tif"), expected
+    )
+
+
+def test_export_applies_the_seeded_fine_rotation(stitched_roll, tmp_path):
+    """The stitch stage's auto-seeded `rotate_fine` op reaches the exported
+    pixels through the same net-state replay as the user ops."""
+    from scanny_boy.library import repo
+
+    repo.append_edit(
+        stitched_roll,
+        _NEGATIVE_ID,
+        repo.ROTATE_FINE_OP,
+        {"angle_deg": 45.0, "source": "auto"},
+    )
+    output_dir = tmp_path / "export"
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)
+
+    assert outcome.failed == []
+    np.testing.assert_array_equal(
+        tifffile.imread(output_dir / "_DSC0001.tif"),
+        apply_edits(_ORIGINAL, 0, False, 45.0),
     )
 
 
@@ -220,3 +315,92 @@ def test_a_failed_write_leaves_no_tmp_file_in_the_output_folder(
         Code.EXPORT_FAILED,
     ]
     assert list(output_dir.glob("*.tmp")) == []
+
+
+# --- metadata written on export ---------------------------------------------
+
+
+def _export_one(roll_dir: Path, tmp_path: Path) -> Path:
+    output_dir = tmp_path / "out"
+    outcome = run_export(roll_dir, output_dir, [], emit=lambda event: None)
+    assert outcome.exported and not outcome.failed
+    return output_dir / "_DSC0001.tif"
+
+
+def _read_tags(path: Path) -> dict:
+    import tifftools
+
+    info = tifftools.read_tiff(str(path))
+    return info["ifds"][0]["tags"]
+
+
+def _exif_tag(tags: dict, code: int) -> str | None:
+    from tifftools.constants import Tag
+
+    exif = tags.get(Tag.ExifIFD.value)
+    if exif is None:
+        return None
+    entry = exif["ifds"][0][0]["tags"].get(code)
+    return entry["data"] if entry else None
+
+
+def _xmp_text(tags: dict) -> str:
+    data = tags[700]["data"]
+    if isinstance(data, list):
+        data = bytes(data).decode("utf-8")
+    return data
+
+
+def test_export_writes_roll_metadata(two_negative_roll_with_metadata, tmp_path):
+    destination = _export_one(two_negative_roll_with_metadata, tmp_path)
+    tags = _read_tags(destination)
+    assert tags[272]["data"] == "Nikon F3"
+    xmp = _xmp_text(tags)
+    assert "photoshop:City>Porto<" in xmp
+    assert "photoshop:State>Oregon<" in xmp
+    assert "dc:description" in xmp and "harbor morning" in xmp
+    assert _exif_tag(tags, 36867) == "2026:08:01 12:00:00"
+    assert _exif_tag(tags, 42036) == "50mm f/1.4"
+
+
+def test_export_negative_value_overrides_roll(tmp_path, two_negative_roll_with_metadata):
+    from scanny_boy.metadata_edit import run_metadata_set
+
+    run_metadata_set(
+        two_negative_roll_with_metadata,
+        {"negatives": {"stitch-negative-01": {"city": "Lisbon"}}},
+    )
+    output_dir = tmp_path / "out"
+    outcome = run_export(
+        two_negative_roll_with_metadata, output_dir, [], emit=lambda event: None
+    )
+    assert not outcome.failed
+    first = _xmp_text(_read_tags(output_dir / "_DSC0001.tif"))
+    second = _xmp_text(_read_tags(output_dir / "_DSC0002.tif"))
+    assert "photoshop:City>Lisbon<" in first
+    assert "photoshop:City>Porto<" in second
+
+
+def test_export_without_metadata_writes_no_xmp(tmp_path, two_negative_roll_with_metadata):
+    from scanny_boy.roll_manifest import (
+        CaptureTime,
+        load_roll_manifest,
+        write_roll_manifest,
+    )
+
+    roll_dir = two_negative_roll_with_metadata
+    manifest = load_roll_manifest(roll_dir)
+    manifest.metadata = type(manifest.metadata)(roll_capture_date=None)
+    for negative in manifest.negatives:
+        negative.metadata = type(negative.metadata)()
+        negative.capture_time = CaptureTime(
+            source_datetime_original=negative.capture_time.source_datetime_original
+        )
+    write_roll_manifest(roll_dir, manifest)
+
+    destination = _export_one(roll_dir, tmp_path)
+    tags = _read_tags(destination)
+    assert 700 not in tags
+    from tifftools.constants import Tag
+
+    assert Tag.ExifIFD.value not in tags

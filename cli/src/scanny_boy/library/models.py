@@ -29,6 +29,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
+# The extended metadata fields (docs/ARCHITECTURE.md, "extended metadata
+# editing"): present on both `rolls` (the roll-level fallback) and
+# `negatives` (the explicit per-image value that wins). Everything except
+# `caption` is also a `metadata_values` catalog field the typeahead offers.
+METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+
 
 class JSONText(TypeDecorator):
     """A TEXT column that transparently serialises JSON values."""
@@ -69,6 +75,15 @@ class RollRow(Base):
     # `metadata`: two nullable strings rather than a nested object.
     roll_capture_date: Mapped[str | None] = mapped_column(Text)
     last_applied_at: Mapped[str | None] = mapped_column(Text)
+    # The roll-level extended-metadata fallbacks: what every negative
+    # without its own explicit value displays and exports. Nullable
+    # throughout — pre-0006 rows (and a roll nothing was typed into) are
+    # all-NULL.
+    city: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str | None] = mapped_column(Text)
+    camera: Mapped[str | None] = mapped_column(Text)
+    lens: Mapped[str | None] = mapped_column(Text)
+    caption: Mapped[str | None] = mapped_column(Text)
 
 
 class RunRow(Base):
@@ -144,9 +159,33 @@ class NegativeRow(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     capture_time: Mapped[dict] = mapped_column(JSONText)
+    # The negative's explicit extended-metadata values. A NULL (or missing,
+    # for pre-0006 rows) means "inherit the roll's fallback" — the effective
+    # value is the negative's own, else the roll's, per the live-fallback
+    # semantics of the extended metadata feature.
+    city: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str | None] = mapped_column(Text)
+    camera: Mapped[str | None] = mapped_column(Text)
+    lens: Mapped[str | None] = mapped_column(Text)
+    caption: Mapped[str | None] = mapped_column(Text)
     # Set by the preview generator once a small preview of the published
     # TIFF exists; null until then.
     preview_path: Mapped[str | None] = mapped_column(Text)
+
+
+class MetadataValueRow(Base):
+    __tablename__ = "metadata_values"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Which metadata field the value belongs to (`city`, `state`, `camera`,
+    # `lens` — never `caption`, which is prose rather than a canonical
+    # value). The (field, value) pair is unique: the catalog remembers that
+    # a value was used, not how many times.
+    field: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    # ISO timestamp of the most recent use — the typeahead's
+    # most-recently-used ordering key.
+    last_used_at: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class EditRow(Base):

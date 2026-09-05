@@ -5,12 +5,12 @@ import SwiftUI
 /// filmstrip along the bottom, a large preview of the selected negative
 /// above it, and the rotation controls that record nondestructive edits.
 ///
-/// Roll info and metadata (the dirty count, Apply) moved to the Metadata
-/// tab; this tab is about seeing and editing the negatives. The preview is
-/// the CLI-rendered file the `roll info` event names — Swift rotates
-/// nothing and renders nothing itself (Python owns every decision); a
-/// rotation button records an op through `edit rotate` and the CLI rewrites
-/// the preview in response.
+/// Roll info and metadata (name, capture date, the extended fields, the
+/// per-image browser) live on the Metadata tab; this tab is about seeing
+/// and transforming the negatives. The preview is the CLI-rendered file
+/// the `roll info` event names — Swift rotates nothing and renders nothing
+/// itself (Python owns every decision); a rotation button records an op
+/// through `edit rotate` and the CLI rewrites the preview in response.
 struct EditStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
@@ -37,10 +37,24 @@ struct EditStageView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
-            filmstrip
+            FilmstripView(
+                negatives: edit.visibleNegatives,
+                isSelected: edit.isSelected
+            ) { negativeID, additive, extendingRange in
+                edit.select(
+                    negativeID,
+                    additive: additive,
+                    extendingRange: extendingRange
+                )
+            }
         }
         .background {
-            selectionShortcuts
+            SelectionShortcutButtons(
+                onPrevious: edit.selectPrevious,
+                onNext: edit.selectNext,
+                onSelectAll: edit.selectAll,
+                onDeselectAll: edit.deselectAll
+            )
         }
         // Nothing about the roll may change while any helper in the app is
         // busy (`AppActivity`) — not just this app's own run, but a
@@ -56,47 +70,6 @@ struct EditStageView: View {
         .onChange(of: run.phase, initial: true) { _, phase in
             if phase == .finished { edit.refresh() }
         }
-    }
-
-    /// Option-left / Option-right move the selection, whether or not the
-    /// filmstrip has keyboard focus; Cmd-A selects every frame, Cmd-D
-    /// deselects them all.
-    private var selectionShortcuts: some View {
-        Group {
-            Button("Previous Negative") { edit.selectPrevious() }
-                .keyboardShortcut(.leftArrow, modifiers: .option)
-            Button("Next Negative") { edit.selectNext() }
-                .keyboardShortcut(.rightArrow, modifiers: .option)
-            Button("Select All Negatives") { edit.selectAll() }
-                .keyboardShortcut("a", modifiers: .command)
-            Button("Deselect All Negatives") { edit.deselectAll() }
-                .keyboardShortcut("d", modifiers: .command)
-        }
-        .allowsHitTesting(false)
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
-
-    private var filmstrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 8) {
-                ForEach(edit.visibleNegatives, id: \.negativeID) { negative in
-                    FilmstripCell(
-                        negative: negative,
-                        isSelected: edit.isSelected(negative.negativeID)
-                    ) { additive, extendingRange in
-                        edit.select(
-                            negative.negativeID,
-                            additive: additive,
-                            extendingRange: extendingRange
-                        )
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .frame(height: 104)
     }
 }
 
@@ -358,74 +331,121 @@ private struct PreviewPane: View {
 /// the model: shift extends a range, command toggles a frame.
 private struct FilmstripCell: View {
     let negative: RollManifest.Negative
-    let isSelected: Bool
-    let onSelect: (_ additive: Bool, _ extendingRange: Bool) -> Void
+    @Bindable var edit: EditModel
+    let runIsActive: Bool
+    let onNegativeDeleted: () -> Void
 
-    @Environment(\.displayScale) private var displayScale
-    @State private var thumbnail: Thumbnail?
+    @State private var isConfirmingDelete = false
 
-    private static let cellSize = CGSize(width: 80, height: 80)
+    /// The negatives the controls act on, read once per invocation.
+    private var targets: [RollManifest.Negative] { edit.selectionTargets }
 
     var body: some View {
-        Button {
-            // NSEvent.pressedMouseButtons style probing is not needed here:
-            // the click's own modifier flags are on the current event.
-            let flags = NSApp.currentEvent?.modifierFlags ?? []
-            onSelect(
-                flags.contains(.command),
-                flags.contains(.shift)
-            )
-        } label: {
-            preview
-                .frame(width: Self.cellSize.width, height: Self.cellSize.height)
-                .background(isSelected ? Color.accentColor.opacity(0.18) : .clear)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(
-                            isSelected ? Color.accentColor : Color.clear,
-                            lineWidth: 2
-                        )
+        VStack(spacing: 8) {
+            PreviewImageView(negative: negative)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding([.horizontal, .top], 16)
+
+            HStack(spacing: 12) {
+                Button {
+                    Task { await edit.rotate(targets, clockwise: false) }
+                } label: {
+                    Image(systemName: "rotate.left")
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
-        .help(negative.expectedOutput)
-        .task(id: "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)") {
-            thumbnail = nil
-            guard let previewPath = negative.previewPath else {
-                return
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help("Rotate 90° counter-clockwise")
+                .accessibilityLabel("Rotate 90° counter-clockwise")
+
+                Button {
+                    Task { await edit.rotate(targets, clockwise: true) }
+                } label: {
+                    Image(systemName: "rotate.right")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help("Rotate 90° clockwise")
+                .accessibilityLabel("Rotate 90° clockwise")
+
+                Button {
+                    Task { await edit.flip(targets) }
+                } label: {
+                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help("Flip horizontally")
+                .accessibilityLabel("Flip horizontally")
+
+                if edit.isRotating {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text(infoLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    isConfirmingDelete = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .disabled(edit.isRotating || edit.isDeleting || runIsActive)
+                .help(deleteButtonHelp)
+                .accessibilityLabel(deleteButtonHelp)
             }
-            thumbnail = await ThumbnailLoader.shared.thumbnail(
-                forPreview: URL(filePath: previewPath),
-                generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
-                pointSize: Self.cellSize,
-                scale: displayScale
-            )
+            .padding([.horizontal, .bottom], 16)
+        }
+        .confirmationDialog(
+            deleteDialogTitle,
+            isPresented: $isConfirmingDelete
+        ) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await edit.delete(targets)
+                    onNegativeDeleted()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deleteDialogMessage)
         }
     }
 
-    @ViewBuilder
-    private var preview: some View {
-        if let thumbnail {
-            Image(nsImage: thumbnail.image)
-                .resizable()
-                .interpolation(.medium)
-                .aspectRatio(contentMode: .fit)
-        } else if negative.isCompleted {
-            RoundedRectangle(cornerRadius: 5)
-                .fill(.quaternary)
-                .overlay {
-                    Image(systemName: "photo")
-                        .foregroundStyle(.secondary)
-                }
-        } else {
-            RoundedRectangle(cornerRadius: 5)
-                .fill(.quaternary)
-                .overlay {
-                    Text(negative.status)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+    private var deleteButtonHelp: String {
+        targets.count > 1 ? "Delete \(targets.count) Negatives…" : "Delete Negative…"
+    }
+
+    private var deleteDialogTitle: String {
+        targets.count == 1
+            ? "Delete “\(negative.expectedOutput)”?"
+            : "Delete \(targets.count) Negatives?"
+    }
+
+    private var deleteDialogMessage: String {
+        targets.count == 1
+            ? """
+            Its published TIFF is removed from the roll folder and its \
+            record is removed from the library. This cannot be undone.
+            """
+            : """
+            Their published TIFFs are removed from the roll folder and \
+            their records are removed from the library. This cannot be \
+            undone.
+            """
+    }
+
+    private var infoLine: String {
+        var parts = [negative.expectedOutput]
+        if let rms = negative.globalRMSPixels {
+            parts.append(String(format: "Global RMS: %.3f px", rms))
         }
+        let selectionCount = edit.selectionTargets.count
+        if selectionCount > 1 {
+            parts.append("\(selectionCount) selected")
+        }
+        return parts.joined(separator: "  ·  ")
     }
 }

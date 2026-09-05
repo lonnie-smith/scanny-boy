@@ -31,12 +31,14 @@ struct EditModelTests {
         applied: String?,
         rotation: Int = 0,
         flipped: Bool = false,
-        previewPath: String? = nil
+        previewPath: String? = nil,
+        metadata: String? = nil
     ) -> String {
         let sequenceJSON = sequence.map(String.init) ?? "null"
         let intendedJSON = intended.map { "\"\($0)\"" } ?? "null"
         let appliedJSON = applied.map { "\"\($0)\"" } ?? "null"
         let previewJSON = previewPath.map { "\"\($0)\"" } ?? "null"
+        let metadataJSON = metadata ?? "null"
         return """
             {"negative_id":"\(negativeID)","run_id":"r","sequence":\(sequenceJSON),\
             "members":["a.NEF"],\
@@ -47,12 +49,16 @@ struct EditModelTests {
             "capture_time":{"source_datetime_original":null,\
             "intended_datetime_original":\(intendedJSON),\
             "applied_datetime_original":\(appliedJSON),"date_override":null},\
+            "metadata":\(metadataJSON),\
             "preview_path":\(previewJSON),\
             "rotation_quarter_turns":\(rotation),"flipped_horizontally":\(flipped)}
             """
     }
 
-    private static func rollInfoEvent(negatives: [String]) -> String {
+    private static func rollInfoEvent(
+        negatives: [String], metadata: String? = nil
+    ) -> String {
+        let metadataJSON = metadata ?? #"{"roll_capture_date":null,"last_applied_at":null,"city":null,"state":null,"camera":null,"lens":null,"caption":null}"#
         let manifest = """
             {"manifest_format_version":5,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
             "roll_id":"roll-1","roll_name":"Test Roll",\
@@ -61,46 +67,35 @@ struct EditModelTests {
             "icc_profile":{"name":"x.icc","sha256":"\(String(repeating: "b", count: 64))"},\
             "stitch_params":{},"runs":[],"sources":[],\
             "negatives":[\(negatives.joined(separator: ","))],\
-            "metadata":{"roll_capture_date":null,"last_applied_at":null}}
+            "metadata":\(metadataJSON)}
             """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
 
-    @Test("Dirty count reflects intended versus applied, not just completion")
-    func testDirtyCountReflectsIntendedVersusApplied() async throws {
-        let dirty = Self.negativeJSON(
-            negativeID: "n1", sequence: 1,
-            intended: "2026-08-02T12:00:00", applied: "2026-08-01T12:00:00"
+    @Test("Effective metadata resolves the live fallback")
+    func testEffectiveMetadataResolvesLiveFallback() async throws {
+        // The roll carries the fallback city; the second negative has its
+        // own explicit value that must win.
+        let rollMetadata = #"{"roll_capture_date":null,"last_applied_at":null,"city":"Porto","state":null,"camera":null,"lens":null,"caption":null}"#
+        let inherited = Self.negativeJSON(
+            negativeID: "n1", sequence: 1, intended: nil, applied: nil
         )
-        let clean = Self.negativeJSON(
-            negativeID: "n2", sequence: 2,
-            intended: "2026-08-02T12:00:01", applied: "2026-08-02T12:00:01"
+        let explicit = Self.negativeJSON(
+            negativeID: "n2", sequence: 2, intended: nil, applied: nil,
+            metadata: #"{"city":"Lisbon","state":null,"camera":null,"lens":null,"caption":null}"#
         )
-        let runner = try Self.isolatedRunner(rollInfoLines: [Self.rollInfoEvent(negatives: [dirty, clean])])
+        let runner = try Self.isolatedRunner(
+            rollInfoLines: [Self.rollInfoEvent(negatives: [inherited, explicit], metadata: rollMetadata)]
+        )
         let model = EditModel(runner: runner)
 
         model.rollURL = URL(filePath: "/tmp/roll")
         await model.waitForPendingFetch()
 
-        #expect(model.dirtyCount == 1)
-        #expect(model.dirtyNegatives.map(\.negativeID) == ["n1"])
-    }
-
-    @Test("Apply is disabled when nothing is dirty")
-    func testApplyIsDisabledWhenNothingIsDirty() async throws {
-        let clean = Self.negativeJSON(
-            negativeID: "n1", sequence: 1,
-            intended: "2026-08-02T12:00:00", applied: "2026-08-02T12:00:00"
-        )
-        let runner = try Self.isolatedRunner(rollInfoLines: [Self.rollInfoEvent(negatives: [clean])])
-        let model = EditModel(runner: runner)
-
-        model.rollURL = URL(filePath: "/tmp/roll")
-        await model.waitForPendingFetch()
-
-        #expect(model.dirtyCount == 0)
-        #expect(!model.canApply)
-        #expect(model.applyCommand == nil)
+        #expect(model.effectiveValue(of: model.visibleNegatives[0], field: "city") == "Porto")
+        #expect(model.effectiveValue(of: model.visibleNegatives[1], field: "city") == "Lisbon")
+        #expect(model.effectiveValues(of: model.visibleNegatives, field: "city").count == 2)
+        #expect(model.effectiveValues(of: [model.visibleNegatives[0]], field: "state").count == 1)
     }
 
     @Test("Unranked negatives sort after ranked ones, and every negative is visible")
@@ -167,7 +162,6 @@ struct EditModelTests {
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives.map(\.negativeID) == ["n1", "n2"])
-        #expect(model.dirtyCount == 2)
     }
 
     // MARK: - Delete
@@ -388,7 +382,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":8,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":9,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -407,11 +401,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":8,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":9,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":8,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":9,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'

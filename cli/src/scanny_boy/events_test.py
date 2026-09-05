@@ -19,6 +19,8 @@ from scanny_boy.events import (
     ItemDone,
     MetadataApplied,
     MetadataSkipped,
+    MetadataUpdated,
+    MetadataValues,
     NegativeDeleted,
     NegativeDone,
     NegativeFailed,
@@ -221,9 +223,13 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_nine():
-    """Protocol 8→9: 1:1 region rendering for the app's 100% zoom — the
-    `edit render-region` command and its `region_rendered` event, carrying
-    the rendered path and the post-clamp display-space rect."""
+"""Protocol 8→9: the extended-metadata editing feature — the `metadata`
+    command family (`metadata_updated`, `metadata_values`, the
+    `INVALID_METADATA` code) and the roll/negative extended-metadata fields
+    in the roll manifest — plus 1:1 region rendering for the app's 100%
+    zoom (the `edit render-region` command and its `region_rendered`
+    event, carrying the rendered path and the post-clamp display-space
+    rect)."""
     assert PROTOCOL_VERSION == 9
 
 
@@ -234,6 +240,8 @@ def test_new_event_kinds_round_trip():
         RollInfo(manifest={"manifest_kind": "roll"}),
         RollRenamed(roll_id="id", roll_name="new name", path="/tmp/roll-2"),
         MetadataApplied(negative_id="neg-1"),
+        MetadataUpdated(manifest={"manifest_kind": "roll"}),
+        MetadataValues(field="city", values=["Porto", "Lisbon"]),
         MetadataSkipped(
             negative_id="neg-2",
             code=Code.METADATA_WRITE_FAILED,
@@ -274,7 +282,7 @@ def test_new_event_kinds_round_trip():
     ]
     for event in events:
         data = event.to_dict()
-        assert data["protocol_version"] == PROTOCOL_VERSION
+assert data["protocol_version"] == PROTOCOL_VERSION
         assert json.loads(json.dumps(data)) == data
 
 
