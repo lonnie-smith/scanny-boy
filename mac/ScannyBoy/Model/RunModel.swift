@@ -289,6 +289,193 @@ final class RunModel {
         }
     }
 
+    // MARK: - Result presentation
+
+    /// One negative the invocation touched, merged from the parallel event
+    /// lists (`completedGroups`, `failedGroups`, `stitchedNegatives`,
+    /// `failedNegatives`, `appliedNegativeIDs`, `skippedMetadata`) so the
+    /// results view can show one row per negative instead of one list per
+    /// event kind. For a `run` the convert stage and the stitch stage
+    /// report the same negative id, and the merge folds the two halves
+    /// into a single row.
+    struct NegativeResult: Identifiable, Hashable {
+        enum Status: Hashable {
+            case succeeded
+            case failed
+            /// `apply-metadata` left this negative's metadata untouched
+            /// (`OUTPUT_MODIFIED_EXTERNALLY`).
+            case skipped
+        }
+
+        /// How a published negative's registration quality reads, judged
+        /// against the thresholds the CLI itself enforces
+        /// (`MAX_GLOBAL_RMS_PX` = 12 px, `MAX_OVERLAP_MAD` = 0.20 —
+        /// composite.py/layout.py). A published negative is always below
+        /// those gates, so `.poor` should not occur; it is a guard, not a
+        /// diagnosis.
+        enum Quality: Hashable {
+            case good
+            case fair
+            case poor
+        }
+
+        let id: String
+        let status: Status
+        /// The stitched TIFF's filename, for invocations that stitch. A
+        /// plain `convert` publishes per-frame files with no single output
+        /// to name, so this is nil there.
+        let output: String?
+        let dimensions: String?
+        let quality: Quality?
+        /// The exact numbers behind `quality`, for the expanded row.
+        let qualityDetail: String?
+        /// The failure, if any, with its stable code for the report. For a
+        /// negative that failed in both stages (`run`), the stitch-stage
+        /// failure wins — it is the one that decided the outcome.
+        let failure: FailedGroup?
+        /// Warnings whose message names this negative (`"{negative_id}: …"`
+        /// — the stitch stage's convention). The convert stage prefixes
+        /// warnings with a source filename instead, and those stay
+        /// run-level.
+        let warnings: [Issue]
+    }
+
+    /// The per-negative view of the run, in first-seen event order.
+    var negativeResults: [NegativeResult] {
+        var ids: [String] = []
+        var seen = Set<String>()
+        func note(_ id: String?) {
+            guard let id, seen.insert(id).inserted else { return }
+            ids.append(id)
+        }
+        completedGroups.forEach { note($0) }
+        failedGroups.forEach { note($0.groupID) }
+        stitchedNegatives.forEach { note($0.negativeID) }
+        failedNegatives.forEach { note($0.groupID) }
+        appliedNegativeIDs.forEach { note($0) }
+        skippedMetadata.forEach { note($0.groupID) }
+
+        let stitched = Dictionary(
+            uniqueKeysWithValues: stitchedNegatives.map { ($0.negativeID, $0) }
+        )
+        var failureByID: [String: FailedGroup] = [:]
+        failedGroups.forEach { failureByID[$0.groupID] = $0 }
+        // Applied second so a stitch-stage failure replaces a convert-stage
+        // one for the same id.
+        failedNegatives.forEach { failureByID[$0.groupID] = $0 }
+        let skippedByID = Dictionary(
+            uniqueKeysWithValues: skippedMetadata.map { ($0.groupID, $0) }
+        )
+
+        return ids.map { id in
+            let failure = failureByID[id]
+            let skipped = skippedByID[id]
+            let status: NegativeResult.Status =
+                failure != nil ? .failed : skipped != nil ? .skipped : .succeeded
+            let prefix = "\(id): "
+            let attributed = warnings.filter { $0.message.hasPrefix(prefix) }
+            let stitchedNegative = stitched[id]
+            return NegativeResult(
+                id: id,
+                status: status,
+                output: stitchedNegative?.output,
+                dimensions: stitchedNegative.map { "\($0.width)×\($0.height)" },
+                quality: stitchedNegative.map {
+                    Self.quality(rms: $0.globalRMS, mad: $0.maxOverlapMAD)
+                },
+                qualityDetail: stitchedNegative.map {
+                    String(
+                        format: "RMS %.2f px, overlap MAD %.3f",
+                        $0.globalRMS, $0.maxOverlapMAD
+                    )
+                },
+                failure: failure ?? skipped,
+                warnings: attributed
+            )
+        }
+    }
+
+    /// Warnings that name no negative the run touched. The convert stage
+    /// prefixes its warnings with a source filename rather than a group id,
+    /// and some codes prefix with nothing at all, so attribution is
+    /// best-effort by design.
+    var runLevelWarnings: [Issue] {
+        let ids = Set(negativeResults.map(\.id))
+        return warnings.filter { warning in
+            !ids.contains { id in warning.message.hasPrefix("\(id): ") }
+        }
+    }
+
+    /// Judged against the same gates the CLI enforces before publishing
+    /// (12 px global RMS, 0.20 overlap MAD — composite.py/layout.py, not
+    /// part of the event protocol, so mirrored here as constants): good is
+    /// a quarter of the gate, fair is anything the gate admitted.
+    private static let globalRMSGate = 12.0
+    private static let overlapMADGate = 0.20
+
+    private static func quality(rms: Double, mad: Double) -> NegativeResult.Quality {
+        if rms <= globalRMSGate / 4 && mad <= overlapMADGate / 4 {
+            return .good
+        }
+        if rms <= globalRMSGate && mad <= overlapMADGate {
+            return .fair
+        }
+        return .poor
+    }
+
+    /// The full conversion log as copyable plain text — every negative with
+    /// its status, stable codes, raw messages, and exact quality numbers.
+    /// The UI summarizes; this is the escape hatch for a bug report.
+    var reportText: String {
+        var lines: [String] = []
+        if let summary = completionSummary {
+            lines.append(summary)
+        }
+        if let runID {
+            lines.append("Run ID: \(runID)")
+        }
+        for negative in negativeResults {
+            lines.append("")
+            switch negative.status {
+            case .succeeded: lines.append("\(negative.id): converted")
+            case .failed: lines.append("\(negative.id): failed")
+            case .skipped: lines.append("\(negative.id): skipped")
+            }
+            if let failure = negative.failure {
+                lines.append("  [\(failure.code.name)] \(failure.message)")
+            }
+            if let output = negative.output {
+                var detail = "  output: \(output)"
+                if let dimensions = negative.dimensions {
+                    detail += ", \(dimensions)"
+                }
+                if let qualityDetail = negative.qualityDetail {
+                    detail += ", \(qualityDetail)"
+                }
+                lines.append(detail)
+            }
+            for warning in negative.warnings {
+                lines.append("  [\(warning.code.name)] \(warning.message)")
+            }
+        }
+        let runLevel = runLevelWarnings
+        if !runLevel.isEmpty {
+            lines.append("")
+            lines.append("Warnings:")
+            for warning in runLevel {
+                lines.append("  [\(warning.code.name)] \(warning.message)")
+            }
+        }
+        if !streamFailures.isEmpty {
+            lines.append("")
+            lines.append("Stream problems:")
+            for failure in streamFailures {
+                lines.append("  \(RunFailureText.string(failure))")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Running
 
     /// Starts one `convert`. `files` must be the selection in canonical order:
