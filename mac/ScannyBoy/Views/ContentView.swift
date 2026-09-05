@@ -57,7 +57,7 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(
                 library: library,
-                selection: $selection,
+                selection: Self.guardedRollSelection($selection, isBusy: activity.isBusy),
                 runIsActive: activity.isBusy,
                 isPresentingNewRollSheet: $isPresentingNewRollSheet
             )
@@ -167,6 +167,7 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Stage")
+            .disabled(activity.isBusy)
             .padding()
 
             switch workspaceTab {
@@ -432,6 +433,21 @@ struct ContentView: View {
         } else {
             startRun()
         }
+    }
+
+    /// Rejects sidebar selection changes while any helper is active (section
+    /// 3.10). Testable so the gate stays decoupled from SwiftUI state.
+    nonisolated static func guardedRollSelection(
+        _ selection: Binding<Roll.ID?>,
+        isBusy: Bool
+    ) -> Binding<Roll.ID?> {
+        Binding(
+            get: { selection.wrappedValue },
+            set: { newValue in
+                guard !isBusy else { return }
+                selection.wrappedValue = newValue
+            }
+        )
     }
 
     /// Whether Convert should ask before writing into an already-populated
