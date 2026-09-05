@@ -464,6 +464,7 @@ private struct ToneAdjustmentPanel: View {
                     value: $grade,
                     range: 50...180,
                     resetValue: Self.defaultGrade,
+                    reversed: true,
                     onCommit: { onCommit(grade, snap) }
                 )
                 .accessibilityLabel("Paper grade")
@@ -531,10 +532,19 @@ private struct ToneSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let resetValue: Double
+    var reversed: Bool = false
     let onCommit: () -> Void
 
+    private var sliderValue: Binding<Double> {
+        guard reversed else { return $value }
+        return Binding(
+            get: { range.upperBound + range.lowerBound - value },
+            set: { value = range.upperBound + range.lowerBound - $0 }
+        )
+    }
+
     var body: some View {
-        Slider(value: $value, in: range) { editing in
+        Slider(value: sliderValue, in: range) { editing in
             guard !editing else { return }
             onCommit()
         }
