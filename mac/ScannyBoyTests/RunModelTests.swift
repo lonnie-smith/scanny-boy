@@ -990,4 +990,221 @@ struct RunModelTests {
         #expect(skipped.message == "a.tif no longer matches the roll")
         #expect(run.completionSummary == "Applied 1 negative(s); 1 skipped.")
     }
+
+    // MARK: - Result presentation: one row per negative
+
+    @Test("negativeResults merges the stitched negative into one succeeded row")
+    func negativeResultsMergeStitchedNegatives() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeDone(
+                    negativeID: "negative-01", output: "_DSC4638.tif",
+                    width: 6140, height: 7917, globalRMS: 1.57, maxOverlapMAD: 0.04
+                ),
+                Self.negativeDone(
+                    negativeID: "negative-02", output: "_DSC4641.tif",
+                    width: 6140, height: 7917, globalRMS: 6.0, maxOverlapMAD: 0.15
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let results = run.negativeResults
+        #expect(results.count == 2)
+        let first = try #require(results.first)
+        #expect(first.id == "negative-01")
+        #expect(first.status == .succeeded)
+        #expect(first.output == "_DSC4638.tif")
+        #expect(first.dimensions == "6140×7917")
+        // RMS 1.57 px and MAD 0.04 are each under a quarter of the gates the
+        // CLI enforces (12 px, 0.20).
+        #expect(first.quality == .good)
+        #expect(first.qualityDetail == "RMS 1.57 px, overlap MAD 0.040")
+        #expect(first.failure == nil)
+        // The second negative is well within the gates but not within a
+        // quarter of them.
+        #expect(try #require(results.last).quality == .fair)
+    }
+
+    @Test("A negative_failed event becomes one failed row with its stable code")
+    func negativeResultsMergeFailedNegatives() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeFailed(
+                    "negative-02", code: "STITCH_UNDERCONSTRAINED",
+                    message: "frames not reachable from 'a.tif'"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let results = run.negativeResults
+        #expect(results.count == 1)
+        let failed = try #require(results.first)
+        #expect(failed.id == "negative-02")
+        #expect(failed.status == .failed)
+        #expect(failed.output == nil)
+        #expect(failed.quality == nil)
+        #expect(failed.failure?.code == .stitchUnderconstrained)
+        #expect(failed.failure?.message == "frames not reachable from 'a.tif'")
+    }
+
+    @Test("Warnings prefixed with a negative id attach to that negative; others stay run-level")
+    func warningsAreAttributedByPrefix() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeDone(
+                    negativeID: "negative-01", output: "a.tif",
+                    width: 100, height: 100, globalRMS: 1.0, maxOverlapMAD: 0.05
+                ),
+                Self.warningEvent(
+                    code: "STITCH_GAIN_DRIFT",
+                    message: "negative-01: frame a.tif's brightness needed a larger "
+                        + "correction than expected"
+                ),
+                Self.warningEvent(
+                    code: "FILENAME_SORT_USED",
+                    message: "a catalogue file has no usable capture timestamp"
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let negative = try #require(run.negativeResults.first)
+        #expect(negative.warnings.count == 1)
+        // STITCH_GAIN_DRIFT predates this app's code list, so it arrives as
+        // an unknown code — the message still carries it.
+        #expect(negative.warnings.first?.code == .unknown("STITCH_GAIN_DRIFT"))
+        #expect(run.runLevelWarnings.count == 1)
+        #expect(run.runLevelWarnings.first?.code == .filenameSortUsed)
+    }
+
+    @Test("A convert run's group events produce rows even without stitch numbers")
+    func convertGroupsBecomeRows() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.itemDone(sourceIndex: 0, output: "a.tif"),
+                Self.groupDone("negative-01"),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(executable: executable, outputFolder: directory)
+
+        let negative = try #require(run.negativeResults.first)
+        #expect(negative.id == "negative-01")
+        #expect(negative.status == .succeeded)
+        // A plain convert publishes per-frame files; there is no single
+        // output or quality summary to name.
+        #expect(negative.output == nil)
+        #expect(negative.quality == nil)
+    }
+
+    @Test("reportText carries the summary, codes, raw messages, and quality numbers")
+    func reportTextCarriesTheFullLog() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.negativeFailed(
+                    "negative-02", code: "STITCH_UNDERCONSTRAINED",
+                    message: "frames not reachable from 'a.tif'"
+                ),
+                Self.warningEvent(
+                    code: "FILENAME_SORT_USED",
+                    message: "a catalogue file has no usable capture timestamp"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let report = run.reportText
+        #expect(report.contains("Run ID: \(Self.runID)"))
+        #expect(report.contains("negative-02: failed"))
+        #expect(report.contains("[STITCH_UNDERCONSTRAINED] frames not reachable from 'a.tif'"))
+        #expect(report.contains("[FILENAME_SORT_USED] a catalogue file has no usable capture timestamp"))
+        #expect(report.contains("The run finished with 1 failed negative(s)."))
+    }
+
+    @Test("Skipped metadata lands as one skipped row with its code")
+    func skippedMetadataBecomesASkippedRow() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.metadataApplied("negative-01"),
+                Self.metadataSkipped(
+                    "negative-02", code: "OUTPUT_MODIFIED_EXTERNALLY",
+                    message: "a.tif no longer matches the roll"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, files: [], commandName: "apply-metadata"
+        )
+
+        let results = run.negativeResults
+        #expect(results.count == 2)
+        let skipped = try #require(results.last)
+        #expect(skipped.id == "negative-02")
+        #expect(skipped.status == .skipped)
+        #expect(skipped.failure?.code == .outputModifiedExternally)
+    }
+
+    @Test("Known codes have friendly titles; the raw name remains the fallback")
+    func friendlyTitlesCoverTheConversionCodes() {
+        #expect(CLICode.stitchUnderconstrained.friendlyTitle == "Not enough usable frames to stitch")
+        #expect(CLICode.scanClipped.friendlyTitle == "Some highlights are clipped in the scan")
+        #expect(CLICode.normalizeHeadroomClipped.friendlyTitle
+            == "Normalization clipped some highlights or shadows")
+        // A code the app predates falls back to its raw name in the UI.
+        #expect(CLICode.unknown("SOMETHING_NEW").friendlyTitle == nil)
+    }
 }

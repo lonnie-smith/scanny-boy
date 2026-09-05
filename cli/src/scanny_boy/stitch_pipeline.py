@@ -1351,8 +1351,9 @@ def _composite_and_publish(
                     run_id=run_id,
                     code=Code.NORMALIZE_HEADROOM_CLIPPED,
                     message=(
-                        f"{record.negative_id}: the encode's headroom clipped "
-                        f"{detail}; the headroom constants are likely too tight"
+                        f"{record.negative_id}: normalizing pushed {detail} "
+                        "past full scale, clipping them; scan a little darker "
+                        "to keep them"
                     ),
                 )
             )
@@ -1393,9 +1394,10 @@ def _composite_and_publish(
                         run_id=run_id,
                         code=Code.STITCH_GAIN_DRIFT,
                         message=(
-                            f"{record.negative_id}: frame {placement.name} solved "
-                            f"gain ({gain[0]:.4f}, {gain[1]:.4f}, {gain[2]:.4f}) "
-                            f"deviates more than {GAIN_DRIFT_WARN} from unity"
+                            f"{record.negative_id}: frame {placement.name}'s "
+                            "brightness needed a larger correction than "
+                            "expected; its exposure may be inconsistent with "
+                            "the rest of the scan"
                         ),
                     )
                 )
