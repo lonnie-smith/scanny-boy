@@ -10,9 +10,9 @@ import pytest
 
 from scanny_boy import concurrency
 from scanny_boy.cli import MAX_SELECTION_FILES, main
-from scanny_boy.library import repo
 from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
+from scanny_boy.library import repo
 from scanny_boy.manifest import load_manifest
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.pipeline import ConvertOutcome

@@ -511,7 +511,7 @@ def validated_tone_params(
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"tone {name} must be a number, got {value!r}")
+            raise TypeError(f"tone {name} must be a number, got {value!r}")
     if grade_r is None and snap_gamma is None:
         return {"grade_r": None, "snap_gamma": None}
     if grade_r is None or snap_gamma is None:
