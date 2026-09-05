@@ -221,6 +221,7 @@ struct RunIntegrationTests {
         #expect(run.completedGroups == ["negative-01", "negative-02"])
 
         #expect(run.stitchedNegatives.count == 2)
+        #expect(run.negativeResults.count == 2)
         // Roll negative ids are `<run short id>-negative-NN`, so ids are
         // matched by suffix rather than pinned to a bare `negative-01`.
         // Publishing follows group order: `negative-01`'s first member is

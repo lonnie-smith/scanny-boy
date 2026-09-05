@@ -46,6 +46,8 @@ struct ContentView: View {
     @State private var restitchOutputFolder: URL?
     @State private var isPresentingNewRollSheet = false
     @State private var isPresentingFlatFieldProfiles = false
+    @State private var isConfirmingConvert = false
+    @State private var pendingConvertAfterNewRoll = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -114,13 +116,39 @@ struct ContentView: View {
                 initialOutputFolder: restitchOutputFolder
             )
         }
-        .sheet(isPresented: $isPresentingNewRollSheet) {
+        .sheet(isPresented: $isPresentingNewRollSheet, onDismiss: {
+            pendingConvertAfterNewRoll = false
+        }) {
             NewRollSheet(library: library) { roll in
                 selection = roll.id
                 // A freshly created roll has no scans yet — land on Add Scans
                 // so the user can begin adding them, regardless of which tab
                 // was active when the sheet opened.
                 workspaceTab = .addScans
+                if pendingConvertAfterNewRoll {
+                    pendingConvertAfterNewRoll = false
+                    startRun()
+                }
+            }
+        }
+        .confirmationDialog(
+            "Add scans to “\(selectedRoll?.displayName ?? "")”?",
+            isPresented: $isConfirmingConvert
+        ) {
+            if let roll = selectedRoll {
+                Button("Add to “\(roll.displayName)”") { startRun() }
+                Button("Create New Roll…") {
+                    pendingConvertAfterNewRoll = true
+                    isPresentingNewRollSheet = true
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let count = selectedRoll?.negativeCount {
+                Text(
+                    "This roll already contains \(count) negative(s). "
+                        + "Add the new scans here, or create a new roll for them."
+                )
             }
         }
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
@@ -165,16 +193,25 @@ struct ContentView: View {
     /// first, then the roll, so the user always knows which roll the
     /// workspace is pointed at.
     private var selectedRollName: String {
-        library.rolls.first { $0.id == selection }?.displayName ?? ""
+        selectedRoll?.displayName ?? ""
+    }
+
+    private var selectedRoll: Roll? {
+        library.rolls.first { $0.id == selection }
     }
 
     private var addScansStage: some View {
         HSplitView {
             catalogueColumn
-                .frame(minWidth: 280, idealWidth: 340)
+                .frame(minWidth: 280, idealWidth: 340, maxHeight: .infinity)
             detailColumn
-                .frame(minWidth: 380, idealWidth: 460)
+                .frame(minWidth: 380, idealWidth: 460, maxHeight: .infinity)
         }
+        // Without a full-height frame the split view sizes to the left
+        // column's content — a `List` when the catalogue is populated, but
+        // only the compact empty state otherwise — and the detail pane then
+        // vertically centers that short stack instead of pinning it to the top.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
@@ -220,6 +257,7 @@ struct ContentView: View {
                     systemImage: "photo.on.rectangle.angled",
                     description: Text("Choose a folder of .NEF files to begin.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.catalogue, id: \.self, selection: $model.selectedFiles) { name in
                     CatalogueRow(name: name, url: model.fileURL(for: name))
@@ -234,6 +272,7 @@ struct ContentView: View {
                 IssueLabel(issue: error, style: .error)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding()
         // Nothing about the configuration may change while a conversion is
         // using it.
@@ -266,6 +305,7 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding()
     }
 
@@ -361,11 +401,26 @@ struct ContentView: View {
                     Button("Cancel", role: .destructive) { run.cancel() }
                         .disabled(!run.canCancel)
                 }
-                Button("Convert") { startRun() }
+                Button("Convert") { handleConvertTap() }
                     .disabled(!model.runEnabled || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
             }
         }
+    }
+
+    private func handleConvertTap() {
+        if Self.shouldConfirmConvert(into: selectedRoll) {
+            isConfirmingConvert = true
+        } else {
+            startRun()
+        }
+    }
+
+    /// Whether Convert should ask before writing into an already-populated
+    /// roll. Testable so the dialog gate stays decoupled from SwiftUI state.
+    nonisolated static func shouldConfirmConvert(into roll: Roll?) -> Bool {
+        guard let roll, roll.status == .ok else { return false }
+        return (roll.negativeCount ?? 0) > 0
     }
 
     // A run always adopts whatever it overlaps in place — passing no

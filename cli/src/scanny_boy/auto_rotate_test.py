@@ -12,15 +12,14 @@ from scanny_boy.auto_rotate import (
     rotate_with_fill,
 )
 from scanny_boy.normalization import NORMALIZED_FILL, encode_normalized
+from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
 # Beyond the clamps the estimator refuses on principle.
 _OVER_TILT_DEG = AUTO_ROTATE_MAX_DEG + 10.0
 
-_FILL_CODE = int(
-    encode_normalized(
-        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
-    )[0, 0, 0]
-)
+_FILL_CODE = encode_normalized(
+    np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+)[0, 0]
 
 
 def _encoded_scene(
@@ -55,8 +54,10 @@ def test_rotate_with_fill_fills_the_uncovered_pixels_with_the_sentinel():
 
     rotated = rotate_with_fill(image, 45.0)
 
-    assert rotated[0, 0, 0] == _FILL_CODE
-    assert rotated[-1, -1, 0] == _FILL_CODE
+    np.testing.assert_array_equal(rotated[0, 0], _FILL_CODE)
+    np.testing.assert_array_equal(rotated[-1, -1], _FILL_CODE)
+    np.testing.assert_array_equal(NORMALIZED_DISPLAY_LUT[rotated[0, 0]], 0)
+    np.testing.assert_array_equal(NORMALIZED_DISPLAY_LUT[rotated[-1, -1]], 0)
     # The centre stays where it was: nothing was invented there.
     np.testing.assert_array_equal(rotated[20, 30], image[20, 30])
 
@@ -77,7 +78,10 @@ def test_rotate_with_fill_positive_angles_turn_clockwise():
     left = rotate_with_fill(image, -5.0)
 
     def marker_col(rotated):
-        return int(np.argmax(rotated[4].sum(axis=-1)))
+        row = rotated[4]
+        sums = row.sum(axis=-1).astype(np.int64)
+        is_fill = np.all(row == _FILL_CODE, axis=-1)
+        return int(np.argmax(np.where(is_fill, -1, sums)))
 
     assert marker_col(right) > 100
     assert marker_col(left) < 100

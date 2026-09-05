@@ -141,18 +141,25 @@ def test_apply_edits_applies_the_fine_rotation_and_its_fill():
     """The fine auto-rotation keeps the canvas dimensions and fills what it
     uncovers with the stitching fill sentinel — the same empty-pixel
     semantics the stitched canvas already has."""
-    image = np.zeros((40, 60), dtype=np.uint16)
-
-    rotated = apply_edits(image, 0, False, 45.0)
-
-    assert rotated.shape == (40, 60)
     from scanny_boy.normalization import NORMALIZED_FILL, encode_normalized
+    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
     fill_code = encode_normalized(
         np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
-    )[0, 0, 0]
-    assert rotated[0, 0] == fill_code
+    )[0, 0]
+
+    image = np.zeros((40, 60), dtype=np.uint16)
+    rotated = apply_edits(image, 0, False, 45.0)
+
+    assert rotated.shape == (40, 60)
+    assert rotated[0, 0] == fill_code[0]
     assert rotated[20, 30] == 0
+
+    image_rgb = np.zeros((40, 60, 3), dtype=np.uint16)
+    rotated_rgb = apply_edits(image_rgb, 0, False, 45.0)
+
+    np.testing.assert_array_equal(rotated_rgb[0, 0], fill_code)
+    np.testing.assert_array_equal(NORMALIZED_DISPLAY_LUT[rotated_rgb[0, 0]], 0)
 
 
 def test_apply_edits_zero_fine_angle_changes_nothing():
