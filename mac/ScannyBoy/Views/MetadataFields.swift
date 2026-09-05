@@ -206,39 +206,66 @@ struct TypeaheadField: View {
 /// that re-sync cannot loop back into another commit.
 struct CommitDatePicker: View {
     let title: String
-    /// The date the field displays, as `YYYY-MM-DD`; `nil` shows a
-    /// disabled picker plus a hint (there is no DatePicker placeholder).
+    /// The date the field displays, as `YYYY-MM-DD`; `nil` leaves the
+    /// picker empty rather than showing today's date.
     let committedValue: String?
     let onCommit: (String?) -> Void
 
-    @State private var date: Date
+    @State private var workingDate: Date
+    @State private var isChoosingDate = false
 
     init(title: String, committedValue: String?, onCommit: @escaping (String?) -> Void) {
         self.title = title
         self.committedValue = committedValue
         self.onCommit = onCommit
-        _date = State(
-            initialValue: MetadataDate.date(fromISO: committedValue)
-                ?? Date.now
+        _workingDate = State(
+            initialValue: MetadataDate.date(fromISO: committedValue) ?? Date.now
         )
     }
 
     var body: some View {
         HStack {
-            DatePicker(
-                title,
-                selection: $date,
-                displayedComponents: MetadataDate.displayedComponents
-            )
-            .onChange(of: date) { _, newDate in
-                let iso = MetadataDate.isoString(from: newDate)
-                if iso != committedValue {
-                    onCommit(iso)
-                }
-            }
             if committedValue != nil {
+                DatePicker(
+                    title,
+                    selection: Binding(
+                        get: { workingDate },
+                        set: { newDate in
+                            workingDate = newDate
+                            onCommit(MetadataDate.isoString(from: newDate))
+                        }
+                    ),
+                    displayedComponents: MetadataDate.displayedComponents
+                )
                 Button("Clear") { onCommit(nil) }
                     .help("Clear this date")
+            } else {
+                Text(title)
+                Text("—")
+                    .foregroundStyle(.tertiary)
+                Button("", systemImage: "calendar") {
+                    isChoosingDate = true
+                }
+                .buttonStyle(.borderless)
+                .help("Set date")
+                .popover(isPresented: $isChoosingDate) {
+                    DatePicker(
+                        title,
+                        selection: $workingDate,
+                        displayedComponents: MetadataDate.displayedComponents
+                    )
+                    .datePickerStyle(.graphical)
+                    .onChange(of: workingDate) { _, newDate in
+                        onCommit(MetadataDate.isoString(from: newDate))
+                        isChoosingDate = false
+                    }
+                    .padding()
+                }
+            }
+        }
+        .onChange(of: committedValue) { _, newValue in
+            if let parsed = MetadataDate.date(fromISO: newValue) {
+                workingDate = parsed
             }
         }
     }

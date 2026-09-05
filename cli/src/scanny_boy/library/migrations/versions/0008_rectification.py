@@ -6,8 +6,8 @@ is no data migration. `negatives.rectification` records the fitted rig-tilt
 correction the stitch stage applied, beside the per-negative
 `normalization` record it mirrors.
 
-Revision ID: 0007
-Revises: 0006
+Revision ID: 0008
+Revises: 0007
 Create Date: 2026-09-05
 
 """
@@ -17,8 +17,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007"
-down_revision = "0006"
+revision = "0008"
+down_revision = "0007"
 branch_labels = None
 depends_on = None
 

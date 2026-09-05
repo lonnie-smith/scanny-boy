@@ -81,13 +81,6 @@ SCENE_CLEAN_FRACTION = 0.01
 # The seeded angle is rounded to this many degrees.
 ANGLE_PRECISION_DEG = 0.01
 
-_FILL_CODE = int(
-    encode_normalized(
-        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
-    )[0, 0, 0]
-)
-
-
 def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
     """Rotate `image` clockwise by `angle_deg` about its center, keeping
     its dimensions, and fill the pixels the rotation uncovers with the
@@ -107,13 +100,21 @@ def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
     matrix = cv2.getRotationMatrix2D(
         (width / 2.0, height / 2.0), -angle_deg, 1.0
     )
+    channel_count = 1 if image.ndim == 2 else image.shape[-1]
+    fill_codes = encode_normalized(
+        np.full((1, 1, channel_count), NORMALIZED_FILL, dtype=np.float32)
+    )[0, 0]
+    if channel_count == 1:
+        border_value = int(np.asarray(fill_codes).ravel()[0])
+    else:
+        border_value = tuple(int(code) for code in fill_codes)
     return cv2.warpAffine(
         image,
         matrix,
         (width, height),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=_FILL_CODE,
+        borderValue=border_value,
     )
 
 

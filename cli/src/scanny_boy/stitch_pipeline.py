@@ -41,6 +41,7 @@ from scanny_boy import (
     registration,
     tiff_exif,
 )
+from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
 from scanny_boy.cancellation import CancellationToken, CancelledError
@@ -146,6 +147,7 @@ from scanny_boy.roll_manifest import (
     merge_sources,
     write_roll_manifest,
 )
+from scanny_boy.selection import GridSpec
 from scanny_boy.stitched_tiff import stitched_image_description, write_stitched_tiff
 from scanny_boy.tiff_writer import BaseTiffTags, software_tag_value
 
@@ -250,6 +252,16 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "gain_drift_warn": GAIN_DRIFT_WARN,
         "max_global_rms_px": MAX_GLOBAL_RMS_PX,
         "strip_spread_ratio": STRIP_SPREAD_RATIO,
+        # docs/GRID_STITCH_PLAN.md sections 2.4 and 4.2: the grid
+        # regularity gates, landed here so `_stitch_params` lands once.
+        # Unmeasured starting values, pending a user gate (layout.py's
+        # comment).
+        "grid_pitch_ratio_min": layout_module.GRID_PITCH_RATIO_MIN,
+        "grid_alignment_ratio_max": layout_module.GRID_ALIGNMENT_RATIO_MAX,
+        # docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1: the separable
+        # (grid) feather's floor as a fraction of full weight, likewise
+        # unmeasured. Unused until Chunk G-4 wires the two-axis path up.
+        "feather_floor_fraction": composite_module._FEATHER_FLOOR_FRACTION,
         # docs/STITCH_QUALITY_PLAN.md section 2.4: distinguishes a manifest
         # written before this change (implicitly rigid, scale forced to 1)
         # from one written after, without consulting the build.
@@ -505,6 +517,7 @@ def _solve_negative(
     work_dir: Path,
     entry: _SolvedNegative,
     *,
+    grid: GridSpec | None,
     workers: int,
     cancel: CancellationToken,
     progress: _StitchProgress,
@@ -532,6 +545,7 @@ def _solve_negative(
             entry,
             paths,
             frame_size,
+            grid=grid,
             use_clahe=USE_CLAHE,
             workers=workers,
             cancel=cancel,
@@ -554,6 +568,7 @@ def _solve_negative(
             entry,
             paths,
             frame_size,
+            grid=grid,
             use_clahe=True,
             workers=workers,
             cancel=cancel,
@@ -564,12 +579,36 @@ def _solve_negative(
         )
 
 
+def _serpentine_cell(index: int, cols: int) -> tuple[int, int]:
+    """The serpentine cell for member `index`: start at cell (0, 0),
+    traverse the across dimension, reverse direction each row (§4.4)."""
+    row, order_col = divmod(index, cols)
+    return row, (order_col if row % 2 == 0 else cols - 1 - order_col)
+
+
+def _serpentine_mismatches(
+    members: list[str], grid: GridSpec, cells: dict[str, tuple[int, int]]
+) -> str:
+    """The members whose solved cell disagrees with the serpentine
+    expectation, formatted for a warning message. Cells are keyed by
+    intermediate names, members by source names, so the member is mapped
+    through the same rule `_intermediate_paths` uses."""
+    unexpected = []
+    for index, member in enumerate(members):
+        expected = _serpentine_cell(index, grid.across)
+        solved = cells.get(_intermediate_name(member))
+        if solved is not None and solved != expected:
+            unexpected.append(f"{member} -> cell {solved}")
+    return ", ".join(unexpected)
+
+
 def _attempt_solve(
     group: GroupRecord,
     entry: _SolvedNegative,
     paths: list[Path],
     frame_size: tuple[int, int],
     *,
+    grid: GridSpec | None,
     use_clahe: bool,
     workers: int,
     cancel: CancellationToken,
@@ -658,7 +697,16 @@ def _attempt_solve(
             )
 
     names = [path.name for path in paths]
-    layout = solve_layout(names, frame_size, pairs, rectification)
+    layout = solve_layout(names, frame_size, pairs, rectification, grid=grid)
+    # §4.4: the solved assignment and the regularity measures are recorded
+    # per negative regardless of the order warning's outcome.
+    entry.record.grid_cells = (
+        {name: list(cell) for name, cell in layout.cells.items()}
+        if layout.cells is not None
+        else None
+    )
+    entry.record.grid_pitch_ratio = layout.grid_pitch_ratio
+    entry.record.grid_alignment_ratio = layout.grid_alignment_ratio
     if progress is not None:
         progress.advance(source_index, PipelineStep.SOLVE)
     cancel.raise_if_cancelled()
@@ -670,7 +718,9 @@ def _attempt_solve(
             f"{MAX_GLOBAL_RMS_PX}px",
         )
 
-    if layout.strip_spread_ratio > STRIP_SPREAD_RATIO:
+    if layout.strip_spread_ratio > STRIP_SPREAD_RATIO and (
+        grid is None or grid.is_strip
+    ):
         on_warning(
             Code.STITCH_LAYOUT_UNEXPECTED,
             f"{group.group_id}: solved layout is not strip-shaped "
@@ -678,12 +728,79 @@ def _attempt_solve(
             f"{STRIP_SPREAD_RATIO})",
         )
 
+    if grid is not None and not grid.is_strip:
+        # The spread ratio is the wrong question for a grid; the cell
+        # assignment and regularity checks are the structural gate instead
+        # (docs/GRID_STITCH_PLAN.md section 3.2).
+        if layout.cells is None:
+            on_warning(
+                Code.STITCH_LAYOUT_UNEXPECTED,
+                f"{group.group_id}: the solved layout does not match the "
+                f"declared {grid.across}x{grid.down} grid — a frame has "
+                "drifted into a neighbouring cell's position; the negative "
+                "was blended with the isotropic distance transform, which "
+                "collapses overlaps at the canvas borders to 50/50 and "
+                "smeares misregistration into a curve",
+            )
+        else:
+            worst_pitch = layout.grid_pitch_ratio
+            worst_alignment = layout.grid_alignment_ratio
+            problems = []
+            if (
+                worst_pitch is not None
+                and worst_pitch < layout_module.GRID_PITCH_RATIO_MIN
+            ):
+                problems.append(
+                    f"cell pitch varies by a factor of {worst_pitch:.3f} "
+                    f"(below {layout_module.GRID_PITCH_RATIO_MIN})"
+                )
+            if (
+                worst_alignment is not None
+                and worst_alignment > layout_module.GRID_ALIGNMENT_RATIO_MAX
+            ):
+                problems.append(
+                    f"rows and columns are out of alignment by "
+                    f"{worst_alignment:.3f} of a cell (above "
+                    f"{layout_module.GRID_ALIGNMENT_RATIO_MAX})"
+                )
+            if problems:
+                on_warning(
+                    Code.STITCH_LAYOUT_UNEXPECTED,
+                    f"{group.group_id}: the solved layout is not a regular "
+                    f"{grid.across}x{grid.down} grid: " + "; ".join(problems),
+                )
+
+            # §4.4's order warning: serpentine capture order is a documented
+            # assumption used only for this warning — the solved assignment
+            # always wins.
+            unexpected = _serpentine_mismatches(group.members, grid, layout.cells)
+            if unexpected:
+                on_warning(
+                    Code.STITCH_GRID_ORDER_UNEXPECTED,
+                    f"{group.group_id}: capture order is not the serpentine "
+                    f"traversal of the declared {grid.across}x{grid.down} "
+                    "grid; the solved geometry wins, but these frames landed "
+                    f"elsewhere than their order implies: {unexpected}",
+                )
+
     check_output_size(layout.canvas_size, on_warning=on_warning)
+    # `estimate_peak_bytes`'s `frame_bbox_size` is the per-frame bounding box
+    # `composite` actually allocates one of per frame — not the canvas. The
+    # per-axis max across frames keeps it an upper bound on every frame's
+    # box, which is what the `frame_count ×` multiplier assumes (docs/
+    # GRID_STITCH_PLAN.md section 1a).
+    boxes = [
+        composite_module.frame_bbox(
+            placement.matrix(), frame_size[0], frame_size[1], layout.canvas_size
+        )
+        for placement in layout.placements
+    ]
+    frame_bbox_size = (max(b[3] for b in boxes), max(b[2] for b in boxes))
     check_memory_budget(
         estimate_peak_bytes(
             layout.canvas_size,
             frame_size,
-            (layout.canvas_size[1], layout.canvas_size[0]),
+            frame_bbox_size,
             len(paths),
             geometry=geometry is not None,
             ca_maps=ca_maps is not None,
@@ -1066,6 +1183,7 @@ def run_stitch(
             layout, frame_size, ca_maps = _solve_negative(
                 work_dir,
                 entry,
+                grid=work_manifest.grid_spec,
                 workers=workers,
                 cancel=cancel,
                 progress=progress,
@@ -1313,6 +1431,7 @@ def _append_this_run(
     next_index = 1
     for group in groups:
         covered = _covered_negatives(roll, group.members)
+        grid_dict = work_manifest.grid_spec.to_dict()
         if covered:
             adopted = _pick_adopted(covered, group.members[0])
             adopted.run_id = run_id
@@ -1321,6 +1440,10 @@ def _append_this_run(
             adopted.used_clahe_fallback = False
             adopted.error_code = None
             adopted.error_message = None
+            adopted.grid = grid_dict
+            adopted.grid_cells = None
+            adopted.grid_pitch_ratio = None
+            adopted.grid_alignment_ratio = None
             records[group.group_id] = adopted
             removals[group.group_id] = [n for n in covered if n is not adopted]
         else:
@@ -1334,6 +1457,7 @@ def _append_this_run(
                     roll, group.members[0], negative_id
                 ),
                 fill_color=FILL_COLOR,
+                grid=grid_dict,
             )
             roll.negatives.append(record)
             records[group.group_id] = record

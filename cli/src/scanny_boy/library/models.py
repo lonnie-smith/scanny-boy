@@ -174,6 +174,12 @@ class NegativeRow(Base):
     # Set by the preview generator once a small preview of the published
     # TIFF exists; null until then.
     preview_path: Mapped[str | None] = mapped_column(Text)
+    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 2.4 and 4);
+    # null/None for pre-grid rows and for failed assignments.
+    grid: Mapped[dict | None] = mapped_column(JSONText)
+    grid_cells: Mapped[dict | None] = mapped_column(JSONText)
+    grid_pitch_ratio: Mapped[float | None] = mapped_column(SQLFloat)
+    grid_alignment_ratio: Mapped[float | None] = mapped_column(SQLFloat)
 
 
 class MetadataValueRow(Base):

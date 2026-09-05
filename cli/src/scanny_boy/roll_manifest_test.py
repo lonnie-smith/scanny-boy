@@ -676,3 +676,48 @@ def test_check_roll_invariants_still_rejects_other_processing_param_changes():
                 }
             ),
         )
+
+
+# --- grid fields (docs/GRID_STITCH_PLAN.md sections 2.4 and 4) -------------
+
+
+def test_grid_fields_round_trip_through_the_library(tmp_path):
+    """The declared grid, the solved cell assignment, and both regularity
+    measures survive a save/load cycle and validate against the schema."""
+    manifest = _manifest(
+        negatives=[
+            _negative(
+                status="completed",
+                grid={"across": 5, "down": 2},
+                grid_cells={"_DSC4638.NEF": [0, 0], "_DSC4639.NEF": [0, 1]},
+                grid_pitch_ratio=0.94,
+                grid_alignment_ratio=0.03,
+            )
+        ]
+    )
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+
+    negative = loaded.negatives[0]
+    assert negative.grid == {"across": 5, "down": 2}
+    assert negative.grid_cells == {"_DSC4638.NEF": [0, 0], "_DSC4639.NEF": [0, 1]}
+    assert negative.grid_pitch_ratio == pytest.approx(0.94)
+    assert negative.grid_alignment_ratio == pytest.approx(0.03)
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_pre_grid_negative_reads_back_with_null_grid_fields(tmp_path):
+    """A negative written by a pre-grid build carries four nulls, and the
+    schema still accepts it."""
+    manifest = _manifest()
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+
+    negative = loaded.negatives[0]
+    assert negative.grid is None
+    assert negative.grid_cells is None
+    assert negative.grid_pitch_ratio is None
+    assert negative.grid_alignment_ratio is None
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())

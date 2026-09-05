@@ -3,7 +3,7 @@ import Observation
 
 /// Configuration state for one prospective run against a selected roll:
 /// input folder and catalogue, the user's contiguous selection, the batch's
-/// scans-per-negative, and the roll it targets.
+/// grid (`across` x `down`), and the roll it targets.
 ///
 /// Phase 3 section 3.10: "Add Scans is Phase 2's `ContentView` with the
 /// output-folder section and the film-date field deleted, the
@@ -12,8 +12,9 @@ import Observation
 /// output-folder picker any more — every run targets whichever roll is
 /// selected in the sidebar (`rollURL`). The roll no longer owns
 /// `shots_per_negative` at all: the grouping is each stitch batch's own
-/// choice (`perNegative`), required before a run can start, so one roll can
-/// hold negatives stitched from different scan counts.
+/// choice (`across` x `down`), required before a run can start, so one roll
+/// can hold negatives stitched from different scan counts. A strip is the
+/// `down == 1` case (docs/GRID_STITCH_PLAN.md section 2.5).
 ///
 /// Swift never sorts files itself and never re-implements the CLI's
 /// selection, grouping, or roll-invariant rules (section 3.2's vocabulary,
@@ -87,15 +88,46 @@ final class ConfigurationModel {
 
     // MARK: - The batch's grouping
 
-    /// Scans stitched into each negative — this batch's own choice, not the
-    /// roll's. `nil` until the user picks one on the Add Scans stage; the
-    /// Stitch button stays disabled until then. Changing it re-validates the
-    /// selection, since grouping and divisibility depend on it.
-    var perNegative: Int? {
+    /// The grid the batch was scanned in (protocol 10's `--grid AxD`):
+    /// `across` runs left-to-right in capture space, `down` top-to-bottom.
+    /// `across` is `nil` until the user picks one on the Add Scans stage —
+    /// that is the "not chosen yet" state, and it gates `runEnabled`.
+    /// Changing either stored dimension re-validates the selection, since
+    /// grouping and divisibility depend on the product.
+    var across: Int? {
         didSet {
-            guard perNegative != oldValue else { return }
-            scheduleValidation()
+            guard across != oldValue else { return }
+            revalidateSelection()
         }
+    }
+
+    /// Defaults to 1 and is not optional: a plain strip run needs one
+    /// selection (Across), not two. `down == 1` keeps the CLI command a
+    /// `--per-negative` run, byte-identical to a pre-grid command line.
+    var down: Int = 1 {
+        didSet {
+            guard down != oldValue else { return }
+            // The product must stay within MAX_PER_NEGATIVE (12) and
+            // min(across, down) <= 2; with down capped at 2 that reduces
+            // to clamping Across to 12 / down.
+            if let across, across * down > Self.maxPerNegative {
+                self.across = Self.maxPerNegative / down
+            }
+            revalidateSelection()
+        }
+    }
+
+    /// Scans stitched into each negative — the product the grouping
+    /// preview uses. Computed from the stored grid dimensions; `nil` until
+    /// Across is chosen.
+    var perNegative: Int? {
+        across.map { $0 * down }
+    }
+
+    static let maxPerNegative = 12
+
+    private func revalidateSelection() {
+        scheduleValidation()
     }
 
     // MARK: - Flat field
@@ -194,7 +226,7 @@ final class ConfigurationModel {
     /// as `--flatfield`, freely chosen for this run — the roll does not
     /// lock to one.
     func runCommand() -> CLICommand? {
-        guard runEnabled, let inputFolder, let rollURL, let perNegative,
+        guard runEnabled, let inputFolder, let rollURL, let across,
             let flatFieldProfileID
         else {
             return nil
@@ -203,7 +235,8 @@ final class ConfigurationModel {
             input: inputFolder,
             files: selectedFilesInCanonicalOrder,
             roll: rollURL,
-            perNegative: perNegative,
+            across: across,
+            down: down,
             skipSources: [],
             flatfield: flatFieldProfileID
         )
@@ -248,8 +281,8 @@ final class ConfigurationModel {
         }
 
         // Grouping and divisibility are per-batch: without a chosen
-        // scans-per-negative there is nothing to validate against yet.
-        guard let perNegative else {
+        // grid width there is nothing to validate against yet.
+        guard let across else {
             groups = []
             selectionWarnings = []
             selectionError = nil
@@ -261,6 +294,7 @@ final class ConfigurationModel {
         let rollURL = rollURL
         let files = selectedFilesInCanonicalOrder
         let flatFieldProfileID = flatFieldProfileID
+        let down = down
 
         isValidating = true
         validationTask = Task { [weak self, runner] in
@@ -272,7 +306,8 @@ final class ConfigurationModel {
                     input: inputFolder,
                     files: files,
                     roll: rollURL,
-                    perNegative: perNegative,
+                    across: across,
+                    down: down,
                     flatfield: flatFieldProfileID
                 )
             )

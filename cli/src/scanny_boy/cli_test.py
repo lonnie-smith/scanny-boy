@@ -1301,13 +1301,14 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
 
     assert status == -signal.SIGKILL
 
-    # The forced stop left exactly the wreckage section 3.8 predicts.
+    # The forced stop left exactly the wreckage section 3.8 predicts. With
+    # jobs=2 the run-wide pool stages every group up front, so one staging
+    # directory per negative of the abandoned run remains.
     abandoned = load_manifest(out_dir)
     assert abandoned.status == "running"
     assert abandoned.finished_at is None
     staging = [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)]
-    assert len(staging) == 1
-    assert staging[0].name.startswith(abandoned.run_id)
+    assert len(staging) == len(abandoned.groups)
 
     # The next run cleans it up and completes the incomplete group.
     status = main(_convert_argv(input_dir, out_dir, REAL_SAMPLE_FILES))
@@ -1484,3 +1485,106 @@ def test_flatfield_create_list_and_delete_round_trip(capsys):
     assert status == 0
     events, _err = _stdout_events(capsys)
     assert events[1]["profile_id"] == profile["profile_id"]
+
+
+# --- --grid (docs/GRID_STITCH_PLAN.md sections 2.2 and 2.7) ----------------
+
+
+@requires_real_samples
+def test_probe_with_grid_emits_the_implied_count_groups(capsys, tmp_path):
+    """`--grid 3x2` groups by the implied count `across * down`, exactly as
+    `--per-negative 6` would."""
+    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
+    status = main(
+        [
+            "probe",
+            "--input",
+            str(input_dir),
+            "--files",
+            *REAL_SAMPLE_FILES,
+            "--grid",
+            "3x2",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "probe_result", "finished"]
+    assert events[1]["groups"] == [
+        ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF",
+         "_DSC4644.NEF", "_DSC4645.NEF", "_DSC4646.NEF"],
+    ]
+
+
+def test_grid_and_per_negative_are_mutually_exclusive(capsys):
+    status = main(
+        [
+            "prepare", "--input", "/tmp/in", "--files", "a.NEF",
+            "--out", "/tmp/out", "--grid", "3x2", "--per-negative", "6",
+        ]
+    )
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "mutually exclusive" in err
+
+
+@pytest.mark.parametrize("command", ["prepare", "run"])
+def test_omitting_both_grid_and_per_negative_is_a_usage_error(capsys, command):
+    """The changed failure mode: argparse used to demand --per-negative by
+    name; now the exactly-one-of check names both flags."""
+    argv = [command, "--input", "/tmp/in", "--files", "a.NEF"]
+    if command == "prepare":
+        argv += ["--out", "/tmp/out"]
+    else:
+        argv += ["--roll", "/tmp/roll"]
+    status = main(argv)
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "--grid" in err and "--per-negative" in err
+
+
+def test_malformed_grid_is_a_usage_error(capsys):
+    status = main(
+        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
+         "/tmp/out", "--grid", "3z2"]
+    )
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "AxD" in err
+
+
+def test_grid_3x3_is_invalid_grid_with_the_rebate_rule(capsys):
+    status = main(
+        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
+         "/tmp/out", "--grid", "3x3"]
+    )
+    assert status == 2
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["error", "finished"]
+    assert events[0]["code"] == "INVALID_GRID"
+    assert "rebate" in events[0]["message"]
+
+
+def test_grid_above_the_count_cap_is_invalid_grid(capsys):
+    status = main(
+        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
+         "/tmp/out", "--grid", "13x1"]
+    )
+    assert status == 2
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["error", "finished"]
+    assert events[0]["code"] == "INVALID_GRID"
+    assert "12" in events[0]["message"]
+
+
+def test_grid_2x5_is_a_legal_shape(capsys, tmp_path):
+    """`2x5` is legal and CLI-only (the UI caps Down at 2): it must pass
+    `validate_grid` and fail later, on the catalogue, rather than with
+    INVALID_GRID."""
+    status = main(["probe", "--input", str(tmp_path), "--grid", "2x5"])
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "NO_FILES"

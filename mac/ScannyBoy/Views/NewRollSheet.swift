@@ -43,6 +43,23 @@ struct NewRollSheet: View {
         }
         .padding(20)
         .frame(minWidth: 360)
+        .onAppear {
+            name = Self.defaultName()
+        }
+    }
+
+    /// A locale-aware timestamp for the default roll name, e.g. "Aug 12,
+    /// 2026, 3:34 PM" in US English.
+    nonisolated static func defaultName(at date: Date = .now, locale: Locale = .current) -> String {
+        date.formatted(
+            .dateTime
+                .month(.abbreviated)
+                .day()
+                .year()
+                .hour()
+                .minute()
+                .locale(locale)
+        )
     }
 
     private var isReady: Bool {

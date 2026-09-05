@@ -82,8 +82,32 @@ struct MetadataStageView: View {
                         style: .error
                     )
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .frame(maxHeight: 240)
+    }
+
+    @ViewBuilder
+    private func rollFields(_ roll: RollManifest) -> some View {
+        Text("Roll metadata")
+            .font(.headline)
+
+        HStack(alignment: .top, spacing: 32) {
+            VStack(alignment: .leading, spacing: 10) {
+                rollField("Name") {
+                    CommitTextField(
+                        title: "Name",
+                        committedValue: roll.rollName,
+                        prompt: "Roll name"
+                    ) { newName in
+                        commitRename(roll, to: newName)
+                    }
+                    .frame(maxWidth: 280)
+                }
                 if let rollURL = edit.rollURL {
-                    LabeledContent("Folder") {
+                    rollField("Folder") {
                         HStack {
                             Text(rollURL.path)
                                 .font(.caption)
@@ -96,43 +120,31 @@ struct MetadataStageView: View {
                         }
                     }
                 }
+                rollField("Capture date") {
+                    CommitDatePicker(
+                        title: "Capture date",
+                        committedValue: roll.metadata.rollCaptureDate
+                    ) { date in
+                        Task { await edit.setRollCaptureDate(date) }
+                    }
+                }
             }
-            .padding()
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(EditModel.catalogedFields, id: \.self) { field in
+                    rollField(fieldLabel(field)) {
+                        TypeaheadField(
+                            title: fieldLabel(field),
+                            committedValue: roll.metadata[field],
+                            suggestions: edit.catalog[field] ?? []
+                        ) { value in
+                            Task { await edit.setRollField(field, to: value) }
+                        }
+                        .frame(maxWidth: 280)
+                    }
+                }
+            }
         }
-        .frame(maxHeight: 340)
-    }
 
-    @ViewBuilder
-    private func rollFields(_ roll: RollManifest) -> some View {
-        LabeledContent("Name") {
-            CommitTextField(
-                title: "Name",
-                committedValue: roll.rollName,
-                prompt: "Roll name"
-            ) { newName in
-                commitRename(roll, to: newName)
-            }
-            .frame(maxWidth: 280)
-        }
-        LabeledContent("Capture date") {
-            CommitDatePicker(
-                title: "Capture date",
-                committedValue: roll.metadata.rollCaptureDate
-            ) { date in
-                Task { await edit.setRollCaptureDate(date) }
-            }
-        }
-        rollTypeaheadFields(roll)
-        LabeledContent("Caption") {
-            CommitTextField(
-                title: "Caption",
-                committedValue: roll.metadata.caption,
-                prompt: "Roll caption"
-            ) { value in
-                Task { await edit.setRollField("caption", to: value) }
-            }
-            .frame(maxWidth: 280)
-        }
         Text(
             "Roll-level values apply to every image without its own value. "
                 + "Images keep any value set individually."
@@ -141,19 +153,12 @@ struct MetadataStageView: View {
         .foregroundStyle(.secondary)
     }
 
-    @ViewBuilder
-    private func rollTypeaheadFields(_ roll: RollManifest) -> some View {
-        ForEach(EditModel.catalogedFields, id: \.self) { field in
-            LabeledContent(fieldLabel(field)) {
-                TypeaheadField(
-                    title: fieldLabel(field),
-                    committedValue: roll.metadata[field],
-                    suggestions: edit.catalog[field] ?? []
-                ) { value in
-                    Task { await edit.setRollField(field, to: value) }
-                }
-                .frame(maxWidth: 280)
-            }
+    private func rollField(_ label: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            content()
         }
     }
 
@@ -181,17 +186,9 @@ struct MetadataStageView: View {
     private var browserSection: some View {
         if let negative = edit.selectedNegative {
             HStack(spacing: 0) {
-                VStack(spacing: 8) {
-                    PreviewImageView(negative: negative)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Text(infoLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                PreviewImageView(negative: negative)
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
                 imageMetadataForm
                     .frame(width: 340)
@@ -206,13 +203,13 @@ struct MetadataStageView: View {
         }
     }
 
-    private var infoLine: String {
-        var parts = [edit.selectedNegative?.expectedOutput ?? ""]
+    private var filenameHeader: String {
+        edit.selectedNegative?.expectedOutput ?? ""
+    }
+
+    private var selectionCaption: String? {
         let count = edit.selectionTargets.count
-        if count > 1 {
-            parts.append("\(count) selected")
-        }
-        return parts.joined(separator: "  ·  ")
+        return count > 1 ? "\(count) selected" : nil
     }
 
     /// The per-image metadata fields, acting on the whole selection when
@@ -223,6 +220,17 @@ struct MetadataStageView: View {
     private var imageMetadataForm: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(filenameHeader)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let selectionCaption {
+                        Text(selectionCaption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 negativeCaptureDateField
                 Divider()
                 ForEach(RollManifest.metadataFields, id: \.self) { field in
@@ -254,9 +262,11 @@ struct MetadataStageView: View {
                 Task { await edit.setNegativeCaptureDate(targets, to: date) }
             }
             .disabled(targets.isEmpty)
-            Text(captureDateCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let caption = captureDateCaption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -268,7 +278,7 @@ struct MetadataStageView: View {
         return distinct.count == 1 ? overrides.first ?? nil : nil
     }
 
-    private var captureDateCaption: String {
+    private var captureDateCaption: String? {
         let rollDate = edit.roll?.metadata.rollCaptureDate
         if targets.isEmpty {
             return "No image selected."
@@ -278,7 +288,7 @@ struct MetadataStageView: View {
             return "Following the roll date (\(rollDate))."
         }
         if overrides.contains(nil), overrides.count == 1 {
-            return "No capture date set."
+            return nil
         }
         return overrides.count == 1
             ? "Override set for \(targets.count) image(s)."

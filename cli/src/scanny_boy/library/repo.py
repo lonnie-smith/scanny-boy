@@ -234,6 +234,10 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     error_message=negative.error_message,
                     capture_time=negative.capture_time.to_dict(),
                     preview_path=negative.preview_path,
+                    grid=negative.grid,
+                    grid_cells=negative.grid_cells,
+                    grid_pitch_ratio=negative.grid_pitch_ratio,
+                    grid_alignment_ratio=negative.grid_alignment_ratio,
                     **{
                         field: getattr(negative.metadata, field)
                         for field in METADATA_FIELDS
@@ -439,6 +443,10 @@ def load_roll(roll_dir: Path) -> RollManifest:
                         **{field: getattr(n, field) for field in METADATA_FIELDS}
                     ),
                     preview_path=n.preview_path,
+                    grid=n.grid,
+                    grid_cells=n.grid_cells,
+                    grid_pitch_ratio=n.grid_pitch_ratio,
+                    grid_alignment_ratio=n.grid_alignment_ratio,
                 )
                 for n in negatives
             ],

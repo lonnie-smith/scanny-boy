@@ -30,6 +30,7 @@ from scanny_boy.pipeline import (
     run_convert,
 )
 from scanny_boy.registration import StitchError
+from scanny_boy.selection import GridSpec
 from scanny_boy.stitch_pipeline import EmitFn, StitchOutcome, run_stitch
 
 # Section 3.12.1's table 7: 0.57s detect + 0.50s warp is 1.07s of per-frame
@@ -117,6 +118,7 @@ def run_full(
     emit: EmitFn,
     flatfield_profile_id: str | None = None,
     auto_rotate: bool = True,
+    grid: GridSpec | None = None,
 ) -> RunOutcome:
     """Convert `files` into a work directory, then stitch it into `out_dir`
     (a roll).
@@ -176,6 +178,7 @@ def run_full(
                 completed_offset=0,
                 total_override=combined_total,
                 flatfield_profile_id=flatfield_profile_id,
+                grid=grid,
             )
         except ConvertFailure as exc:
             raise RunFailure(exc.code, exc.message) from exc

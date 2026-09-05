@@ -272,6 +272,14 @@ class NegativeRecord:
     # the negative's edits applied so far; set by `previews.py`, consumed
     # by the app's Edit tab. Null until first generated.
     preview_path: str | None = None
+    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 2.4 and 4).
+    # All four are null for a negative written by a pre-grid build, and
+    # for one whose cell assignment failed (`grid_cells` then carries no
+    # solved map, and the pitch/alignment ratios nothing to measure).
+    grid: dict[str, int] | None = None  # {"across": A, "down": D} as declared
+    grid_cells: dict[str, list[int]] | None = None  # member name -> [row, col], solved
+    grid_pitch_ratio: float | None = None  # §4.2(a); null when unmeasurable
+    grid_alignment_ratio: float | None = None  # §4.2(b)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -302,6 +310,10 @@ class NegativeRecord:
             "capture_time": self.capture_time.to_dict(),
             "metadata": self.metadata.to_dict(),
             "preview_path": self.preview_path,
+            "grid": self.grid,
+            "grid_cells": self.grid_cells,
+            "grid_pitch_ratio": self.grid_pitch_ratio,
+            "grid_alignment_ratio": self.grid_alignment_ratio,
         }
 
 

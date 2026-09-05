@@ -146,7 +146,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
 
         #expect(model.groups == [
@@ -181,7 +181,7 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.perNegative = 3
+        model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
@@ -225,7 +225,7 @@ struct ConfigurationModelTests {
         #expect(model.rollError == nil)
         #expect(model.runEnabled == false)
 
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
         #expect(model.runEnabled == false)
 
@@ -262,7 +262,7 @@ struct ConfigurationModelTests {
         #expect(model.groups.isEmpty)
         #expect(model.isProbing == false)
 
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
 
         #expect(model.groups == [
@@ -293,7 +293,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
-        model.perNegative = 3
+        model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         await model.waitForPendingProbes()
 
@@ -325,7 +325,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
@@ -365,7 +365,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
@@ -407,7 +407,7 @@ struct ConfigurationModelTests {
 
         #expect(model.flatFieldProfileID == "pid-mine")
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.perNegative = 3
+        model.across = 3
         await model.waitForPendingProbes()
         #expect(model.runEnabled == true)
     }
@@ -458,7 +458,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.perNegative = 3
+        model.across = 3
         model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
 
@@ -492,5 +492,47 @@ struct ConfigurationModelTests {
 
         #expect(second.inputFolder?.standardizedFileURL == directory.standardizedFileURL)
         #expect(second.catalogue == ["a.NEF", "b.NEF", "c.NEF"])
+    }
+
+    // MARK: - Grid dimensions (protocol 10, docs/GRID_STITCH_PLAN.md 2.5)
+
+    @Test("down defaults to 1 and perNegative is computed from across x down")
+    func downDefaultsToOne() {
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: Bundle.main.bundleURL), defaults: Self.isolatedDefaults()
+        )
+        #expect(model.down == 1)
+        #expect(model.across == nil)
+        #expect(model.perNegative == nil)
+
+        model.across = 3
+        #expect(model.perNegative == 3)
+
+        model.down = 2
+        #expect(model.perNegative == 6)
+    }
+
+    @Test("runEnabled stays off until across is chosen, at any down")
+    func runEnabledGatesOnAcross() {
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: Bundle.main.bundleURL), defaults: Self.isolatedDefaults()
+        )
+        #expect(model.runEnabled == false)
+        model.down = 2
+        #expect(model.runEnabled == false)
+        model.across = 3
+        #expect(model.perNegative == 6)
+    }
+
+    @Test("choosing down clamps across so the product stays within 12")
+    func downClampsAcross() {
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: Bundle.main.bundleURL), defaults: Self.isolatedDefaults()
+        )
+        model.across = 12
+        #expect(model.perNegative == 12)
+        model.down = 2
+        #expect(model.across == 6)
+        #expect(model.perNegative == 12)
     }
 }

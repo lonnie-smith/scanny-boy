@@ -75,6 +75,7 @@ from scanny_boy.roll_manifest import (
     RollInvariants,
 )
 from scanny_boy.selection import (
+    GridSpec,
     SelectionUsageError,
     group,
     is_contiguous,
@@ -128,6 +129,7 @@ def _preview_output_folder(
     per_negative: int,
     settings_list: list[SourceSettings],
     out_dir: Path,
+    grid: GridSpec | None = None,
 ) -> _OutputPreview:
     """`probe --out`'s output-folder validation and overwrite-conflict
     preview (section 4.1). Raises `ProbeFailure` for anything that would
@@ -159,6 +161,7 @@ def _preview_output_folder(
             shots_per_negative=per_negative,
             groups=[(g.group_id, g.members) for g in group_records],
             icc_sha256=profile_record(ProfileKind.LINEAR)["sha256"],
+            grid=grid.to_dict() if grid is not None else None,
         )
     except (OutputFolderError, BadManifestError, ManifestMismatchError) as exc:
         raise ProbeFailure(exc.code, exc.message) from exc
@@ -179,6 +182,7 @@ def _preview_output_folder(
         groups=group_records,
         started_at=_PREVIEW_TIMESTAMP,
         finished_at=None,
+        grid=grid.to_dict() if grid is not None else None,
     )
 
     missing_output_count = sum(
@@ -295,6 +299,7 @@ def run_probe(
     roll_dir: Path | None = None,
     flatfield_profile_id: str | None = None,
     on_warning: OnWarning = lambda code, message: None,
+    grid: GridSpec | None = None,
 ) -> ProbeOutcome:
     try:
         names = discover_catalogue(input_dir)
@@ -413,7 +418,7 @@ def run_probe(
     preview = None
     if out_dir is not None:
         preview = _preview_output_folder(
-            input_dir, selection.names, per_negative, settings_list, out_dir
+            input_dir, selection.names, per_negative, settings_list, out_dir, grid
         )
 
     roll_overlap: list[RollOverlapEntry] = []

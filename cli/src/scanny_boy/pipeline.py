@@ -119,6 +119,7 @@ from scanny_boy.output_folder import (
     validate_writable,
 )
 from scanny_boy.selection import (
+    GridSpec,
     SelectionUsageError,
     is_contiguous,
     nearest_valid_counts,
@@ -688,6 +689,7 @@ def run_convert(
     completed_offset: int = 0,
     total_override: int | None = None,
     flatfield_profile_id: str | None = None,
+    grid: GridSpec | None = None,
 ) -> ConvertOutcome:
     """Validate the selection and output folder exactly as `probe` does,
     then convert every selected frame group by group. Raises
@@ -695,6 +697,12 @@ def run_convert(
     during conversion does not raise — it is recorded in the manifest and
     reported through `GroupFailed`, and processing continues with the next
     group.
+
+    `grid` is the batch's grid as declared (`--grid AxD`); None means a
+    plain strip batch, recorded as `across=per_negative, down=1` via
+    `grid_spec`. It is recorded on the work manifest alongside
+    `shots_per_negative == grid.count` and is what the stitch stage reads
+    the grid back from (docs/GRID_STITCH_PLAN.md section 2.3).
 
     `jobs` is `None` for the section 3.8 default worker count, or an
     explicit 1-12. Cancelling `cancel` abandons the group in flight,
@@ -708,6 +716,13 @@ def run_convert(
     nothing.
     """
     cancel = cancel if cancel is not None else CancellationToken()
+
+    if grid is not None and grid.count != per_negative:
+        raise ConvertFailure(
+            Code.INVALID_GRID,
+            f"grid {grid.across}x{grid.down} is {grid.count} scans per "
+            f"negative, but per_negative is {per_negative}",
+        )
 
     # Before anything touches the filesystem: an explicit --jobs that
     # exceeds the memory budget is rejected outright (section 3.8), while
@@ -804,6 +819,7 @@ def run_convert(
         groups=groups,
         started_at=_now_iso(),
         finished_at=None,
+        grid=grid.to_dict() if grid is not None else None,
     )
 
     try:

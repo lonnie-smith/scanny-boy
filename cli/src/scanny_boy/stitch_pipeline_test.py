@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import math
 from fractions import Fraction
 from pathlib import Path
 
@@ -8,9 +9,10 @@ import pytest
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import hashing, stitch_pipeline
+from scanny_boy import hashing, registration, stitch_pipeline
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import CancellationToken
+from scanny_boy.composite import MEMORY_SAFETY_FACTOR, estimate_peak_bytes
 from scanny_boy.events import (
     Code,
     EditRecorded,
@@ -1317,6 +1319,348 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
     with pytest.raises(OutputFolderError) as exc_info:
         plan_rerun(roll_out, phase_one)
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
+
+
+# --- the memory estimate's frame_bbox_size input (GRID_STITCH_PLAN §1a) ----
+
+
+def _make_grid_frames(*, across: int, down: int, seed: int = 3):
+    """`across*down` uint16 frames cut from one synthetic scene at the
+    2/3-step grid geometry (1/3 overlap), frames unrotated, in serpentine
+    capture order (row 0 left-to-right, row 1 right-to-left, ...): index i
+    sits at cell `_serpentine_cell(i, across)`."""
+    frame_height, frame_width = _FRAME_SIZE
+    step_x = round(frame_width * 2 / 3)
+    step_y = round(frame_height * 2 / 3)
+    scene = synthetic_scene(
+        frame_height + (down - 1) * step_y,
+        frame_width + (across - 1) * step_x,
+        seed=seed,
+    )
+    frames = []
+    for index in range(across * down):
+        row, col = stitch_pipeline._serpentine_cell(index, across)
+        x0 = col * step_x
+        y0 = row * step_y
+        patch = scene[y0 : y0 + frame_height, x0 : x0 + frame_width]
+        frames.append(np.stack([patch, patch, patch], axis=-1))
+    return [encode_from_linear(frame.astype(np.float32)) for frame in frames]
+
+
+def _grid_pair_placements(across: int, down: int) -> dict[str, np.ndarray]:
+    """Ground-truth placements matching `_make_grid_frames`' cutting, keyed
+    by the intermediates' names (`IMG_<index>.tif`, serpentine order)."""
+    frame_height, frame_width = _FRAME_SIZE
+    step_x = round(frame_width * 2 / 3)
+    step_y = round(frame_height * 2 / 3)
+    placements = {}
+    for index in range(across * down):
+        row, col = stitch_pipeline._serpentine_cell(index, across)
+        name = f"IMG_{index:02d}.tif"
+        t = np.array([col * step_x, row * step_y], dtype=np.float64)
+        placements[name] = np.hstack([np.eye(2), t.reshape(2, 1)])
+    return placements
+
+
+def _grid_registration_fixtures(across: int, down: int):
+    """Fake `_detect_all`/`register_pair` pair reproducing the grid's
+    ground-truth geometry without paying for real registration."""
+    placements = _grid_pair_placements(across, down)
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+        return [
+            registration.FrameFeatures(
+                name=path.name,
+                keypoints=(),
+                descriptors=np.zeros((0, 1), dtype=np.float32),
+                scale=1.0,
+            )
+            for path in paths
+        ]
+
+    def fake_register_pair(a, b, undistorter=None):
+        return _ground_truth_similarity_pair(
+            a.name, b.name, placements[a.name], placements[b.name], _FRAME_SIZE
+        )
+
+    return fake_detect_all, fake_register_pair
+
+
+def test_grid_order_warning_fires_for_reversed_members_and_not_for_serpentine(
+    tmp_path, monkeypatch
+):
+    """§4.4: serpentine is a documented assumption used only for the
+    warning — the solved assignment always wins, and the warning names the
+    frames that landed elsewhere."""
+    across, down = 3, 2
+    work_dir = _make_grid_work_dir(tmp_path, across=across, down=down)
+    out_dir = _roll_dir(tmp_path, "gridorder")
+    fake_detect_all, fake_register_pair = _grid_registration_fixtures(
+        across, down
+    )
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+
+    # Serpentine order: no warning.
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+    order_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent)
+        and e.code is Code.STITCH_GRID_ORDER_UNEXPECTED
+    ]
+    assert order_warnings == []
+    assert outcome.published == ["IMG_00.tif"]
+
+    # Reversed member list: the warning fires and names a frame.
+    manifest = load_manifest(work_dir)
+    manifest.groups[0].members.reverse()
+    write_manifest(work_dir, manifest)
+
+    events = []
+    outcome = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    order_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent)
+        and e.code is Code.STITCH_GRID_ORDER_UNEXPECTED
+    ]
+    assert len(order_warnings) == 1
+    assert "IMG_" in order_warnings[0].message
+
+    # The solved assignment was recorded regardless.
+    roll = load_roll_manifest(out_dir)
+    negative = roll.negative("stitch-negative-01")
+    assert negative.grid_cells is not None
+    assert len(negative.grid_cells) == across * down
+
+
+def _ground_truth_similarity_pair(
+    name_a: str,
+    name_b: str,
+    placement_a: np.ndarray,
+    placement_b: np.ndarray,
+    frame_size: tuple[int, int],
+    *,
+    n_points: int = 60,
+    seed: int = 0,
+):
+    """A PairResult whose similarity fit is exactly the ground-truth
+    relation between two placements — the registration `register_pair`
+    would have produced for perfectly-placed frames."""
+    rng = np.random.default_rng(seed)
+    height, width = frame_size
+    rotation_a, translation_a = placement_a[:, :2], placement_a[:, 2]
+    rotation_b, translation_b = placement_b[:, :2], placement_b[:, 2]
+    phi_ab = np.arctan2(rotation_b[1, 0], rotation_b[0, 0]) - np.arctan2(
+        rotation_a[1, 0], rotation_a[0, 0]
+    )
+    u_ab = rotation_a.T @ (translation_b - translation_a)
+    rotation_ab = np.array(
+        [[np.cos(phi_ab), -np.sin(phi_ab)], [np.sin(phi_ab), np.cos(phi_ab)]]
+    )
+    pts_b = rng.uniform([0, 0], [width, height], size=(n_points, 2))
+    pts_a = pts_b @ rotation_ab.T + u_ab
+    transform = np.hstack([rotation_ab, u_ab.reshape(2, 1)])
+    return registration.PairResult(
+        a=name_a,
+        b=name_b,
+        transform=transform,
+        good_matches=n_points,
+        inliers=n_points,
+        inlier_ratio=1.0,
+        rms_residual_px=0.0,
+        scale_drift=0.0,
+        accepted=True,
+        reject_code=None,
+        reject_message=None,
+        inlier_points_a=pts_a,
+        inlier_points_b=pts_b,
+        overlap_fraction=None,
+        overlap_mad=None,
+        overlap_mad_pregain=None,
+        similarity_transform=transform,
+        similarity_scale=1.0,
+    )
+
+
+def _make_grid_work_dir(tmp_path: Path, *, across: int, down: int) -> Path:
+    """A work directory of across*down intermediates cut from one synthetic
+    scene at the 2/3-step grid geometry, one group, real Phase 1
+    manifest."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    frames = _make_grid_frames(across=across, down=down)
+    members, outputs, source_order, sources = [], [], [], []
+    for frame_index, frame in enumerate(frames):
+        source_name = f"IMG_{frame_index:02d}.NEF"
+        output_name = f"IMG_{frame_index:02d}.tif"
+        _write_intermediate(work_dir / output_name, frame, source_name)
+        path = work_dir / output_name
+        outputs.append(
+            OutputRecord(
+                name=output_name, size=path.stat().st_size, sha256=hashing.sha256_file(path)
+            )
+        )
+        members.append(source_name)
+        source_order.append(source_name)
+        sources.append(
+            SourceRecord(
+                filename=source_name,
+                absolute_path=f"/tmp/in/{source_name}",
+                size=1000 + frame_index,
+                mtime=1.0,
+                sha256=str(frame_index).ljust(64, "c"),
+            )
+        )
+    write_manifest(
+        work_dir,
+        Manifest(
+            scanny_boy_version=current_scanny_boy_version(),
+            run_id="convert-run",
+            status="complete",
+            input_folder="/tmp/in",
+            film_date=_FILM_DATE,
+            shots_per_negative=across * down,
+            grid={"across": across, "down": down},
+            processing_params={"gamma": [1.8, 16]},
+            icc_profile=profile_record(ProfileKind.LINEAR),
+            source_order=source_order,
+            sources=sources,
+            curated_metadata=CuratedMetadata(
+                exposure_time="1/30",
+                f_number="8",
+                iso=100,
+                focal_length="55",
+                lens_model="55mm f/2.8",
+                orientation=1,
+                camera_whitebalance=(1.69, 1.0, 1.38, 1.0),
+            ),
+            groups=[
+                GroupRecord(
+                    group_id="negative-01",
+                    members=members,
+                    expected_outputs=[f"{Path(m).stem}.tif" for m in members],
+                    status="completed",
+                    outputs=outputs,
+                )
+            ],
+            started_at="2026-08-02T00:00:00Z",
+            finished_at="2026-08-02T00:01:00Z",
+        ),
+    )
+    return work_dir
+
+
+def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkeypatch):
+    """A 5x2 grid: before the fix, `_attempt_solve` charged every frame the
+    whole canvas as its bounding box, so the estimate scaled with the canvas;
+    after it, with the frame. A machine with room for the true peak but not
+    the canvas-inflated one must now pass where it used to raise
+    INSUFFICIENT_MEMORY (docs/GRID_STITCH_PLAN.md section 1a.4)."""
+    import scanny_boy.composite as composite_module
+
+    across, down = 5, 2
+    work_dir = _make_grid_work_dir(tmp_path, across=across, down=down)
+    out_dir = _roll_dir(tmp_path, "gridmem")
+
+    # Ground-truth 5x2 geometry: 2/3 step on both axes (1/3 overlap), no
+    # rotation, so the solve recovers it exactly and every frame bbox is
+    # exactly one frame.
+    fake_detect_all, fake_register_pair = _grid_registration_fixtures(
+        across, down
+    )
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+
+    # First run with an unbounded budget, spying on what the gate is
+    # actually told: the frame bbox must come out frame-sized, not
+    # canvas-sized.
+    captured: list[tuple] = []
+    real_estimate = composite_module.estimate_peak_bytes
+
+    def spy(canvas_size, f_size, bbox_size, f_count, **kwargs):
+        captured.append((canvas_size, f_size, bbox_size, f_count))
+        return real_estimate(canvas_size, f_size, bbox_size, f_count, **kwargs)
+
+    monkeypatch.setattr(composite_module, "physical_memory_bytes", lambda: 10**15)
+    monkeypatch.setattr(stitch_pipeline, "estimate_peak_bytes", spy)
+
+    events: list = []
+    outcome = _stitch(work_dir, out_dir, events=events)
+    assert outcome.published == ["IMG_00.tif"]
+
+    canvas_size, f_size, bbox_size, f_count = captured[0]
+    # The bbox is one frame (plus at most a pixel of rotation rounding),
+    # nowhere near the canvas — this is the behaviour change itself.
+    assert bbox_size[0] <= f_size[0] + 2 and bbox_size[1] <= f_size[1] + 2
+    assert canvas_size[0] > f_size[1] * 2 and canvas_size[1] > f_size[0]
+
+    old_peak = real_estimate(canvas_size, f_size, (canvas_size[1], canvas_size[0]), f_count)
+    new_peak = real_estimate(canvas_size, f_size, bbox_size, f_count)
+    assert old_peak > new_peak * 3  # the bug is worth a large factor here
+
+    # A second run, now with room for the true peak but not the inflated
+    # one: `usable` sits strictly between the two estimates.
+    monkeypatch.setattr(
+        composite_module, "physical_memory_bytes", lambda: 2 * (new_peak + 1)
+    )
+    monkeypatch.setattr(stitch_pipeline, "estimate_peak_bytes", real_estimate)
+
+    events = []
+    outcome = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+
+    memory_failures = [
+        e for e in events if isinstance(e, NegativeFailed)
+        and e.code is Code.INSUFFICIENT_MEMORY
+    ]
+    assert memory_failures == []
+    # The negative reaches compositing and publishes: the gate let it through.
+    assert outcome.published == ["IMG_00.tif"]
+
+
+def test_peak_estimate_5x2_target_workload_matches_the_formula():
+    """The §1a.3 number pinned: at the plan's target workload (6000x4000
+    frames, 1/3 overlap, 5x2 grid), the estimate is computed from a
+    frame-sized bbox — required RAM (2x peak, the half-of-physical gate)
+    must sit near 47.5 GB, not the 197.9 GB the canvas-as-bbox bug
+    charged."""
+    canvas_size = (22000, 6667)
+    frame_size = (4000, 6000)  # (height, width)
+    bbox_size = (4000, 6000)  # (height, width)
+
+    canvas_width, canvas_height = canvas_size
+    frame_height, frame_width = frame_size
+    canvas_pixels = canvas_width * canvas_height
+    frame_pixels = frame_width * frame_height
+    bbox_pixels = frame_pixels
+
+    accum = canvas_pixels * 3 * 4
+    weight = canvas_pixels * 4
+    result = canvas_pixels * 3 * 2
+    log_density = canvas_pixels * 3 * 4
+    normalized = canvas_pixels * 3 * 4
+    source = frame_pixels * 3 * 2 + frame_pixels * 3 * 4
+    warped = bbox_pixels * 3 * 4
+    warp_aux = bbox_pixels * 2
+    feather_scratch = bbox_pixels * 4 * 3
+
+    all_warped = 10 * (warped + warp_aux)
+    live_bytes = max(
+        accum + weight + source + all_warped + feather_scratch,
+        accum + weight + log_density + normalized + result,
+    )
+    expected = math.ceil(live_bytes * MEMORY_SAFETY_FACTOR)
+
+    actual = estimate_peak_bytes(canvas_size, frame_size, bbox_size, 10)
+    assert actual == expected
+
+    required_gb = 2 * actual / 1024**3
+    assert 40 < required_gb < 56  # §1a.3: 47.5 GB required, 26% headroom on 64 GB
+    inflated = estimate_peak_bytes(canvas_size, frame_size, (canvas_height, canvas_width), 10)
+    assert inflated > 3 * actual  # the pre-G-0 bug charged the canvas per frame
 
 
 # --- auto-rotation seeding -------------------------------------------------
