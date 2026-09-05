@@ -340,13 +340,30 @@ final class RunModel {
         let warnings: [Issue]
     }
 
+    /// Maps a convert-stage group id (`negative-01`) to the roll negative id
+    /// (`<short_id>-negative-01`) when the stitch stage reported one.
+    private static func canonicalNegativeID(_ id: String, rollIDs: Set<String>) -> String {
+        if rollIDs.contains(id) { return id }
+        let suffix = "-\(id)"
+        return rollIDs.first { $0.hasSuffix(suffix) } ?? id
+    }
+
     /// The per-negative view of the run, in first-seen event order.
     var negativeResults: [NegativeResult] {
+        let rollIDs = Set(
+            stitchedNegatives.map(\.negativeID) + failedNegatives.map(\.groupID)
+        )
+        func canonical(_ id: String) -> String {
+            Self.canonicalNegativeID(id, rollIDs: rollIDs)
+        }
+
         var ids: [String] = []
         var seen = Set<String>()
         func note(_ id: String?) {
-            guard let id, seen.insert(id).inserted else { return }
-            ids.append(id)
+            guard let id else { return }
+            let canonicalID = canonical(id)
+            guard seen.insert(canonicalID).inserted else { return }
+            ids.append(canonicalID)
         }
         completedGroups.forEach { note($0) }
         failedGroups.forEach { note($0.groupID) }
@@ -359,7 +376,7 @@ final class RunModel {
             uniqueKeysWithValues: stitchedNegatives.map { ($0.negativeID, $0) }
         )
         var failureByID: [String: FailedGroup] = [:]
-        failedGroups.forEach { failureByID[$0.groupID] = $0 }
+        failedGroups.forEach { failureByID[canonical($0.groupID)] = $0 }
         // Applied second so a stitch-stage failure replaces a convert-stage
         // one for the same id.
         failedNegatives.forEach { failureByID[$0.groupID] = $0 }
@@ -436,10 +453,14 @@ final class RunModel {
         }
         for negative in negativeResults {
             lines.append("")
+            let label = negative.output ?? negative.id
             switch negative.status {
-            case .succeeded: lines.append("\(negative.id): converted")
-            case .failed: lines.append("\(negative.id): failed")
-            case .skipped: lines.append("\(negative.id): skipped")
+            case .succeeded: lines.append("\(label): converted")
+            case .failed: lines.append("\(label): failed")
+            case .skipped: lines.append("\(label): skipped")
+            }
+            if negative.output != nil, label != negative.id {
+                lines.append("  id: \(negative.id)")
             }
             if let failure = negative.failure {
                 lines.append("  [\(failure.code.name)] \(failure.message)")

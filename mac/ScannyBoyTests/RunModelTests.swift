@@ -1133,6 +1133,96 @@ struct RunModelTests {
         #expect(negative.quality == nil)
     }
 
+    @Test("group_done and negative_done with different ids merge into one row")
+    func negativeResultsMergeConvertAndStitchIDs() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.groupDone("negative-01"),
+                Self.negativeDone(
+                    negativeID: "run01-negative-01", output: "_DSC4638.tif",
+                    width: 6140, height: 7917, globalRMS: 1.57, maxOverlapMAD: 0.04
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let results = run.negativeResults
+        #expect(results.count == 1)
+        let negative = try #require(results.first)
+        #expect(negative.id == "run01-negative-01")
+        #expect(negative.status == .succeeded)
+        #expect(negative.output == "_DSC4638.tif")
+        #expect(negative.quality == .good)
+    }
+
+    @Test("group_done and negative_failed with different ids merge into one failed row")
+    func negativeResultsMergeConvertAndStitchFailureIDs() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.groupDone("negative-01"),
+                Self.negativeFailed(
+                    "run01-negative-01", code: "STITCH_UNDERCONSTRAINED",
+                    message: "frames not reachable from 'a.tif'"
+                ),
+                Self.finished(status: "failed", exitStatus: 1),
+            ],
+            exitStatus: 1,
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let results = run.negativeResults
+        #expect(results.count == 1)
+        let negative = try #require(results.first)
+        #expect(negative.id == "run01-negative-01")
+        #expect(negative.status == .failed)
+        #expect(negative.failure?.code == .stitchUnderconstrained)
+    }
+
+    @Test("reportText leads with the output filename for stitched negatives")
+    func reportTextLeadsWithOutputFilename() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.groupDone("negative-01"),
+                Self.negativeDone(
+                    negativeID: "run01-negative-01", output: "_DSC4638.tif",
+                    width: 6140, height: 7917, globalRMS: 1.57, maxOverlapMAD: 0.04
+                ),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = await Self.runToCompletion(
+            executable: executable, outputFolder: directory, commandName: "run"
+        )
+
+        let report = run.reportText
+        #expect(report.contains("_DSC4638.tif: converted"))
+        #expect(report.contains("  id: run01-negative-01"))
+        #expect(!report.contains("negative-01: converted"))
+    }
+
     @Test("reportText carries the summary, codes, raw messages, and quality numbers")
     func reportTextCarriesTheFullLog() async throws {
         let directory = try Self.makeTemporaryDirectory()
