@@ -18,6 +18,17 @@ place). The op lives only in the preview's display encode; the published
 TIFF and export are untouched. `roll info` reports the net tone per
 negative as `tone_grade_r`/`tone_snap_gamma` (both `null` when flat).
 
+Roll manifest format version 7 keeps version 6's shape and adds one
+optional per-negative field: `rectification`, the fitted rig-tilt
+rectification (docs/RECTIFICATION_PLAN.md section 7) — `l` (two numbers,
+1/px, acting on coordinates centred at `centre`), `centre`, `frame_size`,
+the fit's `rms_before_px`/`rms_after_px`/`relative_improvement` diagnostics,
+and `pair_count`. It is `null` when the fit was rejected, the negative
+failed before it ran, or the build predates the field. `stitch_params`
+gains `rectification_model` (always `"global-2-param"`) and the three gate
+constants in force; it remains a roll invariant, so rolls recorded by
+earlier builds refuse new runs and there is no migration. No event changed.
+
 Protocol version 9 keeps version 8's roll model and adds **1:1 region
 rendering** for the app's 100% zoom: the new `edit render-region` command
 renders one display-space region of a negative's published TIFF at 1:1 — the
@@ -422,7 +433,7 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
-record as delivered by `roll info` (format version 6; now persisted in the
+record as delivered by `roll info` (format version 7; now persisted in the
 library database rather than a JSON file in the roll folder).
 
 ### Event types
@@ -556,7 +567,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 6` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 7` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |

@@ -185,7 +185,16 @@ still rigid — rotation plus translation, scale forced to exactly 1, and
 still what the acceptance gates measure — but the *global* layout solves one
 isotropic scale per frame on top of that, because film does not sit at a
 constant height above the stage from frame to frame. It is a similarity,
-never an affine and never a homography. Several metrics per pair and per
+never an affine and never a homography. Before that layout solves, the
+stitch stage also fits one *rectifying homography* per negative — two
+parameters, shared by every pair, estimated from the pairs' own inliers and
+accepted only when it measurably helps — that undoes the slight tilt
+between the camera and the film plane. The pairwise fit and the layout are
+still exactly what they were; the rectification is a measured reparameterisation
+of image coordinates, applied in the same slot as the lens-distortion
+correction, under which the inter-frame maps really are similarities. See
+[docs/RECTIFICATION_PLAN.md](docs/RECTIFICATION_PLAN.md) for the
+measurement behind it. Several metrics per pair and per
 negative (inlier count and ratio, reprojection residual, and — the one that
 actually measures whether pixels line up — overlap MAD) are checked against
 thresholds measured from real scans before a negative is allowed to publish;

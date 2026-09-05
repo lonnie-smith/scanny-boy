@@ -236,6 +236,16 @@ private struct PreviewPane: View {
         if let rms = negative.globalRMSPixels {
             parts.append(String(format: "Stitch registration error (RMS): %.1f px", rms))
         }
+        // The CLI's fitted rig-tilt rectification: displayed, never
+        // recomputed (docs/RECTIFICATION_PLAN.md section 7).
+        if let rectification = negative.rectification {
+            parts.append(
+                String(
+                    format: "Rig tilt corrected (%.0f%% fit improvement)",
+                    rectification.relativeImprovement * 100
+                )
+            )
+        }
         if let output = negative.output {
             let megapixels = Double(output.width * output.height) / 1_000_000
             parts.append(String(format: "%d × %d (%.1f MP)", output.width, output.height, megapixels))

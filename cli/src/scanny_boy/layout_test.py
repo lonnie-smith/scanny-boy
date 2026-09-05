@@ -11,12 +11,13 @@ from scanny_boy.layout import (
     GainStat,
     StitchError,
     _largest_all_covered_rectangle,
+    frame_corners,
     global_rms,
     largest_valid_rect,
     solve_gains,
     solve_layout,
 )
-from scanny_boy.registration import PairResult
+from scanny_boy.registration import PairResult, rectify
 
 _FRAME_SIZE = (400, 600)  # (height, width)
 
@@ -607,3 +608,129 @@ def test_largest_all_covered_rectangle_finds_the_true_maximum():
     x, y, width, height = _largest_all_covered_rectangle(mask)
     assert width * height == 6
     assert np.all(mask[y : y + height, x : x + width] == 1)
+
+
+# --- rectified-space canvas (docs/RECTIFICATION_PLAN.md section 5) ---------
+
+
+_FOCAL_PX = 9000.0
+
+
+def _rectification(tilt_x_deg=1.0, tilt_y_deg=0.6):
+    from scanny_boy.registration import Rectification
+
+    height, width = _FRAME_SIZE
+    return Rectification(
+        l=np.array(
+            [
+                np.tan(np.deg2rad(tilt_x_deg)) / _FOCAL_PX,
+                np.tan(np.deg2rad(tilt_y_deg)) / _FOCAL_PX,
+            ]
+        ),
+        centre=np.array([width / 2.0, height / 2.0]),
+        frame_size=_FRAME_SIZE,
+        rms_before_px=1.0,
+        rms_after_px=0.5,
+        relative_improvement=0.5,
+        pair_count=2,
+    )
+
+
+def _rectified_translation_pair(name_a, name_b, shift, seed=2, n_points=200):
+    """A pair whose correspondences live in rectified space and whose
+    inter-frame map is a pure translation there — what register_pair
+    returns on pass 2 when the rig tilt is the only projective component."""
+    rng = np.random.default_rng(seed)
+    height, width = _FRAME_SIZE
+    pts_b = rng.uniform([0, 0], [width, height], size=(n_points, 2))
+    pts_a = pts_b + np.asarray(shift, dtype=np.float64)
+    similarity = np.array(
+        [[1.0, 0.0, shift[0]], [0.0, 1.0, shift[1]]], dtype=np.float64
+    )
+    return PairResult(
+        a=name_a,
+        b=name_b,
+        transform=similarity,
+        good_matches=n_points,
+        inliers=n_points,
+        inlier_ratio=1.0,
+        rms_residual_px=0.0,
+        scale_drift=0.0,
+        accepted=True,
+        reject_code=None,
+        reject_message=None,
+        inlier_points_a=pts_a,
+        inlier_points_b=pts_b,
+        overlap_fraction=None,
+        overlap_mad=None,
+        overlap_mad_pregain=None,
+        similarity_transform=similarity,
+        similarity_scale=1.0,
+    )
+
+
+def test_frame_corners_without_rectification_is_the_plain_affine_map():
+    placement = FramePlacement(
+        name="f0", rotation_deg=7.5, translation=(120.0, -40.0), scale=1.02
+    )
+
+    corners = frame_corners(placement, _FRAME_SIZE)
+
+    matrix = placement.matrix()
+    rotation, translation = matrix[:, :2], matrix[:, 2]
+    corners_local = np.array(
+        [[0, 0], [600, 0], [600, 400], [0, 400]], dtype=np.float64
+    )
+    assert np.array_equal(corners, corners_local @ rotation.T + translation)
+
+
+def test_frame_corners_with_rectification_map_through_w():
+    rect = _rectification()
+    placement = FramePlacement(name="f0", rotation_deg=0.0, translation=(0.0, 0.0))
+
+    corners = frame_corners(placement, _FRAME_SIZE, rect)
+
+    height, width = _FRAME_SIZE
+    corners_local = np.array(
+        [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64
+    )
+    assert np.allclose(corners, rectify(corners_local, rect))
+    # Not the plain rectangle: the keystone quad actually moved.
+    assert not np.allclose(corners, corners_local)
+
+
+def test_solve_layout_bounds_cover_the_rectified_quad():
+    rect = _rectification()
+    shift = (250.0, 0.0)
+    pair = _rectified_translation_pair("f0", "f1", shift)
+
+    layout = solve_layout(["f0", "f1"], _FRAME_SIZE, [pair], rectification=rect)
+
+    quad = np.vstack(
+        [frame_corners(p, _FRAME_SIZE, rect) for p in layout.placements]
+    )
+    assert layout.canvas_size == (
+        math.ceil(quad[:, 0].max() - quad[:, 0].min()),
+        math.ceil(quad[:, 1].max() - quad[:, 1].min()),
+    )
+    # And the quad genuinely differs from the affine image of the raw
+    # rectangle: without the rectification the bounds are just the
+    # translated frame rectangle.
+    plain = solve_layout(["f0", "f1"], _FRAME_SIZE, [pair])
+    assert plain.canvas_size == (600 + 250, 400)
+    assert layout.canvas_size != plain.canvas_size
+
+
+def test_largest_valid_rect_accepts_a_rectification():
+    rect = _rectification()
+    pair = _rectified_translation_pair("f0", "f1", (250.0, 0.0))
+    layout = solve_layout(["f0", "f1"], _FRAME_SIZE, [pair], rectification=rect)
+
+    x, y, width, height = largest_valid_rect(
+        layout, _FRAME_SIZE, rectification=rect
+    )
+
+    assert width > 0 and height > 0
+    assert x >= 0 and y >= 0
+    assert x + width <= layout.canvas_size[0]
+    assert y + height <= layout.canvas_size[1]

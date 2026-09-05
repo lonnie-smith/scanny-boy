@@ -1,85 +1,64 @@
 #!/usr/bin/env python3
-"""Measure whether the camera and the film are parallel, from the scans.
+"""Discriminate rigid camera tilt from film non-flatness, from the stitches'
+own correspondences.
 
-The stitch places every frame with a **similarity** (rotation, translation,
-one isotropic scale — `layout.py`). That model is exact only when the film
-plane is parallel to the sensor. Tilt the camera by a fraction of a degree
-and the true frame-to-frame mapping becomes a homography; fitting a
-similarity to it leaves a residual too small to trip `MAX_PAIR_RMS_PX` but
-which accumulates along the strip as a bow in the film's straight edges.
+The hypothesis this measures (docs/STITCH_QUALITY_PLAN.md's similarity model
+vs reality): the camera sits slightly off fronto-parallel to the film plane,
+so the true frame-to-frame map is a homography, not the similarity
+`layout.py` solves. A similarity fitted to homography-shaped data leaves a
+small systematic residual per pair — invisible against MAX_PAIR_RMS_PX —
+that accumulates along a strip and bows physically straight film edges.
 
-A tilt is only **two** numbers for the whole rig, whatever the frame count:
-the film plane's vanishing line `l = (l1, l2)`. Rectifying every frame by
+The discriminator is per-pair model comparison on the same inliers
+`register_pair` already returns:
 
-    W = [[1, 0, 0], [0, 1, 0], [l1, l2, 1]]      (centred, normalised px)
+- **rigid** — production's fit, the number the gates measure (context).
+- **similarity** — production's fit, what `solve_layout` composes.
+- **homography** — 8 free parameters per pair. If its RMS collapses to the
+  keypoint-noise floor while the similarity's does not, the data carries a
+  projective component.
+- **restricted 2-param tilt** — `H = W^-1 . S . W` with one *globally
+  shared* rectifying homography `W = [[1,0,0],[0,1,0],[l1,l2,1]]` (centred,
+  full-resolution px) and a per-pair similarity. Two rig parameters total.
+  If this matches the per-pair homography, the projective component is one
+  rigid tilt; if the per-pair homography wins but the shared-l model does
+  not, the film is not planar and no global rectification can fix it.
 
-makes a stage translation an exact similarity again — the model `layout.py`
-already solves. So this script fits **one global `l` shared by every pair**,
-by variable projection: for a candidate `l` each pair's similarity is solved
-in closed form with `registration.similarity_from_correspondences`, and only
-the two global numbers are searched.
+The per-pair restricted fits also estimate `l` independently per pair, so
+consistency of `l` across pairs and across negatives can be checked
+directly.
 
-It fits three more models alongside it, because "the residual got smaller"
-is not evidence for tilt on its own:
+Tilt angles are reported in degrees using the EXIF focal length and the
+decoded frame width (assumes a 35.9 mm-wide sensor, constant pixel pitch
+across crop modes) — an approximation for reporting only; the RMS columns
+carry the decision and need no focal length.
 
-| model | global params | what it would mean |
-| --- | --- | --- |
-| `baseline` | — | what production does today |
-| `radial` | k1, k2 | residual *lens distortion*, not tilt |
-| `tilt` | l1, l2 | camera/film not parallel |
-| `radial+tilt` | k1, k2, l1, l2 | both, fitted jointly so neither steals the other's signal |
-| `aniso` | a, b | a *constant* aspect/shear, the same for every pair |
-
-`aniso` is there to separate two things that both look like "the similarity
-is too rigid". A tilt makes each pair anisotropic **in proportion to that
-pair's step along the strip** (to first order in the tilt angle, the
-inter-frame map is an anisotropic scale of that size); a constant global
-affine makes every pair anisotropic by the *same* amount. Only the first is
-a tilt.
-
-It reports two per-pair references, both unconstrained and fitted to one
-pair alone, which no 2-parameter global model can beat:
-
-- **affine** (6 dof) — a tilt's first-order signature is exactly the shear
-  and aspect a similarity cannot represent, so this is the ceiling a tilt
-  correction could reach;
-- **homography** (8 dof) — anything affine misses. Homography much below
-  affine means a genuinely projective residual; the two roughly equal means
-  the residual is first-order, which is what a tilt looks like.
-
-**The discriminator is consistency, not fit.** A rigid tilt is one number
-for the whole session, so the `l` fitted to each negative separately must
-agree with the pooled `l`. A scatter of per-negative values means the film
-is not flat, and no homography can fix that. The jackknife column is what
-says whether an `l` is distinguishable from zero at all.
-
-**This script only measures. It changes nothing** — it writes nothing, and
-reads no constant it does not print.
+**This script only measures. It changes nothing** — production modules are
+imported and called, never re-implemented, and no constant is read or
+written.
 
 Usage, from the repository root:
 
-    uv run --project cli scripts/measure-tilt.py
-    uv run --project cli scripts/measure-tilt.py --nef-dir ~/Pictures/scans/R1
-    uv run --project cli scripts/measure-tilt.py --profile <profile-id>
-    uv run --project cli scripts/measure-tilt.py --magnification 2.0
+    uv run --project cli scripts/measure-tilt.py --nef-dir ~/Downloads/"scanny boy inputs"
+    uv run --project cli scripts/measure-tilt.py --nef-dir DIR --group chunks --shots-per-negative 3
+    uv run --project cli scripts/measure-tilt.py --nef-dir DIR --negative _DSC4638.NEF,_DSC4639.NEF,_DSC4640.NEF
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
+import math
+import statistics
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
 from scipy.optimize import least_squares
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
 
-# Imported after the path insert, exactly as measure-stitch-quality.py does
-# it. These are the production modules — the similarity fit, the undistorter,
-# the acceptance gates and the layout solve are all theirs, not copies.
 from scanny_boy import layout as layout_module
 from scanny_boy import registration as registration_module
 from scanny_boy.detection import (
@@ -87,259 +66,353 @@ from scanny_boy.detection import (
     USE_CLAHE,
     build_detection_image,
 )
-from scanny_boy.geometry_fit import base_camera
-from scanny_boy.library import repo
+from scanny_boy.metadata import read_digitization_fields, read_exif_settings
 from scanny_boy.raw_decode import decode_raw
-from scanny_boy.registration import (
-    PairResult,
-    register_pair,
-    similarity_from_correspondences,
-)
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_NEF_DIR = ROOT / "tests" / "fixtures" / "nef"
+# A pair needs at least this many inliers before any of this script's own
+# model fits mean anything; production's MIN_PAIR_INLIERS gate is stricter.
+MIN_FIT_INLIERS = 10
 
-# Sensor and lens of the rig these scans come from, used *only* to turn a
-# fitted vanishing line into degrees for the report. Nothing in the fit
-# needs them: `l` lives in image coordinates, which is why this measurement
-# works without ever knowing the true focal length (`base_camera`'s `fx` is
-# a gauge — max(w, h) — not a focal length).
-SENSOR_WIDTH_MM = 35.9
-LENS_FOCAL_MM = 55.0
+# Pairs whose similarity RMS is below this are already at the keypoint
+# noise floor: every model ties there, l is unidentifiable, and they are
+# excluded from the verdict aggregates.
+STRUCTURED_RMS_FLOOR_PX = 0.5
+
+DEFAULT_SENSOR_WIDTH_MM = 35.9
 
 
 # --------------------------------------------------------------------------
-# The global model
+# Grouping
 # --------------------------------------------------------------------------
 
 
-def _normalise(points: np.ndarray, K: np.ndarray) -> np.ndarray:
-    return np.column_stack([
-        (points[:, 0] - K[0, 2]) / K[0, 0],
-        (points[:, 1] - K[1, 2]) / K[1, 1],
-    ])
+def capture_times(paths: list[Path]) -> dict[str, datetime.datetime]:
+    times = {}
+    for path in paths:
+        text = read_digitization_fields(path).date_time_original
+        times[path.name] = datetime.datetime.strptime(  # noqa: DTZ007
+            text, "%Y:%m:%d %H:%M:%S"
+        )
+    return times
 
 
-def _denormalise(points: np.ndarray, K: np.ndarray) -> np.ndarray:
-    return np.column_stack([
-        points[:, 0] * K[0, 0] + K[0, 2],
-        points[:, 1] * K[1, 1] + K[1, 2],
-    ])
+def group_by_gap(
+    names: list[str], times: dict[str, datetime.datetime], gap_seconds: float
+) -> list[list[str]]:
+    """Split the canonical order wherever the capture-time gap exceeds
+    `gap_seconds`. Frames shot inside one second (a burst) sort by name."""
+    ordered = sorted(names, key=lambda n: (times[n], n))
+    groups: list[list[str]] = []
+    current = [ordered[0]]
+    for previous, name in zip(ordered, ordered[1:]):
+        if (times[name] - times[previous]).total_seconds() > gap_seconds:
+            groups.append(current)
+            current = []
+        current.append(name)
+    groups.append(current)
+    return [g for g in groups if len(g) >= 2]
 
 
-def apply_model(points: np.ndarray, theta: np.ndarray, K: np.ndarray) -> np.ndarray:
-    """Map observed full-resolution pixels to the model's rectified pixels.
-
-    `theta` is `(k1, k2, l1, l2, a, b)`, where `(a, b)` is a constant
-    aspect/shear correction — `[[1 + a, b], [0, 1 - a]]`, trace-free so it
-    cannot drift into the isotropic scale each pair's similarity already
-    owns. Radial first, then the rectification —
-    the same order section 5.3 composes distortion and everything after it,
-    and the only order that is self-consistent: the vanishing line is a
-    property of the *undistorted* image.
-
-    Returns pixels, not normalised coordinates, so every residual this
-    script prints is directly comparable to `MAX_PAIR_RMS_PX`.
-    """
-    k1, k2, l1, l2, a, b = theta
-    if k1 or k2:
-        # cv2.undistortPoints inverts the OpenCV forward model iteratively —
-        # the same call, in the same convention, that
-        # registration.undistorter_from_geometry makes in production.
-        D = np.array([k1, k2, 0.0, 0.0, 0.0])
-        points = cv2.undistortPoints(
-            points.reshape(-1, 1, 2).astype(np.float32), K, D, P=K
-        ).reshape(-1, 2).astype(np.float64)
-    if not (l1 or l2 or a or b):
-        return points
-    normalised = _normalise(points, K)
-    if l1 or l2:
-        w = 1.0 + l1 * normalised[:, 0] + l2 * normalised[:, 1]
-        normalised = normalised / w[:, None]
-    if a or b:
-        normalised = normalised @ np.array([[1.0 + a, 0.0], [b, 1.0 - a]])
-    return _denormalise(normalised, K)
+def group_by_chunks(names: list[str], per_negative: int) -> list[list[str]]:
+    groups = [
+        names[i : i + per_negative] for i in range(0, len(names), per_negative)
+    ]
+    return [g for g in groups if len(g) >= 2]
 
 
-def pair_residual(
-    pts_a: np.ndarray, pts_b: np.ndarray, theta: np.ndarray, K: np.ndarray
-) -> np.ndarray:
-    """One pair's residual under the global model, with its similarity
-    profiled out in closed form (variable projection): whatever `theta` is,
-    the best similarity for it is not searched for, it is solved."""
-    a = apply_model(pts_a, theta, K)
-    b = apply_model(pts_b, theta, K)
-    transform, _ = similarity_from_correspondences(b, a)
-    projected = b @ transform[:, :2].T + transform[:, 2]
-    return (projected - a).ravel()
+# --------------------------------------------------------------------------
+# Geometry: the rectifying model
+# --------------------------------------------------------------------------
 
 
-def rms_of(residual: np.ndarray) -> float:
-    """RMS point distance, in pixels: the residual is interleaved (dx, dy)."""
-    return float(np.sqrt(np.mean(np.sum(residual.reshape(-1, 2) ** 2, axis=1))))
+def rectify(points: np.ndarray, l: np.ndarray, centre: np.ndarray) -> np.ndarray:
+    """Image px -> rectified (centred) px through W(l) = [[1,0,0],[0,1,0],
+    [l1,l2,1]] applied to centred coordinates: divide by the homogeneous
+    weight. Points must be (N, 2), l a 2-vector."""
+    q = points - centre
+    w = 1.0 + q @ l
+    return q / w[:, None]
 
 
-def fit_model(
-    pair_points: list[tuple[np.ndarray, np.ndarray]],
-    K: np.ndarray,
-    *,
-    radial: bool,
-    tilt: bool,
-    aniso: bool = False,
+def unrectify(q_rect: np.ndarray, l: np.ndarray) -> np.ndarray:
+    """The inverse map: q = q' / (1 - l . q')."""
+    w = 1.0 - q_rect @ l
+    return q_rect / w[:, None]
+
+
+def fit_homography(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Hartley-normalized DLT, 8 degrees of freedom, mapping src -> dst.
+    Returns 3x3 with H[2,2] = 1."""
+    def normalizer(points: np.ndarray) -> np.ndarray:
+        c = points.mean(axis=0)
+        scale = math.sqrt(2.0) / np.mean(
+            np.linalg.norm(points - c, axis=1)
+        )
+        return np.array(
+            [[scale, 0, -scale * c[0]], [0, scale, -scale * c[1]], [0, 0, 1]]
+        )
+
+    ts, td = normalizer(src), normalizer(dst)
+    src_h = np.c_[src, np.ones(len(src))] @ ts.T
+    dst_h = np.c_[dst, np.ones(len(dst))] @ td.T
+
+    rows = []
+    for (x, y, _), (u, v, _) in zip(src_h, dst_h):
+        rows.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y, -u])
+    _, _, vt = np.linalg.svd(np.asarray(rows))
+    return np.linalg.inv(td) @ vt[-1].reshape(3, 3) @ ts
+
+
+def homography_rms(h: np.ndarray, src: np.ndarray, dst: np.ndarray) -> float:
+    projected = (h @ np.c_[src, np.ones(len(src))].T).T
+    projected = projected[:, :2] / projected[:, 2:3]
+    residuals = projected - dst
+    return float(np.sqrt(np.mean(np.sum(residuals**2, axis=1))))
+
+
+def restricted_pair_fit(
+    src: np.ndarray, dst: np.ndarray, centre: np.ndarray
 ) -> tuple[np.ndarray, float]:
-    """Least-squares over the enabled global parameters only. Returns
-    `(theta, pooled_rms_px)`."""
-    free = np.array([radial, radial, tilt, tilt, aniso, aniso])
-    if not free.any():
-        theta = np.zeros(6)
-        return theta, rms_of(_pooled(pair_points, theta, K))
-
-    def unpack(x: np.ndarray) -> np.ndarray:
-        theta = np.zeros(6)
-        theta[free] = x
-        return theta
-
-    result = least_squares(
-        lambda x: _pooled(pair_points, unpack(x), K),
-        np.zeros(int(free.sum())),
-        method="lm",
-        xtol=1e-12,
+    """One pair on its own: parameters [l1, l2, s, phi, tx, ty]. The
+    similarity acts in rectified (centred) space. Returns (l, rms)."""
+    rect_src = rectify(src, np.zeros(2), centre)
+    rect_dst = rectify(dst, np.zeros(2), centre)
+    init_sim, _ = registration_module.similarity_from_correspondences(
+        rect_src, rect_dst
     )
-    theta = unpack(result.x)
-    return theta, rms_of(result.fun)
+    init = np.array(
+        [
+            0.0,
+            0.0,
+            np.hypot(*init_sim[:, 0]),
+            math.atan2(init_sim[1, 0], init_sim[0, 0]),
+            *init_sim[:, 2],
+        ]
+    )
+
+    def residual(params: np.ndarray) -> np.ndarray:
+        l = params[:2]
+        s, phi = params[2], params[3]
+        rotation = s * np.array(
+            [[math.cos(phi), -math.sin(phi)], [math.sin(phi), math.cos(phi)]]
+        )
+        predicted = rectify(src, l, centre) @ rotation.T + params[4:6]
+        return (predicted - rectify(dst, l, centre)).ravel()
+
+    result = least_squares(residual, init, method="lm")
+    residuals = result.fun.reshape(-1, 2)
+    rms = math.sqrt(float(np.mean(np.sum(residuals**2, axis=1))))
+    return result.x[:2], rms
 
 
-def _pooled(
-    pair_points: list[tuple[np.ndarray, np.ndarray]], theta: np.ndarray, K: np.ndarray
+def global_tilt_fit(
+    pairs: list[tuple[np.ndarray, np.ndarray]], centre: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """All of a negative's pairs at once: [l1, l2] shared, each pair's
+    similarity re-fit in closed form (Umeyama) inside the residual. Returns
+    (l, rms over every correspondence)."""
+    def residual(params: np.ndarray) -> np.ndarray:
+        l = params
+        blocks = []
+        for src, dst in pairs:
+            src_rect = rectify(src, l, centre)
+            dst_rect = rectify(dst, l, centre)
+            sim, _ = registration_module.similarity_from_correspondences(
+                src_rect, dst_rect
+            )
+            rotation, translation = sim[:, :2], sim[:, 2]
+            blocks.append(
+                (src_rect @ rotation.T + translation - dst_rect).ravel()
+            )
+        return np.concatenate(blocks)
+
+    result = least_squares(residual, np.zeros(2), method="lm")
+    residuals = result.fun.reshape(-1, 2)
+    rms = math.sqrt(float(np.mean(np.sum(residuals**2, axis=1))))
+    return result.x, rms
+
+
+def restricted_homography(
+    l: np.ndarray, sim: np.ndarray, centre: np.ndarray
 ) -> np.ndarray:
-    return np.concatenate([pair_residual(a, b, theta, K) for a, b in pair_points])
+    """The restricted model H = W^-1 . S . W as one 3x3 mapping raw image
+    px to raw image px (b -> a), for corner-divergence measurements."""
+    inv_w = np.array([[1, 0, 0], [0, 1, 0], [-l[0], -l[1], 1.0]])
+    w = np.array([[1, 0, 0], [0, 1, 0], [l[0], l[1], 1.0]])
+    c = np.array([*centre, 1.0])
+    to_centred = np.eye(3)
+    to_centred[:2, 2] = -centre
+    from_centred = np.eye(3)
+    from_centred[:2, 2] = centre
+    s = np.eye(3)
+    s[:2, :2] = sim[:, :2]
+    s[:2, 2] = sim[:, 2] + sim[:, :2] @ centre - centre
+    return from_centred @ np.linalg.inv(inv_w) @ s @ w @ to_centred
 
 
-def affine_rms(pts_a: np.ndarray, pts_b: np.ndarray) -> float:
-    """The 6-dof per-pair reference. A tilt's first-order signature is the
-    shear and aspect that a similarity has no parameters for, so this is the
-    ceiling any tilt correction could reach on this pair."""
-    design = np.column_stack([pts_b, np.ones(len(pts_b))])
-    solution, *_ = np.linalg.lstsq(design, pts_a, rcond=None)
-    return float(np.sqrt(np.mean(np.sum((design @ solution - pts_a) ** 2, axis=1))))
-
-
-def homography_rms(pts_a: np.ndarray, pts_b: np.ndarray) -> float:
-    """The unconstrained per-pair reference: 8 free parameters fitted to
-    this pair alone. Nothing a 2-parameter global model does can beat it."""
-    matrix, _ = cv2.findHomography(pts_b, pts_a, method=0)
-    if matrix is None:
-        return float("nan")
-    projected = cv2.perspectiveTransform(
-        pts_b.reshape(-1, 1, 2), matrix
-    ).reshape(-1, 2)
-    return float(np.sqrt(np.mean(np.sum((projected - pts_a) ** 2, axis=1))))
-
-
-def tilt_degrees(l: float, magnification: float, frame_width: int, norm: float) -> float:
-    """A vanishing-line component in degrees, for the report only.
-
-    `l` is measured in units of the `base_camera` gauge, so converting needs
-    the real camera constant — the rear node to sensor distance `f(1+m)`, in
-    pixels: `tan(theta) = l * camera_constant / norm`. Wrong
-    `--magnification` scales this number and nothing else; the fit and the
-    correction never see it, which is the whole reason this measurement
-    works on a rig whose true focal length nobody has calibrated.
-    """
-    pitch_mm = SENSOR_WIDTH_MM / frame_width
-    camera_constant_px = LENS_FOCAL_MM * (1.0 + magnification) / pitch_mm
-    return float(np.degrees(np.arctan(l * camera_constant_px / norm)))
+def tilt_degrees(l: np.ndarray, focal_px: float | None) -> tuple[str, str]:
+    if focal_px is None:
+        return "—", "—"
+    alpha_x = math.degrees(math.atan(l[0] * focal_px))
+    alpha_y = math.degrees(math.atan(l[1] * focal_px))
+    return f"{alpha_x:+.3f}", f"{alpha_y:+.3f}"
 
 
 # --------------------------------------------------------------------------
-# Gathering pairs from real scans
+# Measurement
 # --------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
-class Negative:
-    """A run of consecutive frames that actually register to each other —
-    derived from the data, not from a filename convention: the chain is cut
-    wherever `register_pair` refuses the consecutive link, which is exactly
-    a negative boundary."""
+class PairFit:
+    negative: str
+    a: str
+    b: str
+    accepted: bool
+    inliers: int
+    rigid_rms: float
+    similarity_rms: float
+    homography_rms: float | None
+    restricted_rms: float | None
+    l: np.ndarray | None
+    scale_drift: float
+    corner_divergence_px: float | None
 
-    frames: list[str]
-    pairs: list[PairResult]
+
+@dataclasses.dataclass
+class NegativeFit:
+    negative: str
+    n_frames: int
+    solved: bool
+    global_rms_px: float | None
+    shared_l: np.ndarray | None
+    shared_rms: float | None
+    pairs: list[PairFit]
 
 
-def detect_all(paths: list[Path]) -> tuple[dict, tuple[int, int]]:
-    """Returns the features and the frame size (height, width). Only one
-    frame's pixels are resident at a time — the fit needs keypoints, not
-    images, so there is no reason to hold 21 decoded NEFs in memory."""
-    features = {}
+def measure_negative(
+    negative: str, paths: list[Path], focal_px: float | None
+) -> NegativeFit:
     frame_size = None
-    for i, path in enumerate(paths, start=1):
-        print(f"  [{i}/{len(paths)}] {path.name}", file=sys.stderr)
-        decoded = decode_raw(path)
-        if frame_size is None:
-            frame_size = (decoded.pixels.shape[0], decoded.pixels.shape[1])
+    features = {}
+    for path in paths:
+        pixels = decode_raw(path).pixels
+        frame_size = (pixels.shape[0], pixels.shape[1])
         detection = build_detection_image(
-            decoded.pixels, long_edge=DETECTION_LONG_EDGE, clahe=USE_CLAHE
+            pixels, long_edge=DETECTION_LONG_EDGE, clahe=USE_CLAHE
         )
-        features[path.stem] = registration_module.detect_features(
-            detection, name=path.stem
+        del pixels
+        features[path.name] = registration_module.detect_features(
+            detection, name=path.name
         )
-        del decoded
-    return features, frame_size
 
+    names = [path.name for path in paths]
+    pair_results = []
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            pair_results.append(
+                registration_module.register_pair(features[a], features[b])
+            )
 
-def group_into_negatives(names: list[str], features: dict, undistorter) -> list[Negative]:
-    links = [
-        register_pair(features[names[i]], features[names[i + 1]], undistorter)
-        for i in range(len(names) - 1)
-    ]
-    negatives: list[Negative] = []
-    current = [names[0]]
-    current_pairs: list[PairResult] = []
-    for i, link in enumerate(links):
-        if link.accepted:
-            current.append(names[i + 1])
-            current_pairs.append(link)
-        else:
-            negatives.append(Negative(current, current_pairs))
-            current, current_pairs = [names[i + 1]], []
-    negatives.append(Negative(current, current_pairs))
+    solved_layout = None
+    try:
+        solved_layout = layout_module.solve_layout(
+            names, frame_size, pair_results
+        )
+    except registration_module.StitchError:
+        pass
 
-    # Non-consecutive pairs inside a negative carry the accumulated error of
-    # two hops in one measurement, so they are the most informative rows in
-    # the fit — and the loop closure the report checks.
-    for negative in negatives:
-        for gap in range(2, len(negative.frames)):
-            for i in range(len(negative.frames) - gap):
-                extra = register_pair(
-                    features[negative.frames[i]],
-                    features[negative.frames[i + gap]],
-                    undistorter,
+    centre = np.array([frame_size[1] / 2.0, frame_size[0] / 2.0])
+    fit_pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    pair_fits = []
+    for pair in pair_results:
+        if not pair.accepted or pair.inliers < MIN_FIT_INLIERS:
+            pair_fits.append(
+                PairFit(
+                    negative=negative,
+                    a=pair.a,
+                    b=pair.b,
+                    accepted=pair.accepted,
+                    inliers=pair.inliers,
+                    rigid_rms=pair.rms_residual_px
+                    if math.isfinite(pair.rms_residual_px)
+                    else float("nan"),
+                    similarity_rms=float("nan"),
+                    homography_rms=None,
+                    restricted_rms=None,
+                    l=None,
+                    scale_drift=pair.scale_drift
+                    if math.isfinite(pair.scale_drift)
+                    else float("nan"),
+                    corner_divergence_px=None,
                 )
-                if extra.accepted:
-                    negative.pairs.append(extra)
-    return [n for n in negatives if n.pairs]
+            )
+            continue
 
+        src, dst = pair.inlier_points_b, pair.inlier_points_a
+        similarity_rms = registration_module._rms_residual(
+            pair.similarity_transform, src, dst
+        )
+        homography = fit_homography(src, dst)
+        homography_rms_value = homography_rms(homography, src, dst)
+        l_pair, restricted_rms = restricted_pair_fit(src, dst, centre)
 
-def refit_pair(pair: PairResult, theta: np.ndarray, K: np.ndarray) -> PairResult:
-    """The same pair with its correspondences rectified and every fitted
-    field re-derived, so `layout.solve_layout` and `layout.global_rms` can
-    be run on the corrected model without either of them changing."""
-    a = apply_model(pair.inlier_points_a, theta, K)
-    b = apply_model(pair.inlier_points_b, theta, K)
-    rigid = registration_module.rigid_from_correspondences(b, a)
-    similarity, scale = similarity_from_correspondences(b, a)
-    projected = b @ rigid[:, :2].T + rigid[:, 2]
-    rms = float(np.sqrt(np.mean(np.sum((projected - a) ** 2, axis=1))))
-    return dataclasses.replace(
-        pair,
-        transform=rigid,
-        rms_residual_px=rms,
-        similarity_transform=similarity,
-        similarity_scale=scale,
-        scale_drift=abs(scale - 1.0),
-        inlier_points_a=a,
-        inlier_points_b=b,
+        # The restricted model's own mapping b -> a, evaluated at the frame
+        # corners against the production similarity fit: the systematic
+        # error per pair the current pipeline absorbs as noise.
+        rect_sim, _ = registration_module.similarity_from_correspondences(
+            rectify(src, l_pair, centre), rectify(dst, l_pair, centre)
+        )
+        h_restricted = restricted_homography(l_pair, rect_sim, centre)
+        corners = np.array(
+            [
+                [0, 0],
+                [frame_size[1], 0],
+                [frame_size[1], frame_size[0]],
+                [0, frame_size[0]],
+            ],
+            dtype=np.float64,
+        )
+        corners_rect = (h_restricted @ np.c_[corners, np.ones(4)].T).T
+        corners_rect = corners_rect[:, :2] / corners_rect[:, 2:3]
+        corners_sim = corners @ pair.similarity_transform[:, :2].T + pair.similarity_transform[:, 2]
+        divergence = float(
+            np.max(np.linalg.norm(corners_rect - corners_sim, axis=1))
+        )
+
+        fit_pairs.append((src, dst))
+        pair_fits.append(
+            PairFit(
+                negative=negative,
+                a=pair.a,
+                b=pair.b,
+                accepted=True,
+                inliers=pair.inliers,
+                rigid_rms=pair.rms_residual_px,
+                similarity_rms=similarity_rms,
+                homography_rms=homography_rms_value,
+                restricted_rms=restricted_rms,
+                l=l_pair,
+                scale_drift=pair.scale_drift,
+                corner_divergence_px=divergence,
+            )
+        )
+
+    shared_l, shared_rms = None, None
+    if fit_pairs:
+        shared_l, shared_rms = global_tilt_fit(fit_pairs, centre)
+
+    return NegativeFit(
+        negative=negative,
+        n_frames=len(paths),
+        solved=solved_layout is not None,
+        global_rms_px=(
+            solved_layout.global_rms_px if solved_layout is not None else None
+        ),
+        shared_l=shared_l,
+        shared_rms=shared_rms,
+        pairs=pair_fits,
     )
 
 
@@ -356,200 +429,266 @@ def table(headers: list[str], rows: list[list[str]]) -> None:
     print()
 
 
-def num(value, places: int = 3) -> str:
-    if value is None or (isinstance(value, float) and not np.isfinite(value)):
+def num(value: float | None, places: int = 3) -> str:
+    if value is None or not math.isfinite(value):
         return "—"
     return f"{value:.{places}f}"
 
 
+def pair_label(a: str, b: str) -> str:
+    return f"{a.rsplit('_', 1)[1]}–{b.rsplit('_', 1)[1]}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nef-dir", type=Path, default=DEFAULT_NEF_DIR)
-    parser.add_argument("--profile", default=None, help="flat-field profile id")
-    parser.add_argument("--magnification", type=float, default=2.0)
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--nef-dir", type=Path, required=True, dest="nef_dir")
+    parser.add_argument(
+        "--group",
+        choices=("gap", "chunks", "explicit"),
+        default="gap",
+        help=(
+            "gap: split the catalogue wherever the capture-time gap exceeds "
+            "--gap-seconds. chunks: contiguous runs of "
+            "--shots-per-negative. explicit: one --negative per group."
+        ),
+    )
+    parser.add_argument("--gap-seconds", type=float, default=30.0)
+    parser.add_argument("--shots-per-negative", type=int, default=3)
+    parser.add_argument(
+        "--negative",
+        action="append",
+        default=[],
+        help=(
+            "explicit negative as a comma-separated list of filenames; "
+            "repeat for each negative"
+        ),
+    )
+    parser.add_argument(
+        "--focal-px",
+        type=float,
+        default=None,
+        help="Focal length in full-resolution px; derived from EXIF when omitted.",
+    )
+    parser.add_argument(
+        "--sensor-width-mm",
+        type=float,
+        default=DEFAULT_SENSOR_WIDTH_MM,
+        help="Sensor width in mm for the EXIF-derived focal length (default 35.9).",
+    )
     args = parser.parse_args()
 
-    paths = sorted(args.nef_dir.glob("*.NEF")) or sorted(args.nef_dir.glob("*.nef"))
-    if args.limit:
-        paths = paths[: args.limit]
-    if len(paths) < 2:
-        print(f"need at least two NEFs in {args.nef_dir}", file=sys.stderr)
+    paths = sorted(
+        p for p in args.nef_dir.iterdir() if p.suffix.lower() == ".nef"
+    )
+    if not paths:
+        print(f"No NEFs in {args.nef_dir}", file=sys.stderr)
         return 1
 
-    undistorter = None
-    geometry = None
-    if args.profile:
-        profile = repo.load_flatfield_profile(args.profile)
-        geometry = profile.geometry
-        if geometry is not None:
-            undistorter = registration_module.undistorter_from_geometry(geometry)
+    if args.group == "explicit":
+        groups = []
+        for spec in args.negative:
+            names = [n.strip() for n in spec.split(",")]
+            by_name = {p.name: p for p in paths}
+            missing = [n for n in names if n not in by_name]
+            if missing:
+                print(f"Unknown filenames: {missing}", file=sys.stderr)
+                return 1
+            groups.append([by_name[n] for n in names])
+    else:
+        times = capture_times(paths)
+        ordered = [p.name for p in paths]
+        if args.group == "gap":
+            name_groups = group_by_gap(ordered, times, args.gap_seconds)
+        else:
+            name_groups = group_by_chunks(ordered, args.shots_per_negative)
+        by_name = {p.name: p for p in paths}
+        groups = [[by_name[n] for n in g] for g in name_groups]
 
-    print(f"# Tilt measurement\n")
-    print(f"- frames: {len(paths)} from `{args.nef_dir}`")
-    print(f"- detection: long edge {DETECTION_LONG_EDGE}, CLAHE {USE_CLAHE}")
+    print("# Tilt vs film-flatness measurements\n")
+    stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    print(f"Generated {stamp} by `scripts/measure-tilt.py` from `{args.nef_dir}`.\n")
     print(
-        "- profile geometry: "
-        + (
-            f"`{args.profile}` (k1={geometry['k1']:.5f}, k2={geometry['k2']:.5f}) — "
-            "correspondences are undistorted before this fit, so a fitted "
-            "`radial` here is *residual* distortion"
-            if geometry
-            else "none — radial distortion is uncorrected in these scans, so "
-            "it is fitted here alongside the tilt rather than assumed absent"
+        f"Grouping ({args.group}): "
+        + ", ".join(
+            f"{g[0].stem}…{g[-1].stem} ({len(g)})" for g in groups
         )
-    )
-    print()
-
-    print("Decoding and detecting…", file=sys.stderr)
-    features, frame_size = detect_all(paths)
-    names = [p.stem for p in paths]
-    frame_height, frame_width = frame_size
-
-    print("Registering…", file=sys.stderr)
-    negatives = group_into_negatives(names, features, undistorter)
-    all_pairs = [p for n in negatives for p in n.pairs]
-    if len(all_pairs) < 3:
-        print(f"only {len(all_pairs)} accepted pairs — too few to fit", file=sys.stderr)
-        return 1
-
-    # The same gauge camera the plumb-line fit uses (fx = fy = max(w, h),
-    # principal point centred), so a fitted k1/k2 here is directly
-    # comparable to a profile's and `l` is in the same normalisation.
-    K = base_camera(frame_width, frame_height)
-    norm = float(K[0, 0])
-
-    pair_points = [(p.inlier_points_a, p.inlier_points_b) for p in all_pairs]
-
-    print("Fitting…", file=sys.stderr)
-    models = {}
-    for label, (radial, tilt) in {
-        "baseline": (False, False),
-        "radial": (True, False),
-        "tilt": (False, True),
-        "radial+tilt": (True, True),
-    }.items():
-        models[label] = fit_model(pair_points, K, radial=radial, tilt=tilt)
-
-    hom = float(np.sqrt(np.mean(np.concatenate([
-        np.full(len(a), homography_rms(a, b) ** 2) for a, b in pair_points
-    ]))))
-
-    print("## Which model explains the residual\n")
-    rows = []
-    for label, (theta, rms) in models.items():
-        base = models["baseline"][1]
-        rows.append([
-            f"`{label}`",
-            num(rms, 3),
-            f"{100 * (1 - rms / base):.0f}%" if label != "baseline" else "—",
-            num(theta[0], 6) if theta[0] else "—",
-            num(theta[1], 6) if theta[1] else "—",
-            num(theta[2], 6) if theta[2] else "—",
-            num(theta[3], 6) if theta[3] else "—",
-        ])
-    rows.append([
-        "per-pair homography *(reference)*", num(hom, 3),
-        f"{100 * (1 - hom / models['baseline'][1]):.0f}%", "—", "—", "—", "—",
-    ])
-    table(
-        ["model", "pooled RMS px", "vs baseline", "k1", "k2", "l1", "l2"], rows
+        + "\n"
     )
 
-    best_label = "radial+tilt" if geometry is None else "tilt"
-    theta_best = models[best_label][0]
-
-    # Per-negative consistency: a rigid tilt is one number for the session.
-    print("## Is the tilt the same everywhere?\n")
-    print(
-        "A rigid camera/film tilt is a property of the rig, so every "
-        "negative must agree. Scatter here means the film is not flat, and "
-        "no global homography can fix that.\n"
-    )
-    rows = []
-    per_negative_l = []
-    for negative in negatives:
-        points = [(p.inlier_points_a, p.inlier_points_b) for p in negative.pairs]
-        if len(points) < 2:
-            rows.append([
-                f"{negative.frames[0]}–{negative.frames[-1]}",
-                str(len(negative.frames)), str(len(points)),
-                "—", "—", "(too few pairs)",
-            ])
-            continue
-        theta_n, rms_n = fit_model(
-            points, K, radial=geometry is None, tilt=True
-        )
-        per_negative_l.append(theta_n[2:])
-        rows.append([
-            f"{negative.frames[0]}–{negative.frames[-1]}",
-            str(len(negative.frames)), str(len(points)),
-            num(theta_n[2], 6), num(theta_n[3], 6), num(rms_n, 3),
-        ])
-    table(
-        ["negative", "frames", "pairs", "l1", "l2", "RMS px"], rows
-    )
-
-    if per_negative_l:
-        l_array = np.array(per_negative_l)
-        spread = l_array.std(axis=0)
-        deg_x = tilt_degrees(theta_best[2], args.magnification, frame_width, norm)
-        deg_y = tilt_degrees(theta_best[3], args.magnification, frame_width, norm)
-        print(
-            f"- pooled `l` = ({theta_best[2]:+.6f}, {theta_best[3]:+.6f})\n"
-            f"- per-negative scatter (sd) = ({spread[0]:.6f}, {spread[1]:.6f}), "
-            f"over {len(per_negative_l)} negatives\n"
-            f"- implied tilt at m={args.magnification}: **{deg_x:+.2f}°** about "
-            f"the image-y axis (depth varying along image x), **{deg_y:+.2f}°** "
-            f"about the image-x axis (depth varying along image y)\n"
-        )
-        print(
-            "Which of those two bows the strip depends on how the strip lies "
-            "in the frame: the component whose depth gradient runs **across** "
-            "the strip is the one that curves it, and it produces almost no "
-            "scale drift, so nothing in the current gates can see it. The "
-            "component running **along** the strip is largely absorbed by the "
-            "per-frame scale and shows up as `STITCH_SCALE_DRIFT` instead. "
-            "The strip axis of each negative is in the table below.\n"
-        )
-
-    # The production metric, before and after.
-    print("## `global_rms_px`, before and after\n")
-    print(
-        f"The layout solve and `layout.global_rms` are the production ones, "
-        f"run unchanged on correspondences rectified by the pooled "
-        f"`{best_label}` model.\n"
-    )
-    rows = []
-    for negative in negatives:
-        if len(negative.frames) < 2:
-            continue
-        try:
-            before = layout_module.solve_layout(
-                negative.frames, frame_size, negative.pairs
+    first = decode_raw(groups[0][0])
+    focal_px = args.focal_px
+    if focal_px is None:
+        settings = read_exif_settings(groups[0][0])
+        if settings.focal_length is not None:
+            focal_mm = float(settings.focal_length)
+            pitch_mm = args.sensor_width_mm / first.pixels.shape[1]
+            focal_px = focal_mm * first.pixels.shape[1] / args.sensor_width_mm
+            print(
+                f"Frame {first.pixels.shape[1]}x{first.pixels.shape[0]} px; "
+                f"EXIF focal {focal_mm:g} mm -> f ≈ {focal_px:.0f} px "
+                f"(assumes a {args.sensor_width_mm:g} mm-wide sensor). "
+                "Degree columns use this; the RMS columns do not need it.\n"
             )
-            corrected = [refit_pair(p, theta_best, K) for p in negative.pairs]
-            after = layout_module.solve_layout(
-                negative.frames, frame_size, corrected
+    del first
+
+    negative_fits = [
+        measure_negative(
+            f"neg-{i + 1:02d}", group_paths, focal_px
+        )
+        for i, group_paths in enumerate(groups)
+    ]
+
+    print("## Per pair\n")
+    rows = []
+    for nf in negative_fits:
+        for pf in nf.pairs:
+            rows.append(
+                [
+                    nf.negative,
+                    pair_label(pf.a, pf.b),
+                    "yes" if pf.accepted else "no",
+                    str(pf.inliers),
+                    num(pf.rigid_rms),
+                    num(pf.similarity_rms),
+                    num(pf.homography_rms),
+                    num(pf.restricted_rms),
+                    num(pf.corner_divergence_px, 1),
+                ]
             )
-        except registration_module.StitchError as error:
-            rows.append([
-                f"{negative.frames[0]}–{negative.frames[-1]}",
-                "—", "—", f"({error.code.value})", "—",
-            ])
-            continue
-        rows.append([
-            f"{negative.frames[0]}–{negative.frames[-1]}",
-            num(before.global_rms_px, 3), num(after.global_rms_px, 3),
-            f"{100 * (1 - after.global_rms_px / before.global_rms_px):.0f}%"
-            if before.global_rms_px else "—",
-            f"({before.strip_axis[0]:+.2f}, {before.strip_axis[1]:+.2f})"
-            if before.strip_axis else "—",
-        ])
     table(
-        ["negative", "global_rms_px now", "corrected", "reduction", "strip axis"],
+        [
+            "negative", "pair", "accepted", "inliers", "rigid_rms_px",
+            "similarity_rms_px", "homography_rms_px", "restricted_rms_px",
+            "sim_vs_restricted_corner_divergence_px",
+        ],
         rows,
     )
+
+    print("## Per negative\n")
+    rows = []
+    for nf in negative_fits:
+        tilt_x, tilt_y = ("—", "—")
+        if nf.shared_l is not None:
+            tilt_x, tilt_y = tilt_degrees(nf.shared_l, focal_px)
+        gaps = [
+            pf.restricted_rms - pf.homography_rms
+            for pf in nf.pairs
+            if pf.homography_rms is not None
+        ]
+        rows.append(
+            [
+                nf.negative,
+                str(nf.n_frames),
+                "yes" if nf.solved else "no",
+                num(nf.global_rms_px),
+                num(nf.shared_rms),
+                tilt_x,
+                tilt_y,
+                num(statistics.mean(gaps), 2) if gaps else "—",
+            ]
+        )
+    table(
+        [
+            "negative", "frames", "layout_solved", "production_global_rms_px",
+            "shared-l_model_rms_px", "tilt_x_deg", "tilt_y_deg",
+            "mean_homography_minus_shared-l_px",
+        ],
+        rows,
+    )
+
+    print(
+        "tilt_x_deg is the depth ramp along the frame's x axis (rotation "
+        "about the vertical axis); tilt_y_deg along y. With the strip "
+        "running horizontally, tilt_y is the across-the-strip tilt that "
+        "curves a strip while leaving scale untouched, and tilt_x is the "
+        "along-strip tilt that shows up as per-frame magnification drift.\n"
+    )
+
+    # A tilt is only identifiable where the similarity fit is measurably
+    # worse than the noise floor: on a 0.2 px pair every model ties, l is
+    # free to wander (its corner extrapolation then diverges wildly), and
+    # including such pairs only dilutes the aggregates.
+    structured = [
+        pf
+        for nf in negative_fits
+        for pf in nf.pairs
+        if pf.l is not None and pf.similarity_rms >= STRUCTURED_RMS_FLOOR_PX
+    ]
+    shared_ls = [
+        nf.shared_l for nf in negative_fits if nf.shared_l is not None
+    ]
+    if structured and focal_px is not None:
+        print("## Verdict inputs\n")
+        print(
+            f"Aggregated over the {len(structured)} pairs whose similarity "
+            f"RMS reaches at least {STRUCTURED_RMS_FLOOR_PX} px — the pairs "
+            "where a tilt is actually identifiable. Pairs already at the "
+            "keypoint noise floor tie under every model and say nothing "
+            "about l.\n"
+        )
+        degrees = np.array(
+            [
+                [math.degrees(math.atan(pf.l[0] * focal_px)),
+                 math.degrees(math.atan(pf.l[1] * focal_px))]
+                for pf in structured
+            ]
+        )
+        table(
+            ["quantity", "tilt_x_deg", "tilt_y_deg"],
+            [
+                [
+                    "median of per-pair estimates",
+                    f"{np.median(degrees[:, 0]):+.3f}",
+                    f"{np.median(degrees[:, 1]):+.3f}",
+                ],
+                [
+                    "per-pair spread (max-min)",
+                    f"{np.ptp(degrees[:, 0]):.3f}",
+                    f"{np.ptp(degrees[:, 1]):.3f}",
+                ],
+                [
+                    "median of per-negative shared-l estimates",
+                    f"{np.median([math.degrees(math.atan(l[0] * focal_px)) for l in shared_ls]):+.3f}"
+                    if shared_ls else "—",
+                    f"{np.median([math.degrees(math.atan(l[1] * focal_px)) for l in shared_ls]):+.3f}"
+                    if shared_ls else "—",
+                ],
+                [
+                    "per-negative spread of shared-l (max-min)",
+                    f"{np.ptp([math.degrees(math.atan(l[0] * focal_px)) for l in shared_ls]):.3f}"
+                    if shared_ls else "—",
+                    f"{np.ptp([math.degrees(math.atan(l[1] * focal_px)) for l in shared_ls]):.3f}"
+                    if shared_ls else "—",
+                ],
+            ],
+        )
+        improvements = [pf.similarity_rms - pf.homography_rms for pf in structured]
+        restricted_vs_homography = [
+            pf.restricted_rms - pf.homography_rms for pf in structured
+        ]
+        if improvements:
+            print(
+                f"Median similarity→homography RMS improvement: "
+                f"{statistics.median(improvements):.3f} px. "
+                f"Median homography→shared-restricted gap: "
+                f"{statistics.median(restricted_vs_homography):.3f} px "
+                "(what one global tilt per negative fails to explain).\n"
+            )
+        print(
+            "Reading: a rigid tilt shows homography_rms ≈ restricted_rms "
+            "≪ similarity_rms with a small per-pair *and* per-negative "
+            "spread of l (the same two numbers on every negative, stable "
+            "across sessions). Film curl shows homography_rms ≪ "
+            "similarity_rms but l scattered pair to pair. No projective "
+            "component shows homography_rms ≈ similarity_rms.\n"
+        )
+        print(
+            "Caveat on the corner-divergence column: it extrapolates two "
+            "models that agree inside the overlap band out to the frame "
+            "corners, so it is only meaningful where the similarity fit is "
+            "measurably worse than the restricted fit — on noise-floor "
+            "pairs it amplifies an arbitrary l into a huge number."
+        )
 
     return 0
 

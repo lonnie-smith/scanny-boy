@@ -807,3 +807,104 @@ def test_failed_delete_of_removed_covered_tiff_warns_but_does_not_fail_the_run(
     # The record is still dropped even though its file could not be.
     roll = load_roll_manifest(roll_dir)
     assert [n.negative_id for n in roll.negatives] == ["hand-negative-01"]
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
+    """The rig-tilt rectification on the appendix A negatives
+    (docs/RECTIFICATION_PLAN.md section 9, slow tier): the staged six-file
+    selection is served as *tilted captures* — every frame warped through a
+    known W, so the true inter-frame map is W⁻¹·S·W — and each negative
+    must record an accepted rectification whose solve beats a control run
+    with the fit forced to reject."""
+    import cv2
+
+    from scanny_boy import rectification_fit
+    from scanny_boy.registration import Rectification, rectify
+
+    rect = Rectification(
+        l=np.array([1.2e-5, -8e-6]),
+        centre=np.array([_FRAME_SIZE[1] / 2.0, _FRAME_SIZE[0] / 2.0]),
+        frame_size=_FRAME_SIZE,
+        rms_before_px=1.0,
+        rms_after_px=0.5,
+        relative_improvement=0.5,
+        pair_count=2,
+    )
+    files = NEGATIVE_1 + NEGATIVE_2
+    input_dir = stage_samples(tmp_path, files)
+
+    scene = synthetic_scene(*_SCENE_SIZE, seed=1)
+    rotations = [0.0, 2.0, -1.5, 1.0, -0.5, 1.8]
+    frames, _ = cut_frames(
+        scene,
+        frame_size=_FRAME_SIZE,
+        count=len(files),
+        overlap=_OVERLAP,
+        rotations_deg=rotations,
+        seed=1,
+    )
+    height, width = _FRAME_SIZE
+    ys, xs = np.mgrid[0:height, 0:width]
+    pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
+    mapped = rectify(pts, rect).reshape(height, width, 2)
+    pixels_by_name = {}
+    for name, frame in zip(files, frames, strict=True):
+        warped = cv2.remap(
+            frame,
+            mapped[..., 0].astype(np.float32),
+            mapped[..., 1].astype(np.float32),
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        pixels_by_name[name] = encode_from_linear(
+            np.stack([warped, warped, warped], axis=-1)
+        )
+
+    def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
+        pixels = pixels_by_name[path.name]
+        frame_height, frame_width = pixels.shape[0], pixels.shape[1]
+        return raw_decode.DecodedFrame(
+            pixels=pixels, width=frame_width, height=frame_height
+        )
+
+    monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
+
+    def run_once(out_name: str) -> object:
+        monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
+        return run_full(
+            input_dir,
+            files,
+            _out_dir(tmp_path, out_name),
+            _PER_NEGATIVE,
+            run_id="run-run",
+            work_dir=None,
+            skip_sources=[],
+            jobs=1,
+            cancel=CancellationToken(),
+            emit=lambda event: None,
+        )
+
+    outcome = run_once("out-rectified")
+    assert outcome.status == "complete"
+    manifest = load_roll_manifest(_out_dir(tmp_path, "out-rectified"))
+    rectified = [n.rectification for n in manifest.negatives]
+    assert all(block is not None for block in rectified)
+    assert all(block["relative_improvement"] > 0.15 for block in rectified)
+    assert all(np.allclose(block["l"], rect.l, rtol=0.3) for block in rectified)
+    rms_rectified = [n.global_rms_px for n in manifest.negatives]
+
+    # The control: the same captures with the fit's improvement gate forced
+    # to reject anything, so the negative stitches exactly as it would have
+    # before this feature existed.
+    monkeypatch.setattr(rectification_fit, "MIN_RELATIVE_IMPROVEMENT", 5.0)
+    control = run_once("out-control")
+    assert control.status == "complete"
+    control_manifest = load_roll_manifest(_out_dir(tmp_path, "out-control"))
+    assert all(n.rectification is None for n in control_manifest.negatives)
+    rms_control = [n.global_rms_px for n in control_manifest.negatives]
+
+    for rectified_rms, control_rms in zip(rms_rectified, rms_control, strict=True):
+        assert rectified_rms < control_rms

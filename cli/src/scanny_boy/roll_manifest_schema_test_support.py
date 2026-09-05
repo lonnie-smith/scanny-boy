@@ -11,7 +11,8 @@ format version and nothing else. The v2 rules P3-2 carried through the
 contract chunk are gone with the supersession-tombstone removal; v4 added
 per-frame solved photometric gains and per-pair pre-gain overlap MAD; v5
 dropped the roll-level `shots_per_negative`; v6 added a per-frame solved
-scale (docs/STITCH_QUALITY_PLAN.md section 2).
+scale (docs/STITCH_QUALITY_PLAN.md section 2); v7 added the per-negative
+rig-tilt rectification record (docs/RECTIFICATION_PLAN.md section 7).
 """
 
 from __future__ import annotations
@@ -106,6 +107,14 @@ def _assert_matches_v5_roll_manifest_schema(
         for pair in negative["pairs"]:
             _require_keys(pair, defs["pair"]["required"])
         assert len(negative["fill_color"]) == 3
+        if negative["rectification"] is not None:
+            block = negative["rectification"]
+            _require_keys(block, defs["rectification"]["required"])
+            assert len(block["l"]) == 2
+            assert len(block["centre"]) == 2
+            assert len(block["frame_size"]) == 2
+            assert 0.0 <= block["relative_improvement"] <= 1.0
+            assert block["pair_count"] >= 1
 
 
 def assert_matches_roll_manifest_schema(

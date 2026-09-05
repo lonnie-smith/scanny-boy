@@ -225,6 +225,34 @@ hiding rather than showing. It could not be modelled honestly before radial
 distortion was corrected, because distortion produced a position-dependent
 apparent scale that a per-frame constant would have fitted wrongly.
 
+**Amendment (roll manifest format version 7): the stitch stage rectifies
+a measured rig tilt.** The pairwise fit is still rigid and the layout is
+still a similarity — both unchanged, both still what the acceptance gates
+measure. Before the layout solves, the stitch stage fits one rectifying
+homography `W = [[1,0,0],[0,1,0],[l1,l2,1]]` per negative, shared by every
+pair, from the accepted pairs' own inliers — two parameters,
+`scipy.optimize.least_squares` with each pair's similarity re-fit in closed
+form inside the residual. If it passes its acceptance gates (support,
+plausibility, measured improvement), all downstream geometry works in
+`W`-rectified coordinates and the canvas is rectified space. This is not a
+homographic placement: no pair and no frame is ever placed by a homography.
+`W` is a measured property of the rig applied in the same slot as the
+radial undistortion — a re-parameterisation of image coordinates under
+which the inter-frame maps really are the similarities the layout already
+solves.
+
+Why: the film plane is not fronto-parallel — measured at −0.10° to −0.38°
+across the strip on every manually-shot negative examined
+(`scripts/measure-tilt.py`), varying between sessions and absent in a
+burst — so the true frame-to-frame map is a homography, and a similarity
+fitted to it leaves a systematic residual per pair that accumulates along a
+strip into visibly curved film edges. The per-pair homography alternative
+was measured and rejected: eight free parameters per pair, fitted from a
+thin overlap band and extrapolated across the frame, degrade as overlap
+narrows, where the two-parameter rig model holds. The residual a single
+global tilt does not explain (~0.2 px, per-pair film-height variation) is
+recorded in the manifest, not corrected.
+
 ## Colour, resampling, and blending
 
 - All geometric and photometric work happens in **linear light** — decode to

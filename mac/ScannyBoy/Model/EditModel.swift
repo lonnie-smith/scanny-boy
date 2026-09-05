@@ -373,6 +373,7 @@ final class EditModel {
                 rotationQuarterTurns: turns,
                 flippedHorizontally: event.flippedHorizontally
                     ?? negative.flippedHorizontally,
+                rectification: negative.rectification,
                 toneGradeR: toneGradeR,
                 toneSnapGamma: toneSnapGamma
             )
