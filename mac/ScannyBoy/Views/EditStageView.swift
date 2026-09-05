@@ -410,8 +410,11 @@ private struct ToneAdjustmentPanel: View {
     let onCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
     let onReset: () -> Void
 
-    @State private var grade: Double = 115
-    @State private var snap: Double = 0
+    private static let defaultGrade: Double = 115
+    private static let defaultSnap: Double = 0
+
+    @State private var grade: Double = defaultGrade
+    @State private var snap: Double = defaultSnap
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -424,13 +427,11 @@ private struct ToneAdjustmentPanel: View {
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Slider(
+                ToneSlider(
                     value: $grade,
-                    in: 50...180,
-                    onEditingChanged: { editing in
-                        guard !editing else { return }
-                        onCommit(grade, snap)
-                    }
+                    range: 50...180,
+                    resetValue: Self.defaultGrade,
+                    onCommit: { onCommit(grade, snap) }
                 )
                 .accessibilityLabel("Paper grade")
                 Text("50–180, lower is harder")
@@ -447,13 +448,11 @@ private struct ToneAdjustmentPanel: View {
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Slider(
+                ToneSlider(
                     value: $snap,
-                    in: -0.5...0.5,
-                    onEditingChanged: { editing in
-                        guard !editing else { return }
-                        onCommit(grade, snap)
-                    }
+                    range: -0.5...0.5,
+                    resetValue: Self.defaultSnap,
+                    onCommit: { onCommit(grade, snap) }
                 )
                 .accessibilityLabel("Midtone snap")
                 Text("Midtone contrast trim")
@@ -464,9 +463,13 @@ private struct ToneAdjustmentPanel: View {
             Divider()
 
             HStack {
-                Button("Reset", action: onReset)
-                    .disabled(isBusy)
-                    .help("Remove the adjustment and return to the flat linear preview")
+                Button("Reset") {
+                    grade = Self.defaultGrade
+                    snap = Self.defaultSnap
+                    onReset()
+                }
+                .disabled(isBusy)
+                .help("Remove the adjustment and return to the flat linear preview")
                 Spacer()
                 if isBusy {
                     ProgressView()
@@ -475,11 +478,38 @@ private struct ToneAdjustmentPanel: View {
             }
         }
         .padding(16)
-        .onAppear {
-            if let toneGradeR, let toneSnapGamma {
-                grade = toneGradeR
-                snap = toneSnapGamma
-            }
+        .onAppear { syncFromModel() }
+        .onChange(of: toneGradeR) { syncFromModel() }
+        .onChange(of: toneSnapGamma) { syncFromModel() }
+    }
+
+    private func syncFromModel() {
+        if let toneGradeR, let toneSnapGamma {
+            grade = toneGradeR
+            snap = toneSnapGamma
+        } else {
+            grade = Self.defaultGrade
+            snap = Self.defaultSnap
         }
+    }
+}
+
+private struct ToneSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let resetValue: Double
+    let onCommit: () -> Void
+
+    var body: some View {
+        Slider(value: $value, in: range) { editing in
+            guard !editing else { return }
+            onCommit()
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                value = resetValue
+                onCommit()
+            }
+        )
     }
 }
