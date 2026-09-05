@@ -12,13 +12,17 @@ import numpy as np
 import pytest
 import tifffile
 
+from scanny_boy import previews
 from scanny_boy.edits import (
     EditFailure,
     run_edit_delete,
     run_edit_flip,
+    run_edit_render_region,
     run_edit_rotate,
+    run_edit_tone,
 )
 from scanny_boy.events import Code, WarningEvent
+from scanny_boy.library import repo
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.stitch_pipeline_test import _roll_dir
@@ -157,8 +161,8 @@ def test_flip_and_rotate_do_not_commute(stitched_roll):
 
     # flip∘rot-cw ≠ rot-cw∘flip: the mirrored image ends up turned the other
     # way relative to the mirror.
-    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (1, True, 0.0)
-    assert repo.net_edit_state(stitched_roll, "stitch-negative-02") == (3, True, 0.0)
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (1, True, 0.0, None)
+    assert repo.net_edit_state(stitched_roll, "stitch-negative-02") == (3, True, 0.0, None)
 
 
 def test_two_flips_cancel(stitched_roll):
@@ -290,6 +294,145 @@ def test_roll_info_reports_the_net_rotation(stitched_roll):
         repo.net_rotation_quarter_turns(stitched_roll, _NEGATIVE_ID) == 3
     )
     assert manifest.negative(_NEGATIVE_ID).preview_path is not None
+
+
+# --- edit tone --------------------------------------------------------------
+
+
+def _ramp_tiff(stitched_roll: Path) -> None:
+    """Rewrites the fixture TIFF with codes spanning the whole normalized
+    range — `np.arange(12)` sits entirely in the encode's headroom, where
+    every display value clips to white and no tone curve can show."""
+    ramp = np.linspace(0, 65535, 12, dtype=np.uint16).reshape(3, 4)
+    tifffile.imwrite(stitched_roll / "_DSC0001.tif", ramp)
+
+
+def test_tone_records_the_state_and_changes_the_preview(stitched_roll):
+    from scanny_boy import previews
+    from scanny_boy.library import repo
+
+    _ramp_tiff(stitched_roll)
+
+    (fields,) = run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, 90.0, 0.2, emit=lambda event: None
+    )
+
+    assert fields["edit"]["op"] == "tone"
+    assert fields["edit"]["params"] == {"grade_r": 90.0, "snap_gamma": 0.2}
+    assert fields["preview_path"] is not None and Path(fields["preview_path"]).exists()
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (
+        0,
+        False,
+        0.0,
+        {"grade_r": 90.0, "snap_gamma": 0.2},
+    )
+
+    # The toned preview differs from the flat look the same TIFF renders
+    # with no tone params.
+    manifest = load_roll_manifest(stitched_roll)
+    negative = manifest.negative(_NEGATIVE_ID)
+    toned = Path(negative.preview_path).read_bytes()
+    flat = previews.generate_preview(
+        stitched_roll,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+    )
+    assert toned != flat.read_bytes()
+
+
+def test_tone_coalesces_repeated_commits(stitched_roll):
+    from scanny_boy.library import repo
+
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 115.0, 0.0, emit=lambda event: None)
+    (fields,) = run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, 80.0, 0.3, emit=lambda event: None
+    )
+
+    edits = repo.edits_for(stitched_roll, _NEGATIVE_ID)
+    assert len(edits) == 1
+    assert edits[0]["id"] == fields["edit"]["id"]
+    assert edits[0]["params"] == {"grade_r": 80.0, "snap_gamma": 0.3}
+
+
+def test_tone_reset_returns_to_the_flat_look(stitched_roll):
+    from scanny_boy import previews
+
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 90.0, 0.2, emit=lambda event: None)
+
+    (fields,) = run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, None, None, emit=lambda event: None
+    )
+
+    assert fields["edit"]["params"] == {"grade_r": None, "snap_gamma": None}
+    manifest = load_roll_manifest(stitched_roll)
+    negative = manifest.negative(_NEGATIVE_ID)
+    reset_preview = Path(negative.preview_path).read_bytes()
+    flat = previews.generate_preview(
+        stitched_roll,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+    )
+    assert reset_preview == flat.read_bytes()
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID)[3] is None
+
+
+def test_tone_never_touches_the_published_tiff(stitched_roll):
+    before = _tiff_bytes(stitched_roll)
+
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, None, None, emit=lambda event: None)
+
+    assert _tiff_bytes(stitched_roll) == before
+
+
+def test_tone_composes_with_the_geometric_ops(stitched_roll):
+    from scanny_boy.library import repo
+
+    run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (
+        1,
+        False,
+        0.0,
+        {"grade_r": 70.0, "snap_gamma": 0.4},
+    )
+
+
+def test_tone_rejects_bad_params_without_recording(stitched_roll):
+    with pytest.raises(EditFailure) as exc_info:
+        run_edit_tone(stitched_roll, _NEGATIVE_ID, 900.0, 0.0, emit=lambda event: None)
+    assert exc_info.value.code is Code.INVALID_EDIT
+
+    with pytest.raises(EditFailure):
+        run_edit_tone(stitched_roll, _NEGATIVE_ID, 115.0, None, emit=lambda event: None)
+
+    assert repo.edits_for(stitched_roll, _NEGATIVE_ID) == []
+
+
+def test_render_region_applies_the_recorded_tone(stitched_roll, tmp_path):
+    _ramp_tiff(stitched_roll)
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.3, emit=lambda event: None)
+
+    toned = tmp_path / "toned.png"
+    flat = tmp_path / "flat.png"
+    run_edit_render_region(
+        stitched_roll,
+        _NEGATIVE_ID,
+        0,
+        0,
+        4,
+        3,
+        toned,
+        emit=lambda event: None,
+    )
+    previews.render_region(
+        stitched_roll / "_DSC0001.tif", 0, 0, 4, 3, destination=flat
+    )
+
+    assert toned.read_bytes() != flat.read_bytes()
 
 
 # --- edit delete -----------------------------------------------------------
