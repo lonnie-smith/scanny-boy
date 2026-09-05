@@ -360,6 +360,10 @@
         "flipped_horizontally": {
           "type": ["boolean", "null"],
           "description": "Derived, not stored: present in `roll info` output only — whether the ops log's net transform includes a horizontal mirror."
+        },
+        "fine_rotation_deg": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — the ops log's net clockwise fine rotation in degrees (the auto-seeded rebate squaring, composed with any user ops)."
         }
       }
     },

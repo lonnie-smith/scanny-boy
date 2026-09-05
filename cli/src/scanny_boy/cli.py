@@ -160,6 +160,12 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
     stitch.add_argument("--negatives", nargs="+", metavar="ID")
     stitch.add_argument("--flatfield", metavar="PROFILE_ID")
+    stitch.add_argument(
+        "--no-auto-rotate",
+        action="store_false",
+        dest="auto_rotate",
+        help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
 
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
@@ -176,6 +182,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
     run.add_argument("--flatfield", metavar="PROFILE_ID")
+    run.add_argument(
+        "--no-auto-rotate",
+        action="store_false",
+        dest="auto_rotate",
+        help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
 
     flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
     flatfield_subparsers = flatfield.add_subparsers(
@@ -331,6 +343,7 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 emit=writer.write,
                 negatives=args.negatives,
                 flatfield_profile_id=args.flatfield,
+                auto_rotate=args.auto_rotate,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -479,11 +492,12 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     # Net transform is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative["negative_id"]
         )
         negative["rotation_quarter_turns"] = quarter_turns
         negative["flipped_horizontally"] = flipped
+        negative["fine_rotation_deg"] = fine_angle
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -703,6 +717,7 @@ def _run_run_command(
                 cancel=cancel,
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
+                auto_rotate=args.auto_rotate,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))

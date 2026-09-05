@@ -439,6 +439,7 @@
           },
           "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
           "flipped_horizontally": { "type": "boolean" },
+          "fine_rotation_deg": { "type": "number" },
           "preview_path": { "type": ["string", "null"] }
         }
       }

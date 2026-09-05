@@ -42,6 +42,7 @@ from scanny_boy import (
     tiff_exif,
 )
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
+from scanny_boy.auto_rotate import estimate_rotation
 from scanny_boy.cancellation import CancellationToken, CancelledError
 from scanny_boy.composite import (
     FILL_COLOR,
@@ -60,6 +61,7 @@ from scanny_boy.detection import (
 )
 from scanny_boy.events import (
     Code,
+    EditRecorded,
     MetadataApplied,
     MetadataSkipped,
     NegativeDone,
@@ -172,6 +174,12 @@ class _SolvedNegative:
     frame_size: tuple[int, int] | None = None  # (height, width)
     ca_maps: dict | None = None  # profile CA object, "maps" mode only
     failure: tuple[Code, str] | None = None
+    # The rebate-squaring angle `auto_rotate.estimate_rotation` measured on
+    # this negative's composite — set at publish when the negative is new
+    # this run and auto-rotation is enabled. The op it seeds is appended
+    # right after the publish's manifest write, so `sync_previews` renders
+    # the net transform that already includes it.
+    auto_rotation_deg: float | None = None
 
 
 def _now_iso() -> str:
@@ -736,6 +744,7 @@ def run_stitch(
     emit: EmitFn,
     negatives: list[str] | None = None,
     flatfield_profile_id: str | None = None,
+    auto_rotate: bool = True,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -760,6 +769,12 @@ def run_stitch(
     (docs/GEOMETRIC_PLAN.md section 5.4). Omitting it on a roll whose
     `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH` through
     the existing check, with no new code.
+
+    `auto_rotate` (default on, `--no-auto-rotate` to turn it off) seeds each
+    *newly published* negative with the rebate-squaring rotation
+    `auto_rotate` estimates: one `rotate_fine` ops-log entry per negative,
+    emitted as `edit_recorded` — never an adopted negative, whose log (and
+    any user edits) already reflects its first publish.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -877,8 +892,8 @@ def run_stitch(
                 "none of the requested --negatives match a group in this work manifest",
             )
 
-    run_record, records_by_group, removals_by_group = _append_this_run(
-        roll, work_manifest, groups, run_id, invariants, work_dir
+    run_record, records_by_group, removals_by_group, new_negative_ids = (
+        _append_this_run(roll, work_manifest, groups, run_id, invariants, work_dir)
     )
 
     try:
@@ -959,6 +974,11 @@ def run_stitch(
     reference_bounds = _reference_bounds(roll)
 
     # 8. Composite and publish, negative by negative, in canonical order.
+    # Auto-rotation seeds only the negatives this run created fresh: an
+    # adopted one's ops log already reflects its first publish, and
+    # re-seeding would stack a second fine rotation on top of the first
+    # (and on top of any user edits made since).
+    auto_edits: list[dict] = []
     for entry in solved:
         if cancelled or cancel.cancelled:
             cancelled = True
@@ -970,7 +990,7 @@ def run_stitch(
             continue
 
         try:
-            _composite_and_publish(
+            auto_edit_fields = _composite_and_publish(
                 work_dir=work_dir,
                 out_dir=out_dir,
                 entry=entry,
@@ -982,6 +1002,10 @@ def run_stitch(
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
                 reference_bounds=reference_bounds,
+                seed_rotation=(
+                    auto_rotate
+                    and entry.record.negative_id in new_negative_ids
+                ),
             )
         except CancelledError:
             cancelled = True
@@ -1010,6 +1034,8 @@ def run_stitch(
                     ceils=tuple(float(v) for v in block["ceils"]),
                 )
             )
+        if auto_edit_fields is not None:
+            auto_edits.append(auto_edit_fields)
 
     if cancelled:
         status = "cancelled"
@@ -1029,7 +1055,9 @@ def run_stitch(
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows
-    # the CLI's rendering, never its own (Python owns every decision).
+    # the CLI's rendering, never its own (Python owns every decision). The
+    # previews regenerate from the net ops-log transform, which — for the
+    # negatives just seeded — already carries the auto-rotation.
     try:
         previews.sync_previews(out_dir, roll, published)
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
@@ -1039,6 +1067,14 @@ def run_stitch(
                 message=f"could not generate previews: {exc}",
             )
         )
+
+    # The seeded auto edits report through `edit_recorded` exactly as a user
+    # edit does, now that the previews exist to name. A preview failure
+    # above left the op recorded either way.
+    for fields in auto_edits:
+        negative = roll.negative(fields["negative_id"])
+        fields["preview_path"] = negative.preview_path
+        emit(EditRecorded(run_id=run_id, **fields))
 
     return StitchOutcome(status=status, published=published, failed=failed)
 
@@ -1070,7 +1106,7 @@ def _append_this_run(
     run_id: str,
     invariants: RollInvariants,
     work_dir: Path,
-) -> tuple[RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]]]:
+) -> tuple[RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]], set[str]]:
     """Add this stitch to the roll: its run record, its sources, and one
     negative per group, all per sections 3.3 and 3.4.
 
@@ -1094,8 +1130,10 @@ def _append_this_run(
     recorded params in step with whichever profile this run actually used.
 
     Returns the run record, this run's negatives keyed by work-manifest
-    group id (because the group id is what the solving loop carries), and
-    per group the covered records to remove at publish.
+    group id (because the group id is what the solving loop carries), per
+    group the covered records to remove at publish, and the ids of the
+    negatives this run created fresh — the set the auto-rotation seeding
+    distinguishes from adopted records.
     """
     if not roll.runs:
         roll.processing_params = invariants.processing_params
@@ -1134,6 +1172,7 @@ def _append_this_run(
 
     records: dict[str, NegativeRecord] = {}
     removals: dict[str, list[NegativeRecord]] = {}
+    new_negative_ids: set[str] = set()
     next_index = 1
     for group in groups:
         covered = _covered_negatives(roll, group.members)
@@ -1161,7 +1200,8 @@ def _append_this_run(
             )
             roll.negatives.append(record)
             records[group.group_id] = record
-    return run_record, records, removals
+            new_negative_ids.add(negative_id)
+    return run_record, records, removals, new_negative_ids
 
 
 def _friendly_failure_message(
@@ -1323,13 +1363,25 @@ def _composite_and_publish(
     source_index: int,
     profile=None,
     reference_bounds: list[Bounds] | None = None,
-) -> None:
+    seed_rotation: bool = False,
+) -> dict | None:
     """Composite one negative, apply the remaining section 3.4 gates, and
     stage-then-publish it atomically, exactly as Phase 1 publishes a group.
 
     With a calibrated profile, the warp folds in the profile's geometry and
     — in "maps" mode only — its chromatic aberration maps
-    (docs/GEOMETRIC_PLAN.md section 5.3)."""
+    (docs/GEOMETRIC_PLAN.md section 5.3).
+
+    With `seed_rotation` set, the composite also gets one pass of
+    `auto_rotate.estimate_rotation` and — when it finds a trustworthy
+    rebate tilt — one `rotate_fine` ops-log entry is appended to the
+    negative, seeded as the auto edit. Returns the `edit_recorded` field
+    set to emit (minus the preview path, which `sync_previews` fills in
+    later), or None when nothing was seeded.
+
+    The published TIFF itself is never rotated: the rotation is a
+    nondestructive ops-log entry, and its pixels are transformed only at
+    preview generation and export, exactly like a user's quarter turns."""
     layout = entry.layout
     assert layout is not None
     record = entry.record
@@ -1474,6 +1526,13 @@ def _composite_and_publish(
 
         exif, make, model = _read_curated_exif(paths[0])
 
+        # The auto-rotation is measured on the composite while its pixels
+        # are still in memory — the encoded image is exactly what previews
+        # and exports will see, fill sentinel and all.
+        auto_rotation_deg = (
+            estimate_rotation(result.image) if seed_rotation else None
+        )
+
         # Section 5.4 decision 4: the roll records the capture time the
         # negative's first frame actually carries, which is exactly the value
         # just read. `intended_`, `applied_`, and `date_override` stay null —
@@ -1525,6 +1584,31 @@ def _composite_and_publish(
         )
         _remove_covered_negatives(out_dir, roll, entry.covered_to_remove, run_id, emit)
         write_roll_manifest(out_dir, roll)
+
+        # The seeding happens last: the negative row exists (the earlier
+        # `running` manifest write merged it), the ops log entry lands
+        # before `sync_previews` renders the net transform, and the
+        # `edit_recorded` event is deferred until the preview path exists.
+        auto_edit_fields: dict | None = None
+        if auto_rotation_deg is not None:
+            entry.auto_rotation_deg = auto_rotation_deg
+            edit = repo.append_edit(
+                out_dir,
+                record.negative_id,
+                repo.ROTATE_FINE_OP,
+                {"angle_deg": auto_rotation_deg, "source": "auto"},
+            )
+            quarter_turns, flipped, fine_angle = repo.net_edit_state(
+                out_dir, record.negative_id
+            )
+            auto_edit_fields = {
+                "negative_id": record.negative_id,
+                "edit": edit,
+                "rotation_quarter_turns": quarter_turns,
+                "flipped_horizontally": flipped,
+                "fine_rotation_deg": fine_angle,
+            }
+
         emit(
             NegativeDone(
                 run_id=run_id,
@@ -1536,5 +1620,6 @@ def _composite_and_publish(
                 max_overlap_mad=worst,
             )
         )
+        return auto_edit_fields
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

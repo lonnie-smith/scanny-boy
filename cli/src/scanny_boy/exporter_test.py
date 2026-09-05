@@ -137,6 +137,28 @@ def test_apply_edits_mirrors_before_rotating_when_flipped():
         )
 
 
+def test_apply_edits_applies_the_fine_rotation_and_its_fill():
+    """The fine auto-rotation keeps the canvas dimensions and fills what it
+    uncovers with the stitching fill sentinel — the same empty-pixel
+    semantics the stitched canvas already has."""
+    image = np.zeros((40, 60), dtype=np.uint16)
+
+    rotated = apply_edits(image, 0, False, 45.0)
+
+    assert rotated.shape == (40, 60)
+    from scanny_boy.normalization import NORMALIZED_FILL, encode_normalized
+
+    fill_code = encode_normalized(
+        np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
+    )[0, 0, 0]
+    assert rotated[0, 0] == fill_code
+    assert rotated[20, 30] == 0
+
+
+def test_apply_edits_zero_fine_angle_changes_nothing():
+    np.testing.assert_array_equal(apply_edits(_ORIGINAL, 0, False, 0.0), _ORIGINAL)
+
+
 def test_export_applies_the_recorded_flip(stitched_roll, tmp_path):
     run_edit_flip(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
     output_dir = tmp_path / "export"
@@ -147,6 +169,28 @@ def test_export_applies_the_recorded_flip(stitched_roll, tmp_path):
     expected = _ORIGINAL[:, ::-1]
     np.testing.assert_array_equal(
         tifffile.imread(output_dir / "_DSC0001.tif"), expected
+    )
+
+
+def test_export_applies_the_seeded_fine_rotation(stitched_roll, tmp_path):
+    """The stitch stage's auto-seeded `rotate_fine` op reaches the exported
+    pixels through the same net-state replay as the user ops."""
+    from scanny_boy.library import repo
+
+    repo.append_edit(
+        stitched_roll,
+        _NEGATIVE_ID,
+        repo.ROTATE_FINE_OP,
+        {"angle_deg": 45.0, "source": "auto"},
+    )
+    output_dir = tmp_path / "export"
+
+    outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)
+
+    assert outcome.failed == []
+    np.testing.assert_array_equal(
+        tifffile.imread(output_dir / "_DSC0001.tif"),
+        apply_edits(_ORIGINAL, 0, False, 45.0),
     )
 
 

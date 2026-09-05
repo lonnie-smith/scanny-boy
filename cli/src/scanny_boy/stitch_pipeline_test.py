@@ -13,6 +13,7 @@ from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.events import (
     Code,
+    EditRecorded,
     MetadataApplied,
     MetadataSkipped,
     NegativeDone,
@@ -22,6 +23,7 @@ from scanny_boy.events import (
     WarningEvent,
 )
 from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
+from scanny_boy.library import repo
 from scanny_boy.linear import encode_from_linear
 from scanny_boy.manifest import (
     CuratedMetadata,
@@ -1236,3 +1238,82 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
     with pytest.raises(OutputFolderError) as exc_info:
         plan_rerun(roll_out, phase_one)
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
+
+
+# --- auto-rotation seeding -------------------------------------------------
+
+
+def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(tmp_path, monkeypatch):
+    """A newly published negative gets the estimated rebate tilt seeded as
+    one `rotate_fine` ops-log entry — emitted as `edit_recorded`, preview
+    regenerated through the net transform that already carries it — while
+    the published TIFF itself is never rotated."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path, "autorot")
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
+    events: list = []
+
+    outcome = _stitch(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    (edit,) = repo.edits_for(out_dir, "stitch-negative-01")
+    assert edit["op"] == repo.ROTATE_FINE_OP
+    assert edit["params"] == {"angle_deg": 1.5, "source": "auto"}
+    assert repo.net_edit_state(out_dir, "stitch-negative-01") == (0, False, 1.5)
+
+    (recorded,) = [e for e in events if isinstance(e, EditRecorded)]
+    assert recorded.negative_id == "stitch-negative-01"
+    assert recorded.fine_rotation_deg == pytest.approx(1.5)
+    assert recorded.preview_path is not None
+    assert Path(recorded.preview_path).exists()
+
+    manifest = load_roll_manifest(out_dir)
+    negative = manifest.negative("stitch-negative-01")
+    assert negative.preview_path == recorded.preview_path
+
+
+def test_auto_rotation_seeds_nothing_when_the_estimator_declines(
+    tmp_path, monkeypatch
+):
+    """The synthetic fixtures carry no rebate, so the real estimator
+    declines; the seeded op log is empty either way."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path, "norebate")
+
+    outcome = _stitch(work_dir, out_dir)
+
+    assert outcome.status == "complete"
+    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+
+
+def test_auto_rotation_off_seeds_nothing(tmp_path, monkeypatch):
+    def _fail(image):
+        raise AssertionError("the estimator must not run with auto-rotate off")
+
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path, "norot")
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", _fail)
+
+    outcome = _stitch(work_dir, out_dir, auto_rotate=False)
+
+    assert outcome.status == "complete"
+    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+
+
+def test_a_re_stitch_never_re_seeds_the_auto_rotation(tmp_path, monkeypatch):
+    """An adopted negative keeps the rotation its first publish seeded:
+    re-seeding would stack a second fine rotation on top of it."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path, "reseeds")
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
+
+    _stitch(work_dir, out_dir)
+
+    def _fail(image):
+        raise AssertionError("an adopted negative must not be re-seeded")
+
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", _fail)
+    second = _stitch(work_dir, out_dir, run_id="restitch-run")
+
+    assert second.status == "complete"
+    assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1

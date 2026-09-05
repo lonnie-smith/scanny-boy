@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
+from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
     export_metadata_for,
@@ -57,15 +58,23 @@ class ExportOutcome:
 
 
 def apply_edits(
-    image: np.ndarray, rotation_quarter_turns: int, flipped_horizontally: bool = False
+    image: np.ndarray,
+    rotation_quarter_turns: int,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
 ) -> np.ndarray:
     """The single place an op log meets pixels: pure, ordered, and the same
     replay the preview generator performs at thumbnail scale. The canonical
-    net transform mirrors the original horizontally first (when flipped)
-    and then rotates: quarter turns count clockwise; np.rot90 turns
+    net transform mirrors the original horizontally first (when flipped),
+    then applies the fine auto-rotation (`auto_rotate.rotate_with_fill`:
+    the rotation keeps the canvas dimensions and fills what it uncovers
+    with the stitching fill sentinel), then rotates. Quarter turns count
+    clockwise, the fine angle counts clockwise too; np.rot90 turns
     counter-clockwise, so negate."""
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
+    if abs(fine_angle_deg) >= 1e-9:
+        image = rotate_with_fill(image, fine_angle_deg)
     return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
@@ -206,10 +215,10 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        quarter_turns, flipped = repo.net_edit_state(
+        quarter_turns, flipped, fine_angle = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
-        rotated = apply_edits(image, quarter_turns, flipped)
+        rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
         destination = output_dir / negative.output["name"]
         _write_export(destination, rotated, negative)
         _write_metadata(destination, roll, negative, emit)
