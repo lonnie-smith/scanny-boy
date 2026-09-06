@@ -21,7 +21,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    public static let supportedProtocolVersion = 10
+    /// Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: the
+    /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
+    /// the roll manifest's top-level `film` block, and the
+    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes.
+    public static let supportedProtocolVersion = 11
 
     public let protocolVersion: Int
     public let kind: Kind

@@ -131,6 +131,8 @@
         "SCAN_CLIPPED",
         "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
+        "MONO_DETECT_AMBIGUOUS",
+        "MONO_DECISION_CONFLICT",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -212,7 +214,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 10
+      "const": 11
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {

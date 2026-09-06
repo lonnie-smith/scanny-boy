@@ -750,6 +750,12 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert "mono_detect_max_samples" not in params
     assert "mono_mad_floor" not in params
 
+    # §2's gate and §3's merge weights DO shape published output, so they
+    # are roll invariants from the step that introduces them.
+    assert params["mono_chroma_max"] == nz.MONO_CHROMA_MAX
+    assert params["colour_chroma_min"] == nz.COLOUR_CHROMA_MIN
+    assert params["mono_merge_weights"] == list(nz.MONO_MERGE_WEIGHTS)
+
 
 # --- MONOCHROME_PLAN section 5.1: the forward shim -----------------------------
 
@@ -782,6 +788,25 @@ def test_upgrade_normalize_params_covers_keys_added_later(monkeypatch):
         nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
     )
     upgraded = nz.upgrade_normalize_params(v1)
+    assert upgraded["future_threshold"] == 1.5
+    assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
+
+
+def test_upgrade_normalize_params_also_covers_a_v2_block_missing_a_later_key(
+    monkeypatch,
+):
+    """The real gap this shim must close: a roll stitched between §1's
+    format_version-2 bump and a later step (§2/§3) adding a new
+    build_params() key already carries `format_version: 2` — it is not a
+    v1 block — but its stored `normalize` block still lacks that key.
+    Gating the shim on `format_version == 1` alone would leave such a roll
+    unable to compare equal to a fresh build; the shim must upgrade any
+    block missing a key, regardless of its own declared version."""
+    v2_before_the_new_key = {**build_params(), "format_version": 2}
+    monkeypatch.setattr(
+        nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
+    )
+    upgraded = nz.upgrade_normalize_params(v2_before_the_new_key)
     assert upgraded["future_threshold"] == 1.5
     assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
 
@@ -1001,6 +1026,107 @@ def test_real_colour_negatives_score_above_every_synthetic_mono_fixture(tmp_path
         pixels = tifffile.imread(out_dir / f"{Path(name).stem}.tif")
         statistic = nz.measure_mono_statistic(pixels)
         assert statistic.chroma > floor, name
+
+
+# --- MONOCHROME_PLAN section 2: the roll decision -------------------------------
+
+
+def test_classify_mono_chroma_at_and_below_the_mono_ceiling():
+    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX)
+    assert gate.kind is nz.FilmKind.MONOCHROME
+    assert not gate.ambiguous
+    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX - 0.05)
+    assert gate.kind is nz.FilmKind.MONOCHROME
+    assert not gate.ambiguous
+
+
+def test_classify_mono_chroma_at_and_above_the_colour_floor():
+    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN)
+    assert gate.kind is nz.FilmKind.COLOUR
+    assert not gate.ambiguous
+    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN + 0.5)
+    assert gate.kind is nz.FilmKind.COLOUR
+    assert not gate.ambiguous
+
+
+def test_classify_mono_chroma_between_the_thresholds_is_ambiguous_and_defaults_colour():
+    midpoint = (nz.MONO_CHROMA_MAX + nz.COLOUR_CHROMA_MIN) / 2.0
+    gate = nz.classify_mono_chroma(midpoint)
+    assert gate.kind is nz.FilmKind.COLOUR
+    assert gate.ambiguous
+
+
+def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
+    """FilmKind must drop into `icc_profile.published_profile_kind`'s
+    plain-string comparison unchanged (MONOCHROME_PLAN §2/§4)."""
+    from scanny_boy.icc_profile import ProfileKind, published_profile_kind
+
+    assert published_profile_kind(nz.FilmKind.MONOCHROME) is ProfileKind.DENSITY_GREY
+    assert published_profile_kind(nz.FilmKind.COLOUR) is ProfileKind.DENSITY
+    assert nz.FilmKind.MONOCHROME == "monochrome"
+    assert nz.FilmKind.COLOUR == "colour"
+
+
+# --- MONOCHROME_PLAN section 3: the collapse -------------------------------------
+
+
+def test_collapse_to_mono_recovers_the_plane_up_to_a_constant_offset():
+    """§3.4: an image whose three channels are one plane under three
+    different per-channel *offsets* (§3.1's model: same silver density,
+    different film-base/CFA level) collapses back to that plane, shifted
+    by one constant everywhere — the weighted mean of the removed offsets,
+    which step 3 adds back."""
+    plane_linear = _mono_plane(seed=11)
+    plane_log = np.log10(plane_linear).astype(np.float32)
+    offsets = (0.05, -0.2, 0.3)
+    img_log = np.stack([plane_log + o for o in offsets], axis=-1)
+    covered = np.ones(img_log.shape[:2], dtype=bool)
+
+    merged = nz.collapse_to_mono(img_log, covered)
+    assert merged.shape == (*img_log.shape[:2], 1)
+
+    residual = merged[..., 0] - plane_log
+    assert float(np.ptp(residual)) < 1e-4  # constant everywhere
+    expected_shift = sum(
+        w * o for w, o in zip(nz.MONO_MERGE_WEIGHTS, offsets, strict=True)
+    )
+    assert float(np.median(residual)) == pytest.approx(expected_shift, abs=1e-4)
+
+
+def test_collapse_to_mono_median_is_the_weighted_mean_of_input_medians():
+    """§3.1 step 3's actual guarantee: the merged channel's median equals
+    the weighted mean of the input channels' medians — not that the output
+    brackets its inputs, which a weighted mean never does by construction.
+
+    A shared plane under per-channel offsets, not independent per-channel
+    noise: `median` is shift-invariant (`median(x + c) == median(x) + c`)
+    but not additive over independent random variables in general, so
+    proving this property needs channels whose only difference is a
+    constant shift — exactly §3.1's own model of a silver negative."""
+    plane_linear = _mono_plane(seed=13)
+    plane_log = np.log10(plane_linear).astype(np.float32)
+    offsets = (0.1, -0.15, 0.25)
+    img_log = np.stack([plane_log + o for o in offsets], axis=-1)
+    covered = np.ones(img_log.shape[:2], dtype=bool)
+
+    merged = nz.collapse_to_mono(img_log, covered)
+
+    input_medians = [float(np.median(img_log[..., ch])) for ch in range(3)]
+    expected = sum(
+        w * m for w, m in zip(nz.MONO_MERGE_WEIGHTS, input_medians, strict=True)
+    )
+    assert float(np.median(merged)) == pytest.approx(expected, abs=1e-4)
+
+
+def test_collapse_to_mono_range_sits_inside_the_inputs_envelope():
+    rng = np.random.default_rng(6)
+    img_log = (-1.0 + 0.3 * rng.standard_normal((32, 32, 3))).astype(np.float32)
+    covered = np.ones((32, 32), dtype=bool)
+
+    merged = nz.collapse_to_mono(img_log, covered)
+
+    assert float(merged.min()) >= float(img_log.min()) - 1e-5
+    assert float(merged.max()) <= float(img_log.max()) + 1e-5
 
 
 # --- golden values against NegPy (requires the reference implementation) -------

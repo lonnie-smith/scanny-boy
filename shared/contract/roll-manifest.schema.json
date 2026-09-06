@@ -37,6 +37,26 @@
         }
       ]
     },
+    "filmDecision": {
+      "description": "MONOCHROME_PLAN section 2.3: the roll's frozen film-kind decision, written on the roll's first stitch run and never rewritten (except a one-time section 5.2 upgrade of a legacy roll's implicit colour default).",
+      "type": "object",
+      "required": ["kind", "source", "statistic", "samples", "detector_version"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["colour", "monochrome"] },
+        "source": { "type": "string", "enum": ["auto", "manual"] },
+        "statistic": {
+          "type": ["number", "null"],
+          "description": "The deciding median chroma statistic; null when `source` is manual."
+        },
+        "samples": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Which negatives' `mono` evidence the decision was based on."
+        },
+        "detector_version": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
     "source": {
       "type": "object",
       "required": ["filename", "absolute_path", "size", "mtime", "sha256", "run_id"],
@@ -508,6 +528,10 @@
       "type": "array",
       "items": { "$ref": "#/definitions/negative" }
     },
-    "metadata": { "$ref": "#/definitions/metadata" }
+    "metadata": { "$ref": "#/definitions/metadata" },
+    "film": {
+      "description": "MONOCHROME_PLAN section 2.3. Optional (unlike every other top-level field) even though current builds always write it: a manifest predating section 2 has none, and section 5.2 treats a missing block as an implicit frozen colour rather than requiring a migration.",
+      "oneOf": [{ "$ref": "#/definitions/filmDecision" }, { "type": "null" }]
+    }
   }
 }
