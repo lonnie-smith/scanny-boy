@@ -665,7 +665,6 @@ def append_tone_edit(
     append-only discipline; slider commits would otherwise pile up dead
     rows). Returns the row as a dict, same shape as `append_edit`'s.
     Raises `ValueError` on out-of-range or mismatched params."""
-    from scanny_boy.roll_manifest import _now_iso
 
     validated = validated_tone_params(params)
     return _coalesce_state_edit(roll_dir, negative_id, TONE_OP, validated)
@@ -700,7 +699,6 @@ def _tone_neutral_defaults() -> dict[str, float]:
 
 
 def _color_neutral_defaults() -> dict[str, float]:
-    from scanny_boy import color
 
     return {
         "wb_cyan": 0.0,

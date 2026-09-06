@@ -105,6 +105,6 @@ def test_kelvin_round_trips():
     for kelvin in (3000.0, 5500.0, 12000.0):
         m, y = color.kelvin_to_wb(kelvin, 0.1, -0.05)
         assert color.wb_to_kelvin(m, y) == pytest.approx(kelvin, rel=0.01)
-        m2, y2 = color.kelvin_to_wb(kelvin + 500, m, y)
+        m2, _y2 = color.kelvin_to_wb(kelvin + 500, m, y)
         assert m2 - m == pytest.approx(0.0, abs=0.15)
     assert color.wb_to_kelvin(0.0, 0.0) == pytest.approx(5500.0)

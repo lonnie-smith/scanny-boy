@@ -364,7 +364,6 @@ def test_append_tone_edit_reset_records_null_params(roll_dir):
 
 
 def test_append_tone_edit_validates_its_params(roll_dir):
-    from scanny_boy import tone
 
     _negative_in(roll_dir, "rid-1-negative-01")
 
@@ -385,7 +384,6 @@ def test_append_tone_edit_validates_its_params(roll_dir):
 
 
 def test_legacy_two_key_tone_row_reads_with_neutral_defaults(roll_dir):
-    from scanny_boy import tone
 
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(

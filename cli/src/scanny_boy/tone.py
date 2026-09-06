@@ -196,8 +196,7 @@ def _curve_raw(
     )
     if tone_params.shoulder < 0:
         a_shoulder = a_shoulder * (1.0 - tone_params.shoulder * KNEE_SHARPEN)
-    if shoulder_ceil < toe_floor + 0.1:
-        shoulder_ceil = toe_floor + 0.1
+    shoulder_ceil = max(shoulder_ceil, toe_floor + 0.1)
     v = toe_floor + _softplus(a_toe * (v - toe_floor)) / a_toe
     v = shoulder_ceil - _softplus(a_shoulder * (shoulder_ceil - v)) / a_shoulder
     return v

@@ -372,7 +372,6 @@ def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
     image = (image * 3000).astype(np.uint16)
     roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
 
-    from scanny_boy import tone
 
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)

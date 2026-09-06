@@ -592,7 +592,6 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
 
 def _color_flag_updates(args) -> dict[str, float | None]:
     """Non-reset colour flag values explicitly passed on the command line."""
-    from scanny_boy import color
 
     updates: dict[str, float | None] = {}
     mapping = {
