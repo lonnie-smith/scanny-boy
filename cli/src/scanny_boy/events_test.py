@@ -228,7 +228,7 @@ def test_protocol_version_is_eleven():
     plus seven curve controls and two auto flags on `edit tone`, the
     matching seven `tone_*` fields on `roll info`'s negatives, and
     `TONE_METERING_UNAVAILABLE` (docs/MONOCHROME_PLAN.md, docs/DENSITY_PLAN.md)."""
-    assert PROTOCOL_VERSION == 11
+    assert PROTOCOL_VERSION == 12
 
 
 def test_new_event_kinds_round_trip():

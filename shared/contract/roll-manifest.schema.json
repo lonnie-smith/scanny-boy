@@ -487,6 +487,58 @@
         "tone_shoulder_width": {
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — the net shoulder width from the latest `tone` op."
+        },
+        "color_wb_cyan": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — global cyan from the latest `color` op."
+        },
+        "color_wb_magenta": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — global magenta from the latest `color` op."
+        },
+        "color_wb_yellow": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — global yellow from the latest `color` op."
+        },
+        "color_shadow_cyan": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — shadow cyan from the latest `color` op."
+        },
+        "color_shadow_magenta": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — shadow magenta from the latest `color` op."
+        },
+        "color_shadow_yellow": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — shadow yellow from the latest `color` op."
+        },
+        "color_highlight_cyan": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — highlight cyan from the latest `color` op."
+        },
+        "color_highlight_magenta": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — highlight magenta from the latest `color` op."
+        },
+        "color_highlight_yellow": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — highlight yellow from the latest `color` op."
+        },
+        "color_cast_removal": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — cast removal from the latest `color` op."
+        },
+        "color_dye_separation": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — dye separation from the latest `color` op."
+        },
+        "color_separation_damping": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — separation damping from the latest `color` op."
+        },
+        "color_temperature": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."
         }
       }
     },

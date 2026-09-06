@@ -340,6 +340,32 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--snap"))
     }
 
+    // MARK: - Edit color
+
+    @Test("edit color with temperature omits that region's magenta")
+    func editColorTemperatureArguments() {
+        let command = CLICommand.editColor(
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: .neutral,
+            region: "global",
+            temperatureKelvin: 3200
+        )
+        #expect(command.arguments.contains("--temperature"))
+        #expect(command.arguments.contains("3200.0"))
+        #expect(!command.arguments.contains { $0 == "--magenta" })
+        #expect(command.arguments.contains("--cyan"))
+    }
+
+    @Test("edit color with no adjustment is a reset")
+    func editColorResetArguments() {
+        let command = CLICommand.editColor(
+            roll: Self.out, negatives: ["neg-01"], adjustment: nil
+        )
+        #expect(command.arguments.last == "--reset")
+        #expect(!command.arguments.contains("--cyan"))
+    }
+
     // MARK: - Protocol version 6: flat field
 
     @Test("run carries --flatfield when a profile is chosen")

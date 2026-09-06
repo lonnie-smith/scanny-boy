@@ -215,7 +215,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 11
+      "const": 12
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -334,6 +334,7 @@
               "edit flip",
               "edit delete",
               "edit tone",
+              "edit color",
               "edit render-region",
               "export",
               "flatfield create",

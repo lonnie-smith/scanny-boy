@@ -255,9 +255,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":11,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":11,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":12,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -327,9 +327,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":11,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":11,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":11,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":12,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":12,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":12,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi
@@ -448,7 +448,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":11,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":12,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -467,11 +467,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":11,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":12,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -516,7 +516,7 @@ struct EditModelTests {
         let paramsJSON = toneParamsJSON(from: adjustment)
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":11,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":12,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"tone",\
             "params":{\(paramsJSON)},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}
@@ -535,11 +535,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "toned").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":11,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":12,"event":"started","command":"edit tone"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(toned)'
@@ -595,7 +595,7 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
-        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat"))
+        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral"))
     }
 
     @Test("A rotate event leaves the tone state alone")
@@ -615,7 +615,7 @@ struct EditModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let event =
             """
-            {"protocol_version":11,"event":"edit_recorded","negative_id":"n1",\
+            {"protocol_version":12,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":2,"negative_id":"n1","position":2,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:01Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -629,9 +629,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":11,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":12,"event":"started","command":"edit rotate"}'
               echo '\(event)'
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -660,7 +660,20 @@ struct EditModelTests {
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
-        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat"))
+        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral"))
+    }
+
+    @Test("The render generation token carries the colour state")
+    func testRenderGenerationCarriesColor() {
+        let neutral = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+        let separated = Self.multiNegative(
+            id: "n1", toneGradeR: nil, toneSnapGamma: nil, colorDyeSeparation: 1.2
+        )
+
+        #expect(
+            EditModel.renderGeneration(of: neutral)
+                != EditModel.renderGeneration(of: separated)
+        )
     }
 
     @Test("scheduleTone debounces rapid slider commits into one CLI round trip")
@@ -747,14 +760,14 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":11,"event":"started","command":"edit tone"}'
-              echo '{"protocol_version":11,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":12,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":12,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -784,15 +797,15 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":11,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":12,"event":"started","command":"edit tone"}'
               sleep 0.2
-              echo '{"protocol_version":11,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":12,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":11,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -802,7 +815,11 @@ struct EditModelTests {
     }
 
     private static func multiNegative(
-        id: String, toneGradeR: Double?, toneSnapGamma: Double?, toneToe: Double? = nil
+        id: String,
+        toneGradeR: Double?,
+        toneSnapGamma: Double?,
+        toneToe: Double? = nil,
+        colorDyeSeparation: Double? = nil
     ) -> RollManifest.Negative {
         RollManifest.Negative(
             negativeID: id,
@@ -835,6 +852,19 @@ struct EditModelTests {
             toneToeWidth: toneGradeR == nil ? nil : 2.5,
             toneShoulder: toneGradeR == nil ? nil : 0,
             toneShoulderWidth: toneGradeR == nil ? nil : 2.5,
+            colorWbCyan: colorDyeSeparation == nil ? nil : 0,
+            colorWbMagenta: colorDyeSeparation == nil ? nil : 0,
+            colorWbYellow: colorDyeSeparation == nil ? nil : 0,
+            colorShadowCyan: nil,
+            colorShadowMagenta: nil,
+            colorShadowYellow: nil,
+            colorHighlightCyan: nil,
+            colorHighlightMagenta: nil,
+            colorHighlightYellow: nil,
+            colorCastRemoval: colorDyeSeparation == nil ? nil : 0,
+            colorDyeSeparation: colorDyeSeparation,
+            colorSeparationDamping: colorDyeSeparation == nil ? nil : 0,
+            colorTemperature: nil,
             errorCode: nil,
             errorMessage: nil,
             maxOverlapMAD: nil,

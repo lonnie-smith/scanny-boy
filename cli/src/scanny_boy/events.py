@@ -22,20 +22,11 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
-# Protocol 11 adds monochrome film support and extends the preview tone
-# adjustment: `--film-kind {auto,colour,monochrome}` on `stitch` and `run`,
-# the top-level `film` block in the roll manifest and `roll info` (the
-# roll's frozen film-kind decision — `kind`, `source`, `statistic`,
-# `samples`, `detector_version`), seven curve controls and two auto flags
-# on `edit tone`, the matching seven `tone_*` fields on `roll info`'s
-# negatives, and three warning codes — `TONE_METERING_UNAVAILABLE`,
-# `MONO_DETECT_AMBIGUOUS` (an unseeded roll's statistic landed between
-# the thresholds; colour was assumed), and `MONO_DECISION_CONFLICT` (a
-# later run's fresh evidence disagrees with the roll's already-frozen
-# kind; the frozen kind is kept). A monochrome roll's published TIFFs are
-# single-channel, tagged with the new `ScannyBoy-Density-Grey-v1.icc`
-# profile. Protocol 10's roll model is unchanged.
-PROTOCOL_VERSION = 11
+# Protocol 12 adds the preview colour adjustment: the `edit color`
+# subcommand, thirteen derived `color_*` fields (twelve stored params plus
+# `color_temperature`) and `film_kind` on `roll info`, and the `color` op
+# in the ops log. Protocol 11's roll model and tone adjustment are unchanged.
+PROTOCOL_VERSION = 12
 
 
 class EventType(enum.StrEnum):

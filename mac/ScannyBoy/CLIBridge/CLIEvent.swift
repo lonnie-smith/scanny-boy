@@ -28,7 +28,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// and extends the preview tone adjustment (seven curve controls and
     /// two auto flags on `edit tone`, the matching `tone_*` fields in the
     /// roll manifest, and the `TONE_METERING_UNAVAILABLE` warning code).
-    public static let supportedProtocolVersion = 11
+    public static let supportedProtocolVersion = 12
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -273,6 +273,34 @@ extension CLIEvent {
                 shoulder: params["shoulder"]?.doubleValue ?? 0,
                 shoulderWidth: params["shoulder_width"]?.doubleValue
                     ?? ToneAdjustment.neutral.shoulderWidth
+            )
+        )
+    }
+
+    /// The recorded op's colour params when it is a `color` op.
+    public var recordedColor: ColorAdjustment?? {
+        guard let params = edit?["params"]?.objectValue,
+            case .some = params["wb_cyan"]
+        else { return nil }
+        guard let wbCyan = params["wb_cyan"]?.doubleValue,
+            let wbMagenta = params["wb_magenta"]?.doubleValue,
+            let wbYellow = params["wb_yellow"]?.doubleValue
+        else { return .some(nil) }
+        return .some(
+            ColorAdjustment(
+                wbCyan: wbCyan,
+                wbMagenta: wbMagenta,
+                wbYellow: wbYellow,
+                shadowCyan: params["shadow_cyan"]?.doubleValue ?? 0,
+                shadowMagenta: params["shadow_magenta"]?.doubleValue ?? 0,
+                shadowYellow: params["shadow_yellow"]?.doubleValue ?? 0,
+                highlightCyan: params["highlight_cyan"]?.doubleValue ?? 0,
+                highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
+                highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
+                castRemoval: params["cast_removal"]?.doubleValue ?? 0,
+                dyeSeparation: params["dye_separation"]?.doubleValue
+                    ?? ColorAdjustment.neutral.dyeSeparation,
+                separationDamping: params["separation_damping"]?.doubleValue ?? 0
             )
         )
     }

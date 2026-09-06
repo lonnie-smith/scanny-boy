@@ -13,6 +13,7 @@ from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
 from scanny_boy.edits import (
     EditFailure,
+    run_edit_color,
     run_edit_delete,
     run_edit_flip,
     run_edit_render_region,
@@ -450,6 +451,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="reset to the flat linear preview, removing the adjustment",
     )
 
+    edit_color = edit_subparsers.add_parser(
+        "color",
+        help="Record a preview colour adjustment for one or more negatives.",
+    )
+    edit_color.add_argument("--roll", required=True, metavar="DIR")
+    edit_color.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to adjust; repeat for a selection",
+    )
+    for flag, help_text in (
+        ("--cyan", "global cyan filtration, -1..1"),
+        ("--magenta", "global magenta filtration, -1..1"),
+        ("--yellow", "global yellow filtration, -1..1"),
+        ("--shadow-cyan", "shadows cyan, -1..1"),
+        ("--shadow-magenta", "shadows magenta, -1..1"),
+        ("--shadow-yellow", "shadows yellow, -1..1"),
+        ("--highlight-cyan", "highlights cyan, -1..1"),
+        ("--highlight-magenta", "highlights magenta, -1..1"),
+        ("--highlight-yellow", "highlights yellow, -1..1"),
+    ):
+        edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
+    edit_color.add_argument(
+        "--cast-removal",
+        type=float,
+        metavar="V",
+        help="cast removal strength, 0..1 (0 neutral)",
+    )
+    edit_color.add_argument(
+        "--dye-separation",
+        type=float,
+        metavar="V",
+        help="dye separation, 0.5..1.5 (1.0 neutral)",
+    )
+    edit_color.add_argument(
+        "--separation-damping",
+        type=float,
+        metavar="V",
+        help="separation damping, 0..1 (0 neutral)",
+    )
+    edit_color.add_argument(
+        "--temperature",
+        type=float,
+        metavar="K",
+        help="3000-12000 K lever over the region's M/Y pair",
+    )
+    edit_color.add_argument(
+        "--region",
+        choices=("global", "shadows", "highlights"),
+        default="global",
+        help="which region --temperature drives (default: global)",
+    )
+    edit_color.add_argument(
+        "--reset",
+        action="store_true",
+        help="remove the colour adjustment",
+    )
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -493,6 +554,48 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
             args.shoulder_width if args.shoulder_width is not None else tone.WIDTH_REFERENCE
         ),
     }
+
+
+def _color_flag_updates(args) -> dict[str, float | None]:
+    """Non-reset colour flag values explicitly passed on the command line."""
+    from scanny_boy import color
+
+    updates: dict[str, float | None] = {}
+    mapping = {
+        "cyan": "wb_cyan",
+        "magenta": "wb_magenta",
+        "yellow": "wb_yellow",
+        "shadow_cyan": "shadow_cyan",
+        "shadow_magenta": "shadow_magenta",
+        "shadow_yellow": "shadow_yellow",
+        "highlight_cyan": "highlight_cyan",
+        "highlight_magenta": "highlight_magenta",
+        "highlight_yellow": "highlight_yellow",
+        "cast_removal": "cast_removal",
+        "dye_separation": "dye_separation",
+        "separation_damping": "separation_damping",
+    }
+    for arg_name, key in mapping.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            updates[key] = value
+    return updates
+
+
+def _validate_color_temperature_args(args) -> None:
+    if args.temperature is None:
+        return
+    region = args.region
+    if region == "global" and args.magenta is not None:
+        raise ValueError("--temperature is mutually exclusive with --magenta")
+    if region == "shadows" and args.shadow_magenta is not None:
+        raise ValueError(
+            "--temperature is mutually exclusive with --shadow-magenta"
+        )
+    if region == "highlights" and args.highlight_magenta is not None:
+        raise ValueError(
+            "--temperature is mutually exclusive with --highlight-magenta"
+        )
 
 
 def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
@@ -664,12 +767,11 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     # Net state is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-            roll_dir, negative["negative_id"]
-        )
-        negative["rotation_quarter_turns"] = quarter_turns
-        negative["flipped_horizontally"] = flipped
-        negative["fine_rotation_deg"] = fine_angle
+        state = repo.net_edit_state(roll_dir, negative["negative_id"])
+        negative["rotation_quarter_turns"] = state.quarter_turns
+        negative["flipped_horizontally"] = state.flipped
+        negative["fine_rotation_deg"] = state.fine_angle_deg
+        tone_params = state.tone
         negative["tone_grade_r"] = None if tone_params is None else tone_params["grade_r"]
         negative["tone_snap_gamma"] = (
             None if tone_params is None else tone_params["snap_gamma"]
@@ -687,6 +789,24 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         negative["tone_shoulder_width"] = (
             None if tone_params is None else tone_params["shoulder_width"]
         )
+        color_params = state.color
+        from scanny_boy import color as color_mod
+
+        for key in color_mod.COLOR_PARAM_KEYS:
+            negative[f"color_{key}"] = (
+                None if color_params is None else color_params[key]
+            )
+        negative["color_temperature"] = (
+            None
+            if color_params is None
+            else color_mod.wb_to_kelvin(
+                color_params["wb_magenta"], color_params["wb_yellow"]
+            )
+        )
+    if manifest.film is not None:
+        info["film_kind"] = manifest.film.get("kind")
+    else:
+        info["film_kind"] = None
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -736,6 +856,23 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 _tone_params_from_args(args),
                 auto_density=args.auto_density,
                 auto_grade=args.auto_grade,
+                emit=writer.write,
+            )
+            confirmation = EditRecorded
+        elif args.edit_command == "color":
+            try:
+                _validate_color_temperature_args(args)
+            except ValueError as exc:
+                writer.write(ErrorEvent(code=Code.INVALID_EDIT, message=str(exc)))
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
+            results = run_edit_color(
+                Path(args.roll),
+                args.negative,
+                _color_flag_updates(args) if not args.reset else None,
+                reset=args.reset,
+                temperature=args.temperature,
+                region=args.region,
                 emit=writer.write,
             )
             confirmation = EditRecorded

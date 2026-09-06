@@ -9,6 +9,21 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 12 keeps version 11's roll model and adds **the preview
+colour adjustment**.
+
+**The preview's colour adjustment** (docs/COLOR_PLAN.md): a new `edit color`
+command records white balance (global, shadow, and highlight CMY), cast
+removal, dye separation, and separation damping as a `color` op in the
+negative's ops log — preview-only, coalesced like `tone`, ignored by export.
+Unlike `edit tone`, unspecified flags take the negative's currently recorded
+value (partial updates). `--temperature` is a Kelvin lever over the named
+region's magenta and yellow (mutually exclusive with that region's
+`--magenta`); `--region` defaults to `global`. `roll info` reports twelve
+derived `color_*` fields plus `color_temperature` (nominal Kelvin from
+global M/Y) per negative, and `film_kind` on the roll. Colour edits are
+refused on a monochrome roll except `--reset`.
+
 Protocol version 11 keeps version 10's roll model and adds **monochrome
 film support** and an extended preview tone adjustment.
 
@@ -204,6 +219,7 @@ scanny-boy metadata values --field FIELD
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
+scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
 
@@ -448,6 +464,34 @@ metering is absent, and fails with the same roll/negative codes as
 `tone_grade_r`, `tone_snap_gamma`, `tone_density`, `tone_shadow_density`,
 `tone_highlight_density`, `tone_toe`, `tone_toe_width`, `tone_shoulder`,
 and `tone_shoulder_width` (all `null` when no adjustment is recorded).
+
+`edit color` records a preview colour adjustment for one or more negatives:
+global, shadow, and highlight cyan/magenta/yellow enlarger filtration
+(±1.0 each, 0 neutral), cast removal (0.0–1.0, 0 neutral), dye separation
+(0.5–1.5, 1.0 neutral), separation damping (0.0–1.0, 0 neutral), or
+`--reset` to remove the op. Unlike `edit tone`, **unspecified flags take
+the negative's currently recorded value**, not the neutral default — a
+single-slider change need not resend all twelve keys. Validation runs on the
+merged twelve-key state. `--temperature` (3000–12000 K, 5500 K neutral) is
+a Kelvin lever over the named region's magenta and yellow, resolved before
+validation via `kelvin_to_wb`; it is mutually exclusive with that region's
+`--magenta` (and `--shadow-magenta` / `--highlight-magenta` when
+`--region` is `shadows` / `highlights`). `--region` defaults to `global`
+and only applies with `--temperature`. Cyan is untouched by temperature.
+The op is a state, not a transform — the latest `color` op wins and a
+trailing one coalesces in place. The published TIFF and export are
+untouched; previews are regenerated with per-channel display LUTs plus
+optional per-pixel dye separation. `edit_recorded` is emitted per negative
+with all twelve keys in `params` (`null` for reset). Refused on a
+monochrome roll (`INVALID_EDIT`) except `--reset`. Emits
+`TONE_METERING_UNAVAILABLE` per negative when `--cast-removal` is non-zero
+but normalization metering is absent (the op is still recorded). `roll info`
+reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
+`color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
+`color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
+`color_cast_removal`, `color_dye_separation`, `color_separation_damping`,
+and derived `color_temperature` (null when no op), plus `film_kind` on the
+roll.
 
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density

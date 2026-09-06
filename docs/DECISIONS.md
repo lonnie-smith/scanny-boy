@@ -1302,3 +1302,34 @@ NegPy a negative shoulder is inert because `d_min_eff` clamps at the
 paper's physical Dmin; our ceiling is display white with no paper model,
 so the same sharpening branch used for negative toe is applied to the
 shoulder too.
+
+## The preview's colour adjustment: a preview-only `color` op (protocol version 12)
+
+Six controls from NegPy's Colour panel — temperature (a Kelvin lever over
+magenta and yellow, derived never stored), global/shadow/highlight CMY,
+cast removal, dye separation, and separation damping — land as a second
+preview-only op (`repo.COLOR_OP`), sibling to `tone`. The same three
+boundaries apply: the published TIFF and export never see it; the op is a
+state coalesced in place; and the numbers are judgement aids, not calibrated
+colorimetry.
+
+What is not obvious from the code:
+
+1. **Input domain is NegPy's; output is flipped.** Global CMY and cast
+   removal act on normalized log exposure (our TIFF values before the
+   `1 - val` flip) and port verbatim. Regional CMY and dye separation act
+   on display values and need our 0…1 scale (see COLOR_PLAN §0.2).
+2. **Why a second op, not more keys on `tone`.** Tone and colour compose
+   in a fixed order inside the display encode; separate ops keep the ops
+   log readable and let each panel reset independently.
+3. **Cast removal defaults to 0 here, 0.5 in NegPy.** Our normalization
+   already defeated the mask NegPy's default assumes; neutral must mean
+   no cast correction.
+4. **Endpoint rescale is shared across channels.** Without that, per-channel
+   cast removal and CMY would self-cancel when endpoints move.
+5. **Dye separation is the one control that is not a LUT.** When
+   `dye_separation != 1.0` (or damping is non-zero), the preview path
+   applies per-pixel spread after the LUT; otherwise three 1-D tables
+   suffice.
+6. **Cast removal ports the shadow-tie branch only.** We do not measure
+   the neutral-axis refs NegPy's other branch needs.

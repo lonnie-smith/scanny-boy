@@ -113,6 +113,7 @@ private struct PreviewPane: View {
     @State private var thumbnail: Thumbnail?
     @State private var isConfirmingDelete = false
     @State private var isTonePanelPresented = false
+    @State private var isColorPanelPresented = false
     @State private var zoom = PreviewZoomModel()
     @State private var paneSize: CGSize = .zero
 
@@ -120,7 +121,11 @@ private struct PreviewPane: View {
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
 
     private var rotationShortcutsEnabled: Bool {
-        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
+    }
+
+    private var isMonochromeRoll: Bool {
+        edit.roll?.filmKind == "monochrome"
     }
 
     var body: some View {
@@ -174,13 +179,13 @@ private struct PreviewPane: View {
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
                 .help("Tone: print density, paper grade, zone density, toe/shoulder (preview only)")
                 .accessibilityLabel("Tone adjustment")
                 .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
                     ToneAdjustmentPanel(
                         adjustment: negative.toneAdjustment,
-                        isBusy: edit.isSettingTone || edit.isRotating || edit.isDeleting,
+                        isBusy: edit.isSettingTone || edit.isSettingColor || edit.isRotating || edit.isDeleting,
                         onScheduleCommit: { adjustment in
                             edit.scheduleTone(targets, adjustment: adjustment)
                         },
@@ -195,6 +200,39 @@ private struct PreviewPane: View {
                             Task {
                                 await edit.commitTone(targets, adjustment: nil)
                             }
+                        }
+                    )
+                    .frame(width: 360)
+                }
+
+                Button {
+                    isColorPanelPresented = true
+                } label: {
+                    Image(systemName: "paintpalette")
+                }
+                .disabled(
+                    isMonochromeRoll
+                        || edit.isRotating || edit.isDeleting
+                        || edit.isSettingTone || edit.isSettingColor || runIsActive
+                )
+                .help(
+                    isMonochromeRoll
+                        ? "Colour adjustment is unavailable on a monochrome roll"
+                        : "Colour: balance, cast removal, dye separation (preview only)"
+                )
+                .accessibilityLabel("Colour adjustment")
+                .popover(isPresented: $isColorPanelPresented, arrowEdge: .bottom) {
+                    ColorAdjustmentPanel(
+                        adjustment: negative.colorAdjustment,
+                        isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting,
+                        onScheduleCommit: { adjustment in
+                            edit.scheduleColor(targets, adjustment: adjustment)
+                        },
+                        onCommitNow: { adjustment in
+                            Task { await edit.commitColor(targets, adjustment: adjustment) }
+                        },
+                        onReset: {
+                            Task { await edit.commitColor(targets, adjustment: nil) }
                         }
                     )
                     .frame(width: 360)
@@ -713,5 +751,278 @@ private struct ToneSlider: View {
                 onCommitNow()
             }
         )
+    }
+}
+
+private enum ColorRegion: String, CaseIterable, Identifiable {
+    case global, shadows, highlights
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
+private struct ColorAdjustmentPanel: View {
+    let adjustment: ColorAdjustment?
+    let isBusy: Bool
+    let onScheduleCommit: (_ adjustment: ColorAdjustment) -> Void
+    let onCommitNow: (_ adjustment: ColorAdjustment) -> Void
+    let onReset: () -> Void
+
+    @State private var region: ColorRegion = .global
+    @State private var values = ColorAdjustment.neutral
+    /// Anchor (M, Y) for the active region for the duration of a temperature drag.
+    @State private var temperatureAnchor: (magenta: Double, yellow: Double)?
+    @State private var temperatureKelvin = ColorTemperature.neutralKelvin
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Balance").font(.headline)
+                Picker("Region", selection: $region) {
+                    ForEach(ColorRegion.allCases) { item in
+                        Text(item.label).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: region) { syncTemperatureReadout() }
+
+                temperatureSlider
+
+                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02) {
+                    String(format: "%+.2f", cyanBinding.wrappedValue)
+                }
+                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02) {
+                    String(format: "%+.2f", magentaBinding.wrappedValue)
+                }
+                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02) {
+                    String(format: "%+.2f", yellowBinding.wrappedValue)
+                }
+
+                Text("Correction").font(.headline)
+                colorSlider("Cast Removal", value: $values.castRemoval, range: 0...1, step: 0.05) {
+                    String(format: "%.2f", values.castRemoval)
+                }
+
+                Text("Saturation").font(.headline)
+                colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
+                    String(format: "%.2f", values.dyeSeparation)
+                }
+                colorSlider(
+                    "Separation Damping",
+                    value: $values.separationDamping,
+                    range: 0...1,
+                    step: 0.05,
+                    disabled: values.dyeSeparation == 1
+                ) {
+                    String(format: "%.2f", values.separationDamping)
+                }
+                .help("Redistributes dye separation; inactive at neutral separation")
+
+                HStack {
+                    Button("Region Reset") { resetRegion() }
+                    Spacer()
+                    Button("Reset All", role: .destructive) { onReset() }
+                }
+            }
+            .padding()
+        }
+        .disabled(isBusy)
+        .onAppear(perform: syncFromModel)
+        .onChange(of: adjustment) { syncFromModel() }
+    }
+
+    private var cyanBinding: Binding<Double> {
+        switch region {
+        case .global: Binding(get: { values.wbCyan }, set: { values.wbCyan = $0 })
+        case .shadows: Binding(get: { values.shadowCyan }, set: { values.shadowCyan = $0 })
+        case .highlights:
+            Binding(get: { values.highlightCyan }, set: { values.highlightCyan = $0 })
+        }
+    }
+
+    private var magentaBinding: Binding<Double> {
+        switch region {
+        case .global:
+            Binding(
+                get: { values.wbMagenta },
+                set: {
+                    values.wbMagenta = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        case .shadows:
+            Binding(
+                get: { values.shadowMagenta },
+                set: {
+                    values.shadowMagenta = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        case .highlights:
+            Binding(
+                get: { values.highlightMagenta },
+                set: {
+                    values.highlightMagenta = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        }
+    }
+
+    private var yellowBinding: Binding<Double> {
+        switch region {
+        case .global:
+            Binding(
+                get: { values.wbYellow },
+                set: {
+                    values.wbYellow = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        case .shadows:
+            Binding(
+                get: { values.shadowYellow },
+                set: {
+                    values.shadowYellow = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        case .highlights:
+            Binding(
+                get: { values.highlightYellow },
+                set: {
+                    values.highlightYellow = $0
+                    if temperatureAnchor == nil { syncTemperatureReadout() }
+                }
+            )
+        }
+    }
+
+    private func colorSlider(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        disabled: Bool = false,
+        label: @escaping () -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(label())
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            ToneSlider(
+                value: value,
+                range: range,
+                step: step,
+                resetValue: resetValue(for: title),
+                onScheduleCommit: { onScheduleCommit(values) },
+                onCommitNow: { onCommitNow(values) }
+            )
+            .disabled(disabled)
+        }
+    }
+
+    private func resetValue(for title: String) -> Double {
+        switch title {
+        case "Cast Removal", "Separation Damping": 0
+        case "Dye Separation": 1
+        default: 0
+        }
+    }
+
+    private func resetRegion() {
+        switch region {
+        case .global:
+            values.wbCyan = 0; values.wbMagenta = 0; values.wbYellow = 0
+        case .shadows:
+            values.shadowCyan = 0; values.shadowMagenta = 0; values.shadowYellow = 0
+        case .highlights:
+            values.highlightCyan = 0; values.highlightMagenta = 0; values.highlightYellow = 0
+        }
+        onCommitNow(values)
+    }
+
+    private func syncFromModel() {
+        values = adjustment ?? ColorAdjustment.neutral
+        syncTemperatureReadout()
+        temperatureAnchor = nil
+    }
+
+    private func syncTemperatureReadout() {
+        let pair = regionMagentaYellow
+        temperatureKelvin = ColorTemperature.kelvin(
+            magenta: pair.magenta, yellow: pair.yellow
+        )
+    }
+
+    private var regionMagentaYellow: (magenta: Double, yellow: Double) {
+        switch region {
+        case .global: (values.wbMagenta, values.wbYellow)
+        case .shadows: (values.shadowMagenta, values.shadowYellow)
+        case .highlights: (values.highlightMagenta, values.highlightYellow)
+        }
+    }
+
+    private var temperatureSlider: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Temperature")
+                Spacer()
+                Text(String(format: "%.0fK", temperatureKelvin))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: {
+                        ColorTemperature.maxKelvin + ColorTemperature.minKelvin - temperatureKelvin
+                    },
+                    set: { reversed in
+                        let kelvin = ColorTemperature.maxKelvin + ColorTemperature.minKelvin - reversed
+                        let snapped = ToneSlider.snap(
+                            kelvin, step: 50,
+                            range: ColorTemperature.minKelvin...ColorTemperature.maxKelvin
+                        )
+                        guard snapped != temperatureKelvin else { return }
+                        temperatureKelvin = snapped
+                        applyTemperature(snapped)
+                        onScheduleCommit(values)
+                    }
+                ),
+                in: ColorTemperature.minKelvin...ColorTemperature.maxKelvin,
+                step: 50
+            ) { editing in
+                if editing {
+                    let pair = regionMagentaYellow
+                    temperatureAnchor = (pair.magenta, pair.yellow)
+                } else {
+                    temperatureAnchor = nil
+                    onCommitNow(values)
+                }
+            }
+        }
+    }
+
+    private func applyTemperature(_ kelvin: Double) {
+        let anchor = temperatureAnchor ?? regionMagentaYellow
+        let balanced = ColorTemperature.whiteBalance(
+            kelvin: kelvin,
+            anchorMagenta: anchor.magenta,
+            anchorYellow: anchor.yellow
+        )
+        switch region {
+        case .global:
+            values.wbMagenta = balanced.magenta
+            values.wbYellow = balanced.yellow
+        case .shadows:
+            values.shadowMagenta = balanced.magenta
+            values.shadowYellow = balanced.yellow
+        case .highlights:
+            values.highlightMagenta = balanced.magenta
+            values.highlightYellow = balanced.yellow
+        }
     }
 }

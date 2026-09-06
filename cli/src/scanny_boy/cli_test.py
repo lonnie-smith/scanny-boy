@@ -954,6 +954,160 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(capsys, tmp_path
     assert negative["tone_shoulder_width"] == 4.0
 
 
+def _color_params(**overrides: float):
+    import dataclasses
+
+    from scanny_boy import color
+
+    params = dataclasses.asdict(color.NEUTRAL_COLOR)
+    params.update(overrides)
+    return params
+
+
+def test_edit_color_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "color",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--cyan", "0.1",
+            "--magenta", "0.2",
+            "--yellow", "0.05",
+            "--cast-removal", "0.1",
+            "--dye-separation", "1.1",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    assert events[0]["command"] == "edit color"
+    assert events[0]["protocol_version"] == PROTOCOL_VERSION
+    assert events[1]["edit"]["op"] == "color"
+    assert events[1]["edit"]["params"]["wb_cyan"] == pytest.approx(0.1)
+    assert Path(events[1]["preview_path"]).exists()
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+
+def test_edit_color_partial_update_preserves_recorded_values(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
+    assert main(
+        [
+            "edit", "color",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--cyan", str(base["wb_cyan"]),
+            "--magenta", str(base["wb_magenta"]),
+            "--yellow", str(base["wb_yellow"]),
+            "--cast-removal", str(base["cast_removal"]),
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "color",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--cyan", "0.5",
+        ]
+    )
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    params = events[1]["edit"]["params"]
+    assert params["wb_cyan"] == pytest.approx(0.5)
+    assert params["wb_magenta"] == pytest.approx(0.2)
+    assert params["cast_removal"] == pytest.approx(0.3)
+
+
+def test_edit_color_temperature_is_exclusive_with_region_magenta(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "color",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--temperature", "3200",
+            "--magenta", "0.1",
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "INVALID_EDIT"
+
+
+def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
+    from scanny_boy import color
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    params = _color_params(
+        wb_cyan=0.1,
+        wb_magenta=0.2,
+        wb_yellow=0.05,
+        shadow_cyan=0.01,
+        cast_removal=0.15,
+        dye_separation=1.1,
+        separation_damping=0.2,
+    )
+    flag_for_key = {
+        "wb_cyan": "--cyan",
+        "wb_magenta": "--magenta",
+        "wb_yellow": "--yellow",
+        "shadow_cyan": "--shadow-cyan",
+        "shadow_magenta": "--shadow-magenta",
+        "shadow_yellow": "--shadow-yellow",
+        "highlight_cyan": "--highlight-cyan",
+        "highlight_magenta": "--highlight-magenta",
+        "highlight_yellow": "--highlight-yellow",
+        "cast_removal": "--cast-removal",
+        "dye_separation": "--dye-separation",
+        "separation_damping": "--separation-damping",
+    }
+    argv = [
+        "edit", "color",
+        "--roll", str(roll_dir),
+        "--negative", negative_id,
+    ]
+    for key, value in params.items():
+        argv.extend([flag_for_key[key], str(value)])
+    assert main(argv) == 0
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    negative = events[1]["manifest"]["negatives"][0]
+    for key in color.COLOR_PARAM_KEYS:
+        assert negative[f"color_{key}"] == pytest.approx(params[key])
+    assert negative["color_temperature"] == pytest.approx(
+        color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
+    )
+
+
 def test_edit_tone_auto_density_records_a_solved_value(capsys, tmp_path):
     work_dir = _make_work_dir(tmp_path, negatives=1)
     roll_dir = _roll_dir(tmp_path)
