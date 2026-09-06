@@ -9,6 +9,26 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 14 keeps version 13's roll model — the film-base
+reference and spotting both stay as protocol 13 shipped them — and adds
+**cast removal's second tie and auto solve** (docs/CAST_REMOVAL_PLAN.md):
+`edit color` gains `--cast-removal-highlights V` (the highlight-end tie
+strength, 0..1, 0 neutral — with a highlight reference recorded in the
+negative's `normalization` block and a non-zero strength, the per-channel
+tie becomes a genuine affine, gain *and* offset) and `--auto-cast` (solve
+the global filtration from the negative's recorded neutral estimate;
+exclusive with `--reset` and with an explicit `--cyan`, `--magenta` or
+`--yellow`, which it would overwrite). The auto reads a stitch-time meter
+(`neutral_residual` in the `normalization` block), so it is unavailable on
+rolls stitched by an older build — that absence warns
+`TONE_METERING_UNAVAILABLE` and records the state unchanged, as does a
+non-zero tie strength on a negative with no reference for the end it
+drives. `roll info` gains the derived `color_cast_removal_highlights`
+field beside the other `color_*` fields. Global and regional CMY are now
+**mean-removed**, so filtration changes hue and never the display's
+channel mean — this changes how already-recorded colour ops render, which
+is accepted because the op is preview-only. No new codes.
+
 Protocol version 13 keeps version 12's roll model and adds **the film-base
 reference** (docs/REBATE_ANCHORING.md).
 
@@ -46,7 +66,12 @@ work. Ten new codes: `FILM_BASE_REQUIRED` (error), `FILM_BASE_LOCKED`
 (warning). Each negative's `normalization` block gains an optional
 `base_check` object — `{level_offset, shape_residual}` — recorded whenever
 the roll has a locked anchor and the negative's own rebate detector fired
-unclipped, and read by nothing (§6). Roll manifest format version bumps
+unclipped, and read by nothing (§6). It also gains `highlight_refs` (the
+dense end's same-pixel neutral reference, or `null` when the band held no
+trustworthy neutrals) and `neutral_residual` (the frame's `(R-G, B-G)`
+offset in normalized units, or `null` when there was no estimate) — both
+recorded by the stitch stage and read only by `--auto-cast`
+(docs/CAST_REMOVAL_PLAN.md §3). Roll manifest format version bumps
 **7 → 8**: rolls stitched before this feature stay readable, editable and
 exportable, but cannot take new negatives or a base frame
 (`ROLL_PREDATES_FILM_BASE`). There is no migration.
@@ -324,7 +349,7 @@ scanny-boy metadata values --field FIELD
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
-scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--dye-separation V] [--separation-damping V] | --reset
+scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--cast-removal-highlights V] [--auto-cast] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
                               [--mode positive|negative]
@@ -608,16 +633,21 @@ The op is a state, not a transform — the latest `color` op wins and a
 trailing one coalesces in place. The published TIFF and export are
 untouched; previews are regenerated with per-channel display LUTs plus
 optional per-pixel dye separation. `edit_recorded` is emitted per negative
-with all twelve keys in `params` (`null` for reset). Refused on a
+with all thirteen keys in `params` (`null` for reset). Refused on a
 monochrome roll (`INVALID_EDIT`) except `--reset`. Emits
-`TONE_METERING_UNAVAILABLE` per negative when `--cast-removal` is non-zero
-but normalization metering is absent (the op is still recorded). `roll info`
+`TONE_METERING_UNAVAILABLE` per negative when a cast-removal strength is
+non-zero but the metering that end needs is absent, or when `--auto-cast`
+found no recorded neutral estimate (the op is still recorded; the
+filtration is left unchanged). `--auto-cast` is exclusive with `--reset`
+and with an explicit `--cyan`/`--magenta`/`--yellow`. `roll info`
 reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
 `color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
 `color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
-`color_cast_removal`, `color_dye_separation`, `color_separation_damping`,
+`color_cast_removal`, `color_cast_removal_highlights`,
+`color_dye_separation`, `color_separation_damping`,
 and derived `color_temperature` (null when no op), plus `film_kind` on the
-roll.
+roll. The auto cast solve reads a stitch-time meter, so it is unavailable
+on rolls stitched by an older build.
 
 **Spotting (protocol 13).** `edit detect-spots` runs the defect detector
 over each selected negative's published TIFF and records one `spots` op per

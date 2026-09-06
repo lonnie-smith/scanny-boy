@@ -1562,3 +1562,70 @@ no coordinate math — so the CLI converts on the way out
 (`previews.tiff_rect_to_display`, the exact forward map of the canonical
 replay), and rejection is by `id`, never by coordinate. Never the reverse,
 never both in the same structure.
+
+## Cast removal and filtration (docs/CAST_REMOVAL_PLAN.md)
+
+Seven decisions, in the order the plan's §7.4 lists them.
+
+**1. CMY is mean-removed, and the mean is removed after the range
+division.** Global and regional CMY change hue and never the display's
+channel mean — Print Density and the zone controls keep sole ownership of
+lightness. The mean is removed *after* the per-channel range division
+because the offsets are added to the normalized input and the curve applies
+the same slope to every channel near the pivot, so the display shift's
+channel mean is proportional to the mean of the post-division values;
+zeroing that is what holds lightness. Removing the mean of the *sliders*
+before the division would make only the equal-slider case a no-op and
+leave a lightness shift on every unequal move — the case that actually
+matters. The mean is arithmetic, not Rec.709-weighted: equal weights keep
+the three sliders symmetric, which a perceived-lightness weighting would
+not.
+
+**2. Already-recorded colour ops render differently, and that is
+accepted.** Mean removal changes the meaning of every recorded non-zero
+CMY value; recorded numbers are not migrated and the op is not versioned.
+Accepted because the `color` op is preview-only — it never reached a
+published TIFF or an export — so the blast radius is "some previews look
+slightly different, and better".
+
+**3. The tie has two points because one cannot correct an offset.** The
+one-point solve rotates each channel's line about the anchor — one degree
+of freedom, which corrects a crossover but cannot null a plain per-channel
+offset cast (that requires moving the line without rotating it). With a
+highlight reference and a non-zero `cast_removal_highlights` the line is
+determined by both ends — a genuine affine, gain *and* offset,
+`negadoctor`'s `wb_high`/`wb_low` pair in our coordinates. The one-point
+branch is kept verbatim as the fallback: at `strength_h = 0` the two-point
+formula gives a different number, so the branches are separate by design,
+not by limit.
+
+**4. In the two-point branch the anchor is no longer pinned for R and B,
+deliberately.** That is the second degree of freedom being used, not a
+regression to patch out. Exposure stays anchored because green is never
+touched, and green carries 0.7152 of the Rec.709 luma; a correction that
+moves R and B is supposed to move the image's colour.
+
+**5. The highlight reference reuses `_same_pixel_color_floor_refs`, not a
+mirrored percentile.** Independent per-channel percentiles at the dense end
+read a different scene object per channel and mistake coloured highlights
+for film cast — exactly why the shared, chroma-gated, same-pixel set
+exists. Its `None` is load-bearing: it says the dense end was *not* tied on
+measured neutrals, which is precisely when a user-driven highlight tie has
+the most to do.
+
+**6. COLOR_PLAN §0.6 is superseded, not extended.** It justified a single
+shadow tie by saying the dense end was tied on measured neutrals while the
+thin end rested on percentiles, leaving the residual crossover at the
+*shadow* end. With the thin end now anchored on the measured film base
+(docs/REBATE_ANCHORING.md), the reasoning inverts: the thin end is tied on
+a measured base, strictly better than any percentile, while the dense end
+still rests on the gated set and its fallback. The highlight tie is the one
+doing the work and the shadow tie is the trim. The plan's post-R-1
+calibration checks are written for this expectation, and if the shadow tie
+still measures larger, this paragraph — not the panel — is wrong.
+
+**7. `TONE_METERING_UNAVAILABLE` is reused for the colour-only conditions
+rather than renamed.** COLOR_PLAN §7.2 proposed renaming it to
+`METERING_UNAVAILABLE` before it shipped; it has shipped. Renaming a live
+contract code costs more than the wart, so the auto-cast and cast-removal
+metering absences warn with the historical name.

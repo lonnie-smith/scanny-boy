@@ -659,6 +659,10 @@
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — separation damping from the latest `color` op."
         },
+        "color_cast_removal_highlights": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op (docs/CAST_REMOVAL_PLAN.md §7.4)."
+        },
         "color_temperature": {
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."

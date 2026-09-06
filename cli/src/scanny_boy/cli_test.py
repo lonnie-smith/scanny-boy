@@ -1702,6 +1702,7 @@ def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
         "highlight_magenta": "--highlight-magenta",
         "highlight_yellow": "--highlight-yellow",
         "cast_removal": "--cast-removal",
+        "cast_removal_highlights": "--cast-removal-highlights",
         "dye_separation": "--dye-separation",
         "separation_damping": "--separation-damping",
     }
@@ -1714,10 +1715,6 @@ def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
         negative_id,
     ]
     for key, value in params.items():
-        if key not in flag_for_key:
-            # The thirteenth key's flag arrives with chunk R-3; until then
-            # the round trip covers the original twelve.
-            continue
         argv.extend([flag_for_key[key], str(value)])
     assert main(argv) == 0
     capsys.readouterr()
@@ -1726,7 +1723,7 @@ def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
     assert status == 0
     events, _err = _stdout_events(capsys)
     negative = events[1]["manifest"]["negatives"][0]
-    for key in color.COLOR_PARAM_KEYS_V1:
+    for key in color.COLOR_PARAM_KEYS:
         assert negative[f"color_{key}"] == pytest.approx(params[key])
     assert negative["color_temperature"] == pytest.approx(
         color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
@@ -2865,3 +2862,225 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
     assert negative["spots"]["stale"] is True
     assert negative["spots"]["count"] == 0
     assert negative["spots"]["rejected"] == 0
+
+
+# --- --cast-removal-highlights and --auto-cast (docs/CAST_REMOVAL_PLAN.md R-3)
+
+
+def test_cast_removal_highlights_round_trips_through_roll_info(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--cast-removal-highlights",
+            "0.4",
+        ]
+    )
+    assert status == 0
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    negative = events[1]["manifest"]["negatives"][0]
+    assert negative["color_cast_removal_highlights"] == pytest.approx(0.4)
+    # A single flag leaves the other twelve at their recorded values.
+    assert negative["color_wb_cyan"] == pytest.approx(0.0)
+    assert negative["color_cast_removal"] == pytest.approx(0.0)
+    assert negative["color_dye_separation"] == pytest.approx(1.0)
+
+
+def test_auto_cast_writes_nulling_filtration(capsys, tmp_path, monkeypatch):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    # Record a neutral residual for the negative to solve from.
+    roll = load_roll_manifest(roll_dir)
+    roll.negatives[0].normalization["neutral_residual"] = [0.06, -0.03]
+    write_roll_manifest(roll_dir, roll)
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--auto-cast",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    params = events[1]["edit"]["params"]
+    # The three CMY values null the residual: with unit ranges,
+    # o_R - o_G = -a and o_B - o_G = -b.
+    from scanny_boy import color as color_mod
+
+    metering = color_mod.read_metering(
+        load_roll_manifest(roll_dir).negatives[0].normalization
+    )
+    offsets = color_mod.cmy_offsets(
+        color_mod.ColorParams(
+            wb_cyan=params["wb_cyan"],
+            wb_magenta=params["wb_magenta"],
+            wb_yellow=params["wb_yellow"],
+        ),
+        metering,
+    )
+    assert offsets[0] - offsets[1] == pytest.approx(-0.06, abs=1e-6)
+    assert offsets[2] - offsets[1] == pytest.approx(0.03, abs=1e-6)
+
+
+def test_auto_cast_without_a_residual_warns_and_records_unchanged(
+    capsys, tmp_path
+):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--auto-cast",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started",
+        "warning",
+        "edit_recorded",
+        "finished",
+    ]
+    assert events[1]["code"] == "TONE_METERING_UNAVAILABLE"
+    assert "no neutral estimate" in events[1]["message"]
+    params = events[2]["edit"]["params"]
+    assert params["wb_cyan"] == pytest.approx(0.0)
+    assert params["cast_removal"] == pytest.approx(0.0)
+
+
+def test_auto_cast_is_exclusive_with_reset_and_global_sliders(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    for extra in (["--reset"], ["--cyan", "0.1"], ["--magenta", "0.1"], ["--yellow", "0.1"]):
+        status = main(
+            [
+                "edit",
+                "color",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative_id,
+                "--auto-cast",
+                *extra,
+            ]
+        )
+        assert status == 1
+        events, _err = _stdout_events(capsys)
+        assert events[1]["code"] == "INVALID_EDIT"
+        capsys.readouterr()
+
+
+def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch(
+    capsys, tmp_path
+):
+    """§7.3's tie-compensation test at the CLI level: with the highlight
+    strength at rest, the solved CMY does not move when a shadow tie is
+    already recorded."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    roll = load_roll_manifest(roll_dir)
+    roll.negatives[0].normalization["neutral_residual"] = [0.06, -0.03]
+    write_roll_manifest(roll_dir, roll)
+    capsys.readouterr()
+
+    main(
+        ["edit", "color", "--roll", str(roll_dir), "--negative", negative_id,
+         "--auto-cast"]
+    )
+    first = _stdout_events(capsys)[0][1]["edit"]["params"]
+    capsys.readouterr()
+    main(
+        ["edit", "color", "--roll", str(roll_dir), "--negative", negative_id,
+         "--cast-removal", "0.8", "--auto-cast"]
+    )
+    second = _stdout_events(capsys)[0][1]["edit"]["params"]
+
+    assert second["wb_cyan"] == pytest.approx(first["wb_cyan"], abs=1e-9)
+    assert second["wb_magenta"] == pytest.approx(first["wb_magenta"], abs=1e-9)
+    assert second["wb_yellow"] == pytest.approx(first["wb_yellow"], abs=1e-9)
+
+
+def test_cast_removal_highlights_warns_without_a_highlight_reference(
+    capsys, tmp_path
+):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    # R-1's stitch may well have measured a usable highlight reference;
+    # this test needs the fallback signal.
+    roll = load_roll_manifest(roll_dir)
+    roll.negatives[0].normalization["highlight_refs"] = None
+    write_roll_manifest(roll_dir, roll)
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--cast-removal-highlights",
+            "0.5",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started",
+        "warning",
+        "edit_recorded",
+        "finished",
+    ]
+    assert events[1]["code"] == "TONE_METERING_UNAVAILABLE"
+    params = events[2]["edit"]["params"]
+    assert params["cast_removal_highlights"] == pytest.approx(0.5)

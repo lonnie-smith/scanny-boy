@@ -88,7 +88,25 @@ from typing import IO, Any, ClassVar
 # the set needs re-detecting). `roll info` gains a per-negative `spots`
 # summary block. No new error codes of its own: every failure there is
 # `INVALID_EDIT`, `ROLL_NOT_FOUND` or `NEGATIVE_NOT_FOUND`.
-PROTOCOL_VERSION = 13
+#
+# Protocol 14 is cast removal's second tie and auto solve
+# (docs/CAST_REMOVAL_PLAN.md): `edit color` gains `--cast-removal-highlights`
+# (the highlight-end tie strength, 0..1) and `--auto-cast` (solve the global
+# filtration from the negative's recorded neutral estimate — exclusive with
+# `--reset` and with an explicit `--cyan`/`--magenta`/`--yellow`), the
+# `color_cast_removal_highlights` derived field joins the other `color_*`
+# fields on `roll info`, and the per-negative `normalization` block gains
+# two recorded meters — `highlight_refs` (the dense end's same-pixel
+# neutral set, null when the band held no trustworthy neutrals) and
+# `neutral_residual` (the `(R-G, B-G)` offset the auto solve reads). The
+# auto reads a stitch-time meter, so it is unavailable on rolls stitched by
+# an older build — that absence warns `TONE_METERING_UNAVAILABLE`, reused
+# for the colour-only condition rather than renamed (it shipped in protocol
+# 11; renaming a live contract code costs more than the wart). Global and
+# regional CMY are now mean-removed, which changes how already-recorded
+# colour ops render — accepted, the op being preview-only (§0.3). No new
+# codes.
+PROTOCOL_VERSION = 14
 
 
 class EventType(enum.StrEnum):

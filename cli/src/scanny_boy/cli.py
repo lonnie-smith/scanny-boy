@@ -538,8 +538,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("--highlight-cyan", "highlights cyan, -1..1"),
         ("--highlight-magenta", "highlights magenta, -1..1"),
         ("--highlight-yellow", "highlights yellow, -1..1"),
+        ("--cast-removal-highlights", "highlight-end cast removal strength, 0..1 (0 neutral)"),
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
+    edit_color.add_argument(
+        "--auto-cast",
+        action="store_true",
+        help="solve global filtration from this negative's recorded neutral estimate",
+    )
     edit_color.add_argument(
         "--cast-removal",
         type=float,
@@ -718,6 +724,7 @@ def _color_flag_updates(args) -> dict[str, float | None]:
         "highlight_magenta": "highlight_magenta",
         "highlight_yellow": "highlight_yellow",
         "cast_removal": "cast_removal",
+        "cast_removal_highlights": "cast_removal_highlights",
         "dye_separation": "dye_separation",
         "separation_damping": "separation_damping",
     }
@@ -728,7 +735,20 @@ def _color_flag_updates(args) -> dict[str, float | None]:
     return updates
 
 
-def _validate_color_temperature_args(args) -> None:
+def _validate_color_args(args) -> None:
+    """docs/CAST_REMOVAL_PLAN.md §7.3: `--auto-cast` owns all three global
+    CMY sliders outright — it is a usage error with `--reset` (which
+    contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
+    (which it would overwrite). The `--temperature` exclusivity rules are
+    unchanged; the function only outgrew its temperature-only name."""
+    if args.auto_cast:
+        if args.reset:
+            raise ValueError("--auto-cast is mutually exclusive with --reset")
+        if args.cyan is not None or args.magenta is not None or args.yellow is not None:
+            raise ValueError(
+                "--auto-cast is mutually exclusive with --cyan, --magenta and "
+                "--yellow; the auto owns all three"
+            )
     if args.temperature is None:
         return
     region = args.region
@@ -737,7 +757,9 @@ def _validate_color_temperature_args(args) -> None:
     if region == "shadows" and args.shadow_magenta is not None:
         raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
     if region == "highlights" and args.highlight_magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --highlight-magenta")
+        raise ValueError(
+            "--temperature is mutually exclusive with --highlight-magenta"
+        )
 
 
 def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
@@ -1204,7 +1226,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             confirmation = EditRecorded
         elif args.edit_command == "color":
             try:
-                _validate_color_temperature_args(args)
+                _validate_color_args(args)
             except ValueError as exc:
                 writer.write(ErrorEvent(code=Code.INVALID_EDIT, message=str(exc)))
                 writer.write(Finished(status="failed", exit_status=1))
@@ -1216,6 +1238,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 reset=args.reset,
                 temperature=args.temperature,
                 region=args.region,
+                auto_cast=args.auto_cast,
                 emit=writer.write,
             )
             confirmation = EditRecorded

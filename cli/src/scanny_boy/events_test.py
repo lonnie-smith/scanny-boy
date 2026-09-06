@@ -224,7 +224,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_thirteen():
+def test_protocol_version_is_fourteen():
     """Protocol 10→11: monochrome film support, extended preview tone
     adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
     toggle (`--mode` on `edit render-region`, `edit render-preview` with
@@ -235,8 +235,12 @@ def test_protocol_version_is_thirteen():
     (SPOTTING_PLAN): the three spotting commands, the `spots_reported`
     event (display-space rects, no rle), the `SPOT_LIMIT_REACHED` and
     `SPOTS_STALE` codes, and the per-negative `spots` summary block on
-    `roll info`."""
-    assert PROTOCOL_VERSION == 13
+    `roll info`. Protocol 13→14 (docs/CAST_REMOVAL_PLAN.md):
+    `--cast-removal-highlights` and `--auto-cast` on `edit color`, the
+    `color_cast_removal_highlights` derived field on `roll info`, and the
+    `highlight_refs` / `neutral_residual` meters in the `normalization`
+    block. No new codes."""
+    assert PROTOCOL_VERSION == 14
 
 
 def test_new_event_kinds_round_trip():
