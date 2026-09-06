@@ -29,6 +29,16 @@ and only here, and this path decodes through
 `normalization.decode_normalized`, never through the file's ICC profile
 (section 3.12's rule).
 
+A second display mode serves the app's positive/negative toggle: the
+**negative view** encodes the normalized density *without* the `1 - val`
+inversion — the published TIFF's own appearance, the flat un-inverted
+negative, which is what the user looks at when judging densities. The tone
+adjustment is deliberately absent from it: grading is a positive-view
+judgement aid and would lie about the densities it is meant to illuminate.
+Both modes are reachable through the pure-query `edit render-region` and
+`edit render-preview` commands; the managed, on-disk preview stays a
+positive.
+
 For a 90-degree rotation or a horizontal flip the incremental update is a
 lossless pixel transpose or mirror of the cached preview, not a re-decode of
 a multi-megapixel TIFF. PNG, not
@@ -70,6 +80,27 @@ def _build_display_lut() -> np.ndarray:
 NORMALIZED_DISPLAY_LUT: np.ndarray = _build_display_lut()
 
 
+def _build_negative_display_lut() -> np.ndarray:
+    """uint16 normalized-density code -> uint8 negative display code.
+
+    The un-inverted view: `decode_normalized`'s value straight to 8-bit
+    with no gamma — the published TIFF's own appearance, `val = 0` the
+    scene highlight, `val = 1` the scene shadow, the flat negative a
+    densitometer would see. The tone adjustment is deliberately not
+    composed into it: grading is a positive-view judgement aid, and a
+    graded density is not the density.
+    """
+    codes = np.arange(MAX_CODE + 1, dtype=np.float64)
+    normalized = normalization.decode_normalized(codes)
+    return np.rint(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+NEGATIVE_DISPLAY_LUT: np.ndarray = _build_negative_display_lut()
+
+# The display modes `render_region`/`render_preview` understand.
+DISPLAY_MODES = ("positive", "negative")
+
+
 def previews_root() -> Path:
     """Previews sit beside the library database in Application Support."""
     return library_db_path().parent / "previews"
@@ -83,47 +114,88 @@ def _write_downscaled(
     image: np.ndarray,
     destination: Path,
     tone_params: dict[str, float] | None = None,
-) -> None:
+    mode: str = "positive",
+) -> tuple[int, int]:
+    """The downscale (in normalized density — code space, not linear light:
+    averaging density is what averaging a photographic image means —
+    docs/DECISIONS.md, "Normalization decisions") plus the display encode.
+    Returns the written PNG's `(width, height)`."""
     edge = max(image.shape[0], image.shape[1])
     if edge > PREVIEW_MAX_EDGE:
-        # The downscale happens in normalized density (code space), not
-        # linear light: averaging density is what averaging a photographic
-        # image means (docs/DECISIONS.md, "Normalization decisions").
         scale = PREVIEW_MAX_EDGE / edge
         image = cv2.resize(
             image,
             (round(image.shape[1] * scale), round(image.shape[0] * scale)),
             interpolation=cv2.INTER_AREA,
         )
-    _encode_display_png(image, destination, tone_params)
+    _encode_display_png(image, destination, tone_params, mode=mode)
+    return image.shape[1], image.shape[0]
 
 
 def _encode_display_png(
     image: np.ndarray,
     destination: Path,
     tone_params: dict[str, float] | None = None,
+    mode: str = "positive",
 ) -> None:
-    """16-bit normalized-density (or already-8-bit) RGB -> inverted 8-bit
-    lossless PNG on disk, no downscale, no gamma. `tone_params` (the net
-    `tone` op's `{"grade_r", "snap_gamma"}`) composes the user's preview
-    tone adjustment into the display LUT — the published TIFF is never
-    touched by it."""
+    """16-bit normalized-density (or already-8-bit) RGB -> 8-bit lossless
+    PNG on disk, no downscale, no gamma. `mode` picks the display encode:
+    `"positive"` is the inverted look the filmstrip reads as one (`tone_params`,
+    the net `tone` op's `{"grade_r", "snap_gamma"}`, composes the user's
+    preview tone adjustment into the display LUT), `"negative"` is the
+    un-inverted density view, which no tone ever touches. The published
+    TIFF is never touched by any of it."""
+    if mode not in DISPLAY_MODES:
+        raise ValueError(f"unknown display mode {mode!r}")
     if image.dtype == np.uint16:
-        # The TIFF holds normalized log density; decode, invert, apply the
-        # tone curve, encode 8-bit with no gamma.
-        if tone_params is not None:
+        # The TIFF holds normalized log density; decode, then encode 8-bit
+        # with no gamma — inverted for the positive view, straight for the
+        # negative view.
+        if mode == "negative":
+            lut = NEGATIVE_DISPLAY_LUT
+        elif tone_params is not None:
             lut = tone.build_display_lut(
                 tone_params["grade_r"], tone_params["snap_gamma"]
             )
         else:
             lut = NORMALIZED_DISPLAY_LUT
         image = lut[image]
+    elif mode == "negative":
+        raise ValueError(
+            "the negative view must be encoded from the published TIFF's "
+            "density codes, not from an already-display-encoded image"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     # cv2 is BGR; the TIFF is RGB, so flip the channels for storage.
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
     if not ok:
         raise ValueError(f"could not encode preview {destination}")
     destination.write_bytes(encoded.tobytes())
+
+
+def _display_image(
+    tiff_path: Path,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+) -> np.ndarray:
+    """The published TIFF's full display image — the net transform replayed
+    in canonical order (mirror horizontally, then the fine rotation's warp
+    with the fill sentinel, then the quarter turns) — the pixels
+    `generate_preview`, `render_preview`, and `render_region`'s exact path
+    all work from. uint16 RGB in density codes, like the TIFF."""
+    import tifffile
+
+    image = _promote_to_rgb(tifffile.imread(tiff_path))
+    if flipped_horizontally:
+        image = np.ascontiguousarray(image[:, ::-1])
+    if abs(fine_angle_deg) >= 1e-9:
+        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
+    if quarter_turns % 4:
+        # np.rot90 turns counter-clockwise; the count is net clockwise
+        # quarter turns.
+        image = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+    return image
 
 
 def generate_preview(
@@ -149,26 +221,39 @@ def generate_preview(
     output to preview."""
     if negative.output is None:
         return None
-    import tifffile
 
     tiff_path = Path(roll_dir) / negative.output["name"]
-    image = tifffile.imread(tiff_path)
-    if image.ndim == 2:
-        image = np.stack([image] * 3, axis=-1)
-    elif image.shape[2] == 4:
-        image = image[:, :, :3]
-    if flipped_horizontally:
-        image = np.ascontiguousarray(image[:, ::-1])
-    if abs(fine_angle_deg) >= 1e-9:
-        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
-    if quarter_turns % 4:
-        # np.rot90 turns counter-clockwise; the count is net clockwise
-        # quarter turns.
-        image = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+    image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
 
     destination = _preview_path(roll_id, negative.negative_id)
     _write_downscaled(image, destination, tone_params)
     return destination
+
+
+def render_preview(
+    tiff_path: Path,
+    destination: Path,
+    *,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    mode: str = "positive",
+    tone_params: dict[str, float] | None = None,
+) -> tuple[int, int]:
+    """The whole display image in the requested display mode, downscaled to
+    `PREVIEW_MAX_EDGE`, written to a caller-named path — the pure-query
+    sibling of `generate_preview` backing the app's positive/negative
+    toggle (`edit render-preview`): nothing is recorded, the TIFF is
+    untouched. The transform replays exactly as `generate_preview`'s does.
+    `mode` is `"positive"` (the inverted look, always what the managed
+    on-disk preview holds; `tone_params` — the net `tone` op's
+    `{"grade_r", "snap_gamma"}` — composes into its LUT exactly as it does
+    there) or `"negative"` (the un-inverted density view, which no tone
+    ever reaches — `tone_params` is ignored in that mode). Returns the
+    written PNG's `(width, height)`."""
+    image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
+    width, height = _write_downscaled(image, destination, tone_params, mode=mode)
+    return width, height
 
 
 def transform_preview(current_path: Path, op: str) -> Path:
@@ -303,6 +388,7 @@ def render_region(
     fine_angle_deg: float = 0.0,
     tone_params: dict[str, float] | None = None,
     destination: Path | None = None,
+    mode: str = "positive",
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
@@ -310,8 +396,9 @@ def render_region(
     horizontally first (when flipped), then fine-rotated (the auto-seeded
     `rotate_fine` angle, a warp about the canvas center with the fill
     sentinel in the uncovered pixels), then rotated — and the encode is the
-    same inverted 8-bit display LUT (with the net `tone` op composed in
-    when `tone_params` is given) with no downscale.
+    8-bit display LUT named by `mode` (the inverted positive, with the net
+    `tone` op composed in when `tone_params` is given — or the un-inverted
+    negative, which no tone reaches) with no downscale.
 
     The region is clamped against the image bounds; the returned `Region`
     is the rect actually rendered, post-clamp. Cropping first and
@@ -325,6 +412,8 @@ def render_region(
     instead: decode the whole TIFF, replay the full transform on it, and
     slice the rect out of the result — the same pixels the preview shows.
     """
+    if mode not in DISPLAY_MODES:
+        raise ValueError(f"unknown display mode {mode!r}")
     tiff_h, tiff_w = _read_tiff_dimensions(tiff_path)
     r = (-int(quarter_turns)) % 4
     # Odd net turns swap the display dimensions.
@@ -335,17 +424,10 @@ def render_region(
         # The fine warp interpolates across its source's boundaries, so
         # crop-then-transform is no longer exact: replay the transform on
         # the full decode, the way `generate_preview` does, then slice.
-        import tifffile
-
-        image = _promote_to_rgb(tifffile.imread(tiff_path))
-        if flipped_horizontally:
-            image = np.ascontiguousarray(image[:, ::-1])
-        image = auto_rotate.rotate_with_fill(image, fine_angle_deg)
-        if r:
-            image = np.ascontiguousarray(np.rot90(image, k=r))
+        image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
         if destination is not None:
             _encode_display_png(
-                image[dy : dy + dh, dx : dx + dw], destination, tone_params
+                image[dy : dy + dh, dx : dx + dw], destination, tone_params, mode=mode
             )
         return dx, dy, dw, dh
 
@@ -371,7 +453,9 @@ def render_region(
     if r:
         crop = np.ascontiguousarray(np.rot90(crop, k=r))
     if destination is not None:
-        _encode_display_png(_promote_to_rgb(crop), destination, tone_params)
+        _encode_display_png(
+            _promote_to_rgb(crop), destination, tone_params, mode=mode
+        )
     return dx, dy, dw, dh
 
 

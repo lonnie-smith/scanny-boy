@@ -25,6 +25,7 @@ from scanny_boy.events import (
     NegativeDone,
     NegativeFailed,
     PipelineStep,
+    PreviewRendered,
     ProbeResult,
     Progress,
     RegionRendered,
@@ -222,7 +223,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_ten():
+def test_protocol_version_is_eleven():
     """Protocol 9→10: 2D grid stitching — `--grid AxD` on `probe`,
     `prepare`, and `run` (mutually exclusive with `--per-negative`), the
     `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
@@ -233,7 +234,12 @@ def test_protocol_version_is_ten():
     net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
     negatives. The published TIFF never carries the adjustment
     (docs/DECISIONS.md, "The preview's tone adjustment")."""
-    assert PROTOCOL_VERSION == 10
+    """Protocol 10→11: the app's positive/negative display toggle — the
+    `--mode positive|negative` flag on `edit render-region` and the new
+    `edit render-preview` command (with its `preview_rendered` event),
+    whose negative mode is the un-inverted density view the tone
+    adjustment never reaches."""
+    assert PROTOCOL_VERSION == 11
 
 
 def test_new_event_kinds_round_trip():
@@ -281,6 +287,12 @@ def test_new_event_kinds_round_trip():
             y=2,
             width=10,
             height=6,
+        ),
+        PreviewRendered(
+            negative_id="neg-8",
+            path="/tmp/preview.png",
+            width=1024,
+            height=683,
         ),
     ]
     for event in events:

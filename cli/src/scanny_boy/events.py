@@ -26,7 +26,13 @@ from typing import IO, Any, ClassVar
 # tone` command (paper grade + midtone snap, recorded as a `tone` op in the
 # ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
 # manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
-PROTOCOL_VERSION = 10
+# Protocol 11 adds the app's positive/negative display toggle: a `--mode
+# positive|negative` flag on `edit render-region` and the new `edit
+# render-preview` command (with its `preview_rendered` event) — a
+# pure-query render of a negative's whole display image, downscaled like
+# the cached preview. The negative mode is the un-inverted density view;
+# no tone ever reaches it.
+PROTOCOL_VERSION = 11
 
 
 class EventType(enum.StrEnum):
@@ -53,6 +59,7 @@ class EventType(enum.StrEnum):
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     REGION_RENDERED = "region_rendered"
+    PREVIEW_RENDERED = "preview_rendered"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -464,6 +471,24 @@ class RegionRendered(Event):
     path: str
     x: int
     y: int
+    width: int
+    height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class PreviewRendered(Event):
+    """`edit render-preview`'s confirmation: a negative's whole display
+    image — net transform folded in, downscaled like the cached preview —
+    rendered in the display encode the command's `--mode` named, as a
+    lossless PNG at `path`; `width`/`height` are the written PNG's pixel
+    dimensions. No tone ever reaches the negative mode's un-inverted
+    density view. No pixel data of the published TIFF changes and nothing
+    is recorded anywhere."""
+
+    event_type: ClassVar[EventType] = EventType.PREVIEW_RENDERED
+
+    negative_id: str
+    path: str
     width: int
     height: int
 

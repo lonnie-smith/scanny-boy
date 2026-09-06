@@ -9,6 +9,21 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 11 keeps version 10's roll model and adds one feature.
+
+**The positive/negative display toggle** for the Edit tab's preview: `edit
+render-region` gains `--mode positive|negative`, and a new `edit
+render-preview` command renders a negative's whole display image — the ops
+log's net transform folded in, downscaled like the cached preview — into a
+caller-named path, emitting `preview_rendered` with the written PNG's pixel
+dimensions. `"positive"` (the default) is the inverted look the cached
+preview holds, with the tone adjustment composed in; `"negative"` is the
+un-inverted density view — the published TIFF's own appearance — which the
+tone adjustment never reaches (grading is a positive-view judgement aid,
+and a graded density is not the density). Both are pure rendering queries:
+nothing is recorded, the published TIFF is never modified. The managed,
+on-disk preview stays a positive in every mode.
+
 Protocol version 10 keeps version 9's roll model and adds two features.
 
 **2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
@@ -166,6 +181,9 @@ scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R --snap G | --reset)
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
+                              [--mode positive|negative]
+scanny-boy edit render-preview --roll DIR --negative ID --output PATH
+                               [--mode positive|negative]
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
@@ -360,8 +378,10 @@ or fails without partial effects.
 
 `edit render-region` renders one display-space region of a negative's
 published TIFF at 1:1 — the ops log's net transform (rotation, flip, and
-the auto-seeded fine angle) folded in, the same inverted 8-bit display
-encode as the cached preview, no
+the auto-seeded fine angle) folded in, the 8-bit display encode `--mode`
+names (protocol 11): `"positive"` — the default — is the inverted look the
+cached preview holds, with the tone adjustment composed in; `"negative"`
+is the un-inverted density view, which no tone reaches — no
 downscale — into `--output` as a lossless PNG. Display space is the
 published TIFF's pixels with the net transform applied: what `roll info`'s
 `preview_path` shows, and the coordinate space the app's 100% zoom works
@@ -372,6 +392,16 @@ nothing is recorded, the published TIFF and the ops log are untouched. It
 fails with `INVALID_EDIT` for a non-positive size or an empty region
 against the bounds, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative.
+
+`edit render-preview` renders a negative's whole display image — the same
+net transform folded in, downscaled to the cached preview's own longest
+edge — in the display encode `--mode` names (protocol 11; see the
+positive/negative toggle paragraph at the top) into `--output` as a
+lossless PNG, emitting `preview_rendered` with `negative_id`, `path`, and
+the written PNG's `width`/`height`. The pure-query backing of the app's
+positive/negative toggle: nothing is recorded, the published TIFF and the
+ops log are untouched. It fails with the same roll/negative codes as
+`edit render-region`, and with `INVALID_EDIT` for an unknown mode.
 
 `edit flip` records a horizontal mirror of one or more negatives — a flip of
 the pixels as they currently render, *after* any recorded rotations — by
@@ -508,6 +538,7 @@ library database rather than a JSON file in the roll folder).
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
+| `preview_rendered` | A negative's whole display image was rendered by `edit render-preview` in the requested display mode, downscaled like the cached preview. Carries `negative_id`, `path`, `width`, and `height`. Carries no `run_id`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
 | `flatfield_created` | A flat-field profile was created. Carries `profile`. |
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
