@@ -60,10 +60,17 @@ final class EditModel {
     /// one-helper-at-a-time discipline as `isRotating`.
     private(set) var isDeleting = false
 
-    /// Set while one `edit tone` round trip is in flight — the tone
-    /// panel's slider commits, with the same one-helper-at-a-time
-    /// discipline as `isRotating`/`isDeleting`.
+    /// Set while one `edit tone` round trip is in flight — a soft busy
+    /// indicator for the tone panel; the sliders stay enabled so the user
+    /// can keep dragging while a prior commit finishes or is cancelled.
     private(set) var isSettingTone = false
+
+    /// Debounces slider commits: a fast drag across many ISO-R steps fires
+    /// one CLI round trip per pause, not one per step crossed.
+    private static let toneDebounce = Duration.milliseconds(200)
+    @ObservationIgnored private var toneScheduleTask: Task<Void, Never>?
+    @ObservationIgnored private var toneCommitTask: Task<Void, Never>?
+    @ObservationIgnored private var activeToneSession: CLISession?
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -251,27 +258,82 @@ final class EditModel {
         refresh()
     }
 
+    /// Queues a tone commit after [`toneDebounce`](EditModel.toneDebounce).
+    /// Each new call cancels the prior scheduled commit; a superseding
+    /// in-flight CLI session is cancelled when the debounced commit runs.
+    func scheduleTone(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) {
+        toneScheduleTask?.cancel()
+        toneScheduleTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.toneDebounce)
+            guard !Task.isCancelled, let self else { return }
+            await self.commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+        }
+    }
+
+    /// Commits the tone adjustment immediately, cancelling any debounced
+    /// commit and any in-flight `edit tone` session superseded by this one.
+    func commitTone(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) async {
+        toneScheduleTask?.cancel()
+        toneScheduleTask = nil
+        if let toneCommitTask {
+            toneCommitTask.cancel()
+            await toneCommitTask.value
+        }
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.performToneCommit(
+                targets, gradeR: gradeR, snapGamma: snapGamma
+            )
+        }
+        toneCommitTask = task
+        await task.value
+    }
+
     /// Records the selected negatives' preview tone adjustment through the
     /// CLI — a paper grade plus a midtone snap, or `nil`/`nil` for the
-    /// reset to the flat look — and refreshes the roll as the
-    /// `edit_recorded` events confirm. The published TIFFs are never
-    /// touched; the CLI regenerates each preview with the tone curve
-    /// composed into its display encode. One CLI session per commit.
+    /// reset to the flat look. The published TIFFs are never touched; the
+    /// CLI regenerates each preview with the tone curve composed into its
+    /// display encode.
     func setTone(
         _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
     ) async {
-        guard let rollURL, !isSettingTone, !isRotating, !isDeleting, !targets.isEmpty
-        else { return }
+        await commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+    }
+
+    private func performToneCommit(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) async {
+        guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
+
+        if let activeToneSession {
+            await activeToneSession.cancel()
+            self.activeToneSession = nil
+        }
+        guard !Task.isCancelled else { return }
+
         isSettingTone = true
         defer { isSettingTone = false }
+
         let command = CLICommand.editTone(
             roll: rollURL,
             negatives: targets.map(\.negativeID),
             gradeR: gradeR,
             snapGamma: snapGamma
         )
+        let session = runner.session(for: command)
+        activeToneSession = session
+        defer { activeToneSession = nil }
+
         do {
-            for await output in try await runner.session(for: command).start() {
+            for await output in try await session.start() {
+                if Task.isCancelled {
+                    await session.cancel()
+                    return
+                }
                 if case .event(let event) = output, event.kind == .editRecorded,
                     let negativeID = event.negativeID
                 {
@@ -281,7 +343,6 @@ final class EditModel {
         } catch {
             return
         }
-        refresh()
     }
 
     /// Deletes the selected negatives through the CLI and refreshes the
@@ -642,5 +703,11 @@ final class EditModel {
     /// code drives everything from `@Observable`'s change notifications.
     func waitForPendingFetch() async {
         await rollTask?.value
+    }
+
+    /// Waits for any debounced or in-flight tone commit. Test-only.
+    func waitForPendingTone() async {
+        await toneScheduleTask?.value
+        await toneCommitTask?.value
     }
 }

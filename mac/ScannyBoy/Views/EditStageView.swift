@@ -182,11 +182,22 @@ private struct PreviewPane: View {
                         toneGradeR: negative.toneGradeR,
                         toneSnapGamma: negative.toneSnapGamma,
                         isBusy: edit.isSettingTone || edit.isRotating || edit.isDeleting,
-                        onCommit: { grade, snap in
-                            Task { await edit.setTone(targets, gradeR: grade, snapGamma: snap) }
+                        onScheduleCommit: { grade, snap in
+                            edit.scheduleTone(targets, gradeR: grade, snapGamma: snap)
+                        },
+                        onCommitNow: { grade, snap in
+                            Task {
+                                await edit.commitTone(
+                                    targets, gradeR: grade, snapGamma: snap
+                                )
+                            }
                         },
                         onReset: {
-                            Task { await edit.setTone(targets, gradeR: nil, snapGamma: nil) }
+                            Task {
+                                await edit.commitTone(
+                                    targets, gradeR: nil, snapGamma: nil
+                                )
+                            }
                         }
                     )
                     .frame(width: 280)
@@ -430,9 +441,10 @@ private struct PreviewPane: View {
 /// The Edit tab's tone adjustment panel: an ISO-R paper-grade slider
 /// (50–180, lower is harder — the vocabulary the Phase 4 print stage will
 /// use) plus a midtone-snap slider (−0.5…0.5), both recorded
-/// nondestructively through `edit tone`. Sliders commit on release: one
-/// CLI round trip per gesture, and repeated commits coalesce into the
-/// trailing `tone` op. Reset removes the op entirely, returning to the
+/// nondestructively through `edit tone`. Sliders snap to integer ISO-R
+/// units and 0.05 snap steps; each snapped value schedules a debounced
+/// commit, flushed immediately on release. Repeated commits coalesce into
+/// the trailing `tone` op. Reset removes the op entirely, returning to the
 /// flat linear preview the unadjusted display encode gives.
 private struct ToneAdjustmentPanel: View {
     /// The anchor negative's recorded tone — what the sliders sync to when
@@ -440,11 +452,14 @@ private struct ToneAdjustmentPanel: View {
     let toneGradeR: Double?
     let toneSnapGamma: Double?
     let isBusy: Bool
-    let onCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onScheduleCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onCommitNow: (_ gradeR: Double, _ snapGamma: Double) -> Void
     let onReset: () -> Void
 
     private static let defaultGrade: Double = 115
     private static let defaultSnap: Double = 0
+    private static let gradeRange: ClosedRange<Double> = 50...180
+    private static let snapRange: ClosedRange<Double> = -0.5...0.5
 
     @State private var grade: Double = defaultGrade
     @State private var snap: Double = defaultSnap
@@ -462,10 +477,12 @@ private struct ToneAdjustmentPanel: View {
                 }
                 ToneSlider(
                     value: $grade,
-                    range: 50...180,
+                    range: Self.gradeRange,
+                    step: 1,
                     resetValue: Self.defaultGrade,
                     reversed: true,
-                    onCommit: { onCommit(grade, snap) }
+                    onScheduleCommit: scheduleCommit,
+                    onCommitNow: commitNow
                 )
                 .accessibilityLabel("Paper grade")
                 Text("50–180, lower is harder")
@@ -484,9 +501,11 @@ private struct ToneAdjustmentPanel: View {
                 }
                 ToneSlider(
                     value: $snap,
-                    range: -0.5...0.5,
+                    range: Self.snapRange,
+                    step: 0.05,
                     resetValue: Self.defaultSnap,
-                    onCommit: { onCommit(grade, snap) }
+                    onScheduleCommit: scheduleCommit,
+                    onCommitNow: commitNow
                 )
                 .accessibilityLabel("Midtone snap")
                 Text("Midtone contrast trim")
@@ -517,6 +536,22 @@ private struct ToneAdjustmentPanel: View {
         .onChange(of: toneSnapGamma) { syncFromModel() }
     }
 
+    private func scheduleCommit() {
+        onScheduleCommit(snappedGrade, snappedSnap)
+    }
+
+    private func commitNow() {
+        onCommitNow(snappedGrade, snappedSnap)
+    }
+
+    private var snappedGrade: Double {
+        ToneSlider.snap(grade, step: 1, range: Self.gradeRange)
+    }
+
+    private var snappedSnap: Double {
+        ToneSlider.snap(snap, step: 0.05, range: Self.snapRange)
+    }
+
     private func syncFromModel() {
         if let toneGradeR, let toneSnapGamma {
             grade = toneGradeR
@@ -531,27 +566,46 @@ private struct ToneAdjustmentPanel: View {
 private struct ToneSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
+    let step: Double
     let resetValue: Double
     var reversed: Bool = false
-    let onCommit: () -> Void
+    let onScheduleCommit: () -> Void
+    let onCommitNow: () -> Void
 
     private var sliderValue: Binding<Double> {
-        guard reversed else { return $value }
+        let base = reversed ? reversedBinding : $value
         return Binding(
+            get: { base.wrappedValue },
+            set: { newValue in
+                let snapped = Self.snap(newValue, step: step, range: range)
+                guard snapped != base.wrappedValue else { return }
+                base.wrappedValue = snapped
+                onScheduleCommit()
+            }
+        )
+    }
+
+    private var reversedBinding: Binding<Double> {
+        Binding(
             get: { range.upperBound + range.lowerBound - value },
             set: { value = range.upperBound + range.lowerBound - $0 }
         )
     }
 
+    static func snap(_ value: Double, step: Double, range: ClosedRange<Double>) -> Double {
+        let stepped = (value / step).rounded() * step
+        return min(range.upperBound, max(range.lowerBound, stepped))
+    }
+
     var body: some View {
-        Slider(value: sliderValue, in: range) { editing in
+        Slider(value: sliderValue, in: range, step: step) { editing in
             guard !editing else { return }
-            onCommit()
+            onCommitNow()
         }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
                 value = resetValue
-                onCommit()
+                onCommitNow()
             }
         )
     }
