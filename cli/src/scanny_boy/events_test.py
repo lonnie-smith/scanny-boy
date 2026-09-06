@@ -223,13 +223,14 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_eleven():
+def test_protocol_version_is_thirteen():
     """Protocol 10→11: monochrome film support, extended preview tone
     adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
     toggle (`--mode` on `edit render-region`, `edit render-preview` with
     its `preview_rendered` event). Protocol 11→12: the preview colour
-    adjustment (`edit color`, `color_*` fields, docs/COLOR_PLAN.md)."""
-    assert PROTOCOL_VERSION == 12
+    adjustment (`edit color`, `color_*` fields, docs/COLOR_PLAN.md).
+    Protocol 12→13: the film-base reference (docs/REBATE_ANCHORING.md)."""
+    assert PROTOCOL_VERSION == 13
 
 
 def test_new_event_kinds_round_trip():

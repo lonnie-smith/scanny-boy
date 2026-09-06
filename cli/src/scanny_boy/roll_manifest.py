@@ -46,7 +46,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 7
+ROLL_MANIFEST_FORMAT_VERSION = 8
 ROLL_MANIFEST_KIND = "roll"
 
 # The extended metadata fields, in display order. Every one lives on both
@@ -453,6 +453,11 @@ class RollManifest:
     # manifest written before §2 existed at all). Never rewritten once set,
     # except by `_append_this_run`'s one-time §5.2 legacy upgrade.
     film: dict[str, Any] | None = None
+    # REBATE_ANCHORING §3.1: the roll's film-base reference. `None` until
+    # `roll set-base-frame` attaches one; replaceable while `locked_at` is
+    # None; frozen for the life of the roll once the first negative has been
+    # published against it (§3.2). A roll cannot be stitched without one.
+    film_base: dict[str, Any] | None = None
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -500,6 +505,7 @@ class RollManifest:
                 None if self.camera_color is None else self.camera_color.to_dict()
             ),
             "film": self.film,
+            "film_base": self.film_base,
         }
 
 

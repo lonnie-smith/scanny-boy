@@ -60,7 +60,23 @@ from typing import IO, Any, ClassVar
 # subcommand, thirteen derived `color_*` fields (twelve stored params plus
 # `color_temperature`) and `film_kind` on `roll info`, and the `color` op
 # in the ops log.
-PROTOCOL_VERSION = 12
+#
+# Protocol 13 is the film-base reference (docs/REBATE_ANCHORING.md): the
+# new `roll set-base-frame` command (with its `base_frame_set` event)
+# attaches one measured per-roll film-base reference — the thin-end colour
+# anchor for every negative on the roll — through a new top-level
+# `film_base` block on the roll manifest (`roll info` reports it verbatim).
+# The reference is replaceable until the roll's first negative is
+# published, then locked (`FILM_BASE_LOCKED`); a run/stitch on a roll
+# without one fails `FILM_BASE_REQUIRED`; a roll whose manifest predates
+# the feature cannot take new negatives or a base frame
+# (`ROLL_PREDATES_FILM_BASE`); `run`/`stitch`/`set-base-frame` refuse old
+# manifests. Seven gate/diagnostic codes (`FILM_BASE_NOT_FOUND`,
+# `_TOO_SMALL`, `_CLIPPED`, `_TOO_DARK`, `_AMBIGUOUS`) shape the attach
+# path, and two warnings (`FILM_BASE_CAMERA_CONFLICT`,
+# `FILM_BASE_FLATFIELD_CONFLICT`) record rig disagreements. `probe --roll`
+# reports `film_base` so the app can gate Convert without starting a run.
+PROTOCOL_VERSION = 13
 
 
 class EventType(enum.StrEnum):
@@ -93,6 +109,7 @@ class EventType(enum.StrEnum):
     FLATFIELD_LIST = "flatfield_list"
     FLATFIELD_DELETED = "flatfield_deleted"
     FLATFIELD_PROGRESS = "flatfield_progress"
+    BASE_FRAME_SET = "base_frame_set"
 
 
 class Stage(enum.StrEnum):
@@ -552,6 +569,25 @@ class ExportDone(Event):
     output: str
     width: int
     height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class BaseFrameSet(Event):
+    """`roll set-base-frame`'s confirmation (docs/REBATE_ANCHORING.md
+    §7.1): the attached (or replaced) film-base reference's identity and
+    measurement summary. `density` is the per-channel median log10 density
+    of the chosen population; `area_fraction` is its share of the frame;
+    `population_count` is every population the detector found; `locked` is
+    always false — a locked roll refuses the command outright."""
+
+    event_type: ClassVar[EventType] = EventType.BASE_FRAME_SET
+
+    roll_id: str
+    source_name: str
+    density: list[float]
+    area_fraction: float
+    population_count: int
+    locked: bool
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

@@ -500,6 +500,268 @@ def test_roll_rename_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
+# --- roll set-base-frame (docs/REBATE_ANCHORING.md section 7.1) -----------
+
+
+def _base_measurement(
+    density: tuple[float, float, float] = (-0.42, -0.12, -0.99),
+) -> "object":
+    from scanny_boy import film_base
+
+    population = film_base.Population(
+        density=density, luma=-0.25, area_fraction=0.44, cells=34100, spread=0.012
+    )
+    return film_base.BaseMeasurement(
+        density=density,
+        chosen_index=0,
+        populations=(population,),
+        clipped_fractions=(0.0, 0.0, 0.0),
+        grid_cells=786432,
+    )
+
+
+def _init_roll(capsys, tmp_path, name: str = "Roll A") -> Path:
+    main(["roll", "init", "--library", str(tmp_path), "--name", name])
+    capsys.readouterr()
+    return tmp_path / name.replace(" ", "-")
+
+
+def _set_base_frame(capsys, roll_dir: Path, frame: Path, *extra: str) -> int:
+    return main(
+        [
+            "roll",
+            "set-base-frame",
+            "--roll",
+            str(roll_dir),
+            "--frame",
+            str(frame),
+            *extra,
+        ]
+    )
+
+
+def test_roll_set_base_frame_attaches_on_an_absent_roll(capsys, tmp_path, monkeypatch):
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+
+    status = _set_base_frame(capsys, roll_dir, frame)
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started",
+        "base_frame_set",
+        "finished",
+    ]
+    assert events[0]["command"] == "roll set-base-frame"
+    assert events[1]["source_name"] == "_DSC5012.NEF"
+    assert events[1]["density"] == [-0.42, -0.12, -0.99]
+    assert events[1]["area_fraction"] == 0.44
+    assert events[1]["population_count"] == 1
+    assert events[1]["locked"] is False
+    assert err == ""
+
+    manifest = load_roll_manifest(roll_dir)
+    block = manifest.film_base
+    assert block is not None
+    assert block["density"] == [-0.42, -0.12, -0.99]
+    assert block["locked_at"] is None
+    assert block["source_name"] == "_DSC5012.NEF"
+    assert block["source_sha256"] == "f" * 64 or len(block["source_sha256"]) == 64
+    assert block["chosen_index"] == 0
+    assert block["populations"][0]["area_fraction"] == 0.44
+    assert block["grid_cells"] == 786432
+    assert block["measure_version"] == 1
+
+
+def test_roll_set_base_frame_replaces_on_an_attached_roll(
+    capsys, tmp_path, monkeypatch
+):
+    roll_dir = _init_roll(capsys, tmp_path)
+    first = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    second = write_fake_nef(tmp_path / "_DSC5013.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+
+    assert _set_base_frame(capsys, roll_dir, first) == 0
+    capsys.readouterr()
+    assert _set_base_frame(capsys, roll_dir, second) == 0
+
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film_base["source_name"] == "_DSC5013.NEF"
+    assert manifest.film_base["locked_at"] is None
+
+
+def test_roll_set_base_frame_refuses_a_locked_roll(capsys, tmp_path, monkeypatch):
+    from scanny_boy.roll_manifest import write_roll_manifest as write_manifest
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+    assert _set_base_frame(capsys, roll_dir, frame) == 0
+    capsys.readouterr()
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.film_base["locked_at"] = "2026-09-06T19:00:00Z"
+    write_manifest(roll_dir, manifest)
+    capsys.readouterr()
+
+    status = _set_base_frame(capsys, roll_dir, frame)
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "FILM_BASE_LOCKED"
+    assert "2026-09-06" in events[1]["message"]
+    # The block is unchanged.
+    assert load_roll_manifest(roll_dir).film_base["source_name"] == "_DSC5012.NEF"
+    assert load_roll_manifest(roll_dir).film_base["locked_at"] == "2026-09-06T19:00:00Z"
+
+
+def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy import film_base
+    from scanny_boy.events import Code
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+
+    def _too_small(_measurement):
+        raise film_base.FilmBaseError(
+            Code.FILM_BASE_TOO_SMALL,
+            "the largest flat rebate region covers only 9% of the base frame",
+        )
+
+    monkeypatch.setattr("scanny_boy.cli.film_base.gate", _too_small)
+
+    status = _set_base_frame(capsys, roll_dir, frame)
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "FILM_BASE_TOO_SMALL"
+    assert load_roll_manifest(roll_dir).film_base is None
+
+
+def test_roll_set_base_frame_refuses_a_version_7_roll(capsys, tmp_path, monkeypatch):
+    """§9: a roll stitched before film-base anchoring cannot be given one.
+    The library database does not persist `manifest_format_version` — every
+    roll it can produce reads back at the current version — so the v7
+    manifest is staged in memory ahead of the load."""
+    roll_dir = _init_roll(capsys, tmp_path)
+    v7_manifest = load_roll_manifest(roll_dir)
+    v7_manifest.manifest_format_version = 7
+    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", lambda _dir: v7_manifest)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+
+    status = _set_base_frame(capsys, roll_dir, frame)
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_PREDATES_FILM_BASE"
+    assert load_roll_manifest(roll_dir).film_base is None
+
+
+def test_roll_set_base_frame_warns_on_camera_conflict(capsys, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from scanny_boy.roll_manifest import CameraColor
+    from scanny_boy.roll_manifest import write_roll_manifest as write_manifest
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+    monkeypatch.setattr(
+        "scanny_boy.cli.read_source_settings",
+        lambda _frame: SimpleNamespace(make="NIKON CORPORATION", model="NIKON Z f"),
+    )
+    manifest = load_roll_manifest(roll_dir)
+    manifest.camera_color = CameraColor(
+        rgb_xyz_matrix=((0.7, 0.2, 0.1), (0.1, 0.75, 0.15), (0.05, 0.1, 0.85)),
+        source="libraw",
+        camera_model="NIKON Z 7",
+    )
+    write_manifest(roll_dir, manifest)
+    capsys.readouterr()
+
+    status = _set_base_frame(capsys, roll_dir, frame)
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started",
+        "warning",
+        "base_frame_set",
+        "finished",
+    ]
+    assert events[1]["code"] == "FILM_BASE_CAMERA_CONFLICT"
+    assert load_roll_manifest(roll_dir).film_base["camera_model"] == (
+        "NIKON CORPORATION NIKON Z f"
+    )
+
+
+def test_roll_set_base_frame_records_the_flatfield_profile_id(
+    capsys, tmp_path, monkeypatch
+):
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    captured: dict = {}
+
+    def _fake_load(reference, gain_map):
+        captured["gain_map_given"] = gain_map is not None
+        return _base_measurement()
+
+    monkeypatch.setattr("scanny_boy.cli.film_base.load", _fake_load)
+
+    # An unknown profile id fails before anything is written.
+    status = _set_base_frame(capsys, roll_dir, frame, "--flatfield", "nope")
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FLATFIELD_PROFILE_NOT_FOUND"
+    assert load_roll_manifest(roll_dir).film_base is None
+
+
+def test_roll_info_reports_the_film_base_block(capsys, tmp_path, monkeypatch):
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+    assert _set_base_frame(capsys, roll_dir, frame) == 0
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    info = events[1]["manifest"]
+    assert info["film_base"]["density"] == [-0.42, -0.12, -0.99]
+    assert info["film_base"]["locked_at"] is None
+
+
+def test_roll_info_reports_a_null_film_base_block(capsys, tmp_path):
+    roll_dir = _init_roll(capsys, tmp_path)
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert events[1]["manifest"]["film_base"] is None
+
+
 def test_roll_delete_unregisters_the_roll_and_leaves_the_folder(capsys, tmp_path):
     main(
         [
@@ -652,26 +914,37 @@ def test_edit_render_region_renders_the_requested_region(capsys, tmp_path):
     destination = tmp_path / "region.png"
     status = main(
         [
-            "edit", "render-region",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "4", "--y", "2",
-            "--width", "10", "--height", "6",
-            "--output", str(destination),
+            "edit",
+            "render-region",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "4",
+            "--y",
+            "2",
+            "--width",
+            "10",
+            "--height",
+            "6",
+            "--output",
+            str(destination),
         ]
     )
 
     assert status == 0
     events, err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == [
-        "started", "region_rendered", "finished"
-    ]
+    assert [e["event"] for e in events] == ["started", "region_rendered", "finished"]
     assert events[0]["command"] == "edit render-region"
     assert events[1]["negative_id"] == negative.negative_id
     assert events[1]["path"] == str(destination)
-    assert (events[1]["x"], events[1]["y"], events[1]["width"], events[1]["height"]) == (
-        4, 2, 10, 6
-    )
+    assert (
+        events[1]["x"],
+        events[1]["y"],
+        events[1]["width"],
+        events[1]["height"],
+    ) == (4, 2, 10, 6)
     assert events[2]["status"] == "success"
     assert err == ""
 
@@ -703,12 +976,22 @@ def test_edit_render_region_folds_in_the_net_transform(capsys, tmp_path):
     destination = tmp_path / "region.png"
     status = main(
         [
-            "edit", "render-region",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "2", "--y", "3",
-            "--width", "8", "--height", "5",
-            "--output", str(destination),
+            "edit",
+            "render-region",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "2",
+            "--y",
+            "3",
+            "--width",
+            "8",
+            "--height",
+            "5",
+            "--output",
+            str(destination),
         ]
     )
 
@@ -744,12 +1027,22 @@ def test_edit_render_region_rejects_a_bad_region(capsys, tmp_path):
     destination = tmp_path / "region.png"
     status = main(
         [
-            "edit", "render-region",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "0", "--y", "0",
-            "--width", "0", "--height", "6",
-            "--output", str(destination),
+            "edit",
+            "render-region",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "0",
+            "--y",
+            "0",
+            "--width",
+            "0",
+            "--height",
+            "6",
+            "--output",
+            str(destination),
         ]
     )
 
@@ -780,21 +1073,30 @@ def test_edit_render_region_negative_mode_encodes_without_inversion(capsys, tmp_
     destination = tmp_path / "region.png"
     status = main(
         [
-            "edit", "render-region",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "4", "--y", "2",
-            "--width", "10", "--height", "6",
-            "--output", str(destination),
-            "--mode", "negative",
+            "edit",
+            "render-region",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "4",
+            "--y",
+            "2",
+            "--width",
+            "10",
+            "--height",
+            "6",
+            "--output",
+            str(destination),
+            "--mode",
+            "negative",
         ]
     )
 
     assert status == 0
     events, err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == [
-        "started", "region_rendered", "finished"
-    ]
+    assert [e["event"] for e in events] == ["started", "region_rendered", "finished"]
     assert events[1]["path"] == str(destination)
     assert err == ""
 
@@ -820,13 +1122,24 @@ def test_edit_render_region_unknown_mode_is_a_usage_error(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "render-region",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "0", "--y", "0",
-            "--width", "4", "--height", "4",
-            "--output", str(tmp_path / "region.png"),
-            "--mode", "grayscale",
+            "edit",
+            "render-region",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "0",
+            "--y",
+            "0",
+            "--width",
+            "4",
+            "--height",
+            "4",
+            "--output",
+            str(tmp_path / "region.png"),
+            "--mode",
+            "grayscale",
         ]
     )
 
@@ -859,19 +1172,22 @@ def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
     destination = tmp_path / "preview.png"
     status = main(
         [
-            "edit", "render-preview",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--mode", "negative",
-            "--output", str(destination),
+            "edit",
+            "render-preview",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--mode",
+            "negative",
+            "--output",
+            str(destination),
         ]
     )
 
     assert status == 0
     events, err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == [
-        "started", "preview_rendered", "finished"
-    ]
+    assert [e["event"] for e in events] == ["started", "preview_rendered", "finished"]
     assert events[0]["command"] == "edit render-preview"
     assert events[1]["negative_id"] == negative.negative_id
     assert events[1]["path"] == str(destination)
@@ -894,7 +1210,8 @@ def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
             interpolation=cv2.INTER_AREA,
         )
     assert (events[1]["width"], events[1]["height"]) == (
-        display.shape[1], display.shape[0]
+        display.shape[1],
+        display.shape[0],
     )
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(
@@ -922,11 +1239,16 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
         destination = tmp_path / name
         status = main(
             [
-                "edit", "render-preview",
-                "--roll", str(roll_dir),
-                "--negative", negative.negative_id,
-                "--mode", mode,
-                "--output", str(destination),
+                "edit",
+                "render-preview",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative.negative_id,
+                "--mode",
+                mode,
+                "--output",
+                str(destination),
             ]
         )
         assert status == 0
@@ -937,11 +1259,16 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--grade", "160",
-            "--snap", "0.3",
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--grade",
+            "160",
+            "--snap",
+            "0.3",
         ]
     )
     assert status == 0
@@ -967,9 +1294,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
             interpolation=cv2.INTER_AREA,
         )
     graded = cv2.cvtColor(
-        tone.build_display_lut(tone.ToneParams(grade_r=160.0, snap_gamma=0.3))[
-            tiff
-        ],
+        tone.build_display_lut(tone.ToneParams(grade_r=160.0, snap_gamma=0.3))[tiff],
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)
@@ -979,10 +1304,14 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
 def test_edit_render_preview_missing_roll_reports_roll_not_found(capsys, tmp_path):
     status = main(
         [
-            "edit", "render-preview",
-            "--roll", str(tmp_path / "nope"),
-            "--negative", "x",
-            "--output", str(tmp_path / "preview.png"),
+            "edit",
+            "render-preview",
+            "--roll",
+            str(tmp_path / "nope"),
+            "--negative",
+            "x",
+            "--output",
+            str(tmp_path / "preview.png"),
         ]
     )
 
@@ -1070,11 +1399,16 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "90",
-            "--snap", "0.2",
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--grade",
+            "90",
+            "--snap",
+            "0.2",
         ]
     )
 
@@ -1095,15 +1429,23 @@ def test_edit_tone_reset_records_null_params(capsys, tmp_path):
     outcome = _stitch(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    assert main(
-        [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "90",
-            "--snap", "0.2",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "edit",
+                "tone",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative_id,
+                "--grade",
+                "90",
+                "--snap",
+                "0.2",
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
 
     status = main(
@@ -1132,10 +1474,14 @@ def test_edit_tone_needs_grade_and_snap_together(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "90",
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--grade",
+            "90",
         ]
     )
 
@@ -1155,18 +1501,30 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(capsys, tmp_path
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "90",
-            "--snap", "0.2",
-            "--density", "1.2",
-            "--shadow-density", "0.1",
-            "--highlight-density", "-0.1",
-            "--toe", "0.3",
-            "--toe-width", "3.0",
-            "--shoulder", "-0.2",
-            "--shoulder-width", "4.0",
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--grade",
+            "90",
+            "--snap",
+            "0.2",
+            "--density",
+            "1.2",
+            "--shadow-density",
+            "0.1",
+            "--highlight-density",
+            "-0.1",
+            "--toe",
+            "0.3",
+            "--toe-width",
+            "3.0",
+            "--shoulder",
+            "-0.2",
+            "--shoulder-width",
+            "4.0",
         ]
     )
     assert status == 0
@@ -1207,14 +1565,22 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(capsys, tmp
 
     status = main(
         [
-            "edit", "color",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--cyan", "0.1",
-            "--magenta", "0.2",
-            "--yellow", "0.05",
-            "--cast-removal", "0.1",
-            "--dye-separation", "1.1",
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--cyan",
+            "0.1",
+            "--magenta",
+            "0.2",
+            "--yellow",
+            "0.05",
+            "--cast-removal",
+            "0.1",
+            "--dye-separation",
+            "1.1",
         ]
     )
 
@@ -1237,25 +1603,39 @@ def test_edit_color_partial_update_preserves_recorded_values(capsys, tmp_path):
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
-    assert main(
-        [
-            "edit", "color",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--cyan", str(base["wb_cyan"]),
-            "--magenta", str(base["wb_magenta"]),
-            "--yellow", str(base["wb_yellow"]),
-            "--cast-removal", str(base["cast_removal"]),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "edit",
+                "color",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative_id,
+                "--cyan",
+                str(base["wb_cyan"]),
+                "--magenta",
+                str(base["wb_magenta"]),
+                "--yellow",
+                str(base["wb_yellow"]),
+                "--cast-removal",
+                str(base["cast_removal"]),
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
 
     status = main(
         [
-            "edit", "color",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--cyan", "0.5",
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--cyan",
+            "0.5",
         ]
     )
     assert status == 0
@@ -1276,11 +1656,16 @@ def test_edit_color_temperature_is_exclusive_with_region_magenta(capsys, tmp_pat
 
     status = main(
         [
-            "edit", "color",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--temperature", "3200",
-            "--magenta", "0.1",
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--temperature",
+            "3200",
+            "--magenta",
+            "0.1",
         ]
     )
 
@@ -1321,9 +1706,12 @@ def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
         "separation_damping": "--separation-damping",
     }
     argv = [
-        "edit", "color",
-        "--roll", str(roll_dir),
-        "--negative", negative_id,
+        "edit",
+        "color",
+        "--roll",
+        str(roll_dir),
+        "--negative",
+        negative_id,
     ]
     for key, value in params.items():
         argv.extend([flag_for_key[key], str(value)])
@@ -1351,12 +1739,16 @@ def test_edit_tone_auto_density_records_a_solved_value(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
             "--auto-grade",
             "--auto-density",
-            "--snap", "0",
+            "--snap",
+            "0",
         ]
     )
     assert status == 0
@@ -1380,12 +1772,16 @@ def test_edit_tone_auto_on_missing_normalization_warns(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
             "--auto-density",
             "--auto-grade",
-            "--snap", "0",
+            "--snap",
+            "0",
         ]
     )
     assert status == 0
@@ -1405,13 +1801,19 @@ def test_edit_tone_rejects_density_with_auto_density(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--density", "1.2",
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--density",
+            "1.2",
             "--auto-density",
-            "--grade", "115",
-            "--snap", "0",
+            "--grade",
+            "115",
+            "--snap",
+            "0",
         ]
     )
     assert status == 2
@@ -1425,28 +1827,45 @@ def test_edit_tone_toe_only_change_regenerates_the_preview(capsys, tmp_path):
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
 
-    assert main(
-        [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "115",
-            "--snap", "0",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "edit",
+                "tone",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative_id,
+                "--grade",
+                "115",
+                "--snap",
+                "0",
+            ]
+        )
+        == 0
+    )
     events, _ = _stdout_events(capsys)
     base_preview = Path(events[1]["preview_path"]).read_bytes()
 
-    assert main(
-        [
-            "edit", "tone",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--grade", "115",
-            "--snap", "0",
-            "--toe", "0.5",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "edit",
+                "tone",
+                "--roll",
+                str(roll_dir),
+                "--negative",
+                negative_id,
+                "--grade",
+                "115",
+                "--snap",
+                "0",
+                "--toe",
+                "0.5",
+            ]
+        )
+        == 0
+    )
     events, _ = _stdout_events(capsys)
     toe_preview = Path(events[1]["preview_path"]).read_bytes()
     assert toe_preview != base_preview
@@ -1761,7 +2180,9 @@ def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_
 # --- real subprocesses, driven by their own event stream -----------------
 
 
-def _spawn_convert(input_dir: Path, out_dir: Path, files: list[str], **extra) -> subprocess.Popen:
+def _spawn_convert(
+    input_dir: Path, out_dir: Path, files: list[str], **extra
+) -> subprocess.Popen:
     argv = [
         sys.executable,
         "-m",
@@ -2075,16 +2496,31 @@ def test_probe_with_grid_emits_the_implied_count_groups(capsys, tmp_path):
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "probe_result", "finished"]
     assert events[1]["groups"] == [
-        ["_DSC4638.NEF", "_DSC4639.NEF", "_DSC4640.NEF",
-         "_DSC4644.NEF", "_DSC4645.NEF", "_DSC4646.NEF"],
+        [
+            "_DSC4638.NEF",
+            "_DSC4639.NEF",
+            "_DSC4640.NEF",
+            "_DSC4644.NEF",
+            "_DSC4645.NEF",
+            "_DSC4646.NEF",
+        ],
     ]
 
 
 def test_grid_and_per_negative_are_mutually_exclusive(capsys):
     status = main(
         [
-            "prepare", "--input", "/tmp/in", "--files", "a.NEF",
-            "--out", "/tmp/out", "--grid", "3x2", "--per-negative", "6",
+            "prepare",
+            "--input",
+            "/tmp/in",
+            "--files",
+            "a.NEF",
+            "--out",
+            "/tmp/out",
+            "--grid",
+            "3x2",
+            "--per-negative",
+            "6",
         ]
     )
     assert status == 2
@@ -2111,8 +2547,17 @@ def test_omitting_both_grid_and_per_negative_is_a_usage_error(capsys, command):
 
 def test_malformed_grid_is_a_usage_error(capsys):
     status = main(
-        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
-         "/tmp/out", "--grid", "3z2"]
+        [
+            "prepare",
+            "--input",
+            "/tmp/in",
+            "--files",
+            "a.NEF",
+            "--out",
+            "/tmp/out",
+            "--grid",
+            "3z2",
+        ]
     )
     assert status == 2
     events, err = _stdout_events(capsys)
@@ -2122,8 +2567,17 @@ def test_malformed_grid_is_a_usage_error(capsys):
 
 def test_grid_3x3_is_invalid_grid_with_the_rebate_rule(capsys):
     status = main(
-        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
-         "/tmp/out", "--grid", "3x3"]
+        [
+            "prepare",
+            "--input",
+            "/tmp/in",
+            "--files",
+            "a.NEF",
+            "--out",
+            "/tmp/out",
+            "--grid",
+            "3x3",
+        ]
     )
     assert status == 2
     events, _err = _stdout_events(capsys)
@@ -2134,8 +2588,17 @@ def test_grid_3x3_is_invalid_grid_with_the_rebate_rule(capsys):
 
 def test_grid_above_the_count_cap_is_invalid_grid(capsys):
     status = main(
-        ["prepare", "--input", "/tmp/in", "--files", "a.NEF", "--out",
-         "/tmp/out", "--grid", "13x1"]
+        [
+            "prepare",
+            "--input",
+            "/tmp/in",
+            "--files",
+            "a.NEF",
+            "--out",
+            "/tmp/out",
+            "--grid",
+            "13x1",
+        ]
     )
     assert status == 2
     events, _err = _stdout_events(capsys)

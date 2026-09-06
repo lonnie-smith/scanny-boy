@@ -9,6 +9,48 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 13 keeps version 12's roll model and adds **the film-base
+reference** (docs/REBATE_ANCHORING.md).
+
+**The film-base reference**: a new `roll set-base-frame --roll DIR --frame
+FILE [--flatfield PROFILE_ID]` command attaches one measured per-roll
+film-base reference — the per-channel median log density inside the film
+rebate of one dedicated reference frame, shot once per roll showing as much
+clear rebate as possible, exposed about two stops darker than the roll's
+scans. The measurement is exposure-invariant (only per-channel deviations
+from the median are consumed), so the base frame's exposure never has to
+match the roll's; it does have to be the same film, the same light source,
+the same camera body, and the same flat-field profile. The block is a new
+optional top-level `film_base` object on the roll manifest, reported by
+`roll info` verbatim and by `probe --roll` (as `film_base` on
+`probe_result`) so the app can gate Convert without starting a run:
+`{density (3-array), locked_at, attached_at, source_name, source_sha256,
+flat_field_profile_id, camera_model, chosen_index, populations (array of
+{density, luma, area_fraction, cells, spread}, thinnest first),
+clipped_fractions, grid_cells, measure_version}`. `density` is always a
+3-array, even on a monochrome roll (the block is provenance there, not
+consumed). The state machine: ABSENT (`film_base` null) → ATTACHED
+(`locked_at` null) → LOCKED (`locked_at` set). `set-base-frame` attaches or
+replaces freely while unlocked and emits one `base_frame_set` event
+(`roll_id`, `source_name`, `density`, `area_fraction`, `population_count`,
+`locked` — always false); a locked roll refuses with `FILM_BASE_LOCKED`;
+a gate failure emits the error and changes nothing on disk. The first
+negative published against the reference sets `locked_at` in the same
+manifest write; a run that fails before publishing anything leaves it null.
+`run`/`stitch` on an ABSENT roll fail `FILM_BASE_REQUIRED` before any pixel
+work. Ten new codes: `FILM_BASE_REQUIRED` (error), `FILM_BASE_LOCKED`
+(error), `FILM_BASE_NOT_FOUND` (error), `FILM_BASE_TOO_SMALL` (error),
+`FILM_BASE_CLIPPED` (error), `FILM_BASE_TOO_DARK` (error),
+`FILM_BASE_AMBIGUOUS` (error), `ROLL_PREDATES_FILM_BASE` (error),
+`FILM_BASE_CAMERA_CONFLICT` (warning), `FILM_BASE_FLATFIELD_CONFLICT`
+(warning). Each negative's `normalization` block gains an optional
+`base_check` object — `{level_offset, shape_residual}` — recorded whenever
+the roll has a locked anchor and the negative's own rebate detector fired
+unclipped, and read by nothing (§6). Roll manifest format version bumps
+**7 → 8**: rolls stitched before this feature stay readable, editable and
+exportable, but cannot take new negatives or a base frame
+(`ROLL_PREDATES_FILM_BASE`). There is no migration.
+
 Protocol version 12 keeps version 11's roll model and adds **the preview
 colour adjustment**.
 
@@ -223,6 +265,7 @@ scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
+scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N | --grid AxD] [--roll DIR]
                       [--flatfield ID]
@@ -774,7 +817,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 7` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 8` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
@@ -808,6 +851,16 @@ staging directories, and reruns the incomplete negative.
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `MONO_DETECT_AMBIGUOUS` | Warning: an unseeded roll's film-kind statistic landed between the monochrome and colour thresholds; colour was assumed |
 | `MONO_DECISION_CONFLICT` | Warning: this run's fresh film-kind evidence disagrees with the roll's already-frozen kind; the frozen kind is kept |
+| `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |
+| `FILM_BASE_LOCKED` | The roll's film-base reference is locked (its first negative was converted) and cannot be replaced |
+| `FILM_BASE_NOT_FOUND` | No flat film-base region was found in the base frame |
+| `FILM_BASE_TOO_SMALL` | The chosen flat population is below the area or cell floor |
+| `FILM_BASE_CLIPPED` | The base frame's rebate is sensor-clipped |
+| `FILM_BASE_TOO_DARK` | A channel's median inside the rebate is below the per-channel floor |
+| `FILM_BASE_AMBIGUOUS` | Two large flat populations of different density; the frame is refused rather than guessed at |
+| `ROLL_PREDATES_FILM_BASE` | This roll was stitched before film-base anchoring and cannot take new negatives or a base frame |
+| `FILM_BASE_CAMERA_CONFLICT` | Warning: the base frame's EXIF camera model differs from the roll's; the measurement may still be fine |
+| `FILM_BASE_FLATFIELD_CONFLICT` | Warning: the run's flat-field profile differs from the one the base frame was measured with |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

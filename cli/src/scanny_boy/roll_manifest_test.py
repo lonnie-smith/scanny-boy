@@ -170,15 +170,16 @@ def _completed_negative(**overrides) -> NegativeRecord:
 
 
 def test_v7_round_trips(tmp_path):
-    """v7 adds the per-negative rig-tilt rectification record
-    (docs/RECTIFICATION_PLAN.md section 7)."""
+    """v8 adds the top-level film-base reference block
+    (docs/REBATE_ANCHORING.md §3.1) beside v7's per-negative rig-tilt
+    rectification record (docs/RECTIFICATION_PLAN.md section 7)."""
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 7
+    assert loaded.manifest_format_version == 8
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id
@@ -263,6 +264,76 @@ def test_roll_manifest_without_camera_color_loads_and_validates(tmp_path):
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.camera_color is None
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+# --- the film_base block (docs/REBATE_ANCHORING.md section 3.1) -----------
+
+
+def _film_base_block(locked_at: str | None = None) -> dict:
+    return {
+        "density": [-0.4213, -0.1187, -0.9902],
+        "locked_at": locked_at,
+        "attached_at": "2026-09-06T18:04:11Z",
+        "source_name": "_DSC5012.NEF",
+        "source_sha256": _OTHER_SHA,
+        "flat_field_profile_id": "a1b2c3d4-0000-4000-8000-000000000001",
+        "camera_model": "NIKON Z f",
+        "chosen_index": 0,
+        "populations": [
+            {
+                "density": [-0.4213, -0.1187, -0.9902],
+                "luma": -0.21,
+                "area_fraction": 0.44,
+                "cells": 34100,
+                "spread": 0.012,
+            },
+            {
+                "density": [-0.5, -0.2, -1.05],
+                "luma": -0.68,
+                "area_fraction": 0.09,
+                "cells": 7020,
+                "spread": 0.031,
+            },
+        ],
+        "clipped_fractions": [0.0, 0.0, 0.0],
+        "grid_cells": 786432,
+        "measure_version": 1,
+    }
+
+
+def test_film_base_round_trips_through_the_database(tmp_path):
+    """§3.1: one nullable JSON object on the roll row, sibling to `film`
+    and `camera_color`, round-tripping through to_dict/from_dict/repo —
+    and the whole manifest, block included, validates against the schema."""
+    manifest = _manifest(film_base=_film_base_block())
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.film_base == manifest.film_base
+    assert loaded.to_dict() == manifest.to_dict()
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_roll_manifest_without_film_base_loads_and_validates(tmp_path):
+    """Optional: a roll predating the feature (or with nothing attached
+    yet) has none; run/stitch refuse it with FILM_BASE_REQUIRED (§3.2
+    rule 4)."""
+    write_roll_manifest(tmp_path, _manifest())
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.film_base is None
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_film_base_locked_round_trips(tmp_path):
+    manifest = _manifest(film_base=_film_base_block(locked_at="2026-09-06T19:00:00Z"))
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.film_base["locked_at"] == "2026-09-06T19:00:00Z"
     assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
 
 

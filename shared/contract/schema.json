@@ -35,7 +35,8 @@
         "flatfield_deleted",
         "flatfield_progress",
         "metadata_updated",
-        "metadata_values"
+        "metadata_values",
+        "base_frame_set"
       ]
     },
     "stage": {
@@ -138,6 +139,16 @@
         "TONE_METERING_UNAVAILABLE",
         "MONO_DETECT_AMBIGUOUS",
         "MONO_DECISION_CONFLICT",
+        "FILM_BASE_REQUIRED",
+        "FILM_BASE_LOCKED",
+        "FILM_BASE_NOT_FOUND",
+        "FILM_BASE_TOO_SMALL",
+        "FILM_BASE_CLIPPED",
+        "FILM_BASE_TOO_DARK",
+        "FILM_BASE_AMBIGUOUS",
+        "ROLL_PREDATES_FILM_BASE",
+        "FILM_BASE_CAMERA_CONFLICT",
+        "FILM_BASE_FLATFIELD_CONFLICT",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -219,7 +230,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 12
+      "const": 13
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -310,6 +321,10 @@
           "roll_overlap": {
             "type": "array",
             "items": { "$ref": "#/definitions/rollOverlapEntry" }
+          },
+          "film_base": {
+            "description": "The roll's film-base reference block, verbatim from the roll manifest; null when absent (docs/REBATE_ANCHORING.md §7.1). Present only when `--roll` was given.",
+            "oneOf": [{ "type": "object" }, { "type": "null" }]
           }
         }
       }
@@ -331,6 +346,7 @@
               "roll info",
               "roll rename",
               "roll delete",
+              "roll set-base-frame",
               "apply-metadata",
               "metadata set",
               "metadata values",
@@ -559,6 +575,33 @@
             "type": "object",
             "description": "The updated roll manifest, in the roll-manifest schema's shape."
           }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "base_frame_set" } } },
+      "then": {
+        "required": [
+          "roll_id",
+          "source_name",
+          "density",
+          "area_fraction",
+          "population_count",
+          "locked"
+        ],
+        "properties": {
+          "roll_id": { "type": "string" },
+          "source_name": { "type": "string" },
+          "density": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Per-channel median log10 density of the chosen population."
+          },
+          "area_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+          "population_count": { "type": "integer", "minimum": 0 },
+          "locked": { "type": "boolean", "const": false }
         }
       }
     },

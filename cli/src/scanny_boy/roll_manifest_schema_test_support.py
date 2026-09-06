@@ -12,7 +12,9 @@ contract chunk are gone with the supersession-tombstone removal; v4 added
 per-frame solved photometric gains and per-pair pre-gain overlap MAD; v5
 dropped the roll-level `shots_per_negative`; v6 added a per-frame solved
 scale (docs/STITCH_QUALITY_PLAN.md section 2); v7 added the per-negative
-rig-tilt rectification record (docs/RECTIFICATION_PLAN.md section 7).
+rig-tilt rectification record (docs/RECTIFICATION_PLAN.md section 7);
+v8 added the top-level `film_base` block (docs/REBATE_ANCHORING.md §3.1)
+and the per-negative `normalization.base_check` sub-block (§6).
 """
 
 from __future__ import annotations
@@ -130,6 +132,27 @@ def _assert_matches_v5_roll_manifest_schema(
         _require_keys(data["film"], defs["filmDecision"]["required"])
         assert data["film"]["kind"] in defs["filmDecision"]["properties"]["kind"]["enum"]
         assert data["film"]["source"] in defs["filmDecision"]["properties"]["source"]["enum"]
+
+    if data.get("film_base") is not None:
+        # REBATE_ANCHORING §3.1.
+        block = data["film_base"]
+        _require_keys(block, defs["filmBase"]["required"])
+        assert len(block["density"]) == 3
+        assert block["locked_at"] is None or isinstance(block["locked_at"], str)
+        assert len(block["clipped_fractions"]) == 3
+        assert 0 <= block["chosen_index"] < len(block["populations"])
+        for population in block["populations"]:
+            _require_keys(population, defs["filmBase"]["properties"]["populations"]["items"]["required"])
+            assert len(population["density"]) == 3
+
+    for negative in data["negatives"]:
+        normalization = negative.get("normalization")
+        if normalization is not None and normalization.get("base_check") is not None:
+            # REBATE_ANCHORING §6.
+            _require_keys(
+                normalization["base_check"], defs["baseCheck"]["required"]
+            )
+            assert normalization["base_check"]["shape_residual"] >= 0.0
 
 
 def assert_matches_roll_manifest_schema(
