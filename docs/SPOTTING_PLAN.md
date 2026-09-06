@@ -1175,3 +1175,18 @@ For `docs/punchlist.md`, each with its attachment point:
   positives cluster there.
 - **Copying a spot set between negatives** — useful if the same holder
   dust recurs across a roll, meaningless if it does not. Wait for evidence.
+
+---
+
+## 12. Implementation status
+
+Chunks S-1 through S-5 are implemented and green (S-1 `spots.py` + tests;
+S-2 the `spots` op; S-3 the render path, export path, and provenance; S-4
+the three CLI commands, the protocol-13 event and codes, the contract, and
+`roll info`'s summary; S-5 the Mac app's review UI). The calibration tool
+of §9.1 exists at `cli/tools/measure_spot_thresholds.py`.
+
+**Every constant in §2.7 is still seeded.** §9.2's protocol awaits real
+rolls; until it runs, the feature is honest but untuned, and §9.3's
+"Measured constants" section is not written yet — do not close this feature
+without it.

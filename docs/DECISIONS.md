@@ -1488,3 +1488,77 @@ What is not obvious from the code:
    suffice.
 6. **Cast removal ports the shadow-tie branch only.** We do not measure
    the neutral-axis refs NegPy's other branch needs.
+
+# The spotting feature (protocol version 13)
+
+## Three principles hold the whole design together (docs/SPOTTING_PLAN.md)
+
+1. **The published TIFF is never touched.** Detection and repair are a
+   `spots` op in the negative's ops log, exactly like `tone` and `color` —
+   except that the export (and the previews) replay it into pixels. Every
+   repair is reversible by clearing one op.
+2. **Nothing is repaired that the user has not seen.** The detector's
+   output is a *proposal*. Pixels change only after an explicit repair
+   switch, and only inside masks the user had the chance to reject.
+3. **The gates err toward missing crud, never toward eating detail.** A
+   missed speck costs a manual spot; a false positive silently destroys
+   real information in a scan the user may never re-make. Wherever a
+   threshold could go either way, it goes conservative.
+
+## Why the exclusions are exclusions
+
+- **Infrared cleaning (Digital ICE and cousins)** needs a second capture
+  under IR illumination, which a copy-stand rig with an unmodified Z f
+  cannot make — and it fails on silver-halide black-and-white film by
+  construction, so it would not cover this program's monochrome rolls even
+  with the hardware.
+- **Polarized dark-field capture** is the right escalation if the top-hat
+  detector proves too blunt, but it needs a second exposure per frame and
+  two polarizers in the rig. Punchlist.
+- **Learned inpainting** reconstructs plausible detail rather than
+  interpolating measured detail — precisely the failure mode principle 3
+  exists to prevent. Not on an archival scan.
+- **Multi-frame consensus across a negative's overlapping scan frames
+  cannot see emulsion crud**, which is the kind of thing that looks like an
+  obvious win to a reader who has not thought it through: crud stuck to the
+  emulsion is imaged by *every* frame covering that patch of film, so it
+  agrees between frames and is invisible to an outlier test. What consensus
+  *would* catch is optical-path defects (sensor dust, a mote on a lens
+  element), which move relative to film content between frames — a real
+  and separate feature whose natural home is the flat-field reference
+  capture, which already photographs the bare light source with no negative
+  in the holder.
+- **No cross-negative context**: each negative is detected on its own
+  evidence.
+
+## The neutrality test, and why it multiplies by the channel spans
+
+Crud is neutral: a speck of dust is a broadband attenuator, the same
+additive offset in every channel's log density. But each channel is then
+normalized by its own span, so the equal log offset arrives in `val` space
+scaled by `1 / (ceil_ch - floor_ch)` — unequal across channels. The gate
+therefore compares per-channel residuals *after multiplying each by its
+channel's span* (`color.read_metering(...).ranges`), not the raw residuals.
+A monochrome roll has one channel and nothing to agree with, so its
+threshold runs stricter instead (`MONO_K_BONUS`) — an honest statement, not
+a fudge factor, until Chunk S-6 measures it.
+
+## The one way this feature could damage a scan, closed structurally
+
+A re-stitch keeps a negative's id — and therefore its whole ops log — while
+solving a fresh layout: the canvas can change size and content moves to new
+coordinates. TIFF-space spot geometry recorded against the old canvas would
+repair arbitrary parts of the new image. The op therefore records the
+`canvas` it was detected against, `apply_repair` and `is_repairing` no-op
+on a mismatch, markers report an empty list, `list-spots` warns
+`SPOTS_STALE`, and `roll info` marks the summary stale with zeroed counts.
+Re-detecting clears the condition by recording a fresh canvas.
+
+## Spots are TIFF space in the ops log, display space on the wire
+
+A spot must survive a later rotation, so the op stores the published TIFF's
+own pixel grid. The app, however, draws over a display-space image and does
+no coordinate math — so the CLI converts on the way out
+(`previews.tiff_rect_to_display`, the exact forward map of the canonical
+replay), and rejection is by `id`, never by coordinate. Never the reverse,
+never both in the same structure.

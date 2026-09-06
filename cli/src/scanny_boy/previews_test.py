@@ -624,3 +624,240 @@ def test_render_region_does_not_fall_back_to_full_decode(tmp_path, monkeypatch):
         cv2.COLOR_RGB2BGR,
     )
     np.testing.assert_array_equal(stored, expected)
+
+
+# --- spots: the coordinate map and the repair in the render -------------------
+# (docs/SPOTTING_PLAN.md §1.2, §3.3, §3.4)
+
+
+def test_tiff_rect_to_display_round_trips_through_the_point_map():
+    """The forward map composed with `_display_point_to_tiff` is the
+    identity on corner points, for all four quarter turns x flipped/not, at
+    zero fine angle."""
+    from scanny_boy.previews import _display_point_to_tiff, tiff_rect_to_display
+
+    tiff_h, tiff_w = 30, 40
+    for quarter_turns in range(4):
+        r = (-quarter_turns) % 4
+        for flipped in (False, True):
+            _dx, _dy, dw, dh = tiff_rect_to_display(
+                (9, 7, 12, 8),
+                (tiff_h, tiff_w),
+                quarter_turns=quarter_turns,
+                flipped_horizontally=flipped,
+                fine_angle_deg=0.0,
+            )
+            # Odd net turns swap the rect's own dimensions.
+            assert (dw, dh) == ((12, 8) if quarter_turns % 2 == 0 else (8, 12))
+            # A 1x1 rect maps 1:1 at zero fine angle; the display point
+            # maps back to the TIFF point.
+            for tx, ty in ((9, 7), (20, 14)):
+                px, py, pw, ph = tiff_rect_to_display(
+                    (tx, ty, 1, 1),
+                    (tiff_h, tiff_w),
+                    quarter_turns=quarter_turns,
+                    flipped_horizontally=flipped,
+                    fine_angle_deg=0.0,
+                )
+                assert (pw, ph) == (1, 1)
+                # Undo the quarter turns, then the mirror — the inverse of
+                # the canonical order the forward map replays.
+                ti, tj = _display_point_to_tiff(py, px, tiff_h, tiff_w, r)
+                tx_back = tiff_w - 1 - tj if flipped else tj
+                assert (ti, tx_back) == (ty, tx)
+
+
+def test_tiff_rect_to_display_moves_a_rect_with_the_rotation():
+    """Pinned against a hand-computed expectation, not against the
+    function's own output: one cw turn of a rect at (2, 3, 5, 4) on a
+    10x20 TIFF lands at (3, 2, 4, 5)."""
+    from scanny_boy.previews import tiff_rect_to_display
+
+    assert tiff_rect_to_display(
+        (2, 3, 5, 4),
+        (10, 20),
+        quarter_turns=1,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+    ) == (3, 2, 4, 5)
+    # A flip with no turns mirrors the column bounds in place: tiff cols
+    # 2..6 land at display cols 13..17 of a 20-wide image.
+    assert tiff_rect_to_display(
+        (2, 3, 5, 4),
+        (10, 20),
+        quarter_turns=0,
+        flipped_horizontally=True,
+        fine_angle_deg=0.0,
+    ) == (13, 3, 5, 4)
+
+
+def test_tiff_rect_to_display_grows_under_a_fine_angle():
+    import cv2
+
+    from scanny_boy.previews import tiff_rect_to_display
+
+    tiff_h, tiff_w = 30, 40
+    rect = (5, 6, 10, 8)
+    angle = 6.0
+    _dx, _dy, dw, dh = tiff_rect_to_display(
+        rect,
+        (tiff_h, tiff_w),
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=angle,
+    )
+    assert (dw, dh) >= (10, 8)
+    # Every mapped corner lies inside the returned rect.
+    matrix = cv2.getRotationMatrix2D((tiff_w / 2.0, tiff_h / 2.0), -angle, 1.0)
+    x, y, w, _h = rect
+    for px, py in ((x, y), (x + w - 1, y), (x + w - 1, y + _h - 1), (x, y + _h - 1)):
+        mx = matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2]
+        my = matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2]
+        assert _dx <= mx <= _dx + dw
+        assert _dy <= my <= _dy + dh
+
+
+def _spots_params_for(image: np.ndarray, bbox: tuple[int, int, int, int], repair=True):
+    from scanny_boy import spots
+
+    _x, _y, w, h = bbox
+    local = np.zeros((h, w), dtype=bool)
+    local[:, :] = True
+    return spots.spots_params(
+        canvas=(image.shape[1], image.shape[0]),
+        spots=[
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": list(bbox),
+                "rle": spots.encode_rle(local),
+                "area": w * h,
+                "score": 10.0,
+                "rejected": False,
+            }
+        ],
+        sensitivity=0.5,
+        repair=repair,
+    )
+
+
+def test_generate_preview_with_a_repair_off_is_byte_identical(tmp_path):
+    from scanny_boy.previews import generate_preview
+
+    image = (np.arange(60 * 80 * 3, dtype=np.uint16).reshape(60, 80, 3) * 97) % 60000
+    image[12:15, 10:14] = image[12:15, 10:14] // 2  # a planted dark blob
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    plain = generate_preview(roll_dir, "rid-1", negative)
+    off = generate_preview(
+        roll_dir,
+        "rid-1",
+        negative,
+        spots_params=_spots_params_for(image, (10, 12, 4, 3), repair=False),
+    )
+    assert plain.read_bytes() == off.read_bytes()
+
+
+def test_generate_preview_with_a_repair_differs_only_near_the_spot(tmp_path):
+    from scanny_boy import previews
+    from scanny_boy import spots as spots_module
+    from scanny_boy.previews import generate_preview
+
+    image = (np.arange(60 * 80 * 3, dtype=np.uint16).reshape(60, 80, 3) * 97) % 60000
+    image[12:15, 10:14] = image[12:15, 10:14] // 2  # a planted dark blob
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    plain = cv2.imread(str(generate_preview(roll_dir, "rid-1", negative)),
+                       cv2.IMREAD_UNCHANGED)
+    repaired_path = generate_preview(
+        roll_dir,
+        "rid-1",
+        negative,
+        spots_params=_spots_params_for(image, (10, 12, 4, 3), repair=True),
+    )
+    repaired = cv2.imread(str(repaired_path), cv2.IMREAD_UNCHANGED)
+    assert not np.array_equal(plain, repaired)
+
+    changed = np.any(repaired != plain, axis=2)
+    assert changed.any()
+    # The only pixels that moved are the spot's, grown by the repair's
+    # dilation (this preview fits under PREVIEW_MAX_EDGE, so there is no
+    # downscale between the repair and the PNG).
+    assert 80 <= previews.PREVIEW_MAX_EDGE
+    pad = spots_module.REPAIR_DILATE_PX + 1
+    ys, xs = np.nonzero(changed)
+    assert ys.min() >= 12 - pad
+    assert xs.min() >= 10 - pad
+    assert ys.max() <= 15 + pad
+    assert xs.max() <= 14 + pad
+
+
+def test_render_region_takes_the_exact_path_when_a_repair_is_live(tmp_path, monkeypatch):
+    """Inpainting a crop uses different surroundings than inpainting the
+    whole image, so a live repair must leave the strip-level fast path for
+    the exact one — and the pixels must match a full decode + replay +
+    slice (SPOTTING_PLAN §3.4)."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    image[12:15, 10:14] = image[12:15, 10:14] // 2  # a planted dark blob
+    tiff_path = _write_published_tiff(tmp_path, image)
+    params = _spots_params_for(image, (10, 12, 4, 3), repair=True)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("a live repair must not take the strip path")
+
+    monkeypatch.setattr(previews, "_read_tiff_region", _boom)
+
+    destination = tmp_path / "region.png"
+    rect = previews.render_region(
+        tiff_path, 5, 8, 20, 12, destination=destination, spots_params=params
+    )
+    assert rect == (5, 8, 20, 12)
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    display = previews._display_image(tiff_path, spots_params=params)
+    expected = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[display[8:20, 5:25]], cv2.COLOR_RGB2BGR
+    )
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_ensure_preview_regenerates_on_a_spots_op(tmp_path):
+    """A repair changes pixels, and the incremental transform path is
+    lossless-geometry only — so the `spots` op regenerates the cached
+    preview     rather than transforming it."""
+    from scanny_boy import previews
+    from scanny_boy.library import repo
+
+    image = (np.arange(60 * 80 * 3, dtype=np.uint16).reshape(60, 80, 3) * 97) % 60000
+    image[12:15, 10:14] = image[12:15, 10:14] // 2  # a planted dark blob
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    flat = previews.ensure_preview(roll_dir, "rid-1", negative)
+    flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
+
+    params = _spots_params_for(image, (10, 12, 4, 3), repair=True)
+    repo.append_spots_edit(roll_dir, negative.negative_id, params)
+    preview = previews.ensure_preview(
+        roll_dir, "rid-1", negative, repo.SPOTS_OP
+    )
+
+    repaired_pixels = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
+    assert not np.array_equal(flat_pixels, repaired_pixels)
+    expected_path = previews.generate_preview(
+        roll_dir, "rid-1", negative, spots_params=params
+    )
+    assert repaired_pixels.tobytes() == cv2.imread(
+        str(expected_path), cv2.IMREAD_UNCHANGED
+    ).tobytes()
+
+    # Rejection is a decision, not a disappearance: with every spot
+    # rejected the preview returns to its pre-repair bytes.
+    rejected = _spots_params_for(image, (10, 12, 4, 3), repair=True)
+    rejected["spots"][0]["rejected"] = True
+    repo.append_spots_edit(roll_dir, negative.negative_id, rejected)
+    preview = previews.ensure_preview(roll_dir, "rid-1", negative, repo.SPOTS_OP)
+    np.testing.assert_array_equal(
+        cv2.imread(str(preview), cv2.IMREAD_UNCHANGED), flat_pixels
+    )

@@ -446,6 +446,76 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    /// `scanny-boy edit detect-spots --roll DIR --negative ID [--negative ID ...] [--sensitivity S]`
+    ///
+    /// Protocol version 13 (SPOTTING_PLAN): runs the defect detector over
+    /// each selected negative's published TIFF and records the proposals
+    /// as one `spots` op per negative — proposals only; no pixel anywhere
+    /// changes until an explicit repair is switched on. Re-detecting
+    /// preserves rejections and an already-on repair switch.
+    public static func editDetectSpots(
+        roll: URL, negatives: [String], sensitivity: Double = 0.5
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "detect-spots",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        arguments.append(contentsOf: ["--sensitivity", String(sensitivity)])
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy edit spots --roll DIR --negative ID [--reject N ...] [--accept N ...] [--repair | --no-repair] [--clear]`
+    ///
+    /// Protocol version 13: records the review decision for one negative's
+    /// spot set. Rejection is by `id` — spot ids are per-negative, so the
+    /// command takes exactly one `--negative` — and the app converts no
+    /// coordinates in either direction.
+    public static func editSpots(
+        roll: URL,
+        negative: String,
+        reject: [Int] = [],
+        accept: [Int] = [],
+        repair: Bool? = nil,
+        clear: Bool = false
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "spots",
+            "--roll", roll.path,
+            "--negative", negative,
+        ]
+        for id in reject {
+            arguments.append(contentsOf: ["--reject", String(id)])
+        }
+        for id in accept {
+            arguments.append(contentsOf: ["--accept", String(id)])
+        }
+        switch repair {
+        case .some(true): arguments.append("--repair")
+        case .some(false): arguments.append("--no-repair")
+        case .none: break
+        }
+        if clear {
+            arguments.append("--clear")
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy edit list-spots --roll DIR --negative ID`
+    ///
+    /// Protocol version 13: the pure query behind the marker overlay —
+    /// nothing recorded, no pixels touched, in the same family as
+    /// `render-region` and `render-preview`.
+    public static func editListSpots(roll: URL, negative: String) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "list-spots",
+            "--roll", roll.path,
+            "--negative", negative,
+        ])
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
     ///
     /// Renders each negative's published pixels as a positive in Adobe

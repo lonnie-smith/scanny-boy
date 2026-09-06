@@ -604,7 +604,8 @@ final class RunModel {
              .editRecorded, .negativeDeleted, .exportDone, .regionRendered,
              .previewRendered,
              .metadataUpdated, .metadataValues,
-             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress:
+             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+             .spotsReported:
             break
         }
     }

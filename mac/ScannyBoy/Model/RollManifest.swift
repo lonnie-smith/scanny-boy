@@ -194,6 +194,13 @@ struct RollManifest: Sendable, Hashable {
         /// Grid regularity measures (docs/GRID_STITCH_PLAN.md section 4.2).
         let gridPitchRatio: Double?
         let gridAlignmentRatio: Double?
+        /// Protocol 13's per-negative spots summary from `roll info` — the
+        /// counts, without the list (the full list is `edit list-spots`'s
+        /// job, and `EditModel` holds it for the displayed negative only).
+        /// `nil` for a negative with no spot set or a manifest predating
+        /// the field. Defaults to `nil` so every construction site that
+        /// predates the field keeps compiling.
+        var spotsSummary: NegativeSpots.Summary? = nil
 
         /// The normalization meters the Edit tab needs from the stored record.
         struct NormalizationSummary: Sendable, Hashable {
@@ -447,7 +454,9 @@ struct RollManifest: Sendable, Hashable {
                 .flatMap(Self.decodeNormalizationSummary),
             usedClaheFallback: fields["used_clahe_fallback"]?.boolValue ?? false,
             gridPitchRatio: fields["grid_pitch_ratio"]?.doubleValue,
-            gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue
+            gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue,
+            spotsSummary: fields["spots"]?.objectValue
+                .flatMap(NegativeSpots.Summary.init(fields:))
         )
     }
 

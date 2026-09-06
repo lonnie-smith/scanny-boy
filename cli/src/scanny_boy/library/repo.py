@@ -70,6 +70,16 @@ TONE_OP = "tone"
 # preview-only, independently resettable, coalesced in place.
 COLOR_OP = "color"
 
+# `spots` params are the spot detector's proposals plus the whole-negative
+# `repair` switch (see `spots.py`): `{"detector_version", "sensitivity",
+# "repair", "canvas", "spots"}`, each spot carrying its exact RLE mask over
+# its own bounding box in **published-TIFF pixels**. A sibling of `tone` and
+# `color` — a state, not a transform, the latest one wins, coalesced in
+# place — with one singular difference: it is the only op whose replay
+# *synthesizes* pixel values, which is why `repair` is part of the state and
+# why a canvas mismatch repairs nothing (SPOTTING_PLAN §1.5).
+SPOTS_OP = "spots"
+
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
 _UNITY_GAIN = (1.0, 1.0, 1.0)
@@ -82,6 +92,9 @@ class EditState:
     fine_angle_deg: float
     tone: dict[str, float] | None
     color: dict[str, float] | None
+    # The net `spots` op's params, or None — a state like `tone`/`color`,
+    # but one that reaches the export (SPOTTING_PLAN §3.3).
+    spots: dict | None = None
 
 
 class RollNotRegisteredError(Exception):
@@ -182,9 +195,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         # pre-loaded identity inserts a duplicate row on every save. The list
         # is small and nothing holds a foreign key to it, so rewriting it
         # wholesale is the safe diff: delete all, insert the incoming set.
-        session.execute(
-            delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id)
-        )
+        session.execute(delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id))
         for ordinal, source in enumerate(manifest.sources):
             assert isinstance(source, RollSourceRecord)
             session.add(
@@ -475,7 +486,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                 **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
             ),
             camera_color=(
-                None if roll.camera_color is None else CameraColor.from_dict(roll.camera_color)
+                None
+                if roll.camera_color is None
+                else CameraColor.from_dict(roll.camera_color)
             ),
         )
 
@@ -550,7 +563,9 @@ def _tone_param_bounds() -> tuple[tuple[str, float, float], ...]:
     )
 
 
-def validated_tone_params(params: dict[str, float | None] | None) -> dict[str, float | None]:
+def validated_tone_params(
+    params: dict[str, float | None] | None,
+) -> dict[str, float | None]:
     """The `tone` op's params: all nine set, or all nine `None` (the reset)."""
     from scanny_boy import tone
 
@@ -597,7 +612,9 @@ def validated_color_params(
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"color {name} must be a number, got {value!r}")  # noqa: TRY004
         if not low <= value <= high:
-            raise ValueError(f"color {name} must be within [{low}, {high}], got {value}")
+            raise ValueError(
+                f"color {name} must be within [{low}, {high}], got {value}"
+            )
         validated[name] = float(value)
     return validated
 
@@ -687,6 +704,15 @@ def append_color_edit(
     place. Raises `ValueError` on out-of-range or mismatched params."""
     validated = validated_color_params(params)
     return _coalesce_state_edit(roll_dir, negative_id, COLOR_OP, validated)
+
+
+def append_spots_edit(roll_dir: Path, negative_id: str, params: dict) -> dict:
+    """Records the negative's spot proposals and repair switch (see
+    `spots.py`), coalescing a trailing `spots` op in place like `tone` and
+    `color` — it is a state, not a transform. Raises `ValueError` on
+    malformed params."""
+    validated = validated_spots_params(params)
+    return _coalesce_state_edit(roll_dir, negative_id, SPOTS_OP, validated)
 
 
 def _tone_neutral_defaults() -> dict[str, float]:
@@ -787,6 +813,119 @@ def _parse_color_op(params: dict) -> dict[str, float] | None:
     return merged
 
 
+_SPOT_CORE_KEYS = ("id", "kind", "polarity", "bbox", "rle")
+_SPOT_KINDS = ("blob", "streak")
+_SPOT_POLARITIES = ("dense", "thin")
+
+
+def _check_spots_params(params: dict) -> dict:
+    """The shared validation behind `validated_spots_params` (which raises)
+    and `_parse_spots_op` (which degrades to `None`). Unknown keys — on the
+    params and on each spot — are ignored, not rejected: a parser that
+    demands an exact key set silently discards real user state the day the
+    set grows (CAST_REMOVAL_PLAN §6.1's cautionary tale)."""
+    from scanny_boy import spots
+
+    version = params.get("detector_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("spots detector_version must be an int")  # noqa: TRY004
+    if version > spots.DETECTOR_VERSION:
+        raise ValueError(
+            f"spots detector_version {version} is newer than this build's "
+            f"{spots.DETECTOR_VERSION}"
+        )
+    repair = params.get("repair")
+    if not isinstance(repair, bool):
+        raise ValueError("spots repair must be a bool")  # noqa: TRY004
+    sensitivity = params.get("sensitivity")
+    if isinstance(sensitivity, bool) or not isinstance(sensitivity, (int, float)):
+        raise ValueError("spots sensitivity must be a number")  # noqa: TRY004
+    if not 0.0 <= float(sensitivity) <= 1.0:
+        raise ValueError(f"spots sensitivity must be within [0, 1], got {sensitivity}")
+    canvas = params.get("canvas")
+    if (
+        not isinstance(canvas, list)
+        or len(canvas) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in canvas
+        )
+    ):
+        raise ValueError("spots canvas must be [width, height], two positive ints")
+    spot_list = params.get("spots")
+    if not isinstance(spot_list, list):
+        raise ValueError("spots must be a list")  # noqa: TRY004
+    checked_spots: list[dict] = []
+    for spot in spot_list:
+        if not isinstance(spot, dict):
+            raise ValueError("each spot must be an object")  # noqa: TRY004
+        missing = [key for key in _SPOT_CORE_KEYS if key not in spot]
+        if missing:
+            raise ValueError(f"spot missing keys: {', '.join(missing)}")
+        if spot["kind"] not in _SPOT_KINDS:
+            raise ValueError(f"spot kind must be one of {list(_SPOT_KINDS)}")
+        if spot["polarity"] not in _SPOT_POLARITIES:
+            raise ValueError(f"spot polarity must be one of {list(_SPOT_POLARITIES)}")
+        bbox = spot["bbox"]
+        if (
+            not isinstance(bbox, list)
+            or len(bbox) != 4
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) for value in bbox
+            )
+        ):
+            raise ValueError("spot bbox must be [x, y, width, height], four ints")
+        if bbox[2] <= 0 or bbox[3] <= 0:
+            raise ValueError("spot bbox must have positive width and height")
+        rle = spot["rle"]
+        if (
+            not isinstance(rle, list)
+            or not rle
+            or any(
+                isinstance(run, bool) or not isinstance(run, int) or run < 0
+                for run in rle
+            )
+        ):
+            raise ValueError("spot rle must be a list of non-negative ints")
+        if sum(rle) != bbox[2] * bbox[3]:
+            raise ValueError(
+                "spot rle must sum to the bbox area "
+                f"({sum(rle)} != {bbox[2]} * {bbox[3]})"
+            )
+        checked_spots.append(dict(spot))
+    return {
+        "detector_version": version,
+        "sensitivity": float(sensitivity),
+        "repair": repair,
+        "canvas": list(canvas),
+        "spots": checked_spots,
+    }
+
+
+def validated_spots_params(params: dict) -> dict:
+    """The `spots` op's params, validated. Raises `ValueError` with a
+    specific message for each malformed shape; `edits.py` turns those into
+    `INVALID_EDIT`. The parser cannot check `canvas` against a real image —
+    it has none — so that comparison stays in `spots.py` (SPOTTING_PLAN
+    §1.5)."""
+    if not isinstance(params, dict):
+        raise ValueError("spots params must be an object")  # noqa: TRY004
+    return _check_spots_params(params)
+
+
+def _parse_spots_op(params: dict) -> dict | None:
+    """The `spots` op as replayed into `EditState`. Never raises: anything
+    malformed degrades to `None`, which means *no markers and no repair* —
+    degrading toward "change no pixels" is the only safe direction
+    (SPOTTING_PLAN §5)."""
+    if not isinstance(params, dict):
+        return None
+    try:
+        return _check_spots_params(params)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
     with _session() as session:
         negative = _negative_row(session, roll_dir, negative_id)
@@ -810,14 +949,15 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
 
 def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net state. Geometric ops compose; `tone` and `color` are
-    preview-only states where only the latest op of each kind matters.
+    canonical net state. Geometric ops compose; `tone`, `color`, and
+    `spots` are states where only the latest op of each kind matters.
     Unknown ops are skipped; malformed state ops degrade to no adjustment."""
     turns = 0
     flipped = False
     fine_deg = 0.0
     tone: dict[str, float] | None = None
     color: dict[str, float] | None = None
+    spots: dict | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -840,12 +980,17 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
         elif op == COLOR_OP:
             parsed = _parse_color_op(edit["params"])
             color = parsed
+        elif op == SPOTS_OP:
+            # The net spots state is TIFF-space geometry; it does not move
+            # when the display transform does.
+            spots = _parse_spots_op(edit["params"])
     return EditState(
         quarter_turns=turns % 4,
         flipped=flipped,
         fine_angle_deg=fine_deg,
         tone=tone,
         color=color,
+        spots=spots,
     )
 
 
@@ -987,9 +1132,7 @@ def upsert_metadata_values(field: str, values: list[str]) -> None:
             )
             if row is None:
                 session.add(
-                    MetadataValueRow(
-                        field=field, value=value, last_used_at=_now_iso()
-                    )
+                    MetadataValueRow(field=field, value=value, last_used_at=_now_iso())
                 )
             else:
                 row.last_used_at = _now_iso()

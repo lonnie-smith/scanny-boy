@@ -47,3 +47,37 @@ flat-field calibration frames — which is exactly what they exist for — and
 re-deriving the weights from it is worth doing, but needs its own
 measurement protocol; it was explicitly out of scope for
 docs/MONOCHROME_PLAN.md.
+
+## Spotting escalations (docs/SPOTTING_PLAN.md §11)
+
+The spot detector shipped with seeded constants and a top-hat-only response
+bank (Chunk S-6's calibration measures them — `cli/tools/
+measure_spot_thresholds.py`); each escalation below has its attachment
+point named so it can land without a redesign:
+
+* **Patch-based (exemplar / PatchMatch-style) fill** to preserve grain
+  across a repair, instead of Telea's smooth diffusion. Attachment point:
+  `spots.apply_repair` — the mask side of the feature would not change at
+  all. Do this when the §9 contact sheets show repairs reading as plastic
+  at 100%, and not before.
+* **A Hessian/Frangi ridge filter** as a second detection channel for thin
+  scratches the top-hat's size gate misses. Attachment point:
+  `spots.detect`, as a third response alongside the two top-hats. Do this
+  when §9 shows scratches being missed at every sensitivity.
+* **Optical-path defect mapping from the flat-field reference capture** —
+  sensor dust and lens motes are fixed in camera coordinates and recur on
+  every frame, so the bare-light reference already photographs them.
+  Attachment point: `flatfield.create_profile`, recording a defect mask on
+  the profile. A genuinely different feature from spot detection
+  (SPOTTING_PLAN §0.1: multi-frame consensus cannot see emulsion crud) and
+  worth its own short plan.
+* **Polarized dark-field capture** (SPOTTING_PLAN §0.1) — the measurement
+  that would replace the heuristic: crossed polarizers on light source and
+  lens suppress the silver image so only depolarizing surface defects
+  survive. Needs a second exposure per frame and two polarizers in the rig.
+* **Restricting detection to the image frame** rather than the whole
+  canvas, once docs/REBATE_ANCHORING.md lands a measured rebate geometry.
+  Crud on the rebate is harmless either way; this only matters if false
+  positives cluster there.
+* **Copying a spot set between negatives** — useful if the same holder
+  dust recurs across a roll, meaningless if it does not. Wait for evidence.

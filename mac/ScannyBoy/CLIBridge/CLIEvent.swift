@@ -39,8 +39,14 @@ public struct CLIEvent: Sendable, Hashable {
     /// curated block's `rgb_xyz_matrix`/`camera_model`.
     /// Protocol 12 adds the preview colour adjustment (`edit color`, the
     /// `color_*` fields in the roll manifest, and the `color` op in the
-    /// ops log).
-    public static let supportedProtocolVersion = 12
+    /// ops log). Protocol 13 (SPOTTING_PLAN) adds spotting: the three
+    /// `edit detect-spots` / `edit spots` / `edit list-spots` commands,
+    /// the `spots_reported` event — whose spot rects are **display
+    /// space**, already transformed, so Swift converts no coordinates and
+    /// rejects by `id` only — the `SPOT_LIMIT_REACHED` and `SPOTS_STALE`
+    /// warning codes, and the per-negative `spots` summary block on
+    /// `roll info`.
+    public static let supportedProtocolVersion = 13
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -78,6 +84,7 @@ public struct CLIEvent: Sendable, Hashable {
         case flatfieldList
         case flatfieldDeleted
         case flatfieldProgress
+        case spotsReported
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -113,6 +120,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "flatfield_list": self = .flatfieldList
             case "flatfield_deleted": self = .flatfieldDeleted
             case "flatfield_progress": self = .flatfieldProgress
+            case "spots_reported": self = .spotsReported
             default: self = .unknown(name)
             }
         }
@@ -148,6 +156,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .flatfieldList: "flatfield_list"
             case .flatfieldDeleted: "flatfield_deleted"
             case .flatfieldProgress: "flatfield_progress"
+            case .spotsReported: "spots_reported"
             case .unknown(let name): name
             }
         }
@@ -343,6 +352,17 @@ extension CLIEvent {
 
     // `flatfield_progress`
     public var flatFieldPhase: String? { fields["phase"]?.stringValue }
+
+    // `spots_reported` (protocol version 13): a negative's spot set as the
+    // app draws it. Every rect is display space, already transformed — the
+    // app never converts coordinates, rejects by `id`, and never sees an
+    // RLE mask. Decoding into typed values lives on `NegativeSpots`.
+    public var spotsNegativeID: String? { fields["negative_id"]?.stringValue }
+    public var spotsDetectorVersion: Int? { fields["detector_version"]?.intValue }
+    public var spotsSensitivity: Double? { fields["sensitivity"]?.doubleValue }
+    public var spotsRepair: Bool? { fields["repair"]?.boolValue }
+    public var spotsFound: Int? { fields["found"]?.intValue }
+    // `preview_path` rides the shared `previewPath` accessor above.
 }
 
 /// One pipeline step, from the plan's Vocabulary section. The last seven
@@ -471,6 +491,8 @@ public enum CLICode: Sendable, Hashable {
     case scanClipped
     case normalizeDegenerateBounds
     case normalizeHeadroomClipped
+    case spotLimitReached
+    case spotsStale
     case libraryDBUnsupported
     case internalError
     case unknown(String)
@@ -542,6 +564,8 @@ public enum CLICode: Sendable, Hashable {
         case "SCAN_CLIPPED": self = .scanClipped
         case "NORMALIZE_DEGENERATE_BOUNDS": self = .normalizeDegenerateBounds
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
+        case "SPOT_LIMIT_REACHED": self = .spotLimitReached
+        case "SPOTS_STALE": self = .spotsStale
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
@@ -615,6 +639,8 @@ public enum CLICode: Sendable, Hashable {
         case .scanClipped: "SCAN_CLIPPED"
         case .normalizeDegenerateBounds: "NORMALIZE_DEGENERATE_BOUNDS"
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
+        case .spotLimitReached: "SPOT_LIMIT_REACHED"
+        case .spotsStale: "SPOTS_STALE"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name

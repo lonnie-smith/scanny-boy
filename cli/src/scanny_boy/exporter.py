@@ -35,7 +35,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import jxl_writer, render
+from scanny_boy import jxl_writer, render, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -119,12 +119,24 @@ def provenance_record(
     tone_params: dict[str, float] | None,
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
+    spots_params: dict | None = None,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload (§5.2): what makes an exported
     file interpretable without the database. The published TIFF's
     `normalization` block — the encoding the *published* file still
     carries — plus a `rendered` sibling recording what the export actually
-    did to make the display pixels."""
+    did to make the display pixels. The `spots` entry records the repair:
+    "some pixels here are interpolated" is exactly the kind of thing the
+    XMP exists to say (SPOTTING_PLAN §6)."""
+    repaired = None
+    if spots_params is not None and spots_params.get("repair"):
+        repaired = {
+            "detector_version": spots_params.get("detector_version"),
+            "sensitivity": spots_params.get("sensitivity"),
+            "repaired": sum(
+                1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
+            ),
+        }
     return {
         "kind": "scanny-boy export",
         "negative_id": negative.negative_id,
@@ -140,6 +152,7 @@ def provenance_record(
             ),
             "tone": None if tone_params is None else dict(tone_params),
             "clip_fractions": list(clipped_fractions),
+            "spots": repaired,
         },
     }
 
@@ -284,12 +297,16 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params = (
+        quarter_turns, flipped, fine_angle, tone_params, spots_params = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
             state.tone,
+            state.spots,
         )
+        # The spot repair applies before any geometry: the op's coordinates
+        # are TIFF space (SPOTTING_PLAN §3.3).
+        image = spots.apply_repair(image, spots_params)
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
         # §4.5: the matrix follows the channel count — `None` for a mono
         # roll's 2-D published TIFF, the recorded camera matrix for a
@@ -314,6 +331,7 @@ def _export_negative(
             matrix,
             tone_params,
             clipped_fractions,
+            spots_params,
         )
     except jxl_writer.JxlEncoderUnavailable as exc:
         # A packaging failure, not a user error (§1.2): stop the export
@@ -342,6 +360,7 @@ def _write_export(
     matrix: np.ndarray | None,
     tone_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
+    spots_params: dict | None = None,
 ) -> None:
     """The single write: rendered pixels, the export ICC profile embedded,
     and the metadata boxes built at encode time. The `.tmp`-and-replace
@@ -359,7 +378,7 @@ def _write_export(
         else None
     )
     provenance = provenance_record(
-        negative, matrix, tone_params, profile_kind, clipped_fractions
+        negative, matrix, tone_params, profile_kind, clipped_fractions, spots_params
     )
     jxl_writer.write_jxl(
         destination,

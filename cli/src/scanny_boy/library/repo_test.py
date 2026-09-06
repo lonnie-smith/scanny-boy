@@ -204,6 +204,7 @@ def _state(
     fine_angle_deg: float = 0.0,
     tone: dict | None = None,
     color: dict | None = None,
+    spots: dict | None = None,
 ) -> repo.EditState:
     return repo.EditState(
         quarter_turns=quarter_turns,
@@ -211,6 +212,7 @@ def _state(
         fine_angle_deg=fine_angle_deg,
         tone=tone,
         color=color,
+        spots=spots,
     )
 
 
@@ -495,6 +497,138 @@ def test_append_color_edit_validates_its_params(roll_dir):
             repo.append_color_edit(roll_dir, "rid-1-negative-01", params)
 
     assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
+
+
+# --- the spots op (SPOTTING_PLAN §5) -----------------------------------------
+
+
+def _spots_params(**overrides) -> dict:
+    params = {
+        "detector_version": 1,
+        "sensitivity": 0.5,
+        "repair": False,
+        "canvas": [7412, 4988],
+        "spots": [
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": [4211, 1880, 5, 4],
+                # §1.1's fixture: a 5x4 box holding a plus shape.
+                "rle": [1, 3, 1, 10, 1, 3, 1],
+                "area": 16,
+                "score": 9.4,
+                "rejected": False,
+            }
+        ],
+    }
+    params.update(overrides)
+    return params
+
+
+def test_append_spots_edit_records_the_state(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    edit = repo.append_spots_edit(roll_dir, "rid-1-negative-01", _spots_params())
+
+    assert edit["op"] == repo.SPOTS_OP
+    assert edit["params"] == _spots_params()
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state == _state(spots=_spots_params())
+
+
+def test_append_spots_edit_coalesces_a_trailing_spots_op(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    first = repo.append_spots_edit(roll_dir, "rid-1-negative-01", _spots_params())
+    second = repo.append_spots_edit(
+        roll_dir, "rid-1-negative-01", _spots_params(repair=True)
+    )
+
+    assert second["id"] == first["id"]
+    assert second["position"] == first["position"] == 1
+    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
+        "spots"
+    ]
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots["repair"] is True
+
+
+def test_spots_op_ignores_unknown_keys_on_a_spot(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    params = _spots_params()
+    params["spots"][0]["someday_new_field"] = 7
+    params["someday_new_key"] = "kept-or-ignored, never fatal"
+
+    repo.append_spots_edit(roll_dir, "rid-1-negative-01", params)
+
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state.spots["spots"][0]["bbox"] == [4211, 1880, 5, 4]
+    assert state.spots["spots"][0]["rle"] == [1, 3, 1, 10, 1, 3, 1]
+    assert state.spots["spots"][0]["id"] == 1
+    assert state.spots["detector_version"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.update(detector_version="1"),
+        lambda p: p.update(detector_version=99),
+        lambda p: p.update(repair="yes"),
+        lambda p: p.update(sensitivity=1.5),
+        lambda p: p.update(canvas=[7412]),
+        lambda p: p.update(canvas=[7412, -1]),
+        lambda p: p.update(spots="all of them"),
+        lambda p: p["spots"][0].pop("bbox"),
+        lambda p: p["spots"][0].pop("rle"),
+        lambda p: p["spots"][0].update(rle=[1, 2, 3]),
+        lambda p: p["spots"][0].update(bbox=[4211, 1880, 0, 4]),
+        lambda p: p["spots"][0].update(kind="smudge"),
+        lambda p: p["spots"][0].update(polarity="bright"),
+    ],
+)
+def test_malformed_spots_params_degrade_to_no_adjustment(roll_dir, mutate):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    params = _spots_params()
+    mutate(params)
+    with pytest.raises(ValueError):
+        repo.validated_spots_params(params)
+    # The raw append refuses it before anything is recorded.
+    with pytest.raises(ValueError):
+        repo.append_spots_edit(roll_dir, "rid-1-negative-01", params)
+    assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
+
+    # A row that got into the log by some other means replays as no
+    # adjustment at all — no markers, no repair.
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.SPOTS_OP, params)
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots is None
+
+
+def test_spots_op_survives_a_rotation(roll_dir):
+    """TIFF-space spot geometry does not move when the display transform
+    does."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_spots_edit(roll_dir, "rid-1-negative-01", _spots_params())
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state.quarter_turns == 1
+    assert state.spots == _spots_params()
+
+
+def test_future_detector_version_degrades_to_none(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.SPOTS_OP,
+        _spots_params(detector_version=99),
+    )
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots is None
 
 
 def test_edits_survive_re_saving_the_manifest(roll_dir):

@@ -51,7 +51,14 @@ final class EditModel {
     /// The Edit tab's anchor selection: the negative shown large above the
     /// filmstrip. `nil` means "fall back to the first visible negative",
     /// which is also how a freshly loaded roll starts out.
-    var selectedNegativeID: String?
+    var selectedNegativeID: String? {
+        didSet {
+            guard selectedNegativeID != oldValue else { return }
+            // The spot markers belong to the negative on screen; a new
+            // selection fetches its set (SPOTTING_PLAN §8.2).
+            fetchSpotsForSelection()
+        }
+    }
 
     /// The full multi-selection the edit controls act on: shift-click
     /// extends a range, command-click toggles frames, Cmd-A selects all,
@@ -77,6 +84,27 @@ final class EditModel {
 
     /// Set while one `edit color` round trip is in flight.
     private(set) var isSettingColor = false
+
+    /// Set while one `edit detect-spots` round trip is in flight —
+    /// detection decodes a full published TIFF, so it can take a moment.
+    private(set) var isDetectingSpots = false
+
+    /// Set while one `edit spots` review round trip is in flight. A
+    /// rejection must never lose the user's click, so unlike the sliders
+    /// there is no debounce here.
+    private(set) var isReviewingSpots = false
+
+    /// The spot set of the negative the preview pane shows (protocol
+    /// version 13): display-space rects straight from the CLI, refreshed
+    /// by `list-spots` whenever the selection changes and after a roll
+    /// refresh. `nil` — no set, or not loaded yet. Swift converts no
+    /// coordinates; the rects it holds are the ones it draws.
+    private(set) var spots: NegativeSpots?
+
+    /// Whether the spots popover is showing. Markers stay visible while it
+    /// is open even when repair is on — the point of turning repair on is
+    /// to look at the result, and the popover is how.
+    var showsSpotsPopover = false
 
     /// Debounces slider commits: a fast drag across many ISO-R steps fires
     /// one CLI round trip per pause, not one per step crossed.
@@ -446,6 +474,174 @@ final class EditModel {
         }
     }
 
+    // MARK: - Spotting (protocol version 13, SPOTTING_PLAN §8.2)
+
+    /// Runs the detector over the whole selection — one `edit detect-spots`
+    /// round trip — and refreshes the roll: the summary in `roll info` has
+    /// changed. The published TIFFs are untouched; the ops gain proposals
+    /// only, with `repair` preserved from the previous op.
+    func detectSpots(
+        _ targets: [RollManifest.Negative], sensitivity: Double
+    ) async {
+        guard let rollURL, !isDetectingSpots, !isReviewingSpots, !targets.isEmpty else {
+            return
+        }
+        isDetectingSpots = true
+        defer { isDetectingSpots = false }
+        let command = CLICommand.editDetectSpots(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID),
+            sensitivity: sensitivity
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .spotsReported {
+                    applySpotsReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    /// Records one rejection — a decision the user made, never a
+    /// disappearance — and applies the confirmation to the local state
+    /// without a refetch. Rejection is by `id`; Swift converts nothing.
+    func rejectSpot(_ negative: RollManifest.Negative, id: Int) async {
+        await reviewSpot(negative, reject: id)
+    }
+
+    /// Records one acceptance (un-rejection) by id.
+    func acceptSpot(_ negative: RollManifest.Negative, id: Int) async {
+        await reviewSpot(negative, accept: id)
+    }
+
+    private func reviewSpot(
+        _ negative: RollManifest.Negative, reject rejectedID: Int? = nil,
+        accept acceptedID: Int? = nil
+    ) async {
+        guard let rollURL, !isDetectingSpots, !isReviewingSpots else { return }
+        isReviewingSpots = true
+        defer { isReviewingSpots = false }
+        let command = CLICommand.editSpots(
+            roll: rollURL,
+            negative: negative.negativeID,
+            reject: rejectedID.map { [$0] } ?? [],
+            accept: acceptedID.map { [$0] } ?? []
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .spotsReported {
+                    applySpotsReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    /// Flips the whole-negative repair switch — the moment pixels change —
+    /// and refreshes the roll.
+    func setRepair(_ negative: RollManifest.Negative, on: Bool) async {
+        guard let rollURL, !isDetectingSpots, !isReviewingSpots else { return }
+        isReviewingSpots = true
+        defer { isReviewingSpots = false }
+        let command = CLICommand.editSpots(
+            roll: rollURL, negative: negative.negativeID, repair: on
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .spotsReported {
+                    applySpotsReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    /// Clears the negative's spot set entirely — repair off, no spots.
+    func clearSpots(_ negative: RollManifest.Negative) async {
+        guard let rollURL, !isDetectingSpots, !isReviewingSpots else { return }
+        isReviewingSpots = true
+        defer { isReviewingSpots = false }
+        let command = CLICommand.editSpots(
+            roll: rollURL, negative: negative.negativeID, clear: true
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .spotsReported {
+                    applySpotsReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    /// The `list-spots` query for the negative the preview pane shows: a
+    /// pure query — nothing recorded, no pixels touched — so it never
+    /// calls `refresh()` (that would loop: the refresh fetches the roll,
+    /// and the roll fetch loads spots).
+    func loadSpots(_ negative: RollManifest.Negative) async {
+        guard let rollURL else { return }
+        let command = CLICommand.editListSpots(
+            roll: rollURL, negative: negative.negativeID
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .spotsReported,
+                    event.spotsNegativeID == negative.negativeID
+                {
+                    applySpotsReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+    }
+
+    private func fetchSpotsForSelection() {
+        guard let negative = selectedNegative else {
+            spots = nil
+            return
+        }
+        Task { [weak self] in
+            await self?.loadSpots(negative)
+        }
+    }
+
+    /// Applies a `spots_reported` payload to the local state: the full set
+    /// to `spots`, and the matching summary into the in-memory manifest —
+    /// the way `applyEditRecorded` does, so the UI moves without a `roll
+    /// info` round trip. A stale set arrives as an empty list (SPOTTING_PLAN
+    /// §1.5); the next `refresh()` reconciles the summary's `stale` flag.
+    private func applySpotsReported(_ event: CLIEvent) {
+        guard let loaded = NegativeSpots(event: event),
+            let negativeID = event.spotsNegativeID
+        else { return }
+        spots = loaded
+        guard let manifest = roll,
+            let index = manifest.negatives.firstIndex(where: {
+                $0.negativeID == negativeID
+            })
+        else { return }
+        var updated = manifest.negatives[index]
+        updated.spotsSummary = NegativeSpots.Summary(
+            detectorVersion: loaded.detectorVersion,
+            sensitivity: loaded.sensitivity,
+            repair: loaded.repair,
+            stale: false,
+            count: loaded.spots.count,
+            rejected: loaded.spots.count - loaded.accepted.count
+        )
+        roll = manifest.replacingNegative(updated)
+    }
+
     /// Deletes the selected negatives through the CLI and refreshes the
     /// roll when the deletion is confirmed: each record (and its ops log)
     /// leaves the library database, each published TIFF leaves the roll
@@ -628,7 +824,8 @@ final class EditModel {
                 normalization: negative.normalization,
                 usedClaheFallback: negative.usedClaheFallback,
                 gridPitchRatio: negative.gridPitchRatio,
-                gridAlignmentRatio: negative.gridAlignmentRatio
+                gridAlignmentRatio: negative.gridAlignmentRatio,
+                spotsSummary: negative.spotsSummary
             )
         )
     }
@@ -731,9 +928,13 @@ final class EditModel {
     }
 
     /// Everything the CLI's display encode folds into a rendered frame —
-    /// the net transform plus the tone state — as one cache-generation
-    /// token. The preview PNG and the 1:1 region renders are both keyed on
-    /// it, so a new tone commit invalidates the old crops.
+    /// the net transform, the tone state, and the spot repair — as one
+    /// cache-generation token. The preview PNG and the 1:1 region renders
+    /// are both keyed on it, so a new tone commit or a repair flip
+    /// invalidates the old crops. The spot term changes whenever the
+    /// rendered pixels change: repair flips, spots are rejected (a
+    /// rejected spot's mask leaves the repair), or the set is
+    /// re-detected.
     static func renderGeneration(of negative: RollManifest.Negative) -> String {
         let tone: String
         if let adjustment = negative.toneAdjustment {
@@ -747,15 +948,25 @@ final class EditModel {
         } else {
             colour = "neutral"
         }
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(spotsTerm(of: negative))"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
     /// negative view folds in. The tone state is deliberately absent: the
     /// negative view shows raw densities, and the tone adjustment never
-    /// reaches it.
+    /// reaches it. The spot repair is deliberately present: what the user
+    /// compares when they toggle repair on and off is the same in both
+    /// views (SPOTTING_PLAN §3.3).
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)"
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(spotsTerm(of: negative))"
+    }
+
+    /// The spots half of a cache-generation token: `repair#count#rejected`
+    /// is enough to change whenever the rendered pixels change. Getting
+    /// this wrong is the "repair does nothing" bug — a cached PNG reused.
+    private static func spotsTerm(of negative: RollManifest.Negative) -> String {
+        guard let summary = negative.spotsSummary else { return "none" }
+        return "\(summary.repair)#\(summary.count)#\(summary.rejected)"
     }
 
     private static func regionCacheURL(
@@ -936,6 +1147,12 @@ final class EditModel {
             let manifest = await Self.fetchRollManifest(runner: runner, roll: rollURL)
             guard let self, !Task.isCancelled else { return }
             self.roll = manifest
+            // The refreshed manifest carries fresh summaries; the displayed
+            // negative's full spot list rides `list-spots` (SPOTTING_PLAN
+            // §8.2: run on selection change and after a roll refresh).
+            if let negative = self.selectedNegative {
+                await self.loadSpots(negative)
+            }
         }
     }
 
