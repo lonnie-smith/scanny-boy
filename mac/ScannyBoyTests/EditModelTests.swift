@@ -676,6 +676,107 @@ struct EditModelTests {
         )
     }
 
+    @Test("The negative view's cache generation carries the transform but not the tone")
+    func testNegativeViewGenerationIgnoresTone() {
+        let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+        let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
+
+        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false")
+        #expect(EditModel.negativeViewGeneration(of: flat) == EditModel.negativeViewGeneration(of: toned))
+    }
+
+    @Test("renderPreview renders through the CLI and passes --mode negative")
+    func testRenderPreviewNegativeMode() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let argsFile = directory.appending(path: "args")
+        let rollInfo = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "render-preview" ]; then
+              printf '%s\\n' "$@" >> '\(argsFile.path)'
+              out=""
+              prev=""
+              for a in "$@"; do
+                if [ "$prev" = "--output" ]; then out="$a"; fi
+                prev="$a"
+              done
+              echo '{"protocol_version":12,"event":"started","command":"edit render-preview"}'
+              echo '{"protocol_version":12,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
+              mkdir -p "$(dirname "$out")"
+              printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
+            else
+              echo '\(rollInfo)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = try await Self.multiSelectModel(CLIRunner(executable: executable))
+        guard let negative = model.visibleNegatives.first else {
+            Issue.record("no negatives in the fake roll")
+            return
+        }
+
+        let thumbnail = await model.renderPreview(negative, mode: .negative)
+
+        #expect(thumbnail != nil)
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("render-preview"))
+        #expect(args.contains("--mode"))
+        #expect(args.contains("negative"))
+    }
+
+    @Test("renderRegion passes the display mode through to the CLI")
+    func testRenderRegionCarriesMode() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let argsFile = directory.appending(path: "args")
+        let rollInfo = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "render-region" ]; then
+              printf '%s\\n' "$@" >> '\(argsFile.path)'
+              out=""
+              prev=""
+              for a in "$@"; do
+                if [ "$prev" = "--output" ]; then out="$a"; fi
+                prev="$a"
+              done
+              echo '{"protocol_version":12,"event":"started","command":"edit render-region"}'
+              echo '{"protocol_version":12,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
+              echo '{"protocol_version":12,"event":"finished","status":"success","exit_status":0}'
+              mkdir -p "$(dirname "$out")"
+              printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
+            else
+              echo '\(rollInfo)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = try await Self.multiSelectModel(CLIRunner(executable: executable))
+        guard let negative = model.visibleNegatives.first else {
+            Issue.record("no negatives in the fake roll")
+            return
+        }
+
+        let thumbnail = await model.renderRegion(
+            negative, rect: CGRect(x: 0, y: 0, width: 4, height: 4), mode: .negative
+        )
+
+        #expect(thumbnail != nil)
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("render-region"))
+        #expect(args.contains("--mode"))
+        #expect(args.contains("negative"))
+    }
+
     @Test("scheduleTone debounces rapid slider commits into one CLI round trip")
     func testScheduleToneDebounces() async throws {
         let directory = FileManager.default.temporaryDirectory

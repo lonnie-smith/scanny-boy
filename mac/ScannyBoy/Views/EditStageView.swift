@@ -116,9 +116,19 @@ private struct PreviewPane: View {
     @State private var isColorPanelPresented = false
     @State private var zoom = PreviewZoomModel()
     @State private var paneSize: CGSize = .zero
+    /// The display mode the pane shows: the CLI's inverted positive, or
+    /// protocol version 11's un-inverted negative for judging densities.
+    /// Sticky across negative changes — the point is comparing densities
+    /// from frame to frame.
+    @State private var showsNegative = false
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
+
+    /// The display encode the pane's renders should use.
+    private var displayMode: PreviewDisplayMode {
+        showsNegative ? .negative : .positive
+    }
 
     private var rotationShortcutsEnabled: Bool {
         !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
@@ -175,12 +185,26 @@ private struct PreviewPane: View {
                 .accessibilityLabel(zoomButtonHelp)
 
                 Button {
+                    showsNegative.toggle()
+                } label: {
+                    Image(systemName: showsNegative
+                        ? "circle.lefthalf.filled.inverse"
+                        : "circle.lefthalf.filled")
+                }
+                .disabled(
+                    negative.output == nil
+                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                )
+                .help(displayModeButtonHelp)
+                .accessibilityLabel(displayModeButtonHelp)
+
+                Button {
                     isTonePanelPresented = true
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
-                .help("Tone: print density, paper grade, zone density, toe/shoulder (preview only)")
+                .help("Tone: print density, paper grade, zone density, toe/shoulder (positive view only)")
                 .accessibilityLabel("Tone adjustment")
                 .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
                     ToneAdjustmentPanel(
@@ -291,17 +315,25 @@ private struct PreviewPane: View {
             zoom.reset()
             refreshZoomContext(paneSize: paneSize)
         }
-        .task(id: previewIdentity) {
+        .onChange(of: showsNegative) {
+            // The on-screen 1:1 crop is the other mode's pixels until the
+            // new render arrives; forget it and refetch through the new
+            // loader. The zoom mode itself is kept — both views zoom.
+            zoom.invalidate()
+            refreshZoomContext(paneSize: paneSize)
+        }
+        .task(id: displayIdentity) {
             thumbnail = nil
-            guard let url = previewURL else {
-                return
+            if showsNegative {
+                thumbnail = await edit.renderPreview(negative, mode: .negative)
+            } else if let url = previewURL {
+                thumbnail = await ThumbnailLoader.shared.thumbnail(
+                    forPreview: url,
+                    generation: previewGeneration,
+                    pointSize: CGSize(width: 1200, height: 1200),
+                    scale: displayScale
+                )
             }
-            thumbnail = await ThumbnailLoader.shared.thumbnail(
-                forPreview: url,
-                generation: previewGeneration,
-                pointSize: CGSize(width: 1200, height: 1200),
-                scale: displayScale
-            )
         }
         .onChange(of: displayScale) {
             // The 1:1 crop is sized in physical pixels; a moved window (or
@@ -315,6 +347,12 @@ private struct PreviewPane: View {
         zoom.mode == .fit
             ? "Zoom to 100% (Space+click)"
             : "Zoom to fit (Space+click)"
+    }
+
+    private var displayModeButtonHelp: String {
+        showsNegative
+            ? "Show the positive view (the graded print look)"
+            : "Show the underlying negative (raw densities)"
     }
 
     /// The centre of the preview pane — where the toolbar zoom button anchors.
@@ -366,9 +404,17 @@ private struct PreviewPane: View {
 
     /// Path plus net transform: the CLI rewrites the preview file in
     /// place, so the pair is what tells the thumbnail cache the
-    /// contents changed.
+    /// contents changed. Deliberately without the display mode: a mode
+    /// flip must not reset the zoom, only swap what is fetched (see
+    /// `displayIdentity`).
     private var previewIdentity: String {
         "\(negative.previewPath ?? "none")#\(previewGeneration)"
+    }
+
+    /// Everything the fit view's load depends on: the preview identity
+    /// plus the display mode.
+    private var displayIdentity: String {
+        "\(previewIdentity)#\(displayMode.rawValue)"
     }
 
     private var previewGeneration: String {
@@ -432,7 +478,7 @@ private struct PreviewPane: View {
             displayScale: displayScale,
             displaySize: displaySize,
             loader: { rect in
-                await edit.renderRegion(negative, rect: rect)
+                await edit.renderRegion(negative, rect: rect, mode: displayMode)
             }
         )
         if zoom.mode == .pixels100 { zoom.fetchCrop() }

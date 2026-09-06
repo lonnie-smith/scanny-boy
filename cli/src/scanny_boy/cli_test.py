@@ -760,6 +760,236 @@ def test_edit_render_region_rejects_a_bad_region(capsys, tmp_path):
     assert not destination.exists()
 
 
+def test_edit_render_region_negative_mode_encodes_without_inversion(capsys, tmp_path):
+    """`--mode negative` renders the same display-space rect through the
+    un-inverted density LUT — the published TIFF's own appearance, which
+    the region route also honours."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.previews import NEGATIVE_DISPLAY_LUT, NORMALIZED_DISPLAY_LUT
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    tiff = tifffile.imread(roll_dir / negative.output["name"])
+    capsys.readouterr()
+
+    destination = tmp_path / "region.png"
+    status = main(
+        [
+            "edit", "render-region",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "4", "--y", "2",
+            "--width", "10", "--height", "6",
+            "--output", str(destination),
+            "--mode", "negative",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "region_rendered", "finished"
+    ]
+    assert events[1]["path"] == str(destination)
+    assert err == ""
+
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    negative_view = cv2.cvtColor(
+        NEGATIVE_DISPLAY_LUT[tiff[2:8, 4:14]], cv2.COLOR_RGB2BGR
+    )
+    np.testing.assert_array_equal(stored, negative_view)
+    # And it is genuinely the other view, not the default encode.
+    positive_view = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[tiff[2:8, 4:14]], cv2.COLOR_RGB2BGR
+    )
+    assert not np.array_equal(stored, positive_view)
+
+
+def test_edit_render_region_unknown_mode_is_a_usage_error(capsys, tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "render-region",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "0", "--y", "0",
+            "--width", "4", "--height", "4",
+            "--output", str(tmp_path / "region.png"),
+            "--mode", "grayscale",
+        ]
+    )
+
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert err != ""
+
+
+def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
+    """`edit render-preview --mode negative` writes the whole display image
+    — net transform folded in — through the un-inverted LUT, and
+    `preview_rendered` carries the written PNG's pixel dimensions."""
+    import cv2
+    import tifffile
+
+    from scanny_boy.library import repo
+    from scanny_boy.previews import NEGATIVE_DISPLAY_LUT
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    repo.append_edit(
+        roll_dir, negative.negative_id, repo.ROTATE_OP, {"direction": "cw"}
+    )
+    capsys.readouterr()
+
+    destination = tmp_path / "preview.png"
+    status = main(
+        [
+            "edit", "render-preview",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--mode", "negative",
+            "--output", str(destination),
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "preview_rendered", "finished"
+    ]
+    assert events[0]["command"] == "edit render-preview"
+    assert events[1]["negative_id"] == negative.negative_id
+    assert events[1]["path"] == str(destination)
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+    # One cw turn: the display is the TIFF rotated clockwise. The preview
+    # is capped at PREVIEW_MAX_EDGE on its longest edge, in density space,
+    # exactly as the managed preview's downscale — so replay that here.
+    from scanny_boy.previews import PREVIEW_MAX_EDGE
+
+    tiff = tifffile.imread(roll_dir / negative.output["name"])
+    display = np.ascontiguousarray(np.rot90(tiff, k=3))
+    edge = max(display.shape[0], display.shape[1])
+    if edge > PREVIEW_MAX_EDGE:
+        scale = PREVIEW_MAX_EDGE / edge
+        display = cv2.resize(
+            display,
+            (round(display.shape[1] * scale), round(display.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+    assert (events[1]["width"], events[1]["height"]) == (
+        display.shape[1], display.shape[0]
+    )
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(
+        stored, cv2.cvtColor(NEGATIVE_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR)
+    )
+
+
+def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
+    """The negative view is a density view: a recorded tone adjustment is
+    composed into the positive render's display LUT and never reaches the
+    negative render."""
+    import cv2
+    import tifffile
+
+    from scanny_boy import tone
+
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    roll_dir = _roll_dir(tmp_path)
+    outcome = _stitch(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    capsys.readouterr()
+
+    def _render(mode: str, name: str) -> Path:
+        destination = tmp_path / name
+        status = main(
+            [
+                "edit", "render-preview",
+                "--roll", str(roll_dir),
+                "--negative", negative.negative_id,
+                "--mode", mode,
+                "--output", str(destination),
+            ]
+        )
+        assert status == 0
+        capsys.readouterr()
+        return destination
+
+    negative_before = _render("negative", "negative-before.png").read_bytes()
+
+    status = main(
+        [
+            "edit", "tone",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--grade", "160",
+            "--snap", "0.3",
+        ]
+    )
+    assert status == 0
+    capsys.readouterr()
+
+    # The negative view is byte-for-byte unaffected...
+    assert _render("negative", "negative-after.png").read_bytes() == negative_before
+    # ...while the positive render carries the tone curve: the graded LUT,
+    # not the flat one, encodes the published TIFF — after the same
+    # PREVIEW_MAX_EDGE density-space downscale the command applies.
+    _render("positive", "positive-after.png")
+    import numpy as np
+
+    from scanny_boy.previews import PREVIEW_MAX_EDGE
+
+    tiff = tifffile.imread(roll_dir / negative.output["name"])
+    edge = max(tiff.shape[0], tiff.shape[1])
+    if edge > PREVIEW_MAX_EDGE:
+        scale = PREVIEW_MAX_EDGE / edge
+        tiff = cv2.resize(
+            tiff,
+            (round(tiff.shape[1] * scale), round(tiff.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+    graded = cv2.cvtColor(
+        tone.build_display_lut(160.0, 0.3)[tiff], cv2.COLOR_RGB2BGR
+    )
+    stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(stored, graded)
+
+
+def test_edit_render_preview_missing_roll_reports_roll_not_found(capsys, tmp_path):
+    status = main(
+        [
+            "edit", "render-preview",
+            "--roll", str(tmp_path / "nope"),
+            "--negative", "x",
+            "--output", str(tmp_path / "preview.png"),
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[0]["command"] == "edit render-preview"
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
 def test_edit_flip_records_the_flip_and_refreshes_the_preview(capsys, tmp_path):
     work_dir = _make_work_dir(tmp_path, negatives=1)
     roll_dir = _roll_dir(tmp_path)

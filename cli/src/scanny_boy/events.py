@@ -22,10 +22,20 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
+# Protocol 11 adds monochrome film support (`--film-kind {auto,colour,
+# monochrome}` on `stitch` and `run`, the top-level `film` block in the
+# roll manifest and `roll info`, and `MONO_DETECT_AMBIGUOUS`/
+# `MONO_DECISION_CONFLICT`), an extended preview tone adjustment (seven
+# curve controls and two auto flags on `edit tone`, matching `tone_*`
+# fields on `roll info`, and `TONE_METERING_UNAVAILABLE`), and the app's
+# positive/negative display toggle (`--mode positive|negative` on
+# `edit render-region`, the `edit render-preview` command with its
+# `preview_rendered` event — the negative mode is the un-inverted density
+# view; no tone ever reaches it).
 # Protocol 12 adds the preview colour adjustment: the `edit color`
 # subcommand, thirteen derived `color_*` fields (twelve stored params plus
 # `color_temperature`) and `film_kind` on `roll info`, and the `color` op
-# in the ops log. Protocol 11's roll model and tone adjustment are unchanged.
+# in the ops log.
 PROTOCOL_VERSION = 12
 
 
@@ -53,6 +63,7 @@ class EventType(enum.StrEnum):
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     REGION_RENDERED = "region_rendered"
+    PREVIEW_RENDERED = "preview_rendered"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -467,6 +478,24 @@ class RegionRendered(Event):
     path: str
     x: int
     y: int
+    width: int
+    height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class PreviewRendered(Event):
+    """`edit render-preview`'s confirmation: a negative's whole display
+    image — net transform folded in, downscaled like the cached preview —
+    rendered in the display encode the command's `--mode` named, as a
+    lossless PNG at `path`; `width`/`height` are the written PNG's pixel
+    dimensions. No tone ever reaches the negative mode's un-inverted
+    density view. No pixel data of the published TIFF changes and nothing
+    is recorded anywhere."""
+
+    event_type: ClassVar[EventType] = EventType.PREVIEW_RENDERED
+
+    negative_id: str
+    path: str
     width: int
     height: int
 

@@ -384,30 +384,13 @@ def run_edit_color(
     return results
 
 
-def run_edit_render_region(
-    roll_dir: Path,
-    negative_id: str,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    output_path: Path,
-    *,
-    emit: EmitFn,
-) -> dict:
-    """Render one display-space region of a negative's published TIFF at
-    1:1 — the ops log's net rotation and flip folded in, the same display
-    encode as `generate_preview` — into `output_path` as a lossless PNG. A
-    pure rendering query: nothing is recorded, the published TIFF and the
-    ops log are untouched. Returns the `RegionRendered` event's field
-    values (the rect actually rendered, post-clamp). Raises `EditFailure`
-    when the roll, negative, or region is no good."""
-    if width <= 0 or height <= 0:
-        raise EditFailure(
-            Code.INVALID_EDIT,
-            f"--width and --height must be positive, got {width}x{height}",
-        )
-
+def _validated_negative(
+    roll_dir: Path, negative_id: str
+) -> tuple[RollManifest, NegativeRecord]:
+    """The roll manifest plus the one named negative, verified to belong to
+    the roll and to have been stitched — the single-negative form of
+    `_validated_negatives`, shared by the pure-query rendering subcommands
+    (which take exactly one negative, not a selection)."""
     if not repo.roll_registered(roll_dir):
         raise EditFailure(
             Code.ROLL_NOT_FOUND,
@@ -432,6 +415,49 @@ def run_edit_render_region(
             Code.NEGATIVE_NOT_FOUND,
             f"{negative_id} has not been stitched yet; nothing to render",
         )
+    return roll, negative
+
+
+def _validated_display_mode(mode: str) -> str:
+    """The display encode `render-region`/`render-preview` should use."""
+    if mode not in previews.DISPLAY_MODES:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--mode must be one of {list(previews.DISPLAY_MODES)}, got {mode!r}",
+        )
+    return mode
+
+
+def run_edit_render_region(
+    roll_dir: Path,
+    negative_id: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    output_path: Path,
+    *,
+    mode: str = "positive",
+    emit: EmitFn,
+) -> dict:
+    """Render one display-space region of a negative's published TIFF at
+    1:1 — the ops log's net rotation and flip folded in, the display encode
+    `mode` names (`"positive"`: the same inverted encode as
+    `generate_preview`, with the net tone composed in; `"negative"`: the
+    un-inverted density view, which no tone reaches) — into `output_path`
+    as a lossless PNG. A pure rendering query: nothing is recorded, the
+    published TIFF and the ops log are untouched. Returns the
+    `RegionRendered` event's field values (the rect actually rendered,
+    post-clamp). Raises `EditFailure` when the roll, negative, mode, or
+    region is no good."""
+    _validated_display_mode(mode)
+    if width <= 0 or height <= 0:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--width and --height must be positive, got {width}x{height}",
+        )
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
 
     tiff_path = roll_dir / negative.output["name"]
     state = repo.net_edit_state(roll_dir, negative_id)
@@ -450,6 +476,7 @@ def run_edit_render_region(
             color_params=state.color,
             metering=meter,
             destination=output_path,
+            mode=mode,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
@@ -460,6 +487,52 @@ def run_edit_render_region(
         "y": rendered[1],
         "width": rendered[2],
         "height": rendered[3],
+    }
+
+
+def run_edit_render_preview(
+    roll_dir: Path,
+    negative_id: str,
+    output_path: Path,
+    *,
+    mode: str = "positive",
+    emit: EmitFn,
+) -> dict:
+    """Render the whole display image — the ops log's net transform folded
+    in, downscaled to the managed preview's own `PREVIEW_MAX_EDGE` — in the
+    display encode `mode` names into `output_path` as a lossless PNG. The
+    pure-query backing of the app's positive/negative toggle: like
+    `run_edit_render_region` it is a pure rendering query — nothing is
+    recorded, the published TIFF and the ops log are untouched — and the
+    `"negative"` mode is the un-inverted density view, which no tone
+    reaches. Returns the `PreviewRendered` event's field values (the
+    written PNG's pixel dimensions). Raises `EditFailure` when the roll,
+    negative, or mode is no good."""
+    _validated_display_mode(mode)
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+
+    tiff_path = roll_dir / negative.output["name"]
+    quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
+        roll_dir, negative_id
+    )
+    try:
+        width, height = previews.render_preview(
+            tiff_path,
+            output_path,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped,
+            fine_angle_deg=fine_angle,
+            mode=mode,
+            tone_params=tone_params,
+        )
+    except ValueError as exc:
+        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+    return {
+        "negative_id": negative_id,
+        "path": str(output_path),
+        "width": width,
+        "height": height,
     }
 
 

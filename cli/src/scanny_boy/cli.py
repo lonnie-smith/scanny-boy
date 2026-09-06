@@ -16,6 +16,7 @@ from scanny_boy.edits import (
     run_edit_color,
     run_edit_delete,
     run_edit_flip,
+    run_edit_render_preview,
     run_edit_render_region,
     run_edit_rotate,
     run_edit_tone,
@@ -33,6 +34,7 @@ from scanny_boy.events import (
     MetadataUpdated,
     MetadataValues,
     NegativeDeleted,
+    PreviewRendered,
     ProbeResult,
     RegionRendered,
     RollCreated,
@@ -363,6 +365,38 @@ def build_parser() -> argparse.ArgumentParser:
     edit_render_region.add_argument("--width", required=True, type=int, metavar="PX")
     edit_render_region.add_argument("--height", required=True, type=int, metavar="PX")
     edit_render_region.add_argument("--output", required=True, metavar="PATH")
+    edit_render_region.add_argument(
+        "--mode",
+        choices=("positive", "negative"),
+        default="positive",
+        help=(
+            "display encode: positive (inverted, the cached preview's "
+            "look, tone composed in) or negative (the un-inverted "
+            "density view, no tone)"
+        ),
+    )
+
+    edit_render_preview = edit_subparsers.add_parser(
+        "render-preview",
+        help=(
+            "Render a negative's whole display image — net transform "
+            "folded in, downscaled like the cached preview — as a "
+            "lossless PNG in the chosen display mode."
+        ),
+    )
+    edit_render_preview.add_argument("--roll", required=True, metavar="DIR")
+    edit_render_preview.add_argument("--negative", required=True, metavar="ID")
+    edit_render_preview.add_argument(
+        "--mode",
+        choices=("positive", "negative"),
+        default="positive",
+        help=(
+            "display encode: positive (inverted, the cached preview's "
+            "look, tone composed in) or negative (the un-inverted "
+            "density view, no tone)"
+        ),
+    )
+    edit_render_preview.add_argument("--output", required=True, metavar="PATH")
 
     edit_tone = edit_subparsers.add_parser(
         "tone",
@@ -892,9 +926,19 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.width,
                 args.height,
                 Path(args.output),
+                mode=args.mode,
                 emit=writer.write,
             )]
             confirmation = RegionRendered
+        elif args.edit_command == "render-preview":
+            results = [run_edit_render_preview(
+                Path(args.roll),
+                args.negative,
+                Path(args.output),
+                mode=args.mode,
+                emit=writer.write,
+            )]
+            confirmation = PreviewRendered
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
     except EditFailure as exc:

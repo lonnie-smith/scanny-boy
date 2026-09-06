@@ -181,6 +181,23 @@ struct CLIEventTests {
         #expect(event.runID == nil)
     }
 
+    @Test("preview_rendered")
+    func previewRenderedDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"preview_rendered","negative_id":"a1b2c3-negative-01",\
+                "path":"/tmp/preview.png","width":1024,"height":683}
+                """)
+        )
+        #expect(event.kind == .previewRendered)
+        #expect(event.kind.isKnown)
+        #expect(event.negativeID == "a1b2c3-negative-01")
+        #expect(event.previewRenderedPath == "/tmp/preview.png")
+        #expect(event.width == 1024)
+        #expect(event.height == 683)
+        #expect(event.runID == nil)
+    }
+
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(

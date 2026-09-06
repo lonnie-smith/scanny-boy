@@ -14,8 +14,8 @@ public struct CLIEvent: Sendable, Hashable {
     /// command family — `metadata_updated`, `metadata_values`, the
     /// `INVALID_METADATA` code — and the roll/negative extended-metadata
     /// fields in the roll manifest), and `edit render-region` with its
-    /// `region_rendered` event: a 1:1 PNG of one display-space region of a
-    /// published TIFF, for the 100% zoom. Protocol 10 adds 2D grid
+    /// `region_rendered` event: a 1:1 PNG of one display-space region of
+    /// a published TIFF, for the 100% zoom. Protocol 10 adds 2D grid
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
     /// the `INVALID_GRID` error code, and the
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
@@ -24,10 +24,17 @@ public struct CLIEvent: Sendable, Hashable {
     /// Protocol 11 adds monochrome film support (the
     /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
     /// the roll manifest's top-level `film` block, and the
-    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes)
-    /// and extends the preview tone adjustment (seven curve controls and
-    /// two auto flags on `edit tone`, the matching `tone_*` fields in the
-    /// roll manifest, and the `TONE_METERING_UNAVAILABLE` warning code).
+    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes),
+    /// extends the preview tone adjustment (seven curve controls and two
+    /// auto flags on `edit tone`, the matching `tone_*` fields in the roll
+    /// manifest, and the `TONE_METERING_UNAVAILABLE` warning code), and
+    /// the positive/negative display toggle for the Edit tab (`--mode
+    /// positive|negative` on `edit render-region`, the `edit render-preview`
+    /// command with its `preview_rendered` event — the negative mode being
+    /// the un-inverted density view the tone adjustment never reaches).
+    /// Protocol 12 adds the preview colour adjustment (`edit color`, the
+    /// `color_*` fields in the roll manifest, and the `color` op in the
+    /// ops log).
     public static let supportedProtocolVersion = 12
 
     public let protocolVersion: Int
@@ -60,6 +67,7 @@ public struct CLIEvent: Sendable, Hashable {
         case editRecorded
         case negativeDeleted
         case regionRendered
+        case previewRendered
         case exportDone
         case flatfieldCreated
         case flatfieldList
@@ -94,6 +102,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "edit_recorded": self = .editRecorded
             case "negative_deleted": self = .negativeDeleted
             case "region_rendered": self = .regionRendered
+            case "preview_rendered": self = .previewRendered
             case "export_done": self = .exportDone
             case "flatfield_created": self = .flatfieldCreated
             case "flatfield_list": self = .flatfieldList
@@ -128,6 +137,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .editRecorded: "edit_recorded"
             case .negativeDeleted: "negative_deleted"
             case .regionRendered: "region_rendered"
+            case .previewRendered: "preview_rendered"
             case .exportDone: "export_done"
             case .flatfieldCreated: "flatfield_created"
             case .flatfieldList: "flatfield_list"
@@ -310,6 +320,11 @@ extension CLIEvent {
     public var regionPath: String? { fields["path"]?.stringValue }
     public var regionX: Int? { fields["x"]?.intValue }
     public var regionY: Int? { fields["y"]?.intValue }
+
+    // `preview_rendered`: the whole-display PNG's path (protocol version
+    // 11's `edit render-preview`); its `width`/`height` ride the shared
+    // `width`/`height` accessors above.
+    public var previewRenderedPath: String? { fields["path"]?.stringValue }
 
     // `flatfield_created` and `flatfield_list`
     public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }

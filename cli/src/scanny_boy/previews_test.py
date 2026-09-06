@@ -94,6 +94,146 @@ def test_display_lut_midtone_is_near_half():
     assert 100 <= int(grey) <= 130
 
 
+# --- the negative display mode ----------------------------------------------
+
+
+def test_negative_display_lut_is_the_uninverted_density():
+    """The negative view is decode_normalized straight to 8-bit — no
+    inversion, no gamma: the published TIFF's own appearance, what a
+    densitometer sees. A denser code (closer to the scene's shadow) reads
+    brighter, opposite to the positive LUT."""
+    from scanny_boy.previews import NEGATIVE_DISPLAY_LUT
+
+    assert NEGATIVE_DISPLAY_LUT.shape == (MAX_CODE + 1,)
+    assert int(NEGATIVE_DISPLAY_LUT[0]) == 0
+    assert int(NEGATIVE_DISPLAY_LUT[MAX_CODE]) == 255
+    for code in (0, 1, 50, 2000, 8192, 32768, 65535):
+        val = float(normalization.decode_normalized(np.array([code]))[0])
+        assert int(NEGATIVE_DISPLAY_LUT[code]) == round(np.clip(val, 0.0, 1.0) * 255)
+    # Monotonically *increasing* in the code, and the un-inverted mirror of
+    # the positive view.
+    assert np.all(np.diff(NEGATIVE_DISPLAY_LUT.astype(np.int32)) >= 0)
+    for code in (0, 2000, 32768, 65535):
+        assert int(NEGATIVE_DISPLAY_LUT[code]) + int(NORMALIZED_DISPLAY_LUT[code]) in (
+            255,
+            254,
+        )
+
+
+def test_render_region_negative_mode_encodes_without_inversion(tmp_path):
+    """`render_region(mode="negative")` is the same rect through the
+    un-inverted LUT — the positive view inverted back, byte for byte, and
+    the tone adjustment never reaches it even when one is named."""
+    import cv2
+
+    from scanny_boy.previews import NEGATIVE_DISPLAY_LUT, render_region
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    destination = tmp_path / "region.png"
+    rect = render_region(
+        tiff_path,
+        10, 5, 20, 12,
+        tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+        destination=destination,
+        mode="negative",
+    )
+    assert rect == (10, 5, 20, 12)
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    expected = cv2.cvtColor(
+        NEGATIVE_DISPLAY_LUT[image[5:17, 10:30]],
+        cv2.COLOR_RGB2BGR,
+    )
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_render_region_rejects_an_unknown_mode(tmp_path):
+    import pytest
+
+    from scanny_boy.previews import render_region
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    with pytest.raises(ValueError):
+        render_region(tiff_path, 0, 0, 10, 10, mode="grayscale")
+
+
+def test_render_preview_matches_the_display_encode_and_folds_the_transform(tmp_path):
+    """`render_preview` is `generate_preview`'s pixel content written to a
+    caller-named path: the net transform replayed (mirror, then rotation),
+    then the 16→8-bit encode of the chosen mode — no inversion in the
+    negative mode — with no downscale when the image is small enough."""
+    import cv2
+
+    from scanny_boy.previews import NEGATIVE_DISPLAY_LUT, render_preview
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    for mode, lut in (("positive", NORMALIZED_DISPLAY_LUT), ("negative", NEGATIVE_DISPLAY_LUT)):
+        for quarter_turns in range(4):
+            destination = tmp_path / f"preview-{mode}-{quarter_turns}.png"
+            width, height = render_preview(
+                tiff_path,
+                destination,
+                quarter_turns=quarter_turns,
+                mode=mode,
+            )
+            display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+            assert (width, height) == (display.shape[1], display.shape[0])
+            stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+            expected = cv2.cvtColor(lut[display], cv2.COLOR_RGB2BGR)
+            np.testing.assert_array_equal(stored, expected)
+
+
+def test_render_preview_downscales_to_the_max_edge(tmp_path):
+    """Past `PREVIEW_MAX_EDGE` the downscale is density-space `INTER_AREA`,
+    exactly as the managed preview's: the written PNG's longest edge is
+    capped, and the returned dimensions are the written file's."""
+    import cv2
+
+    from scanny_boy.previews import (
+        NEGATIVE_DISPLAY_LUT,
+        PREVIEW_MAX_EDGE,
+        render_preview,
+    )
+
+    image = (np.arange(1400 * 1000 * 3, dtype=np.uint16).reshape(1400, 1000, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    destination = tmp_path / "preview.png"
+    width, height = render_preview(tiff_path, destination, mode="negative")
+
+    scale = PREVIEW_MAX_EDGE / 1400
+    assert (width, height) == (round(1000 * scale), PREVIEW_MAX_EDGE)
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    assert stored.shape[:2] == (height, width)
+
+    # The same downscale the managed preview does, then the negative LUT.
+    scale = PREVIEW_MAX_EDGE / max(image.shape[0], image.shape[1])
+    downscaled = cv2.resize(
+        image,
+        (round(image.shape[1] * scale), round(image.shape[0] * scale)),
+        interpolation=cv2.INTER_AREA,
+    )
+    expected = cv2.cvtColor(NEGATIVE_DISPLAY_LUT[downscaled], cv2.COLOR_RGB2BGR)
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_render_preview_rejects_an_unknown_mode(tmp_path):
+    import pytest
+
+    from scanny_boy.previews import render_preview
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    with pytest.raises(ValueError):
+        render_preview(tiff_path, tmp_path / "preview.png", mode="grayscale")
+
+
 # --- ensure_preview / sync_previews against a real roll ---------------------
 
 
