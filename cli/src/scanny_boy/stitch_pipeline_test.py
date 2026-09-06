@@ -48,7 +48,6 @@ from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
     NegativeRecord,
     RollInvariants,
-    RollManifest,
     RunRecord,
     append_run,
     load_roll_manifest,
@@ -1888,7 +1887,11 @@ def test_mono_roll_seeds_the_density_grey_profile_and_publishes_one_channel(tmp_
 def test_decide_film_kind_ambiguous_defaults_to_colour_and_warns(tmp_path):
     """§2.1: a statistic landing between the two thresholds is ambiguous —
     the roll decides colour (the lossless choice) and warns."""
-    from scanny_boy.normalization import COLOUR_CHROMA_MIN, MONO_CHROMA_MAX, MonoStatistic
+    from scanny_boy.normalization import (
+        COLOUR_CHROMA_MIN,
+        MONO_CHROMA_MAX,
+        MonoStatistic,
+    )
 
     out_dir = _roll_dir(tmp_path)  # fresh, unseeded roll
     midpoint = (MONO_CHROMA_MAX + COLOUR_CHROMA_MIN) / 2.0

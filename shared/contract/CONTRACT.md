@@ -51,6 +51,7 @@ profile; every per-channel roll-manifest field (`floors`, `ceils`,
 `gain` array is unaffected and stays 3-wide even on a monochrome roll's
 negatives, since the photometric solve that produces it still runs in
 linear light on three channels.
+
 Protocol version 10 keeps version 9's roll model and adds two features.
 
 **2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
