@@ -725,3 +725,85 @@ def test_the_provenance_names_the_profile_kind_constant_mapping(tmp_path):
 
     assert export_profile_kind(1) is ProfileKind.EXPORT_GREY
     assert export_profile_kind(3) is ProfileKind.EXPORT_RGB
+
+
+# --- the spots repair reaches the export (SPOTTING_PLAN §6) -------------------
+
+
+def _planted_original() -> np.ndarray:
+    """The ramp with a dark blob planted at TIFF (1, 1)-(2, 2) — small
+    enough that a hand-written spot mask covers it exactly."""
+    planted = _ORIGINAL.copy()
+    planted[1:3, 1:3] = planted[1:3, 1:3] // 4
+    return planted
+
+
+def _hand_spots_params(repair: bool = True, rejected: bool = False) -> dict:
+    from scanny_boy import spots
+
+    return spots.spots_params(
+        canvas=(4, 3),  # (width, height) of the 3x4 published TIFF
+        spots=[
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": [1, 1, 2, 2],
+                "rle": [0, 2, 2],
+                "area": 2,
+                "score": 10.0,
+                "rejected": rejected,
+            }
+        ],
+        sensitivity=0.5,
+        repair=repair,
+    )
+
+
+def test_the_export_applies_the_repair_before_the_geometry(stitched_roll, tmp_path):
+    """A rotate plus a repair compose in the right order: the repair reads
+    TIFF-space coordinates first, the rotation moves the healed pixels."""
+    import tifffile
+
+    from scanny_boy import spots
+    from scanny_boy.library import repo
+
+    planted = _planted_original()
+    tifffile.imwrite(stitched_roll / "_DSC0001.tif", planted)
+    repo.append_spots_edit(
+        stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True)
+    )
+    repo.append_edit(stitched_roll, _NEGATIVE_ID, repo.ROTATE_OP, {"direction": "cw"})
+
+    destination = _export(stitched_roll, tmp_path)
+
+    repaired = spots.apply_repair(planted, _hand_spots_params(repair=True))
+    expected, _ = render.render_export(np.rot90(repaired, k=-1), None, None)
+    np.testing.assert_array_equal(_decode(destination), expected)
+
+
+def test_the_provenance_record_names_the_repair_count(stitched_roll, tmp_path):
+    from scanny_boy.library import repo
+
+    repo.append_spots_edit(
+        stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True)
+    )
+    destination = _export(stitched_roll, tmp_path)
+
+    record = _provenance(destination)
+    assert record["rendered"]["spots"] == {
+        "detector_version": 1,
+        "sensitivity": 0.5,
+        "repaired": 1,
+    }
+
+
+def test_the_provenance_record_is_null_without_a_live_repair(stitched_roll, tmp_path):
+    repo_module = __import__("scanny_boy.library.repo", fromlist=["repo"])
+    repo_module.append_spots_edit(
+        stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=False)
+    )
+    destination = _export(stitched_roll, tmp_path)
+
+    record = _provenance(destination)
+    assert record["rendered"]["spots"] is None

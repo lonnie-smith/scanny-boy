@@ -428,4 +428,80 @@ struct CLICommandTests {
             ]
         )
     }
+    // MARK: - Spotting (protocol 13)
+
+    private static let roll = URL(filePath: "/Volumes/Scans/roll-12")
+
+    @Test("detect-spots repeats --negative and carries the sensitivity")
+    func detectSpotsArguments() {
+        let command = CLICommand.editDetectSpots(
+            roll: Self.roll,
+            negatives: ["n1", "n2"],
+            sensitivity: 0.75
+        )
+        #expect(
+            command.arguments == [
+                "edit", "detect-spots",
+                "--roll", "/Volumes/Scans/roll-12",
+                "--negative", "n1",
+                "--negative", "n2",
+                "--sensitivity", "0.75",
+            ]
+        )
+    }
+
+    @Test("spots review emits repeated --reject and --accept flags")
+    func spotsReviewArguments() {
+        let command = CLICommand.editSpots(
+            roll: Self.roll, negative: "n1", reject: [3, 7], accept: [2]
+        )
+        #expect(
+            command.arguments == [
+                "edit", "spots",
+                "--roll", "/Volumes/Scans/roll-12",
+                "--negative", "n1",
+                "--reject", "3",
+                "--reject", "7",
+                "--accept", "2",
+            ]
+        )
+        #expect(!command.arguments.contains("--repair"))
+        #expect(!command.arguments.contains("--no-repair"))
+    }
+
+    @Test("spots review's repair switch, clear, and the bare form")
+    func spotsRepairSwitchArguments() {
+        #expect(
+            CLICommand.editSpots(roll: Self.roll, negative: "n1", repair: true)
+                .arguments
+                == ["edit", "spots", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--repair"]
+        )
+        #expect(
+            CLICommand.editSpots(roll: Self.roll, negative: "n1", repair: false)
+                .arguments
+                == ["edit", "spots", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--no-repair"]
+        )
+        #expect(
+            CLICommand.editSpots(roll: Self.roll, negative: "n1", clear: true)
+                .arguments
+                == ["edit", "spots", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--clear"]
+        )
+        #expect(
+            CLICommand.editSpots(roll: Self.roll, negative: "n1").arguments
+                == ["edit", "spots", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1"]
+        )
+    }
+
+    @Test("list-spots is the pure query's two flags")
+    func listSpotsArguments() {
+        #expect(
+            CLICommand.editListSpots(roll: Self.roll, negative: "n1").arguments
+                == ["edit", "list-spots", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1"]
+        )
+    }
 }

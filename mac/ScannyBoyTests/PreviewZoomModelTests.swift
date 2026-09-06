@@ -234,4 +234,37 @@ struct PreviewZoomModelTests {
         image.unlockFocus()
         return Thumbnail(image: image)
     }
+    // MARK: - Spot marker mapping (protocol 13)
+
+    @Test("a spot rect maps into the fit rect, hand-computed")
+    func spotScreenRectInFitMode() {
+        // The fit rect of 2000x1000 in 500x400 is 1:4 at (0, 75).
+        let fit = PreviewZoomModel.fitRect(
+            displaySize: Self.tiffSize, container: Self.paneSize
+        )
+        let screen = PreviewZoomModel.spotScreenRect(
+            CGRect(x: 400, y: 400, width: 40, height: 20),
+            fitRect: fit,
+            displaySize: Self.tiffSize
+        )
+        // 1:4 scale, offset by the letterbox.
+        #expect(screen == CGRect(x: 100, y: 175, width: 10, height: 5))
+    }
+
+    @Test("a spot rect maps through the crop and the pan offset at 100%, hand-computed")
+    func spotScreenRectAt100() {
+        let crop = PreviewZoomModel.Crop(
+            image: NSImage(),
+            rect: CGRect(x: 200, y: 300, width: 1000, height: 800),
+            displayScale: Self.scale
+        )
+        let pan = CGSize(width: -30, height: 10)
+        let screen = PreviewZoomModel.spotScreenRect(
+            CGRect(x: 400, y: 400, width: 40, height: 20),
+            crop: crop,
+            cropScreenOffset: pan
+        )
+        // (400 - 200) / 2 - 30 = 70; (400 - 300) / 2 + 10 = 60.
+        #expect(screen == CGRect(x: 70, y: 60, width: 20, height: 10))
+    }
 }

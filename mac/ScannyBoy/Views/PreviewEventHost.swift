@@ -8,19 +8,30 @@ import SwiftUI
 /// SwiftUI cannot filter a drag on a *held* key the way it filters on
 /// `.shift`, so the pan gesture lives on an NSView overlaid on the preview.
 /// Plain clicks pass straight through — nothing else on the tab needs them,
-/// and the filmstrip's buttons live outside this overlay.
+/// except the spot markers (SPOTTING_PLAN §8.3): a plain click that hits a
+/// marker toggles its rejection, and one that hits nothing keeps doing
+/// what it has always done (nothing; space+click zoom lives on the space
+/// gesture).
 struct PreviewEventHost: NSViewRepresentable {
     /// `PreviewZoomModel` is `@MainActor`, like every `NSView`; the host
     /// only touches it from event callbacks and cursor updates, which all
     /// run on the main thread.
     let zoom: PreviewZoomModel
+    /// The spot id under `panePoint`, or nil — the marker layer only takes
+    /// a click when a marker is under the cursor (nearest-rect within a
+    /// slop radius).
+    var spotHitTester: (@MainActor (CGPoint) -> Int?)? = nil
+    /// Called with the toggled spot's id when a marker click lands.
+    var onSpotToggled: (@MainActor (Int) -> Void)? = nil
 
     func makeNSView(context: Context) -> PreviewEventView {
-        PreviewEventView(zoom: zoom)
+        PreviewEventView(zoom: zoom, spotHitTester: spotHitTester, onSpotToggled: onSpotToggled)
     }
 
     func updateNSView(_ view: PreviewEventView, context: Context) {
         view.model = zoom
+        view.spotHitTester = spotHitTester
+        view.onSpotToggled = onSpotToggled
         view.window?.invalidateCursorRects(for: view)
     }
 }
@@ -29,9 +40,17 @@ struct PreviewEventHost: NSViewRepresentable {
 @MainActor
 final class PreviewEventView: NSView {
     var model: PreviewZoomModel
+    var spotHitTester: (@MainActor (CGPoint) -> Int?)?
+    var onSpotToggled: (@MainActor (Int) -> Void)?
 
-    init(zoom: PreviewZoomModel) {
+    init(
+        zoom: PreviewZoomModel,
+        spotHitTester: (@MainActor (CGPoint) -> Int?)? = nil,
+        onSpotToggled: (@MainActor (Int) -> Void)? = nil
+    ) {
         self.model = zoom
+        self.spotHitTester = spotHitTester
+        self.onSpotToggled = onSpotToggled
         super.init(frame: .zero)
     }
 
@@ -118,13 +137,20 @@ final class PreviewEventView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard gestureIsActive else {
-            super.mouseUp(with: event)
+        if gestureIsActive {
+            gestureIsActive = false
+            window?.invalidateCursorRects(for: self)
+            model.mouseUp(at: point(for: event))
             return
         }
-        gestureIsActive = false
-        window?.invalidateCursorRects(for: self)
-        model.mouseUp(at: point(for: event))
+        // A plain click (no space): a marker under the cursor toggles its
+        // rejection; empty space keeps doing what it does today (nothing —
+        // space+click zoom is the space gesture's).
+        if let spotHitTester, let onSpotToggled,
+            let spotID = spotHitTester(point(for: event))
+        {
+            onSpotToggled(spotID)
+        }
     }
 
     // MARK: - Cursor

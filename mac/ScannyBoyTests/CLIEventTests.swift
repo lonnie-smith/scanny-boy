@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":12,"event":"negative_deleted",\
+                {"protocol_version":13,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -201,7 +201,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":12,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":13,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -423,7 +423,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":12,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":13,"command":"probe"}"#)
         }
     }
 
@@ -442,3 +442,94 @@ struct CLIEventTests {
         )
     }
 }
+
+    // MARK: - spots_reported (protocol 13)
+
+    @Test("spots_reported decodes display-space rects")
+    func spotsReportedDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"spots_reported","negative_id":"n1",\
+                "detector_version":1,"sensitivity":0.5,"repair":false,\
+                "spots":[{"id":1,"kind":"blob","polarity":"dense",\
+                "rect":[4211,1880,5,4],"score":9.4,"rejected":false},\
+                {"id":2,"kind":"streak","polarity":"thin",\
+                "rect":[12,20,300,3],"score":7.1,"rejected":true}],\
+                "found":2,"preview_path":"/tmp/preview.png"}
+                """)
+        )
+        #expect(event.kind == .spotsReported)
+        #expect(event.kind.isKnown)
+        #expect(event.spotsNegativeID == "n1")
+        #expect(event.spotsDetectorVersion == 1)
+        #expect(event.spotsSensitivity == 0.5)
+        #expect(event.spotsRepair == false)
+        #expect(event.spotsFound == 2)
+        #expect(event.previewPath == "/tmp/preview.png")
+
+        let spots = try #require(NegativeSpots(event: event))
+        #expect(spots.spots.count == 2)
+        #expect(spots.found == 2)
+        #expect(spots.accepted.count == 1)
+        #expect(spots.spots[0].id == 1)
+        #expect(spots.spots[0].kind == "blob")
+        #expect(spots.spots[0].polarity == "dense")
+        #expect(spots.spots[0].rect == CGRect(x: 4211, y: 1880, width: 5, height: 4))
+        #expect(spots.spots[0].score == 9.4)
+        #expect(spots.spots[0].rejected == false)
+        #expect(spots.spots[1].id == 2)
+        #expect(spots.spots[1].kind == "streak")
+        #expect(spots.spots[1].rejected == true)
+    }
+
+    @Test("spots_reported with an empty list and a null preview path")
+    func spotsReportedEmptyDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"spots_reported","negative_id":"n2",\
+                "detector_version":1,"sensitivity":0.5,"repair":false,\
+                "spots":[],"found":0,"preview_path":null}
+                """)
+        )
+        #expect(event.kind == .spotsReported)
+        let spots = try #require(NegativeSpots(event: event))
+        #expect(spots.spots.isEmpty)
+        #expect(spots.found == 0)
+        #expect(event.previewPath == nil)
+    }
+
+    @Test("the spots summary decodes and a malformed block is no block")
+    func spotsSummaryDecodes() throws {
+        let good = NegativeSpots.Summary(fields: [
+            "detector_version": .int(1),
+            "sensitivity": .double(0.5),
+            "repair": .bool(true),
+            "stale": .bool(false),
+            "count": .int(42),
+            "rejected": .int(6),
+        ])
+        #expect(good?.detectorVersion == 1)
+        #expect(good?.repair == true)
+        #expect(good?.stale == false)
+        #expect(good?.count == 42)
+        #expect(good?.rejected == 6)
+        #expect(NegativeSpots.Summary(fields: ["count": .int(1)]) == nil)
+    }
+
+    @Test("the new warning codes decode")
+    func spotsWarningCodesDecode() throws {
+        let limit = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"warning","code":"SPOT_LIMIT_REACHED","message":"capped"}"#
+            )
+        )
+        #expect(limit.code == .spotLimitReached)
+        #expect(limit.code?.name == "SPOT_LIMIT_REACHED")
+        let stale = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"warning","code":"SPOTS_STALE","message":"re-stitched"}"#
+            )
+        )
+        #expect(stale.code == .spotsStale)
+        #expect(stale.code?.name == "SPOTS_STALE")
+    }

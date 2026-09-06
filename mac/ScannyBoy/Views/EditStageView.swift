@@ -114,6 +114,11 @@ private struct PreviewPane: View {
     @State private var isConfirmingDelete = false
     @State private var isTonePanelPresented = false
     @State private var isColorPanelPresented = false
+    @State private var isSpotsPanelPresented = false
+    /// The sensitivity the "Find spots" popover offers. Not the model's
+    /// state: it seeds from the negative's recorded sensitivity and is
+    /// what the next detect run sends.
+    @State private var spotsSensitivity: Double = 0.5
     @State private var zoom = PreviewZoomModel()
     @State private var paneSize: CGSize = .zero
     /// The display mode the pane shows: the CLI's inverted positive, or
@@ -260,6 +265,31 @@ private struct PreviewPane: View {
                         }
                     )
                     .frame(width: 360)
+                }
+
+                Button {
+                    isSpotsPanelPresented = true
+                } label: {
+                    Image(systemName: "sparkle.magnifyingglass")
+                }
+                .disabled(
+                    negative.output == nil || edit.isDetectingSpots || edit.isReviewingSpots
+                        || edit.isRotating || edit.isDeleting
+                        || edit.isSettingTone || edit.isSettingColor || runIsActive
+                )
+                .help("Find spots: detect crud, review the proposals, repair what survives")
+                .accessibilityLabel("Find spots")
+                .popover(isPresented: $isSpotsPanelPresented, arrowEdge: .bottom) {
+                    SpotsReviewPanel(
+                        negative: negative,
+                        edit: edit,
+                        isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
+                        sensitivity: $spotsSensitivity
+                    )
+                    .frame(width: 300)
+                    .onAppear {
+                        spotsSensitivity = negative.spotsSummary?.sensitivity ?? 0.5
+                    }
                 }
 
                 if edit.isRotating {
@@ -459,14 +489,112 @@ private struct PreviewPane: View {
                             }
                         }
                 }
+                if showsSpotMarkers {
+                    spotMarkers
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay {
-                PreviewEventHost(zoom: zoom)
+                PreviewEventHost(
+                    zoom: zoom,
+                    spotHitTester: showsSpotMarkers ? spotMarker(at:) : nil,
+                    onSpotToggled: { spotID in toggleSpot(spotID) }
+                )
             }
             .onChange(of: geo.size, initial: true) {
                 paneSize = geo.size
                 refreshZoomContext(paneSize: geo.size)
+            }
+        }
+    }
+
+    // MARK: - Spot markers (SPOTTING_PLAN §8.3)
+
+    /// Markers show while a set exists and repair is off; with repair on
+    /// they hide unless the popover is open — the point of turning repair
+    /// on is to look at the result.
+    private var showsSpotMarkers: Bool {
+        guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
+            return false
+        }
+        return !spots.repair || edit.showsSpotsPopover
+    }
+
+    /// Accepted spots draw as a thin stroked rect; rejected ones draw
+    /// dimmed and dashed, so a rejection is visibly *a decision the user
+    /// made*, not a disappearance. The layer takes no events: clicks land
+    /// in the event host, which hit-tests through `spotMarker(at:)`.
+    @ViewBuilder
+    private var spotMarkers: some View {
+        ForEach(edit.spots?.spots ?? []) { spot in
+            let screen = spotScreenRect(spot.rect)
+            RoundedRectangle(cornerRadius: 1)
+                .stroke(
+                    spot.rejected ? Color.secondary.opacity(0.55) : Color.yellow,
+                    style: StrokeStyle(lineWidth: 1.2, dash: spot.rejected ? [3, 3] : [])
+                )
+                .frame(width: max(screen.width, 3), height: max(screen.height, 3))
+                .position(x: screen.midX, y: screen.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Display-space rect → screen rect, the same way the image maps: the
+    /// fit rect in fit mode, the crop's rect and scale plus the pan offset
+    /// at 100%.
+    private func spotScreenRect(_ rect: CGRect) -> CGRect {
+        switch zoom.mode {
+        case .fit:
+            return PreviewZoomModel.spotScreenRect(
+                rect,
+                fitRect: PreviewZoomModel.fitRect(
+                    displaySize: displaySize, container: paneSize
+                ),
+                displaySize: displaySize
+            )
+        case .pixels100:
+            guard let crop = zoom.crop else { return .zero }
+            return PreviewZoomModel.spotScreenRect(
+                rect, crop: crop, cropScreenOffset: zoom.cropScreenOffset
+            )
+        }
+    }
+
+    /// Nearest-rect hit-testing within a small slop radius — markers are
+    /// small, so the slop matters. The distance to a rect is to its
+    /// nearest edge, zero when the point is inside.
+    private func spotMarker(at point: CGPoint) -> Int? {
+        let slop: CGFloat = 6
+        var bestID: Int?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for spot in edit.spots?.spots ?? [] {
+            let screen = spotScreenRect(spot.rect)
+            let distance = Self.rectDistance(screen, to: point)
+            if distance <= slop, distance < bestDistance {
+                bestDistance = distance
+                bestID = spot.id
+            }
+        }
+        return bestID
+    }
+
+    /// Nearest-edge distance from a point to a rect, zero when inside
+    /// (`CGRect.distance(to:)` is macOS 26-only, so the small arithmetic
+    /// lives here).
+    private static func rectDistance(_ rect: CGRect, to point: CGPoint) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
+    /// Click a marker to toggle its rejection.
+    private func toggleSpot(_ spotID: Int) {
+        guard let spot = edit.spots?.spots.first(where: { $0.id == spotID }) else { return }
+        Task {
+            if spot.rejected {
+                await edit.acceptSpot(negative, id: spotID)
+            } else {
+                await edit.rejectSpot(negative, id: spotID)
             }
         }
     }
@@ -1070,5 +1198,114 @@ private struct ColorAdjustmentPanel: View {
             values.highlightMagenta = balanced.magenta
             values.highlightYellow = balanced.yellow
         }
+    }
+}
+
+/// The "Find spots" popover (SPOTTING_PLAN §8.3): the sensitivity slider,
+/// the counts, the whole-negative repair toggle, and Clear. Detect is a
+/// selection-level command but the panel reviews the displayed negative —
+/// `edit.selectionTargets` is what a Detect click sends.
+private struct SpotsReviewPanel: View {
+    let negative: RollManifest.Negative
+    @Bindable var edit: EditModel
+    let isBusy: Bool
+    @Binding var sensitivity: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Sensitivity")
+                    Spacer()
+                    Text(String(format: "%.2f", sensitivity))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $sensitivity, in: 0...1, step: 0.05)
+                Text("0.0 misses crud before risking detail; 1.0 proposes aggressively.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                Task {
+                    await edit.detectSpots(edit.selectionTargets, sensitivity: sensitivity)
+                }
+            } label: {
+                Label("Find Spots", systemImage: "sparkle.magnifyingglass")
+            }
+            .disabled(isBusy || edit.selectionTargets.isEmpty)
+
+            countsRow
+
+            Toggle("Repair", isOn: repairBinding)
+                .disabled(isBusy || !hasAcceptableSpots)
+                .help(
+                    repairOn
+                        ? "Inpainting is live — the preview shows the repaired pixels"
+                        : "Inpaint every accepted spot's exact mask"
+                )
+
+            HStack {
+                Button("Clear", role: .destructive) {
+                    Task { await edit.clearSpots(negative) }
+                }
+                .disabled(isBusy || !hasSpots)
+                .help("Remove the spot set and switch repair off")
+                Spacer()
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    private var spots: NegativeSpots? { edit.spots }
+    private var summary: NegativeSpots.Summary? { negative.spotsSummary }
+
+    private var repairOn: Bool {
+        spots?.repair ?? summary?.repair ?? false
+    }
+
+    private var hasSpots: Bool {
+        (spots?.spots.isEmpty == false) || ((summary?.count ?? 0) > 0)
+    }
+
+    private var hasAcceptableSpots: Bool {
+        (spots?.accepted.isEmpty == false)
+            || ((summary.map { $0.count - $0.rejected } ?? 0) > 0)
+    }
+
+    private var countsRow: some View {
+        let text: String
+        if let spots {
+            let rejected = spots.spots.count - spots.accepted.count
+            text = spots.spots.isEmpty
+                ? "No spots found"
+                : "\(spots.spots.count) found, \(rejected) rejected"
+        } else if let summary, summary.count > 0 {
+            text = summary.stale
+                ? "Stale — the negative was re-stitched; find spots again"
+                : "\(summary.count) found, \(summary.rejected) rejected"
+        } else {
+            text = "No spots found"
+        }
+        return HStack {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    private var repairBinding: Binding<Bool> {
+        Binding(
+            get: { repairOn },
+            set: { on in
+                Task { await edit.setRepair(negative, on: on) }
+            }
+        )
     }
 }
