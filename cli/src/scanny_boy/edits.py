@@ -512,18 +512,16 @@ def run_edit_render_preview(
     _roll, negative = _validated_negative(roll_dir, negative_id)
 
     tiff_path = roll_dir / negative.output["name"]
-    quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-        roll_dir, negative_id
-    )
+    state = repo.net_edit_state(roll_dir, negative_id)
     try:
         width, height = previews.render_preview(
             tiff_path,
             output_path,
-            quarter_turns=quarter_turns,
-            flipped_horizontally=flipped,
-            fine_angle_deg=fine_angle,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
             mode=mode,
-            tone_params=tone_params,
+            tone_params=state.tone,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc

@@ -967,7 +967,8 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
             interpolation=cv2.INTER_AREA,
         )
     graded = cv2.cvtColor(
-        tone.build_display_lut(160.0, 0.3)[tiff], cv2.COLOR_RGB2BGR
+        tone.build_display_lut(tone.ToneParams(grade_r=160.0, snap_gamma=0.3))[tiff],
+        cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(stored, graded)
