@@ -9,13 +9,43 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 11 keeps version 10's roll model and extends the preview
-tone adjustment: seven new curve controls on `edit tone` (print density,
-zone density, toe/shoulder and their widths), `--auto-density` and
-`--auto-grade` (solve once from the negative's recorded normalization and
-write the value — not a persistent mode), the matching seven `tone_*`
-derived fields on `roll info`'s negatives, and the
-`TONE_METERING_UNAVAILABLE` warning code.
+Protocol version 11 keeps version 10's roll model and adds **monochrome
+film support** and an extended preview tone adjustment.
+
+**Monochrome film support** (docs/MONOCHROME_PLAN.md): `stitch` and `run`
+accept `--film-kind {auto,colour,monochrome}` (default `auto`), which
+decides whether a roll's three warped channels merge into one before
+publishing. Detection is per **roll**, not per negative (a roll is one film
+stock): a pre-pass samples up to six negatives, spread across the roll, and
+reads a chroma statistic that survives removing each channel's own gain and
+offset — near zero on a silver B&W negative, well above it on anything with
+a real orange mask or colour content. The decision is frozen on the roll's
+first stitch run in a new top-level `film` object —
+`{kind, source, statistic, samples, detector_version}`, `kind` one of
+`"colour"`/`"monochrome"`, `source` one of `"auto"`/`"manual"` — and never
+changes after that: a later run whose fresh evidence disagrees only warns
+(`MONO_DECISION_CONFLICT`); an ambiguous first-run statistic defaults to
+colour and warns (`MONO_DETECT_AMBIGUOUS`); naming the *other* kind via
+`--film-kind` on a roll that already has runs fails
+`ROLL_INVARIANT_MISMATCH` (re-stitch the whole roll to change it). `roll
+info` reports `film` verbatim, `null` for a manifest written before this
+protocol version. A monochrome roll's published TIFFs are single-channel
+(`photometric=minisblack`), tagged with the new
+`ScannyBoy-Density-Grey-v1.icc` profile instead of the colour density
+profile; every per-channel roll-manifest field (`floors`, `ceils`,
+`shadow_refs`, `observed_min`/`_max`, the headroom-clip fractions,
+`unclamped_floors`/`_ceils`) carries one entry instead of three, and
+`rebate.base_density` is `null`, a 1-array, or a 3-array. The per-frame
+`gain` array is unaffected and stays 3-wide even on a monochrome roll's
+negatives, since the photometric solve that produces it still runs in
+linear light on three channels.
+
+**Extended preview tone adjustment** (docs/DENSITY_PLAN.md): seven new curve
+controls on `edit tone` (print density, zone density, toe/shoulder and
+their widths), `--auto-density` and `--auto-grade` (solve once from the
+negative's recorded normalization and write the value — not a persistent
+mode), the matching seven `tone_*` derived fields on `roll info`'s
+negatives, and the `TONE_METERING_UNAVAILABLE` warning code.
 
 Protocol version 10 keeps version 9's roll model and adds two features.
 
@@ -159,10 +189,12 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ...] [--flatfield ID]
+                      [--film-kind {auto,colour,monochrome}]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
+                      [--film-kind {auto,colour,monochrome}]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -665,6 +697,8 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
+| `MONO_DETECT_AMBIGUOUS` | Warning: an unseeded roll's film-kind statistic landed between the monochrome and colour thresholds; colour was assumed |
+| `MONO_DECISION_CONFLICT` | Warning: this run's fresh film-kind evidence disagrees with the roll's already-frozen kind; the frozen kind is kept |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

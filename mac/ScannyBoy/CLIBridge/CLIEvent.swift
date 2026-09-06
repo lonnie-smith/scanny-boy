@@ -21,6 +21,13 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// Protocol 11 adds monochrome film support (the
+    /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
+    /// the roll manifest's top-level `film` block, and the
+    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes)
+    /// and extends the preview tone adjustment (seven curve controls and
+    /// two auto flags on `edit tone`, the matching `tone_*` fields in the
+    /// roll manifest, and the `TONE_METERING_UNAVAILABLE` warning code).
     public static let supportedProtocolVersion = 11
 
     public let protocolVersion: Int

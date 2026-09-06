@@ -190,6 +190,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
+    stitch.add_argument(
+        "--film-kind",
+        choices=("auto", "colour", "monochrome"),
+        default="auto",
+        dest="film_kind",
+        help="skip the film-kind detector's decision (MONOCHROME_PLAN §2.2); "
+        "the statistic is still recorded either way",
+    )
 
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
@@ -218,6 +226,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
+    run.add_argument(
+        "--film-kind",
+        choices=("auto", "colour", "monochrome"),
+        default="auto",
+        dest="film_kind",
+        help="skip the film-kind detector's decision (MONOCHROME_PLAN §2.2); "
+        "the statistic is still recorded either way",
     )
 
     flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
@@ -499,6 +515,7 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 negatives=args.negatives,
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
+                film_kind=args.film_kind,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -931,6 +948,7 @@ def _run_run_command(
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
                 grid=spec,
+                film_kind=args.film_kind,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))

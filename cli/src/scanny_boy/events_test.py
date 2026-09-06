@@ -223,16 +223,11 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_eleven():
-    """Protocol 9→10: 2D grid stitching — `--grid AxD` on `probe`,
-    `prepare`, and `run` (mutually exclusive with `--per-negative`), the
-    `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
-    warning code (docs/GRID_STITCH_PLAN.md section 2.0)."""
-    """Protocol 9→10: the preview's nondestructive tone adjustment — the
-    `edit tone` command (an ISO-R paper grade plus a midtone snap,
-    recorded as a `tone` op in the ops log and coalesced there) and the
-    net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
-    negatives. The published TIFF never carries the adjustment
-    (docs/DECISIONS.md, "The preview's tone adjustment")."""
+    """Protocol 10→11: monochrome film support (`--film-kind`, the roll
+    manifest's `film` block, `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT`)
+    plus seven curve controls and two auto flags on `edit tone`, the
+    matching seven `tone_*` fields on `roll info`'s negatives, and
+    `TONE_METERING_UNAVAILABLE` (docs/MONOCHROME_PLAN.md, docs/DENSITY_PLAN.md)."""
     assert PROTOCOL_VERSION == 11
 
 

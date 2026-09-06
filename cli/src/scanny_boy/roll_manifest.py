@@ -392,6 +392,11 @@ class RollManifest:
     sources: list[RollSourceRecord] = dataclasses.field(default_factory=list)
     negatives: list[NegativeRecord] = dataclasses.field(default_factory=list)
     metadata: RollMetadata = dataclasses.field(default_factory=RollMetadata)
+    # MONOCHROME_PLAN §2.3: the roll's frozen film-kind decision — `None`
+    # until the first stitch run seeds it (§5.2: also `None` for a roll
+    # manifest written before §2 existed at all). Never rewritten once set,
+    # except by `_append_this_run`'s one-time §5.2 legacy upgrade.
+    film: dict[str, Any] | None = None
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -435,6 +440,7 @@ class RollManifest:
             "sources": [s.to_dict() for s in self.sources],
             "negatives": [n.to_dict() for n in self.negatives],
             "metadata": self.metadata.to_dict(),
+            "film": self.film,
         }
 
 

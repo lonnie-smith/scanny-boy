@@ -48,6 +48,9 @@ from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
     NegativeRecord,
     RollInvariants,
+    RollManifest,
+    RunRecord,
+    append_run,
     load_roll_manifest,
     new_roll_manifest,
     write_roll_manifest,
@@ -291,6 +294,12 @@ def _stitch(work_dir, out_dir, *, events=None, cancel=None, **kwargs):
         "overwrite": False,
         "allow_partial": False,
         "jobs": 1,
+        # These synthetic fixtures stack one plane into all three channels
+        # (perfectly indistinguishable from a real monochrome negative
+        # under MONOCHROME_PLAN §1's detector), which is not what most of
+        # these tests are exercising; force the colour path explicitly. A
+        # test of the monochrome feature itself overrides this.
+        "film_kind": "colour",
     }
     defaults.update(kwargs)
     return run_stitch(
@@ -954,6 +963,7 @@ def test_cancellation_keeps_completed_negatives(tmp_path):
         jobs=1,
         cancel=cancel,
         emit=emit,
+        film_kind="colour",
     )
 
     assert outcome.status == "cancelled"
@@ -1784,3 +1794,144 @@ def test_mono_sampling_spreads_across_the_run_and_caps_at_max_samples(tmp_path):
     assert group_ids[0] in samples
     assert group_ids[-1] in samples
     assert set(samples) <= set(group_ids)
+
+
+# --- MONOCHROME_PLAN section 2: the roll decision --------------------------------
+
+
+def test_mono_roll_freezes_film_on_first_run_and_never_rewrites(tmp_path):
+    """§2.3: a fresh roll's first stitch decides and freezes `film`
+    (the synthetic scenes are three copies of one plane, so the roll
+    decides monochrome); a second stitch into the same roll re-measures
+    but does not rewrite the frozen block."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir, film_kind="auto").status == "complete"
+    roll = load_roll_manifest(out_dir)
+    assert roll.film is not None
+    assert roll.film["kind"] == "monochrome"
+    assert roll.film["source"] == "auto"
+    assert roll.film["detector_version"] == stitch_pipeline.FILM_DETECTOR_VERSION
+    assert roll.film["samples"] == [roll.negatives[0].negative_id]
+    first_film = dict(roll.film)
+
+    assert (
+        _stitch(work_dir, out_dir, film_kind="auto", run_id="stitch-run-2").status
+        == "complete"
+    )
+    roll_again = load_roll_manifest(out_dir)
+    assert roll_again.film == first_film
+
+
+def test_mono_decision_conflict_warns_and_keeps_the_frozen_kind(tmp_path):
+    """§2.3: once frozen, later evidence that disagrees only warns — it
+    never flips the kind. This roll is frozen colour by manual override
+    even though its content reads as monochrome; the second run's fresh
+    auto evidence disagrees and warns, but the roll stays colour."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir, film_kind="colour").status == "complete"
+    roll = load_roll_manifest(out_dir)
+    assert roll.film["kind"] == "colour"
+    assert roll.film["source"] == "manual"
+
+    events: list = []
+    outcome = _stitch(
+        work_dir, out_dir, film_kind="auto", run_id="stitch-run-2", events=events
+    )
+    assert outcome.status == "complete"
+    warnings = [e for e in events if isinstance(e, WarningEvent)]
+    assert any(w.code == Code.MONO_DECISION_CONFLICT for w in warnings)
+
+    roll_after = load_roll_manifest(out_dir)
+    assert roll_after.film == roll.film
+    assert (
+        roll_after.published_icc_profile["sha256"]
+        == profile_record(ProfileKind.DENSITY)["sha256"]
+    )
+
+
+def test_film_kind_override_naming_the_other_kind_errors_on_a_roll_with_runs(
+    tmp_path,
+):
+    """§2.3: `--film-kind` naming the *other* kind on a roll that already
+    has runs is an error, surfacing through the published-ICC invariant —
+    no special-case check needed."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+    assert _stitch(work_dir, out_dir, film_kind="colour").status == "complete"
+
+    with pytest.raises(StitchError) as exc_info:
+        _stitch(work_dir, out_dir, film_kind="monochrome", run_id="stitch-run-2")
+    assert exc_info.value.code == Code.ROLL_INVARIANT_MISMATCH
+
+
+def test_mono_roll_seeds_the_density_grey_profile_and_publishes_one_channel(tmp_path):
+    """§2.3/§4: a mono roll's seeded `published_icc_profile_sha256` is the
+    `DENSITY_GREY` record's, and its published TIFF is a true 2-D array."""
+    import tifffile
+
+    from scanny_boy.icc_profile import DENSITY_GREY_PROFILE_SHA256
+
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+    assert _stitch(work_dir, out_dir, film_kind="auto").status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    assert roll.published_icc_profile["sha256"] == DENSITY_GREY_PROFILE_SHA256
+    published = out_dir / roll.negatives[0].output["name"]
+    assert tifffile.imread(published).ndim == 2
+
+
+def test_decide_film_kind_ambiguous_defaults_to_colour_and_warns(tmp_path):
+    """§2.1: a statistic landing between the two thresholds is ambiguous —
+    the roll decides colour (the lossless choice) and warns."""
+    from scanny_boy.normalization import COLOUR_CHROMA_MIN, MONO_CHROMA_MAX, MonoStatistic
+
+    out_dir = _roll_dir(tmp_path)  # fresh, unseeded roll
+    midpoint = (MONO_CHROMA_MAX + COLOUR_CHROMA_MIN) / 2.0
+    mono_by_group = {
+        "negative-01": MonoStatistic(
+            sampled=True, chroma=midpoint, channel_correlation=(0.9, 0.9)
+        )
+    }
+    warnings: list[tuple] = []
+
+    decision = stitch_pipeline._decide_film_kind(
+        out_dir,
+        mono_by_group,
+        "auto",
+        lambda code, message: warnings.append((code, message)),
+    )
+
+    assert decision.kind is stitch_pipeline.FilmKind.COLOUR
+    assert decision.freeze_template is not None
+    assert decision.freeze_template["source"] == "auto"
+    assert decision.freeze_template["statistic"] == pytest.approx(midpoint)
+    assert any(code == Code.MONO_DETECT_AMBIGUOUS for code, _ in warnings)
+
+
+def test_decide_film_kind_treats_a_legacy_roll_as_frozen_colour(tmp_path):
+    """§5.2: a roll manifest with runs but no `film` block predates §2
+    entirely and is treated as already-frozen colour; this run must write
+    the default block out."""
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    append_run(
+        roll,
+        RunRecord(
+            run_id="legacy-run",
+            kind="stitch",
+            status="complete",
+            started_at="2026-01-01T00:00:00Z",
+        ),
+    )
+    write_roll_manifest(out_dir, roll)
+    assert roll.film is None
+
+    decision = stitch_pipeline._decide_film_kind(out_dir, {}, "auto", lambda *a: None)
+
+    assert decision.kind is stitch_pipeline.FilmKind.COLOUR
+    assert decision.freeze_template == stitch_pipeline._legacy_film_block()
