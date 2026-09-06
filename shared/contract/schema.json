@@ -28,6 +28,7 @@
         "edit_recorded",
         "negative_deleted",
         "region_rendered",
+        "preview_rendered",
         "export_done",
         "flatfield_created",
         "flatfield_list",
@@ -334,6 +335,7 @@
               "edit delete",
               "edit tone",
               "edit render-region",
+              "edit render-preview",
               "export",
               "flatfield create",
               "flatfield list",
@@ -514,6 +516,18 @@
           "path": { "type": "string" },
           "x": { "type": "integer", "minimum": 0 },
           "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "preview_rendered" } } },
+      "then": {
+        "required": ["negative_id", "path", "width", "height"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "path": { "type": "string" },
           "width": { "type": "integer", "minimum": 1 },
           "height": { "type": "integer", "minimum": 1 }
         }

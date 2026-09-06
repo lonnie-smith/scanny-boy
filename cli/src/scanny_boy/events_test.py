@@ -25,6 +25,7 @@ from scanny_boy.events import (
     NegativeDone,
     NegativeFailed,
     PipelineStep,
+    PreviewRendered,
     ProbeResult,
     Progress,
     RegionRendered,
@@ -223,6 +224,11 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_eleven():
+    """Protocol 10→11: the app's positive/negative display toggle — the
+    `--mode positive|negative` flag on `edit render-region` and the new
+    `edit render-preview` command (with its `preview_rendered` event),
+    whose negative mode is the un-inverted density view the tone
+    adjustment never reaches."""
     """Protocol 10→11 (MONOCHROME_PLAN): `--film-kind {auto,colour,
     monochrome}` on `stitch` and `run`, the roll manifest's top-level
     `film` block, and the `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT`
@@ -275,6 +281,12 @@ def test_new_event_kinds_round_trip():
             y=2,
             width=10,
             height=6,
+        ),
+        PreviewRendered(
+            negative_id="neg-8",
+            path="/tmp/preview.png",
+            width=1024,
+            height=683,
         ),
     ]
     for event in events:
