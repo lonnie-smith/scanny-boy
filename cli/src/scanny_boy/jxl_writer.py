@@ -17,6 +17,8 @@ sites; they cost real hours when rediscovered.
 from __future__ import annotations
 
 import ctypes
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -170,14 +172,23 @@ class _JxlApi:
     `JxlEncoderDestroy`)."""
 
     def __init__(self) -> None:
+        # Linux dlopens an extension's dependency libraries with the
+        # import's own flags, and the default flags lack RTLD_GLOBAL — so
+        # without this the libjxl symbols never reach the global namespace
+        # `CDLL(None)` searches (macOS loads dependencies globally either
+        # way, which is why the failure only showed on Linux).
+        dlopen_flags = sys.getdlopenflags()
         try:
             # Loads libjxl, libjxl_threads and libjxl_cms into the process.
+            sys.setdlopenflags(dlopen_flags | getattr(os, "RTLD_GLOBAL", 0))
             import imagecodecs._jpegxl  # noqa: F401
         except Exception as exc:
             raise JxlEncoderUnavailable(
                 "could not import imagecodecs._jpegxl; the bundled libjxl "
                 f"is missing from this build: {exc}"
             ) from exc
+        finally:
+            sys.setdlopenflags(dlopen_flags)
         # The global symbol namespace — path-independent and
         # version-agnostic, which is what makes this work frozen.
         lib = ctypes.CDLL(None)
