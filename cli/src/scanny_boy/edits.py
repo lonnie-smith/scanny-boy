@@ -293,12 +293,20 @@ def _merge_color_params(
     import dataclasses
 
     from scanny_boy import color
+    from scanny_boy.library.repo import _color_neutral_defaults
 
-    base = (
-        dict(recorded)
-        if recorded is not None
-        else dataclasses.asdict(color.NEUTRAL_COLOR)
-    )
+    # Build the base from the neutral defaults and overlay the recorded
+    # dict, instead of indexing the recorded dict directly
+    # (docs/CAST_REMOVAL_PLAN.md R-2 §6.2): a twelve-key recorded state —
+    # an op written before the thirteenth key existed — must not raise,
+    # and a missing newer key keeps its neutral default.
+    base = _color_neutral_defaults()
+    if recorded is not None:
+        for key, value in recorded.items():
+            if key in base:
+                base[key] = value
+    else:
+        base = dataclasses.asdict(color.NEUTRAL_COLOR)
     merged = {key: base[key] for key in color.COLOR_PARAM_KEYS}
     for key, value in updates.items():
         if value is not None:

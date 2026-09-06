@@ -65,8 +65,10 @@ _DIRECTIONS = {"cw": 1, "ccw": -1}
 # sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
 
-# `color` params are the complete preview colour state — twelve keys, all
-# set or all `None` for the reset (see `color.py`). A sibling of `tone`:
+# `color` params are the complete preview colour state — thirteen keys
+# (docs/CAST_REMOVAL_PLAN.md R-2), of which the original twelve are the
+# compatibility floor (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None`
+# for the reset (see `color.py`). A sibling of `tone`:
 # preview-only, independently resettable, coalesced in place.
 COLOR_OP = "color"
 
@@ -580,15 +582,21 @@ def validated_tone_params(params: dict[str, float | None] | None) -> dict[str, f
 def validated_color_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
-    """The `color` op's params: all twelve set, or all twelve `None`."""
+    """The `color` op's params: all twelve compatibility-floor keys set, or
+    all `None` (docs/CAST_REMOVAL_PLAN.md R-2 §6.2). A newer key absent
+    from `params` is filled from the neutral defaults before validation —
+    that is what "this op predates the control" means."""
     from scanny_boy import color
 
     if params is None:
         return {key: None for key in color.COLOR_PARAM_KEYS}
-    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
+    missing = [key for key in color.COLOR_PARAM_KEYS_V1 if key not in params]
     if missing:
         raise ValueError(f"color params missing keys: {', '.join(missing)}")
-    values = {key: params[key] for key in color.COLOR_PARAM_KEYS}
+    defaults = _color_neutral_defaults()
+    values = {
+        key: params.get(key, defaults[key]) for key in color.COLOR_PARAM_KEYS
+    }
     if all(value is None for value in values.values()):
         return {key: None for key in color.COLOR_PARAM_KEYS}
     if any(value is None for value in values.values()):
@@ -708,7 +716,6 @@ def _tone_neutral_defaults() -> dict[str, float]:
 
 
 def _color_neutral_defaults() -> dict[str, float]:
-
     return {
         "wb_cyan": 0.0,
         "wb_magenta": 0.0,
@@ -720,6 +727,7 @@ def _color_neutral_defaults() -> dict[str, float]:
         "highlight_magenta": 0.0,
         "highlight_yellow": 0.0,
         "cast_removal": 0.0,
+        "cast_removal_highlights": 0.0,
         "dye_separation": 1.0,
         "separation_damping": 0.0,
     }
@@ -772,15 +780,21 @@ def _parse_tone_op(params: dict) -> dict[str, float] | None:
 def _parse_color_op(params: dict) -> dict[str, float] | None:
     from scanny_boy import color
 
-    if not all(key in params for key in color.COLOR_PARAM_KEYS):
+    # Gate on the ORIGINAL twelve (docs/CAST_REMOVAL_PLAN.md R-2 §6.1): an
+    # op written before that plan has no thirteenth key and is still a
+    # complete colour state. Newer keys fall back to their neutral
+    # defaults, which is what "this op predates the control" means.
+    if not all(key in params for key in color.COLOR_PARAM_KEYS_V1):
         return None
-    if all(params[key] is None for key in color.COLOR_PARAM_KEYS):
+    if all(params.get(key) is None for key in color.COLOR_PARAM_KEYS_V1):
         return None
     merged = _color_neutral_defaults()
     for key in merged:
-        value = params[key]
+        value = params.get(key)
         if value is None:
-            return None
+            if key in color.COLOR_PARAM_KEYS_V1:
+                return None  # a null among the twelve is still a reset
+            continue  # a missing newer key keeps its default
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         merged[key] = float(value)

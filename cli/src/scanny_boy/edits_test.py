@@ -845,3 +845,28 @@ def test_delete_survives_a_stuck_tiff(stitched_roll, monkeypatch):
     assert load_roll_manifest(stitched_roll).negatives == []
     warnings = [e for e in events if isinstance(e, WarningEvent)]
     assert [w.code for w in warnings] == [Code.ORPHAN_FILE_NOT_REMOVED]
+
+
+def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
+    """docs/CAST_REMOVAL_PLAN.md R-2 §6.2: the merge builds its base from
+    the neutral defaults and overlays the recorded dict, so a twelve-key
+    recorded state (an op predating the thirteenth key) merges instead of
+    raising, and a one-key update leaves the other twelve untouched."""
+    import dataclasses
+
+    from scanny_boy import color
+    from scanny_boy.edits import _merge_color_params
+
+    recorded = {
+        key: value
+        for key, value in dataclasses.asdict(color.NEUTRAL_COLOR).items()
+        if key != "cast_removal_highlights"
+    } | {"wb_cyan": 0.1, "cast_removal": 0.4}
+
+    merged = _merge_color_params(recorded, {"wb_magenta": 0.3})
+
+    assert set(merged) == set(color.COLOR_PARAM_KEYS)
+    assert merged["cast_removal_highlights"] == 0.0
+    assert merged["wb_cyan"] == 0.1
+    assert merged["wb_magenta"] == 0.3
+    assert merged["cast_removal"] == 0.4

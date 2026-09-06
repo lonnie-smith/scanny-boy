@@ -122,6 +122,17 @@ def grade_slope(grade_r: float) -> float:
     return min(SLOPE_MAX, max(SLOPE_MIN, GRADE_SLOPE_REF * GRADE_REFERENCE / grade_r))
 
 
+def base_slope_and_pivot(tone_params: ToneParams) -> tuple[float, float]:
+    """The achromatic straight-line slope and input pivot — the two
+    quantities every per-channel colour solve is defined against
+    (docs/CAST_REMOVAL_PLAN.md §3.4). Extracted from `_curve_raw` so the
+    colour stage's auto solve reads the same two numbers the curve applies;
+    one definition, no drift."""
+    slope = grade_slope(tone_params.grade_r)
+    pivot_in = 0.5 + (tone_params.density - DENSITY_REFERENCE) * DENSITY_PIVOT_SHIFT
+    return slope, pivot_in
+
+
 def _softplus(x: np.ndarray | float) -> np.ndarray | float:
     """Numerically stable softplus: log(1 + exp(x))."""
     if isinstance(x, np.ndarray):
@@ -160,9 +171,8 @@ def _curve_raw(
 ) -> np.ndarray:
     """Steps 2–6 on display values; global CMY is applied before the flip
     in `build_channel_tables`. `channel=None` is the achromatic path."""
-    base_slope = grade_slope(tone_params.grade_r)
+    base_slope, pivot_in = base_slope_and_pivot(tone_params)
     pivot_out = 0.5
-    pivot_in = 0.5 + (tone_params.density - DENSITY_REFERENCE) * DENSITY_PIVOT_SHIFT
     if apply_color and channel is not None:
         per_channel = color.cast_slopes(
             color_params, metering, base_slope, pivot_in
