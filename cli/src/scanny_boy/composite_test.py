@@ -22,6 +22,7 @@ from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.normalization import (
     NORMALIZED_FILL,
     Bounds,
+    FilmKind,
     analyze_bounds,
     block_median_grid,
     decode_normalized,
@@ -691,6 +692,81 @@ def test_uncovered_pixels_take_the_normalized_fill():
         assert tuple(int(v) for v in result.image[y, x]) == tuple(
             int(v) for v in fill_code
         )
+
+
+# --- MONOCHROME_PLAN section 3: the collapse, wired into composite() -----------
+
+
+def test_film_kind_colour_default_matches_omitting_it():
+    """MONOCHROME_PLAN §3.4's regression at the composite level: passing
+    the default `film_kind` explicitly is indistinguishable from omitting
+    it — the collapse must not run on a colour composite, so every other
+    test in this file (which all omit `film_kind`) stays a colour-path
+    regression net for this change."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    implicit = _composite(layout, uint16_frames)
+    explicit = composite(
+        layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        film_kind=FilmKind.COLOUR,
+    )
+    assert np.array_equal(implicit.image, explicit.image)
+    assert implicit.bounds == explicit.bounds
+    assert implicit.shadow_refs == explicit.shadow_refs
+    assert implicit.anchor == explicit.anchor
+    assert implicit.textural_range == explicit.textural_range
+
+
+def test_monochrome_film_kind_publishes_a_single_channel_composite():
+    """§3.3/§3.4: a mono roll's composite collapses to one channel before
+    the bounds analysis — a 2-D published image, one-element bounds, and
+    `decode_normalized` round-tripping through them the same way it does
+    for a colour composite's three."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    result = composite(
+        layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        film_kind=FilmKind.MONOCHROME,
+    )
+    assert result.image.ndim == 2
+    assert len(result.bounds.floors) == 1
+    assert len(result.bounds.ceils) == 1
+    assert len(result.shadow_refs) == 1
+
+    decoded = decode_normalized(result.image)
+    floor, ceil = result.bounds.floors[0], result.bounds.ceils[0]
+    reconstructed_log = floor + decoded * (ceil - floor)
+    # A sane log-density range: within the encode's headroom of [0, 1] on
+    # the covered interior, not NaN/inf, and not the fill's sentinel value.
+    fill_code = encode_normalized(np.full((1, 1, 1), NORMALIZED_FILL))[0, 0, 0]
+    covered = result.image != fill_code
+    assert np.count_nonzero(covered) > 0
+    assert np.all(np.isfinite(reconstructed_log[covered]))
+    assert reconstructed_log[covered].min() >= floor - 1.0
+    assert reconstructed_log[covered].max() <= ceil + 1.0
+
+
+def test_monochrome_uncovered_pixels_take_the_normalized_fill():
+    """The one-channel counterpart of
+    `test_uncovered_pixels_take_the_normalized_fill`: `fill_code`'s shape
+    already generalises to the collapsed channel count (MONOCHROME_PLAN
+    §4's composite.py:747 row)."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    result = composite(
+        layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        film_kind=FilmKind.MONOCHROME,
+    )
+    canvas_width, canvas_height = layout.canvas_size
+    fill_code = int(encode_normalized(np.full((1, 1, 1), NORMALIZED_FILL))[0, 0, 0])
+    assert int(result.image[0, 0]) == fill_code
+    assert int(result.image[canvas_height - 1, canvas_width - 1]) == fill_code
 
 
 def test_region_keep_withholds_uncovered_interior_blocks():

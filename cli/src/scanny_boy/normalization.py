@@ -29,6 +29,7 @@ export — goes through it, never through the file's ICC profile (section
 from __future__ import annotations
 
 import dataclasses
+import enum
 
 import cv2
 import numpy as np
@@ -542,6 +543,110 @@ def _pair_correlation(a: np.ndarray, b: np.ndarray) -> float:
     if denominator == 0.0:
         return 0.0
     return float(np.sum(a * b) / denominator)
+
+
+# --- MONOCHROME_PLAN section 2: the roll decision -----------------------------
+
+
+class FilmKind(enum.StrEnum):
+    """§2: a roll's frozen film kind, once decided — never per-negative
+    (§0.3). A plain `str` subclass: it serializes into the roll manifest's
+    `film.kind` and `icc_profile.published_profile_kind`'s comparison
+    unchanged."""
+
+    COLOUR = "colour"
+    MONOCHROME = "monochrome"
+
+
+# §2.1's gate, pinned from measurements over the real roll library on
+# 2026-09-05 (see docs/MONOCHROME_PLAN.md §1.4/§7 step 2): one monochrome
+# roll's sampled per-negative chroma ran 0.053-0.122 (roll median 0.101),
+# one colour roll's ran 0.612-2.340 (roll median 1.051) — no overlap. The
+# pair below sits near the log-midpoint of that gap, leaving margin on
+# both sides of the two measured clusters for a roll not yet seen.
+MONO_CHROMA_MAX = 0.20  # roll median at or below -> monochrome
+COLOUR_CHROMA_MIN = 0.35  # roll median at or above -> colour
+
+
+@dataclasses.dataclass(frozen=True)
+class FilmKindGate:
+    """§2.1's gate outcome for one roll's sampled statistics."""
+
+    kind: FilmKind
+    ambiguous: bool
+
+
+def classify_mono_chroma(statistic: float) -> FilmKindGate:
+    """§2.1: classify a roll from the **median** of its sampled
+    `MonoStatistic.chroma` values (never the mean — a single outlier
+    sample must not flip the roll). At or below `MONO_CHROMA_MAX` decides
+    monochrome; at or above `COLOUR_CHROMA_MIN` decides colour. Between
+    them is ambiguous, and the lossless choice wins: a colour roll is
+    never wrong to publish as three channels, so an ambiguous statistic is
+    called colour and `ambiguous=True` tells the caller to warn
+    (`MONO_DETECT_AMBIGUOUS`)."""
+    if statistic <= MONO_CHROMA_MAX:
+        return FilmKindGate(kind=FilmKind.MONOCHROME, ambiguous=False)
+    if statistic >= COLOUR_CHROMA_MIN:
+        return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=False)
+    return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=True)
+
+
+# --- MONOCHROME_PLAN section 3: the collapse ----------------------------------
+
+# Three noisy measurements of one physical quantity — silver density — not
+# a colorimetry problem. The minimum-variance estimator weights by
+# 1/sigma^2; a Bayer CFA has twice as many green sites, so green carries
+# about twice the photons and needs no interpolation at half its
+# positions. Two honest caveats: demosaicing correlates the channels (R
+# and B at a green site are partly interpolated *from* green), so the real
+# gain over green-only is closer to sqrt(1.5) than sqrt(2); and R/B have
+# worse post-demosaic MTF, so weighting them in costs a little sharpness.
+# Green-only (0, 1, 0) is a defensible fallback if a measurement ever says
+# so — measuring the real per-channel sigma from the flat-field
+# calibration frames is out of scope here (§8/docs/punchlist.md).
+#
+# Deliberately not Rec.709 luma: those coefficients model the eye's
+# response to display primaries, a photometric weighting for scene
+# brightness — the right job for `luma_of_log`'s bounds axis, the wrong
+# job here, where the "signal" is silver density, not perceived
+# brightness.
+MONO_MERGE_WEIGHTS = (0.25, 0.50, 0.25)
+
+
+def collapse_to_mono(img_log: np.ndarray, covered: np.ndarray) -> np.ndarray:
+    """§3.1: merge a colour composite's three log-density channels into
+    one, for a roll whose frozen `film.kind` is monochrome.
+
+    An offset-aligned, inverse-variance-weighted mean in log density:
+
+    1. per channel, subtract its median *over the covered pixels*
+       (`covered` is the composite's blend-coverage mask, computed before
+       the analysis region or the rebate mask exist — "covered" is the
+       region that exists). Not optional: without it the weights conflate
+       "undo the CFA gain" with "combine the estimates".
+    2. the `MONO_MERGE_WEIGHTS` weighted sum of the offset channels (the
+       weights already sum to 1.0, so this is the weighted mean).
+    3. add back the weighted mean of the three channel medians. This does
+       not make the output bracket its inputs — a weighted mean is
+       narrower than its inputs' envelope by construction — it guarantees
+       only that the merged channel sits at the weighted mean of the
+       inputs' density level, close enough that `REBATE_DENSITY_TOLERANCE`
+       and `DENSE_BORDER_TOLERANCE`'s absolute thresholds keep meaning
+       what they were measured to mean.
+
+    A weighted sum in log is a weighted **geometric mean** of the linear
+    transmittances — a defensible physical quantity, and what
+    `10 ** (floor + val * (ceil - floor))` recovers downstream. Returns an
+    `(H, W, 1)` float32 array."""
+    weights = np.asarray(MONO_MERGE_WEIGHTS, dtype=np.float64)
+    medians = np.array(
+        [float(np.median(img_log[..., ch][covered])) for ch in range(3)]
+    )
+    aligned = img_log.astype(np.float64) - medians
+    merged = aligned @ weights
+    merged += float(np.dot(weights, medians))
+    return merged[..., np.newaxis].astype(np.float32)
 
 
 # --- section 3.13: the rebate detector ---------------------------------------
@@ -1086,26 +1191,35 @@ def build_params() -> dict:
         "normalized_headroom_low": NORMALIZED_HEADROOM_LOW,
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,
+        # MONOCHROME_PLAN §2/§3: these shape published output (they gate
+        # and perform the collapse), so — unlike §1's detector constants —
+        # they are roll invariants from the step that introduces them.
+        "mono_chroma_max": MONO_CHROMA_MAX,
+        "colour_chroma_min": COLOUR_CHROMA_MIN,
+        "mono_merge_weights": list(MONO_MERGE_WEIGHTS),
     }
 
 
 def upgrade_normalize_params(params: dict) -> dict:
     """MONOCHROME_PLAN section 5.1's forward shim, for the exact-dict
     comparison `manifest.py` and `roll_manifest.py` run over
-    `processing_params`: a stored `normalize` block from format_version 1
-    is upgraded in memory by injecting the current defaults for every key
-    it lacks, then compared. A v1 roll then compares equal to a v2 build
-    as long as the new constants sit at their defaults — which for an
-    existing colour roll they do. Because the injected defaults are read
-    from the live `build_params()`, keys added later (§2's thresholds, §3's
-    weights) are covered by this same shim without a second migration.
+    `processing_params`: a stored `normalize` block is upgraded in memory
+    by injecting the current defaults for every key it lacks, then
+    compared. Because the injected defaults are read from the live
+    `build_params()`, this covers not just a v1 block (predating the mono
+    feature entirely) but also a v2 block written between §1 shipping and
+    a later step (§2's thresholds, §3's weights) adding a new key —
+    exactly what a roll stitched during the plan's own measurement gate
+    produces. Either one compares equal to a fresh build as long as the
+    new constants sit at their defaults, which for an existing colour roll
+    they do.
 
-    v2 and later blocks pass through unchanged; the function is idempotent
-    (applying it to an upgraded block is a no-op) and it is the only place
-    that knows v1 existed."""
+    Not gated on the stored `format_version` at all: `setdefault` is a
+    no-op for a key already present, so a fully current block passes
+    through unchanged and the function is idempotent (applying it to an
+    upgraded block is a no-op) — it is simply always safe to apply before
+    comparing. It is the only place that knows an older format existed."""
     upgraded = dict(params)
-    if upgraded.get("format_version") != 1:
-        return upgraded
     for key, value in build_params().items():
         if key == "format_version":
             continue

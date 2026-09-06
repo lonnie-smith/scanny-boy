@@ -26,7 +26,18 @@ from typing import IO, Any, ClassVar
 # tone` command (paper grade + midtone snap, recorded as a `tone` op in the
 # ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
 # manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
-PROTOCOL_VERSION = 10
+#
+# Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: `--film-kind
+# {auto,colour,monochrome}` on `stitch` and `run`, the top-level `film`
+# block in the roll manifest and `roll info` (the roll's frozen film-kind
+# decision — `kind`, `source`, `statistic`, `samples`,
+# `detector_version`), and two warning codes — `MONO_DETECT_AMBIGUOUS` (an
+# unseeded roll's statistic landed between the thresholds; colour was
+# assumed) and `MONO_DECISION_CONFLICT` (a later run's fresh evidence
+# disagrees with the roll's already-frozen kind; the frozen kind is kept).
+# A monochrome roll's published TIFFs are single-channel, tagged with the
+# new `ScannyBoy-Density-Grey-v1.icc` profile.
+PROTOCOL_VERSION = 11
 
 
 class EventType(enum.StrEnum):
@@ -154,6 +165,8 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
+    MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 

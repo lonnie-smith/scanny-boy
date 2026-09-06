@@ -222,18 +222,12 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_ten():
-    """Protocol 9→10: 2D grid stitching — `--grid AxD` on `probe`,
-    `prepare`, and `run` (mutually exclusive with `--per-negative`), the
-    `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
-    warning code (docs/GRID_STITCH_PLAN.md section 2.0)."""
-    """Protocol 9→10: the preview's nondestructive tone adjustment — the
-    `edit tone` command (an ISO-R paper grade plus a midtone snap,
-    recorded as a `tone` op in the ops log and coalesced there) and the
-    net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
-    negatives. The published TIFF never carries the adjustment
-    (docs/DECISIONS.md, "The preview's tone adjustment")."""
-    assert PROTOCOL_VERSION == 10
+def test_protocol_version_is_eleven():
+    """Protocol 10→11 (MONOCHROME_PLAN): `--film-kind {auto,colour,
+    monochrome}` on `stitch` and `run`, the roll manifest's top-level
+    `film` block, and the `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT`
+    warning codes."""
+    assert PROTOCOL_VERSION == 11
 
 
 def test_new_event_kinds_round_trip():
