@@ -710,7 +710,10 @@ def test_resolve_analysis_region_clamps_and_falls_back_on_degenerate_rects():
 
 def test_build_params_carries_every_constant_and_the_format_version():
     params = build_params()
-    assert params["format_version"] == 2
+    # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants join
+    # build_params() because the residual the auto solve reads is recorded
+    # per negative against them.
+    assert params["format_version"] == 3
     assert params["analysis_grid"] == ANALYSIS_GRID
     assert params["base_luma_clip"] == nz.BASE_LUMA_CLIP
     assert params["base_color_clip"] == nz.BASE_COLOR_CLIP
@@ -755,6 +758,11 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["mono_chroma_max"] == nz.MONO_CHROMA_MAX
     assert params["colour_chroma_min"] == nz.COLOUR_CHROMA_MIN
     assert params["mono_merge_weights"] == list(nz.MONO_MERGE_WEIGHTS)
+
+    # CAST_REMOVAL_PLAN R-1: the two meters' record.
+    assert params["neutral_residual_p_norm"] == nz.NEUTRAL_RESIDUAL_P_NORM
+    assert params["neutral_residual_min_cells"] == nz.NEUTRAL_RESIDUAL_MIN_CELLS
+    assert params["highlight_neutral_source"] == "same_pixel_color_refs"
 
 
 # --- MONOCHROME_PLAN section 5.1: the forward shim -----------------------------
@@ -1268,3 +1276,191 @@ def test_encode_decode_round_trip_with_one_element_bounds():
     codes = encode_normalized(normalized)
     # The uint16 code quantizes to ~1e-5 of the 1.25-wide normalized span.
     assert decode_normalized(codes) == pytest.approx(normalized, abs=2e-5)
+
+
+# --- docs/CAST_REMOVAL_PLAN.md chunk R-1 ------------------------------------
+
+
+def _structured_grid(
+    seed: int = 3, size: int = 64, red_offset: float = 0.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """A normalized-frame grid in [0, 1]: structured blocks and a ramp,
+    neutral across channels, with independent per-channel noise (the
+    weight's variances and covariance need something to measure). The
+    bounds are identity, so grid values ARE normalized values."""
+    rng = np.random.default_rng(seed)
+    u = np.broadcast_to(
+        np.linspace(0.2, 0.8, size, dtype=np.float32)[None, :], (size, size)
+    ).copy()
+    u[: size // 4, : size // 4] = 0.3
+    u[size // 2 :, size // 2 :] = 0.7
+    noise = rng.normal(0.0, 1e-3, (size, size, 1)).astype(np.float32)
+    red = np.clip(u + noise[..., 0] + red_offset, 0.0, 1.0)
+    green = np.clip(u + noise[..., 0] * 0.0 + rng.normal(0.0, 1e-3, (size, size)), 0.0, 1.0)
+    blue = np.clip(u + rng.normal(0.0, 1e-3, (size, size)), 0.0, 1.0)
+    grid = np.stack([red, green, blue], axis=-1).astype(np.float32)
+    keep = np.ones((size, size), dtype=bool)
+    return grid, keep
+
+
+_IDENTITY_BOUNDS = Bounds(floors=(0.0, 0.0, 0.0), ceils=(1.0, 1.0, 1.0))
+
+
+def test_neutral_residual_on_a_neutral_frame_is_approximately_zero():
+    grid, keep = _structured_grid()
+    residual = nz.measure_neutral_residual(grid, keep, _IDENTITY_BOUNDS)
+
+    assert residual is not None
+    assert residual[0] == pytest.approx(0.0, abs=1e-3)
+    assert residual[1] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_neutral_residual_on_a_cast_frame_matches_the_offset_within_ten_percent():
+    """The estimator, not an identity: a constant red offset added before
+    normalization is recovered to within 10% of its normalized size."""
+    grid, keep = _structured_grid(red_offset=0.1)
+    residual = nz.measure_neutral_residual(grid, keep, _IDENTITY_BOUNDS)
+
+    assert residual is not None
+    assert residual[0] == pytest.approx(0.1, rel=0.10)
+    assert residual[1] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_neutral_residual_on_a_flat_grid_is_none():
+    grid = np.full((64, 64, 3), 0.5, dtype=np.float32)
+    keep = np.ones((64, 64), dtype=bool)
+
+    assert nz.measure_neutral_residual(grid, keep, _IDENTITY_BOUNDS) is None
+
+
+def test_neutral_residual_needs_enough_eligible_cells():
+    grid, keep = _structured_grid()
+    keep[:] = False
+    keep[20:28, 20:28] = True  # eroded to 6x6 = 36 < NEUTRAL_RESIDUAL_MIN_CELLS
+
+    assert nz.measure_neutral_residual(grid, keep, _IDENTITY_BOUNDS) is None
+
+
+def test_neutral_residual_erosion_withholds_a_wild_border_stripe():
+    """A withheld border stripe carrying a wild cast produces the same
+    estimate as the same grid without it: the cells whose 3x3 neighbourhood
+    would leak the stripe are eroded out of the accumulation."""
+    grid, keep = _structured_grid()
+    keep_stripe = keep.copy()
+    keep_stripe[-3:, :] = False
+    striped = grid.copy()
+    striped[-3:, :, 0] = 1.0
+    striped[-3:, :, 1] = 0.0
+    striped[-3:, :, 2] = 0.0
+    clean = grid.copy()
+
+    striped_estimate = nz.measure_neutral_residual(
+        striped, keep_stripe, _IDENTITY_BOUNDS
+    )
+    clean_estimate = nz.measure_neutral_residual(clean, keep_stripe, _IDENTITY_BOUNDS)
+
+    assert striped_estimate is not None
+    assert striped_estimate == pytest.approx(clean_estimate, abs=1e-9)
+
+
+def test_the_meters_decline_a_single_channel_grid():
+    grid = np.full((32, 32, 1), 0.5, dtype=np.float32)
+    keep = np.ones((32, 32), dtype=bool)
+
+    assert nz.measure_neutral_residual(grid, keep, Bounds(floors=(0.0,), ceils=(1.0,))) is None
+    assert nz.measure_highlight_refs(grid, keep) is None
+
+
+def test_measure_highlight_refs_agrees_with_analyze_bounds():
+    """On a grid whose dense-end neutral band is trustworthy, the returned
+    triple is exactly the c_floors list analyze_bounds uses: the floors'
+    deviations from their own median equal the refs' deviations. "Neutral"
+    here means the base-anchored chroma is small — the dense content must
+    carry the thin end's own colour balance, which is what the gated set
+    selects for."""
+    rng = np.random.default_rng(5)
+    size = 64
+    # Bright, strongly coloured content everywhere...
+    u = np.linspace(0.4, 0.9, size, dtype=np.float32)
+    grid = np.empty((size, size, 3), dtype=np.float32)
+    grid[..., 0] = u[None, :]
+    grid[..., 1] = 0.5 * u[None, :]
+    grid[..., 2] = 0.25 * u[None, :]
+    # ...and a dense patch carrying the thin end's own colour balance,
+    # scaled down in level: the band the dense end reads.
+    thin_end = np.asarray([0.9, 0.45, 0.225], dtype=np.float32)
+    patch = (slice(size // 2, size), slice(0, size // 8))
+    level = 0.2 + rng.normal(
+        0.0, 1e-3, (patch[0].stop - patch[0].start, patch[1].stop - patch[1].start)
+    ).astype(np.float32)
+    grid[patch] = level[..., None] * thin_end[None, None, :]
+    keep = np.ones((size, size), dtype=bool)
+
+    refs = nz.measure_highlight_refs(grid, keep)
+    assert refs is not None
+
+    bounds = nz.analyze_bounds(grid, keep)
+    floors = np.asarray(bounds.floors)
+    assert (floors - np.median(floors)).tolist() == pytest.approx(
+        (np.asarray(refs) - np.median(refs)).tolist(), abs=1e-9
+    )
+
+
+def test_measure_highlight_refs_returns_none_without_trustworthy_neutrals():
+    """The dense band holding only strongly coloured content is the
+    fallback signal, and `None` here matches `analyze_bounds`' plain
+    percentile fallback there."""
+    size = 64
+    u = np.linspace(0.1, 0.9, size, dtype=np.float32)
+    grid = np.empty((size, size, 3), dtype=np.float32)
+    grid[..., 0] = 0.9 * u[None, :]
+    grid[..., 1] = 0.2 * u[None, :]
+    grid[..., 2] = 0.1 * u[None, :]
+    keep = np.ones((size, size), dtype=bool)
+
+    assert nz.measure_highlight_refs(grid, keep) is None
+
+
+def test_measure_highlight_refs_prefers_a_threaded_base_refs():
+    """§0.6: with a roll anchor threaded in, the dense-end chroma is
+    measured against the measured film base rather than a scene
+    percentile — the same thin end the published pixels use. Here the
+    anchor's deviations match the band's true chroma, so the gated set is
+    found where the percentile anchor missed it."""
+    size = 64
+    u = np.linspace(0.3, 0.9, size, dtype=np.float32)
+    grid = np.empty((size, size, 3), dtype=np.float32)
+    grid[..., 0] = u[None, :]
+    grid[..., 1] = u[None, :]
+    grid[..., 2] = u[None, :] - 0.6  # a uniform blue-density cast
+    grid[..., 2] = np.clip(grid[..., 2], 0.0, 1.0)
+    keep = np.ones((size, size), dtype=bool)
+    # The roll's measured base: exactly the cast the frame carries.
+    base_refs = (0.0, 0.0, -0.6)
+
+    assert nz.measure_highlight_refs(grid, keep, base_refs) is not None
+
+
+def test_upgrade_normalize_params_upgrades_a_stored_v2_block_to_v3():
+    """CAST_REMOVAL_PLAN R-1: a roll stitched between REBATE anchoring and
+    this chunk carries `format_version: 2` and lacks the three new keys;
+    the shim must still compare it equal to a fresh build."""
+    from scanny_boy import normalization
+
+    v2 = normalization.build_params()
+    v2 = {
+        key: value
+        for key, value in v2.items()
+        if key
+        not in (
+            "neutral_residual_p_norm",
+            "neutral_residual_min_cells",
+            "highlight_neutral_source",
+        )
+    }
+    v2["format_version"] = 2
+
+    upgraded = normalization.upgrade_normalize_params(v2)
+
+    assert upgraded == normalization.build_params()
+    assert normalization.upgrade_normalize_params(upgraded) == upgraded

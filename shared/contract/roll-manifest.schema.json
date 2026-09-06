@@ -355,6 +355,22 @@
         "clamped": { "type": "boolean" },
         "unclamped_floors": { "$ref": "#/definitions/channelArray" },
         "unclamped_ceils": { "$ref": "#/definitions/channelArray" },
+        "highlight_refs": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/channelArray" }],
+          "description": "CAST_REMOVAL_PLAN R-1 (section 3.2): the dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read by nothing in the stitch stage."
+        },
+        "neutral_residual": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "description": "CAST_REMOVAL_PLAN R-1 (section 3.1): the frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read by nothing in the stitch stage."
+        },
         "base_check": { "$ref": "#/definitions/baseCheck" },
         "source": { "type": "string" }
       }

@@ -1047,6 +1047,17 @@ def _normalization_record(
         "floors": list(bounds.floors),
         "ceils": list(bounds.ceils),
         "shadow_refs": list(result.shadow_refs),
+        # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral
+        # reference (null when the band held no trustworthy neutrals) and
+        # the frame's residual neutral offset (null when there was no
+        # estimate). Recorded, read by nothing in the stitch stage; the
+        # auto cast solve reads them back.
+        "highlight_refs": (
+            None if result.highlight_refs is None else list(result.highlight_refs)
+        ),
+        "neutral_residual": (
+            None if result.neutral_residual is None else list(result.neutral_residual)
+        ),
         "anchor": result.anchor,
         "textural_range": result.textural_range,
         "analysis_rect": list(analysis_rect),

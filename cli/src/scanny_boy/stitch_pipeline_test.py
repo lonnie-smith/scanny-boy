@@ -1353,6 +1353,27 @@ def test_base_check_is_absent_when_the_rebate_was_clipped(tmp_path, monkeypatch)
     assert "base_check" not in record
 
 
+# --- CAST_REMOVAL_PLAN R-1: the two new meters ------------------------------
+
+
+def test_normalization_record_carries_the_highlight_refs_and_residual(tmp_path):
+    """A real stitch writes both keys — `highlight_refs` (3-wide or null)
+    and `neutral_residual` (2-wide or null) — and the manifest validates
+    against the updated schema."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["highlight_refs"] is None or len(record["highlight_refs"]) == 3
+    assert (
+        record["neutral_residual"] is None or len(record["neutral_residual"]) == 2
+    )
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+
+
 @pytest.mark.slow
 def test_changed_shots_per_negative_is_accepted(tmp_path):
     """`shots_per_negative` is each batch's own choice, never the roll's: a
