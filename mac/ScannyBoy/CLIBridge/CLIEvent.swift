@@ -26,6 +26,10 @@ public struct CLIEvent: Sendable, Hashable {
     /// and the new `edit render-preview` command with its
     /// `preview_rendered` event — the negative mode being the un-inverted
     /// density view the tone adjustment never reaches.
+    /// Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: the
+    /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
+    /// the roll manifest's top-level `film` block, and the
+    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes.
     public static let supportedProtocolVersion = 11
 
     public let protocolVersion: Int
