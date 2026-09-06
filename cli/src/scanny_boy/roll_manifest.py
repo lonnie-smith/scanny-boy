@@ -53,6 +53,8 @@ ROLL_MANIFEST_KIND = "roll"
 # `RollMetadata` (the roll-level fallback) and `NegativeMetadata` (the
 # explicit per-image value); `effective_metadata` resolves the pair.
 METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+# Roll-only extended metadata: no negative columns, no per-image override.
+ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
 
 # Section 3.4: `short_id` starts at six characters of the run's UUID and
 # lengthens until it is free within the roll.
@@ -326,6 +328,8 @@ class RollMetadata:
 
     roll_capture_date: str | None = None
     last_applied_at: str | None = None
+    film: str | None = None
+    iso: str | None = None
     city: str | None = None
     state: str | None = None
     camera: str | None = None
@@ -344,10 +348,13 @@ def effective_metadata(
     between rows — changing a roll-level value instantly covers every
     negative without an explicit one, and a negative added later inherits
     the roll's values without a write."""
-    return {
+    result = {
         field: getattr(negative_metadata, field) or getattr(roll_metadata, field)
         for field in METADATA_FIELDS
     }
+    for field in ROLL_ONLY_METADATA_FIELDS:
+        result[field] = getattr(roll_metadata, field)
+    return result
 
 
 @dataclasses.dataclass(frozen=True)

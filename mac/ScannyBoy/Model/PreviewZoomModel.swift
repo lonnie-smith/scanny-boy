@@ -6,11 +6,12 @@ import Observation
 /// 9's 1:1 zoom).
 ///
 /// The preview scales to fit by default — that stays. Holding space turns
-/// the cursor into a magnifier, space+click toggles between fit view and
-/// 100% view, and space+drag pans. "100%" means one image pixel per
-/// physical screen pixel against the underlying TIFF, so the pane shows
-/// exactly `paneSize x displayScale` pixels of the stitched image,
-/// letterboxed when the image is smaller than the pane.
+/// the cursor into a magnifier at fit (or a hand at 100%), space+click
+/// toggles between fit view and 100% view, and space+drag pans at 100%.
+/// "100%" means one image pixel per physical screen pixel
+/// against the underlying TIFF, so the pane shows exactly
+/// `paneSize x displayScale` pixels of the stitched image, letterboxed when
+/// the image is smaller than the pane.
 ///
 /// The pixels on screen are always the CLI's: `edit render-region` renders
 /// the display-space crop — net rotation folded in, the same inverted
@@ -24,6 +25,11 @@ final class PreviewZoomModel {
     enum Mode: Equatable {
         case fit
         case pixels100
+    }
+
+    /// Space+click toggles zoom; space+drag pans at 100%.
+    enum GestureKind: Equatable {
+        case space
     }
 
     /// One on-screen crop: the pixels the CLI rendered for `rect`, sized
@@ -70,6 +76,7 @@ final class PreviewZoomModel {
         let start: CGPoint
         /// The crop origin the view had when the gesture started.
         let originAtStart: CGPoint
+        let kind: GestureKind
         var total: CGSize = .zero
     }
 
@@ -181,17 +188,16 @@ final class PreviewZoomModel {
         spaceHeld = false
     }
 
-    /// Space+mouseDown: remember where the gesture started. The behaviour —
-    /// toggle or pan — is decided at `mouseUp`, from how far it moved.
-    func mouseDown(at panePoint: CGPoint) {
-        drag = Drag(start: panePoint, originAtStart: origin)
+    /// Remember where the gesture started. Toggle vs pan is decided at
+    /// `mouseUp`, from how far it moved and which modifier started it.
+    func mouseDown(at panePoint: CGPoint, kind: GestureKind) {
+        drag = Drag(start: panePoint, originAtStart: origin, kind: kind)
     }
 
-    /// Translates the on-screen crop live, following the drag 1:1 until the
-    /// clamped target origin hits the image's edge. No-op when the image
-    /// fits the pane at 1:1.
+    /// Translates the on-screen crop live until the clamped target origin
+    /// hits the image's edge. No-op when the image fits the pane at 1:1.
     func mouseDragged(to panePoint: CGPoint) {
-        guard mode == .pixels100, let drag, let crop else { return }
+        guard mode == .pixels100, let drag, drag.kind == .space, let crop else { return }
         let moved = CGSize(
             width: panePoint.x - drag.start.x,
             height: panePoint.y - drag.start.y
@@ -202,16 +208,14 @@ final class PreviewZoomModel {
             cropSize: crop.rect.size,
             displaySize: displaySize
         )
-        // The image's top-left rides the mouse, in points.
         panOffset = CGSize(
             width: (drag.originAtStart.x - target.x) / crop.displayScale,
             height: (drag.originAtStart.y - target.y) / crop.displayScale
         )
     }
 
-    /// Space+mouseUp. A near-motionless gesture toggles the zoom, anchored
-    /// where the user clicked; a drag commits the clamped target origin and
-    /// refetches, snapping onto it when the pixels arrive.
+    /// A near-motionless gesture zooms; a drag commits the clamped target
+    /// origin and refetches, snapping onto it when the pixels arrive.
     func mouseUp(at panePoint: CGPoint) {
         let gesture = drag
         drag = nil
@@ -223,7 +227,7 @@ final class PreviewZoomModel {
             toggle(at: panePoint)
             return
         }
-        guard mode == .pixels100, let crop else {
+        guard mode == .pixels100, gesture.kind == .space, let crop else {
             panOffset = .zero
             return
         }
@@ -243,43 +247,54 @@ final class PreviewZoomModel {
     }
 
     /// The crop origin a drag asks for, before clamping: dragging right
-    /// moves the image right, so the origin moves left — in display pixels,
-    /// which are `crop.displayScale` per point.
+    /// reveals content to the right, so the origin moves right — in display
+    /// pixels, which are `crop.displayScale` per point.
     private static func targetOrigin(
         from gesture: Drag, moved: CGSize, crop: Crop
     ) -> CGPoint {
         CGPoint(
-            x: gesture.originAtStart.x - moved.width * crop.displayScale,
-            y: gesture.originAtStart.y - moved.height * crop.displayScale
+            x: gesture.originAtStart.x + moved.width * crop.displayScale,
+            y: gesture.originAtStart.y + moved.height * crop.displayScale
         )
     }
 
-    /// Fit ↔ 100% for a space+click at `panePoint`. Zooming in anchors the
+    /// Fit → 100% for a space+click at `panePoint`. Zooming in anchors the
     /// 1:1 crop on the pixel the user clicked, Lightroom-style.
+    func zoomIn(at panePoint: CGPoint) {
+        guard mode == .fit, displaySize.width > 0 else { return }
+        mode = .pixels100
+        let size = Self.cropSize(
+            paneSize: paneSize, displayScale: displayScale, displaySize: displaySize
+        )
+        let hit = Self.displayPoint(
+            for: panePoint,
+            fitRect: Self.fitRect(displaySize: displaySize, container: paneSize),
+            displaySize: displaySize
+        )
+        origin = Self.clampOrigin(
+            CGPoint(x: hit.x - size.width / 2, y: hit.y - size.height / 2),
+            cropSize: size,
+            displaySize: displaySize
+        )
+        fetchCrop()
+    }
+
+    /// 100% → fit for a space+click.
+    func zoomOut() {
+        guard mode == .pixels100 else { return }
+        mode = .fit
+        crop = nil
+        panOffset = .zero
+        origin = .zero
+    }
+
+    /// Fit ↔ 100% for tests and callers that still use a single toggle.
     func toggle(at panePoint: CGPoint) {
         switch mode {
         case .fit:
-            guard displaySize.width > 0 else { return }
-            mode = .pixels100
-            let size = Self.cropSize(
-                paneSize: paneSize, displayScale: displayScale, displaySize: displaySize
-            )
-            let hit = Self.displayPoint(
-                for: panePoint,
-                fitRect: Self.fitRect(displaySize: displaySize, container: paneSize),
-                displaySize: displaySize
-            )
-            origin = Self.clampOrigin(
-                CGPoint(x: hit.x - size.width / 2, y: hit.y - size.height / 2),
-                cropSize: size,
-                displaySize: displaySize
-            )
-            fetchCrop()
+            zoomIn(at: panePoint)
         case .pixels100:
-            mode = .fit
-            crop = nil
-            panOffset = .zero
-            origin = .zero
+            zoomOut()
         }
     }
 

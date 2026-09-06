@@ -25,6 +25,7 @@ struct EditStageView: View {
                 PreviewPane(
                     negative: negative,
                     edit: edit,
+                    run: run,
                     runIsActive: activity.isBusy,
                     onNegativeDeleted: onNegativeDeleted
                 )
@@ -35,6 +36,16 @@ struct EditStageView: View {
                     description: Text("Convert scans into this roll to see them here.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if showsRunLevelWarnings {
+                Text(rollLevelWarningCaption)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
             }
             Divider()
             FilmstripView(
@@ -71,16 +82,30 @@ struct EditStageView: View {
             if phase == .finished { edit.refresh() }
         }
     }
+
+    private var showsRunLevelWarnings: Bool {
+        guard run.phase == .finished,
+              !run.runLevelWarnings.isEmpty,
+              let rollURL = edit.rollURL,
+              let outputFolder = run.outputFolder
+        else { return false }
+        return rollURL.standardizedFileURL == outputFolder.standardizedFileURL
+    }
+
+    private var rollLevelWarningCaption: String {
+        NegativeDiagnostics.rollLevelWarningCaption(run.runLevelWarnings)
+    }
 }
 
 /// The selected negative: a preview sized to fill the available space (or,
-/// after a space+click, a 1:1 crop of it), the rotate/flip controls, and
+/// after space+click, a 1:1 crop of it), the rotate/flip controls, and
 /// the one-line info strip. The controls act on the whole multi-selection
 /// when one exists — `edit.selectionTargets` falls back to the anchor
 /// frame otherwise.
 private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
+    let run: RunModel
     let runIsActive: Bool
     let onNegativeDeleted: () -> Void
 
@@ -89,9 +114,14 @@ private struct PreviewPane: View {
     @State private var isConfirmingDelete = false
     @State private var isTonePanelPresented = false
     @State private var zoom = PreviewZoomModel()
+    @State private var paneSize: CGSize = .zero
 
-        /// The negatives the controls act on, read once per invocation.
+    /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
+
+    private var rotationShortcutsEnabled: Bool {
+        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -106,7 +136,7 @@ private struct PreviewPane: View {
                     Image(systemName: "rotate.left")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° counter-clockwise")
+                .help("Rotate 90° counter-clockwise (⌘[)")
                 .accessibilityLabel("Rotate 90° counter-clockwise")
 
                 Button {
@@ -115,7 +145,7 @@ private struct PreviewPane: View {
                     Image(systemName: "rotate.right")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° clockwise")
+                .help("Rotate 90° clockwise (⌘])")
                 .accessibilityLabel("Rotate 90° clockwise")
 
                 Button {
@@ -126,6 +156,18 @@ private struct PreviewPane: View {
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
                 .help("Flip horizontally")
                 .accessibilityLabel("Flip horizontally")
+
+                Button {
+                    zoom.toggle(at: previewCenter)
+                } label: {
+                    Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
+                }
+                .disabled(
+                    negative.output == nil
+                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                )
+                .help(zoomButtonHelp)
+                .accessibilityLabel(zoomButtonHelp)
 
                 Button {
                     isTonePanelPresented = true
@@ -157,7 +199,7 @@ private struct PreviewPane: View {
 
                 Text(infoLine)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(negative.isFailed ? .red : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -174,6 +216,17 @@ private struct PreviewPane: View {
             }
             .padding([.horizontal, .bottom], 16)
         }
+        .background {
+            RotationShortcutButtons(
+                isEnabled: rotationShortcutsEnabled,
+                onRotateCounterClockwise: {
+                    Task { await edit.rotate(targets, clockwise: false) }
+                },
+                onRotateClockwise: {
+                    Task { await edit.rotate(targets, clockwise: true) }
+                }
+            )
+        }
         .confirmationDialog(
             deleteDialogTitle,
             isPresented: $isConfirmingDelete
@@ -188,9 +241,12 @@ private struct PreviewPane: View {
         } message: {
             Text(deleteDialogMessage)
         }
+        .onChange(of: previewIdentity) {
+            zoom.reset()
+            refreshZoomContext(paneSize: paneSize)
+        }
         .task(id: previewIdentity) {
             thumbnail = nil
-            zoom.reset()
             guard let url = previewURL else {
                 return
             }
@@ -207,6 +263,17 @@ private struct PreviewPane: View {
             zoom.invalidate()
             if zoom.mode == .pixels100 { zoom.fetchCrop() }
         }
+    }
+
+    private var zoomButtonHelp: String {
+        zoom.mode == .fit
+            ? "Zoom to 100% (Space+click)"
+            : "Zoom to fit (Space+click)"
+    }
+
+    /// The centre of the preview pane — where the toolbar zoom button anchors.
+    private var previewCenter: CGPoint {
+        CGPoint(x: paneSize.width / 2, y: paneSize.height / 2)
     }
 
     private var deleteButtonHelp: String {
@@ -232,29 +299,23 @@ private struct PreviewPane: View {
             """
     }
     private var infoLine: String {
-        var parts = [negative.expectedOutput]
-        if let rms = negative.globalRMSPixels {
-            parts.append(String(format: "Stitch registration error (RMS): %.1f px", rms))
-        }
-        // The CLI's fitted rig-tilt rectification: displayed, never
-        // recomputed (docs/RECTIFICATION_PLAN.md section 7).
-        if let rectification = negative.rectification {
-            parts.append(
-                String(
-                    format: "Rig tilt corrected (%.0f%% fit improvement)",
-                    rectification.relativeImprovement * 100
-                )
-            )
-        }
-        if let output = negative.output {
-            let megapixels = Double(output.width * output.height) / 1_000_000
-            parts.append(String(format: "%d × %d (%.1f MP)", output.width, output.height, megapixels))
-        }
-        let selectionCount = edit.selectionTargets.count
-        if selectionCount > 1 {
-            parts.append("\(selectionCount) selected")
-        }
-        return parts.joined(separator: "  ·  ")
+        let overlay = runOverlay
+        return NegativeDiagnostics.infoParts(
+            for: negative,
+            runOverlay: overlay,
+            selectionCount: edit.selectionTargets.count
+        ).joined(separator: "  ·  ")
+    }
+
+    /// Fresh per-negative diagnostics from the most recent finished run into
+    /// this roll, when the session still holds them.
+    private var runOverlay: RunModel.NegativeResult? {
+        guard run.phase == .finished,
+              let rollURL = edit.rollURL,
+              let outputFolder = run.outputFolder,
+              rollURL.standardizedFileURL == outputFolder.standardizedFileURL
+        else { return nil }
+        return run.negativeResult(for: negative.negativeID)
     }
 
     /// Path plus net transform: the CLI rewrites the preview file in
@@ -312,17 +373,23 @@ private struct PreviewPane: View {
                 PreviewEventHost(zoom: zoom)
             }
             .onChange(of: geo.size, initial: true) {
-                zoom.update(
-                    paneSize: geo.size,
-                    displayScale: displayScale,
-                    displaySize: displaySize,
-                    loader: { rect in
-                        await edit.renderRegion(negative, rect: rect)
-                    }
-                )
-                if zoom.mode == .pixels100 { zoom.fetchCrop() }
+                paneSize = geo.size
+                refreshZoomContext(paneSize: geo.size)
             }
         }
+    }
+
+    private func refreshZoomContext(paneSize: CGSize) {
+        guard paneSize.width > 0, paneSize.height > 0 else { return }
+        zoom.update(
+            paneSize: paneSize,
+            displayScale: displayScale,
+            displaySize: displaySize,
+            loader: { rect in
+                await edit.renderRegion(negative, rect: rect)
+            }
+        )
+        if zoom.mode == .pixels100 { zoom.fetchCrop() }
     }
 
     /// The 1:1 crop the CLI rendered: one image pixel per physical screen
@@ -376,8 +443,11 @@ private struct ToneAdjustmentPanel: View {
     let onCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
     let onReset: () -> Void
 
-    @State private var grade: Double = 115
-    @State private var snap: Double = 0
+    private static let defaultGrade: Double = 115
+    private static let defaultSnap: Double = 0
+
+    @State private var grade: Double = defaultGrade
+    @State private var snap: Double = defaultSnap
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -390,13 +460,11 @@ private struct ToneAdjustmentPanel: View {
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Slider(
+                ToneSlider(
                     value: $grade,
-                    in: 50...180,
-                    onEditingChanged: { editing in
-                        guard !editing else { return }
-                        onCommit(grade, snap)
-                    }
+                    range: 50...180,
+                    resetValue: Self.defaultGrade,
+                    onCommit: { onCommit(grade, snap) }
                 )
                 .accessibilityLabel("Paper grade")
                 Text("50–180, lower is harder")
@@ -413,13 +481,11 @@ private struct ToneAdjustmentPanel: View {
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Slider(
+                ToneSlider(
                     value: $snap,
-                    in: -0.5...0.5,
-                    onEditingChanged: { editing in
-                        guard !editing else { return }
-                        onCommit(grade, snap)
-                    }
+                    range: -0.5...0.5,
+                    resetValue: Self.defaultSnap,
+                    onCommit: { onCommit(grade, snap) }
                 )
                 .accessibilityLabel("Midtone snap")
                 Text("Midtone contrast trim")
@@ -430,9 +496,13 @@ private struct ToneAdjustmentPanel: View {
             Divider()
 
             HStack {
-                Button("Reset", action: onReset)
-                    .disabled(isBusy)
-                    .help("Remove the adjustment and return to the flat linear preview")
+                Button("Reset") {
+                    grade = Self.defaultGrade
+                    snap = Self.defaultSnap
+                    onReset()
+                }
+                .disabled(isBusy)
+                .help("Remove the adjustment and return to the flat linear preview")
                 Spacer()
                 if isBusy {
                     ProgressView()
@@ -441,11 +511,38 @@ private struct ToneAdjustmentPanel: View {
             }
         }
         .padding(16)
-        .onAppear {
-            if let toneGradeR, let toneSnapGamma {
-                grade = toneGradeR
-                snap = toneSnapGamma
-            }
+        .onAppear { syncFromModel() }
+        .onChange(of: toneGradeR) { syncFromModel() }
+        .onChange(of: toneSnapGamma) { syncFromModel() }
+    }
+
+    private func syncFromModel() {
+        if let toneGradeR, let toneSnapGamma {
+            grade = toneGradeR
+            snap = toneSnapGamma
+        } else {
+            grade = Self.defaultGrade
+            snap = Self.defaultSnap
         }
+    }
+}
+
+private struct ToneSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let resetValue: Double
+    let onCommit: () -> Void
+
+    var body: some View {
+        Slider(value: $value, in: range) { editing in
+            guard !editing else { return }
+            onCommit()
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                value = resetValue
+                onCommit()
+            }
+        )
     }
 }

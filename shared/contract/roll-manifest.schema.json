@@ -439,6 +439,8 @@
       "required": [
         "roll_capture_date",
         "last_applied_at",
+        "film",
+        "iso",
         "city",
         "state",
         "camera",
@@ -451,6 +453,8 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
         },
         "last_applied_at": { "type": ["string", "null"] },
+        "film": { "type": ["string", "null"] },
+        "iso": { "type": ["string", "null"] },
         "city": { "type": ["string", "null"] },
         "state": { "type": ["string", "null"] },
         "camera": { "type": ["string", "null"] },

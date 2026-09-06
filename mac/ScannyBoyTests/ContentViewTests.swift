@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import ScannyBoy
@@ -37,6 +38,34 @@ struct ContentViewTests {
             try Data().write(to: file)
             #expect(ContentView.closestExistingAncestor(of: file) == directory)
         }
+    }
+
+    // MARK: - guardedRollSelection
+
+    @Test
+    @MainActor
+    func guardedRollSelectionAllowsChangeWhenNotBusy() {
+        var selection: Roll.ID? = "roll-a"
+        let binding = Binding(
+            get: { selection },
+            set: { selection = $0 }
+        )
+        let guarded = ContentView.guardedRollSelection(binding, isBusy: false)
+        guarded.wrappedValue = "roll-b"
+        #expect(selection == "roll-b")
+    }
+
+    @Test
+    @MainActor
+    func guardedRollSelectionIgnoresChangeWhenBusy() {
+        var selection: Roll.ID? = "roll-a"
+        let binding = Binding(
+            get: { selection },
+            set: { selection = $0 }
+        )
+        let guarded = ContentView.guardedRollSelection(binding, isBusy: true)
+        guarded.wrappedValue = "roll-b"
+        #expect(selection == "roll-a")
     }
 
     // MARK: - shouldConfirmConvert

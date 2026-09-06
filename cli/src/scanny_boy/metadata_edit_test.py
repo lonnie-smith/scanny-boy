@@ -196,6 +196,39 @@ def test_clearing_the_roll_date_clears_intent(two_negative_roll: Path):
 # --- the catalog ------------------------------------------------------------
 
 
+def test_roll_film_and_iso_persist_and_catalog(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {"roll": {"film": "Tri-X 400", "iso": "400"}},
+    )
+    manifest = load_roll_manifest(two_negative_roll)
+    assert manifest.metadata.film == "Tri-X 400"
+    assert manifest.metadata.iso == "400"
+    effective = effective_metadata(
+        manifest.metadata, manifest.negative(_NEGATIVE_A).metadata
+    )
+    assert effective["film"] == "Tri-X 400"
+    assert effective["iso"] == "400"
+    assert repo.list_metadata_values("film") == ["Tri-X 400"]
+    assert repo.list_metadata_values("iso") == ["400"]
+
+
+def test_negative_payload_rejects_roll_only_fields(two_negative_roll: Path):
+    before = load_roll_manifest(two_negative_roll).to_dict()
+    with pytest.raises(MetadataEditFailure):
+        run_metadata_set(
+            two_negative_roll,
+            {"negatives": {_NEGATIVE_A: {"film": "Tri-X 400"}}},
+        )
+    assert load_roll_manifest(two_negative_roll).to_dict() == before
+
+
+def test_values_command_accepts_film(two_negative_roll: Path):
+    run_metadata_set(two_negative_roll, {"roll": {"film": "HP5+"}})
+    values = run_metadata_values("film")
+    assert values == ["HP5+"]
+
+
 def test_catalog_remembers_canonical_values_not_caption(two_negative_roll: Path):
     run_metadata_set(
         two_negative_roll,
@@ -224,6 +257,7 @@ def test_values_command_rejects_unknown_fields(two_negative_roll: Path):
     "payload",
     [
         {"roll": {"exposure": "1/125"}},
+        {"negatives": {_NEGATIVE_A: {"film": "Tri-X 400"}}},
         {"negatives": {_NEGATIVE_A: {"nope": "x"}}},
         {"negatives": {"unknown-negative": {"city": "x"}}},
         {"roll": {"capture_date": "August"}},

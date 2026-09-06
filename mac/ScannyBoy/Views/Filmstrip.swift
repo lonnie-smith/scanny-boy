@@ -109,6 +109,48 @@ struct FilmstripCell: View {
     }
 }
 
+/// Cmd-A selects every item, Cmd-D deselects them all. Invisible,
+/// hit-test-transparent buttons — the same trick `.keyboardShortcut`
+/// demands, since no focusable control owns these key combinations.
+struct SelectAllDeselectAllShortcutButtons: View {
+    let onSelectAll: () -> Void
+    let onDeselectAll: () -> Void
+
+    var body: some View {
+        Group {
+            Button("Select All") { onSelectAll() }
+                .keyboardShortcut("a", modifiers: .command)
+            Button("Deselect All") { onDeselectAll() }
+                .keyboardShortcut("d", modifiers: .command)
+        }
+        .allowsHitTesting(false)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Cmd-[ / Cmd-] rotate the selection 90° counter-clockwise / clockwise.
+/// Invisible, hit-test-transparent buttons — same pattern as
+/// `SelectionShortcutButtons`.
+struct RotationShortcutButtons: View {
+    let isEnabled: Bool
+    let onRotateCounterClockwise: () -> Void
+    let onRotateClockwise: () -> Void
+
+    var body: some View {
+        Group {
+            Button("Rotate Counter-Clockwise") { onRotateCounterClockwise() }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("Rotate Clockwise") { onRotateClockwise() }
+                .keyboardShortcut("]", modifiers: .command)
+        }
+        .disabled(!isEnabled)
+        .allowsHitTesting(false)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The browser's keyboard shortcuts: Option-left / Option-right move the
 /// selection (collapsing any multi-selection, exactly as the filmstrip's
 /// order defines "next"), Cmd-A selects every frame, Cmd-D deselects them
@@ -127,14 +169,11 @@ struct SelectionShortcutButtons: View {
                 .keyboardShortcut(.leftArrow, modifiers: .option)
             Button("Next Negative") { onNext() }
                 .keyboardShortcut(.rightArrow, modifiers: .option)
-            Button("Select All Negatives") { onSelectAll() }
-                .keyboardShortcut("a", modifiers: .command)
-            Button("Deselect All Negatives") { onDeselectAll() }
-                .keyboardShortcut("d", modifiers: .command)
+            SelectAllDeselectAllShortcutButtons(
+                onSelectAll: onSelectAll,
+                onDeselectAll: onDeselectAll
+            )
         }
-        .allowsHitTesting(false)
-        .opacity(0)
-        .accessibilityHidden(true)
     }
 }
 
