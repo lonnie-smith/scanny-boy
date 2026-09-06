@@ -69,14 +69,14 @@ struct FilmstripCell: View {
         }
         .buttonStyle(.plain)
         .help(negative.expectedOutput)
-        .task(id: "\(negative.previewPath ?? "none")#\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)") {
+        .task(id: "\(negative.previewPath ?? "none")#\(EditModel.renderGeneration(of: negative))") {
             thumbnail = nil
             guard let previewPath = negative.previewPath else {
                 return
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
                 forPreview: URL(filePath: previewPath),
-                generation: "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)",
+                generation: EditModel.renderGeneration(of: negative),
                 pointSize: Self.cellSize,
                 scale: displayScale
             )
@@ -209,7 +209,7 @@ struct PreviewImageView: View {
     }
 
     private var previewGeneration: String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)"
+        EditModel.renderGeneration(of: negative)
     }
 
     private var previewURL: URL? {

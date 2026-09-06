@@ -629,6 +629,118 @@ struct EditModelTests {
         #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat"))
     }
 
+    @Test("scheduleTone debounces rapid slider commits into one CLI round trip")
+    func testScheduleToneDebounces() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appending(path: "tone-count")
+        let runner = try Self.countingEditToneRunner(directory, counter: counter)
+        let model = try await Self.multiSelectModel(runner)
+
+        model.scheduleTone(model.selectionTargets, gradeR: 90, snapGamma: 0)
+        model.scheduleTone(model.selectionTargets, gradeR: 100, snapGamma: 0)
+        try await Task.sleep(for: .milliseconds(250))
+        await model.waitForPendingTone()
+
+        let count = Int(try String(contentsOf: counter, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        #expect(count == 1)
+        #expect(model.visibleNegatives[0].toneGradeR == 100)
+    }
+
+    @Test("commitTone supersedes an in-flight tone session")
+    func testCommitToneSupersedesInFlightSession() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appending(path: "tone-count")
+        let runner = try Self.slowCountingEditToneRunner(directory, counter: counter)
+        let model = try await Self.multiSelectModel(runner)
+
+        let first = Task { await model.commitTone(model.selectionTargets, gradeR: 90, snapGamma: 0) }
+        try await Task.sleep(for: .milliseconds(20))
+        await model.commitTone(model.selectionTargets, gradeR: 100, snapGamma: 0)
+        await first.value
+        await model.waitForPendingTone()
+
+        #expect(model.visibleNegatives[0].toneGradeR == 100)
+    }
+
+    /// Parses `--grade` / `--snap` from the fake CLI, increments `counter`
+    /// on each `edit tone`, and emits matching `edit_recorded` events.
+    private static func countingEditToneRunner(
+        _ directory: URL, counter: URL
+    ) throws -> CLIRunner {
+        let initial = rollInfoEvent(negatives: [
+            negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil),
+        ])
+        let script = """
+            if [ "$1" = "edit" ]; then
+              grade=""
+              snap=""
+              while [ $# -gt 0 ]; do
+                case "$1" in
+                  --grade) grade="$2"; shift 2 ;;
+                  --snap) snap="$2"; shift 2 ;;
+                  *) shift ;;
+                esac
+              done
+              count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
+              echo $((count + 1)) > '\(counter.path)'
+              echo '{"protocol_version":10,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":10,"event":"edit_recorded","negative_id":"n1",\
+            "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
+            "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"'},"created_at":"2026-09-01T00:00:00Z"},\
+            "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
+            else
+              echo '\(initial)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    /// Like `countingEditToneRunner`, but sleeps before finishing so a
+    /// superseding commit can cancel the first session.
+    private static func slowCountingEditToneRunner(
+        _ directory: URL, counter: URL
+    ) throws -> CLIRunner {
+        let initial = rollInfoEvent(negatives: [
+            negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil),
+        ])
+        let script = """
+            if [ "$1" = "edit" ]; then
+              grade=""
+              snap=""
+              while [ $# -gt 0 ]; do
+                case "$1" in
+                  --grade) grade="$2"; shift 2 ;;
+                  --snap) snap="$2"; shift 2 ;;
+                  *) shift ;;
+                esac
+              done
+              count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
+              echo $((count + 1)) > '\(counter.path)'
+              echo '{"protocol_version":10,"event":"started","command":"edit tone"}'
+              sleep 0.2
+              echo '{"protocol_version":10,"event":"edit_recorded","negative_id":"n1",\
+            "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
+            "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"'},"created_at":"2026-09-01T00:00:00Z"},\
+            "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
+              echo '{"protocol_version":10,"event":"finished","status":"success","exit_status":0}'
+            else
+              echo '\(initial)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
     private static func multiNegative(
         id: String, toneGradeR: Double?, toneSnapGamma: Double?
     ) -> RollManifest.Negative {
