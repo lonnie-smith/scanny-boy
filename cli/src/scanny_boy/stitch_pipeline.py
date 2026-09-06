@@ -101,6 +101,7 @@ from scanny_boy.normalization import (
     FilmKind,
     FilmKindGate,
     MonoStatistic,
+    Rebate,
     classify_mono_chroma,
     measure_mono_statistic,
 )
@@ -983,10 +984,51 @@ def _finite(value: float) -> float:
     return sys.float_info.max if math.isinf(value) else value
 
 
+def _base_check(roll: RollManifest, rebate: Rebate) -> dict[str, float] | None:
+    """REBATE_ANCHORING §6: how this negative's own rebate compares with
+    the roll's locked film-base anchor. Recorded whenever both inputs
+    exist — the roll has a locked anchor, and this negative's own
+    `detect_rebate` fired with an unclipped `base_density` — and read by
+    nothing. `level_offset` is the common-mode difference (capture-exposure
+    drift across the roll, the quantity §12's deferred level-anchoring
+    decision needs); `shape_residual` is the largest per-channel
+    disagreement after removing that common mode, the direct measure of
+    whether the roll anchor is right. Absent whenever either input is
+    missing."""
+    block = roll.film_base
+    if block is None or not block.get("locked_at"):
+        return None
+    anchor = block.get("density")
+    negative = rebate.base_density
+    # A 1-wide (mono) `base_density` cannot be compared with a 3-wide
+    # anchor, so it counts as a missing input.
+    if (
+        not rebate.detected
+        or negative is None
+        or len(negative) != 3
+        or anchor is None
+        or len(anchor) != 3
+    ):
+        return None
+    negative_median = float(np.median(negative))
+    anchor_median = float(np.median(anchor))
+    return {
+        "level_offset": negative_median - anchor_median,
+        "shape_residual": max(
+            abs(
+                (negative[channel] - negative_median)
+                - (anchor[channel] - anchor_median)
+            )
+            for channel in range(3)
+        ),
+    }
+
+
 def _normalization_record(
     result: composite_module.CompositeResult,
     analysis_rect: tuple[int, int, int, int],
     mono_statistic: MonoStatistic | None = None,
+    base_check: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
     decisions"): the bounds the published pixels were stretched with, the
@@ -1035,6 +1077,8 @@ def _normalization_record(
             "channel_correlation": list(mono_statistic.channel_correlation),
             "sampled": True,
         }
+    if base_check is not None:
+        record["base_check"] = base_check
     if result.unclamped_bounds is not None:
         record["unclamped_floors"] = list(result.unclamped_bounds.floors)
         record["unclamped_ceils"] = list(result.unclamped_bounds.ceils)
@@ -2092,7 +2136,9 @@ def _composite_and_publish(
             )
 
         record.valid_rect = valid_rect
-        record.normalization = _normalization_record(result, valid_rect, mono_statistic)
+        record.normalization = _normalization_record(
+            result, valid_rect, mono_statistic, _base_check(roll, result.rebate)
+        )
         record.normalized_fill = NORMALIZED_FILL
         record.normalized_fill = NORMALIZED_FILL
 

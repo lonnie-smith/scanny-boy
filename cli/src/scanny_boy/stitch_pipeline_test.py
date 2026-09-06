@@ -1204,10 +1204,8 @@ def test_a_differing_flatfield_profile_warns(tmp_path):
     assert _stitch(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
     ]
     assert [w.code for w in warnings] == [Code.FILM_BASE_FLATFIELD_CONFLICT]
     assert "pid-elsewhere" in warnings[0].message
@@ -1221,10 +1219,8 @@ def test_a_matching_flatfield_profile_does_not_warn(tmp_path):
     assert _stitch(work_dir, out_dir, events=events).status == "complete"
 
     assert not [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code is Code.FILM_BASE_FLATFIELD_CONFLICT
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.FILM_BASE_FLATFIELD_CONFLICT
     ]
 
 
@@ -1247,14 +1243,114 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(tmp_path):
     assert _stitch(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
     ]
     assert [w.code for w in warnings] == [Code.FILM_BASE_CAMERA_CONFLICT]
     assert "NIKON Z f" in warnings[0].message
     assert "NIKON Z 7" in warnings[0].message
+
+
+# --- the drift evidence (docs/REBATE_ANCHORING.md section 6) ---------------
+
+
+def _forced_rebate(base_density, *, clipped: bool = False):
+    """A `detect_rebate` stand-in that fires on a thin band along one edge
+    of the analysis region, with a known `base_density`. The synthetic
+    scenes carry no rebate of their own (the real detector declines on
+    them), so the recorded-arithmetic tests need one that always does."""
+    from scanny_boy.normalization import Rebate
+
+    def detect(grid_log, keep):
+        band = keep & (np.arange(keep.shape[0])[:, None] >= keep.shape[0] - 8)
+        kept = max(int(np.count_nonzero(keep)), 1)
+        rebate = Rebate(
+            detected=True,
+            mask_fraction=float(np.count_nonzero(band)) / kept,
+            base_density=None if clipped else base_density,
+            clipped=clipped,
+        )
+        return keep & ~band, rebate
+
+    return detect
+
+
+def test_base_check_is_recorded_when_both_inputs_exist(tmp_path, monkeypatch):
+    """§6: present, with the level_offset/shape_residual arithmetic, when
+    the roll has a locked anchor and the negative's rebate fired unclipped.
+    The anchor is (-0.42, -0.12, -0.99); the forced rebate reads
+    (-0.40, -0.10, -0.95): level_offset = median diff = +0.02, and the
+    residuals agree per channel except blue's 0.02, so shape_residual
+    = 0.02."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate",
+        _forced_rebate((-0.40, -0.10, -0.95)),
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["base_check"]["level_offset"] == pytest.approx(0.02, abs=1e-9)
+    assert record["base_check"]["shape_residual"] == pytest.approx(0.02, abs=1e-9)
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+
+
+def test_base_check_is_absent_without_a_locked_anchor(tmp_path, monkeypatch):
+    """§6: a roll still ATTACHED at composite time (the first negative of
+    its first run) records no base_check even when the rebate fired."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate",
+        _forced_rebate((-0.40, -0.10, -0.95)),
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert "base_check" not in record
+
+
+def test_base_check_is_absent_when_the_rebate_did_not_fire(tmp_path):
+    """§6: the synthetic scenes carry no rebate, so detect_rebate declines
+    and the comparison is absent even with a locked anchor."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert record["rebate"]["detected"] is False
+    assert "base_check" not in record
+
+
+def test_base_check_is_absent_when_the_rebate_was_clipped(tmp_path, monkeypatch):
+    """§6: clipped base is worthless base — `base_density` is None and the
+    comparison is absent."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate", _forced_rebate((0.0, 0.0, 0.0), clipped=True)
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert record["rebate"]["detected"] is True
+    assert record["rebate"]["clipped"] is True
+    assert "base_check" not in record
 
 
 @pytest.mark.slow
