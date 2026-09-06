@@ -219,8 +219,11 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
-            roll_dir, negative.negative_id
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        quarter_turns, flipped, fine_angle = (
+            state.quarter_turns,
+            state.flipped,
+            state.fine_angle_deg,
         )
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
         destination = output_dir / negative.output["name"]

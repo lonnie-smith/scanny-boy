@@ -372,18 +372,53 @@ def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
     image = (image * 3000).astype(np.uint16)
     roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
 
+
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
-    repo.append_tone_edit(roll_dir, negative.negative_id, 70.0, 0.3)
+    params = {
+        "grade_r": 70.0,
+        "snap_gamma": 0.3,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+    repo.append_tone_edit(roll_dir, negative.negative_id, params)
     # The same canonical path is rewritten in place.
     toned = previews.ensure_preview(roll_dir, "rid-1", negative, repo.TONE_OP)
 
     toned_pixels = cv2.imread(str(toned), cv2.IMREAD_UNCHANGED)
     assert not np.array_equal(toned_pixels, flat_pixels)
-    lut = tone.build_display_lut(70.0, 0.3)
+    lut = tone.build_display_lut(tone.ToneParams(**params))
     np.testing.assert_array_equal(
         toned_pixels, cv2.cvtColor(lut[image], cv2.COLOR_RGB2BGR)
     )
+
+
+def test_ensure_preview_regenerates_on_a_color_op(tmp_path):
+    """A `color` op cannot ride the lossless incremental path — the display
+    encode's per-channel LUTs change — so it regenerates from the TIFF."""
+    import dataclasses
+
+    from scanny_boy import color, previews
+    from scanny_boy.library import repo
+
+    image = np.repeat(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 3, axis=-1)
+    image = (image * 3000).astype(np.uint16)
+    roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
+
+    flat = previews.ensure_preview(roll_dir, "rid-1", negative)
+    flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
+    params = dataclasses.asdict(color.NEUTRAL_COLOR) | {"wb_cyan": 0.2, "wb_magenta": 0.1}
+    repo.append_color_edit(roll_dir, negative.negative_id, params)
+    coloured = previews.ensure_preview(roll_dir, "rid-1", negative, repo.COLOR_OP)
+
+    coloured_pixels = cv2.imread(str(coloured), cv2.IMREAD_UNCHANGED)
+    assert not np.array_equal(coloured_pixels, flat_pixels)
+    assert coloured == flat
 
 
 def test_sync_previews_regenerates_a_stale_preview_after_a_restitch(tmp_path):

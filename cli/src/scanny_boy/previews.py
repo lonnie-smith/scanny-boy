@@ -52,7 +52,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import auto_rotate, normalization, tone
+from scanny_boy import auto_rotate, color, normalization, tone
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -114,6 +114,8 @@ def _write_downscaled(
     image: np.ndarray,
     destination: Path,
     tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
     mode: str = "positive",
 ) -> tuple[int, int]:
     """The downscale (in normalized density — code space, not linear light:
@@ -128,45 +130,84 @@ def _write_downscaled(
             (round(image.shape[1] * scale), round(image.shape[0] * scale)),
             interpolation=cv2.INTER_AREA,
         )
-    _encode_display_png(image, destination, tone_params, mode=mode)
+    _encode_display_png(
+        image,
+        destination,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+        mode=mode,
+    )
     return image.shape[1], image.shape[0]
+
+
+def _display_tables(
+    tone_params: tone.ToneParams,
+    color_params: color.ColorParams,
+    metering: color.Metering,
+    channels: int,
+) -> np.ndarray:
+    """Per-channel float display tables, shape `(channels, 65536)`."""
+    return tone.build_channel_tables(tone_params, color_params, metering, channels)
 
 
 def _encode_display_png(
     image: np.ndarray,
     destination: Path,
     tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
     mode: str = "positive",
 ) -> None:
     """16-bit normalized-density (or already-8-bit) RGB -> 8-bit lossless
     PNG on disk, no downscale, no gamma. `mode` picks the display encode:
-    `"positive"` is the inverted look the filmstrip reads as one (`tone_params`,
-    the net `tone` op's `{"grade_r", "snap_gamma"}`, composes the user's
-    preview tone adjustment into the display LUT), `"negative"` is the
-    un-inverted density view, which no tone ever touches. The published
-    TIFF is never touched by any of it."""
+    `"positive"` is the inverted look the filmstrip reads as one (tone and
+    colour ops compose into the display LUT), `"negative"` is the
+    un-inverted density view, which no tone or colour ever touches. The
+    published TIFF is never touched by any of it."""
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode {mode!r}")
     if image.dtype == np.uint16:
-        # The TIFF holds normalized log density; decode, then encode 8-bit
-        # with no gamma — inverted for the positive view, straight for the
-        # negative view.
         if mode == "negative":
-            lut = NEGATIVE_DISPLAY_LUT
-        elif tone_params is not None:
-            lut = tone.build_display_lut(
-                tone_params["grade_r"], tone_params["snap_gamma"]
-            )
+            image = NEGATIVE_DISPLAY_LUT[image]
         else:
-            lut = NORMALIZED_DISPLAY_LUT
-        image = lut[image]
+            channels = image.shape[2] if image.ndim == 3 else 1
+            if tone_params is None and color_params is None:
+                image = NORMALIZED_DISPLAY_LUT[image]
+            else:
+                tone_obj = tone.ToneParams(**tone_params) if tone_params else tone.NEUTRAL
+                color_obj = (
+                    color.ColorParams(**color_params) if color_params else color.NEUTRAL_COLOR
+                )
+                meter = metering or color.Metering(
+                    ranges=(1.0,) * channels, shadow_refs_norm=None
+                )
+                tables = _display_tables(tone_obj, color_obj, meter, channels)
+                use_separation = (
+                    channels > 1
+                    and color_params is not None
+                    and color_obj.dye_separation != 1.0
+                )
+                if use_separation:
+                    gathered = np.empty(image.shape, dtype=np.float32)
+                    for ch in range(channels):
+                        gathered[..., ch] = tables[ch][image[..., ch]]
+                    separated = color.apply_separation(gathered, color_obj)
+                    encoded = np.clip(np.rint(separated * 255), 0, 255).astype(np.uint8)
+                    image = encoded
+                elif channels == 1:
+                    image = np.rint(tables[0][image] * 255).astype(np.uint8)
+                else:
+                    out = np.empty(image.shape, dtype=np.uint8)
+                    for ch in range(channels):
+                        out[..., ch] = np.rint(tables[ch][image[..., ch]] * 255).astype(np.uint8)
+                    image = out
     elif mode == "negative":
         raise ValueError(
             "the negative view must be encoded from the published TIFF's "
             "density codes, not from an already-display-encoded image"
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # cv2 is BGR; the TIFF is RGB, so flip the channels for storage.
     ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
     if not ok:
         raise ValueError(f"could not encode preview {destination}")
@@ -206,6 +247,8 @@ def generate_preview(
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
     tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
     transform applied — the published TIFF itself never carries edits, so
@@ -215,8 +258,8 @@ def generate_preview(
     uncovered pixels, `auto_rotate.rotate_with_fill`), then rotates; the
     fine angle is negated by a flip exactly as `repo.net_edit_state`'s
     replay says, so the caller passes the canonical angle through
-    untouched. `tone_params` is the net `tone` op's `{"grade_r",
-    "snap_gamma"}` (None = the flat look), composed into the display LUT.
+    untouched. `tone_params` is the net `tone` op's full param dict (None =
+    the flat look), composed into the display LUT.
     Returns the preview path, or None when the negative has no published
     output to preview."""
     if negative.output is None:
@@ -226,7 +269,13 @@ def generate_preview(
     image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
 
     destination = _preview_path(roll_id, negative.negative_id)
-    _write_downscaled(image, destination, tone_params)
+    _write_downscaled(
+        image,
+        destination,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+    )
     return destination
 
 
@@ -387,6 +436,8 @@ def render_region(
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
     tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
     destination: Path | None = None,
     mode: str = "positive",
 ) -> Region:
@@ -427,7 +478,12 @@ def render_region(
         image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
         if destination is not None:
             _encode_display_png(
-                image[dy : dy + dh, dx : dx + dw], destination, tone_params, mode=mode
+                image[dy : dy + dh, dx : dx + dw],
+                destination,
+                tone_params,
+                color_params=color_params,
+                metering=metering,
+                mode=mode,
             )
         return dx, dy, dw, dh
 
@@ -454,17 +510,20 @@ def render_region(
         crop = np.ascontiguousarray(np.rot90(crop, k=r))
     if destination is not None:
         _encode_display_png(
-            _promote_to_rgb(crop), destination, tone_params, mode=mode
+            _promote_to_rgb(crop),
+            destination,
+            tone_params,
+            color_params=color_params,
+            metering=metering,
+            mode=mode,
         )
     return dx, dy, dw, dh
 
 
-# The preview ops `ensure_preview`/`transform_preview` understand, kept in
-# step with the repo's ops log: rotations by direction, plus the flip. The
-# tone op is understood too, but never routes through the lossless
-# incremental path — an 8-bit PNG cannot be re-curved losslessly, so a tone
-# edit always regenerates from the TIFF.
+# tone and color ops never route through the lossless incremental path —
+# an 8-bit PNG cannot be re-curved or re-coloured losslessly.
 PREVIEW_OPS = {"cw", "ccw", "flip"}
+_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP}
 
 
 def ensure_preview(
@@ -484,34 +543,36 @@ def ensure_preview(
       been through.
     - Preview exists, no op: leave it alone.
     """
-    if op is not None and op not in PREVIEW_OPS and op != repo.TONE_OP:
+    if op is not None and op not in PREVIEW_OPS and op not in _STATE_PREVIEW_OPS:
         raise ValueError(f"unknown preview op {op!r}")
     if negative.preview_path is None or not Path(negative.preview_path).exists():
-        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-            roll_dir, negative.negative_id
-        )
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        meter = color.read_metering(negative.normalization)
         return generate_preview(
             roll_dir,
             roll_id,
             negative,
-            quarter_turns=quarter_turns,
-            flipped_horizontally=flipped,
-            fine_angle_deg=fine_angle,
-            tone_params=tone_params,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            tone_params=state.tone,
+            color_params=state.color,
+            metering=meter,
         )
     if op is not None:
-        if op == repo.TONE_OP:
-            quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-                roll_dir, negative.negative_id
-            )
+        if op in _STATE_PREVIEW_OPS:
+            state = repo.net_edit_state(roll_dir, negative.negative_id)
+            meter = color.read_metering(negative.normalization)
             return generate_preview(
                 roll_dir,
                 roll_id,
                 negative,
-                quarter_turns=quarter_turns,
-                flipped_horizontally=flipped,
-                fine_angle_deg=fine_angle,
-                tone_params=tone_params,
+                quarter_turns=state.quarter_turns,
+                flipped_horizontally=state.flipped,
+                fine_angle_deg=state.fine_angle_deg,
+                tone_params=state.tone,
+                color_params=state.color,
+                metering=meter,
             )
         return transform_preview(Path(negative.preview_path), op)
     return Path(negative.preview_path)
@@ -536,17 +597,18 @@ def sync_previews(
         has_preview = negative.preview_path and Path(negative.preview_path).exists()
         if has_preview and negative.output["name"] not in published:
             continue
-        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-            roll_dir, negative.negative_id
-        )
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        meter = color.read_metering(negative.normalization)
         preview = generate_preview(
             roll_dir,
             manifest.roll_id,
             negative,
-            quarter_turns=quarter_turns,
-            flipped_horizontally=flipped,
-            fine_angle_deg=fine_angle,
-            tone_params=tone_params,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            tone_params=state.tone,
+            color_params=state.color,
+            metering=meter,
         )
         if preview is not None:
             negative.preview_path = str(preview)
@@ -559,9 +621,8 @@ def sync_previews(
 
 def transforms_for(
     manifest, roll_dir: Path
-) -> dict[str, tuple[int, bool, float, dict[str, float] | None]]:
-    """Net state per negative id — `(quarter_turns, flipped,
-    fine_angle_deg, tone_params)` — for `roll info` augmentation."""
+) -> dict[str, repo.EditState]:
+    """Net state per negative id — for `roll info` augmentation."""
     return {
         negative.negative_id: repo.net_edit_state(roll_dir, negative.negative_id)
         for negative in manifest.negatives

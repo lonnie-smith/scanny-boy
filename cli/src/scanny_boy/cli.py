@@ -13,6 +13,7 @@ from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
 from scanny_boy.edits import (
     EditFailure,
+    run_edit_color,
     run_edit_delete,
     run_edit_flip,
     run_edit_render_preview,
@@ -400,8 +401,8 @@ def build_parser() -> argparse.ArgumentParser:
     edit_tone = edit_subparsers.add_parser(
         "tone",
         help=(
-            "Record a preview tone adjustment (paper grade + midtone snap) "
-            "for one or more negatives."
+            "Record a preview tone adjustment (paper grade, density, zone "
+            "density, toe/shoulder) for one or more negatives."
         ),
     )
     edit_tone.add_argument("--roll", required=True, metavar="DIR")
@@ -412,22 +413,136 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ID",
         help="negative to adjust; repeat for a selection",
     )
-    edit_tone.add_argument(
+    grade_group = edit_tone.add_mutually_exclusive_group()
+    grade_group.add_argument(
         "--grade",
         type=float,
         metavar="R",
         help="ISO-R paper grade, 50-180 (lower is harder); with --snap",
     )
+    grade_group.add_argument(
+        "--auto-grade",
+        action="store_true",
+        help="solve the grade from the negative's recorded metering",
+    )
     edit_tone.add_argument(
         "--snap",
         type=float,
         metavar="G",
-        help="midtone snap, -0.5..0.5; with --grade",
+        help="midtone snap, -0.5..0.5; with --grade or --auto-grade",
+    )
+    density_group = edit_tone.add_mutually_exclusive_group()
+    density_group.add_argument(
+        "--density",
+        type=float,
+        metavar="D",
+        help="print density, 0.0-2.0 (1.0 neutral, higher is denser)",
+    )
+    density_group.add_argument(
+        "--auto-density",
+        action="store_true",
+        help="solve the density from the negative's recorded metering",
+    )
+    edit_tone.add_argument(
+        "--shadow-density",
+        type=float,
+        metavar="D",
+        help="shadows density, -0.9..0.9 (positive adds density)",
+    )
+    edit_tone.add_argument(
+        "--highlight-density",
+        type=float,
+        metavar="D",
+        help="highlights density, -0.5..0.5 (positive adds density)",
+    )
+    edit_tone.add_argument(
+        "--toe",
+        type=float,
+        metavar="T",
+        help="shadow roll-off, -1..1 (positive lifts the black)",
+    )
+    edit_tone.add_argument(
+        "--toe-width",
+        type=float,
+        metavar="W",
+        help="toe extent, 0.1-5.0 (2.5 neutral)",
+    )
+    edit_tone.add_argument(
+        "--shoulder",
+        type=float,
+        metavar="S",
+        help="highlight roll-off, -1..1 (positive holds the white)",
+    )
+    edit_tone.add_argument(
+        "--shoulder-width",
+        type=float,
+        metavar="W",
+        help="shoulder extent, 0.1-5.0 (2.5 neutral)",
     )
     edit_tone.add_argument(
         "--reset",
         action="store_true",
         help="reset to the flat linear preview, removing the adjustment",
+    )
+
+    edit_color = edit_subparsers.add_parser(
+        "color",
+        help="Record a preview colour adjustment for one or more negatives.",
+    )
+    edit_color.add_argument("--roll", required=True, metavar="DIR")
+    edit_color.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to adjust; repeat for a selection",
+    )
+    for flag, help_text in (
+        ("--cyan", "global cyan filtration, -1..1"),
+        ("--magenta", "global magenta filtration, -1..1"),
+        ("--yellow", "global yellow filtration, -1..1"),
+        ("--shadow-cyan", "shadows cyan, -1..1"),
+        ("--shadow-magenta", "shadows magenta, -1..1"),
+        ("--shadow-yellow", "shadows yellow, -1..1"),
+        ("--highlight-cyan", "highlights cyan, -1..1"),
+        ("--highlight-magenta", "highlights magenta, -1..1"),
+        ("--highlight-yellow", "highlights yellow, -1..1"),
+    ):
+        edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
+    edit_color.add_argument(
+        "--cast-removal",
+        type=float,
+        metavar="V",
+        help="cast removal strength, 0..1 (0 neutral)",
+    )
+    edit_color.add_argument(
+        "--dye-separation",
+        type=float,
+        metavar="V",
+        help="dye separation, 0.5..1.5 (1.0 neutral)",
+    )
+    edit_color.add_argument(
+        "--separation-damping",
+        type=float,
+        metavar="V",
+        help="separation damping, 0..1 (0 neutral)",
+    )
+    edit_color.add_argument(
+        "--temperature",
+        type=float,
+        metavar="K",
+        help="3000-12000 K lever over the region's M/Y pair",
+    )
+    edit_color.add_argument(
+        "--region",
+        choices=("global", "shadows", "highlights"),
+        default="global",
+        help="which region --temperature drives (default: global)",
+    )
+    edit_color.add_argument(
+        "--reset",
+        action="store_true",
+        help="remove the colour adjustment",
     )
 
     export = subparsers.add_parser(
@@ -451,6 +566,69 @@ def _usage_error(parser: argparse.ArgumentParser, message: str) -> int:
     except SystemExit as exc:
         return _exit_code(exc)
     raise AssertionError("argparse.ArgumentParser.error() always raises SystemExit")
+
+
+def _tone_params_from_args(args) -> dict[str, float | None] | None:
+    from scanny_boy import tone
+
+    if args.reset:
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    return {
+        "grade_r": args.grade if args.grade is not None else tone.GRADE_REFERENCE,
+        "snap_gamma": args.snap,
+        "density": args.density if args.density is not None else tone.DENSITY_REFERENCE,
+        "shadow_density": args.shadow_density if args.shadow_density is not None else 0.0,
+        "highlight_density": (
+            args.highlight_density if args.highlight_density is not None else 0.0
+        ),
+        "toe": args.toe if args.toe is not None else 0.0,
+        "toe_width": args.toe_width if args.toe_width is not None else tone.WIDTH_REFERENCE,
+        "shoulder": args.shoulder if args.shoulder is not None else 0.0,
+        "shoulder_width": (
+            args.shoulder_width if args.shoulder_width is not None else tone.WIDTH_REFERENCE
+        ),
+    }
+
+
+def _color_flag_updates(args) -> dict[str, float | None]:
+    """Non-reset colour flag values explicitly passed on the command line."""
+
+    updates: dict[str, float | None] = {}
+    mapping = {
+        "cyan": "wb_cyan",
+        "magenta": "wb_magenta",
+        "yellow": "wb_yellow",
+        "shadow_cyan": "shadow_cyan",
+        "shadow_magenta": "shadow_magenta",
+        "shadow_yellow": "shadow_yellow",
+        "highlight_cyan": "highlight_cyan",
+        "highlight_magenta": "highlight_magenta",
+        "highlight_yellow": "highlight_yellow",
+        "cast_removal": "cast_removal",
+        "dye_separation": "dye_separation",
+        "separation_damping": "separation_damping",
+    }
+    for arg_name, key in mapping.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            updates[key] = value
+    return updates
+
+
+def _validate_color_temperature_args(args) -> None:
+    if args.temperature is None:
+        return
+    region = args.region
+    if region == "global" and args.magenta is not None:
+        raise ValueError("--temperature is mutually exclusive with --magenta")
+    if region == "shadows" and args.shadow_magenta is not None:
+        raise ValueError(
+            "--temperature is mutually exclusive with --shadow-magenta"
+        )
+    if region == "highlights" and args.highlight_magenta is not None:
+        raise ValueError(
+            "--temperature is mutually exclusive with --highlight-magenta"
+        )
 
 
 def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
@@ -622,16 +800,46 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     # Net state is derived state — the ops log's replay — so it is
     # augmented here rather than stored in the negatives' own shape.
     for negative in info["negatives"]:
-        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-            roll_dir, negative["negative_id"]
-        )
-        negative["rotation_quarter_turns"] = quarter_turns
-        negative["flipped_horizontally"] = flipped
-        negative["fine_rotation_deg"] = fine_angle
+        state = repo.net_edit_state(roll_dir, negative["negative_id"])
+        negative["rotation_quarter_turns"] = state.quarter_turns
+        negative["flipped_horizontally"] = state.flipped
+        negative["fine_rotation_deg"] = state.fine_angle_deg
+        tone_params = state.tone
         negative["tone_grade_r"] = None if tone_params is None else tone_params["grade_r"]
         negative["tone_snap_gamma"] = (
             None if tone_params is None else tone_params["snap_gamma"]
         )
+        negative["tone_density"] = None if tone_params is None else tone_params["density"]
+        negative["tone_shadow_density"] = (
+            None if tone_params is None else tone_params["shadow_density"]
+        )
+        negative["tone_highlight_density"] = (
+            None if tone_params is None else tone_params["highlight_density"]
+        )
+        negative["tone_toe"] = None if tone_params is None else tone_params["toe"]
+        negative["tone_toe_width"] = None if tone_params is None else tone_params["toe_width"]
+        negative["tone_shoulder"] = None if tone_params is None else tone_params["shoulder"]
+        negative["tone_shoulder_width"] = (
+            None if tone_params is None else tone_params["shoulder_width"]
+        )
+        color_params = state.color
+        from scanny_boy import color as color_mod
+
+        for key in color_mod.COLOR_PARAM_KEYS:
+            negative[f"color_{key}"] = (
+                None if color_params is None else color_params[key]
+            )
+        negative["color_temperature"] = (
+            None
+            if color_params is None
+            else color_mod.wb_to_kelvin(
+                color_params["wb_magenta"], color_params["wb_yellow"]
+            )
+        )
+    if manifest.film is not None:
+        info["film_kind"] = manifest.film.get("kind")
+    else:
+        info["film_kind"] = None
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -661,13 +869,16 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = EditRecorded
         elif args.edit_command == "tone":
-            grade = None if args.reset else args.grade
-            snap = None if args.reset else args.snap
-            if not args.reset and (args.grade is None or args.snap is None):
+            if not args.reset and (
+                (not args.auto_grade and args.grade is None) or args.snap is None
+            ):
                 writer.write(
                     ErrorEvent(
                         code=Code.INVALID_EDIT,
-                        message="edit tone needs --grade and --snap together, or --reset",
+                        message=(
+                            "edit tone needs --grade (or --auto-grade) and "
+                            "--snap together, or --reset"
+                        ),
                     )
                 )
                 writer.write(Finished(status="failed", exit_status=1))
@@ -675,8 +886,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             results = run_edit_tone(
                 Path(args.roll),
                 args.negative,
-                grade,
-                snap,
+                _tone_params_from_args(args),
+                auto_density=args.auto_density,
+                auto_grade=args.auto_grade,
+                emit=writer.write,
+            )
+            confirmation = EditRecorded
+        elif args.edit_command == "color":
+            try:
+                _validate_color_temperature_args(args)
+            except ValueError as exc:
+                writer.write(ErrorEvent(code=Code.INVALID_EDIT, message=str(exc)))
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
+            results = run_edit_color(
+                Path(args.roll),
+                args.negative,
+                _color_flag_updates(args) if not args.reset else None,
+                reset=args.reset,
+                temperature=args.temperature,
+                region=args.region,
                 emit=writer.write,
             )
             confirmation = EditRecorded

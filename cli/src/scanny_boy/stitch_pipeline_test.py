@@ -1691,7 +1691,9 @@ def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(tmp_path, monkeypatch
     (edit,) = repo.edits_for(out_dir, "stitch-negative-01")
     assert edit["op"] == repo.ROTATE_FINE_OP
     assert edit["params"] == {"angle_deg": 1.5, "source": "auto"}
-    assert repo.net_edit_state(out_dir, "stitch-negative-01") == (0, False, 1.5, None)
+    assert repo.net_edit_state(out_dir, "stitch-negative-01") == repo.EditState(
+        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None
+    )
     (recorded,) = [e for e in events if isinstance(e, EditRecorded)]
     assert recorded.negative_id == "stitch-negative-01"
     assert recorded.fine_rotation_deg == pytest.approx(1.5)

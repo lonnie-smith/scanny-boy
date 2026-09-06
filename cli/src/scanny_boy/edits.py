@@ -1,12 +1,13 @@
 """`edit` subcommands: the nondestructive editing entry points.
 
 **Edits live in the ops log; the TIFF is the artefact.** `edit rotate`,
-`edit flip`, and `edit tone` append ops to the negatives' ordered log in
-the library database, regenerate the CLI-rendered previews so the app can
-show the results, and emit `edit_recorded` per negative — they never touch
-the published TIFFs. The pixels are transformed only at export time, when
-the exporter replays each negative's ops log over the published TIFF (the
-`tone` op is preview-only judgement aid, so the exporter ignores it).
+`edit flip`, `edit tone`, and `edit color` append ops to the negatives'
+ordered log in the library database, regenerate the CLI-rendered previews
+so the app can show the results, and emit `edit_recorded` per negative —
+they never touch the published TIFFs. The pixels are transformed only at
+export time, when the exporter replays each negative's ops log over the
+published TIFF (`tone` and `color` are preview-only judgement aids, so the
+exporter ignores them).
 
 Every subcommand accepts a *selection* of negatives: the whole selection is
 validated before anything is written, so a batch either records or fails
@@ -19,7 +20,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scanny_boy import previews
+from scanny_boy import color, previews
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -35,6 +36,22 @@ if TYPE_CHECKING:
 EmitFn = Any
 
 DIRECTIONS = {"cw", "ccw"}
+
+_COLOR_REGION_KEYS = {
+    "global": ("wb_magenta", "wb_yellow"),
+    "shadows": ("shadow_magenta", "shadow_yellow"),
+    "highlights": ("highlight_magenta", "highlight_yellow"),
+}
+
+
+def roll_is_monochrome(roll: RollManifest) -> bool:
+    """The roll's frozen film kind (MONOCHROME_PLAN §2). Colour has no
+    meaning on a single-density roll: there are no layers to balance and
+    no dyes to separate."""
+    film = roll.film
+    if not film:
+        return False
+    return film.get("kind") == "monochrome"
 
 
 def _as_selection(negative_ids: str | Sequence[str]) -> list[str]:
@@ -129,16 +146,14 @@ def _append_transform_op(
     for negative in negatives:
         edit = repo.append_edit(roll_dir, negative.negative_id, op, params)
         _refresh_preview(roll_dir, roll, negative, preview_op, what=what, emit=emit)
-        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
-            roll_dir, negative.negative_id
-        )
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
         results.append(
             {
                 "negative_id": negative.negative_id,
                 "edit": edit,
-                "rotation_quarter_turns": quarter_turns,
-                "flipped_horizontally": flipped,
-                "fine_rotation_deg": fine_angle,
+                "rotation_quarter_turns": state.quarter_turns,
+                "flipped_horizontally": state.flipped,
+                "fine_rotation_deg": state.fine_angle_deg,
                 "preview_path": negative.preview_path,
             }
         )
@@ -198,43 +213,170 @@ def run_edit_flip(
 def run_edit_tone(
     roll_dir: Path,
     negative_ids: str | Sequence[str],
-    grade_r: float | None,
-    snap_gamma: float | None,
+    params: dict[str, float | None] | None,
     *,
+    auto_density: bool = False,
+    auto_grade: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
-    """Records each selected negative's preview tone adjustment — a paper
-    grade (`grade_r`, ISO-R 50–180) plus a midtone snap (`snap_gamma`,
-    −0.5…0.5), or both `None` for the reset to the flat linear look (see
-    `tone.py`). The op is a state, not a transform: the latest one wins and
-    a trailing `tone` op is coalesced in place, so slider commits do not
-    pile up dead rows.
+    """Records each selected negative's preview tone adjustment — the full
+    nine-key tone state, or all `None` for the reset to the flat linear
+    look (see `tone.py`). Auto flags solve density and/or grade from each
+    negative's recorded normalization before validation.
 
-    The preview is regenerated from the published TIFF (the display LUT is
-    where the curve lives — a cached 8-bit PNG cannot be re-curved
-    losslessly); the TIFFs themselves are untouched, and export ignores
-    the tone op. Same contract as `run_edit_rotate` otherwise."""
-    try:
-        repo.validated_tone_params(grade_r, snap_gamma)
-    except ValueError as exc:
-        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+    The op is a state, not a transform: the latest one wins and a trailing
+    `tone` op is coalesced in place. The preview is regenerated from the
+    published TIFF; the TIFFs themselves are untouched, and export ignores
+    the tone op."""
+    from scanny_boy import auto_tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
 
     results: list[dict] = []
     for negative in negatives:
-        edit = repo.append_tone_edit(roll_dir, negative.negative_id, grade_r, snap_gamma)
+        solved = dict(params or {key: None for key in repo.validated_tone_params(None)})
+        if auto_density or auto_grade:
+            record = negative.normalization
+            if auto_density:
+                value = auto_tone.solve_density(record)
+                if value is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: normalization metering "
+                                "unavailable; density left unchanged"
+                            ),
+                        )
+                    )
+                else:
+                    solved["density"] = value
+            if auto_grade:
+                value = auto_tone.solve_grade(record)
+                if value is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: normalization metering "
+                                "unavailable; grade left unchanged"
+                            ),
+                        )
+                    )
+                else:
+                    solved["grade_r"] = value
+        try:
+            validated = repo.validated_tone_params(solved)
+        except ValueError as exc:
+            raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+
+        edit = repo.append_tone_edit(roll_dir, negative.negative_id, validated)
         _refresh_preview(roll_dir, roll, negative, repo.TONE_OP, what="tone", emit=emit)
-        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
-            roll_dir, negative.negative_id
-        )
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
         results.append(
             {
                 "negative_id": negative.negative_id,
                 "edit": edit,
-                "rotation_quarter_turns": quarter_turns,
-                "flipped_horizontally": flipped,
-                "fine_rotation_deg": fine_angle,
+                "rotation_quarter_turns": state.quarter_turns,
+                "flipped_horizontally": state.flipped,
+                "fine_rotation_deg": state.fine_angle_deg,
+                "preview_path": negative.preview_path,
+            }
+        )
+    return results
+
+
+def _merge_color_params(
+    recorded: dict[str, float] | None,
+    updates: dict[str, float | None],
+) -> dict[str, float | None]:
+    import dataclasses
+
+    from scanny_boy import color
+
+    base = (
+        dict(recorded)
+        if recorded is not None
+        else dataclasses.asdict(color.NEUTRAL_COLOR)
+    )
+    merged = {key: base[key] for key in color.COLOR_PARAM_KEYS}
+    for key, value in updates.items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def run_edit_color(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    params: dict[str, float | None] | None,
+    *,
+    reset: bool = False,
+    temperature: float | None = None,
+    region: str = "global",
+    emit: EmitFn,
+) -> list[dict]:
+    """Records each selected negative's preview colour adjustment — the full
+    twelve-key colour state, or all `None` for the reset."""
+    from scanny_boy import color
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if not reset and roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — colour adjustment has no meaning on a "
+            "single-density roll",
+        )
+
+    mag_key, yellow_key = _COLOR_REGION_KEYS[region]
+
+    results: list[dict] = []
+    for negative in negatives:
+        if reset:
+            solved = {key: None for key in color.COLOR_PARAM_KEYS}
+        else:
+            state = repo.net_edit_state(roll_dir, negative.negative_id)
+            updates = dict(params or {})
+            if temperature is not None:
+                import dataclasses
+
+                base = (
+                    dict(state.color)
+                    if state.color is not None
+                    else dataclasses.asdict(color.NEUTRAL_COLOR)
+                )
+                m, y = color.kelvin_to_wb(temperature, base[mag_key], base[yellow_key])
+                updates[mag_key] = m
+                updates[yellow_key] = y
+            solved = _merge_color_params(state.color, updates)
+            cast = solved.get("cast_removal", 0.0)
+            if cast and float(cast) != 0.0:
+                meter = color.read_metering(negative.normalization)
+                if meter.shadow_refs_norm is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: normalization metering "
+                                "unavailable; cast removal recorded anyway"
+                            ),
+                        )
+                    )
+        try:
+            validated = repo.validated_color_params(solved)
+        except ValueError as exc:
+            raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+
+        edit = repo.append_color_edit(roll_dir, negative.negative_id, validated)
+        _refresh_preview(roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit)
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        results.append(
+            {
+                "negative_id": negative.negative_id,
+                "edit": edit,
+                "rotation_quarter_turns": state.quarter_turns,
+                "flipped_horizontally": state.flipped,
+                "fine_rotation_deg": state.fine_angle_deg,
                 "preview_path": negative.preview_path,
             }
         )
@@ -317,9 +459,8 @@ def run_edit_render_region(
     _roll, negative = _validated_negative(roll_dir, negative_id)
 
     tiff_path = roll_dir / negative.output["name"]
-    quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-        roll_dir, negative_id
-    )
+    state = repo.net_edit_state(roll_dir, negative_id)
+    meter = color.read_metering(negative.normalization)
     try:
         rendered = previews.render_region(
             tiff_path,
@@ -327,10 +468,12 @@ def run_edit_render_region(
             y,
             width,
             height,
-            quarter_turns=quarter_turns,
-            flipped_horizontally=flipped,
-            fine_angle_deg=fine_angle,
-            tone_params=tone_params,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            tone_params=state.tone,
+            color_params=state.color,
+            metering=meter,
             destination=output_path,
             mode=mode,
         )
@@ -369,18 +512,16 @@ def run_edit_render_preview(
     _roll, negative = _validated_negative(roll_dir, negative_id)
 
     tiff_path = roll_dir / negative.output["name"]
-    quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-        roll_dir, negative_id
-    )
+    state = repo.net_edit_state(roll_dir, negative_id)
     try:
         width, height = previews.render_preview(
             tiff_path,
             output_path,
-            quarter_turns=quarter_turns,
-            flipped_horizontally=flipped,
-            fine_angle_deg=fine_angle,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
             mode=mode,
-            tone_params=tone_params,
+            tone_params=state.tone,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc

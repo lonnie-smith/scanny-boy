@@ -9,7 +9,22 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 11 keeps version 10's roll model and adds two features.
+Protocol version 12 keeps version 11's roll model and adds **the preview
+colour adjustment**.
+
+**The preview's colour adjustment** (docs/COLOR_PLAN.md): a new `edit color`
+command records white balance (global, shadow, and highlight CMY), cast
+removal, dye separation, and separation damping as a `color` op in the
+negative's ops log — preview-only, coalesced like `tone`, ignored by export.
+Unlike `edit tone`, unspecified flags take the negative's currently recorded
+value (partial updates). `--temperature` is a Kelvin lever over the named
+region's magenta and yellow (mutually exclusive with that region's
+`--magenta`); `--region` defaults to `global`. `roll info` reports twelve
+derived `color_*` fields plus `color_temperature` (nominal Kelvin from
+global M/Y) per negative, and `film_kind` on the roll. Colour edits are
+refused on a monochrome roll except `--reset`.
+
+Protocol version 11 keeps version 10's roll model and adds three features.
 
 **The positive/negative display toggle** for the Edit tab's preview: `edit
 render-region` gains `--mode positive|negative`, and a new `edit
@@ -25,14 +40,14 @@ nothing is recorded, the published TIFF is never modified. The managed,
 on-disk preview stays a positive in every mode.
 
 **Monochrome film support** (docs/MONOCHROME_PLAN.md): `stitch` and `run`
-accept `--film-kind {auto,colour,monochrome}` (default `auto`), which decides
-whether a roll's three warped channels merge into one before publishing.
-Detection is per **roll**, not per negative (a roll is one film stock): a
-pre-pass samples up to six negatives, spread across the roll, and reads a
-chroma statistic that survives removing each channel's own gain and offset
-— near zero on a silver B&W negative, well above it on anything with a real
-orange mask or colour content. The decision is frozen on the roll's first
-stitch run in a new top-level `film` object —
+accept `--film-kind {auto,colour,monochrome}` (default `auto`), which
+decides whether a roll's three warped channels merge into one before
+publishing. Detection is per **roll**, not per negative (a roll is one film
+stock): a pre-pass samples up to six negatives, spread across the roll, and
+reads a chroma statistic that survives removing each channel's own gain and
+offset — near zero on a silver B&W negative, well above it on anything with
+a real orange mask or colour content. The decision is frozen on the roll's
+first stitch run in a new top-level `film` object —
 `{kind, source, statistic, samples, detector_version}`, `kind` one of
 `"colour"`/`"monochrome"`, `source` one of `"auto"`/`"manual"` — and never
 changes after that: a later run whose fresh evidence disagrees only warns
@@ -51,6 +66,13 @@ profile; every per-channel roll-manifest field (`floors`, `ceils`,
 `gain` array is unaffected and stays 3-wide even on a monochrome roll's
 negatives, since the photometric solve that produces it still runs in
 linear light on three channels.
+
+**Extended preview tone adjustment** (docs/DENSITY_PLAN.md): seven new curve
+controls on `edit tone` (print density, zone density, toe/shoulder and
+their widths), `--auto-density` and `--auto-grade` (solve once from the
+negative's recorded normalization and write the value — not a persistent
+mode), the matching seven `tone_*` derived fields on `roll info`'s
+negatives, and the `TONE_METERING_UNAVAILABLE` warning code.
 
 Protocol version 10 keeps version 9's roll model and adds two features.
 
@@ -208,7 +230,8 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
-scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R --snap G | --reset)
+scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
+scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
                               [--mode positive|negative]
@@ -445,18 +468,57 @@ It fails with the
 same codes as `edit rotate`.
 
 `edit tone` records a preview tone adjustment for one or more negatives: an
-ISO-R paper grade (`--grade`, 50–180; lower is harder) plus a midtone snap
-(`--snap`, −0.5…0.5), or `--reset` for the flat linear look. The op is a
-state, not a transform — the latest `tone` op wins, and a trailing `tone` op
-is updated in place rather than appended behind. The published TIFF is never
-touched (export ignores the op); each preview is regenerated from its TIFF
-with the tone curve composed into the display encode, and `edit_recorded` is
-emitted per negative — the `edit` row's `params` carry
-`{"grade_r": number | null, "snap_gamma": number | null}` (both `null` for a
-reset). It fails with `INVALID_EDIT` for out-of-range or mismatched
-parameters and with the same roll/negative codes as `edit rotate`. `roll
-info` reports the net tone state per negative as `tone_grade_r` /
-`tone_snap_gamma` (both `null` when no adjustment is recorded).
+ISO-R paper grade (`--grade`, 50–180, or `--auto-grade` to solve from the
+negative's recorded normalization; lower is harder), a midtone snap
+(`--snap`, −0.5…0.5), print density (`--density`, 0.0–2.0, neutral 1.0,
+higher is denser, or `--auto-density`), zone density offsets
+(`--shadow-density` ±0.9, `--highlight-density` ±0.5; positive adds
+density), and toe/shoulder shaping (`--toe` / `--shoulder` −1…1,
+`--toe-width` / `--shoulder-width` 0.1–5.0, neutral 2.5), or `--reset` for
+the flat linear look. `--density` and `--auto-density` are mutually
+exclusive, as are `--grade` and `--auto-grade`. Auto flags solve once per
+negative and record the computed value — they are not a persistent mode.
+The op is a state, not a transform — the latest `tone` op wins, and a
+trailing `tone` op is updated in place rather than appended behind. The
+published TIFF is never touched (export ignores the op); each preview is
+regenerated from its TIFF with the tone curve composed into the display
+encode, and `edit_recorded` is emitted per negative — the `edit` row's
+`params` carry all nine tone keys (all `null` for a reset). It fails with
+`INVALID_EDIT` for out-of-range or mismatched parameters, emits
+`TONE_METERING_UNAVAILABLE` per negative when auto is requested but
+metering is absent, and fails with the same roll/negative codes as
+`edit rotate`. `roll info` reports the net tone state per negative as
+`tone_grade_r`, `tone_snap_gamma`, `tone_density`, `tone_shadow_density`,
+`tone_highlight_density`, `tone_toe`, `tone_toe_width`, `tone_shoulder`,
+and `tone_shoulder_width` (all `null` when no adjustment is recorded).
+
+`edit color` records a preview colour adjustment for one or more negatives:
+global, shadow, and highlight cyan/magenta/yellow enlarger filtration
+(±1.0 each, 0 neutral), cast removal (0.0–1.0, 0 neutral), dye separation
+(0.5–1.5, 1.0 neutral), separation damping (0.0–1.0, 0 neutral), or
+`--reset` to remove the op. Unlike `edit tone`, **unspecified flags take
+the negative's currently recorded value**, not the neutral default — a
+single-slider change need not resend all twelve keys. Validation runs on the
+merged twelve-key state. `--temperature` (3000–12000 K, 5500 K neutral) is
+a Kelvin lever over the named region's magenta and yellow, resolved before
+validation via `kelvin_to_wb`; it is mutually exclusive with that region's
+`--magenta` (and `--shadow-magenta` / `--highlight-magenta` when
+`--region` is `shadows` / `highlights`). `--region` defaults to `global`
+and only applies with `--temperature`. Cyan is untouched by temperature.
+The op is a state, not a transform — the latest `color` op wins and a
+trailing one coalesces in place. The published TIFF and export are
+untouched; previews are regenerated with per-channel display LUTs plus
+optional per-pixel dye separation. `edit_recorded` is emitted per negative
+with all twelve keys in `params` (`null` for reset). Refused on a
+monochrome roll (`INVALID_EDIT`) except `--reset`. Emits
+`TONE_METERING_UNAVAILABLE` per negative when `--cast-removal` is non-zero
+but normalization metering is absent (the op is still recorded). `roll info`
+reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
+`color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
+`color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
+`color_cast_removal`, `color_dye_separation`, `color_separation_damping`,
+and derived `color_temperature` (null when no op), plus `film_kind` on the
+roll.
 
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density
@@ -706,6 +768,7 @@ staging directories, and reruns the incomplete negative.
 | `SCAN_CLIPPED` | Warning: more than 1% of one channel's pixels decoded at or above sensor white; their highlights are clipped and no reconstruction is attempted |
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
+| `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `MONO_DETECT_AMBIGUOUS` | Warning: an unseeded roll's film-kind statistic landed between the monochrome and colour thresholds; colour was assumed |
 | `MONO_DECISION_CONFLICT` | Warning: this run's fresh film-kind evidence disagrees with the roll's already-frozen kind; the frozen kind is kept |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |

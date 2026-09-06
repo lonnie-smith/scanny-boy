@@ -22,28 +22,21 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
-# Protocol 10 adds the preview's nondestructive tone adjustment: the `edit
-# tone` command (paper grade + midtone snap, recorded as a `tone` op in the
-# ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
-# manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
-# Protocol 11 adds the app's positive/negative display toggle: a `--mode
-# positive|negative` flag on `edit render-region` and the new `edit
-# render-preview` command (with its `preview_rendered` event) — a
-# pure-query render of a negative's whole display image, downscaled like
-# the cached preview. The negative mode is the un-inverted density view;
-# no tone ever reaches it.
-#
-# Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: `--film-kind
-# {auto,colour,monochrome}` on `stitch` and `run`, the top-level `film`
-# block in the roll manifest and `roll info` (the roll's frozen film-kind
-# decision — `kind`, `source`, `statistic`, `samples`,
-# `detector_version`), and two warning codes — `MONO_DETECT_AMBIGUOUS` (an
-# unseeded roll's statistic landed between the thresholds; colour was
-# assumed) and `MONO_DECISION_CONFLICT` (a later run's fresh evidence
-# disagrees with the roll's already-frozen kind; the frozen kind is kept).
-# A monochrome roll's published TIFFs are single-channel, tagged with the
-# new `ScannyBoy-Density-Grey-v1.icc` profile.
-PROTOCOL_VERSION = 11
+# Protocol 11 adds monochrome film support (`--film-kind {auto,colour,
+# monochrome}` on `stitch` and `run`, the top-level `film` block in the
+# roll manifest and `roll info`, and `MONO_DETECT_AMBIGUOUS`/
+# `MONO_DECISION_CONFLICT`), an extended preview tone adjustment (seven
+# curve controls and two auto flags on `edit tone`, matching `tone_*`
+# fields on `roll info`, and `TONE_METERING_UNAVAILABLE`), and the app's
+# positive/negative display toggle (`--mode positive|negative` on
+# `edit render-region`, the `edit render-preview` command with its
+# `preview_rendered` event — the negative mode is the un-inverted density
+# view; no tone ever reaches it).
+# Protocol 12 adds the preview colour adjustment: the `edit color`
+# subcommand, thirteen derived `color_*` fields (twelve stored params plus
+# `color_temperature`) and `film_kind` on `roll info`, and the `color` op
+# in the ops log.
+PROTOCOL_VERSION = 12
 
 
 class EventType(enum.StrEnum):
@@ -172,6 +165,7 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
     MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
