@@ -17,8 +17,9 @@ pushing it through an sRGB OETF would double-encode. The result is a
 positive-looking, flat-contrast image. On top of that flat baseline the
 user's nondestructive tone adjustment (`tone.py`, recorded as a `tone` op)
 composes a paper-grade contrast curve into the same display LUT — a
-preview-only judgement aid, not the Phase 4 print curve, which will own
-the pixels at export time. The downscale happens in normalized density
+preview-time judgement aid whose curve the export's render bakes into the
+exported pixels at full resolution (`render.py`; the published TIFF is
+still never touched). The downscale happens in normalized density
 (code space), not linear light, which is correct: averaging density is
 what averaging a photographic image means. Uncovered canvas renders black
 here, without special-casing: the fill sits at the thin end, so `1 - val`

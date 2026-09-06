@@ -1,36 +1,43 @@
-"""Writes the roll's and negative's metadata into an exported TIFF.
+"""Builds the metadata an exported file carries, as box payloads.
 
-The extended-metadata editing feature's one rule about TIFFs: metadata
-lives in the database and reaches a TIFF only at export. This module is
-that moment. The exporter's base write (plain `tifffile.imwrite`) carries
-the pixels, the ICC profile, and the `ImageDescription` JSON; this module's
-second pass adds everything a photo manager reads:
+The extended-metadata editing feature's one rule about deliverables:
+metadata lives in the database and reaches a file only at export. This
+module is that moment (docs/EXPORT_PLAN.md §5.2).
 
-- `DateTimeOriginal`/`SubSecTimeOriginal` (nested EXIF IFD) from the
-  negative's *intended* capture time — the rank formula's answer, so roll
-  order survives into any tool that sorts by capture time.
-- `Model` (IFD0) from the roll/negative `camera` field. The field is one
-  free-text string, so it lands on `Model` alone; `Make` stays unset
-  rather than guessed at.
-- `LensModel` (EXIF IFD 42036) from the `lens` field.
-- An XMP packet (tag 700) carrying `photoshop:City`, `photoshop:State`,
-  and `dc:description` (the caption) — the fields that live in the
-  commercial tool catalogs, not in EXIF.
+Since the export became a JPEG XL write, there is no second pass: JPEG XL
+takes metadata as boxes at encode time, so nothing is reopened or
+rewritten. The exporters' base write carries the pixels, the ICC profile
+and the boxes; this module *builds* the two box payloads:
+
+- `build_exif` — a little-endian TIFF stream: IFD0 with
+  `ImageDescription` (270) and `Model` (272), plus the nested EXIF IFD
+  with `DateTimeOriginal` (36867), `SubSecTimeOriginal` (37521) and
+  `LensModel` (42036). Built with `tifftools` over an in-memory 1x1
+  placeholder image — readers take the tags from IFD0 and ignore the
+  strip — because hand-rolling nested-IFD offsets is the fiddliest work
+  in the export plan and there is no reason to do it.
+- `build_xmp` — the XMP packet: `dc:description` (the caption),
+  `photoshop:City`, `photoshop:State`, and the `scannyboy:provenance`
+  record (the file's interpretability record — what the published TIFF's
+  `ImageDescription` JSON used to carry, plus what the render actually
+  did; §5.2).
 
 Effective values follow the live-fallback rule: the negative's explicit
 value, else the roll's. A field nobody set writes nothing at all — no
-empty placeholders in the output file. The pass writes to a `.tmp` sibling
-and verifies before replacing, the same discipline
-`apply_metadata.rewrite_date_time_original` and `finalize_tiff` follow.
+empty placeholders in the output file, and no Exif box when nothing is
+set.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import datetime
-from pathlib import Path
+import io
+import json
 from xml.sax.saxutils import escape
 
+import numpy as np
+import tifffile
 import tifftools
 from tifftools.constants import Tag
 
@@ -49,10 +56,15 @@ DATE_TIME_ORIGINAL = 36867
 SUBSEC_TIME_ORIGINAL = 37521
 LENS_MODEL = 42036
 
+# The provenance record's namespace (docs/EXPORT_PLAN.md §5.2): a JSON
+# string in a `scannyboy:provenance` property — what makes an exported
+# file interpretable without the database.
+SCANNY_BOY_NS = "http://scannyboy.local/ns/1.0/"
+
 
 @dataclasses.dataclass(frozen=True)
 class ExportMetadata:
-    """The metadata one exported TIFF should carry, already resolved to
+    """The metadata one exported file should carry, already resolved to
     effective values. `None` fields are omitted from the file entirely."""
 
     camera: str | None = None
@@ -95,10 +107,13 @@ def export_metadata_for(manifest: RollManifest, negative: NegativeRecord) -> Exp
     )
 
 
-def _xmp_packet(metadata: ExportMetadata) -> str:
-    """A minimal XMP packet for the fields XMP (not EXIF) is the home of.
-    Only the set fields are written; `dc:description` is an `Alt` container
-    with the `x-default` language item, as photo managers expect."""
+def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
+    """The XMP packet: the fields XMP (not EXIF) is the home of, plus the
+    `scannyboy:provenance` record. The provenance is always present — it
+    is what makes the file interpretable without the database — while the
+    user-set fields appear only when set. `dc:description` is an `Alt`
+    container with the `x-default` language item, as photo managers
+    expect."""
     description_items = ""
     if metadata.caption is not None:
         description_items = (
@@ -116,19 +131,29 @@ def _xmp_packet(metadata: ExportMetadata) -> str:
         if metadata.state is not None
         else ""
     )
+    provenance_items = (
+        f"<scannyboy:provenance>{escape(json.dumps(provenance, sort_keys=True))}"
+        "</scannyboy:provenance>"
+    )
     return (
         '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
         '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
         '<rdf:Description rdf:about="" '
         'xmlns:dc="http://purl.org/dc/elements/1.1/" '
-        'xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">'
-        f"{description_items}{city}{state}"
+        'xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" '
+        f'xmlns:scannyboy="{SCANNY_BOY_NS}">'
+        f"{description_items}{city}{state}{provenance_items}"
         "</rdf:Description>"
         "</rdf:RDF>"
         "</x:xmpmeta>"
         '<?xpacket end="w"?>'
     )
+
+
+def build_xmp(metadata: ExportMetadata, provenance: dict) -> bytes:
+    """The `xml ` box's payload: the XMP packet, UTF-8 bytes."""
+    return _xmp_packet(metadata, provenance).encode("utf-8")
 
 
 def _exif_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
@@ -152,13 +177,23 @@ def _exif_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
     return tags
 
 
-def write_export_metadata(path: Path, metadata: ExportMetadata) -> None:
-    """Adds the metadata tags to an already-written export TIFF. The file is
-    rewritten through a `.tmp` sibling and only replaces the destination
-    after the `DateTimeOriginal` round-trips (when one was written), so a
-    failed write can never leave the export half-tagged or truncated."""
-    info = tifftools.read_tiff(str(path))
+def build_exif(metadata: ExportMetadata, image_description: str) -> bytes:
+    """The `Exif` box's payload: a little-endian TIFF stream whose IFD0
+    carries `ImageDescription` and `Model`, with the nested EXIF IFD
+    beside them. `tifftools` builds it over an in-memory 1x1 placeholder
+    image — the tags live in IFD0, and readers of the box ignore the
+    strip. Same tags, same effective-value fallback rules, and the same
+    "a field nobody set writes nothing" behaviour as the TIFF-era second
+    pass."""
+    buffer = io.BytesIO()
+    tifffile.imwrite(buffer, [[0]], dtype=np.uint8)
+    buffer.seek(0)
+    info = tifftools.read_tiff(buffer)
     ifd0 = info["ifds"][0]
+    ifd0["tags"][270] = {
+        "data": image_description,
+        "datatype": tifftools.Datatype.ASCII,
+    }
     if metadata.camera is not None:
         ifd0["tags"][MODEL] = {
             "data": metadata.camera,
@@ -171,46 +206,6 @@ def write_export_metadata(path: Path, metadata: ExportMetadata) -> None:
             "ifds": [[exif_ifd]],
             "datatype": tifftools.Datatype.LONG,
         }
-    if metadata.city is not None or metadata.state is not None or metadata.caption is not None:
-        ifd0["tags"][XMP_DESCRIPTION] = {
-            # XMP in TIFF is a BYTE-array tag; tifftools packs `data` as a
-            # list of ints for that datatype.
-            "data": list(_xmp_packet(metadata).encode("utf-8")),
-            "datatype": tifftools.Datatype.BYTE,
-        }
-
-    tmp_path = path.with_suffix(path.suffix + ".meta.tmp")
-    try:
-        tifftools.write_tiff(info, str(tmp_path))
-        _verify(tmp_path, metadata)
-        tmp_path.replace(path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-
-
-def _verify(path: Path, metadata: ExportMetadata) -> None:
-    """The rewrite's sanity check: the `DateTimeOriginal` just written must
-    read back identically (the one tag whose correctness is easy to get
-    silently wrong), and the XMP packet — when one belongs in this file —
-    must be present."""
-    info = tifftools.read_tiff(str(path))
-    ifd0 = info["ifds"][0]
-    xmp_entry = ifd0["tags"].get(XMP_DESCRIPTION)
-    if xmp_entry is not None:
-        xmp_data = xmp_entry["data"]
-        if isinstance(xmp_data, list):
-            xmp_data = bytes(xmp_data).decode("utf-8")
-        if "xmpmeta" not in xmp_data:
-            raise ValueError("XMP packet did not survive the rewrite")
-    elif metadata.city is not None or metadata.state is not None or metadata.caption is not None:
-        raise ValueError("XMP packet did not survive the rewrite")
-    if metadata.date_time_original is not None:
-        exif_ifd = ifd0["tags"][Tag.ExifIFD.value]["ifds"][0][0]
-        actual = exif_ifd["tags"][DATE_TIME_ORIGINAL]["data"]
-        expected = metadata.date_time_original.strftime("%Y:%m:%d %H:%M:%S")
-        if actual != expected:
-            raise ValueError(
-                f"DateTimeOriginal did not round-trip: wrote {expected!r}, "
-                f"read {actual!r}"
-            )
+    out = io.BytesIO()
+    tifftools.write_tiff(info, out)
+    return out.getvalue()

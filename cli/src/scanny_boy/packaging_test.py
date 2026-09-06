@@ -25,10 +25,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import imagecodecs
 import pytest
 import tifffile
 
-from scanny_boy.icc_profile import DENSITY_PROFILE_SHA256, LINEAR_PROFILE_SHA256
+from scanny_boy.icc_profile import (
+    DENSITY_GREY_PROFILE_SHA256,
+    DENSITY_PROFILE_SHA256,
+    EXPORT_GREY_PROFILE_SHA256,
+    EXPORT_RGB_PROFILE_SHA256,
+    LINEAR_PROFILE_SHA256,
+)
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.packaged_app_support import (
     BUNDLE_EXECUTABLE,
@@ -174,13 +181,19 @@ def test_helper_bundle_is_background_only_with_a_unique_identifier():
 
 
 def test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata():
-    """Both bundled profiles are ordinary package data — the linear one for
-    prepare-stage intermediates, the density one for published TIFFs
-    (`icc_profile.py`) — and the two `copy_metadata` entries of section 5.2
-    are what keep `importlib.metadata` working in the frozen program."""
+    """The bundled profiles are ordinary package data — the linear one for
+    prepare-stage intermediates, the density pair for published TIFFs, the
+    export pair for JPEG XL exports (`icc_profile.py`) — and the
+    `copy_metadata` entries of section 5.2 are what keep
+    `importlib.metadata` working in the frozen program. (The grey density
+    profile was missing from the spec's `datas` until the export plan's
+    §8 caught it: the frozen program could not export a mono roll.)"""
     for filename, expected_sha256 in (
         ("ScannyBoy-Linear-v1.icc", LINEAR_PROFILE_SHA256),
         ("ScannyBoy-Density-v1.icc", DENSITY_PROFILE_SHA256),
+        ("ScannyBoy-Density-Grey-v1.icc", DENSITY_GREY_PROFILE_SHA256),
+        ("ScannyBoy-Export-AdobeRGB-v1.icc", EXPORT_RGB_PROFILE_SHA256),
+        ("ScannyBoy-Export-Grey-v1.icc", EXPORT_GREY_PROFILE_SHA256),
     ):
         profiles = list(BUNDLE_PATH.rglob(filename))
         assert profiles, f"{filename} is missing from the bundle"
@@ -400,6 +413,41 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     # just its pixel output.
     assert work_dir.exists()
     assert (work_dir / "scanny-boy-manifest.json").exists()
+
+    # docs/EXPORT_PLAN.md section 8: the frozen binary must reach libjxl —
+    # the one check that would catch a `.dylibs`-collection regression,
+    # since `jxl_writer` resolves libjxl through the process's symbol
+    # namespace and a missing library fails only at encode time.
+    export_dir = tmp_path / "export"
+    result = run_packaged(
+        "export",
+        "--roll",
+        str(out_dir),
+        "--output",
+        str(export_dir),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
+    export_events = _events(result.stdout)
+    done = next(e for e in export_events if e["event"] == "export_done")
+    assert done["output"] == "_DSC4638.jxl"
+    exported = export_dir / done["output"]
+    assert exported.exists()
+
+    from scanny_boy.icc_profile import EXPORT_RGB_PROFILE_SHA256
+    from scanny_boy.jxl_writer_test import read_icc_profile
+
+    blob = exported.read_bytes()
+    assert blob[:12] == b"\x00\x00\x00\x0cJXL \r\n\x87\n"
+    pixels = imagecodecs.jpegxl_decode(blob)
+    assert pixels.dtype == "uint16"
+    assert pixels.ndim == 3 and pixels.shape[2] == 3
+    # The export profile is embedded, and the codestream keeps the
+    # original samples (16-bit lossless).
+    assert (
+        hashlib.sha256(read_icc_profile(blob)).hexdigest()
+        == EXPORT_RGB_PROFILE_SHA256
+    )
 
 
 @requires_real_samples

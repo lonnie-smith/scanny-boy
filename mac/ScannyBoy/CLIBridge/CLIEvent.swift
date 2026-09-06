@@ -21,7 +21,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    public static let supportedProtocolVersion = 10
+    public static let supportedProtocolVersion = 11
 
     public let protocolVersion: Int
     public let kind: Kind

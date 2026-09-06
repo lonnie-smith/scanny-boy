@@ -2,46 +2,61 @@
 
 The exporter replays each negative's ordered ops log over its published
 TIFF — the canonical `(quarter_turns, flipped)` net transform, applied as a
-horizontal mirror followed by `np.rot90` quarter turns — and
-writes the result, named after the negative, into the output folder. The
+horizontal mirror followed by `np.rot90` quarter turns — and renders the
+result as a **positive in Adobe RGB (1998)-compatible colour, with the
+negative's recorded tone op baked in** (`render.render_export`), written as
+a **16-bit lossless JPEG XL** with the export ICC profile embedded
+(docs/EXPORT_PLAN.md §5). A mono roll's export is single-channel, tagged
+with the grey export profile and rendered without a colour matrix. The
 roll's own TIFF is never opened for writing: exports land elsewhere, and a
 re-export after further edits simply runs again.
 
-The export *is* a normalized digital negative: the pixels replay straight
-through, carrying the same density profile the published TIFF carries
-(docs/DECISIONS.md, "Normalization decisions"), and the negative's
-`normalization` block is written into the `ImageDescription` so the file is
-interpretable without the database. The database's metadata — capture time,
-camera, lens, city, state, caption — is also written here, by
-`export_metadata.write_export_metadata`'s second pass: export is the only
-place metadata reaches a TIFF. A metadata write that fails downgrades to a
-`METADATA_WRITE_FAILED` warning and the export still counts — the pixels
-are good, and re-exporting after fixing the metadata is cheap.
+A colour roll predating the `camera_color` block fails the export outright
+(`CAMERA_MATRIX_MISSING`, raised once before anything is written): a silent
+identity matrix would produce a file that claims Adobe RGB and is not,
+which is precisely the bug the export plan exists to remove (§3.4). A mono
+roll needs no matrix and is never failed for its absence.
+
+The database's metadata — capture time, camera, lens, city, state,
+caption — is built into the Exif and XMP boxes by `export_metadata` at
+encode time; the XMP also carries the `scannyboy:provenance` record (the
+file's interpretability record: the published TIFF's normalization block
+plus what the render actually did). A malformed metadata value now fails
+the negative outright — there is no second write left to downgrade, and
+the file was never written.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import tifffile
 
+from scanny_boy import jxl_writer, render
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
+    build_exif,
+    build_xmp,
     export_metadata_for,
-    write_export_metadata,
 )
-from scanny_boy.icc_profile import ProfileKind, load_icc_profile
+from scanny_boy.icc_profile import (
+    ProfileKind,
+    export_profile_kind,
+    load_icc_profile,
+    profile_record,
+)
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.roll_manifest import NegativeRecord, RollManifest, load_roll_manifest
 
 EmitFn = Any
+
+EXPORT_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy export"
 
 
 class ExportFailure(Exception):
@@ -79,41 +94,72 @@ def apply_edits(
 
 
 def export_image_description(negative: NegativeRecord) -> str:
-    """The export's `ImageDescription`: the negative's `normalization`
-    block as JSON, so the file is interpretable without the database."""
-    return json.dumps(
-        {
-            "kind": "scanny-boy export",
-            "negative_id": negative.negative_id,
-            "normalization": negative.normalization,
-            "normalized_fill": negative.normalized_fill,
-        },
-        sort_keys=True,
-    )
+    """The export's `ImageDescription`: the short human string. The
+    interpretability record — the negative's `normalization` block —
+    moved to the XMP's `scannyboy:provenance` (§5.2), where it belongs:
+    after the render the pixels are no longer the encoded thing that
+    record describes."""
+    return f"{negative.negative_id}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
 
 
-def _write_export(
-    destination: Path, image: np.ndarray, negative: NegativeRecord
-) -> None:
-    tmp_path = destination.with_suffix(destination.suffix + ".tmp")
-    try:
-        tifffile.imwrite(
-            tmp_path,
-            image,
-            description=export_image_description(negative),
-            # MONOCHROME_PLAN section 4: a mono roll's published TIFF is
-            # single-channel and carries the grey density profile.
-            iccprofile=load_icc_profile(
-                ProfileKind.DENSITY_GREY if image.ndim == 2 else ProfileKind.DENSITY
+def camera_matrix_for(roll: RollManifest) -> np.ndarray | None:
+    """The export's 3x3 camera -> Adobe RGB matrix, or `None` for a roll
+    with no recorded block — which only a mono roll may proceed without
+    (§3.4: the caller gates on the published TIFF's channel count before
+    calling this for colour). Built once per run: the block is a property
+    of the camera body, frozen on the roll's first run."""
+    if roll.camera_color is None:
+        return None
+    return render.export_matrix(roll.camera_color.rgb_xyz_matrix)
+
+
+def provenance_record(
+    negative: NegativeRecord,
+    matrix: np.ndarray | None,
+    tone_params: dict[str, float] | None,
+    profile_kind: ProfileKind,
+    clipped_fractions: tuple[float, ...],
+) -> dict[str, Any]:
+    """The `scannyboy:provenance` payload (§5.2): what makes an exported
+    file interpretable without the database. The published TIFF's
+    `normalization` block — the encoding the *published* file still
+    carries — plus a `rendered` sibling recording what the export actually
+    did to make the display pixels."""
+    return {
+        "kind": "scanny-boy export",
+        "negative_id": negative.negative_id,
+        # The published TIFF's encoding — the export no longer *is* this,
+        # but the published file beside the export still is.
+        "normalization": negative.normalization,
+        "normalized_fill": negative.normalized_fill,
+        "rendered": {
+            "profile": profile_record(profile_kind),
+            "gamma": render.GAMMA_ADOBE,
+            "matrix": (
+                None if matrix is None else np.asarray(matrix).tolist()
             ),
-        )
-        tmp_path.replace(destination)
-    except BaseException:
-        # A failed write (disk full, permissions) must not leave a partial
-        # .tmp file behind in the user's output folder — the same rule
-        # apply_metadata.rewrite_date_time_original already follows.
-        tmp_path.unlink(missing_ok=True)
-        raise
+            "tone": None if tone_params is None else dict(tone_params),
+            "clip_fractions": list(clipped_fractions),
+        },
+    }
+
+
+def _first_published_channel_count(
+    roll_dir: Path, negatives: list[NegativeRecord]
+) -> int | None:
+    """The first completed negative's published channel count, read from
+    the TIFF's header only (cheap). `None` when there is nothing to peek
+    at — the per-negative loop reports missing files itself."""
+    for negative in negatives:
+        if negative.output is None or negative.status != "completed":
+            continue
+        tiff_path = Path(roll_dir) / negative.output["name"]
+        if not tiff_path.exists():
+            continue
+        with tifffile.TiffFile(tiff_path) as tif:
+            page = tif.pages[0]
+            return int(page.samplesperpixel)
+    return None
 
 
 def run_export(
@@ -123,10 +169,12 @@ def run_export(
     *,
     emit: EmitFn,
 ) -> ExportOutcome:
-    """Exports the roll's negatives (all of them, or the requested ids) with
-    their edits applied. Raises `ExportFailure` when the roll itself can't
-    be read; one negative's problem is a warning plus a `failed` entry, and
-    never stops the rest."""
+    """Exports the roll's negatives (all of them, or the requested ids)
+    as rendered positives in JPEG XL. Raises `ExportFailure` when the
+    roll itself can't be read — including a colour roll predating the
+    `camera_color` block (§3.4, raised once before anything is written);
+    one negative's problem is a warning plus a `failed` entry, and never
+    stops the rest."""
     if not repo.roll_registered(roll_dir):
         raise ExportFailure(
             Code.ROLL_NOT_FOUND,
@@ -166,6 +214,22 @@ def run_export(
     if not output_dir.is_dir():
         raise ExportFailure(
             Code.OUTPUT_NOT_WRITABLE, f"{output_dir} is not a directory"
+        )
+
+    # §3.4's gate, before anything is written: a **colour** roll with no
+    # recorded `camera_color` predates the colour-managed export and must
+    # be re-converted (or deleted). A **mono** roll does not need the
+    # matrix and must not be failed for its absence (§4.5), so the check
+    # is conditional on the published TIFF's channel count — the same fact
+    # §4.5's render gates on. Peeking the first completed negative's
+    # header keeps the failure "raised once, before anything is written".
+    channels = _first_published_channel_count(roll_dir, negatives)
+    if channels is not None and channels > 1 and roll.camera_color is None:
+        raise ExportFailure(
+            Code.CAMERA_MATRIX_MISSING,
+            f"{roll_dir}'s roll manifest predates the colour-managed export: "
+            "it records no camera_color block. Re-convert the roll (or "
+            "delete it) so the export can colour-manage it.",
         )
 
     exported: list[str] = []
@@ -219,13 +283,41 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
+        # The net edit state's fourth element is the tone op this render
+        # bakes in (§4.6) — no longer destructured away.
+        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
             roll_dir, negative.negative_id
         )
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
-        destination = output_dir / negative.output["name"]
-        _write_export(destination, rotated, negative)
-        _write_metadata(destination, roll, negative, emit)
+        # §4.5: the matrix follows the channel count — `None` for a mono
+        # roll's 2-D published TIFF, the recorded camera matrix for a
+        # colour one. (When MONOCHROME_PLAN §2's film block lands, the
+        # two agree by construction.)
+        matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)
+        rendered, clipped_fractions = render.render_export(
+            rotated, matrix, tone_params
+        )
+        profile_kind = export_profile_kind(
+            1 if rendered.ndim == 2 else rendered.shape[2]
+        )
+        destination = output_dir / Path(negative.output["name"]).with_suffix(
+            jxl_writer.JXL_SUFFIX
+        )
+        _write_export(
+            destination,
+            rendered,
+            profile_kind,
+            roll,
+            negative,
+            matrix,
+            tone_params,
+            clipped_fractions,
+        )
+    except jxl_writer.JxlEncoderUnavailable as exc:
+        # A packaging failure, not a user error (§1.2): stop the export
+        # and say what broke, rather than failing every negative with a
+        # per-file warning.
+        raise ExportFailure(Code.JXL_ENCODER_UNAVAILABLE, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — one bad negative never stops the export
         emit(
             WarningEvent(
@@ -235,31 +327,42 @@ def _export_negative(
         )
         return None
 
-    height, width = rotated.shape[0], rotated.shape[1]
+    height, width = rendered.shape[0], rendered.shape[1]
     return destination.name, width, height
 
 
-def _write_metadata(
+def _write_export(
     destination: Path,
+    rendered: np.ndarray,
+    profile_kind: ProfileKind,
     roll: RollManifest,
     negative: NegativeRecord,
-    emit: EmitFn,
+    matrix: np.ndarray | None,
+    tone_params: dict[str, float] | None,
+    clipped_fractions: tuple[float, ...],
 ) -> None:
-    """The second pass that puts the database's metadata into the exported
-    TIFF. A failure here downgrades to a `METADATA_WRITE_FAILED` warning —
-    it must not lose the export that already succeeded above."""
+    """The single write: rendered pixels, the export ICC profile embedded,
+    and the metadata boxes built at encode time. The `.tmp`-and-replace
+    lives in `write_jxl` (§1.4), so there is no second pass and no nested
+    tmp dance.
+
+    The `has_any` guard: a field nobody set writes nothing — with no
+    metadata at all there is no Exif box (§5.1). The XMP always goes,
+    because the provenance record is not user-set metadata but the file's
+    interpretability record (§5.2)."""
     metadata = export_metadata_for(roll, negative)
-    if not metadata.has_any:
-        return
-    try:
-        write_export_metadata(destination, metadata)
-    except Exception as exc:  # noqa: BLE001 — metadata never loses pixels
-        emit(
-            WarningEvent(
-                code=Code.METADATA_WRITE_FAILED,
-                message=(
-                    f"exported {negative.negative_id} but could not write its "
-                    f"metadata: {exc}"
-                ),
-            )
-        )
+    exif = (
+        build_exif(metadata, export_image_description(negative))
+        if metadata.has_any
+        else None
+    )
+    provenance = provenance_record(
+        negative, matrix, tone_params, profile_kind, clipped_fractions
+    )
+    jxl_writer.write_jxl(
+        destination,
+        rendered,
+        icc_profile=load_icc_profile(profile_kind),
+        exif=exif,
+        xmp=build_xmp(metadata, provenance),
+    )

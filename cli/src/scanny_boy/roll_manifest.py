@@ -374,6 +374,56 @@ class RollInvariants:
     published_icc_profile_sha256: str = ""
 
 
+MATRIX_VERSION = 1
+
+
+@dataclasses.dataclass(frozen=True)
+class CameraColor:
+    """The roll manifest's `camera_color` block (docs/EXPORT_PLAN.md §3.2):
+    the capturing body's colour response, written by the stitch stage from
+    the run's first source and then **frozen** — a property of the camera
+    body, and a roll is shot on one rig.
+
+    This is recorded data, not a roll invariant (§3.3): it affects no
+    published pixel — the export's render reads it — so it must not sit in
+    `processing_params`, whose exact-dict equality is the
+    `ROLL_INVARIANT_MISMATCH` check; that would break every existing roll
+    and drag in the upgrade-shim machinery for a value the decode never
+    uses. A later run whose source reports a different matrix (a different
+    body mid-roll) warns `CAMERA_MATRIX_CONFLICT` and keeps the frozen
+    value — a warning, not an error, because half the roll may already be
+    exported."""
+
+    rgb_xyz_matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]
+    source: str  # "libraw"
+    camera_model: str | None
+    matrix_version: int = MATRIX_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rgb_xyz_matrix": [list(row) for row in self.rgb_xyz_matrix],
+            "source": self.source,
+            "camera_model": self.camera_model,
+            "matrix_version": self.matrix_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CameraColor:
+        matrix = data["rgb_xyz_matrix"]
+        return cls(
+            rgb_xyz_matrix=tuple(
+                (row[0], row[1], row[2]) for row in matrix
+            ),
+            source=data["source"],
+            camera_model=data.get("camera_model"),
+            matrix_version=data.get("matrix_version", MATRIX_VERSION),
+        )
+
+
 @dataclasses.dataclass
 class RollManifest:
     scanny_boy_version: str
@@ -392,6 +442,12 @@ class RollManifest:
     sources: list[RollSourceRecord] = dataclasses.field(default_factory=list)
     negatives: list[NegativeRecord] = dataclasses.field(default_factory=list)
     metadata: RollMetadata = dataclasses.field(default_factory=RollMetadata)
+    # The capturing body's colour response (docs/EXPORT_PLAN.md §3.2) —
+    # written by the stitch stage's first run, frozen thereafter. Recorded
+    # data for the export path, deliberately NOT a roll invariant (§3.3).
+    # `None` on a roll whose runs predate the block; a colour roll in that
+    # state fails the export (`CAMERA_MATRIX_MISSING`).
+    camera_color: CameraColor | None = None
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -435,6 +491,9 @@ class RollManifest:
             "sources": [s.to_dict() for s in self.sources],
             "negatives": [n.to_dict() for n in self.negatives],
             "metadata": self.metadata.to_dict(),
+            "camera_color": (
+                None if self.camera_color is None else self.camera_color.to_dict()
+            ),
         }
 
 

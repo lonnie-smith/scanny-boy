@@ -114,6 +114,9 @@
         "INVALID_EDIT",
         "INVALID_METADATA",
         "EXPORT_FAILED",
+        "JXL_ENCODER_UNAVAILABLE",
+        "CAMERA_MATRIX_MISSING",
+        "CAMERA_MATRIX_CONFLICT",
         "PREVIEW_FAILED",
         "FLATFIELD_PROFILE_NOT_FOUND",
         "FLATFIELD_PROFILE_EXISTS",
@@ -212,7 +215,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 10
+      "const": 11
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {

@@ -12,8 +12,8 @@ import Observation
 @MainActor
 @Observable
 final class ExportModel {
-    /// One `export_done` event: a negative's edits were applied and its
-    /// TIFF written into the output folder.
+    /// One `export_done` event: a negative was rendered as a positive in
+    /// Adobe RGB and written into the output folder as a lossless JPEG XL.
     struct ExportedNegative: Sendable, Hashable {
         let negativeID: String
         let output: String

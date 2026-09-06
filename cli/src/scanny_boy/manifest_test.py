@@ -52,6 +52,24 @@ def _curated() -> CuratedMetadata:
     )
 
 
+def _curated_with_matrix() -> CuratedMetadata:
+    """docs/EXPORT_PLAN.md §3.2: the curated block carries the camera's
+    recorded colour matrix and the body it names."""
+    curated = _curated()
+    return CuratedMetadata(
+        **{
+            **curated.to_dict(),
+            "camera_whitebalance": curated.camera_whitebalance,
+            "rgb_xyz_matrix": (
+                (0.7, 0.2, 0.1),
+                (0.1, 0.75, 0.15),
+                (0.05, 0.1, 0.85),
+            ),
+            "camera_model": "NIKON Z 7",
+        }
+    )
+
+
 def _group(**overrides) -> GroupRecord:
     defaults = {
         "group_id": "negative-01",
@@ -123,6 +141,48 @@ def test_every_written_manifest_validates_against_schema(tmp_path):
 
     data = json.loads((tmp_path / MANIFEST_FILENAME).read_text())
     assert_matches_manifest_schema(data, SCHEMA)
+
+
+# --- the camera colour matrix (docs/EXPORT_PLAN.md section 3) --------------
+
+
+def test_curated_metadata_round_trips_the_rgb_xyz_matrix(tmp_path):
+    manifest = _manifest(curated_metadata=_curated_with_matrix())
+    write_manifest(tmp_path, manifest)
+
+    loaded = load_manifest(tmp_path)
+
+    assert loaded.curated_metadata.rgb_xyz_matrix == (
+        (0.7, 0.2, 0.1),
+        (0.1, 0.75, 0.15),
+        (0.05, 0.1, 0.85),
+    )
+    assert loaded.curated_metadata.camera_model == "NIKON Z 7"
+
+    data = json.loads((tmp_path / MANIFEST_FILENAME).read_text())
+    assert_matches_manifest_schema(data, SCHEMA)
+
+
+def test_curated_metadata_round_trips_the_none_matrix(tmp_path):
+    """The None case round-trips as null: a manifest whose run predates
+    the field, or whose sources report no matrix, stays loadable."""
+    write_manifest(tmp_path, _manifest())
+    loaded = load_manifest(tmp_path)
+    assert loaded.curated_metadata.rgb_xyz_matrix is None
+    assert loaded.curated_metadata.camera_model is None
+
+    data = json.loads((tmp_path / MANIFEST_FILENAME).read_text())
+    assert_matches_manifest_schema(data, SCHEMA)
+
+
+def test_structural_validation_rejects_a_bad_matrix(tmp_path):
+    data = _manifest(curated_metadata=_curated_with_matrix()).to_dict()
+    data["curated_metadata"]["rgb_xyz_matrix"] = [[0.7, 0.2, 0.1]]
+    path = tmp_path / MANIFEST_FILENAME
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(BadManifestError, match="rgb_xyz_matrix"):
+        load_manifest(tmp_path)
 
 
 # --- structural (BAD_MANIFEST) validation ---------------------------------

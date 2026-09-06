@@ -9,9 +9,25 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 10 keeps version 9's roll model and adds two features.
+Protocol version 11 keeps version 10's roll model and adds one feature.
 
-**2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
+**The colour-managed export** (docs/EXPORT_PLAN.md): `export` renders each
+negative as a positive in Adobe RGB (1998)-compatible colour — the
+negative's recorded tone op baked in — written as a 16-bit lossless JPEG
+XL with its ICC profile embedded and Exif/XMP boxes at encode time. A mono
+roll's export is single-channel with the grey export profile and no colour
+matrix. The roll manifest gains an optional top-level `camera_color` block
+(the capturing body's colour matrix, written by the stitch stage's first
+run and frozen thereafter), the work manifest's curated block gains
+`rgb_xyz_matrix`/`camera_model`, and three event codes: `CAMERA_MATRIX_MISSING`
+(error), `CAMERA_MATRIX_CONFLICT` (warning), `JXL_ENCODER_UNAVAILABLE`
+(error). `METADATA_WRITE_FAILED` becomes **reserved**: protocol 11
+removes the exporter's raiser (metadata is built at encode time; there is
+no second write to fail), but the code stays in the shipped protocol —
+`apply-metadata` still raises it — and removing an event code is a
+breaking change for zero benefit.
+
+Protocol version 10 keeps version 9's roll model and adds two features.**2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
 `run` accept `--grid AxD` (e.g. `--grid 3x2`) — five across, two down —
 naming the 2D arrangement of one negative's scans, mutually exclusive with
 `--per-negative`. Exactly one of the two flags is required on `prepare` and
@@ -34,10 +50,11 @@ the serpentine capture-order assumption (start at cell (0, 0), traverse
 command records an ISO-R paper grade (`--grade`, 50–180) plus a midtone
 snap (`--snap`, −0.5…0.5) — or `--reset` — as a `tone` op in the negative's
 ops log (a state, not a transform: the latest op wins and a trailing one
-coalesces in place). The op lives only in the preview's display encode;
-the published TIFF and export are untouched. `roll info` reports the net
-tone per negative as `tone_grade_r`/`tone_snap_gamma` (both `null` when
-flat).
+coalesces in place). The published TIFF is never touched; the preview's
+display encode composes the curve in, and the export's render bakes the
+same curve into the exported pixels (docs/EXPORT_PLAN.md §4.6). `roll
+info` reports the net tone per negative as `tone_grade_r`/`tone_snap_gamma`
+(both `null` when flat).
 
 Roll manifest format version 7 keeps version 6's shape and adds one
 optional per-negative field: `rectification`, the fitted rig-tilt
@@ -389,7 +406,8 @@ ISO-R paper grade (`--grade`, 50–180; lower is harder) plus a midtone snap
 (`--snap`, −0.5…0.5), or `--reset` for the flat linear look. The op is a
 state, not a transform — the latest `tone` op wins, and a trailing `tone` op
 is updated in place rather than appended behind. The published TIFF is never
-touched (export ignores the op); each preview is regenerated from its TIFF
+touched (the export's render bakes the curve into the exported pixels
+instead); each preview is regenerated from its TIFF
 with the tone curve composed into the display encode, and `edit_recorded` is
 emitted per negative — the `edit` row's `params` carry
 `{"grade_r": number | null, "snap_gamma": number | null}` (both `null` for a
@@ -434,13 +452,29 @@ the negative. It fails with `ROLL_NOT_FOUND` for an unregistered roll and
 `NEGATIVE_NOT_FOUND` for an unknown negative — again validating the whole
 selection before removing anything.
 
-`export` writes each negative's TIFF into `--output` with the negative's
-edits applied — the ops log replayed over the published pixels, named after
-the negative and never touching the roll's own files. It emits `export_done`
-per negative (`negative_id`, `output`, `width`, `height`); a negative that
-has not been stitched is skipped with a `warning` (`NEGATIVE_NOT_FOUND`) and
-fails the command's exit status, while a write failure warns with
-`EXPORT_FAILED`. A failed write per negative does not stop the rest.
+`export` renders each negative's published TIFF into a **positive in Adobe
+RGB (1998)-compatible colour — the negative's recorded tone op baked in —
+written as a 16-bit lossless JPEG XL** named after the negative (`.jxl`),
+into `--output` (docs/EXPORT_PLAN.md). The ops log's geometric ops are
+replayed over the published pixels exactly as before; the render then
+inverts, matrixes the colour into Adobe RGB via the roll's recorded
+`camera_color` matrix, and applies the tone curve — the same curve the
+preview shows, at 16 bits. A mono roll's export is single-channel, tagged
+with the grey export profile and rendered without a colour matrix. Each
+file carries its export ICC profile embedded, plus Exif and XMP boxes at
+encode time (metadata reaches the file in the same write — there is no
+second pass); the XMP carries a `scannyboy:provenance` record making the
+file interpretable without the database. The roll's own files are never
+touched. A colour roll whose manifest predates the `camera_color` block
+fails the export outright with `CAMERA_MATRIX_MISSING` — raised once,
+before anything is written; a mono roll without the block exports fine.
+libjxl being unreachable fails the whole export with
+`JXL_ENCODER_UNAVAILABLE` (a packaging failure, not a user error). It
+emits `export_done` per negative (`negative_id`, `output`, `width`,
+`height`); a negative that has not been stitched is skipped with a
+`warning` (`NEGATIVE_NOT_FOUND`) and fails the command's exit status,
+while a per-negative failure warns with `EXPORT_FAILED` and does not stop
+the rest.
 
 ### `--version`
 
@@ -622,12 +656,15 @@ staging directories, and reruns the incomplete negative.
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
 | `OUTPUT_MODIFIED_EXTERNALLY` | A published TIFF's hash differs from the manifest at apply time |
-| `METADATA_WRITE_FAILED` | The EXIF rewrite or its verification failed |
+| `METADATA_WRITE_FAILED` | Reserved (see below) |
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 | `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
 | `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
+| `JXL_ENCODER_UNAVAILABLE` | libjxl could not be reached from the export process — a packaging failure, not a user error; the whole export stops |
+| `CAMERA_MATRIX_MISSING` | A colour roll's manifest predates the `camera_color` block; the export is refused (a mono roll is not) |
+| `CAMERA_MATRIX_CONFLICT` | Warning: a later stitch run's source reports a different camera colour matrix than the roll's frozen one; the frozen value is kept |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
 | `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |
 | `FLATFIELD_PROFILE_EXISTS` | A flat-field profile with that name already exists |

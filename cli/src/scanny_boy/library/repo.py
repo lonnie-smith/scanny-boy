@@ -130,6 +130,9 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.icc_profile = manifest.icc_profile
         roll.published_icc_profile = manifest.published_icc_profile
         roll.stitch_params = manifest.stitch_params
+        roll.camera_color = (
+            None if manifest.camera_color is None else manifest.camera_color.to_dict()
+        )
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -305,6 +308,7 @@ def delete_roll(roll_dir: Path) -> str:
 
 def load_roll(roll_dir: Path) -> RollManifest:
     from scanny_boy.roll_manifest import (
+        CameraColor,
         CaptureTime,
         FrameRecord,
         NegativeMetadata,
@@ -458,6 +462,9 @@ def load_roll(roll_dir: Path) -> RollManifest:
                 last_applied_at=roll.last_applied_at,
                 **{field: getattr(roll, field) for field in METADATA_FIELDS},
                 **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
+            ),
+            camera_color=(
+                None if roll.camera_color is None else CameraColor.from_dict(roll.camera_color)
             ),
         )
 

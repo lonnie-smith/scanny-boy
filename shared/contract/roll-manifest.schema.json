@@ -4,6 +4,22 @@
   "description": "scanny-boy-roll.json: one roll's durable record. See docs/PHASE3_IMPLEMENTATION_PLAN.md section 3.3.",
   "type": "object",
   "definitions": {
+    "cameraColor": {
+      "type": "object",
+      "required": ["rgb_xyz_matrix", "source", "camera_model", "matrix_version"],
+      "properties": {
+        "rgb_xyz_matrix": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "source": { "type": "string" },
+        "camera_model": { "type": ["string", "null"] },
+        "matrix_version": { "type": "integer" }
+      },
+      "description": "The capturing body's colour response (docs/EXPORT_PLAN.md section 3.2): written by the stitch stage's first run from the run's first source, frozen thereafter. Recorded data for the export path, not a roll invariant (section 3.3). A colour roll with no camera_color fails the export (CAMERA_MATRIX_MISSING)."
+    },
     "runStatus": {
       "type": "string",
       "enum": ["running", "partial", "cancelled", "complete"]
@@ -508,6 +524,7 @@
       "type": "array",
       "items": { "$ref": "#/definitions/negative" }
     },
-    "metadata": { "$ref": "#/definitions/metadata" }
+    "metadata": { "$ref": "#/definitions/metadata" },
+    "camera_color": { "$ref": "#/definitions/cameraColor" }
   }
 }

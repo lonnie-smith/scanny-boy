@@ -26,7 +26,19 @@ from typing import IO, Any, ClassVar
 # tone` command (paper grade + midtone snap, recorded as a `tone` op in the
 # ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
 # manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
-PROTOCOL_VERSION = 10
+# Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
+# export becomes a rendered positive in Adobe RGB (1998)-compatible colour
+# (grey for a mono roll), with the negative's recorded tone op baked in,
+# written as a 16-bit lossless JPEG XL with the ICC profile embedded and
+# Exif/XMP boxes at encode time. New: the `JXL_ENCODER_UNAVAILABLE` error
+# (libjxl could not be reached — a packaging failure), the
+# `CAMERA_MATRIX_MISSING` error (a colour roll predating the roll
+# manifest's `camera_color` block), and the `CAMERA_MATRIX_CONFLICT`
+# warning (a later run's source reports a different matrix than the roll's
+# frozen one). The roll manifest gains the optional `camera_color` block
+# and the work manifest's curated block gains `rgb_xyz_matrix`/
+# `camera_model`. No `export_done` payload change.
+PROTOCOL_VERSION = 11
 
 
 class EventType(enum.StrEnum):
@@ -137,6 +149,12 @@ class Code(enum.StrEnum):
     INVALID_EDIT = "INVALID_EDIT"
     INVALID_METADATA = "INVALID_METADATA"
     EXPORT_FAILED = "EXPORT_FAILED"
+    # EXPORT_PLAN §1.2: libjxl could not be reached through the process's
+    # symbol namespace. A packaging failure, not a user error.
+    JXL_ENCODER_UNAVAILABLE = "JXL_ENCODER_UNAVAILABLE"
+    # EXPORT_PLAN §3: the camera colour matrix recorded in the roll manifest.
+    CAMERA_MATRIX_MISSING = "CAMERA_MATRIX_MISSING"
+    CAMERA_MATRIX_CONFLICT = "CAMERA_MATRIX_CONFLICT"
     PREVIEW_FAILED = "PREVIEW_FAILED"
     FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
     FLATFIELD_PROFILE_EXISTS = "FLATFIELD_PROFILE_EXISTS"

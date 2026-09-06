@@ -233,7 +233,7 @@ def test_protocol_version_is_ten():
     net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
     negatives. The published TIFF never carries the adjustment
     (docs/DECISIONS.md, "The preview's tone adjustment")."""
-    assert PROTOCOL_VERSION == 10
+    assert PROTOCOL_VERSION == 11
 
 
 def test_new_event_kinds_round_trip():

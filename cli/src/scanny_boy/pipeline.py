@@ -416,6 +416,12 @@ def build_groups(selected: list[str], per_negative: int) -> list[GroupRecord]:
 
 def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetadata:
     first = settings_list[0]
+    # The camera model is the EXIF make/model joined; a lone one of the two
+    # is used alone. Recorded for the roll manifest's `camera_color` block
+    # (docs/EXPORT_PLAN.md §3.2).
+    camera_model = " ".join(
+        part for part in (first.make, first.model) if part
+    ) or None
     return CuratedMetadata(
         exposure_time=str(first.exposure_time),
         f_number=str(first.f_number),
@@ -424,6 +430,8 @@ def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetada
         lens_model=first.lens_model,
         orientation=first.orientation,
         camera_whitebalance=first.camera_whitebalance,
+        rgb_xyz_matrix=first.rgb_xyz_matrix,
+        camera_model=camera_model,
     )
 
 

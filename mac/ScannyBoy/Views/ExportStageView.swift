@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The Export tab (protocol version 5): choose an output folder, then write
-/// every negative's TIFF with its edits applied. The roll's own files are
-/// never touched — the CLI replays each negative's ops log over its
-/// published pixels and writes the result into the chosen folder.
+/// The Export tab: choose an output folder, then write every negative as a
+/// rendered positive in Adobe RGB, written as a lossless JPEG XL (with the
+/// negative's recorded tone baked in). The roll's own files are never
+/// touched — the CLI replays each negative's ops log over its published
+/// pixels, renders, and writes the result into the chosen folder.
 struct ExportStageView: View {
     @Bindable var export: ExportModel
     let edit: EditModel
@@ -30,7 +31,7 @@ struct ExportStageView: View {
             Section("Export") {
                 HStack {
                     Text(
-                        "Writes each negative's TIFF with its edits applied. "
+                        "Writes each negative as a rendered positive in Adobe RGB, as a lossless JPEG XL. "
                             + "The roll's own files are never modified."
                     )
                     .font(.caption)
@@ -83,7 +84,7 @@ struct ExportStageView: View {
     private func chooseOutputFolder() {
         guard let directory = ContentView.pickFolder(
             startingAt: export.outputDirectory,
-            message: "Choose where the exported TIFFs are written.",
+            message: "Choose where the exported JPEG XLs are written.",
             canCreateDirectories: true
         ) else { return }
         export.outputDirectory = directory

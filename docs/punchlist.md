@@ -17,3 +17,19 @@ for the decisions that superseded earlier items.
   point: `probe.py`'s invariant seeding (plus `pipeline.py` and
   `stitch_pipeline.py`, the `generate_icc_profile.py` tool, and the
   packaging tests that enumerate bundled resources).
+* **Surface the gamut clip fraction in the Exported list** — the export's
+  render already measures it and records it in the file's XMP
+  (`scannyboy:provenance`, docs/EXPORT_PLAN.md §4.4); showing it in the
+  app's Exported list would need an `export_done` payload change (a
+  protocol bump) and Swift decoding, and it is a forensic record on the
+  file, not a user-facing signal. Do it only if a user actually asks what
+  the number means.
+* **Gamut compression instead of the per-channel clip** — the export
+  clips out-of-gamut colours per channel, which shifts hue slightly on
+  the most saturated pixels; the ordinary, accepted behaviour of every
+  matrix-based render. A gamut-compression curve is a feature with its
+  own plan (docs/EXPORT_PLAN.md §4.4).
+* **A print curve distinct from grade/snap, soft-proofing, paper
+  simulation, printing** — what the export plan took from Phase 4
+  (inversion, tone at full resolution) and what it left (docs/
+  EXPORT_PLAN.md §9, `DECISIONS.md`'s Phase 4 note).

@@ -323,9 +323,10 @@ public struct CLICommand: Sendable, Hashable {
 
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
     ///
-    /// Applies each negative's recorded edits to its published pixels and
-    /// writes the result into the chosen folder; the roll's own TIFFs are
-    /// never modified. No selection means every negative.
+    /// Renders each negative's published pixels as a positive in Adobe
+    /// RGB — the recorded tone baked in — and writes it as a lossless JPEG
+    /// XL into the chosen folder; the roll's own files are never modified.
+    /// No selection means every negative.
     public static func export(roll: URL, output: URL, negatives: [String] = []) -> CLICommand {
         var arguments = ["export", "--roll", roll.path, "--output", output.path]
         if !negatives.isEmpty {

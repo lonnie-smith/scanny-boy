@@ -1,7 +1,7 @@
 """Loads and verifies the bundled ICC colour profiles.
 
-Three profiles, one claim each (docs/DECISIONS.md, "Normalization
-decisions"; MONOCHROME_PLAN section 4):
+Five profiles (docs/DECISIONS.md, "Normalization decisions";
+MONOCHROME_PLAN section 4; EXPORT_PLAN section 2):
 
 - `ScannyBoy-Linear-v1.icc` tags the **prepare stage's intermediates**,
   and its linear TRC is the truth about those pixels
@@ -11,9 +11,9 @@ decisions"; MONOCHROME_PLAN section 4):
   Its g = 2.2 TRC is a *viewing convention*, not a colorimetric claim:
   the pixels are normalized log density, which no ICC TRC expresses. It
   exists so external viewers show approximately the code values; every
-  internal consumer — previews, the edit stage, export, the future print
-  stage — decodes through `normalization.decode_normalized`, never
-  through an ICC transform. That rule is the load-bearing one, and
+  internal consumer — previews, the edit stage, export — decodes through
+  `normalization.decode_normalized`, never through an ICC transform. That
+  rule is the load-bearing one for these two profiles, and
   `icc_profile_test.py`'s guard test keeps the profile from creeping into
   the render path where a wrong TRC could corrupt pixels instead of
   merely looking odd.
@@ -22,15 +22,22 @@ decisions"; MONOCHROME_PLAN section 4):
   viewing convention and the same caveat, in a GRAY-class profile a
   1-channel file can actually carry (the DENSITY profile is RGB and
   cannot).
+- `ScannyBoy-Export-AdobeRGB-v1.icc` tags the **export** — a rendered
+  positive in Adobe RGB (1998)-compatible colour (EXPORT_PLAN sections
+  2 and 4). Here the profile *is* load-bearing: the render's matrix
+  conversion really puts the pixels in this space, and an external
+  program that honours the profile is doing the right thing.
+- `ScannyBoy-Export-Grey-v1.icc` is the single-channel companion of the
+  export profile, same TRC, for a mono roll's export.
 
-All three carry the RGB profiles' colorants as a **deliberately wide
-container**, not a measurement: `raw_decode.RAW_PARAMS` decodes the
-camera's own filter responses, so no primaries could be true of the
-pixels (docs/PROFILE_HONESTY_PLAN.md; docs/DECISIONS.md D-2). The wide
-container keeps a viewer applying the profile from clipping
-camera-native values.
+The three working profiles carry the RGB profiles' colorants as a
+**deliberately wide container**, not a measurement: `raw_decode.RAW_PARAMS`
+decodes the camera's own filter responses, so no primaries could be true
+of the pixels (docs/PROFILE_HONESTY_PLAN.md; docs/DECISIONS.md D-2). The
+two export profiles' colorimetry is the published Adobe RGB (1998)
+specification and *is* the claim being made about the rendered pixels.
 
-Every TIFF this program writes must carry the profile its stage dictates —
+Every file this program writes must carry the profile its stage dictates —
 never untagged data — so the SHA-256 is checked before every use, not just
 once at import time.
 """
@@ -46,6 +53,8 @@ from scanny_boy.events import Code
 LINEAR_PROFILE_FILENAME = "ScannyBoy-Linear-v1.icc"
 DENSITY_PROFILE_FILENAME = "ScannyBoy-Density-v1.icc"
 DENSITY_GREY_PROFILE_FILENAME = "ScannyBoy-Density-Grey-v1.icc"
+EXPORT_RGB_PROFILE_FILENAME = "ScannyBoy-Export-AdobeRGB-v1.icc"
+EXPORT_GREY_PROFILE_FILENAME = "ScannyBoy-Export-Grey-v1.icc"
 
 # Verified against the generated files (`cli/tools/generate_icc_profile.py`).
 LINEAR_PROFILE_SHA256 = (
@@ -57,12 +66,20 @@ DENSITY_PROFILE_SHA256 = (
 DENSITY_GREY_PROFILE_SHA256 = (
     "4ab76544009b34358eabb74cc83ec09e5a47278f531a7ed80293ba5dce8dad6c"
 )
+EXPORT_RGB_PROFILE_SHA256 = (
+    "85fc817bb230d5617578087e35d79e5e89cbae0930b9929e639690a44973a25c"
+)
+EXPORT_GREY_PROFILE_SHA256 = (
+    "87a776bac58693beb3de9a6effa0ce82177fe326f0813a5cf888382282a4f86d"
+)
 
 
 class ProfileKind(enum.StrEnum):
     LINEAR = "linear"  # prepare-stage intermediates
     DENSITY = "density"  # published, normalized TIFFs (colour)
     DENSITY_GREY = "density-grey"  # published mono TIFFs (MONOCHROME_PLAN §4)
+    EXPORT_RGB = "export-rgb"  # colour exports (EXPORT_PLAN §2)
+    EXPORT_GREY = "export-grey"  # mono exports (EXPORT_PLAN §2)
 
 
 # kind -> (filename, sha256)
@@ -72,6 +89,14 @@ PROFILES: dict[ProfileKind, tuple[str, str]] = {
     ProfileKind.DENSITY_GREY: (
         DENSITY_GREY_PROFILE_FILENAME,
         DENSITY_GREY_PROFILE_SHA256,
+    ),
+    ProfileKind.EXPORT_RGB: (
+        EXPORT_RGB_PROFILE_FILENAME,
+        EXPORT_RGB_PROFILE_SHA256,
+    ),
+    ProfileKind.EXPORT_GREY: (
+        EXPORT_GREY_PROFILE_FILENAME,
+        EXPORT_GREY_PROFILE_SHA256,
     ),
 }
 
@@ -87,6 +112,19 @@ def published_profile_kind(film_kind: str = "colour") -> ProfileKind:
         return ProfileKind.DENSITY_GREY
     return ProfileKind.DENSITY
 
+
+def export_profile_kind(channel_count: int) -> ProfileKind:
+    """The export profile a rendered image's channel count dictates
+    (EXPORT_PLAN §4.5): the grey profile for a 1-channel (mono roll)
+    export, the Adobe RGB compatible one otherwise. Selected on the
+    channel count — the fact the writer actually sees — not on a manifest
+    film-kind lookup; when MONOCHROME_PLAN §2's `film` block lands the
+    two agree by construction."""
+    if channel_count == 1:
+        return ProfileKind.EXPORT_GREY
+    return ProfileKind.EXPORT_RGB
+
+
 # ICC parametricCurveType function type 0 (pure gamma), in s15Fixed16. The
 # linear profile's g = 1.0 is the identity curve, because the decode is
 # linear; the density profile's g = 2.2 (`round(2.2 * 65536)`) is the
@@ -94,6 +132,11 @@ def published_profile_kind(film_kind: str = "colour") -> ProfileKind:
 TRC_FUNCTION_TYPE = 0
 TRC_G_LINEAR = 65536
 TRC_G_DENSITY = 144179
+# The export profiles' TRC: 563/256 = 2.19921875, exact in s15Fixed16 —
+# the published Adobe RGB (1998) gamma. The generator's `curv` tag writes
+# it in u8Fixed8 (563), and `render.GAMMA_ADOBE` derives from this
+# constant (EXPORT_PLAN §2.2: one number, three places, all pinned here).
+TRC_G_EXPORT = 144128
 
 
 class IccProfileError(Exception):

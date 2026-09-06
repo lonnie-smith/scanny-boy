@@ -30,7 +30,13 @@ written:
 §0.1 exposes that they assert primaries the pixels never had, but fixing it
 shares nothing with this work mechanically and is the only change that
 breaks the roll invariants. It is `docs/PROFILE_HONESTY_PLAN.md`, and
-neither plan depends on the other.
+neither plan depends on the other. *(Update, on landing here: §3 of
+PROFILE_HONESTY_PLAN — the renames and re-pinned hashes — has already been
+carried out, so the profiles are now described as a "wide container, not a
+measurement" rather than claiming ProPhoto. §0.1's colour-space point
+survives unchanged: the pixels are still the camera's own filter responses
+with no colorimetric conversion, which is exactly what §3's matrix
+addresses.)*
 
 ---
 
@@ -47,17 +53,17 @@ straight through with `tifffile.imwrite` plus
 `tifftools` to add EXIF and XMP (`export_metadata.write_export_metadata`).
 
 So today's exported file is: **normalized log density, still a negative,
-tagged with a profile that claims ProPhoto primaries and a g = 2.2 TRC,
-neither of which is true of the pixels.** `docs/DECISIONS.md`
-("Two ICC profiles, and the profile is never load-bearing") is candid that
-the TRC is a viewing convention. It is less candid that the *primaries* are
-equally invented: `raw_decode.RAW_PARAMS` sets `output_color=raw` and
-`user_wb=[1,1,1,1]`, so the channels are the camera's own filter responses
-and have never been converted into any colorimetric space at all.
+tagged with a profile whose primaries and g = 2.2 TRC describe nothing the
+pixels were ever converted into.** (`docs/DECISIONS.md`'s D-2 calls the
+colorants a "deliberately wide container, not a measurement" — candid, but
+the consequence stands.) `raw_decode.RAW_PARAMS` sets `output_color=raw`
+and `user_wb=[1,1,1,1]`, so the channels are the camera's own filter
+responses and have never been converted into any colorimetric space at all.
 
-Both halves of that fiction end here, for the export path only. The export
-gets its own honest profile; the density profile keeps its pixels and its
-label, and `PROFILE_HONESTY_PLAN.md` deals with the label separately.
+Both halves of that situation end here, for the export path only. The export
+gets its own colour-managed profile; the density profile keeps its pixels
+and its wide-container label, which `PROFILE_HONESTY_PLAN.md` §3 has
+already renamed and §5 rewords further.
 
 ### 0.2 What it becomes
 
@@ -181,6 +187,12 @@ this plan is still correct in shape but the container decision has to be
 revisited (16-bit lossless AVIF and 16-bit PNG are the plausible
 alternatives, and both would keep §2, §3 and §4 unchanged). Do not silently
 substitute a format.
+
+*(Update, on landing here: the prototype — 900×600, 16-bit lossless,
+Apple's Adobe RGB profile, Exif + XMP boxes — was confirmed in Lightroom
+desktop 9.5.1: it opens with correct colour and the caption survives.
+`sips` reports `profile: Adobe RGB (1998)`, `bitsPerSample: 16`, and
+`exiftool` reads both boxes. The gate passed; §5 proceeded.)*
 
 macOS itself is known good: `sips` reads the prototype files and reports
 `profile: Adobe RGB (1998)`, `bitsPerSample: 16`, and `exiftool` reads both
@@ -393,9 +405,10 @@ Two new files in `cli/src/scanny_boy/resources/`:
 
 `ProfileKind` (`icc_profile.py`) gains `EXPORT_RGB` and `EXPORT_GREY`, with
 their SHA-256s pinned beside the existing three and verified on every load,
-exactly as the others are. The three existing profiles are untouched —
-`PROFILE_HONESTY_PLAN.md` deals with their descriptions, separately and
-independently.
+exactly as the others are. The three existing profiles are not modified by
+this plan — their renames and re-pinned hashes were PROFILE_HONESTY_PLAN §3's
+work, already carried out; §5 of that plan rewords their descriptions
+further, separately and independently.
 
 ### 2.2 The exact tag values
 
@@ -459,19 +472,28 @@ Adobe RGB (1998) specification and the bytes are this project's own.
   and the grey profile has a `kTRC` and no `rXYZ`.
 - The two profiles' TRC gammas are equal, and equal `TRC_G_EXPORT`.
 
-**Three existing tests are parametrized over `list(ProfileKind)` and will
-pick up the new kinds automatically. Two of them must not:**
+**Five existing tests are parametrized over `list(ProfileKind)` and will
+pick up the new kinds automatically. Three of them must not:**
 
-- `test_primaries_white_point_and_chad_are_byte_identical_to_prophoto`
-  (`:176`) asserts colorants matching the vendored ProPhoto source, which
-  the Adobe RGB profiles deliberately do not. Parametrize it over an
-  explicit `LINEAR, DENSITY, DENSITY_GREY` instead.
+- `test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source`
+  (`:176` — renamed from `test_primaries_white_point_and_chad_are_byte_identical_to_prophoto`
+  when PROFILE_HONESTY §3 landed) asserts colorants matching the vendored
+  ProPhoto source, which the Adobe RGB profiles deliberately do not.
+  Parametrize it over an explicit `LINEAR, DENSITY, DENSITY_GREY` instead.
+- `test_every_description_declares_a_wide_container_not_a_measurement`
+  (`:229`, added by the same commit) asserts every description says "wide
+  container" and "not a measurement" — true of the three existing profiles
+  and false of these two, whose colorimetry *is* the claim being made.
+  Parametrize it over `LINEAR, DENSITY, DENSITY_GREY` as well.
+  (`test_no_filename_or_description_claims_prophoto`, `:221`, passes
+  as-is: the §2.3 description mentions Adobe RGB, not ProPhoto.)
 - `test_trc_tags_share_one_offset` (`:159`) picks `kTRC` vs `rTRC/gTRC/bTRC`
   with `kind is ProfileKind.DENSITY_GREY`. Widen that to a set including
   `EXPORT_GREY`, or the grey export profile is checked for RGB TRC tags it
   does not have.
-- `test_profile_header_declares_icc_v4` (`:217`) *should* cover the new
-  kinds — the second construction path must write a v4 header too. Leave it.
+- `test_profile_header_declares_icc_v4` (`:254`, moved from `:217`)
+  *should* cover the new kinds — the second construction path must write a
+  v4 header too. Leave it.
 
 The guard test (`test_guard_nothing_outside_the_write_path_imports_the_loader`)
 needs **no change**: it checks which *modules* mention `load_icc_profile`,
@@ -737,10 +759,12 @@ land, the two agree by construction; add a comment pointing at that.
 
 Mono takes §4.1's no-matrix path: one LUT, no exponentiation, no matrix
 stage. There is one channel, there are no primaries to rotate, and the
-collapse (`normalization.collapse_to_mono`) already merged the camera's
-channels with an inverse-variance weighting that is a noise argument, not a
-colorimetric one. Applying a colour matrix to its output would be inventing
-a luminance weighting nobody measured. The file is tagged `EXPORT_GREY`.
+published channel is a collapse (MONOCHROME_PLAN §4 — *not yet landed*; a
+mono roll's single-channel TIFF cannot exist until it is) that will merge
+the camera's channels with an inverse-variance weighting that is a noise
+argument, not a colorimetric one. Applying a colour matrix to its output
+would be inventing a luminance weighting nobody measured. The file is
+tagged `EXPORT_GREY`.
 
 ### 4.6 The tone op, and what changes about it
 
@@ -935,8 +959,10 @@ New codes in `events.py`:
 - `CAMERA_MATRIX_CONFLICT` — warning; a later run's source reports a
   different matrix (§3.2).
 
-`METADATA_WRITE_FAILED` is **kept** even though §5.2 removes its only
-raiser: it is in the shipped protocol and in Swift's `CLIEvent` handling,
+`METADATA_WRITE_FAILED` is **kept** even though §5.2 removes the
+exporter's raiser (note it still has one in `apply_metadata.py`'s
+DateOriginal rewrite — so the code is not orphaned by this plan either
+way): it is in the shipped protocol and in Swift's `CLIEvent` handling,
 and removing an event code is a breaking change for zero benefit. Mark it
 reserved in `CONTRACT.md`.
 
@@ -944,12 +970,15 @@ reserved in `CONTRACT.md`.
 file's XMP (§4.4), not in the protocol.
 
 Bump `PROTOCOL_VERSION` to 11 and update `shared/contract/CONTRACT.md` and
-`schema.json` together. The export section (CONTRACT.md lines 379–385) needs
-rewriting rather than editing — it currently describes writing TIFFs with
-edits applied and says nothing about rendering, colour or tone. The
-error-code table near line 569 needs the three new entries. Line 18's claim
-that "the published TIFF and export are untouched" by the tone feature is
-now false; fix it.
+`schema.json` together. The export section (CONTRACT.md's export
+subsection — the plan's original "lines 379–385" drifted as sections
+landed above it; grep for "export" headings) needs rewriting rather than
+editing — it currently describes writing TIFFs with edits applied and says
+nothing about rendering, colour or tone. The error-code table near line 569
+needs the three new entries. The `edit tone` section's claim that
+"export ignores the op" / "the published TIFF is never touched" is now
+false; fix it (the plan's original "line 18" reference drifted the same
+way).
 
 ---
 
@@ -981,25 +1010,33 @@ The `.dylibs` that `imagecodecs` ships are already collected by PyInstaller
 and PyInstaller follows each extension module's linked dependencies). §1.2's
 `ctypes.CDLL(None)` approach is what makes this work frozen: no path is
 hardcoded, and the symbols are already in the process by the time the shim
-looks for them.
+looks for them. (Verified live: every symbol §1.3 needs resolves through
+`CDLL(None)` after `import imagecodecs._jpegxl`, against libjxl 0.12.0 /
+imagecodecs 2026.8.16.)
 
-Two additions:
+Three additions:
 
 - `packaging_test.py` gains a check that the frozen binary can import
   `jxl_writer` and encode a tiny image — the `--slow` packaged-app tier is
   where this belongs, and it is the only test that would catch a
   `.dylibs`-collection regression.
-- The two new `.icc` files must be in the wheel and the bundle. They sit in
-  `scanny_boy/resources/`, which is already collected, but the existing
-  packaging test that enumerates the bundled profiles needs the two new
-  names added or it will keep passing while checking the wrong set.
+- The `.icc` files are **not** collected implicitly: the spec's `datas`
+  lists each one explicitly. Add the two new profiles there — and fix the
+  pre-existing gap this plan's review found: `ScannyBoy-Density-Grey-v1.icc`
+  (mono step 1) was never added to the spec or to
+  `test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata`, so the
+  frozen app cannot export a mono roll today. The new names go into that
+  test's enumeration too, or it keeps passing while checking the wrong set.
 
 ---
 
 ## 9. `DECISIONS.md` amendments
 
-**D-2, "Two ICC profiles, and the profile is never load-bearing"** now
-describes two of five. Split its central claim — never load-bearing *for the
+**D-2, "Two ICC profiles, and the profile is never load-bearing"** (which
+PROFILE_HONESTY §3 has already partially rewritten — amend today's wording,
+including its "wide container" table, rather than the pre-rename text this
+plan was first written against) now describes three of five. Split its
+central claim — never load-bearing *for the
 intermediates and the published TIFF*, genuinely descriptive *for the
 export* — and add an Export column:
 
@@ -1040,7 +1077,7 @@ together (§4.6); there is no `--format` flag (§6).
 0. **§0.5** — prototype JXL, confirm Lightroom imports it. Stop if not.
 1. **§1** — `jxl_writer.py` and its tests. Nothing consumes it yet. Ship it.
 2. **§2** — the two profiles, the generator's second construction path, the
-   `ProfileKind` entries, the pinned hashes, §2.4's three parametrized-test
+   `ProfileKind` entries, the pinned hashes, §2.4's parametrized-test
    fixes. No pixel changes and **no invariant break**.
 3. **§3** — the matrix, `rawpy` through the work manifest to the roll
    manifest, plus the two schemas. Do §3.1's direction check against a real

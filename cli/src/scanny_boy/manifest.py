@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,25 @@ class CuratedMetadata:
     lens_model: str | None
     orientation: int
     camera_whitebalance: tuple[float, float, float, float]
+    # LibRaw's `rgb_xyz_matrix`, first three rows (docs/EXPORT_PLAN.md
+    # §3.2). Recorded data, read at decode for the export path's colour
+    # matrix and never used by this or any pixel pipeline: it is
+    # deliberately **not** in `processing_params`, whose exact-dict
+    # equality is the roll invariant — adding a key there would break
+    # every existing roll's check for a value no published pixel depends
+    # on (EXPORT_PLAN §3.3). `camera_whitebalance`/`daylight_whitebalance`
+    # are deliberately not applied either: the stitch stage's per-channel
+    # normalization is the white balance (§3.1), and layering a second one
+    # would double-correct. `None` when LibRaw reported no usable matrix.
+    rgb_xyz_matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] | None = None
+    # The capturing body's make/model, as the source files' EXIF spell it —
+    # recorded beside the matrix so the roll manifest's `camera_color`
+    # block can name the instrument the matrix characterizes.
+    camera_model: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +120,12 @@ class CuratedMetadata:
             "lens_model": self.lens_model,
             "orientation": self.orientation,
             "camera_whitebalance": list(self.camera_whitebalance),
+            "rgb_xyz_matrix": (
+                None
+                if self.rgb_xyz_matrix is None
+                else [list(row) for row in self.rgb_xyz_matrix]
+            ),
+            "camera_model": self.camera_model,
         }
 
 
@@ -369,6 +395,26 @@ def validate_manifest_dict(data: Any) -> None:
     _require(
         isinstance(data["curated_metadata"], dict), "curated_metadata is not an object"
     )
+    # The camera colour matrix (docs/EXPORT_PLAN.md §3.2): optional, written
+    # by this program only; older manifests read back as null through the
+    # dataclass defaults. Recorded data for the export path — never part of
+    # `processing_params` (§3.3).
+    matrix = data["curated_metadata"].get("rgb_xyz_matrix")
+    if matrix is not None:
+        _require(
+            isinstance(matrix, list)
+            and len(matrix) == 3
+            and all(
+                isinstance(row, list)
+                and len(row) == 3
+                and all(
+                isinstance(v, int | float) and math.isfinite(v)
+                for v in row
+            )
+                for row in matrix
+            ),
+            "curated_metadata rgb_xyz_matrix is invalid",
+        )
     _require(isinstance(data["groups"], list), "groups is not a list")
     for group in data["groups"]:
         _validate_group_dict(group)
@@ -467,6 +513,14 @@ def _manifest_from_dict(data: dict[str, Any]) -> Manifest:
             lens_model=curated["lens_model"],
             orientation=curated["orientation"],
             camera_whitebalance=(wb[0], wb[1], wb[2], wb[3]),
+            rgb_xyz_matrix=(
+                None
+                if curated.get("rgb_xyz_matrix") is None
+                else tuple(
+                    (row[0], row[1], row[2]) for row in curated["rgb_xyz_matrix"]
+                )
+            ),
+            camera_model=curated.get("camera_model"),
         ),
         groups=[
             GroupRecord(

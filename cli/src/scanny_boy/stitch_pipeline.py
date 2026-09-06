@@ -132,6 +132,7 @@ from scanny_boy.registration import (
 from scanny_boy.roll_manifest import (
     ROLL_PROFILE_PROCESSING_PARAMS_KEYS,
     ROLL_PROFILE_STITCH_PARAMS_KEYS,
+    CameraColor,
     CaptureTime,
     FrameRecord,
     NegativeRecord,
@@ -1146,7 +1147,9 @@ def run_stitch(
     mono_by_group = _measure_mono_samples(work_dir, groups, cancel)
 
     run_record, records_by_group, removals_by_group, new_negative_ids = (
-        _append_this_run(roll, work_manifest, groups, run_id, invariants, work_dir)
+        _append_this_run(
+            roll, work_manifest, groups, run_id, invariants, work_dir, emit=emit
+        )
     )
 
     try:
@@ -1354,6 +1357,49 @@ def _pick_adopted(covered: list[NegativeRecord], first_member: str) -> NegativeR
     return covered[0]
 
 
+def _seed_camera_color(
+    roll: RollManifest, work_manifest: Manifest, emit: EmitFn
+) -> None:
+    """The roll manifest's `camera_color` block (docs/EXPORT_PLAN.md §3.2):
+    the capturing body's colour response, taken from the work manifest's
+    curated metadata — the run's first source.
+
+    Written on the roll's first run and then frozen: the block is a
+    property of the camera body, and a roll is shot on one rig. A later
+    run whose source reports a different matrix — a different body
+    mid-roll — emits a `CAMERA_MATRIX_CONFLICT` warning and keeps the
+    frozen value, the same posture MONOCHROME_PLAN §2.3 takes for
+    `film.kind`: a warning, not an error, because half the roll may
+    already be exported. Rolls whose run predates the block have none —
+    the export decides what that means (§3.4).
+
+    `daylight_whitebalance` is deliberately not consulted here: the
+    stitch stage's per-channel normalization is the white balance, and
+    layering a second one on top would double-correct (§3.1)."""
+    curated = work_manifest.curated_metadata
+    if curated.rgb_xyz_matrix is None:
+        return
+    candidate = CameraColor(
+        rgb_xyz_matrix=curated.rgb_xyz_matrix,
+        source="libraw",
+        camera_model=curated.camera_model,
+    )
+    if roll.camera_color is None:
+        roll.camera_color = candidate
+        return
+    if roll.camera_color.rgb_xyz_matrix != candidate.rgb_xyz_matrix:
+        emit(
+            WarningEvent(
+                code=Code.CAMERA_MATRIX_CONFLICT,
+                message=(
+                    "this run's source reports a different camera colour "
+                    "matrix than the roll's; keeping the roll's recorded "
+                    f"one ({roll.camera_color.camera_model or 'unknown camera'})"
+                ),
+            )
+        )
+
+
 def _append_this_run(
     roll: RollManifest,
     work_manifest: Manifest,
@@ -1361,6 +1407,7 @@ def _append_this_run(
     run_id: str,
     invariants: RollInvariants,
     work_dir: Path,
+    emit: EmitFn = lambda event: None,
 ) -> tuple[RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]], set[str]]:
     """Add this stitch to the roll: its run record, its sources, and one
     negative per group, all per sections 3.3 and 3.4.
@@ -1405,6 +1452,8 @@ def _append_this_run(
                 roll.stitch_params[key] = invariants.stitch_params[key]
             else:
                 roll.stitch_params.pop(key, None)
+
+    _seed_camera_color(roll, work_manifest, emit)
 
     run_record = RunRecord(
         run_id=run_id,

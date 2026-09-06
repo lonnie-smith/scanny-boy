@@ -5,6 +5,7 @@ from scanny_boy.icc_profile import ProfileKind, profile_record
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError, SourceRecord
 from scanny_boy.roll_manifest import (
+    CameraColor,
     CaptureTime,
     FrameRecord,
     NegativeRecord,
@@ -229,6 +230,40 @@ def test_persisted_manifest_matches_the_published_schema(tmp_path):
     assert_matches_roll_manifest_schema(
         load_roll_manifest(tmp_path).to_dict(), load_roll_manifest_schema()
     )
+
+
+# --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
+
+
+def test_camera_color_round_trips_through_the_database(tmp_path):
+    manifest = _manifest(
+        camera_color=CameraColor(
+            rgb_xyz_matrix=(
+                (0.7, 0.2, 0.1),
+                (0.1, 0.75, 0.15),
+                (0.05, 0.1, 0.85),
+            ),
+            source="libraw",
+            camera_model="NIKON Z 7",
+        )
+    )
+    write_roll_manifest(tmp_path, manifest)
+
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.camera_color == manifest.camera_color
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_roll_manifest_without_camera_color_loads_and_validates(tmp_path):
+    """An optional object: a roll whose runs predate the block (or a build
+    whose sources report no matrix) has no `camera_color` — the export
+    decides what that means (EXPORT_PLAN §3.4), the loader does not."""
+    write_roll_manifest(tmp_path, _manifest())
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.camera_color is None
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
 
 
 def test_schema_rejects_a_frame_record_missing_scale():
