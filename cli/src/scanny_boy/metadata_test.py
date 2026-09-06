@@ -11,6 +11,8 @@ from scanny_boy.metadata import (
     read_camera_whitebalance,
     read_digitization_fields,
     read_exif_settings,
+    read_rgb_xyz_matrix,
+    read_source_settings,
 )
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
@@ -63,6 +65,43 @@ def test_read_exif_settings_ignores_missing_tags_independently(tmp_path):
 
     assert settings.lens_model is None
     assert settings.exposure_time == Fraction(1, 30)
+
+
+def test_read_rgb_xyz_matrix_maps_garbage_file_to_unreadable_raw(tmp_path):
+    path = tmp_path / "garbage.NEF"
+    path.write_bytes(b"not a raw file at all")
+
+    with pytest.raises(UnreadableRawError):
+        read_rgb_xyz_matrix(path)
+
+
+def test_read_rgb_xyz_matrix_maps_non_raw_tiff_to_unsupported_raw(tmp_path):
+    path = write_fake_nef(tmp_path / "a.NEF")
+
+    with pytest.raises(UnsupportedRawError):
+        read_rgb_xyz_matrix(path)
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_read_source_settings_carries_the_matrix_and_does_not_reopen_the_raw(tmp_path):
+    """The sibling reader shares `read_camera_whitebalance`'s single
+    `rawpy.imread` context (docs/EXPORT_PLAN.md §3.2). `read_source_settings`
+    is the one caller, so its record is where the matrix lands."""
+    settings = read_source_settings(FIXTURES_DIR / REAL_SAMPLE_FILES[0])
+
+    assert settings.rgb_xyz_matrix is not None
+    assert len(settings.rgb_xyz_matrix) == 3
+    assert all(len(row) == 3 for row in settings.rgb_xyz_matrix)
+    assert settings.camera_whitebalance is not None
+
+
+def test_read_source_settings_maps_garbage_file_to_unreadable_raw(tmp_path):
+    path = tmp_path / "garbage.NEF"
+    path.write_bytes(b"not a raw file at all")
+
+    with pytest.raises(UnreadableRawError):
+        read_source_settings(path)
 
 
 def test_read_camera_whitebalance_maps_garbage_file_to_unreadable_raw(tmp_path):
@@ -217,3 +256,27 @@ def test_real_sample_files_camera_whitebalance_matches_appendix_a():
         wb = read_camera_whitebalance(FIXTURES_DIR / name)
         assert wb is not None
         assert wb == pytest.approx((1.691406, 1.0, 1.378906, 1.0), abs=1e-6)
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_real_sample_files_rgb_xyz_matrix_direction_check():
+    """docs/EXPORT_PLAN.md §3.1's empirical check, against real NEFs:
+    `rawpy.rgb_xyz_matrix` is LibRaw's `cam_xyz` — the **XYZ -> camera RGB**
+    matrix (the DNG `ColorMatrix` convention), the opposite of the name's
+    reading. Confirming direction: `pinv(M) @ XYZ_of_D65` must be a
+    roughly equal-parts, all-positive camera triple. If it is not, the
+    matrix points the other way and everything downstream transposes."""
+    import numpy as np
+
+    d65_xyz = np.array([0.95047, 1.0, 1.08883])
+    for name in REAL_SAMPLE_FILES:
+        matrix = read_rgb_xyz_matrix(FIXTURES_DIR / name)
+        assert matrix is not None, name
+        m = np.asarray(matrix)
+        camera_triple = np.linalg.pinv(m) @ d65_xyz
+        assert np.all(camera_triple > 0), (name, camera_triple)
+        assert np.all(np.abs(camera_triple - 1.0) < 0.5), (
+            name,
+            camera_triple,
+        )

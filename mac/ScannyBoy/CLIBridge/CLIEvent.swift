@@ -32,6 +32,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// positive|negative` on `edit render-region`, the `edit render-preview`
     /// command with its `preview_rendered` event — the negative mode being
     /// the un-inverted density view the tone adjustment never reaches).
+    /// Protocol 11 is also the colour-managed JPEG XL export (see
+    /// `events.py`): the `JXL_ENCODER_UNAVAILABLE`/`CAMERA_MATRIX_MISSING`
+    /// error codes, the `CAMERA_MATRIX_CONFLICT` warning, the roll
+    /// manifest's optional `camera_color` block, and the work manifest
+    /// curated block's `rgb_xyz_matrix`/`camera_model`.
     /// Protocol 12 adds the preview colour adjustment (`edit color`, the
     /// `color_*` fields in the roll manifest, and the `color` op in the
     /// ops log).

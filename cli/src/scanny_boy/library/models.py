@@ -80,6 +80,11 @@ class RollRow(Base):
     # throughout — pre-0009 rows read back with NULLs.
     film: Mapped[str | None] = mapped_column(Text)
     iso: Mapped[str | None] = mapped_column(Text)
+    # The capturing body's colour response (docs/EXPORT_PLAN.md §3.2):
+    # `{"rgb_xyz_matrix": [[...], [...], [...]], "source": "libraw",
+    # "camera_model": ..., "matrix_version": 1}`. Nullable throughout —
+    # pre-0010 rolls read back with NULL and no block.
+    camera_color: Mapped[dict | None] = mapped_column(JSONText)
     # The roll-level extended-metadata fallbacks: what every negative
     # without its own explicit value displays and exports. Nullable
     # throughout — pre-0006 rows (and a roll nothing was typed into) are

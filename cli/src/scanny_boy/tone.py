@@ -5,8 +5,12 @@ display encode happens.
 The published TIFF holds normalized log density; its preview display is a
 deliberately flat, contrast-free inversion (`previews.py`). That is honest
 but hard to judge, so the Edit screen offers a nondestructive tone
-adjustment — recorded in the ops log as a `tone` op (`repo.TONE_OP`), a
-state the display LUT consumes, never baked into any TIFF.
+adjustment — recorded in the ops log as a `tone` op (`repo.TONE_OP`). The
+display LUT composes it into the preview's 8-bit encode, and the export's
+render (`render.py`) bakes the same curve into the exported pixels at
+full resolution (docs/EXPORT_PLAN.md §4.6) — the same `curve_values`, so
+preview and export cannot drift apart. The published TIFF itself is never
+touched; the curve owns pixels only where a *rendering* is made.
 
 Colour shaping (global/regional CMY, cast removal) composes in the same
 per-channel tables; dye separation is the one control that is not a LUT

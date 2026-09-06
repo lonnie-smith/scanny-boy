@@ -21,8 +21,15 @@ SRC_DIR = CLI_DIR / "src"
 datas = [
     # The vetted ICC profiles, loaded through `importlib.resources` so the
     # same code works in a checkout and in the bundle (section 3.4).
-    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Linear-ProPhoto-v1.icc"), "scanny_boy/resources"),
-    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Density-ProPhoto-v1.icc"), "scanny_boy/resources"),
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Linear-v1.icc"), "scanny_boy/resources"),
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Density-v1.icc"), "scanny_boy/resources"),
+    # The grey density profile (MONOCHROME_PLAN section 4) and the two
+    # export profiles (docs/EXPORT_PLAN.md section 2) ride along the same
+    # way. (The grey one was missing here until the export plan's section
+    # 8 caught it: the frozen program could not export a mono roll.)
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Density-Grey-v1.icc"), "scanny_boy/resources"),
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Export-AdobeRGB-v1.icc"), "scanny_boy/resources"),
+    (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Export-Grey-v1.icc"), "scanny_boy/resources"),
     # The Alembic migration scripts for the library database. `db.py`
     # locates them at the bundle root when frozen (`sys._MEIPASS`), which
     # this destination provides.

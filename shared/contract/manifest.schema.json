@@ -90,6 +90,22 @@
           "items": { "type": "number" },
           "minItems": 4,
           "maxItems": 4
+        },
+        "rgb_xyz_matrix": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "LibRaw's rgb_xyz_matrix, first three rows - the DNG ColorMatrix convention's XYZ -> camera RGB (docs/EXPORT_PLAN.md section 3). Recorded data for the export path's colour matrix; null when the run predates the field. Deliberately not part of processing_params (section 3.3)."
+        },
+        "camera_model": {
+          "type": ["string", "null"],
+          "description": "The capturing body's EXIF make/model, recorded beside the matrix for the roll manifest's camera_color block."
         }
       }
     },

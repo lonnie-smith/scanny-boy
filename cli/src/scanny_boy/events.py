@@ -22,16 +22,40 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
-# Protocol 11 adds monochrome film support (`--film-kind {auto,colour,
-# monochrome}` on `stitch` and `run`, the top-level `film` block in the
-# roll manifest and `roll info`, and `MONO_DETECT_AMBIGUOUS`/
-# `MONO_DECISION_CONFLICT`), an extended preview tone adjustment (seven
-# curve controls and two auto flags on `edit tone`, matching `tone_*`
-# fields on `roll info`, and `TONE_METERING_UNAVAILABLE`), and the app's
-# positive/negative display toggle (`--mode positive|negative` on
-# `edit render-region`, the `edit render-preview` command with its
-# `preview_rendered` event — the negative mode is the un-inverted density
-# view; no tone ever reaches it).
+# Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
+# export becomes a rendered positive in Adobe RGB (1998)-compatible colour
+# (grey for a mono roll), with the negative's recorded tone op baked in,
+# written as a 16-bit lossless JPEG XL with the ICC profile embedded and
+# Exif/XMP boxes at encode time. New: the `JXL_ENCODER_UNAVAILABLE` error
+# (libjxl could not be reached — a packaging failure), the
+# `CAMERA_MATRIX_MISSING` error (a colour roll predating the roll
+# manifest's `camera_color` block), and the `CAMERA_MATRIX_CONFLICT`
+# warning (a later run's source reports a different matrix than the roll's
+# frozen one). The roll manifest gains the optional `camera_color` block
+# and the work manifest's curated block gains `rgb_xyz_matrix`/
+# `camera_model`. No `export_done` payload change.
+#
+# Protocol 11 also adds the app's positive/negative display toggle: a `--mode
+# positive|negative` flag on `edit render-region` and the new `edit
+# render-preview` command (with its `preview_rendered` event) — a
+# pure-query render of a negative's whole display image, downscaled like
+# the cached preview. The negative mode is the un-inverted density view;
+# no tone ever reaches it.
+#
+# Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: `--film-kind
+# {auto,colour,monochrome}` on `stitch` and `run`, the top-level `film`
+# block in the roll manifest and `roll info` (the roll's frozen film-kind
+# decision — `kind`, `source`, `statistic`, `samples`,
+# `detector_version`), and two warning codes — `MONO_DETECT_AMBIGUOUS` (an
+# unseeded roll's statistic landed between the thresholds; colour was
+# assumed) and `MONO_DECISION_CONFLICT` (a later run's fresh evidence
+# disagrees with the roll's already-frozen kind; the frozen kind is kept).
+# A monochrome roll's published TIFFs are single-channel, tagged with the
+# new `ScannyBoy-Density-Grey-v1.icc` profile.
+#
+# Protocol 11 also extends the preview tone adjustment: seven curve
+# controls and two auto flags on `edit tone`, matching `tone_*` fields on
+# `roll info`, and the `TONE_METERING_UNAVAILABLE` code.
 # Protocol 12 adds the preview colour adjustment: the `edit color`
 # subcommand, thirteen derived `color_*` fields (twelve stored params plus
 # `color_temperature`) and `film_kind` on `roll info`, and the `color` op
@@ -148,6 +172,12 @@ class Code(enum.StrEnum):
     INVALID_EDIT = "INVALID_EDIT"
     INVALID_METADATA = "INVALID_METADATA"
     EXPORT_FAILED = "EXPORT_FAILED"
+    # EXPORT_PLAN §1.2: libjxl could not be reached through the process's
+    # symbol namespace. A packaging failure, not a user error.
+    JXL_ENCODER_UNAVAILABLE = "JXL_ENCODER_UNAVAILABLE"
+    # EXPORT_PLAN §3: the camera colour matrix recorded in the roll manifest.
+    CAMERA_MATRIX_MISSING = "CAMERA_MATRIX_MISSING"
+    CAMERA_MATRIX_CONFLICT = "CAMERA_MATRIX_CONFLICT"
     PREVIEW_FAILED = "PREVIEW_FAILED"
     FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
     FLATFIELD_PROFILE_EXISTS = "FLATFIELD_PROFILE_EXISTS"

@@ -46,6 +46,7 @@ from scanny_boy.output_folder import (
 )
 from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
+    CameraColor,
     NegativeRecord,
     RollInvariants,
     RunRecord,
@@ -63,7 +64,7 @@ from scanny_boy.sample_nef_support import (
     NEGATIVE_2,
     requires_real_samples,
 )
-from scanny_boy.stitch_pipeline import run_stitch
+from scanny_boy.stitch_pipeline import _seed_camera_color, run_stitch
 from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
 from scanny_boy.tiff_exif import (
     DATE_TIME_ORIGINAL,
@@ -149,6 +150,67 @@ def _negative_frames(
             for frame, gain in zip(stacked, frame_gains, strict=True)
         ]
     return [encode_from_linear(frame.astype(np.float32)) for frame in stacked]
+
+
+def _work_manifest(**overrides) -> Manifest:
+    """A minimal completed work manifest for `_seed_camera_color` tests."""
+    defaults = {
+        "scanny_boy_version": "0.1.0",
+        "run_id": "convert-run",
+        "status": "complete",
+        "input_folder": "/tmp/in",
+        "film_date": _FILM_DATE,
+        "shots_per_negative": 1,
+        "processing_params": {"gamma": [1.8, 16]},
+        "icc_profile": {"name": "ScannyBoy-Linear-v1.icc", "sha256": "a" * 64},
+        "source_order": ["_DSC4638.NEF"],
+        "sources": [
+            SourceRecord(
+                filename="_DSC4638.NEF",
+                absolute_path="/tmp/in/_DSC4638.NEF",
+                size=123,
+                mtime=1.0,
+                sha256="a" * 64,
+            )
+        ],
+        "curated_metadata": CuratedMetadata(
+            exposure_time="1/30",
+            f_number="8",
+            iso=100,
+            focal_length="55",
+            lens_model="55mm f/2.8",
+            orientation=1,
+            camera_whitebalance=(1.69, 1.0, 1.38, 1.0),
+        ),
+        "groups": [],
+        "started_at": "2026-08-02T00:00:00Z",
+    }
+    defaults.update(overrides)
+    return Manifest(**defaults)
+
+
+def _matrix(scale: float = 1.0) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    return (
+        (0.7 * scale, 0.2, 0.1),
+        (0.1, 0.75 * scale, 0.15),
+        (0.05, 0.1, 0.85 * scale),
+    )
+
+
+def _curated_with_matrix(scale: float = 1.0, camera_model: str | None = "NIKON Z 7"):
+    curated = _work_manifest().curated_metadata
+    return CuratedMetadata(
+        **{
+            **curated.to_dict(),
+            "camera_whitebalance": curated.camera_whitebalance,
+            "rgb_xyz_matrix": _matrix(scale),
+            "camera_model": camera_model,
+        }
+    )
 
 
 def _make_work_dir(
@@ -1796,6 +1858,71 @@ def test_mono_sampling_spreads_across_the_run_and_caps_at_max_samples(tmp_path):
     assert group_ids[-1] in samples
     assert set(samples) <= set(group_ids)
 
+
+# --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
+
+
+def test_seed_camera_color_writes_the_block_on_the_first_run():
+    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    manifest = _work_manifest(
+        curated_metadata=_curated_with_matrix(),
+    )
+    events: list[WarningEvent] = []
+
+    _seed_camera_color(roll, manifest, emit=events.append)
+
+    assert roll.camera_color == CameraColor(
+        rgb_xyz_matrix=_matrix(),
+        source="libraw",
+        camera_model="NIKON Z 7",
+    )
+    assert events == []
+
+
+def test_seed_camera_color_is_frozen_and_warns_on_a_conflict():
+    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll.camera_color = CameraColor(
+        rgb_xyz_matrix=_matrix(),
+        source="libraw",
+        camera_model="NIKON Z 7",
+    )
+    events: list[WarningEvent] = []
+
+    # A later run whose source reports a different matrix — a different
+    # body mid-roll — warns and keeps the frozen value (EXPORT_PLAN §3.2).
+    _seed_camera_color(
+        roll,
+        _work_manifest(curated_metadata=_curated_with_matrix(scale=0.9)),
+        emit=events.append,
+    )
+
+    assert roll.camera_color.rgb_xyz_matrix == _matrix()
+    assert roll.camera_color.camera_model == "NIKON Z 7"
+    assert [event.code for event in events] == [Code.CAMERA_MATRIX_CONFLICT]
+
+
+def test_seed_camera_color_tolerates_an_identical_matrix_silently():
+    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll.camera_color = CameraColor(
+        rgb_xyz_matrix=_matrix(),
+        source="libraw",
+        camera_model="NIKON Z 7",
+    )
+    events: list[WarningEvent] = []
+
+    _seed_camera_color(
+        roll, _work_manifest(curated_metadata=_curated_with_matrix()), emit=events.append
+    )
+
+    assert events == []
+
+
+def test_seed_camera_color_no_ops_without_a_matrix():
+    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    _seed_camera_color(
+        roll, _work_manifest(), emit=lambda event: None  # type: ignore[arg-type]
+    )
+    assert roll.camera_color is None
 
 # --- MONOCHROME_PLAN section 2: the roll decision --------------------------------
 

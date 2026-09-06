@@ -62,6 +62,16 @@ class SourceSettings:
     camera_whitebalance: tuple[float, float, float, float] | None
     make: str | None
     model: str | None
+    # LibRaw's `rgb_xyz_matrix`, first three rows: the DNG `ColorMatrix`
+    # convention's XYZ -> camera RGB matrix (docs/EXPORT_PLAN.md §3.1 —
+    # the name reads the other way). Recorded data for the export path's
+    # colour matrix; the decode never uses it. `None` when LibRaw reports
+    # no usable matrix (or an all-zero one).
+    rgb_xyz_matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -163,12 +173,20 @@ def choose_digitized_fields(source: DigitizationSourceFields) -> DigitizedFields
     )
 
 
-def read_camera_whitebalance(path: Path) -> tuple[float, float, float, float] | None:
-    """Read `raw.camera_whitebalance`, per section 3.2. Returns `None` when
-    LibRaw reports fewer than four multipliers."""
+def _read_rawpy_fields(
+    path: Path,
+) -> tuple[
+    tuple[float, float, float, float] | None,
+    tuple[tuple[float, float, float], ...] | None,
+]:
+    """Reads `raw.camera_whitebalance` and `raw.rgb_xyz_matrix` from one
+    `rawpy.imread` context — the caller must not open the RAW a second
+    time (docs/EXPORT_PLAN.md §3.2). Both are `None` when LibRaw reports
+    fewer than four multipliers / no usable matrix."""
     try:
         with rawpy.imread(str(path)) as raw:
             wb = raw.camera_whitebalance
+            matrix = raw.rgb_xyz_matrix
     except rawpy.LibRawFileUnsupportedError as exc:
         raise UnsupportedRawError(str(path)) from exc
     except rawpy.LibRawError as exc:
@@ -177,13 +195,36 @@ def read_camera_whitebalance(path: Path) -> tuple[float, float, float, float] | 
         raise UnreadableRawError(str(path)) from exc
 
     if wb is None or len(wb) < 4:
-        return None
-    return (float(wb[0]), float(wb[1]), float(wb[2]), float(wb[3]))
+        wb_out = None
+    else:
+        wb_out = (float(wb[0]), float(wb[1]), float(wb[2]), float(wb[3]))
+
+    matrix_out = None
+    if matrix is not None and matrix.size >= 9:
+        rows = [[float(v) for v in row] for row in matrix[:3]]
+        if any(any(row) for row in rows):
+            matrix_out = tuple(tuple(row) for row in rows)
+    return wb_out, matrix_out
+
+
+def read_camera_whitebalance(path: Path) -> tuple[float, float, float, float] | None:
+    """Read `raw.camera_whitebalance`, per section 3.2. Returns `None` when
+    LibRaw reports fewer than four multipliers."""
+    return _read_rawpy_fields(path)[0]
+
+
+def read_rgb_xyz_matrix(path: Path) -> tuple[tuple[float, float, float], ...] | None:
+    """Read `raw.rgb_xyz_matrix`'s first three rows (docs/EXPORT_PLAN.md
+    §3.1). Returns `None` when LibRaw reports no usable matrix. Not used
+    by the decode or the stitch — recorded data for the export path's
+    colour matrix, which is why it lives beside the curated metadata and
+    not in `processing_params` (EXPORT_PLAN §3.3)."""
+    return _read_rawpy_fields(path)[1]
 
 
 def read_source_settings(path: Path) -> SourceSettings:
     exif = read_exif_settings(path)
-    wb = read_camera_whitebalance(path)
+    wb, rgb_xyz_matrix = _read_rawpy_fields(path)
     return SourceSettings(
         filename=path.name,
         exposure_time=exif.exposure_time,
@@ -195,4 +236,5 @@ def read_source_settings(path: Path) -> SourceSettings:
         camera_whitebalance=wb,
         make=exif.make,
         model=exif.model,
+        rgb_xyz_matrix=rgb_xyz_matrix,
     )

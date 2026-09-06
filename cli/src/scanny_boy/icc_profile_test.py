@@ -11,13 +11,17 @@ import pytest
 from scanny_boy.icc_profile import (
     DENSITY_GREY_PROFILE_SHA256,
     DENSITY_PROFILE_SHA256,
+    EXPORT_GREY_PROFILE_SHA256,
+    EXPORT_RGB_PROFILE_SHA256,
     LINEAR_PROFILE_SHA256,
     PROFILES,
     TRC_FUNCTION_TYPE,
     TRC_G_DENSITY,
+    TRC_G_EXPORT,
     TRC_G_LINEAR,
     IccProfileError,
     ProfileKind,
+    export_profile_kind,
     load_icc_profile,
     published_profile_kind,
     verify_icc_profile,
@@ -27,9 +31,11 @@ from scanny_boy.linear import MAX_CODE
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GENERATOR = REPO_ROOT / "cli" / "tools" / "generate_icc_profile.py"
 RESOURCES = Path(__file__).resolve().parent / "resources"
-COMMITTED_LINEAR = RESOURCES / "ScannyBoy-Linear-ProPhoto-v1.icc"
-COMMITTED_DENSITY = RESOURCES / "ScannyBoy-Density-ProPhoto-v1.icc"
+COMMITTED_LINEAR = RESOURCES / "ScannyBoy-Linear-v1.icc"
+COMMITTED_DENSITY = RESOURCES / "ScannyBoy-Density-v1.icc"
 COMMITTED_DENSITY_GREY = RESOURCES / "ScannyBoy-Density-Grey-v1.icc"
+COMMITTED_EXPORT_RGB = RESOURCES / "ScannyBoy-Export-AdobeRGB-v1.icc"
+COMMITTED_EXPORT_GREY = RESOURCES / "ScannyBoy-Export-Grey-v1.icc"
 
 _spec = importlib.util.spec_from_file_location("generate_icc_profile", GENERATOR)
 _generator = importlib.util.module_from_spec(_spec)
@@ -40,7 +46,20 @@ PROPHOTO_BYTES = _generator.prophoto_source_bytes()
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
 LINEAR_TRC_PARAMS = (TRC_G_LINEAR,)
 DENSITY_TRC_PARAMS = (TRC_G_DENSITY,)
-LINEAR_PROFILE_ID = bytes.fromhex("a1108f985e63b5fa50788c48fad2ddd0")
+LINEAR_PROFILE_ID = bytes.fromhex("18cfa8234c46e4b8e766fab30d2a86d7")
+
+# The three profiles whose colorants are the vendored ProPhoto source's
+# wide container (docs/PROFILE_HONESTY_PLAN.md). The two export profiles
+# are built from Adobe RGB's published colorimetry instead
+# (docs/EXPORT_PLAN.md §2), so the byte-identity test does not extend to
+# them — and their descriptions *are* a measurement claim, so the "wide
+# container" description test does not either.
+WORKING_KINDS = (
+    ProfileKind.LINEAR,
+    ProfileKind.DENSITY,
+    ProfileKind.DENSITY_GREY,
+)
+GREY_KINDS = frozenset({ProfileKind.DENSITY_GREY, ProfileKind.EXPORT_GREY})
 
 # The guard test's exception set (docs/DECISIONS.md, "Normalization decisions"):
 # the profile must never become load-bearing for the render, so only the
@@ -117,6 +136,12 @@ def test_generator_reproduces_the_committed_profiles(tmp_path):
     assert (
         generated / COMMITTED_DENSITY_GREY.name
     ).read_bytes() == COMMITTED_DENSITY_GREY.read_bytes()
+    assert (
+        generated / COMMITTED_EXPORT_RGB.name
+    ).read_bytes() == COMMITTED_EXPORT_RGB.read_bytes()
+    assert (
+        generated / COMMITTED_EXPORT_GREY.name
+    ).read_bytes() == COMMITTED_EXPORT_GREY.read_bytes()
 
 
 def test_generator_is_deterministic(tmp_path):
@@ -128,6 +153,8 @@ def test_generator_is_deterministic(tmp_path):
         COMMITTED_LINEAR.name,
         COMMITTED_DENSITY.name,
         COMMITTED_DENSITY_GREY.name,
+        COMMITTED_EXPORT_RGB.name,
+        COMMITTED_EXPORT_GREY.name,
     ):
         assert (first / name).read_bytes() == (second / name).read_bytes()
 
@@ -138,6 +165,8 @@ def test_generator_is_deterministic(tmp_path):
         (COMMITTED_LINEAR, LINEAR_PROFILE_SHA256),
         (COMMITTED_DENSITY, DENSITY_PROFILE_SHA256),
         (COMMITTED_DENSITY_GREY, DENSITY_GREY_PROFILE_SHA256),
+        (COMMITTED_EXPORT_RGB, EXPORT_RGB_PROFILE_SHA256),
+        (COMMITTED_EXPORT_GREY, EXPORT_GREY_PROFILE_SHA256),
     ],
 )
 def test_committed_profile_hash_matches_the_constant(path, expected_sha):
@@ -159,7 +188,7 @@ def test_density_trc_is_parametric_type_zero_with_viewing_gamma_2_2():
 @pytest.mark.parametrize("kind", list(ProfileKind))
 def test_trc_tags_share_one_offset(kind):
     data = load_icc_profile(kind)
-    grey = kind is ProfileKind.DENSITY_GREY
+    grey = kind in GREY_KINDS
     signatures = (b"kTRC",) if grey else TRC_SIGNATURES
     trc_entries = [
         (sig, off, size)
@@ -173,8 +202,8 @@ def test_trc_tags_share_one_offset(kind):
     assert len(sizes) == 1
 
 
-@pytest.mark.parametrize("kind", list(ProfileKind))
-def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
+@pytest.mark.parametrize("kind", WORKING_KINDS)
+def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source(kind):
     data = load_icc_profile(kind)
     # The grey profile is a gray-class profile: it carries no RGB matrix,
     # by construction (MONOCHROME_PLAN section 4).
@@ -195,6 +224,43 @@ def test_primaries_white_point_and_chad_are_byte_identical_to_prophoto(kind):
             if sig == tag_name
         )
         assert new == src, tag_name
+
+
+def _profile_description(data: bytes) -> str:
+    """The en-US string of the profile's `desc` (`mluc`) tag."""
+    sig, tag_offset, _size = next(
+        entry for entry in _tag_entries(data) if entry[0] == b"desc"
+    )
+    assert sig == b"desc"
+    assert data[tag_offset : tag_offset + 4] == b"mluc"
+    record_count = struct.unpack(">I", data[tag_offset + 8 : tag_offset + 12])[0]
+    record_size = struct.unpack(">I", data[tag_offset + 12 : tag_offset + 16])[0]
+    for index in range(record_count):
+        base = tag_offset + 16 + index * record_size
+        string_length = struct.unpack(">I", data[base + 4 : base + 8])[0]
+        string_offset = struct.unpack(">I", data[base + 8 : base + 12])[0]
+        return (
+            data[tag_offset + string_offset : tag_offset + string_offset + string_length]
+            .decode("utf-16-be")
+            .rstrip("\x00")
+        )
+    raise AssertionError("desc tag carries no records")
+
+
+@pytest.mark.parametrize("kind", list(ProfileKind))
+def test_no_filename_or_description_claims_prophoto(kind):
+    data = load_icc_profile(kind)
+    filename = PROFILES[kind][0]
+    assert "ProPhoto" not in filename
+    assert "ProPhoto" not in _profile_description(data)
+
+
+@pytest.mark.parametrize("kind", WORKING_KINDS)
+def test_every_description_declares_a_wide_container_not_a_measurement(kind):
+    data = load_icc_profile(kind)
+    description = _profile_description(data).lower()
+    assert "wide container" in description
+    assert "not a measurement" in description
 
 
 def test_density_grey_is_a_gray_class_profile():
@@ -244,13 +310,13 @@ def test_decoded_density_curve_is_monotonic_and_spans_zero_to_one():
 
 def test_load_icc_profile_still_verifies_and_returns_bytes():
     data = load_icc_profile(ProfileKind.LINEAR)
-    assert len(data) == 568
+    assert len(data) == 1140
     assert hashlib.sha256(data).hexdigest() == LINEAR_PROFILE_SHA256
     density = load_icc_profile(ProfileKind.DENSITY)
-    assert len(density) == 1232
+    assert len(density) == 1776
     assert hashlib.sha256(density).hexdigest() == DENSITY_PROFILE_SHA256
     grey = load_icc_profile(ProfileKind.DENSITY_GREY)
-    assert len(grey) == 1124
+    assert len(grey) == 1508
     assert hashlib.sha256(grey).hexdigest() == DENSITY_GREY_PROFILE_SHA256
 
 
@@ -285,6 +351,130 @@ def test_published_profile_kind_selects_by_film_kind():
     assert published_profile_kind() is ProfileKind.DENSITY
 
 
+def test_export_profile_kind_selects_by_channel_count():
+    """EXPORT_PLAN §4.5: the export tag site selects on the channel count
+    the writer actually sees — EXPORT_GREY for a 1-channel (mono roll)
+    export, EXPORT_RGB otherwise."""
+    assert export_profile_kind(1) is ProfileKind.EXPORT_GREY
+    assert export_profile_kind(3) is ProfileKind.EXPORT_RGB
+
+
+# --- the export profiles (docs/EXPORT_PLAN.md section 2) -------------------
+
+# The §2.2 pinned values: the published Adobe RGB (1998) ICC values, in
+# s15Fixed16 (cross-checked byte for byte against Apple's file for the
+# colorants; the wtpt/chad pair is the conformant D50 + chad convention,
+# which Apple's file does not use).
+ADOBE_RGB_EXPORT_TAGS = {
+    b"wtpt": (63190, 65536, 54061),
+    b"rXYZ": (39960, 20389, 1276),
+    b"gXYZ": (13453, 41004, 3989),
+    b"bXYZ": (9777, 4143, 48796),
+}
+ADOBE_RGB_EXPORT_CHAD = (
+    68674, 1502, -3291,
+    1939, 64912, -1119,
+    -606, 988, 49262,
+)
+# u8Fixed8 563 = 563/256 = 2.19921875 = TRC_G_EXPORT / 65536.
+ADOBE_RGB_TRC_U8FIXED8 = 563
+
+
+def _xyz_tag_payload(data: bytes, tag_signature: bytes) -> tuple[int, ...]:
+    payload = next(
+        data[off : off + size]
+        for sig, off, size in _tag_entries(data)
+        if sig == tag_signature
+    )
+    assert payload[:4] == b"XYZ "
+    assert payload[4:8] == b"\x00\x00\x00\x00"
+    body = payload[8:]
+    return tuple(
+        struct.unpack(">i", body[i : i + 4])[0] for i in range(0, len(body), 4)
+    )
+
+
+def _curv_gamma(data: bytes, tag_signature: bytes) -> int:
+    payload = next(
+        data[off : off + size]
+        for sig, off, size in _tag_entries(data)
+        if sig == tag_signature
+    )
+    assert payload[:4] == b"curv"
+    assert payload[4:8] == b"\x00\x00\x00\x00"
+    (count,) = struct.unpack(">I", payload[8:12])
+    assert count == 1
+    (gamma,) = struct.unpack(">I", payload[12:16])
+    return gamma
+
+
+def test_export_rgb_profile_carries_the_pinned_adobe_rgb_values():
+    data = load_icc_profile(ProfileKind.EXPORT_RGB)
+    for signature, expected in ADOBE_RGB_EXPORT_TAGS.items():
+        assert _xyz_tag_payload(data, signature) == expected, signature
+    assert _xyz_tag_payload(data, b"chad") == ADOBE_RGB_EXPORT_CHAD
+    assert _curv_gamma(data, b"rTRC") == ADOBE_RGB_TRC_U8FIXED8
+
+
+def test_export_rgb_profile_is_an_rgb_monitor_profile():
+    data = load_icc_profile(ProfileKind.EXPORT_RGB)
+    assert data[12:16] == b"mntr"
+    assert data[16:20] == b"RGB "
+    assert data[20:24] == b"XYZ "
+    signatures = {sig for sig, _off, _size in _tag_entries(data)}
+    assert signatures == {
+        b"desc", b"wtpt", b"chad", b"rXYZ", b"gXYZ", b"bXYZ",
+        b"rTRC", b"gTRC", b"bTRC",
+    }
+
+
+def test_export_grey_profile_is_a_gray_class_profile():
+    """EXPORT_PLAN §2.2: the grey export profile carries a D50 `wtpt`, the
+    same `chad`, a single `kTRC` with the *same* gamma as the RGB
+    profile's TRCs, and no colorants at all."""
+    data = load_icc_profile(ProfileKind.EXPORT_GREY)
+    assert data[12:16] == b"mntr"
+    assert data[16:20] == b"GRAY"
+    assert data[20:24] == b"XYZ "
+    signatures = {sig for sig, _off, _size in _tag_entries(data)}
+    assert signatures == {b"desc", b"wtpt", b"chad", b"kTRC"}
+    assert _xyz_tag_payload(data, b"wtpt") == ADOBE_RGB_EXPORT_TAGS[b"wtpt"]
+    assert _xyz_tag_payload(data, b"chad") == ADOBE_RGB_EXPORT_CHAD
+    with pytest.raises(StopIteration):
+        _xyz_tag_payload(data, b"rXYZ")
+
+
+def test_the_export_profiles_trc_gammas_are_equal_and_equal_trc_g_export():
+    rgb = load_icc_profile(ProfileKind.EXPORT_RGB)
+    grey = load_icc_profile(ProfileKind.EXPORT_GREY)
+    gammas = {
+        _curv_gamma(rgb, b"rTRC"),
+        _curv_gamma(rgb, b"gTRC"),
+        _curv_gamma(rgb, b"bTRC"),
+        _curv_gamma(grey, b"kTRC"),
+    }
+    assert gammas == {ADOBE_RGB_TRC_U8FIXED8}
+    assert ADOBE_RGB_TRC_U8FIXED8 / 256 * 65536 == TRC_G_EXPORT
+
+
+def test_the_export_profiles_describe_themselves_as_adobe_rgb_compatible():
+    rgb_description = _profile_description(load_icc_profile(ProfileKind.EXPORT_RGB))
+    grey_description = _profile_description(load_icc_profile(ProfileKind.EXPORT_GREY))
+    for description in (rgb_description, grey_description):
+        assert "Adobe RGB (1998)" in description
+        assert "not an Adobe product" in description
+        assert "not derived from Adobe's profile" in description
+    assert "ScannyBoy Export RGB" in rgb_description
+    assert "ScannyBoy Export Grey" in grey_description
+
+
+def test_load_icc_profile_returns_the_export_profiles_with_pinned_hashes():
+    rgb = load_icc_profile(ProfileKind.EXPORT_RGB)
+    assert hashlib.sha256(rgb).hexdigest() == EXPORT_RGB_PROFILE_SHA256
+    grey = load_icc_profile(ProfileKind.EXPORT_GREY)
+    assert hashlib.sha256(grey).hexdigest() == EXPORT_GREY_PROFILE_SHA256
+
+
 def test_verify_icc_profile_rejects_corrupted_data():
     with pytest.raises(IccProfileError) as exc_info:
         verify_icc_profile(b"not an icc profile", ProfileKind.LINEAR)
@@ -292,11 +482,7 @@ def test_verify_icc_profile_rejects_corrupted_data():
 
 
 def test_profiles_record_covers_every_kind():
-    assert set(PROFILES) == {
-        ProfileKind.LINEAR,
-        ProfileKind.DENSITY,
-        ProfileKind.DENSITY_GREY,
-    }
+    assert set(PROFILES) == set(ProfileKind)
     for filename, _sha in PROFILES.values():
         assert (RESOURCES / filename).exists()
 

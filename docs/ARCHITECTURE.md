@@ -235,7 +235,7 @@ to bottom.
 | --- | --- |
 | `edits.py` | `edit rotate`: append a rotation op, regenerate the preview, emit `edit_recorded`. `edit delete`: drop the negative's record, TIFF, and preview, emit `negative_deleted`. Never touches a surviving negative's published TIFF. |
 | `previews.py` | Small lossless PNG previews of published TIFFs, under Application Support beside the database; rewritten whenever an edit changes the rendering. |
-| `exporter.py` | `export`: replay a negative's ops log over its published TIFF into an output folder. Pixels only — no EXIF/ICC carry-over yet. |
+| `exporter.py` | `export`: replay a negative's ops log over its published TIFF, render a positive in Adobe RGB (`render.py`), and write a 16-bit lossless JPEG XL with the export profile, Exif and XMP boxes (`export_metadata.py`, `jxl_writer.py`). |
 
 **Stitching**
 | Module | Role |
@@ -345,11 +345,13 @@ Consequences, all live in the code today:
   holds plain fixed-point scaling: `decode_to_linear` is `code / 65535`,
   `encode_from_linear` is clip-and-round. The round trip is exact for every
   code — proved by a test, not assumed.
-- The prepare stage's intermediates carry `ScannyBoy-Linear-ProPhoto-v1.icc`:
-  ProPhoto primaries (byte-identical to the upstream ProPhoto-v4 source)
-  with a **linear** TRC (parametric type 0, g = 1.0) — the truth about
-  those pixels. Both profiles are generated deterministically by
-  `cli/tools/generate_icc_profile.py`.
+- The prepare stage's intermediates carry `ScannyBoy-Linear-v1.icc`:
+  a **linear** TRC (parametric type 0, g = 1.0) — the truth about
+  those pixels — over wide-container colorants (byte-identical to the
+  upstream ProPhoto-v4 source, but labelled as a deliberately wide
+  container, not a measurement of this camera's primaries;
+  docs/PROFILE_HONESTY_PLAN.md). All three profiles are generated
+  deterministically by `cli/tools/generate_icc_profile.py`.
 - `icc_profile.py` verifies each profile's SHA-256 on every load, and
   `tiff_writer.write_base_tiff` refuses to write a TIFF with an empty
   profile. An untagged file is never produced.
@@ -407,9 +409,9 @@ in linear light, which is where they are physically correct:
 
 Three properties to hold onto:
 
-- **The published TIFF is a working intermediate, not the deliverable** —
-  the positive export does not exist yet, and the creative-edit stage reads
-  this. The bake is arithmetically reversible: the per-channel floors and
+- **The published TIFF is a working intermediate** — the creative-edit
+  stage reads it, and the export renders the positive from it (docs/
+  EXPORT_PLAN.md). The bake is arithmetically reversible: the per-channel floors and
   ceils are recorded, and `10 ** (floor + val * (ceil - floor))` recovers
   the linear composite to within quantization.
 - **It stays a negative in appearance.** The published file's border is now
@@ -423,14 +425,17 @@ Three properties to hold onto:
   before compositing, restricts the meters only. It never crops the output.
 
 The published TIFF carries a **second** ICC profile,
-`ScannyBoy-Density-ProPhoto-v1.icc`: ProPhoto primaries, parametric type 0
-at g = 2.2 — a *viewing convention*, explicitly not a colorimetric claim
-(a correct profile would decode the file back to un-normalized linear,
-undoing the one thing this stage does). Every internal consumer —
-previews, the edit stage, export, the future print stage — decodes through
+`ScannyBoy-Density-v1.icc`: parametric type 0 at g = 2.2 over the same
+wide-container colorants — a *viewing convention*, explicitly not a
+colorimetric claim (a correct profile would decode the file back to
+un-normalized linear, undoing the one thing this stage does). Every
+internal consumer —
+previews and the edit stage — decodes through
 `normalization.decode_normalized`, never through an ICC transform; a
 grep-shaped guard test keeps the loader out of everything but the write
-path.
+path. The export is the deliberate exception: its pixels *are* colour
+managed (docs/EXPORT_PLAN.md), through `render.py`'s matrix conversion and
+the export profiles' pinned gamma.
 
 - **Previews are display-decoded, then inverted.** The published TIFF is
   normalized log density, so `previews.py` downscales in code space,
@@ -1085,15 +1090,15 @@ where the README or `DECISIONS.md` describes intent that is not implemented.
 6. **`stitch --overwrite` is accepted and ignored** — intentionally, but it is
    still dead surface area.
 
-7. **`export` is pixels-plus-density-tag.** The exported TIFF replays the
-   pixels straight through and carries the density profile and the
-   `normalization` block in its `ImageDescription` (§7.1) — but no EXIF:
-   full EXIF carry-over from the published TIFF remains the
-   deliberately-deferred next step, not half-done. What is still undecided
-   is the profile the eventual **positive** export carries — that is the
-   first colourimetric question that belongs to the export work itself.
-   Rotation is also the **only** edit operation: the ops-log shape (`op` +
-   `params`) is general, but `rotate` is the single op implemented.
+7. **`export` is a rendered positive.** (Was "pixels-plus-density-tag":
+   the export wrote the TIFF's codes straight through with no EXIF — the
+   colour question it deferred is now answered, docs/EXPORT_PLAN.md.) The
+   export replays the ops log, renders a positive in Adobe RGB (the
+   recorded camera matrix converting the colour, the recorded tone op
+   baked in), and writes a 16-bit lossless JPEG XL with the export ICC
+   profile embedded and Exif/XMP boxes at encode time; the
+   `scannyboy:provenance` XMP record makes the file interpretable without
+   the database.
 
 ---
 
