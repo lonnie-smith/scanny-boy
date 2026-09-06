@@ -1,17 +1,24 @@
 """`edit` subcommands: the nondestructive editing entry points.
 
 **Edits live in the ops log; the TIFF is the artefact.** `edit rotate`,
-`edit flip`, `edit tone`, and `edit color` append ops to the negatives'
+`edit flip`, `edit tone`, `edit color`, and the three spotting commands
+(`detect-spots`, `spots`, `list-spots`) append ops to the negatives'
 ordered log in the library database, regenerate the CLI-rendered previews
-so the app can show the results, and emit `edit_recorded` per negative —
+so the app can show the results, and emit per-negative confirmations —
 they never touch the published TIFFs. The pixels are transformed only at
 export time, when the exporter replays each negative's ops log over the
-published TIFF (`tone` and `color` are preview-only judgement aids, so the
-exporter ignores them).
+published TIFF (`tone` is baked in there through `render.render_export`;
+`color` is the one preview-only judgement aid the exporter ignores). The
+`spots` op is the exception that proves the log's replay rule: it is the
+only op whose replay *synthesizes* pixel values, at export and in the
+preview alike (SPOTTING_PLAN §1.1).
 
 Every subcommand accepts a *selection* of negatives: the whole selection is
 validated before anything is written, so a batch either records or fails
-without partial effects.
+without partial effects. The spotting commands are the exception's
+exception: `detect-spots` takes a selection, but `spots` and `list-spots`
+take exactly one negative — spot ids are per-negative, so a selection
+would be meaningless for `--reject`.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scanny_boy import color, previews
+from scanny_boy import color, previews, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -609,3 +616,287 @@ def run_edit_delete(
             {"negative_id": negative.negative_id, "output": output_name}
         )
     return results
+
+
+# --- spotting (docs/SPOTTING_PLAN.md §7) --------------------------------------
+
+
+def _spots_for_report(
+    roll_dir: Path, negative: NegativeRecord, params: dict | None
+) -> list[dict]:
+    """The op's TIFF-space spots as the app draws them: display-space
+    rects, ids unchanged. Swift converts nothing. The `rle` is never
+    reported — it is an implementation detail of the repair and would
+    multiply the payload for nothing — and a stale set (a canvas a
+    re-stitch has replaced, §1.5) reports an empty list, so no markers are
+    drawn over pixels they do not describe."""
+    if not params:
+        return []
+    output = negative.output or {}
+    width = output.get("width")
+    height = output.get("height")
+    canvas = params.get("canvas") or [None, None]
+    if (canvas[0], canvas[1]) != (width, height):
+        return []
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    report: list[dict] = []
+    for spot in params.get("spots") or []:
+        x, y, w, h = spot["bbox"]
+        rect = previews.tiff_rect_to_display(
+            (x, y, w, h),
+            (height, width),
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+        )
+        report.append(
+            {
+                "id": spot["id"],
+                "kind": spot["kind"],
+                "polarity": spot["polarity"],
+                "rect": list(rect),
+                "score": spot.get("score"),
+                "rejected": bool(spot.get("rejected")),
+            }
+        )
+    return report
+
+
+def _spots_stale(negative: NegativeRecord, params: dict | None) -> bool:
+    """True when a spot set was detected against a canvas the negative's
+    published TIFF no longer has (§1.5) — the one way this feature could
+    damage a scan without the user doing anything wrong, closed
+    structurally."""
+    if not params:
+        return False
+    output = negative.output or {}
+    canvas = params.get("canvas") or [None, None]
+    return (canvas[0], canvas[1]) != (
+        output.get("width"),
+        output.get("height"),
+    )
+
+
+def _carry_rejections_forward(
+    previous_params: dict | None, spots_list: list[dict]
+) -> list[dict]:
+    """§2.6: re-detection preserves rejections. A newly proposed spot whose
+    bbox centre lies within `REJECTION_MATCH_PX` of any *previously
+    rejected* spot's is born `rejected: true` — without this, changing the
+    sensitivity slider throws away every judgement the user has made."""
+    previous = (previous_params or {}).get("spots") or []
+    centres = [
+        (
+            spot["bbox"][0] + spot["bbox"][2] / 2,
+            spot["bbox"][1] + spot["bbox"][3] / 2,
+        )
+        for spot in previous
+        if spot.get("rejected")
+    ]
+    if not centres:
+        return spots_list
+    carried: list[dict] = []
+    for spot in spots_list:
+        x, y, w, h = spot["bbox"]
+        cx, cy = x + w / 2, y + h / 2
+        if any(
+            (cx - rx) ** 2 + (cy - ry) ** 2 <= spots.REJECTION_MATCH_PX**2
+            for rx, ry in centres
+        ):
+            spot = {**spot, "rejected": True}
+        carried.append(spot)
+    return carried
+
+
+def run_edit_detect_spots(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    sensitivity: float,
+    *,
+    emit: EmitFn,
+) -> list[dict]:
+    """Run the spot detector over each selected negative's published TIFF
+    and record one `spots` op per negative — proposals only, `repair`
+    preserved from the previous op (re-detecting a repaired negative keeps
+    it repaired, with the new masks). Rejections carry forward (§2.6). The
+    selection is validated up front, so a batch either records or fails
+    whole. Returns one `SpotsReported` field set per negative."""
+    if not 0.0 <= sensitivity <= 1.0:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--sensitivity must be within [0, 1], got {sensitivity}",
+        )
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+
+    import tifffile
+
+    results: list[dict] = []
+    for negative in negatives:
+        tiff_path = roll_dir / negative.output["name"]
+        image = tifffile.imread(tiff_path)
+        meter = color.read_metering(negative.normalization)
+        result = spots.detect(
+            image,
+            valid_rect=negative.valid_rect,
+            channel_ranges=meter.ranges,
+            sensitivity=sensitivity,
+        )
+        previous = repo.net_edit_state(roll_dir, negative.negative_id).spots
+        carried = _carry_rejections_forward(previous, result.spots)
+        repair = bool(previous["repair"]) if previous else False
+        # The canvas comes from the decoded image's own shape — the
+        # pixels actually detected on — not from the record (§7.2).
+        params = spots.spots_params(
+            canvas=(image.shape[1], image.shape[0]),
+            spots=carried,
+            sensitivity=sensitivity,
+            repair=repair,
+        )
+        repo.append_spots_edit(roll_dir, negative.negative_id, params)
+        _refresh_preview(
+            roll_dir, roll, negative, repo.SPOTS_OP, what="spot detection", emit=emit
+        )
+        if result.found > spots.MAX_SPOTS:
+            emit(
+                WarningEvent(
+                    code=Code.SPOT_LIMIT_REACHED,
+                    message=(
+                        f"{negative.negative_id}: the detector found "
+                        f"{result.found} spots and kept the highest-scoring "
+                        f"{spots.MAX_SPOTS}; lower --sensitivity to see fewer "
+                        "proposals"
+                    ),
+                )
+            )
+        results.append(
+            {
+                "negative_id": negative.negative_id,
+                "detector_version": params["detector_version"],
+                "sensitivity": params["sensitivity"],
+                "repair": params["repair"],
+                "spots": _spots_for_report(roll_dir, negative, params),
+                "found": result.found,
+                "preview_path": negative.preview_path,
+            }
+        )
+    return results
+
+
+def run_edit_spots(
+    roll_dir: Path,
+    negative_id: str,
+    *,
+    reject: Sequence[int] = (),
+    accept: Sequence[int] = (),
+    repair: bool | None = None,
+    clear: bool = False,
+    emit: EmitFn,
+) -> dict:
+    """Record the review decision for one negative's spot set: reject
+    and/or accept ids by id (never by coordinate — the app converts
+    nothing), flip the whole-negative repair switch, or clear the set. The
+    op is a state, so a trailing `spots` op is updated in place. Returns
+    the `SpotsReported` field values."""
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    current = state.spots
+
+    if clear:
+        params = {
+            "detector_version": spots.DETECTOR_VERSION,
+            "sensitivity": (
+                current["sensitivity"] if current else spots.DEFAULT_SENSITIVITY
+            ),
+            "repair": False,
+            "canvas": list(current["canvas"]) if current else [],
+            "spots": [],
+        }
+    else:
+        if current is None:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"{negative_id} has no spot set; run edit detect-spots first",
+            )
+        if not reject and not accept and repair is None:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                "edit spots needs one of --reject, --accept, --repair, "
+                "--no-repair, or --clear",
+            )
+        by_id = {spot["id"]: spot for spot in current["spots"]}
+        for spot_id in list(reject) + list(accept):
+            if spot_id not in by_id:
+                raise EditFailure(
+                    Code.INVALID_EDIT,
+                    f"{negative_id} has no spot {spot_id} to review",
+                )
+        spot_list = [dict(spot) for spot in current["spots"]]
+        for spot in spot_list:
+            if spot["id"] in set(reject):
+                spot["rejected"] = True
+            elif spot["id"] in set(accept):
+                spot.pop("rejected", None)  # absent means accepted
+        params = dict(current)
+        params["spots"] = spot_list
+        if repair is not None:
+            params["repair"] = repair
+
+    repo.append_spots_edit(roll_dir, negative_id, params)
+    _refresh_preview(roll_dir, _roll, negative, repo.SPOTS_OP, what="spot review", emit=emit)
+    if _spots_stale(negative, params):
+        emit(
+            WarningEvent(
+                code=Code.SPOTS_STALE,
+                message=(
+                    f"{negative_id}: its spot set was detected against a "
+                    "different canvas — the negative was re-stitched and "
+                    "needs re-detecting"
+                ),
+            )
+        )
+    return {
+        "negative_id": negative_id,
+        "detector_version": params["detector_version"],
+        "sensitivity": params["sensitivity"],
+        "repair": params["repair"],
+        "spots": _spots_for_report(roll_dir, negative, params),
+        "found": len(params["spots"]),
+        "preview_path": negative.preview_path,
+    }
+
+
+def run_edit_list_spots(
+    roll_dir: Path, negative_id: str, *, emit: EmitFn
+) -> dict:
+    """The pure query behind the app's marker overlay: the negative's spot
+    set as display-space rects, nothing recorded, no pixels touched — in
+    the same family as `render-region` and `render-preview`. A stale set
+    (§1.5) reports an empty list plus a `SPOTS_STALE` warning."""
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    params = state.spots
+    reported = _spots_for_report(roll_dir, negative, params)
+    if _spots_stale(negative, params):
+        emit(
+            WarningEvent(
+                code=Code.SPOTS_STALE,
+                message=(
+                    f"{negative_id}: its spot set was detected against a "
+                    "different canvas — the negative was re-stitched and "
+                    "needs re-detecting"
+                ),
+            )
+        )
+    return {
+        "negative_id": negative_id,
+        "detector_version": (
+            params["detector_version"] if params else spots.DETECTOR_VERSION
+        ),
+        "sensitivity": (
+            params["sensitivity"] if params else spots.DEFAULT_SENSITIVITY
+        ),
+        "repair": bool(params["repair"]) if params else False,
+        "spots": reported,
+        "found": len(params["spots"]) if params else 0,
+        "preview_path": None,
+    }

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy import previews
+from scanny_boy import previews, spots
 from scanny_boy.edits import (
     EditFailure,
     run_edit_color,
@@ -870,3 +870,291 @@ def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
     assert merged["wb_cyan"] == 0.1
     assert merged["wb_magenta"] == 0.3
     assert merged["cast_removal"] == 0.4
+
+
+# --- spotting (docs/SPOTTING_PLAN.md §7) --------------------------------------
+
+# A published canvas small enough to keep detection instant, with the
+# width-gate fraction patched up so the derived gates still bite: 300 * 0.02
+# = 6 px max defect width, SE radius 6.
+_SPOTS_H, _SPOTS_W = 300, 400
+_SPOT_FRACTION = 0.02
+
+
+@pytest.fixture()
+def spotty_roll(tmp_path: Path, monkeypatch):
+    """A registered roll holding one completed negative whose published
+    TIFF carries two defects: a 5x5 dark blob and a 3x90 dark hair."""
+    monkeypatch.setattr(spots, "MAX_SPOT_MINOR_FRACTION", _SPOT_FRACTION)
+    roll_dir = _roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.manifest import SourceRecord
+    from scanny_boy.roll_manifest import append_run, merge_sources
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    merge_sources(
+        manifest,
+        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        "stitch-run",
+    )
+    manifest.negatives.append(
+        _negative(
+            negative_id=_NEGATIVE_ID,
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": _SPOTS_W,
+                "height": _SPOTS_H,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    image = np.full((_SPOTS_H, _SPOTS_W, 3), 30000, dtype=np.uint16)
+    yy, xx = np.ogrid[:_SPOTS_H, :_SPOTS_W]
+    blob = (yy - 150) ** 2 + (xx - 200) ** 2 <= 9  # radius 3 at (row 150, col 200)
+    image[blob] = 29850
+    image[60:63, 40:130] = 29850  # a 3x90 hair
+    import tifffile
+
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", image)
+    return roll_dir
+
+
+def test_detect_spots_records_the_op_and_reports_display_rects(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots
+
+    (fields,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+
+    state = repo.net_edit_state(spotty_roll, _NEGATIVE_ID)
+    assert state.spots is not None
+    assert state.spots["detector_version"] == spots.DETECTOR_VERSION
+    assert state.spots["repair"] is False
+    assert state.spots["canvas"] == [_SPOTS_W, _SPOTS_H]
+    assert state.spots["spots"], "the fixture's defects must be found"
+    for spot in state.spots["spots"]:
+        assert "rle" in spot  # the op carries the exact masks
+
+    # On the wire: display-space rects, ids unchanged, no rle anywhere.
+    assert fields["found"] == len(fields["spots"]) == len(state.spots["spots"])
+    assert fields["preview_path"] is not None
+    for reported in fields["spots"]:
+        assert set(reported) == {"id", "kind", "polarity", "rect", "score", "rejected"}
+        x, y, w, h = reported["rect"]
+        assert 0 <= x and 0 <= y and w > 0 and h > 0
+
+
+def test_detect_spots_twice_carries_rejections_forward(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_spots
+
+    (first,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+    by_centre = {}
+    for reported in first["spots"]:
+        x, y, w, h = reported["rect"]
+        by_centre[(x + w // 2, y + h // 2)] = reported["id"]
+    # Raster order: the hair (row 60) is id 1, the blob (row 150) id 2.
+    assert first["spots"][0]["id"] == 1
+
+    reviewed = run_edit_spots(
+        spotty_roll, _NEGATIVE_ID, reject=(1,), emit=lambda event: None
+    )
+    assert reviewed["spots"][0]["rejected"] is True
+    assert reviewed["spots"][1]["rejected"] is False
+
+    (again,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+    # The hair's new proposal sits within REJECTION_MATCH_PX of the
+    # rejected one and is born rejected; the blob's is not.
+    assert again["spots"][0]["rejected"] is True
+    assert again["spots"][1]["rejected"] is False
+
+
+def test_detect_spots_preserves_repair_across_a_re_detect(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    fields = run_edit_spots(
+        spotty_roll, _NEGATIVE_ID, repair=True, emit=lambda event: None
+    )
+    assert fields["repair"] is True
+
+    (again,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+    assert again["repair"] is True
+    assert repo.net_edit_state(spotty_roll, _NEGATIVE_ID).spots["repair"] is True
+
+
+def test_spots_reject_on_an_unknown_id_fails_and_records_nothing(spotty_roll):
+    from scanny_boy.edits import EditFailure, run_edit_detect_spots, run_edit_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    before = repo.edits_for(spotty_roll, _NEGATIVE_ID)
+
+    with pytest.raises(EditFailure) as excinfo:
+        run_edit_spots(spotty_roll, _NEGATIVE_ID, reject=(7,), emit=lambda e: None)
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert "7" in excinfo.value.message
+    assert repo.edits_for(spotty_roll, _NEGATIVE_ID) == before
+
+
+def test_spots_clear_empties_the_set_and_turns_repair_off(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    run_edit_spots(spotty_roll, _NEGATIVE_ID, repair=True, emit=lambda event: None)
+
+    fields = run_edit_spots(
+        spotty_roll, _NEGATIVE_ID, clear=True, emit=lambda event: None
+    )
+    assert fields["repair"] is False
+    assert fields["spots"] == []
+    state = repo.net_edit_state(spotty_roll, _NEGATIVE_ID)
+    assert state.spots["repair"] is False
+    assert state.spots["spots"] == []
+
+
+def test_repair_then_no_repair_restores_the_pre_repair_preview(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_spots
+
+    (first,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+    plain = Path(first["preview_path"]).read_bytes()
+
+    run_edit_spots(spotty_roll, _NEGATIVE_ID, repair=True, emit=lambda event: None)
+    (repaired,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None
+    )
+    assert Path(repaired["preview_path"]).read_bytes() != plain
+
+    back = run_edit_spots(
+        spotty_roll, _NEGATIVE_ID, repair=False, emit=lambda event: None
+    )
+    assert back["repair"] is False
+    assert Path(back["preview_path"]).read_bytes() == plain
+
+
+def test_accept_un_rejects(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    run_edit_spots(spotty_roll, _NEGATIVE_ID, reject=(1,), emit=lambda event: None)
+    fields = run_edit_spots(
+        spotty_roll, _NEGATIVE_ID, accept=(1,), emit=lambda event: None
+    )
+    assert all(not spot["rejected"] for spot in fields["spots"])
+    state = repo.net_edit_state(spotty_roll, _NEGATIVE_ID)
+    assert all(not spot.get("rejected") for spot in state.spots["spots"])
+
+
+def test_spots_without_any_flag_fails(spotty_roll):
+    from scanny_boy.edits import EditFailure, run_edit_detect_spots, run_edit_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    with pytest.raises(EditFailure) as excinfo:
+        run_edit_spots(spotty_roll, _NEGATIVE_ID, emit=lambda e: None)
+    assert excinfo.value.code is Code.INVALID_EDIT
+
+
+def test_spots_on_a_negative_without_a_set_fails(spotty_roll):
+    from scanny_boy.edits import EditFailure, run_edit_spots
+
+    with pytest.raises(EditFailure) as excinfo:
+        run_edit_spots(spotty_roll, _NEGATIVE_ID, reject=(1,), emit=lambda e: None)
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert "detect-spots" in excinfo.value.message
+
+
+def test_list_spots_records_nothing(spotty_roll):
+    from scanny_boy.edits import run_edit_detect_spots, run_edit_list_spots
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    before = repo.edits_for(spotty_roll, _NEGATIVE_ID)
+
+    fields = run_edit_list_spots(spotty_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    assert repo.edits_for(spotty_roll, _NEGATIVE_ID) == before
+    assert fields["spots"]
+    assert fields["preview_path"] is None
+    assert all("rle" not in spot for spot in fields["spots"])
+
+
+def test_a_stale_spot_set_reports_empty_with_a_warning(spotty_roll):
+    from scanny_boy.edits import run_edit_list_spots
+
+    stale = spots.spots_params(
+        canvas=(123, 456),
+        spots=[
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": [10, 10, 4, 3],
+                "rle": [0, 4, 0, 4, 0, 4],
+                "area": 12,
+                "score": 9.0,
+                "rejected": False,
+            }
+        ],
+        sensitivity=0.5,
+        repair=True,
+    )
+    repo.append_spots_edit(spotty_roll, _NEGATIVE_ID, stale)
+
+    warnings: list = []
+    fields = run_edit_list_spots(spotty_roll, _NEGATIVE_ID, emit=warnings.append)
+
+    assert fields["spots"] == []
+    assert [w.code for w in warnings] == [Code.SPOTS_STALE]
+
+
+def test_spot_limit_reached_fires_with_found_and_kept(spotty_roll, monkeypatch):
+    from scanny_boy.edits import run_edit_detect_spots
+
+    monkeypatch.setattr(spots, "MAX_SPOTS", 1)
+    warnings: list = []
+    (fields,) = run_edit_detect_spots(
+        spotty_roll, _NEGATIVE_ID, 0.5, emit=warnings.append
+    )
+
+    assert fields["found"] == 2
+    assert len(fields["spots"]) == 1
+    assert [w.code for w in warnings] == [Code.SPOT_LIMIT_REACHED]
+    assert "2" in warnings[0].message and "1" in warnings[0].message
+
+
+def test_detect_spots_sensitivity_out_of_range_fails(spotty_roll):
+    from scanny_boy.edits import EditFailure, run_edit_detect_spots
+
+    with pytest.raises(EditFailure) as excinfo:
+        run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 1.5, emit=lambda e: None)
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert repo.edits_for(spotty_roll, _NEGATIVE_ID) == []
+
+
+def test_unstitched_negative_fails_for_all_three_spot_commands(tmp_path):
+    from scanny_boy.edits import (
+        EditFailure,
+        run_edit_detect_spots,
+        run_edit_list_spots,
+        run_edit_spots,
+    )
+
+    roll_dir = _roll_dir(tmp_path)
+    for runner, kwargs in (
+        (run_edit_detect_spots, {"sensitivity": 0.5}),
+        (run_edit_spots, {"reject": (1,)}),
+        (run_edit_list_spots, {}),
+    ):
+        with pytest.raises(EditFailure) as excinfo:
+            runner(roll_dir, "nope", emit=lambda e: None, **kwargs)
+        assert excinfo.value.code is Code.NEGATIVE_NOT_FOUND

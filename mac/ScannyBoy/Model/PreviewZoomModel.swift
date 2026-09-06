@@ -143,6 +143,38 @@ final class PreviewZoomModel {
         return CGPoint(x: x, y: y)
     }
 
+    /// The screen rect (pane points, top-left origin) a display-space spot
+    /// marker occupies in the fit view: the same mapping the image itself
+    /// goes through (SPOTTING_PLAN §8.3).
+    static func spotScreenRect(
+        _ spotRect: CGRect, fitRect: CGRect, displaySize: CGSize
+    ) -> CGRect {
+        guard fitRect.width > 0, fitRect.height > 0,
+            displaySize.width > 0, displaySize.height > 0
+        else { return .zero }
+        let scale = fitRect.width / displaySize.width
+        return CGRect(
+            x: fitRect.minX + spotRect.minX * scale,
+            y: fitRect.minY + spotRect.minY * scale,
+            width: spotRect.width * scale,
+            height: spotRect.height * scale
+        )
+    }
+
+    /// The screen rect a display-space spot marker occupies at 100%:
+    /// through the on-screen crop's rect, its display scale, and the live
+    /// pan offset.
+    static func spotScreenRect(
+        _ spotRect: CGRect, crop: Crop, cropScreenOffset: CGSize
+    ) -> CGRect {
+        CGRect(
+            x: cropScreenOffset.width + (spotRect.minX - crop.rect.minX) / crop.displayScale,
+            y: cropScreenOffset.height + (spotRect.minY - crop.rect.minY) / crop.displayScale,
+            width: spotRect.width / crop.displayScale,
+            height: spotRect.height / crop.displayScale
+        )
+    }
+
     /// The 1:1 crop size to fetch for a pane of `paneSize` points: the
     /// pane's size in physical pixels, clamped against the image.
     static func cropSize(

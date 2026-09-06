@@ -63,7 +63,7 @@ from typing import IO, Any, ClassVar
 #
 # Protocol 13 is the film-base reference (docs/REBATE_ANCHORING.md): the
 # new `roll set-base-frame` command (with its `base_frame_set` event)
-# attaches one measured per-roll film-base reference — the thin-end colour
+# attaches a measured per-roll film-base reference — the thin-end colour
 # anchor for every negative on the roll — through a new top-level
 # `film_base` block on the roll manifest (`roll info` reports it verbatim).
 # The reference is replaceable until the roll's first negative is
@@ -76,6 +76,18 @@ from typing import IO, Any, ClassVar
 # path, and two warnings (`FILM_BASE_CAMERA_CONFLICT`,
 # `FILM_BASE_FLATFIELD_CONFLICT`) record rig disagreements. `probe --roll`
 # reports `film_base` so the app can gate Convert without starting a run.
+#
+# The same protocol 13 also carries spotting (SPOTTING_PLAN, merged from
+# origin/main): `edit detect-spots` (the detector's proposals, one `spots`
+# op per negative), `edit spots` (review — reject/accept ids by id, the
+# whole-negative repair switch, clear), and `edit list-spots` (a pure
+# query). One new event, `spots_reported` — carrying the spots as
+# **display-space** rects, ids unchanged, never the RLE masks (Swift
+# converts no coordinates) — plus `SPOT_LIMIT_REACHED` (the detector
+# capped its proposals) and `SPOTS_STALE` (a re-stitch changed the canvas;
+# the set needs re-detecting). `roll info` gains a per-negative `spots`
+# summary block. No new error codes of its own: every failure there is
+# `INVALID_EDIT`, `ROLL_NOT_FOUND` or `NEGATIVE_NOT_FOUND`.
 PROTOCOL_VERSION = 13
 
 
@@ -110,6 +122,7 @@ class EventType(enum.StrEnum):
     FLATFIELD_DELETED = "flatfield_deleted"
     FLATFIELD_PROGRESS = "flatfield_progress"
     BASE_FRAME_SET = "base_frame_set"
+    SPOTS_REPORTED = "spots_reported"
 
 
 class Stage(enum.StrEnum):
@@ -227,6 +240,14 @@ class Code(enum.StrEnum):
     ROLL_PREDATES_FILM_BASE = "ROLL_PREDATES_FILM_BASE"
     FILM_BASE_CAMERA_CONFLICT = "FILM_BASE_CAMERA_CONFLICT"
     FILM_BASE_FLATFIELD_CONFLICT = "FILM_BASE_FLATFIELD_CONFLICT"
+    # SPOTTING_PLAN §1.4: the detector found more spots than it may
+    # propose; the highest-scoring ones were kept. The remedy is a lower
+    # --sensitivity.
+    SPOT_LIMIT_REACHED = "SPOT_LIMIT_REACHED"
+    # SPOTTING_PLAN §1.5: the negative's spot set was recorded against a
+    # canvas a re-stitch has replaced; it repairs nothing and needs
+    # re-detecting.
+    SPOTS_STALE = "SPOTS_STALE"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -592,6 +613,28 @@ class BaseFrameSet(Event):
     area_fraction: float
     population_count: int
     locked: bool
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class SpotsReported(Event):
+    """The three spotting commands' shared event: a negative's spot set as
+    the app draws it. Every rect is **display space**, already transformed
+    by the net rotation/flip/fine angle — the app never converts
+    coordinates, and rejection is by `id`, never by position. The RLE masks
+    stay in the ops log; they are an implementation detail of the repair
+    and would multiply the payload for nothing. `found` is the detector's
+    count before the `MAX_SPOTS` cap. `preview_path` is null for
+    `list-spots`, which is a pure query."""
+
+    event_type: ClassVar[EventType] = EventType.SPOTS_REPORTED
+
+    negative_id: str
+    detector_version: int
+    sensitivity: float
+    repair: bool
+    spots: list[dict[str, Any]]  # display space, no rle
+    found: int
+    preview_path: str | None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

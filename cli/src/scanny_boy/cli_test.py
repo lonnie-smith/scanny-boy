@@ -2619,3 +2619,249 @@ def test_grid_2x5_is_a_legal_shape(capsys, tmp_path):
     assert status == 1
     events, _err = _stdout_events(capsys)
     assert events[1]["code"] == "NO_FILES"
+
+
+# --- the spotting commands (docs/SPOTTING_PLAN.md §7) --------------------------
+
+
+def _spots_roll(capsys, tmp_path):
+    """A registered roll with one completed negative (a small published
+    TIFF), built the way `roll init` plus a stitch leaves one — without
+    paying for the stitch."""
+    import tifffile
+
+    from scanny_boy.roll_manifest import CaptureTime
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    main(["roll", "init", "--library", str(tmp_path), "--name", "Spots"])
+    capsys.readouterr()
+    roll_dir = tmp_path / "Spots"
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.manifest import SourceRecord
+    from scanny_boy.roll_manifest import append_run, merge_sources
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    merge_sources(
+        manifest,
+        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        "stitch-run",
+    )
+    manifest.negatives.append(
+        _negative(
+            negative_id="spots-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            capture_time=CaptureTime(source_datetime_original="2026-08-01T12:00:00"),
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 64,
+                "height": 48,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.full((48, 64, 3), 30000, dtype=np.uint16))
+    return roll_dir, "spots-negative-01"
+
+
+def _hand_spots_op(repair=False):
+    from scanny_boy import spots
+
+    return spots.spots_params(
+        canvas=(64, 48),
+        spots=[
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": [10, 12, 4, 3],
+                "rle": [0, 4, 0, 4, 0, 4],
+                "area": 12,
+                "score": 9.0,
+                "rejected": False,
+            },
+            {
+                "id": 2,
+                "kind": "streak",
+                "polarity": "thin",
+                "bbox": [40, 30, 12, 3],
+                "rle": [0, 3, 9, 0, 3, 9, 0, 3, 9],
+                "area": 24,
+                "score": 8.0,
+                "rejected": False,
+            },
+        ],
+        sensitivity=0.5,
+        repair=repair,
+    )
+
+
+def test_edit_detect_spots_records_and_reports(capsys, tmp_path):
+    roll_dir, negative_id = _spots_roll(capsys, tmp_path)
+
+    status = main(
+        [
+            "edit", "detect-spots",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--sensitivity", "0.5",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "spots_reported", "finished"]
+    assert events[0]["command"] == "edit detect-spots"
+    reported = events[1]
+    assert reported["negative_id"] == negative_id
+    assert reported["detector_version"] == 1
+    assert reported["sensitivity"] == 0.5
+    assert reported["repair"] is False
+    assert reported["preview_path"] is not None
+    for spot in reported["spots"]:
+        assert "rle" not in spot
+        assert set(spot) == {"id", "kind", "polarity", "rect", "score", "rejected"}
+    assert events[2]["status"] == "success"
+    assert err == ""
+
+
+def test_edit_spots_reject_accept_and_repair_flags(capsys, tmp_path):
+    from scanny_boy.library import repo
+
+    roll_dir, negative_id = _spots_roll(capsys, tmp_path)
+    repo.append_spots_edit(roll_dir, negative_id, _hand_spots_op())
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "spots",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--reject", "1",
+            "--reject", "2",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "spots_reported", "finished"]
+    reported = events[1]
+    assert [spot["rejected"] for spot in reported["spots"]] == [True, True]
+    assert reported["repair"] is False
+
+    capsys.readouterr()
+    status = main(
+        [
+            "edit", "spots",
+            "--roll", str(roll_dir),
+            "--negative", negative_id,
+            "--accept", "2",
+            "--repair",
+        ]
+    )
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    reported = events[1]
+    assert [spot["rejected"] for spot in reported["spots"]] == [True, False]
+    assert reported["repair"] is True
+
+
+def test_edit_list_spots_is_a_pure_query(capsys, tmp_path):
+    from scanny_boy.library import repo
+
+    roll_dir, negative_id = _spots_roll(capsys, tmp_path)
+    repo.append_spots_edit(roll_dir, negative_id, _hand_spots_op(repair=True))
+    capsys.readouterr()
+    before = repo.edits_for(roll_dir, negative_id)
+
+    status = main(
+        ["edit", "list-spots", "--roll", str(roll_dir), "--negative", negative_id]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "spots_reported", "finished"]
+    reported = events[1]
+    assert reported["repair"] is True
+    assert reported["preview_path"] is None
+    assert len(reported["spots"]) == 2
+    assert repo.edits_for(roll_dir, negative_id) == before
+    assert err == ""
+
+
+def test_edit_list_spots_on_a_stale_set_warns(capsys, tmp_path):
+    from scanny_boy import spots
+    from scanny_boy.library import repo
+
+    roll_dir, negative_id = _spots_roll(capsys, tmp_path)
+    stale = spots.spots_params(
+        canvas=(100, 100),
+        spots=[
+            {
+                "id": 1,
+                "kind": "blob",
+                "polarity": "dense",
+                "bbox": [10, 12, 4, 3],
+                "rle": [0, 4, 0, 4, 0, 4],
+                "area": 12,
+                "score": 9.0,
+                "rejected": False,
+            }
+        ],
+        sensitivity=0.5,
+        repair=True,
+    )
+    repo.append_spots_edit(roll_dir, negative_id, stale)
+    capsys.readouterr()
+
+    status = main(
+        ["edit", "list-spots", "--roll", str(roll_dir), "--negative", negative_id]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == [
+        "started", "warning", "spots_reported", "finished"
+    ]
+    assert events[1]["code"] == "SPOTS_STALE"
+    assert events[2]["spots"] == []
+    assert err == ""
+
+
+def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
+    from scanny_boy.library import repo
+
+    roll_dir, negative_id = _spots_roll(capsys, tmp_path)
+
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _err = _stdout_events(capsys)
+    negative = events[1]["manifest"]["negatives"][0]
+    assert negative["spots"] is None
+
+    repo.append_spots_edit(roll_dir, negative_id, _hand_spots_op(repair=True))
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _err = _stdout_events(capsys)
+    negative = events[1]["manifest"]["negatives"][0]
+    assert negative["spots"] == {
+        "detector_version": 1,
+        "sensitivity": 0.5,
+        "repair": True,
+        "stale": False,
+        "count": 2,
+        "rejected": 0,
+    }
+
+    stale = _hand_spots_op()
+    stale["canvas"] = [100, 100]
+    repo.append_spots_edit(roll_dir, negative_id, stale)
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _err = _stdout_events(capsys)
+    negative = events[1]["manifest"]["negatives"][0]
+    assert negative["spots"]["stale"] is True
+    assert negative["spots"]["count"] == 0
+    assert negative["spots"]["rejected"] == 0

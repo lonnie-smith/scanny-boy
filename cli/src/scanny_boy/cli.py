@@ -17,10 +17,13 @@ from scanny_boy.edits import (
     EditFailure,
     run_edit_color,
     run_edit_delete,
+    run_edit_detect_spots,
     run_edit_flip,
+    run_edit_list_spots,
     run_edit_render_preview,
     run_edit_render_region,
     run_edit_rotate,
+    run_edit_spots,
     run_edit_tone,
 )
 from scanny_boy.events import (
@@ -47,6 +50,7 @@ from scanny_boy.events import (
     RollListingEntry,
     RollListingReason,
     RollRenamed,
+    SpotsReported,
     Started,
     WarningEvent,
 )
@@ -572,6 +576,82 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove the colour adjustment",
     )
 
+    edit_detect_spots = edit_subparsers.add_parser(
+        "detect-spots",
+        help=(
+            "Run the spot detector over one or more negatives' published "
+            "TIFFs and record the proposals as a `spots` op per negative."
+        ),
+    )
+    edit_detect_spots.add_argument("--roll", required=True, metavar="DIR")
+    edit_detect_spots.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to detect on; repeat for a selection",
+    )
+    edit_detect_spots.add_argument(
+        "--sensitivity",
+        type=float,
+        default=0.5,
+        metavar="S",
+        help="0.0 (most conservative) to 1.0 (most aggressive); default 0.5",
+    )
+
+    edit_spots = edit_subparsers.add_parser(
+        "spots",
+        help=(
+            "Review one negative's spot set: reject or accept spots by id, "
+            "flip the whole-negative repair switch, or clear the set."
+        ),
+    )
+    edit_spots.add_argument("--roll", required=True, metavar="DIR")
+    edit_spots.add_argument("--negative", required=True, metavar="ID")
+    edit_spots.add_argument(
+        "--reject",
+        type=int,
+        action="append",
+        metavar="N",
+        default=[],
+        help="spot id to reject; repeatable",
+    )
+    edit_spots.add_argument(
+        "--accept",
+        type=int,
+        action="append",
+        metavar="N",
+        default=[],
+        help="spot id to accept (un-reject); repeatable",
+    )
+    repair_group = edit_spots.add_mutually_exclusive_group()
+    repair_group.add_argument(
+        "--repair",
+        dest="repair",
+        action="store_true",
+        default=None,
+        help="switch the whole-negative repair on",
+    )
+    repair_group.add_argument(
+        "--no-repair",
+        dest="repair",
+        action="store_false",
+        default=None,
+        help="switch the whole-negative repair off",
+    )
+    edit_spots.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove the spot set entirely (repair off, no spots)",
+    )
+
+    edit_list_spots = edit_subparsers.add_parser(
+        "list-spots",
+        help="List one negative's spot set as display-space rects (pure query).",
+    )
+    edit_list_spots.add_argument("--roll", required=True, metavar="DIR")
+    edit_list_spots.add_argument("--negative", required=True, metavar="ID")
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -876,6 +956,30 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                 color_params["wb_magenta"], color_params["wb_yellow"]
             )
         )
+        # The spots summary, not the list: a 36-negative roll with 500
+        # spots each would otherwise put megabytes of JSON through every
+        # `roll info` (SPOTTING_PLAN §7.3). The full list is
+        # `edit list-spots`' job.
+        spots_params = state.spots
+        if spots_params is None:
+            negative["spots"] = None
+        else:
+            output = negative.get("output") or {}
+            stale = tuple(spots_params.get("canvas") or (None, None)) != (
+                output.get("width"),
+                output.get("height"),
+            )
+            spot_list = spots_params.get("spots") or []
+            negative["spots"] = {
+                "detector_version": spots_params.get("detector_version"),
+                "sensitivity": spots_params.get("sensitivity"),
+                "repair": spots_params.get("repair"),
+                "stale": stale,
+                "count": 0 if stale else len(spot_list),
+                "rejected": (
+                    0 if stale else sum(1 for s in spot_list if s.get("rejected"))
+                ),
+            }
     if manifest.film is not None:
         info["film_kind"] = manifest.film.get("kind")
     else:
@@ -1148,6 +1252,32 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 )
             ]
             confirmation = PreviewRendered
+        elif args.edit_command == "detect-spots":
+            results = run_edit_detect_spots(
+                Path(args.roll),
+                args.negative,
+                args.sensitivity,
+                emit=writer.write,
+            )
+            confirmation = SpotsReported
+        elif args.edit_command == "spots":
+            results = [run_edit_spots(
+                Path(args.roll),
+                args.negative,
+                reject=args.reject,
+                accept=args.accept,
+                repair=args.repair,
+                clear=args.clear,
+                emit=writer.write,
+            )]
+            confirmation = SpotsReported
+        elif args.edit_command == "list-spots":
+            results = [run_edit_list_spots(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )]
+            confirmation = SpotsReported
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
     except EditFailure as exc:

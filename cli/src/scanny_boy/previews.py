@@ -48,12 +48,13 @@ JPEG: repeated edits would otherwise compound generational loss.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from scanny_boy import auto_rotate, color, normalization, tone
+from scanny_boy import auto_rotate, color, normalization, spots, tone
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -220,15 +221,23 @@ def _display_image(
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
+    spots_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (mirror horizontally, then the fine rotation's warp
-    with the fill sentinel, then the quarter turns) — the pixels
-    `generate_preview`, `render_preview`, and `render_region`'s exact path
-    all work from. uint16 RGB in density codes, like the TIFF."""
+    in canonical order (the spot repair, then the mirror, then the fine
+    rotation's warp with the fill sentinel, then the quarter turns) — the
+    pixels `generate_preview`, `render_preview`, and `render_region`'s
+    exact path all work from. uint16 RGB in density codes, like the TIFF.
+
+    The spot repair (when `spots_params` carries a live one) is the first
+    step, before any geometry: the op's coordinates are TIFF space, and the
+    repair applies in both display modes — what the user compares when they
+    toggle repair on and off is the same in both views (SPOTTING_PLAN
+    §3.3)."""
     import tifffile
 
     image = _promote_to_rgb(tifffile.imread(tiff_path))
+    image = spots.apply_repair(image, spots_params)
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
@@ -250,6 +259,7 @@ def generate_preview(
     tone_params: dict[str, float] | None = None,
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
+    spots_params: dict | None = None,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
     transform applied — the published TIFF itself never carries edits, so
@@ -267,7 +277,13 @@ def generate_preview(
         return None
 
     tiff_path = Path(roll_dir) / negative.output["name"]
-    image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
+    image = _display_image(
+        tiff_path,
+        quarter_turns,
+        flipped_horizontally,
+        fine_angle_deg,
+        spots_params,
+    )
 
     destination = _preview_path(roll_id, negative.negative_id)
     _write_downscaled(
@@ -289,6 +305,7 @@ def render_preview(
     fine_angle_deg: float = 0.0,
     mode: str = "positive",
     tone_params: dict[str, float] | None = None,
+    spots_params: dict | None = None,
 ) -> tuple[int, int]:
     """The whole display image in the requested display mode, downscaled to
     `PREVIEW_MAX_EDGE`, written to a caller-named path — the pure-query
@@ -301,7 +318,13 @@ def render_preview(
     there) or `"negative"` (the un-inverted density view, which no tone
     ever reaches — `tone_params` is ignored in that mode). Returns the
     written PNG's `(width, height)`."""
-    image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
+    image = _display_image(
+        tiff_path,
+        quarter_turns,
+        flipped_horizontally,
+        fine_angle_deg,
+        spots_params,
+    )
     width, height = _write_downscaled(image, destination, tone_params, mode=mode)
     return width, height
 
@@ -362,6 +385,79 @@ def _display_point_to_tiff(
     if r == 2:
         return tiff_h - 1 - i, tiff_w - 1 - j
     return tiff_h - 1 - j, i  # r == 3
+
+
+def tiff_rect_to_display(
+    rect: tuple[int, int, int, int],
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> tuple[int, int, int, int]:
+    """A TIFF-space `(x, y, width, height)` rect as the display-space rect
+    the app draws markers over — the exact forward map of
+    `_display_point_to_tiff`, replaying `_display_image`'s canonical order
+    on the rect's four corners: mirror, then the fine rotation (the same
+    matrix `auto_rotate.rotate_with_fill` builds, negated angle and all),
+    then the quarter turns; the axis-aligned bounding box of the mapped
+    corners (floor the minimum, ceil the maximum), clamped to the display
+    bounds. A box under a fine rotation grows slightly — correct behaviour
+    for a review marker, not a bug to fix (SPOTTING_PLAN §1.2).
+
+    The CLI converts; Swift never does. Every command and query reports
+    spots in display space, already transformed."""
+    import cv2
+
+    tiff_h, tiff_w = tiff_size
+    x, y, w, h = rect
+    corners = [
+        (float(px), float(py))
+        for px, py in (
+            (x, y),
+            (x + w - 1, y),
+            (x + w - 1, y + h - 1),
+            (x, y + h - 1),
+        )
+    ]
+    # 1. Mirror, when flipped.
+    if flipped_horizontally:
+        corners = [(tiff_w - 1 - px, py) for px, py in corners]
+    # 2. The fine rotation, about the canvas center, negated angle — the
+    # same matrix `rotate_with_fill` builds.
+    if abs(fine_angle_deg) >= 1e-9:
+        matrix = cv2.getRotationMatrix2D(
+            (tiff_w / 2.0, tiff_h / 2.0), -fine_angle_deg, 1.0
+        )
+        corners = [
+            (
+                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
+                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
+            )
+            for px, py in corners
+        ]
+    # 3. Quarter turns (the inverse of `_display_point_to_tiff`'s case
+    # table). r = the counter-clockwise turn count np.rot90 applies.
+    r = (-int(quarter_turns)) % 4
+    if r == 1:
+        corners = [(py, tiff_w - 1 - px) for px, py in corners]
+    elif r == 2:
+        corners = [(tiff_w - 1 - px, tiff_h - 1 - py) for px, py in corners]
+    elif r == 3:
+        corners = [(tiff_h - 1 - py, px) for px, py in corners]
+
+    xs = [px for px, _ in corners]
+    ys = [py for _, py in corners]
+    # Odd net turns swap the display dimensions.
+    display_w, display_h = (tiff_w, tiff_h) if r % 2 == 0 else (tiff_h, tiff_w)
+    # The corners are pixel indices, so the bounding rect's far edges are
+    # one past the extreme corner: floor the minimum, ceil the maximum
+    # *plus one* — which is what makes an unrotated rect come back exact.
+    x0 = min(max(math.floor(min(xs)), 0), display_w)
+    y0 = min(max(math.floor(min(ys)), 0), display_h)
+    x1 = min(max(math.ceil(max(xs)) + 1, 0), display_w)
+    y1 = min(max(math.ceil(max(ys)) + 1, 0), display_h)
+    return x0, y0, max(x1 - x0, 0), max(y1 - y0, 0)
 
 
 def _clamp_display_region(
@@ -441,6 +537,7 @@ def render_region(
     metering: color.Metering | None = None,
     destination: Path | None = None,
     mode: str = "positive",
+    spots_params: dict | None = None,
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
@@ -472,11 +569,21 @@ def render_region(
     display_h, display_w = (tiff_w, tiff_h) if r % 2 else (tiff_h, tiff_w)
     dx, dy, dw, dh = _clamp_display_region(x, y, width, height, display_h, display_w)
 
-    if abs(fine_angle_deg) >= 1e-9:
-        # The fine warp interpolates across its source's boundaries, so
-        # crop-then-transform is no longer exact: replay the transform on
-        # the full decode, the way `generate_preview` does, then slice.
-        image = _display_image(tiff_path, quarter_turns, flipped_horizontally, fine_angle_deg)
+    if abs(fine_angle_deg) >= 1e-9 or spots.is_repairing(
+        spots_params, (tiff_h, tiff_w)
+    ):
+        # The fine warp interpolates across its source's boundaries, and
+        # inpainting a crop uses different surroundings than inpainting
+        # the whole image — either way crop-then-transform is no longer
+        # exact: replay the transform on the full decode, the way
+        # `generate_preview` does, then slice.
+        image = _display_image(
+            tiff_path,
+            quarter_turns,
+            flipped_horizontally,
+            fine_angle_deg,
+            spots_params,
+        )
         if destination is not None:
             _encode_display_png(
                 image[dy : dy + dh, dx : dx + dw],
@@ -522,9 +629,11 @@ def render_region(
 
 
 # tone and color ops never route through the lossless incremental path —
-# an 8-bit PNG cannot be re-curved or re-coloured losslessly.
+# an 8-bit PNG cannot be re-curved or re-coloured losslessly. The spots op
+# joins them: a repair changes pixels, and the incremental path is
+# lossless-geometry only (SPOTTING_PLAN §6).
 PREVIEW_OPS = {"cw", "ccw", "flip"}
-_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP}
+_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP}
 
 
 def ensure_preview(
@@ -541,7 +650,9 @@ def ensure_preview(
       preview, which already reflects every earlier edit.
     - Preview exists and the `tone` op came in: regenerate — the tone
       curve lives in the display encode, which the cached PNG has already
-      been through.
+      been through. The `color` op likewise; the `spots` op likewise — a
+      repair changes pixels, and the incremental transform path is
+      lossless-geometry only.
     - Preview exists, no op: leave it alone.
     """
     if op is not None and op not in PREVIEW_OPS and op not in _STATE_PREVIEW_OPS:
@@ -559,6 +670,7 @@ def ensure_preview(
             tone_params=state.tone,
             color_params=state.color,
             metering=meter,
+            spots_params=state.spots,
         )
     if op is not None:
         if op in _STATE_PREVIEW_OPS:
@@ -574,6 +686,7 @@ def ensure_preview(
                 tone_params=state.tone,
                 color_params=state.color,
                 metering=meter,
+                spots_params=state.spots,
             )
         return transform_preview(Path(negative.preview_path), op)
     return Path(negative.preview_path)
@@ -610,6 +723,7 @@ def sync_previews(
             tone_params=state.tone,
             color_params=state.color,
             metering=meter,
+            spots_params=state.spots,
         )
         if preview is not None:
             negative.preview_path = str(preview)

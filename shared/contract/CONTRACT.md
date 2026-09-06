@@ -51,6 +51,39 @@ unclipped, and read by nothing (§6). Roll manifest format version bumps
 exportable, but cannot take new negatives or a base frame
 (`ROLL_PREDATES_FILM_BASE`). There is no migration.
 
+The same protocol 13 also adds **spotting** (docs/SPOTTING_PLAN.md,
+merged from origin/main).
+
+**The spotting feature**: dust, hairs, water spots and scratches are
+detected, reviewed, and repaired — the published TIFF is never touched, and
+no pixel anywhere changes until an explicit repair is switched on. Three
+new commands join the `edit` family: `edit detect-spots` takes a
+`--negative` selection (repeatable) and an optional `--sensitivity 0..1`
+(default 0.5, most-conservative 0.0), runs the detector over each
+negative's published TIFF, and records one `spots` op per negative — a
+state op, coalesced in place like `tone` and `color`, carrying the spots'
+exact RLE masks in **published-TIFF pixels**. Re-detecting preserves
+rejections made near the same coordinates and preserves an already-on
+repair switch; when the detector finds more than 500 spots it keeps the
+highest-scoring 500 and warns `SPOT_LIMIT_REACHED` (the remedy is a lower
+`--sensitivity`). `edit spots` takes **exactly one** `--negative` and
+records the review: `--reject N` / `--accept N` (repeatable, combinable, by
+id — an unknown id fails `INVALID_EDIT` naming it), `--repair` /
+`--no-repair` (the whole-negative switch), or `--clear` (empty set, repair
+off). `edit list-spots` is a pure query: nothing recorded, no pixels
+touched. All three emit `spots_reported` — and here is the rule the app
+must not break: **every reported spot rect is display space, already
+transformed by the net rotation/flip/fine angle; the app never converts
+coordinates, rejects by `id` only, and never sees an RLE mask.** A spot set
+recorded against a canvas a re-stitch has replaced is *stale*: it repairs
+nothing, draws no markers, reports an empty list with a `SPOTS_STALE`
+warning, and needs re-detecting. `roll info` gains a per-negative `spots`
+**summary** (not the list): `{detector_version, sensitivity, repair, stale,
+count, rejected}`, `null` for a negative with no spot set, counts zeroed
+when stale. The export applies a live repair (before any geometry) and
+records it in the XMP provenance's `rendered.spots`:
+`{detector_version, sensitivity, repaired}`, `null` when none.
+
 Protocol version 12 keeps version 11's roll model and adds **the preview
 colour adjustment**.
 
@@ -297,6 +330,11 @@ scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX 
                               [--mode positive|negative]
 scanny-boy edit render-preview --roll DIR --negative ID --output PATH
                                [--mode positive|negative]
+scanny-boy edit detect-spots   --roll DIR --negative ID [ID ...]
+                               [--sensitivity S]
+scanny-boy edit spots          --roll DIR --negative ID [--reject N ...]
+                               [--accept N ...] [--repair | --no-repair] [--clear]
+scanny-boy edit list-spots     --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
 
@@ -581,6 +619,42 @@ reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
 and derived `color_temperature` (null when no op), plus `film_kind` on the
 roll.
 
+**Spotting (protocol 13).** `edit detect-spots` runs the defect detector
+over each selected negative's published TIFF and records one `spots` op per
+negative: `{"detector_version", "sensitivity", "repair", "canvas", "spots"}`.
+Each spot entry carries `id` (assigned in raster order, top-left to
+bottom-right, stable for a given detection), `kind` (`"blob"` or
+`"streak"`), `polarity` (`"dense"` — crud blocking light, the print reads
+locally white — or `"thin"` — a scratch through the emulsion, the print
+reads locally black), `bbox` `[x, y, width, height]` in **published-TIFF
+pixels** (TIFF space: the stored geometry survives later rotations), `rle`
+(the component's exact mask, run-length encoded over its own bounding box,
+alternating runs starting with a run of zeros, summing to `width * height`),
+`area`, `score` (the peak response in robust sigmas), and `rejected`
+(*absent means accepted* — the user rejects, never accepts). The op is a
+state, not a transform: the latest `spots` op wins and a trailing one
+coalesces in place. It is also the only op whose replay **synthesizes**
+pixel values — the export and the previews apply a live repair (`repair:
+true`) before any geometry. Re-detecting preserves rejections (a new
+proposal within 8 px of a previously rejected one is born rejected) and
+preserves an on repair switch. `edit spots` reviews one negative's set:
+`--reject`/`--accept` by id (unknown id → `INVALID_EDIT` naming the id),
+`--repair`/`--no-repair`, or `--clear` (empty set, repair off). `edit
+list-spots` is the pure query. All three emit `spots_reported` with
+`negative_id`, `detector_version`, `sensitivity`, `repair`, `spots`
+(**display-space** rects `{id, kind, polarity, rect, score, rejected}` —
+the app never converts coordinates, never rejects by position, and never
+sees the `rle`), `found` (before the 500-spot cap), and `preview_path`
+(null for `list-spots`). Failures: `INVALID_EDIT` (bad sensitivity,
+unknown id, no set, nothing to do), `ROLL_NOT_FOUND`,
+`NEGATIVE_NOT_FOUND` (including an unstitched negative). Warnings:
+`SPOT_LIMIT_REACHED` (the cap bit; remedy: lower `--sensitivity`) and
+`SPOTS_STALE` (a re-stitch changed the canvas; the set repairs nothing and
+needs re-detecting — `roll info`'s summary reports `"stale": true` with
+zeroed counts). `roll info` reports the per-negative `spots` **summary**
+(`{detector_version, sensitivity, repair, stale, count, rejected}`), `null`
+for a negative with no spot set — the full list is `edit list-spots`' job.
+
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density
 discriminator (film base is the thinnest thing on the film) locates the
@@ -713,6 +787,7 @@ library database rather than a JSON file in the roll folder).
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
 | `flatfield_deleted` | A flat-field profile was deleted. Carries `profile_id`. |
 | `flatfield_progress` | A long `flatfield create` is progressing. Carries `phase`, `completed`, `total`. Carries no `run_id`. |
+| `spots_reported` | A negative's spot set was reported by `edit detect-spots`, `edit spots`, or `edit list-spots`: display-space rects (the app converts nothing), `found` before the cap, `preview_path` null for the pure query. Carries no `run_id`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
 | `finished` | The command ended. Carries final status and exit status. |
@@ -861,6 +936,8 @@ staging directories, and reruns the incomplete negative.
 | `ROLL_PREDATES_FILM_BASE` | This roll was stitched before film-base anchoring and cannot take new negatives or a base frame |
 | `FILM_BASE_CAMERA_CONFLICT` | Warning: the base frame's EXIF camera model differs from the roll's; the measurement may still be fine |
 | `FILM_BASE_FLATFIELD_CONFLICT` | Warning: the run's flat-field profile differs from the one the base frame was measured with |
+| `SPOT_LIMIT_REACHED` | Warning: the spot detector found more than 500 proposals on a negative and kept the highest-scoring 500; the remedy is a lower `--sensitivity` |
+| `SPOTS_STALE` | Warning: the negative's spot set was detected against a canvas a re-stitch has replaced; it repairs nothing and needs re-detecting |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

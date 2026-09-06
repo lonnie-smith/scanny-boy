@@ -167,7 +167,13 @@ nondestructive rotation per negative — the ops log lives in the library
 database, the CLI re-renders the preview, and the published TIFF is never
 touched. **Metadata** carries the roll's info and the dirty count with its
 **Apply** button, which writes intended capture times into the published
-TIFFs' EXIF tags (no pixel data is touched). **Export** writes TIFFs with
+TIFFs' EXIF tags (no pixel data is touched). The Edit tab's tone and colour
+controls likewise record nondestructive ops, and the spot tool
+("Find spots") proposes dust/hair/scratch candidates as markers over the
+preview — reject the bad ones by clicking them, then switch repair on and
+only what survived review is inpainted (the published TIFF stays
+untouched; the repair lives in the ops log and reaches the export).
+**Export** writes TIFFs with
 the edits applied into a folder of your choosing. The roll capture date and
 each negative's date override are shown but are not yet editable from the
 app — see `docs/punchlist.md`.

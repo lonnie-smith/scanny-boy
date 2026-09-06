@@ -36,7 +36,8 @@
         "flatfield_progress",
         "metadata_updated",
         "metadata_values",
-        "base_frame_set"
+        "base_frame_set",
+        "spots_reported"
       ]
     },
     "stage": {
@@ -149,6 +150,8 @@
         "ROLL_PREDATES_FILM_BASE",
         "FILM_BASE_CAMERA_CONFLICT",
         "FILM_BASE_FLATFIELD_CONFLICT",
+        "SPOT_LIMIT_REACHED",
+        "SPOTS_STALE",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -357,6 +360,9 @@
               "edit color",
               "edit render-region",
               "edit render-preview",
+              "edit detect-spots",
+              "edit spots",
+              "edit list-spots",
               "export",
               "flatfield create",
               "flatfield list",
@@ -602,6 +608,49 @@
           "area_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
           "population_count": { "type": "integer", "minimum": 0 },
           "locked": { "type": "boolean", "const": false }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "spots_reported" } } },
+      "then": {
+        "required": [
+          "negative_id",
+          "detector_version",
+          "sensitivity",
+          "repair",
+          "spots",
+          "found",
+          "preview_path"
+        ],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "detector_version": { "type": "integer", "minimum": 1 },
+          "sensitivity": { "type": "number", "minimum": 0, "maximum": 1 },
+          "repair": { "type": "boolean" },
+          "spots": {
+            "type": "array",
+            "description": "Display-space rects; the app never converts coordinates.",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "polarity", "rect", "score", "rejected"],
+              "properties": {
+                "id": { "type": "integer", "minimum": 1 },
+                "kind": { "type": "string", "enum": ["blob", "streak"] },
+                "polarity": { "type": "string", "enum": ["dense", "thin"] },
+                "rect": {
+                  "type": "array",
+                  "items": { "type": "integer" },
+                  "minItems": 4,
+                  "maxItems": 4
+                },
+                "score": { "type": "number" },
+                "rejected": { "type": "boolean" }
+              }
+            }
+          },
+          "found": { "type": "integer", "minimum": 0 },
+          "preview_path": { "type": ["string", "null"] }
         }
       }
     },
