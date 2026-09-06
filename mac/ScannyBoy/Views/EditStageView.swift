@@ -115,9 +115,19 @@ private struct PreviewPane: View {
     @State private var isTonePanelPresented = false
     @State private var zoom = PreviewZoomModel()
     @State private var paneSize: CGSize = .zero
+    /// The display mode the pane shows: the CLI's inverted positive, or
+    /// protocol version 11's un-inverted negative for judging densities.
+    /// Sticky across negative changes — the point is comparing densities
+    /// from frame to frame.
+    @State private var showsNegative = false
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
+
+    /// The display encode the pane's renders should use.
+    private var displayMode: PreviewDisplayMode {
+        showsNegative ? .negative : .positive
+    }
 
     private var rotationShortcutsEnabled: Bool {
         !(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
@@ -170,23 +180,48 @@ private struct PreviewPane: View {
                 .accessibilityLabel(zoomButtonHelp)
 
                 Button {
+                    showsNegative.toggle()
+                } label: {
+                    Image(systemName: showsNegative
+                        ? "circle.lefthalf.filled.inverse"
+                        : "circle.lefthalf.filled")
+                }
+                .disabled(
+                    negative.output == nil
+                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                )
+                .help(displayModeButtonHelp)
+                .accessibilityLabel(displayModeButtonHelp)
+
+                Button {
                     isTonePanelPresented = true
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Tone: paper grade and midtone snap (preview only)")
+                .help("Tone: paper grade and midtone snap (positive view only)")
                 .accessibilityLabel("Tone adjustment")
                 .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
                     ToneAdjustmentPanel(
                         toneGradeR: negative.toneGradeR,
                         toneSnapGamma: negative.toneSnapGamma,
                         isBusy: edit.isSettingTone || edit.isRotating || edit.isDeleting,
-                        onCommit: { grade, snap in
-                            Task { await edit.setTone(targets, gradeR: grade, snapGamma: snap) }
+                        onScheduleCommit: { grade, snap in
+                            edit.scheduleTone(targets, gradeR: grade, snapGamma: snap)
+                        },
+                        onCommitNow: { grade, snap in
+                            Task {
+                                await edit.commitTone(
+                                    targets, gradeR: grade, snapGamma: snap
+                                )
+                            }
                         },
                         onReset: {
-                            Task { await edit.setTone(targets, gradeR: nil, snapGamma: nil) }
+                            Task {
+                                await edit.commitTone(
+                                    targets, gradeR: nil, snapGamma: nil
+                                )
+                            }
                         }
                     )
                     .frame(width: 280)
@@ -245,17 +280,25 @@ private struct PreviewPane: View {
             zoom.reset()
             refreshZoomContext(paneSize: paneSize)
         }
-        .task(id: previewIdentity) {
+        .onChange(of: showsNegative) {
+            // The on-screen 1:1 crop is the other mode's pixels until the
+            // new render arrives; forget it and refetch through the new
+            // loader. The zoom mode itself is kept — both views zoom.
+            zoom.invalidate()
+            refreshZoomContext(paneSize: paneSize)
+        }
+        .task(id: displayIdentity) {
             thumbnail = nil
-            guard let url = previewURL else {
-                return
+            if showsNegative {
+                thumbnail = await edit.renderPreview(negative, mode: .negative)
+            } else if let url = previewURL {
+                thumbnail = await ThumbnailLoader.shared.thumbnail(
+                    forPreview: url,
+                    generation: previewGeneration,
+                    pointSize: CGSize(width: 1200, height: 1200),
+                    scale: displayScale
+                )
             }
-            thumbnail = await ThumbnailLoader.shared.thumbnail(
-                forPreview: url,
-                generation: previewGeneration,
-                pointSize: CGSize(width: 1200, height: 1200),
-                scale: displayScale
-            )
         }
         .onChange(of: displayScale) {
             // The 1:1 crop is sized in physical pixels; a moved window (or
@@ -269,6 +312,12 @@ private struct PreviewPane: View {
         zoom.mode == .fit
             ? "Zoom to 100% (Space+click)"
             : "Zoom to fit (Space+click)"
+    }
+
+    private var displayModeButtonHelp: String {
+        showsNegative
+            ? "Show the positive view (the graded print look)"
+            : "Show the underlying negative (raw densities)"
     }
 
     /// The centre of the preview pane — where the toolbar zoom button anchors.
@@ -320,9 +369,17 @@ private struct PreviewPane: View {
 
     /// Path plus net transform: the CLI rewrites the preview file in
     /// place, so the pair is what tells the thumbnail cache the
-    /// contents changed.
+    /// contents changed. Deliberately without the display mode: a mode
+    /// flip must not reset the zoom, only swap what is fetched (see
+    /// `displayIdentity`).
     private var previewIdentity: String {
         "\(negative.previewPath ?? "none")#\(previewGeneration)"
+    }
+
+    /// Everything the fit view's load depends on: the preview identity
+    /// plus the display mode.
+    private var displayIdentity: String {
+        "\(previewIdentity)#\(displayMode.rawValue)"
     }
 
     private var previewGeneration: String {
@@ -386,7 +443,7 @@ private struct PreviewPane: View {
             displayScale: displayScale,
             displaySize: displaySize,
             loader: { rect in
-                await edit.renderRegion(negative, rect: rect)
+                await edit.renderRegion(negative, rect: rect, mode: displayMode)
             }
         )
         if zoom.mode == .pixels100 { zoom.fetchCrop() }
@@ -430,9 +487,10 @@ private struct PreviewPane: View {
 /// The Edit tab's tone adjustment panel: an ISO-R paper-grade slider
 /// (50–180, lower is harder — the vocabulary the Phase 4 print stage will
 /// use) plus a midtone-snap slider (−0.5…0.5), both recorded
-/// nondestructively through `edit tone`. Sliders commit on release: one
-/// CLI round trip per gesture, and repeated commits coalesce into the
-/// trailing `tone` op. Reset removes the op entirely, returning to the
+/// nondestructively through `edit tone`. Sliders snap to integer ISO-R
+/// units and 0.05 snap steps; each snapped value schedules a debounced
+/// commit, flushed immediately on release. Repeated commits coalesce into
+/// the trailing `tone` op. Reset removes the op entirely, returning to the
 /// flat linear preview the unadjusted display encode gives.
 private struct ToneAdjustmentPanel: View {
     /// The anchor negative's recorded tone — what the sliders sync to when
@@ -440,11 +498,14 @@ private struct ToneAdjustmentPanel: View {
     let toneGradeR: Double?
     let toneSnapGamma: Double?
     let isBusy: Bool
-    let onCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onScheduleCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onCommitNow: (_ gradeR: Double, _ snapGamma: Double) -> Void
     let onReset: () -> Void
 
     private static let defaultGrade: Double = 115
     private static let defaultSnap: Double = 0
+    private static let gradeRange: ClosedRange<Double> = 50...180
+    private static let snapRange: ClosedRange<Double> = -0.5...0.5
 
     @State private var grade: Double = defaultGrade
     @State private var snap: Double = defaultSnap
@@ -462,9 +523,12 @@ private struct ToneAdjustmentPanel: View {
                 }
                 ToneSlider(
                     value: $grade,
-                    range: 50...180,
+                    range: Self.gradeRange,
+                    step: 1,
                     resetValue: Self.defaultGrade,
-                    onCommit: { onCommit(grade, snap) }
+                    reversed: true,
+                    onScheduleCommit: scheduleCommit,
+                    onCommitNow: commitNow
                 )
                 .accessibilityLabel("Paper grade")
                 Text("50–180, lower is harder")
@@ -483,9 +547,11 @@ private struct ToneAdjustmentPanel: View {
                 }
                 ToneSlider(
                     value: $snap,
-                    range: -0.5...0.5,
+                    range: Self.snapRange,
+                    step: 0.05,
                     resetValue: Self.defaultSnap,
-                    onCommit: { onCommit(grade, snap) }
+                    onScheduleCommit: scheduleCommit,
+                    onCommitNow: commitNow
                 )
                 .accessibilityLabel("Midtone snap")
                 Text("Midtone contrast trim")
@@ -516,6 +582,22 @@ private struct ToneAdjustmentPanel: View {
         .onChange(of: toneSnapGamma) { syncFromModel() }
     }
 
+    private func scheduleCommit() {
+        onScheduleCommit(snappedGrade, snappedSnap)
+    }
+
+    private func commitNow() {
+        onCommitNow(snappedGrade, snappedSnap)
+    }
+
+    private var snappedGrade: Double {
+        ToneSlider.snap(grade, step: 1, range: Self.gradeRange)
+    }
+
+    private var snappedSnap: Double {
+        ToneSlider.snap(snap, step: 0.05, range: Self.snapRange)
+    }
+
     private func syncFromModel() {
         if let toneGradeR, let toneSnapGamma {
             grade = toneGradeR
@@ -530,18 +612,46 @@ private struct ToneAdjustmentPanel: View {
 private struct ToneSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
+    let step: Double
     let resetValue: Double
-    let onCommit: () -> Void
+    var reversed: Bool = false
+    let onScheduleCommit: () -> Void
+    let onCommitNow: () -> Void
+
+    private var sliderValue: Binding<Double> {
+        let base = reversed ? reversedBinding : $value
+        return Binding(
+            get: { base.wrappedValue },
+            set: { newValue in
+                let snapped = Self.snap(newValue, step: step, range: range)
+                guard snapped != base.wrappedValue else { return }
+                base.wrappedValue = snapped
+                onScheduleCommit()
+            }
+        )
+    }
+
+    private var reversedBinding: Binding<Double> {
+        Binding(
+            get: { range.upperBound + range.lowerBound - value },
+            set: { value = range.upperBound + range.lowerBound - $0 }
+        )
+    }
+
+    static func snap(_ value: Double, step: Double, range: ClosedRange<Double>) -> Double {
+        let stepped = (value / step).rounded() * step
+        return min(range.upperBound, max(range.lowerBound, stepped))
+    }
 
     var body: some View {
-        Slider(value: $value, in: range) { editing in
+        Slider(value: sliderValue, in: range, step: step) { editing in
             guard !editing else { return }
-            onCommit()
+            onCommitNow()
         }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
                 value = resetValue
-                onCommit()
+                onCommitNow()
             }
         )
     }

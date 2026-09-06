@@ -33,11 +33,13 @@ from scanny_boy.normalization import (
     NORMALIZED_FILL,
     Bounds,
     DenseBorder,
+    FilmKind,
     Rebate,
     analysis_grid_block_sizes,
     analyze_bounds,
     block_median_grid,
     clamp_bounds,
+    collapse_to_mono,
     detect_rebate,
     encode_normalized,
     headroom_clip_fractions,
@@ -624,6 +626,7 @@ def composite(
     rectification: Rectification | None = None,
     region: tuple[int, int, int, int] | None = None,
     reference_bounds: list[Bounds] | None = None,
+    film_kind: FilmKind = FilmKind.COLOUR,
 ) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
     result released immediately, so the caller controls residency.
@@ -684,6 +687,12 @@ def composite(
     encode on the float32 accumulator that already exists:
 
       img_log    = to_log_density(result_linear)
+      img_log    = collapse_to_mono(img_log, covered)  # mono roll only
+                   (MONOCHROME_PLAN section 3: after the log, before the
+                   bounds — averaging in linear light would weight by
+                   intensity, not density, and biases toward the film
+                   base; after the bounds, `analyze_bounds`' colour axis
+                   would solve for an orange mask that is not there)
       keep       = resolve_analysis_region(...); rebate detector excludes
                    the film rebate from it (section 3.13)
       bounds     = analyze_bounds(keep)
@@ -869,6 +878,8 @@ def composite(
     # once the data is log-encoded.
     img_log = to_log_density(result_linear)
     del result_linear
+    if film_kind is FilmKind.MONOCHROME:
+        img_log = collapse_to_mono(img_log, covered)
 
     grid = block_median_grid(img_log)
     keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
@@ -909,6 +920,14 @@ def composite(
         np.full((1, 1, encoded.shape[-1]), NORMALIZED_FILL, dtype=np.float32)
     )[0, 0]
     encoded[~covered] = fill_code
+    if encoded.shape[-1] == 1:
+        # MONOCHROME_PLAN §4 (tiff_writer.py:81's `photometric` site, and
+        # `write_stitched_tiff`'s own shape check): the published mono TIFF
+        # is a true 2-D array, not a (H, W, 1) one — the collapse point
+        # keeps a trailing channel axis throughout the meters because every
+        # generalised function reads `shape[-1]`, but nothing downstream of
+        # this function expects one.
+        encoded = encoded[..., 0]
 
     coverage_fraction = float(np.count_nonzero(covered)) / covered.size
 

@@ -106,8 +106,9 @@ def published_profile_kind(film_kind: str = "colour") -> ProfileKind:
     (MONOCHROME_PLAN §2.3/§4): DENSITY_GREY on a mono roll, DENSITY on a
     colour one. The invariant seed (`stitch_pipeline`'s RollInvariants)
     and the published-TIFF tag site both go through here, so §2 wires the
-    frozen kind in at exactly one call shape. Until §2 lands, every roll
-    is colour."""
+    frozen kind in at exactly one call shape. `film_kind` accepts
+    `normalization.FilmKind` too — it is a plain `str` subclass and
+    compares equal to `"monochrome"`/`"colour"` unchanged."""
     if film_kind == "monochrome":
         return ProfileKind.DENSITY_GREY
     return ProfileKind.DENSITY

@@ -126,6 +126,11 @@ def _assert_matches_v5_roll_manifest_schema(
             assert 0.0 <= block["relative_improvement"] <= 1.0
             assert block["pair_count"] >= 1
 
+    if data.get("film") is not None:
+        _require_keys(data["film"], defs["filmDecision"]["required"])
+        assert data["film"]["kind"] in defs["filmDecision"]["properties"]["kind"]["enum"]
+        assert data["film"]["source"] in defs["filmDecision"]["properties"]["source"]["enum"]
+
 
 def assert_matches_roll_manifest_schema(
     data: dict[str, Any], schema: dict[str, Any]

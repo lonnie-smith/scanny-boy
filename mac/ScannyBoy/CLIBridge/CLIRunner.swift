@@ -293,13 +293,16 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH`
+    /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`
     ///
-    /// Protocol version 9: renders one display-space region of the
+    /// Protocol version 9's 1:1 region rendering, extended by protocol
+    /// version 11's `--mode`: renders one display-space region of the
     /// negative's published TIFF at 1:1 — the net rotation folded in, the
-    /// same display encode as the cached preview — into `output` as a
-    /// lossless PNG. A pure rendering query backing the Edit tab's 100%
-    /// zoom: nothing is recorded, the TIFF is never touched.
+    /// display encode the mode names (`positive`: the inverted, tone-graded
+    /// look of the cached preview; `negative`: the un-inverted density
+    /// view, which no tone reaches) — into `output` as a lossless PNG. A
+    /// pure rendering query backing the Edit tab's 100% zoom: nothing is
+    /// recorded, the TIFF is never touched.
     public static func editRenderRegion(
         roll: URL,
         negative: String,
@@ -307,7 +310,8 @@ public struct CLICommand: Sendable, Hashable {
         y: Int,
         width: Int,
         height: Int,
-        output: URL
+        output: URL,
+        mode: String
     ) -> CLICommand {
         CLICommand(arguments: [
             "edit", "render-region",
@@ -317,6 +321,30 @@ public struct CLICommand: Sendable, Hashable {
             "--y", String(y),
             "--width", String(width),
             "--height", String(height),
+            "--output", output.path,
+            "--mode", mode,
+        ])
+    }
+
+    /// `scanny-boy edit render-preview --roll DIR --negative ID --mode positive|negative --output PATH`
+    ///
+    /// Protocol version 11: renders a negative's whole display image — the
+    /// net transform folded in, downscaled to the managed preview's own
+    /// longest edge — in the display encode `mode` names into `output` as
+    /// a lossless PNG. The pure-query backing of the Edit tab's
+    /// positive/negative toggle: nothing is recorded, the TIFF is never
+    /// touched.
+    public static func editRenderPreview(
+        roll: URL,
+        negative: String,
+        mode: String,
+        output: URL
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "render-preview",
+            "--roll", roll.path,
+            "--negative", negative,
+            "--mode", mode,
             "--output", output.path,
         ])
     }

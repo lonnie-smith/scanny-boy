@@ -899,12 +899,79 @@ still follows.
   Edit filmstrip is legible — the file in Photoshop looks like a negative
   and the preview beside it looks positive. Both are correct.
 
-## Colour negative only
+## E-6 and `ProcessMode` are not ported
 
 NegPy's `ProcessMode` is not ported: no E-6 branch, no swapped percentiles,
-no fixed-range fallback, no dead flag. This rig photographs colour
-negative film under white light; if transparency support is ever wanted it
-is a new feature with its own plan.
+no fixed-range fallback, no dead flag. This rig photographs negative film
+under white light; if transparency support is ever wanted it is a new
+feature with its own plan. (This is narrower than it once read: monochrome
+*negative* film — silver B&W — is supported; see "Monochrome film" below.
+Chromogenic B&W and stained negatives are not E-6 either and are covered
+there too.)
+
+## Monochrome film: detect at the roll, freeze, never flip (docs/MONOCHROME_PLAN.md)
+
+A silver B&W negative's three Bayer-CFA channels record the same image,
+differing only by a per-channel gain and offset. Stripping that affine
+(subtract each channel's median, divide by its MAD) and reading the P90 of
+the surviving per-pixel spread separates the two classes cleanly: near
+zero on a silver negative, well above it on anything with real colour
+content — including a chromogenic B&W's orange mask or a pyro/PMK stain,
+both of which correctly normalize down the colour path rather than being
+mistaken for silver B&W.
+
+**Detect at the roll, not the negative.** A roll is one film stock; a
+per-negative decision would eventually flip on a snow scene or a grey wall
+and produce a roll where one negative is single-channel and the rest are
+not — the same failure `clamp_bounds` already exists to prevent for
+bounds. The decision is therefore frozen once, on the roll's first stitch
+run, into a top-level `film` manifest block, and **never changes**
+afterward except by re-stitching the whole roll from scratch. A later
+run's fresh evidence that disagrees only warns
+(`MONO_DECISION_CONFLICT`) — it does not raise and does not flip. An
+ambiguous first-run statistic (between the two pinned thresholds) resolves
+to colour and warns (`MONO_DETECT_AMBIGUOUS`): colour is the lossless
+choice, since a colour roll is never wrong to publish as three channels,
+while a mono roll wrongly published as three channels is not obviously
+wrong either — it is simply not what a reader would expect. The
+thresholds themselves are pinned constants, measured from real rolls and
+approved before being written down, per this project's house rule that no
+threshold ships ungrounded.
+
+**The collapse runs between the log transfer and the bounds analysis**,
+never before the log and never after the bounds. Averaging in linear
+light weights by intensity, not density, and biases the merge toward the
+film base; averaging after `analyze_bounds` would let the colour axis
+solve for an orange mask that a mono negative does not have.
+`analyze_bounds`' chroma gate still runs on the collapsed one-channel
+image — it degenerates harmlessly, since with no colour there is no
+colour deviation to add back, and that degeneracy is `analyze_bounds`'
+generalised arithmetic reaching the right answer on its own, not a
+special case.
+
+**The merge weights are a minimum-variance estimator, not a luma curve —
+the single most likely thing here for a future reader to "correct" back
+to Rec.709.** Three channels are three noisy measurements of one physical
+quantity, silver density; the merge weights them `(0.25, 0.50, 0.25)`
+because a Bayer CFA has twice as many green sites and green carries about
+twice the photons. Rec.709's coefficients model the eye's response to
+display primaries for perceived scene brightness — the right job for
+`analyze_bounds`' luma axis (a proxy for "how bright", which is what a
+black point should track), the wrong job for combining three redundant
+measurements of density.
+
+**The merge does not bracket its inputs, and the absolute tolerances
+survive anyway.** A weighted mean is narrower than its inputs' envelope by
+construction; re-centering it at the weighted mean of the inputs' medians
+does not change that. What it guarantees is that the merged channel sits
+at the right density *level* — close enough that `REBATE_DENSITY_TOLERANCE`
+and `DENSE_BORDER_TOLERANCE`'s absolute log-density thresholds keep
+meaning what they were measured to mean on a colour composite.
+
+**The published mono TIFF is single-channel, and that is final.** Toning
+is not a goal of this project, so there is no downstream consumer that
+would ever need the per-channel record back — the collapse is a one-way
+publish decision, not a reversible colour-to-mono preview mode.
 
 ## Two ICC profiles, and the profile is never load-bearing (D-2)
 

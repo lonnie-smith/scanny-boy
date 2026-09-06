@@ -133,6 +133,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.camera_color = (
             None if manifest.camera_color is None else manifest.camera_color.to_dict()
         )
+        roll.film_kind = manifest.film
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -354,6 +355,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             icc_profile=roll.icc_profile,
             published_icc_profile=dict(roll.published_icc_profile or {}),
             stitch_params=roll.stitch_params,
+            film=roll.film_kind,
             runs=[
                 RunRecord(
                     run_id=r.run_id,

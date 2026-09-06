@@ -112,6 +112,12 @@ def _run(
         "run_id": "run-run",
         "skip_sources": [],
         "jobs": 1,
+        # These synthetic fixtures stack one plane into all three channels
+        # (perfectly indistinguishable from a real monochrome negative
+        # under MONOCHROME_PLAN §1's detector), which is not what most of
+        # these tests are exercising; force the colour path explicitly.
+        # A test of the monochrome feature itself overrides this.
+        "film_kind": "colour",
     }
     defaults.update(kwargs)
     return run_full(
@@ -151,7 +157,7 @@ def _run_into_roll(
     _install_fast_registerable_decode(
         monkeypatch, decode_files if decode_files is not None else files, seed=seed
     )
-    defaults = {"skip_sources": [], "jobs": 1}
+    defaults = {"skip_sources": [], "jobs": 1, "film_kind": "colour"}
     defaults.update(kwargs)
     return run_full(
         FIXTURES_DIR,
@@ -264,6 +270,7 @@ def test_work_directory_is_removed_after_a_failed_negative(tmp_path, monkeypatch
         jobs=1,
         cancel=CancellationToken(),
         emit=events.append,
+        film_kind="colour",
     )
 
     assert outcome.status == "partial"
@@ -885,6 +892,7 @@ def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
             jobs=1,
             cancel=CancellationToken(),
             emit=lambda event: None,
+            film_kind="colour",
         )
 
     outcome = run_once("out-rectified")

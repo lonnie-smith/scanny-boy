@@ -94,6 +94,11 @@ class RollRow(Base):
     camera: Mapped[str | None] = mapped_column(Text)
     lens: Mapped[str | None] = mapped_column(Text)
     caption: Mapped[str | None] = mapped_column(Text)
+    # MONOCHROME_PLAN §2.3: the roll's frozen film-kind decision — a JSON
+    # object (`{kind, source, statistic, samples, detector_version}`) or
+    # NULL until the first stitch run seeds it. Not to be confused with
+    # `film` above, the free-text film-stock metadata string.
+    film_kind: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class RunRow(Base):

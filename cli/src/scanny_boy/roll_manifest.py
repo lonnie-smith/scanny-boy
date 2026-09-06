@@ -448,6 +448,11 @@ class RollManifest:
     # `None` on a roll whose runs predate the block; a colour roll in that
     # state fails the export (`CAMERA_MATRIX_MISSING`).
     camera_color: CameraColor | None = None
+    # MONOCHROME_PLAN §2.3: the roll's frozen film-kind decision — `None`
+    # until the first stitch run seeds it (§5.2: also `None` for a roll
+    # manifest written before §2 existed at all). Never rewritten once set,
+    # except by `_append_this_run`'s one-time §5.2 legacy upgrade.
+    film: dict[str, Any] | None = None
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -494,6 +499,7 @@ class RollManifest:
             "camera_color": (
                 None if self.camera_color is None else self.camera_color.to_dict()
             ),
+            "film": self.film,
         }
 
 

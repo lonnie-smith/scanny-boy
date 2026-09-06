@@ -3,6 +3,16 @@ import Foundation
 import ImageIO
 import Observation
 
+/// The Edit preview's display mode (protocol version 11's
+/// positive/negative toggle). The positive is the CLI's inverted, tone-
+/// graded encode — the look the filmstrip reads as a print. The negative
+/// is the published TIFF's own un-inverted appearance, the flat density
+/// view the tone adjustment never reaches, for judging negative densities.
+enum PreviewDisplayMode: String {
+    case positive
+    case negative
+}
+
 /// State for the Edit tab (section 3.10): the selected roll's negatives in
 /// sequence order and the dirty count Apply acts on. Apply itself is not
 /// driven from here — it goes through the app's
@@ -60,10 +70,17 @@ final class EditModel {
     /// one-helper-at-a-time discipline as `isRotating`.
     private(set) var isDeleting = false
 
-    /// Set while one `edit tone` round trip is in flight — the tone
-    /// panel's slider commits, with the same one-helper-at-a-time
-    /// discipline as `isRotating`/`isDeleting`.
+    /// Set while one `edit tone` round trip is in flight — a soft busy
+    /// indicator for the tone panel; the sliders stay enabled so the user
+    /// can keep dragging while a prior commit finishes or is cancelled.
     private(set) var isSettingTone = false
+
+    /// Debounces slider commits: a fast drag across many ISO-R steps fires
+    /// one CLI round trip per pause, not one per step crossed.
+    private static let toneDebounce = Duration.milliseconds(200)
+    @ObservationIgnored private var toneScheduleTask: Task<Void, Never>?
+    @ObservationIgnored private var toneCommitTask: Task<Void, Never>?
+    @ObservationIgnored private var activeToneSession: CLISession?
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -251,27 +268,82 @@ final class EditModel {
         refresh()
     }
 
+    /// Queues a tone commit after [`toneDebounce`](EditModel.toneDebounce).
+    /// Each new call cancels the prior scheduled commit; a superseding
+    /// in-flight CLI session is cancelled when the debounced commit runs.
+    func scheduleTone(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) {
+        toneScheduleTask?.cancel()
+        toneScheduleTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.toneDebounce)
+            guard !Task.isCancelled, let self else { return }
+            await self.commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+        }
+    }
+
+    /// Commits the tone adjustment immediately, cancelling any debounced
+    /// commit and any in-flight `edit tone` session superseded by this one.
+    func commitTone(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) async {
+        toneScheduleTask?.cancel()
+        toneScheduleTask = nil
+        if let toneCommitTask {
+            toneCommitTask.cancel()
+            await toneCommitTask.value
+        }
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.performToneCommit(
+                targets, gradeR: gradeR, snapGamma: snapGamma
+            )
+        }
+        toneCommitTask = task
+        await task.value
+    }
+
     /// Records the selected negatives' preview tone adjustment through the
     /// CLI — a paper grade plus a midtone snap, or `nil`/`nil` for the
-    /// reset to the flat look — and refreshes the roll as the
-    /// `edit_recorded` events confirm. The published TIFFs are never
-    /// touched; the CLI regenerates each preview with the tone curve
-    /// composed into its display encode. One CLI session per commit.
+    /// reset to the flat look. The published TIFFs are never touched; the
+    /// CLI regenerates each preview with the tone curve composed into its
+    /// display encode.
     func setTone(
         _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
     ) async {
-        guard let rollURL, !isSettingTone, !isRotating, !isDeleting, !targets.isEmpty
-        else { return }
+        await commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+    }
+
+    private func performToneCommit(
+        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+    ) async {
+        guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
+
+        if let activeToneSession {
+            await activeToneSession.cancel()
+            self.activeToneSession = nil
+        }
+        guard !Task.isCancelled else { return }
+
         isSettingTone = true
         defer { isSettingTone = false }
+
         let command = CLICommand.editTone(
             roll: rollURL,
             negatives: targets.map(\.negativeID),
             gradeR: gradeR,
             snapGamma: snapGamma
         )
+        let session = runner.session(for: command)
+        activeToneSession = session
+        defer { activeToneSession = nil }
+
         do {
-            for await output in try await runner.session(for: command).start() {
+            for await output in try await session.start() {
+                if Task.isCancelled {
+                    await session.cancel()
+                    return
+                }
                 if case .event(let event) = output, event.kind == .editRecorded,
                     let negativeID = event.negativeID
                 {
@@ -281,7 +353,6 @@ final class EditModel {
         } catch {
             return
         }
-        refresh()
     }
 
     /// Deletes the selected negatives through the CLI and refreshes the
@@ -390,15 +461,22 @@ final class EditModel {
     // MARK: - Region rendering
 
     /// Renders one display-space region of `negative`'s published TIFF at
-    /// 1:1 — `edit render-region`, protocol version 9 — and loads the
-    /// result for drawing at `rect.width/height` image pixels per physical
-    /// screen pixel. A pure query backing the Edit tab's 100% zoom: the CLI
+    /// 1:1 — `edit render-region` — in the display encode `mode` names
+    /// (protocol version 9's inverted positive; protocol version 11's
+    /// un-inverted negative, which no tone reaches), and loads the result
+    /// for drawing at `rect.width/height` image pixels per physical screen
+    /// pixel. A pure query backing the Edit tab's 100% zoom: the CLI
     /// records nothing and touches no pixels.
-    func renderRegion(_ negative: RollManifest.Negative, rect: CGRect) async -> Thumbnail? {
+    func renderRegion(
+        _ negative: RollManifest.Negative,
+        rect: CGRect,
+        mode: PreviewDisplayMode
+    ) async -> Thumbnail? {
         guard let rollURL else { return nil }
         let output = Self.regionCacheURL(
             negativeID: negative.negativeID,
             generation: Self.renderGeneration(of: negative),
+            mode: mode,
             rect: rect
         )
         let command = CLICommand.editRenderRegion(
@@ -408,7 +486,8 @@ final class EditModel {
             y: Int(rect.minY),
             width: Int(rect.width),
             height: Int(rect.height),
-            output: output
+            output: output,
+            mode: mode.rawValue
         )
         var rendered = false
         do {
@@ -426,8 +505,54 @@ final class EditModel {
         return Thumbnail(image: image)
     }
 
+    /// Renders `negative`'s whole display image — `edit render-preview`,
+    /// protocol version 11, downscaled to the managed preview's own longest
+    /// edge — in the display encode `mode` names, and loads it for the Edit
+    /// tab's fit view. The pure-query backing of the positive/negative
+    /// toggle: the CLI records nothing and touches no pixels. The
+    /// negative mode ignores the tone state, so its cache keying excludes
+    /// it (`negativeViewGeneration`).
+    func renderPreview(
+        _ negative: RollManifest.Negative,
+        mode: PreviewDisplayMode
+    ) async -> Thumbnail? {
+        guard let rollURL else { return nil }
+        let generation = mode == .negative
+            ? Self.negativeViewGeneration(of: negative)
+            : Self.renderGeneration(of: negative)
+        let output = Self.previewCacheURL(
+            negativeID: negative.negativeID,
+            generation: generation,
+            mode: mode
+        )
+        let command = CLICommand.editRenderPreview(
+            roll: rollURL,
+            negative: negative.negativeID,
+            mode: mode.rawValue,
+            output: output
+        )
+        var rendered = false
+        do {
+            for await line in try await runner.session(for: command).start() {
+                if case .event(let event) = line, event.kind == .previewRendered {
+                    rendered = true
+                }
+            }
+        } catch {
+            return nil
+        }
+        guard rendered, let image = Self.fullResolutionImage(at: output) else {
+            return nil
+        }
+        return Thumbnail(image: image)
+    }
+
     private static var regionCacheDirectory: URL {
         URL.cachesDirectory.appending(path: "preview-regions", directoryHint: .isDirectory)
+    }
+
+    private static var previewCacheDirectory: URL {
+        URL.cachesDirectory.appending(path: "rendered-previews", directoryHint: .isDirectory)
     }
 
     /// Everything the CLI's display encode folds into a rendered frame —
@@ -444,11 +569,27 @@ final class EditModel {
         return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)"
     }
 
+    /// The net-geometry part of `renderGeneration` — everything the
+    /// negative view folds in. The tone state is deliberately absent: the
+    /// negative view shows raw densities, and the tone adjustment never
+    /// reaches it.
+    static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)"
+    }
+
     private static func regionCacheURL(
-        negativeID: String, generation: String, rect: CGRect
+        negativeID: String, generation: String, mode: PreviewDisplayMode, rect: CGRect
     ) -> URL {
         regionCacheDirectory.appending(
-            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
+            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(mode.rawValue)-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
+        )
+    }
+
+    private static func previewCacheURL(
+        negativeID: String, generation: String, mode: PreviewDisplayMode
+    ) -> URL {
+        previewCacheDirectory.appending(
+            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(mode.rawValue).png"
         )
     }
 
@@ -642,5 +783,11 @@ final class EditModel {
     /// code drives everything from `@Observable`'s change notifications.
     func waitForPendingFetch() async {
         await rollTask?.value
+    }
+
+    /// Waits for any debounced or in-flight tone commit. Test-only.
+    func waitForPendingTone() async {
+        await toneScheduleTask?.value
+        await toneCommitTask?.value
     }
 }

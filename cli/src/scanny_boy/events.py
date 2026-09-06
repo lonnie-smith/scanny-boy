@@ -27,17 +27,23 @@ from typing import IO, Any, ClassVar
 # ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
 # manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
 # Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
-# export becomes a rendered positive in Adobe RGB (1998)-compatible colour
-# (grey for a mono roll), with the negative's recorded tone op baked in,
-# written as a 16-bit lossless JPEG XL with the ICC profile embedded and
-# Exif/XMP boxes at encode time. New: the `JXL_ENCODER_UNAVAILABLE` error
-# (libjxl could not be reached — a packaging failure), the
-# `CAMERA_MATRIX_MISSING` error (a colour roll predating the roll
-# manifest's `camera_color` block), and the `CAMERA_MATRIX_CONFLICT`
-# warning (a later run's source reports a different matrix than the roll's
-# frozen one). The roll manifest gains the optional `camera_color` block
-# and the work manifest's curated block gains `rgb_xyz_matrix`/
-# `camera_model`. No `export_done` payload change.
+# Protocol 11 also adds the app's positive/negative display toggle: a `--mode
+# positive|negative` flag on `edit render-region` and the new `edit
+# render-preview` command (with its `preview_rendered` event) — a
+# pure-query render of a negative's whole display image, downscaled like
+# the cached preview. The negative mode is the un-inverted density view;
+# no tone ever reaches it.
+#
+# Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: `--film-kind
+# {auto,colour,monochrome}` on `stitch` and `run`, the top-level `film`
+# block in the roll manifest and `roll info` (the roll's frozen film-kind
+# decision — `kind`, `source`, `statistic`, `samples`,
+# `detector_version`), and two warning codes — `MONO_DETECT_AMBIGUOUS` (an
+# unseeded roll's statistic landed between the thresholds; colour was
+# assumed) and `MONO_DECISION_CONFLICT` (a later run's fresh evidence
+# disagrees with the roll's already-frozen kind; the frozen kind is kept).
+# A monochrome roll's published TIFFs are single-channel, tagged with the
+# new `ScannyBoy-Density-Grey-v1.icc` profile.
 PROTOCOL_VERSION = 11
 
 
@@ -65,6 +71,7 @@ class EventType(enum.StrEnum):
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     REGION_RENDERED = "region_rendered"
+    PREVIEW_RENDERED = "preview_rendered"
     EXPORT_DONE = "export_done"
     FLATFIELD_CREATED = "flatfield_created"
     FLATFIELD_LIST = "flatfield_list"
@@ -172,6 +179,8 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
+    MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -482,6 +491,24 @@ class RegionRendered(Event):
     path: str
     x: int
     y: int
+    width: int
+    height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class PreviewRendered(Event):
+    """`edit render-preview`'s confirmation: a negative's whole display
+    image — net transform folded in, downscaled like the cached preview —
+    rendered in the display encode the command's `--mode` named, as a
+    lossless PNG at `path`; `width`/`height` are the written PNG's pixel
+    dimensions. No tone ever reaches the negative mode's un-inverted
+    density view. No pixel data of the published TIFF changes and nothing
+    is recorded anywhere."""
+
+    event_type: ClassVar[EventType] = EventType.PREVIEW_RENDERED
+
+    negative_id: str
+    path: str
     width: int
     height: int
 

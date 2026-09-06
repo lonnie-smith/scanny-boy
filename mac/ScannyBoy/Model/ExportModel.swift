@@ -165,7 +165,7 @@ final class ExportModel {
             if let message = event.message {
                 failureMessage = message
             }
-        case .editRecorded, .negativeDeleted, .regionRendered:
+        case .editRecorded, .negativeDeleted, .regionRendered, .previewRendered:
             // An export emits none of these; kept for exhaustiveness.
             break
         case .started, .probeResult, .progress, .itemDone, .groupDone, .groupFailed,
