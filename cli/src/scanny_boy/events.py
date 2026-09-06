@@ -22,11 +22,19 @@ from typing import IO, Any, ClassVar
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
 # down=1 case), the `INVALID_GRID` error code, and the
 # `STITCH_GRID_ORDER_UNEXPECTED` warning code.
-# Protocol 10 adds the preview's nondestructive tone adjustment: the `edit
-# tone` command (paper grade + midtone snap, recorded as a `tone` op in the
-# ops log) and the net `tone_grade_r`/`tone_snap_gamma` fields in the roll
-# manifest's negatives (docs/DECISIONS.md, "The preview's tone adjustment").
 # Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
+# export becomes a rendered positive in Adobe RGB (1998)-compatible colour
+# (grey for a mono roll), with the negative's recorded tone op baked in,
+# written as a 16-bit lossless JPEG XL with the ICC profile embedded and
+# Exif/XMP boxes at encode time. New: the `JXL_ENCODER_UNAVAILABLE` error
+# (libjxl could not be reached — a packaging failure), the
+# `CAMERA_MATRIX_MISSING` error (a colour roll predating the roll
+# manifest's `camera_color` block), and the `CAMERA_MATRIX_CONFLICT`
+# warning (a later run's source reports a different matrix than the roll's
+# frozen one). The roll manifest gains the optional `camera_color` block
+# and the work manifest's curated block gains `rgb_xyz_matrix`/
+# `camera_model`. No `export_done` payload change.
+#
 # Protocol 11 also adds the app's positive/negative display toggle: a `--mode
 # positive|negative` flag on `edit render-region` and the new `edit
 # render-preview` command (with its `preview_rendered` event) — a
@@ -44,7 +52,15 @@ from typing import IO, Any, ClassVar
 # disagrees with the roll's already-frozen kind; the frozen kind is kept).
 # A monochrome roll's published TIFFs are single-channel, tagged with the
 # new `ScannyBoy-Density-Grey-v1.icc` profile.
-PROTOCOL_VERSION = 11
+#
+# Protocol 11 also extends the preview tone adjustment: seven curve
+# controls and two auto flags on `edit tone`, matching `tone_*` fields on
+# `roll info`, and the `TONE_METERING_UNAVAILABLE` code.
+# Protocol 12 adds the preview colour adjustment: the `edit color`
+# subcommand, thirteen derived `color_*` fields (twelve stored params plus
+# `color_temperature`) and `film_kind` on `roll info`, and the `color` op
+# in the ops log.
+PROTOCOL_VERSION = 12
 
 
 class EventType(enum.StrEnum):
@@ -179,6 +195,7 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
     MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"

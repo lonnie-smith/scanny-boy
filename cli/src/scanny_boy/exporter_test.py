@@ -18,6 +18,7 @@ import tifftools
 
 from scanny_boy import jxl_writer, render
 from scanny_boy.edits import run_edit_flip, run_edit_rotate, run_edit_tone
+from scanny_boy.edits_test import _tone_params
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.exporter import (
     EXPORT_IMAGE_DESCRIPTION_SUFFIX,
@@ -379,7 +380,9 @@ def test_a_mono_roll_without_camera_color_exports_successfully(stitched_roll, tm
 def test_the_tone_op_changes_the_exported_pixels_and_matches_the_curve(
     stitched_roll, tmp_path
 ):
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+    )
     destination = _export(stitched_roll, tmp_path)
     rendered = _decode(destination)
 
@@ -672,7 +675,9 @@ def test_export_without_metadata_writes_no_exif_box_but_still_the_provenance(
 
 
 def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_path):
-    run_edit_tone(colour_roll, _NEGATIVE_ID, 115.0, 0.2, emit=lambda event: None)
+    run_edit_tone(
+        colour_roll, _NEGATIVE_ID, _tone_params(115.0, 0.2), emit=lambda event: None
+    )
     destination = _export_one(colour_roll, tmp_path)
 
     record = _provenance(destination)
@@ -682,7 +687,7 @@ def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_pa
     assert record["rendered"]["profile"]["name"] == "ScannyBoy-Export-AdobeRGB-v1.icc"
     assert record["rendered"]["gamma"] == pytest.approx(render.GAMMA_ADOBE)
     assert record["rendered"]["matrix"] is not None
-    assert record["rendered"]["tone"] == {"grade_r": 115.0, "snap_gamma": 0.2}
+    assert record["rendered"]["tone"] == _tone_params(115.0, 0.2)
     # The synthetic RGB's channels are far from neutral, so the gamut clip
     # does real work here; assert the record's shape, and that it is in
     # [0, 1] per channel (render_test pins the in-gamut zero case).

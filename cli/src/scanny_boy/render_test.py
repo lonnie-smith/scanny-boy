@@ -64,9 +64,7 @@ def test_the_no_matrix_path_is_exact_against_the_tone_curve(tone_params):
 def tone_curve_reference(positive: np.ndarray, tone_params) -> np.ndarray:
     if tone_params is None:
         return positive
-    return tone.curve_values(
-        positive, tone_params["grade_r"], tone_params["snap_gamma"]
-    )
+    return tone.curve_values(positive, tone.ToneParams(**tone_params))
 
 
 # --- the anchor, bounded (colour path) -------------------------------------

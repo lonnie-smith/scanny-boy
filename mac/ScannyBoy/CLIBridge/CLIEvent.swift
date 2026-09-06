@@ -21,21 +21,26 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    /// Protocol 11 adds the positive/negative display toggle for the Edit
-    /// tab: the `--mode positive|negative` flag on `edit render-region`
-    /// and the new `edit render-preview` command with its
-    /// `preview_rendered` event — the negative mode being the un-inverted
-    /// density view the tone adjustment never reaches.
-    /// Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: the
+    /// Protocol 11 adds monochrome film support (the
     /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
     /// the roll manifest's top-level `film` block, and the
-    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes.
+    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes),
+    /// extends the preview tone adjustment (seven curve controls and two
+    /// auto flags on `edit tone`, the matching `tone_*` fields in the roll
+    /// manifest, and the `TONE_METERING_UNAVAILABLE` warning code), and
+    /// the positive/negative display toggle for the Edit tab (`--mode
+    /// positive|negative` on `edit render-region`, the `edit render-preview`
+    /// command with its `preview_rendered` event — the negative mode being
+    /// the un-inverted density view the tone adjustment never reaches).
     /// Protocol 11 is also the colour-managed JPEG XL export (see
     /// `events.py`): the `JXL_ENCODER_UNAVAILABLE`/`CAMERA_MATRIX_MISSING`
     /// error codes, the `CAMERA_MATRIX_CONFLICT` warning, the roll
     /// manifest's optional `camera_color` block, and the work manifest
     /// curated block's `rgb_xyz_matrix`/`camera_model`.
-    public static let supportedProtocolVersion = 11
+    /// Protocol 12 adds the preview colour adjustment (`edit color`, the
+    /// `color_*` fields in the roll manifest, and the `color` op in the
+    /// ops log).
+    public static let supportedProtocolVersion = 12
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -264,11 +269,55 @@ extension CLIEvent {
     /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
     /// reset to the flat look). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
-    public var recordedTone: (gradeR: Double?, snapGamma: Double?)? {
+    public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
             case .some = params["grade_r"]
         else { return nil }
-        return (params["grade_r"]?.doubleValue, params["snap_gamma"]?.doubleValue)
+        guard let gradeR = params["grade_r"]?.doubleValue,
+            let snapGamma = params["snap_gamma"]?.doubleValue
+        else { return .some(nil) }
+        return .some(
+            ToneAdjustment(
+                gradeR: gradeR,
+                snapGamma: snapGamma,
+                density: params["density"]?.doubleValue ?? ToneAdjustment.neutral.density,
+                shadowDensity: params["shadow_density"]?.doubleValue ?? 0,
+                highlightDensity: params["highlight_density"]?.doubleValue ?? 0,
+                toe: params["toe"]?.doubleValue ?? 0,
+                toeWidth: params["toe_width"]?.doubleValue ?? ToneAdjustment.neutral.toeWidth,
+                shoulder: params["shoulder"]?.doubleValue ?? 0,
+                shoulderWidth: params["shoulder_width"]?.doubleValue
+                    ?? ToneAdjustment.neutral.shoulderWidth
+            )
+        )
+    }
+
+    /// The recorded op's colour params when it is a `color` op.
+    public var recordedColor: ColorAdjustment?? {
+        guard let params = edit?["params"]?.objectValue,
+            case .some = params["wb_cyan"]
+        else { return nil }
+        guard let wbCyan = params["wb_cyan"]?.doubleValue,
+            let wbMagenta = params["wb_magenta"]?.doubleValue,
+            let wbYellow = params["wb_yellow"]?.doubleValue
+        else { return .some(nil) }
+        return .some(
+            ColorAdjustment(
+                wbCyan: wbCyan,
+                wbMagenta: wbMagenta,
+                wbYellow: wbYellow,
+                shadowCyan: params["shadow_cyan"]?.doubleValue ?? 0,
+                shadowMagenta: params["shadow_magenta"]?.doubleValue ?? 0,
+                shadowYellow: params["shadow_yellow"]?.doubleValue ?? 0,
+                highlightCyan: params["highlight_cyan"]?.doubleValue ?? 0,
+                highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
+                highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
+                castRemoval: params["cast_removal"]?.doubleValue ?? 0,
+                dyeSeparation: params["dye_separation"]?.doubleValue
+                    ?? ColorAdjustment.neutral.dyeSeparation,
+                separationDamping: params["separation_damping"]?.doubleValue ?? 0
+            )
+        )
     }
 
     // `region_rendered`: the 1:1 PNG's path and the rect actually rendered,

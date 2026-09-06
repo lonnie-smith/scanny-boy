@@ -283,10 +283,12 @@ def _export_negative(
 
     try:
         image = tifffile.imread(tiff_path)
-        # The net edit state's fourth element is the tone op this render
-        # bakes in (§4.6) — no longer destructured away.
-        quarter_turns, flipped, fine_angle, tone_params = repo.net_edit_state(
-            roll_dir, negative.negative_id
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        quarter_turns, flipped, fine_angle, tone_params = (
+            state.quarter_turns,
+            state.flipped,
+            state.fine_angle_deg,
+            state.tone,
         )
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
         # §4.5: the matrix follows the channel count — `None` for a mono

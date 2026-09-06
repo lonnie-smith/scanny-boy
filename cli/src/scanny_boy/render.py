@@ -72,9 +72,7 @@ def tone_curve(
     preview shows today, and the correct default, not a placeholder."""
     if tone_params is None:
         return np.clip(values, 0.0, 1.0)
-    return tone.curve_values(
-        values, tone_params["grade_r"], tone_params["snap_gamma"]
-    )
+    return tone.curve_values(values, tone.ToneParams(**tone_params))
 
 
 # XYZ (D65) -> Adobe RGB (1998) linear. The published inverse of the

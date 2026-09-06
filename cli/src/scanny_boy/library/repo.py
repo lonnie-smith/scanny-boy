@@ -19,6 +19,7 @@ the manifest was a JSON file.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -57,22 +58,30 @@ FLIP_OP = "flip"
 ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
-# `tone` params are `{"grade_r": number | None, "snap_gamma": number | None}`
-# — the preview's paper-grade contrast and midtone-snap adjustment (see
-# `tone.py`). Unlike the geometric ops it is a state, not a transform: the
-# latest op wins, and both params `None` records the reset to the flat
-# linear look. `append_tone_edit` coalesces a trailing `tone` op in place,
-# the one sanctioned exception to the log's append-only discipline — slider
-# commits would otherwise pile up dozens of dead rows per frame.
+# `tone` params are the complete preview tone state — nine keys, all set or
+# all `None` for the reset (see `tone.py`). Unlike the geometric ops it is a
+# state, not a transform and never a mode: the latest one wins.
+# `append_tone_edit` coalesces a trailing `tone` op in place, the one
+# sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
-TONE_GRADE_MIN = 50.0
-TONE_GRADE_MAX = 180.0
-TONE_SNAP_MIN = -0.5
-TONE_SNAP_MAX = 0.5
+
+# `color` params are the complete preview colour state — twelve keys, all
+# set or all `None` for the reset (see `color.py`). A sibling of `tone`:
+# preview-only, independently resettable, coalesced in place.
+COLOR_OP = "color"
 
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
 _UNITY_GAIN = (1.0, 1.0, 1.0)
+
+
+@dataclasses.dataclass(frozen=True)
+class EditState:
+    quarter_turns: int
+    flipped: bool
+    fine_angle_deg: float
+    tone: dict[str, float] | None
+    color: dict[str, float] | None
 
 
 class RollNotRegisteredError(Exception):
@@ -525,50 +534,83 @@ def append_edit(
         }
 
 
-def validated_tone_params(
-    grade_r: float | None, snap_gamma: float | None
-) -> dict[str, float | None]:
-    """The `tone` op's params, validated as a pair: both set, or both
-    `None` (the reset). Anything else is a caller bug."""
-    for name, value in (("grade_r", grade_r), ("snap_gamma", snap_gamma)):
-        if value is None:
-            continue
+def _tone_param_bounds() -> tuple[tuple[str, float, float], ...]:
+    from scanny_boy import tone
+
+    return (
+        ("grade_r", tone.GRADE_MIN, tone.GRADE_MAX),
+        ("snap_gamma", tone.SNAP_MIN, tone.SNAP_MAX),
+        ("density", tone.DENSITY_MIN, tone.DENSITY_MAX),
+        ("shadow_density", tone.SHADOW_DENSITY_MIN, tone.SHADOW_DENSITY_MAX),
+        ("highlight_density", tone.HIGHLIGHT_DENSITY_MIN, tone.HIGHLIGHT_DENSITY_MAX),
+        ("toe", tone.TOE_MIN, tone.TOE_MAX),
+        ("toe_width", tone.TOE_WIDTH_MIN, tone.TOE_WIDTH_MAX),
+        ("shoulder", tone.SHOULDER_MIN, tone.SHOULDER_MAX),
+        ("shoulder_width", tone.SHOULDER_WIDTH_MIN, tone.SHOULDER_WIDTH_MAX),
+    )
+
+
+def validated_tone_params(params: dict[str, float | None] | None) -> dict[str, float | None]:
+    """The `tone` op's params: all nine set, or all nine `None` (the reset)."""
+    from scanny_boy import tone
+
+    if params is None:
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    missing = [key for key in tone.TONE_PARAM_KEYS if key not in params]
+    if missing:
+        raise ValueError(f"tone params missing keys: {', '.join(missing)}")
+    values = {key: params[key] for key in tone.TONE_PARAM_KEYS}
+    if all(value is None for value in values.values()):
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    if any(value is None for value in values.values()):
+        raise ValueError("tone params must all be set together, or all None for reset")
+    validated: dict[str, float | None] = {}
+    for name, low, high in _tone_param_bounds():
+        value = values[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"tone {name} must be a number, got {value!r}")  # noqa: TRY004
-    if grade_r is None and snap_gamma is None:
-        return {"grade_r": None, "snap_gamma": None}
-    if grade_r is None or snap_gamma is None:
-        raise ValueError("tone grade_r and snap_gamma must be set together")
-    if not TONE_GRADE_MIN <= grade_r <= TONE_GRADE_MAX:
-        raise ValueError(
-            f"tone grade_r must be within [{TONE_GRADE_MIN}, {TONE_GRADE_MAX}], got {grade_r}"
-        )
-    if not TONE_SNAP_MIN <= snap_gamma <= TONE_SNAP_MAX:
-        raise ValueError(
-            f"tone snap_gamma must be within [{TONE_SNAP_MIN}, {TONE_SNAP_MAX}], got {snap_gamma}"
-        )
-    return {"grade_r": float(grade_r), "snap_gamma": float(snap_gamma)}
+        if not low <= value <= high:
+            raise ValueError(f"tone {name} must be within [{low}, {high}], got {value}")
+        validated[name] = float(value)
+    return validated
 
 
-def append_tone_edit(
+def validated_color_params(
+    params: dict[str, float | None] | None,
+) -> dict[str, float | None]:
+    """The `color` op's params: all twelve set, or all twelve `None`."""
+    from scanny_boy import color
+
+    if params is None:
+        return {key: None for key in color.COLOR_PARAM_KEYS}
+    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
+    if missing:
+        raise ValueError(f"color params missing keys: {', '.join(missing)}")
+    values = {key: params[key] for key in color.COLOR_PARAM_KEYS}
+    if all(value is None for value in values.values()):
+        return {key: None for key in color.COLOR_PARAM_KEYS}
+    if any(value is None for value in values.values()):
+        raise ValueError("color params must all be set together, or all None for reset")
+    validated: dict[str, float | None] = {}
+    for name, low, high in color._color_param_bounds():
+        value = values[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"color {name} must be a number, got {value!r}")  # noqa: TRY004
+        if not low <= value <= high:
+            raise ValueError(f"color {name} must be within [{low}, {high}], got {value}")
+        validated[name] = float(value)
+    return validated
+
+
+def _coalesce_state_edit(
     roll_dir: Path,
     negative_id: str,
-    grade_r: float | None,
-    snap_gamma: float | None,
+    op: str,
+    params: dict[str, float | None],
 ) -> dict:
-    """Records the negative's preview tone adjustment (see `tone.py`):
-    `grade_r` ISO-R paper grade plus `snap_gamma` midtone trim, or both
-    `None` for the reset to the flat linear look.
-
-    The op is a state, not a transform — the latest one wins — so when the
-    log's last entry is already a `tone` op it is updated in place rather
-    than appended behind (the one coalescing exception to the log's
-    append-only discipline; slider commits would otherwise pile up dead
-    rows). Returns the row as a dict, same shape as `append_edit`'s.
-    Raises `ValueError` on out-of-range or mismatched params."""
+    """Append or update the trailing state op (`tone` or `color`)."""
     from scanny_boy.roll_manifest import _now_iso
 
-    params = validated_tone_params(grade_r, snap_gamma)
     with _session() as session:
         negative = _negative_row(session, roll_dir, negative_id)
         last = session.scalar(
@@ -577,7 +619,7 @@ def append_tone_edit(
             .order_by(EditRow.position.desc())
             .limit(1)
         )
-        if last is not None and last.op == TONE_OP:
+        if last is not None and last.op == op:
             last.params = params
             last.created_at = _now_iso()
             session.flush()
@@ -600,7 +642,7 @@ def append_tone_edit(
         row = EditRow(
             negative_id=negative.negative_id,
             position=position,
-            op=TONE_OP,
+            op=op,
             params=params,
             created_at=_now_iso(),
         )
@@ -614,6 +656,135 @@ def append_tone_edit(
             "params": row.params,
             "created_at": row.created_at,
         }
+
+
+def append_tone_edit(
+    roll_dir: Path,
+    negative_id: str,
+    params: dict[str, float | None] | None,
+) -> dict:
+    """Records the negative's preview tone adjustment (see `tone.py`), or
+    the reset when every param is `None`.
+
+    The op is a state, not a transform — the latest one wins — so when the
+    log's last entry is already a `tone` op it is updated in place rather
+    than appended behind (the one coalescing exception to the log's
+    append-only discipline; slider commits would otherwise pile up dead
+    rows). Returns the row as a dict, same shape as `append_edit`'s.
+    Raises `ValueError` on out-of-range or mismatched params."""
+
+    validated = validated_tone_params(params)
+    return _coalesce_state_edit(roll_dir, negative_id, TONE_OP, validated)
+
+
+def append_color_edit(
+    roll_dir: Path,
+    negative_id: str,
+    params: dict[str, float | None] | None,
+) -> dict:
+    """Records the negative's preview colour adjustment (see `color.py`), or
+    the reset when every param is `None`. Coalesces a trailing `color` op in
+    place. Raises `ValueError` on out-of-range or mismatched params."""
+    validated = validated_color_params(params)
+    return _coalesce_state_edit(roll_dir, negative_id, COLOR_OP, validated)
+
+
+def _tone_neutral_defaults() -> dict[str, float]:
+    from scanny_boy import tone
+
+    return {
+        "grade_r": tone.GRADE_REFERENCE,
+        "snap_gamma": 0.0,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+
+
+def _color_neutral_defaults() -> dict[str, float]:
+
+    return {
+        "wb_cyan": 0.0,
+        "wb_magenta": 0.0,
+        "wb_yellow": 0.0,
+        "shadow_cyan": 0.0,
+        "shadow_magenta": 0.0,
+        "shadow_yellow": 0.0,
+        "highlight_cyan": 0.0,
+        "highlight_magenta": 0.0,
+        "highlight_yellow": 0.0,
+        "cast_removal": 0.0,
+        "dye_separation": 1.0,
+        "separation_damping": 0.0,
+    }
+
+
+def _color_in_range(params: dict[str, float]) -> bool:
+    from scanny_boy import color
+
+    for name, low, high in color._color_param_bounds():
+        value = params[name]
+        if not low <= value <= high:
+            return False
+    return True
+
+
+def _tone_in_range(params: dict[str, float]) -> bool:
+    for name, low, high in _tone_param_bounds():
+        value = params[name]
+        if not low <= value <= high:
+            return False
+    return True
+
+
+def _parse_tone_op(params: dict) -> dict[str, float] | None:
+    grade = params.get("grade_r")
+    snap = params.get("snap_gamma")
+    if grade is None or snap is None:
+        return None
+    if isinstance(grade, bool) or not isinstance(grade, (int, float)):
+        return None
+    if isinstance(snap, bool) or not isinstance(snap, (int, float)):
+        return None
+    merged = _tone_neutral_defaults()
+    merged["grade_r"] = float(grade)
+    merged["snap_gamma"] = float(snap)
+    for key in merged:
+        if key in ("grade_r", "snap_gamma"):
+            continue
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        merged[key] = float(value)
+    if not _tone_in_range(merged):
+        return None
+    return merged
+
+
+def _parse_color_op(params: dict) -> dict[str, float] | None:
+    from scanny_boy import color
+
+    if not all(key in params for key in color.COLOR_PARAM_KEYS):
+        return None
+    if all(params[key] is None for key in color.COLOR_PARAM_KEYS):
+        return None
+    merged = _color_neutral_defaults()
+    for key in merged:
+        value = params[key]
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        merged[key] = float(value)
+    if not _color_in_range(merged):
+        return None
+    return merged
 
 
 def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
@@ -637,36 +808,16 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
         ]
 
 
-def net_edit_state(
-    roll_dir: Path, negative_id: str
-) -> tuple[int, bool, float, dict[str, float] | None]:
+def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net state: `(quarter_turns, flipped_horizontally,
-    fine_angle_degrees, tone)`, where the pixels are the original mirrored
-    horizontally first (when flipped), then rotated clockwise by
-    `fine_angle_degrees`, then rotated `quarter_turns` clockwise quarter
-    turns. `tone` is the latest `tone` op's validated params —
-    `{"grade_r", "snap_gamma"}` — or `None` when no tone op has been
-    recorded (or the last one is the reset).
-
-    Replay is closed-form because every geometric op transforms the image
-    as it currently renders: a rotate adds to the turn count, a fine
-    rotation adds to the angle, and a horizontal flip of an
-    already-rotated image equals rotating the flipped image the other way
-    (`flip ∘ rot = rot^-1 ∘ flip` — true for quarter turns and fine angles
-    alike), so a flip toggles the flag and negates *both* the turn count
-    and the fine angle. Fine angles and quarter turns commute, both being
-    rotations. `tone` is not part of that composition — it is a state the
-    display encode consumes, so only the latest op matters. The single
-    state every consumer needs: the preview generator's mirror + fine warp
-    + `np.rot90` + tone LUT and the exporter's identical geometric replay
-    (which ignores `tone` — the published TIFF carries no display curve)
-    are both driven from it. Unknown ops (an older build reading a newer
-    log) are skipped; a malformed `tone` op degrades to no adjustment."""
+    canonical net state. Geometric ops compose; `tone` and `color` are
+    preview-only states where only the latest op of each kind matters.
+    Unknown ops are skipped; malformed state ops degrade to no adjustment."""
     turns = 0
     flipped = False
     fine_deg = 0.0
     tone: dict[str, float] | None = None
+    color: dict[str, float] | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -684,29 +835,24 @@ def net_edit_state(
                 continue
             fine_deg += float(angle)
         elif op == TONE_OP:
-            params = edit["params"]
-            grade = params.get("grade_r")
-            snap = params.get("snap_gamma")
-            if isinstance(grade, bool) or not isinstance(grade, (int, float)):
-                tone = None
-                continue
-            if isinstance(snap, bool) or not isinstance(snap, (int, float)):
-                tone = None
-                continue
-            if (
-                not TONE_GRADE_MIN <= grade <= TONE_GRADE_MAX
-                or not TONE_SNAP_MIN <= snap <= TONE_SNAP_MAX
-            ):
-                tone = None
-                continue
-            tone = {"grade_r": float(grade), "snap_gamma": float(snap)}
-    return turns % 4, flipped, fine_deg, tone
+            parsed = _parse_tone_op(edit["params"])
+            tone = parsed
+        elif op == COLOR_OP:
+            parsed = _parse_color_op(edit["params"])
+            color = parsed
+    return EditState(
+        quarter_turns=turns % 4,
+        flipped=flipped,
+        fine_angle_deg=fine_deg,
+        tone=tone,
+        color=color,
+    )
 
 
 def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
     """The rotation half of `net_edit_state` — kept for callers that only
     care about orientation."""
-    return net_edit_state(roll_dir, negative_id)[0]
+    return net_edit_state(roll_dir, negative_id).quarter_turns
 
 
 # --- flat-field profiles -----------------------------------------------------

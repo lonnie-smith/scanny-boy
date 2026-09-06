@@ -224,16 +224,12 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_eleven():
-    """Protocol 10→11: the app's positive/negative display toggle — the
-    `--mode positive|negative` flag on `edit render-region` and the new
-    `edit render-preview` command (with its `preview_rendered` event),
-    whose negative mode is the un-inverted density view the tone
-    adjustment never reaches."""
-    """Protocol 10→11 (MONOCHROME_PLAN): `--film-kind {auto,colour,
-    monochrome}` on `stitch` and `run`, the roll manifest's top-level
-    `film` block, and the `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT`
-    warning codes."""
-    assert PROTOCOL_VERSION == 11
+    """Protocol 10→11: monochrome film support, extended preview tone
+    adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
+    toggle (`--mode` on `edit render-region`, `edit render-preview` with
+    its `preview_rendered` event). Protocol 11→12: the preview colour
+    adjustment (`edit color`, `color_*` fields, docs/COLOR_PLAN.md)."""
+    assert PROTOCOL_VERSION == 12
 
 
 def test_new_event_kinds_round_trip():

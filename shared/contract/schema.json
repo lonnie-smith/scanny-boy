@@ -135,6 +135,7 @@
         "SCAN_CLIPPED",
         "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
+        "TONE_METERING_UNAVAILABLE",
         "MONO_DETECT_AMBIGUOUS",
         "MONO_DECISION_CONFLICT",
         "LIBRARY_DB_UNSUPPORTED",
@@ -218,7 +219,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 11
+      "const": 12
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -337,6 +338,7 @@
               "edit flip",
               "edit delete",
               "edit tone",
+              "edit color",
               "edit render-region",
               "edit render-preview",
               "export",

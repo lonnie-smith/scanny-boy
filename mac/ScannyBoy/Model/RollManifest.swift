@@ -156,6 +156,28 @@ struct RollManifest: Sendable, Hashable {
         /// the flat linear look. The published TIFF never carries it.
         let toneGradeR: Double?
         let toneSnapGamma: Double?
+        /// Absent before protocol 11's density control existed.
+        let toneDensity: Double?
+        let toneShadowDensity: Double?
+        let toneHighlightDensity: Double?
+        let toneToe: Double?
+        let toneToeWidth: Double?
+        let toneShoulder: Double?
+        let toneShoulderWidth: Double?
+        /// Protocol 12's net preview colour adjustment. `nil` = no op recorded.
+        let colorWbCyan: Double?
+        let colorWbMagenta: Double?
+        let colorWbYellow: Double?
+        let colorShadowCyan: Double?
+        let colorShadowMagenta: Double?
+        let colorShadowYellow: Double?
+        let colorHighlightCyan: Double?
+        let colorHighlightMagenta: Double?
+        let colorHighlightYellow: Double?
+        let colorCastRemoval: Double?
+        let colorDyeSeparation: Double?
+        let colorSeparationDamping: Double?
+        let colorTemperature: Double?
         /// The stitch-stage failure code, when `status` is `failed`.
         let errorCode: String?
         let errorMessage: String?
@@ -233,6 +255,8 @@ struct RollManifest: Sendable, Hashable {
     let runs: [Run]
     let negatives: [Negative]
     let metadata: Metadata
+    /// The roll's frozen film kind (`colour` or `monochrome`), protocol 12.
+    let filmKind: String?
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -253,7 +277,8 @@ struct RollManifest: Sendable, Hashable {
             updatedAt: updatedAt,
             runs: runs,
             negatives: negatives,
-            metadata: metadata
+            metadata: metadata,
+            filmKind: filmKind
         )
     }
 
@@ -266,7 +291,8 @@ struct RollManifest: Sendable, Hashable {
         updatedAt: String,
         runs: [Run],
         negatives: [Negative],
-        metadata: Metadata
+        metadata: Metadata,
+        filmKind: String? = nil
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -275,6 +301,7 @@ struct RollManifest: Sendable, Hashable {
         self.runs = runs
         self.negatives = negatives
         self.metadata = metadata
+        self.filmKind = filmKind
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -310,6 +337,7 @@ struct RollManifest: Sendable, Hashable {
         self.runs = runs
         self.negatives = negatives
         self.metadata = metadata
+        self.filmKind = fields["film_kind"]?.stringValue
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {
@@ -392,6 +420,26 @@ struct RollManifest: Sendable, Hashable {
             // a reset): no adjustment, the flat look.
             toneGradeR: fields["tone_grade_r"]?.doubleValue,
             toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue,
+            toneDensity: fields["tone_density"]?.doubleValue,
+            toneShadowDensity: fields["tone_shadow_density"]?.doubleValue,
+            toneHighlightDensity: fields["tone_highlight_density"]?.doubleValue,
+            toneToe: fields["tone_toe"]?.doubleValue,
+            toneToeWidth: fields["tone_toe_width"]?.doubleValue,
+            toneShoulder: fields["tone_shoulder"]?.doubleValue,
+            toneShoulderWidth: fields["tone_shoulder_width"]?.doubleValue,
+            colorWbCyan: fields["color_wb_cyan"]?.doubleValue,
+            colorWbMagenta: fields["color_wb_magenta"]?.doubleValue,
+            colorWbYellow: fields["color_wb_yellow"]?.doubleValue,
+            colorShadowCyan: fields["color_shadow_cyan"]?.doubleValue,
+            colorShadowMagenta: fields["color_shadow_magenta"]?.doubleValue,
+            colorShadowYellow: fields["color_shadow_yellow"]?.doubleValue,
+            colorHighlightCyan: fields["color_highlight_cyan"]?.doubleValue,
+            colorHighlightMagenta: fields["color_highlight_magenta"]?.doubleValue,
+            colorHighlightYellow: fields["color_highlight_yellow"]?.doubleValue,
+            colorCastRemoval: fields["color_cast_removal"]?.doubleValue,
+            colorDyeSeparation: fields["color_dye_separation"]?.doubleValue,
+            colorSeparationDamping: fields["color_separation_damping"]?.doubleValue,
+            colorTemperature: fields["color_temperature"]?.doubleValue,
             errorCode: fields["error_code"]?.stringValue,
             errorMessage: fields["error_message"]?.stringValue,
             maxOverlapMAD: Self.maxOverlapMAD(from: pairs),

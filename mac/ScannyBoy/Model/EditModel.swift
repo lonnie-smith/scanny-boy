@@ -75,12 +75,20 @@ final class EditModel {
     /// can keep dragging while a prior commit finishes or is cancelled.
     private(set) var isSettingTone = false
 
+    /// Set while one `edit color` round trip is in flight.
+    private(set) var isSettingColor = false
+
     /// Debounces slider commits: a fast drag across many ISO-R steps fires
     /// one CLI round trip per pause, not one per step crossed.
     private static let toneDebounce = Duration.milliseconds(200)
     @ObservationIgnored private var toneScheduleTask: Task<Void, Never>?
     @ObservationIgnored private var toneCommitTask: Task<Void, Never>?
     @ObservationIgnored private var activeToneSession: CLISession?
+
+    private static let colorDebounce = Duration.milliseconds(200)
+    @ObservationIgnored private var colorScheduleTask: Task<Void, Never>?
+    @ObservationIgnored private var colorCommitTask: Task<Void, Never>?
+    @ObservationIgnored private var activeColorSession: CLISession?
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -272,20 +280,24 @@ final class EditModel {
     /// Each new call cancels the prior scheduled commit; a superseding
     /// in-flight CLI session is cancelled when the debounced commit runs.
     func scheduleTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment,
+        auto: ToneAutoFlags = []
     ) {
         toneScheduleTask?.cancel()
         toneScheduleTask = Task { [weak self] in
             try? await Task.sleep(for: Self.toneDebounce)
             guard !Task.isCancelled, let self else { return }
-            await self.commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+            await self.commitTone(targets, adjustment: adjustment, auto: auto)
         }
     }
 
     /// Commits the tone adjustment immediately, cancelling any debounced
     /// commit and any in-flight `edit tone` session superseded by this one.
     func commitTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags = []
     ) async {
         toneScheduleTask?.cancel()
         toneScheduleTask = nil
@@ -296,7 +308,7 @@ final class EditModel {
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performToneCommit(
-                targets, gradeR: gradeR, snapGamma: snapGamma
+                targets, adjustment: adjustment, auto: auto
             )
         }
         toneCommitTask = task
@@ -304,18 +316,19 @@ final class EditModel {
     }
 
     /// Records the selected negatives' preview tone adjustment through the
-    /// CLI — a paper grade plus a midtone snap, or `nil`/`nil` for the
-    /// reset to the flat look. The published TIFFs are never touched; the
-    /// CLI regenerates each preview with the tone curve composed into its
-    /// display encode.
+    /// CLI, or `nil` for the reset to the flat look.
     func setTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags = []
     ) async {
-        await commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+        await commitTone(targets, adjustment: adjustment, auto: auto)
     }
 
     private func performToneCommit(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags
     ) async {
         guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
 
@@ -331,12 +344,90 @@ final class EditModel {
         let command = CLICommand.editTone(
             roll: rollURL,
             negatives: targets.map(\.negativeID),
-            gradeR: gradeR,
-            snapGamma: snapGamma
+            adjustment: adjustment,
+            auto: auto
         )
         let session = runner.session(for: command)
         activeToneSession = session
         defer { activeToneSession = nil }
+
+        do {
+            for await output in try await session.start() {
+                if Task.isCancelled {
+                    await session.cancel()
+                    return
+                }
+                if case .event(let event) = output, event.kind == .editRecorded,
+                    let negativeID = event.negativeID
+                {
+                    applyEditRecorded(event, negativeID: negativeID)
+                }
+            }
+        } catch {
+            return
+        }
+    }
+
+    func scheduleColor(
+        _ targets: [RollManifest.Negative],
+        adjustment: ColorAdjustment
+    ) {
+        colorScheduleTask?.cancel()
+        colorScheduleTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.colorDebounce)
+            guard !Task.isCancelled, let self else { return }
+            await self.commitColor(targets, adjustment: adjustment)
+        }
+    }
+
+    func commitColor(
+        _ targets: [RollManifest.Negative],
+        adjustment: ColorAdjustment?
+    ) async {
+        colorScheduleTask?.cancel()
+        colorScheduleTask = nil
+        if let colorCommitTask {
+            colorCommitTask.cancel()
+            await colorCommitTask.value
+        }
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.performColorCommit(targets, adjustment: adjustment)
+        }
+        colorCommitTask = task
+        await task.value
+    }
+
+    func setColor(
+        _ targets: [RollManifest.Negative],
+        adjustment: ColorAdjustment?
+    ) async {
+        await commitColor(targets, adjustment: adjustment)
+    }
+
+    private func performColorCommit(
+        _ targets: [RollManifest.Negative],
+        adjustment: ColorAdjustment?
+    ) async {
+        guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
+
+        if let activeColorSession {
+            await activeColorSession.cancel()
+            self.activeColorSession = nil
+        }
+        guard !Task.isCancelled else { return }
+
+        isSettingColor = true
+        defer { isSettingColor = false }
+
+        let command = CLICommand.editColor(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID),
+            adjustment: adjustment
+        )
+        let session = runner.session(for: command)
+        activeColorSession = session
+        defer { activeColorSession = nil }
 
         do {
             for await output in try await session.start() {
@@ -417,14 +508,78 @@ final class EditModel {
         let negative = manifest.negatives[index]
         var toneGradeR = negative.toneGradeR
         var toneSnapGamma = negative.toneSnapGamma
-        if let tone = event.recordedTone {
-            // Both nulls is the reset; the CLI validates them as a pair.
-            if let grade = tone.gradeR, let snap = tone.snapGamma {
-                toneGradeR = grade
-                toneSnapGamma = snap
+        var toneDensity = negative.toneDensity
+        var toneShadowDensity = negative.toneShadowDensity
+        var toneHighlightDensity = negative.toneHighlightDensity
+        var toneToe = negative.toneToe
+        var toneToeWidth = negative.toneToeWidth
+        var toneShoulder = negative.toneShoulder
+        var toneShoulderWidth = negative.toneShoulderWidth
+        var colorWbCyan = negative.colorWbCyan
+        var colorWbMagenta = negative.colorWbMagenta
+        var colorWbYellow = negative.colorWbYellow
+        var colorShadowCyan = negative.colorShadowCyan
+        var colorShadowMagenta = negative.colorShadowMagenta
+        var colorShadowYellow = negative.colorShadowYellow
+        var colorHighlightCyan = negative.colorHighlightCyan
+        var colorHighlightMagenta = negative.colorHighlightMagenta
+        var colorHighlightYellow = negative.colorHighlightYellow
+        var colorCastRemoval = negative.colorCastRemoval
+        var colorDyeSeparation = negative.colorDyeSeparation
+        var colorSeparationDamping = negative.colorSeparationDamping
+        var colorTemperature = negative.colorTemperature
+        if let recorded = event.recordedTone {
+            if let tone = recorded {
+                toneGradeR = tone.gradeR
+                toneSnapGamma = tone.snapGamma
+                toneDensity = tone.density
+                toneShadowDensity = tone.shadowDensity
+                toneHighlightDensity = tone.highlightDensity
+                toneToe = tone.toe
+                toneToeWidth = tone.toeWidth
+                toneShoulder = tone.shoulder
+                toneShoulderWidth = tone.shoulderWidth
             } else {
                 toneGradeR = nil
                 toneSnapGamma = nil
+                toneDensity = nil
+                toneShadowDensity = nil
+                toneHighlightDensity = nil
+                toneToe = nil
+                toneToeWidth = nil
+                toneShoulder = nil
+                toneShoulderWidth = nil
+            }
+        }
+        if let recorded = event.recordedColor {
+            if let color = recorded {
+                colorWbCyan = color.wbCyan
+                colorWbMagenta = color.wbMagenta
+                colorWbYellow = color.wbYellow
+                colorShadowCyan = color.shadowCyan
+                colorShadowMagenta = color.shadowMagenta
+                colorShadowYellow = color.shadowYellow
+                colorHighlightCyan = color.highlightCyan
+                colorHighlightMagenta = color.highlightMagenta
+                colorHighlightYellow = color.highlightYellow
+                colorCastRemoval = color.castRemoval
+                colorDyeSeparation = color.dyeSeparation
+                colorSeparationDamping = color.separationDamping
+                colorTemperature = nil
+            } else {
+                colorWbCyan = nil
+                colorWbMagenta = nil
+                colorWbYellow = nil
+                colorShadowCyan = nil
+                colorShadowMagenta = nil
+                colorShadowYellow = nil
+                colorHighlightCyan = nil
+                colorHighlightMagenta = nil
+                colorHighlightYellow = nil
+                colorCastRemoval = nil
+                colorDyeSeparation = nil
+                colorSeparationDamping = nil
+                colorTemperature = nil
             }
         }
         roll = manifest.replacingNegative(
@@ -447,6 +602,26 @@ final class EditModel {
                 rectification: negative.rectification,
                 toneGradeR: toneGradeR,
                 toneSnapGamma: toneSnapGamma,
+                toneDensity: toneDensity,
+                toneShadowDensity: toneShadowDensity,
+                toneHighlightDensity: toneHighlightDensity,
+                toneToe: toneToe,
+                toneToeWidth: toneToeWidth,
+                toneShoulder: toneShoulder,
+                toneShoulderWidth: toneShoulderWidth,
+                colorWbCyan: colorWbCyan,
+                colorWbMagenta: colorWbMagenta,
+                colorWbYellow: colorWbYellow,
+                colorShadowCyan: colorShadowCyan,
+                colorShadowMagenta: colorShadowMagenta,
+                colorShadowYellow: colorShadowYellow,
+                colorHighlightCyan: colorHighlightCyan,
+                colorHighlightMagenta: colorHighlightMagenta,
+                colorHighlightYellow: colorHighlightYellow,
+                colorCastRemoval: colorCastRemoval,
+                colorDyeSeparation: colorDyeSeparation,
+                colorSeparationDamping: colorSeparationDamping,
+                colorTemperature: colorTemperature,
                 errorCode: negative.errorCode,
                 errorMessage: negative.errorMessage,
                 maxOverlapMAD: negative.maxOverlapMAD,
@@ -561,12 +736,18 @@ final class EditModel {
     /// it, so a new tone commit invalidates the old crops.
     static func renderGeneration(of negative: RollManifest.Negative) -> String {
         let tone: String
-        if let grade = negative.toneGradeR, let snap = negative.toneSnapGamma {
-            tone = String(format: "g%.1f-s%.2f", grade, snap)
+        if let adjustment = negative.toneAdjustment {
+            tone = String(adjustment.hashValue)
         } else {
             tone = "flat"
         }
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)"
+        let colour: String
+        if let adjustment = negative.colorAdjustment {
+            colour = String(adjustment.hashValue)
+        } else {
+            colour = "neutral"
+        }
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
