@@ -175,32 +175,29 @@ private struct PreviewPane: View {
                     Image(systemName: "slider.horizontal.3")
                 }
                 .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Tone: paper grade and midtone snap (preview only)")
+                .help("Tone: print density, paper grade, zone density, toe/shoulder (preview only)")
                 .accessibilityLabel("Tone adjustment")
                 .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
                     ToneAdjustmentPanel(
-                        toneGradeR: negative.toneGradeR,
-                        toneSnapGamma: negative.toneSnapGamma,
+                        adjustment: negative.toneAdjustment,
                         isBusy: edit.isSettingTone || edit.isRotating || edit.isDeleting,
-                        onScheduleCommit: { grade, snap in
-                            edit.scheduleTone(targets, gradeR: grade, snapGamma: snap)
+                        onScheduleCommit: { adjustment in
+                            edit.scheduleTone(targets, adjustment: adjustment)
                         },
-                        onCommitNow: { grade, snap in
+                        onCommitNow: { adjustment, auto in
                             Task {
                                 await edit.commitTone(
-                                    targets, gradeR: grade, snapGamma: snap
+                                    targets, adjustment: adjustment, auto: auto
                                 )
                             }
                         },
                         onReset: {
                             Task {
-                                await edit.commitTone(
-                                    targets, gradeR: nil, snapGamma: nil
-                                )
+                                await edit.commitTone(targets, adjustment: nil)
                             }
                         }
                     )
-                    .frame(width: 280)
+                    .frame(width: 360)
                 }
 
                 if edit.isRotating {
@@ -438,128 +435,236 @@ private struct PreviewPane: View {
     }
 }
 
-/// The Edit tab's tone adjustment panel: an ISO-R paper-grade slider
-/// (50–180, lower is harder — the vocabulary the Phase 4 print stage will
-/// use) plus a midtone-snap slider (−0.5…0.5), both recorded
-/// nondestructively through `edit tone`. Sliders snap to integer ISO-R
-/// units and 0.05 snap steps; each snapped value schedules a debounced
-/// commit, flushed immediately on release. Repeated commits coalesce into
-/// the trailing `tone` op. Reset removes the op entirely, returning to the
-/// flat linear preview the unadjusted display encode gives.
+/// The Edit tab's tone adjustment panel, grouped like NegPy's Exposure panel.
 private struct ToneAdjustmentPanel: View {
-    /// The anchor negative's recorded tone — what the sliders sync to when
-    /// the panel opens. `nil` = the flat look.
-    let toneGradeR: Double?
-    let toneSnapGamma: Double?
+    let adjustment: ToneAdjustment?
     let isBusy: Bool
-    let onScheduleCommit: (_ gradeR: Double, _ snapGamma: Double) -> Void
-    let onCommitNow: (_ gradeR: Double, _ snapGamma: Double) -> Void
+    let onScheduleCommit: (_ adjustment: ToneAdjustment) -> Void
+    let onCommitNow: (_ adjustment: ToneAdjustment, _ auto: ToneAutoFlags) -> Void
     let onReset: () -> Void
 
-    private static let defaultGrade: Double = 115
-    private static let defaultSnap: Double = 0
     private static let gradeRange: ClosedRange<Double> = 50...180
     private static let snapRange: ClosedRange<Double> = -0.5...0.5
+    private static let densityRange: ClosedRange<Double> = 0...2
+    private static let shadowDensityRange: ClosedRange<Double> = -0.9...0.9
+    private static let highlightDensityRange: ClosedRange<Double> = -0.5...0.5
+    private static let toeRange: ClosedRange<Double> = -1...1
+    private static let widthRange: ClosedRange<Double> = 0.1...5
 
-    @State private var grade: Double = defaultGrade
-    @State private var snap: Double = defaultSnap
+    @State private var values = ToneAdjustment.neutral
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Paper Grade")
-                        .font(.callout)
-                    Spacer()
-                    Text("R\(Int(grade))")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                ToneSlider(
-                    value: $grade,
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                sectionHeader("Print")
+                sliderRow(
+                    title: "Print Density",
+                    valueLabel: String(format: "%.2f", values.density),
+                    value: $values.density,
+                    range: Self.densityRange,
+                    step: 0.05,
+                    resetValue: ToneAdjustment.neutral.density,
+                    accessibilityLabel: "Print density",
+                    help: "0.0–2.0, higher is denser",
+                    autoHelp: "Solve the density from this negative's own metering",
+                    autoFlag: .density
+                )
+                sliderRow(
+                    title: "Paper Grade",
+                    valueLabel: "R\(Int(values.gradeR))",
+                    value: $values.gradeR,
                     range: Self.gradeRange,
                     step: 1,
-                    resetValue: Self.defaultGrade,
+                    resetValue: ToneAdjustment.neutral.gradeR,
                     reversed: true,
-                    onScheduleCommit: scheduleCommit,
-                    onCommitNow: commitNow
+                    accessibilityLabel: "Paper grade",
+                    help: "50–180, lower is harder",
+                    autoHelp: "Solve the grade from this negative's own metering",
+                    autoFlag: .grade
                 )
-                .accessibilityLabel("Paper grade")
-                Text("50–180, lower is harder")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Snap")
-                        .font(.callout)
-                    Spacer()
-                    Text(String(format: "%+.2f", snap))
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                ToneSlider(
-                    value: $snap,
+                sliderRow(
+                    title: "Snap",
+                    valueLabel: String(format: "%+.2f", values.snapGamma),
+                    value: $values.snapGamma,
                     range: Self.snapRange,
                     step: 0.05,
-                    resetValue: Self.defaultSnap,
-                    onScheduleCommit: scheduleCommit,
-                    onCommitNow: commitNow
+                    resetValue: 0,
+                    accessibilityLabel: "Midtone snap",
+                    help: "Midtone contrast trim"
                 )
-                .accessibilityLabel("Midtone snap")
-                Text("Midtone contrast trim")
-                    .font(.caption)
+
+                sectionHeader("Zones")
+                sliderRow(
+                    title: "Shadows Density",
+                    valueLabel: String(format: "%+.2f", values.shadowDensity),
+                    value: $values.shadowDensity,
+                    range: Self.shadowDensityRange,
+                    step: 0.05,
+                    resetValue: 0,
+                    accessibilityLabel: "Shadows density",
+                    help: "±0.9, positive adds density"
+                )
+                sliderRow(
+                    title: "Highlights Density",
+                    valueLabel: String(format: "%+.2f", values.highlightDensity),
+                    value: $values.highlightDensity,
+                    range: Self.highlightDensityRange,
+                    step: 0.05,
+                    resetValue: 0,
+                    accessibilityLabel: "Highlights density",
+                    help: "±0.5, positive adds density"
+                )
+
+                DisclosureGroup("Curve") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        sliderRow(
+                            title: "Toe",
+                            valueLabel: String(format: "%+.2f", values.toe),
+                            value: $values.toe,
+                            range: Self.toeRange,
+                            step: 0.05,
+                            resetValue: 0,
+                            accessibilityLabel: "Toe",
+                            help: "Shadow roll-off"
+                        )
+                        sliderRow(
+                            title: "Toe Width",
+                            valueLabel: String(format: "%.1f", values.toeWidth),
+                            value: $values.toeWidth,
+                            range: Self.widthRange,
+                            step: 0.1,
+                            resetValue: ToneAdjustment.neutral.toeWidth,
+                            accessibilityLabel: "Toe width",
+                            help: "0.1–5.0"
+                        )
+                        sliderRow(
+                            title: "Shoulder",
+                            valueLabel: String(format: "%+.2f", values.shoulder),
+                            value: $values.shoulder,
+                            range: Self.toeRange,
+                            step: 0.05,
+                            resetValue: 0,
+                            accessibilityLabel: "Shoulder",
+                            help: "Highlight roll-off"
+                        )
+                        sliderRow(
+                            title: "Shoulder Width",
+                            valueLabel: String(format: "%.1f", values.shoulderWidth),
+                            value: $values.shoulderWidth,
+                            range: Self.widthRange,
+                            step: 0.1,
+                            resetValue: ToneAdjustment.neutral.shoulderWidth,
+                            accessibilityLabel: "Shoulder width",
+                            help: "0.1–5.0"
+                        )
+                    }
+                    .padding(.top, 8)
+                }
+
+                Divider()
+
+                HStack {
+                    Button("Reset") {
+                        values = ToneAdjustment.neutral
+                        onReset()
+                    }
+                    .disabled(isBusy)
+                    .help("Remove the adjustment and return to the flat linear preview")
+                    Spacer()
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(maxHeight: 520)
+        .onAppear { syncFromModel() }
+        .onChange(of: adjustment) { syncFromModel() }
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+    }
+
+    @ViewBuilder
+    private func sliderRow(
+        title: String,
+        valueLabel: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        resetValue: Double,
+        reversed: Bool = false,
+        accessibilityLabel: String,
+        help: String,
+        autoHelp: String? = nil,
+        autoFlag: ToneAutoFlags = []
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.callout)
+                Spacer()
+                if let autoHelp {
+                    Button {
+                        onCommitNow(snappedValues, autoFlag)
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isBusy)
+                    .help(autoHelp)
+                }
+                Text(valueLabel)
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-
-            Divider()
-
-            HStack {
-                Button("Reset") {
-                    grade = Self.defaultGrade
-                    snap = Self.defaultSnap
-                    onReset()
-                }
-                .disabled(isBusy)
-                .help("Remove the adjustment and return to the flat linear preview")
-                Spacer()
-                if isBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
+            ToneSlider(
+                value: value,
+                range: range,
+                step: step,
+                resetValue: resetValue,
+                reversed: reversed,
+                onScheduleCommit: scheduleCommit,
+                onCommitNow: { onCommitNow(snappedValues, []) }
+            )
+            .accessibilityLabel(accessibilityLabel)
+            Text(help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .padding(16)
-        .onAppear { syncFromModel() }
-        .onChange(of: toneGradeR) { syncFromModel() }
-        .onChange(of: toneSnapGamma) { syncFromModel() }
     }
 
     private func scheduleCommit() {
-        onScheduleCommit(snappedGrade, snappedSnap)
+        onScheduleCommit(snappedValues)
     }
 
-    private func commitNow() {
-        onCommitNow(snappedGrade, snappedSnap)
-    }
-
-    private var snappedGrade: Double {
-        ToneSlider.snap(grade, step: 1, range: Self.gradeRange)
-    }
-
-    private var snappedSnap: Double {
-        ToneSlider.snap(snap, step: 0.05, range: Self.snapRange)
+    private var snappedValues: ToneAdjustment {
+        ToneAdjustment(
+            gradeR: ToneSlider.snap(values.gradeR, step: 1, range: Self.gradeRange),
+            snapGamma: ToneSlider.snap(values.snapGamma, step: 0.05, range: Self.snapRange),
+            density: ToneSlider.snap(values.density, step: 0.05, range: Self.densityRange),
+            shadowDensity: ToneSlider.snap(
+                values.shadowDensity, step: 0.05, range: Self.shadowDensityRange
+            ),
+            highlightDensity: ToneSlider.snap(
+                values.highlightDensity, step: 0.05, range: Self.highlightDensityRange
+            ),
+            toe: ToneSlider.snap(values.toe, step: 0.05, range: Self.toeRange),
+            toeWidth: ToneSlider.snap(values.toeWidth, step: 0.1, range: Self.widthRange),
+            shoulder: ToneSlider.snap(values.shoulder, step: 0.05, range: Self.toeRange),
+            shoulderWidth: ToneSlider.snap(
+                values.shoulderWidth, step: 0.1, range: Self.widthRange
+            )
+        )
     }
 
     private func syncFromModel() {
-        if let toneGradeR, let toneSnapGamma {
-            grade = toneGradeR
-            snap = toneSnapGamma
-        } else {
-            grade = Self.defaultGrade
-            snap = Self.defaultSnap
-        }
+        values = adjustment ?? ToneAdjustment.neutral
     }
 }
 

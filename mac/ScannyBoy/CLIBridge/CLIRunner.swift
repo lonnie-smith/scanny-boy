@@ -258,7 +258,10 @@ public struct CLICommand: Sendable, Hashable {
     /// Never touches the published TIFFs; the preview is regenerated with
     /// the tone curve composed into the display encode.
     public static func editTone(
-        roll: URL, negatives: [String], gradeR: Double?, snapGamma: Double?
+        roll: URL,
+        negatives: [String],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags = []
     ) -> CLICommand {
         var arguments = [
             "edit", "tone",
@@ -267,8 +270,28 @@ public struct CLICommand: Sendable, Hashable {
         for negative in negatives {
             arguments.append(contentsOf: ["--negative", negative])
         }
-        if let gradeR, let snapGamma {
-            arguments.append(contentsOf: ["--grade", String(gradeR), "--snap", String(snapGamma)])
+        if let adjustment {
+            if auto.contains(.grade) {
+                arguments.append("--auto-grade")
+            } else {
+                arguments.append(contentsOf: ["--grade", String(adjustment.gradeR)])
+            }
+            arguments.append(contentsOf: ["--snap", String(adjustment.snapGamma)])
+            if auto.contains(.density) {
+                arguments.append("--auto-density")
+            } else {
+                arguments.append(contentsOf: ["--density", String(adjustment.density)])
+            }
+            arguments.append(contentsOf: ["--shadow-density", String(adjustment.shadowDensity)])
+            arguments.append(
+                contentsOf: ["--highlight-density", String(adjustment.highlightDensity)]
+            )
+            arguments.append(contentsOf: ["--toe", String(adjustment.toe)])
+            arguments.append(contentsOf: ["--toe-width", String(adjustment.toeWidth)])
+            arguments.append(contentsOf: ["--shoulder", String(adjustment.shoulder)])
+            arguments.append(
+                contentsOf: ["--shoulder-width", String(adjustment.shoulderWidth)]
+            )
         } else {
             arguments.append("--reset")
         }

@@ -105,16 +105,14 @@ def _encode_display_png(
 ) -> None:
     """16-bit normalized-density (or already-8-bit) RGB -> inverted 8-bit
     lossless PNG on disk, no downscale, no gamma. `tone_params` (the net
-    `tone` op's `{"grade_r", "snap_gamma"}`) composes the user's preview
+    `tone` op's nine-key params) composes the user's preview
     tone adjustment into the display LUT — the published TIFF is never
     touched by it."""
     if image.dtype == np.uint16:
         # The TIFF holds normalized log density; decode, invert, apply the
         # tone curve, encode 8-bit with no gamma.
         if tone_params is not None:
-            lut = tone.build_display_lut(
-                tone_params["grade_r"], tone_params["snap_gamma"]
-            )
+            lut = tone.build_display_lut(tone.ToneParams(**tone_params))
         else:
             lut = NORMALIZED_DISPLAY_LUT
         image = lut[image]
@@ -143,8 +141,8 @@ def generate_preview(
     uncovered pixels, `auto_rotate.rotate_with_fill`), then rotates; the
     fine angle is negated by a flip exactly as `repo.net_edit_state`'s
     replay says, so the caller passes the canonical angle through
-    untouched. `tone_params` is the net `tone` op's `{"grade_r",
-    "snap_gamma"}` (None = the flat look), composed into the display LUT.
+    untouched. `tone_params` is the net `tone` op's full param dict (None =
+    the flat look), composed into the display LUT.
     Returns the preview path, or None when the negative has no published
     output to preview."""
     if negative.output is None:

@@ -57,18 +57,12 @@ FLIP_OP = "flip"
 ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
-# `tone` params are `{"grade_r": number | None, "snap_gamma": number | None}`
-# — the preview's paper-grade contrast and midtone-snap adjustment (see
-# `tone.py`). Unlike the geometric ops it is a state, not a transform: the
-# latest op wins, and both params `None` records the reset to the flat
-# linear look. `append_tone_edit` coalesces a trailing `tone` op in place,
-# the one sanctioned exception to the log's append-only discipline — slider
-# commits would otherwise pile up dozens of dead rows per frame.
+# `tone` params are the complete preview tone state — nine keys, all set or
+# all `None` for the reset (see `tone.py`). Unlike the geometric ops it is a
+# state, not a transform and never a mode: the latest one wins.
+# `append_tone_edit` coalesces a trailing `tone` op in place, the one
+# sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
-TONE_GRADE_MIN = 50.0
-TONE_GRADE_MAX = 180.0
-TONE_SNAP_MIN = -0.5
-TONE_SNAP_MAX = 0.5
 
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
@@ -516,40 +510,54 @@ def append_edit(
         }
 
 
-def validated_tone_params(
-    grade_r: float | None, snap_gamma: float | None
-) -> dict[str, float | None]:
-    """The `tone` op's params, validated as a pair: both set, or both
-    `None` (the reset). Anything else is a caller bug."""
-    for name, value in (("grade_r", grade_r), ("snap_gamma", snap_gamma)):
-        if value is None:
-            continue
+def _tone_param_bounds() -> tuple[tuple[str, float, float], ...]:
+    from scanny_boy import tone
+
+    return (
+        ("grade_r", tone.GRADE_MIN, tone.GRADE_MAX),
+        ("snap_gamma", tone.SNAP_MIN, tone.SNAP_MAX),
+        ("density", tone.DENSITY_MIN, tone.DENSITY_MAX),
+        ("shadow_density", tone.SHADOW_DENSITY_MIN, tone.SHADOW_DENSITY_MAX),
+        ("highlight_density", tone.HIGHLIGHT_DENSITY_MIN, tone.HIGHLIGHT_DENSITY_MAX),
+        ("toe", tone.TOE_MIN, tone.TOE_MAX),
+        ("toe_width", tone.TOE_WIDTH_MIN, tone.TOE_WIDTH_MAX),
+        ("shoulder", tone.SHOULDER_MIN, tone.SHOULDER_MAX),
+        ("shoulder_width", tone.SHOULDER_WIDTH_MIN, tone.SHOULDER_WIDTH_MAX),
+    )
+
+
+def validated_tone_params(params: dict[str, float | None] | None) -> dict[str, float | None]:
+    """The `tone` op's params: all nine set, or all nine `None` (the reset)."""
+    from scanny_boy import tone
+
+    if params is None:
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    missing = [key for key in tone.TONE_PARAM_KEYS if key not in params]
+    if missing:
+        raise ValueError(f"tone params missing keys: {', '.join(missing)}")
+    values = {key: params[key] for key in tone.TONE_PARAM_KEYS}
+    if all(value is None for value in values.values()):
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    if any(value is None for value in values.values()):
+        raise ValueError("tone params must all be set together, or all None for reset")
+    validated: dict[str, float | None] = {}
+    for name, low, high in _tone_param_bounds():
+        value = values[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"tone {name} must be a number, got {value!r}")  # noqa: TRY004
-    if grade_r is None and snap_gamma is None:
-        return {"grade_r": None, "snap_gamma": None}
-    if grade_r is None or snap_gamma is None:
-        raise ValueError("tone grade_r and snap_gamma must be set together")
-    if not TONE_GRADE_MIN <= grade_r <= TONE_GRADE_MAX:
-        raise ValueError(
-            f"tone grade_r must be within [{TONE_GRADE_MIN}, {TONE_GRADE_MAX}], got {grade_r}"
-        )
-    if not TONE_SNAP_MIN <= snap_gamma <= TONE_SNAP_MAX:
-        raise ValueError(
-            f"tone snap_gamma must be within [{TONE_SNAP_MIN}, {TONE_SNAP_MAX}], got {snap_gamma}"
-        )
-    return {"grade_r": float(grade_r), "snap_gamma": float(snap_gamma)}
+        if not low <= value <= high:
+            raise ValueError(f"tone {name} must be within [{low}, {high}], got {value}")
+        validated[name] = float(value)
+    return validated
 
 
 def append_tone_edit(
     roll_dir: Path,
     negative_id: str,
-    grade_r: float | None,
-    snap_gamma: float | None,
+    params: dict[str, float | None] | None,
 ) -> dict:
-    """Records the negative's preview tone adjustment (see `tone.py`):
-    `grade_r` ISO-R paper grade plus `snap_gamma` midtone trim, or both
-    `None` for the reset to the flat linear look.
+    """Records the negative's preview tone adjustment (see `tone.py`), or
+    the reset when every param is `None`.
 
     The op is a state, not a transform — the latest one wins — so when the
     log's last entry is already a `tone` op it is updated in place rather
@@ -559,7 +567,7 @@ def append_tone_edit(
     Raises `ValueError` on out-of-range or mismatched params."""
     from scanny_boy.roll_manifest import _now_iso
 
-    params = validated_tone_params(grade_r, snap_gamma)
+    validated = validated_tone_params(params)
     with _session() as session:
         negative = _negative_row(session, roll_dir, negative_id)
         last = session.scalar(
@@ -569,7 +577,7 @@ def append_tone_edit(
             .limit(1)
         )
         if last is not None and last.op == TONE_OP:
-            last.params = params
+            last.params = validated
             last.created_at = _now_iso()
             session.flush()
             return {
@@ -592,7 +600,7 @@ def append_tone_edit(
             negative_id=negative.negative_id,
             position=position,
             op=TONE_OP,
-            params=params,
+            params=validated,
             created_at=_now_iso(),
         )
         session.add(row)
@@ -605,6 +613,30 @@ def append_tone_edit(
             "params": row.params,
             "created_at": row.created_at,
         }
+
+
+def _tone_neutral_defaults() -> dict[str, float]:
+    from scanny_boy import tone
+
+    return {
+        "grade_r": tone.GRADE_REFERENCE,
+        "snap_gamma": 0.0,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+
+
+def _tone_in_range(params: dict[str, float]) -> bool:
+    for name, low, high in _tone_param_bounds():
+        value = params[name]
+        if not low <= value <= high:
+            return False
+    return True
 
 
 def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
@@ -637,8 +669,9 @@ def net_edit_state(
     horizontally first (when flipped), then rotated clockwise by
     `fine_angle_degrees`, then rotated `quarter_turns` clockwise quarter
     turns. `tone` is the latest `tone` op's validated params —
-    `{"grade_r", "snap_gamma"}` — or `None` when no tone op has been
-    recorded (or the last one is the reset).
+    all nine tone keys — or `None` when no tone op has been recorded (or
+    the last one is the reset). Legacy two-key rows fill neutral defaults
+    for the seven newer keys.
 
     Replay is closed-form because every geometric op transforms the image
     as it currently renders: a rotate adds to the turn count, a fine
@@ -678,19 +711,30 @@ def net_edit_state(
             params = edit["params"]
             grade = params.get("grade_r")
             snap = params.get("snap_gamma")
+            if grade is None or snap is None:
+                tone = None
+                continue
             if isinstance(grade, bool) or not isinstance(grade, (int, float)):
                 tone = None
                 continue
             if isinstance(snap, bool) or not isinstance(snap, (int, float)):
                 tone = None
                 continue
-            if (
-                not TONE_GRADE_MIN <= grade <= TONE_GRADE_MAX
-                or not TONE_SNAP_MIN <= snap <= TONE_SNAP_MAX
-            ):
-                tone = None
-                continue
-            tone = {"grade_r": float(grade), "snap_gamma": float(snap)}
+            merged = _tone_neutral_defaults()
+            merged["grade_r"] = float(grade)
+            merged["snap_gamma"] = float(snap)
+            for key in merged:
+                if key in ("grade_r", "snap_gamma"):
+                    continue
+                value = params.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    tone = None
+                    break
+                merged[key] = float(value)
+            else:
+                tone = None if not _tone_in_range(merged) else merged
     return turns % 4, flipped, fine_deg, tone
 
 

@@ -156,6 +156,14 @@ struct RollManifest: Sendable, Hashable {
         /// the flat linear look. The published TIFF never carries it.
         let toneGradeR: Double?
         let toneSnapGamma: Double?
+        /// Absent before protocol 11's density control existed.
+        let toneDensity: Double?
+        let toneShadowDensity: Double?
+        let toneHighlightDensity: Double?
+        let toneToe: Double?
+        let toneToeWidth: Double?
+        let toneShoulder: Double?
+        let toneShoulderWidth: Double?
         /// The stitch-stage failure code, when `status` is `failed`.
         let errorCode: String?
         let errorMessage: String?
@@ -392,6 +400,13 @@ struct RollManifest: Sendable, Hashable {
             // a reset): no adjustment, the flat look.
             toneGradeR: fields["tone_grade_r"]?.doubleValue,
             toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue,
+            toneDensity: fields["tone_density"]?.doubleValue,
+            toneShadowDensity: fields["tone_shadow_density"]?.doubleValue,
+            toneHighlightDensity: fields["tone_highlight_density"]?.doubleValue,
+            toneToe: fields["tone_toe"]?.doubleValue,
+            toneToeWidth: fields["tone_toe_width"]?.doubleValue,
+            toneShoulder: fields["tone_shoulder"]?.doubleValue,
+            toneShoulderWidth: fields["tone_shoulder_width"]?.doubleValue,
             errorCode: fields["error_code"]?.stringValue,
             errorMessage: fields["error_message"]?.stringValue,
             maxOverlapMAD: Self.maxOverlapMAD(from: pairs),

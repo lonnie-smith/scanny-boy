@@ -249,7 +249,11 @@ def test_export_leaves_the_rolls_own_tiff_untouched(stitched_roll, tmp_path):
 def test_export_ignores_the_tone_op(stitched_roll, tmp_path):
     """The tone op is a preview-only judgement aid (`tone.py`): the exported
     pixels are the published TIFF's, un-curved."""
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+    from scanny_boy.edits_test import _tone_params
+
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+    )
     output_dir = tmp_path / "export"
 
     outcome = run_export(stitched_roll, output_dir, [], emit=lambda event: None)

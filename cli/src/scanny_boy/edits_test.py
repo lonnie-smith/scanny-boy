@@ -30,6 +30,30 @@ from scanny_boy.stitch_pipeline_test import _roll_dir
 _NEGATIVE_ID = "stitch-negative-01"
 
 
+def _tone_params(grade_r: float = 115.0, snap_gamma: float = 0.0, **overrides: float):
+    from scanny_boy import tone
+
+    params = {
+        "grade_r": grade_r,
+        "snap_gamma": snap_gamma,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+    params.update(overrides)
+    return params
+
+
+def _reset_tone_params():
+    from scanny_boy import tone
+
+    return {key: None for key in tone.TONE_PARAM_KEYS}
+
+
 @pytest.fixture()
 def stitched_roll(tmp_path: Path) -> Path:
     roll_dir = _roll_dir(tmp_path)
@@ -314,17 +338,17 @@ def test_tone_records_the_state_and_changes_the_preview(stitched_roll):
     _ramp_tiff(stitched_roll)
 
     (fields,) = run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, 90.0, 0.2, emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(90.0, 0.2), emit=lambda event: None
     )
 
     assert fields["edit"]["op"] == "tone"
-    assert fields["edit"]["params"] == {"grade_r": 90.0, "snap_gamma": 0.2}
+    assert fields["edit"]["params"] == _tone_params(90.0, 0.2)
     assert fields["preview_path"] is not None and Path(fields["preview_path"]).exists()
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (
         0,
         False,
         0.0,
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        _tone_params(90.0, 0.2),
     )
 
     # The toned preview differs from the flat look the same TIFF renders
@@ -344,27 +368,31 @@ def test_tone_records_the_state_and_changes_the_preview(stitched_roll):
 def test_tone_coalesces_repeated_commits(stitched_roll):
     from scanny_boy.library import repo
 
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 115.0, 0.0, emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(115.0, 0.0), emit=lambda event: None
+    )
     (fields,) = run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, 80.0, 0.3, emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(80.0, 0.3), emit=lambda event: None
     )
 
     edits = repo.edits_for(stitched_roll, _NEGATIVE_ID)
     assert len(edits) == 1
     assert edits[0]["id"] == fields["edit"]["id"]
-    assert edits[0]["params"] == {"grade_r": 80.0, "snap_gamma": 0.3}
+    assert edits[0]["params"] == _tone_params(80.0, 0.3)
 
 
 def test_tone_reset_returns_to_the_flat_look(stitched_roll):
     from scanny_boy import previews
 
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 90.0, 0.2, emit=lambda event: None)
-
-    (fields,) = run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, None, None, emit=lambda event: None
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(90.0, 0.2), emit=lambda event: None
     )
 
-    assert fields["edit"]["params"] == {"grade_r": None, "snap_gamma": None}
+    (fields,) = run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _reset_tone_params(), emit=lambda event: None
+    )
+
+    assert fields["edit"]["params"] == _reset_tone_params()
     manifest = load_roll_manifest(stitched_roll)
     negative = manifest.negative(_NEGATIVE_ID)
     reset_preview = Path(negative.preview_path).read_bytes()
@@ -381,8 +409,12 @@ def test_tone_reset_returns_to_the_flat_look(stitched_roll):
 def test_tone_never_touches_the_published_tiff(stitched_roll):
     before = _tiff_bytes(stitched_roll)
 
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, None, None, emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+    )
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _reset_tone_params(), emit=lambda event: None
+    )
 
     assert _tiff_bytes(stitched_roll) == before
 
@@ -391,30 +423,38 @@ def test_tone_composes_with_the_geometric_ops(stitched_roll):
     from scanny_boy.library import repo
 
     run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.4, emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+    )
 
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == (
         1,
         False,
         0.0,
-        {"grade_r": 70.0, "snap_gamma": 0.4},
+        _tone_params(70.0, 0.4),
     )
 
 
 def test_tone_rejects_bad_params_without_recording(stitched_roll):
     with pytest.raises(EditFailure) as exc_info:
-        run_edit_tone(stitched_roll, _NEGATIVE_ID, 900.0, 0.0, emit=lambda event: None)
+        run_edit_tone(
+            stitched_roll, _NEGATIVE_ID, _tone_params(900.0, 0.0), emit=lambda event: None
+        )
     assert exc_info.value.code is Code.INVALID_EDIT
 
+    partial = _tone_params(115.0, 0.0)
+    partial["snap_gamma"] = None
     with pytest.raises(EditFailure):
-        run_edit_tone(stitched_roll, _NEGATIVE_ID, 115.0, None, emit=lambda event: None)
+        run_edit_tone(stitched_roll, _NEGATIVE_ID, partial, emit=lambda event: None)
 
     assert repo.edits_for(stitched_roll, _NEGATIVE_ID) == []
 
 
 def test_render_region_applies_the_recorded_tone(stitched_roll, tmp_path):
     _ramp_tiff(stitched_roll)
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, 70.0, 0.3, emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.3), emit=lambda event: None
+    )
 
     toned = tmp_path / "toned.png"
     flat = tmp_path / "flat.png"

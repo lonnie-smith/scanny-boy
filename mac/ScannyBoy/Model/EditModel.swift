@@ -262,20 +262,24 @@ final class EditModel {
     /// Each new call cancels the prior scheduled commit; a superseding
     /// in-flight CLI session is cancelled when the debounced commit runs.
     func scheduleTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment,
+        auto: ToneAutoFlags = []
     ) {
         toneScheduleTask?.cancel()
         toneScheduleTask = Task { [weak self] in
             try? await Task.sleep(for: Self.toneDebounce)
             guard !Task.isCancelled, let self else { return }
-            await self.commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+            await self.commitTone(targets, adjustment: adjustment, auto: auto)
         }
     }
 
     /// Commits the tone adjustment immediately, cancelling any debounced
     /// commit and any in-flight `edit tone` session superseded by this one.
     func commitTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags = []
     ) async {
         toneScheduleTask?.cancel()
         toneScheduleTask = nil
@@ -286,7 +290,7 @@ final class EditModel {
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performToneCommit(
-                targets, gradeR: gradeR, snapGamma: snapGamma
+                targets, adjustment: adjustment, auto: auto
             )
         }
         toneCommitTask = task
@@ -294,18 +298,19 @@ final class EditModel {
     }
 
     /// Records the selected negatives' preview tone adjustment through the
-    /// CLI — a paper grade plus a midtone snap, or `nil`/`nil` for the
-    /// reset to the flat look. The published TIFFs are never touched; the
-    /// CLI regenerates each preview with the tone curve composed into its
-    /// display encode.
+    /// CLI, or `nil` for the reset to the flat look.
     func setTone(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags = []
     ) async {
-        await commitTone(targets, gradeR: gradeR, snapGamma: snapGamma)
+        await commitTone(targets, adjustment: adjustment, auto: auto)
     }
 
     private func performToneCommit(
-        _ targets: [RollManifest.Negative], gradeR: Double?, snapGamma: Double?
+        _ targets: [RollManifest.Negative],
+        adjustment: ToneAdjustment?,
+        auto: ToneAutoFlags
     ) async {
         guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
 
@@ -321,8 +326,8 @@ final class EditModel {
         let command = CLICommand.editTone(
             roll: rollURL,
             negatives: targets.map(\.negativeID),
-            gradeR: gradeR,
-            snapGamma: snapGamma
+            adjustment: adjustment,
+            auto: auto
         )
         let session = runner.session(for: command)
         activeToneSession = session
@@ -407,14 +412,34 @@ final class EditModel {
         let negative = manifest.negatives[index]
         var toneGradeR = negative.toneGradeR
         var toneSnapGamma = negative.toneSnapGamma
-        if let tone = event.recordedTone {
-            // Both nulls is the reset; the CLI validates them as a pair.
-            if let grade = tone.gradeR, let snap = tone.snapGamma {
-                toneGradeR = grade
-                toneSnapGamma = snap
+        var toneDensity = negative.toneDensity
+        var toneShadowDensity = negative.toneShadowDensity
+        var toneHighlightDensity = negative.toneHighlightDensity
+        var toneToe = negative.toneToe
+        var toneToeWidth = negative.toneToeWidth
+        var toneShoulder = negative.toneShoulder
+        var toneShoulderWidth = negative.toneShoulderWidth
+        if let recorded = event.recordedTone {
+            if let tone = recorded {
+                toneGradeR = tone.gradeR
+                toneSnapGamma = tone.snapGamma
+                toneDensity = tone.density
+                toneShadowDensity = tone.shadowDensity
+                toneHighlightDensity = tone.highlightDensity
+                toneToe = tone.toe
+                toneToeWidth = tone.toeWidth
+                toneShoulder = tone.shoulder
+                toneShoulderWidth = tone.shoulderWidth
             } else {
                 toneGradeR = nil
                 toneSnapGamma = nil
+                toneDensity = nil
+                toneShadowDensity = nil
+                toneHighlightDensity = nil
+                toneToe = nil
+                toneToeWidth = nil
+                toneShoulder = nil
+                toneShoulderWidth = nil
             }
         }
         roll = manifest.replacingNegative(
@@ -437,6 +462,13 @@ final class EditModel {
                 rectification: negative.rectification,
                 toneGradeR: toneGradeR,
                 toneSnapGamma: toneSnapGamma,
+                toneDensity: toneDensity,
+                toneShadowDensity: toneShadowDensity,
+                toneHighlightDensity: toneHighlightDensity,
+                toneToe: toneToe,
+                toneToeWidth: toneToeWidth,
+                toneShoulder: toneShoulder,
+                toneShoulderWidth: toneShoulderWidth,
                 errorCode: negative.errorCode,
                 errorMessage: negative.errorMessage,
                 maxOverlapMAD: negative.maxOverlapMAD,
@@ -497,8 +529,8 @@ final class EditModel {
     /// it, so a new tone commit invalidates the old crops.
     static func renderGeneration(of negative: RollManifest.Negative) -> String {
         let tone: String
-        if let grade = negative.toneGradeR, let snap = negative.toneSnapGamma {
-            tone = String(format: "g%.1f-s%.2f", grade, snap)
+        if let adjustment = negative.toneAdjustment {
+            tone = String(adjustment.hashValue)
         } else {
             tone = "flat"
         }

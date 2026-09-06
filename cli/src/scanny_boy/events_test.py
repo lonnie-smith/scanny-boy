@@ -222,7 +222,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_ten():
+def test_protocol_version_is_eleven():
     """Protocol 9→10: 2D grid stitching — `--grid AxD` on `probe`,
     `prepare`, and `run` (mutually exclusive with `--per-negative`), the
     `INVALID_GRID` error code, and the `STITCH_GRID_ORDER_UNEXPECTED`
@@ -233,7 +233,7 @@ def test_protocol_version_is_ten():
     net `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest's
     negatives. The published TIFF never carries the adjustment
     (docs/DECISIONS.md, "The preview's tone adjustment")."""
-    assert PROTOCOL_VERSION == 10
+    assert PROTOCOL_VERSION == 11
 
 
 def test_new_event_kinds_round_trip():

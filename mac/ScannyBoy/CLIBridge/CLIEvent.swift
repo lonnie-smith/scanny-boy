@@ -21,7 +21,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    public static let supportedProtocolVersion = 10
+    public static let supportedProtocolVersion = 11
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -247,11 +247,27 @@ extension CLIEvent {
     /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
     /// reset to the flat look). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
-    public var recordedTone: (gradeR: Double?, snapGamma: Double?)? {
+    public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
             case .some = params["grade_r"]
         else { return nil }
-        return (params["grade_r"]?.doubleValue, params["snap_gamma"]?.doubleValue)
+        guard let gradeR = params["grade_r"]?.doubleValue,
+            let snapGamma = params["snap_gamma"]?.doubleValue
+        else { return .some(nil) }
+        return .some(
+            ToneAdjustment(
+                gradeR: gradeR,
+                snapGamma: snapGamma,
+                density: params["density"]?.doubleValue ?? ToneAdjustment.neutral.density,
+                shadowDensity: params["shadow_density"]?.doubleValue ?? 0,
+                highlightDensity: params["highlight_density"]?.doubleValue ?? 0,
+                toe: params["toe"]?.doubleValue ?? 0,
+                toeWidth: params["toe_width"]?.doubleValue ?? ToneAdjustment.neutral.toeWidth,
+                shoulder: params["shoulder"]?.doubleValue ?? 0,
+                shoulderWidth: params["shoulder_width"]?.doubleValue
+                    ?? ToneAdjustment.neutral.shoulderWidth
+            )
+        )
     }
 
     // `region_rendered`: the 1:1 PNG's path and the rect actually rendered,

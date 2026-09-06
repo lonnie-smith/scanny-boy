@@ -1199,3 +1199,39 @@ Three deliberate boundaries:
   (`GRADE_SLOPE_REF`, at R115) is chosen to land the default grade at a
   print-like midtone contrast with the softest end of the range near the
   flat look. The numbers are a judgement aid, not a calibrated paper.
+
+### Protocol version 11: density, zone density, toe/shoulder, auto metering
+
+Seven more controls join grade and snap on the same preview-only `tone` op,
+with NegPy's user-facing ranges kept verbatim (same status as the grade
+reference — vocabulary, not calibrated paper):
+
+- **Print density** (0.0–2.0, neutral 1.0) offsets the curve's input pivot
+  before the grade rotation, so brightness and contrast decouple.
+- **Zone density** (shadows ±0.9, highlights ±0.5) applies mid-sparing
+  sigmoid offsets on the quarter tones, read on the post-Snap value.
+- **Toe / shoulder** (−1…1) and their **widths** (0.1–5.0, neutral 2.5)
+  parameterise the softplus knees already in the curve.
+
+The math is re-derived, not transcribed from NegPy: our axis is flipped
+(normalized log density → positive display value) and rescaled, so
+NegPy's density coordinates cannot be mapped linearly onto ours. Zone
+centres are placed by position on our own curve (quarter and
+three-quarter tones) rather than by NegPy's absolute density anchors.
+
+Endpoint rescale reads its anchors with every shaping control at rest
+(grade and snap only). Without that rule, print density would be nearly
+inert and toe/shoulder would be completely inert, because moving the
+endpoints is precisely what they do.
+
+**Auto Density** and **Auto Grade** are buttons, not modes: the display LUT
+has no image, so a persistent auto mode is not representable. Each press
+solves from the negative's recorded `normalization` block (already written
+at stitch time) and records the computed value as ordinary op state.
+Re-stitching does not re-run auto.
+
+**Negative shoulder sharpening** is a deliberate deviation from NegPy: in
+NegPy a negative shoulder is inert because `d_min_eff` clamps at the
+paper's physical Dmin; our ceiling is display white with no paper model,
+so the same sharpening branch used for negative toe is applied to the
+shoulder too.

@@ -9,6 +9,14 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 11 keeps version 10's roll model and extends the preview
+tone adjustment: seven new curve controls on `edit tone` (print density,
+zone density, toe/shoulder and their widths), `--auto-density` and
+`--auto-grade` (solve once from the negative's recorded normalization and
+write the value — not a persistent mode), the matching seven `tone_*`
+derived fields on `roll info`'s negatives, and the
+`TONE_METERING_UNAVAILABLE` warning code.
+
 Protocol version 10 keeps version 9's roll model and adds two features.
 
 **2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
@@ -163,7 +171,7 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
-scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R --snap G | --reset)
+scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
 
@@ -385,18 +393,29 @@ It fails with the
 same codes as `edit rotate`.
 
 `edit tone` records a preview tone adjustment for one or more negatives: an
-ISO-R paper grade (`--grade`, 50–180; lower is harder) plus a midtone snap
-(`--snap`, −0.5…0.5), or `--reset` for the flat linear look. The op is a
-state, not a transform — the latest `tone` op wins, and a trailing `tone` op
-is updated in place rather than appended behind. The published TIFF is never
-touched (export ignores the op); each preview is regenerated from its TIFF
-with the tone curve composed into the display encode, and `edit_recorded` is
-emitted per negative — the `edit` row's `params` carry
-`{"grade_r": number | null, "snap_gamma": number | null}` (both `null` for a
-reset). It fails with `INVALID_EDIT` for out-of-range or mismatched
-parameters and with the same roll/negative codes as `edit rotate`. `roll
-info` reports the net tone state per negative as `tone_grade_r` /
-`tone_snap_gamma` (both `null` when no adjustment is recorded).
+ISO-R paper grade (`--grade`, 50–180, or `--auto-grade` to solve from the
+negative's recorded normalization; lower is harder), a midtone snap
+(`--snap`, −0.5…0.5), print density (`--density`, 0.0–2.0, neutral 1.0,
+higher is denser, or `--auto-density`), zone density offsets
+(`--shadow-density` ±0.9, `--highlight-density` ±0.5; positive adds
+density), and toe/shoulder shaping (`--toe` / `--shoulder` −1…1,
+`--toe-width` / `--shoulder-width` 0.1–5.0, neutral 2.5), or `--reset` for
+the flat linear look. `--density` and `--auto-density` are mutually
+exclusive, as are `--grade` and `--auto-grade`. Auto flags solve once per
+negative and record the computed value — they are not a persistent mode.
+The op is a state, not a transform — the latest `tone` op wins, and a
+trailing `tone` op is updated in place rather than appended behind. The
+published TIFF is never touched (export ignores the op); each preview is
+regenerated from its TIFF with the tone curve composed into the display
+encode, and `edit_recorded` is emitted per negative — the `edit` row's
+`params` carry all nine tone keys (all `null` for a reset). It fails with
+`INVALID_EDIT` for out-of-range or mismatched parameters, emits
+`TONE_METERING_UNAVAILABLE` per negative when auto is requested but
+metering is absent, and fails with the same roll/negative codes as
+`edit rotate`. `roll info` reports the net tone state per negative as
+`tone_grade_r`, `tone_snap_gamma`, `tone_density`, `tone_shadow_density`,
+`tone_highlight_density`, `tone_toe`, `tone_toe_width`, `tone_shoulder`,
+and `tone_shoulder_width` (all `null` when no adjustment is recorded).
 
 **Auto-rotation (`rotate_fine`).** At stitch time the CLI estimates the
 rebate tilt of each *newly published* negative's composite — the density
@@ -645,6 +664,7 @@ staging directories, and reruns the incomplete negative.
 | `SCAN_CLIPPED` | Warning: more than 1% of one channel's pixels decoded at or above sensor white; their highlights are clipped and no reconstruction is attempted |
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
+| `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |
 | `INTERNAL_ERROR` | An unexpected exception reached the top of a command; the message names it. Bug-report material |
 

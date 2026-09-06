@@ -258,18 +258,42 @@ def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     assert repo.net_edit_state(roll_dir, negative) == (0, False, 0.0, None)
 
 
+def _tone_params(
+    grade_r: float = 115.0,
+    snap_gamma: float = 0.0,
+    **overrides: float,
+) -> dict[str, float]:
+    from scanny_boy import tone
+
+    params = {
+        "grade_r": grade_r,
+        "snap_gamma": snap_gamma,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+    params.update(overrides)
+    return params
+
+
 def test_append_tone_edit_records_the_state(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    edit = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+    edit = repo.append_tone_edit(
+        roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2)
+    )
 
     assert edit["op"] == repo.TONE_OP
-    assert edit["params"] == {"grade_r": 90.0, "snap_gamma": 0.2}
+    assert edit["params"] == _tone_params(90.0, 0.2)
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (
         0,
         False,
         0.0,
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        _tone_params(90.0, 0.2),
     )
 
 
@@ -279,9 +303,13 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
     rows — the one coalescing exception to the log's append-only rule."""
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    first = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 115.0, 0.0)
+    first = repo.append_tone_edit(
+        roll_dir, "rid-1-negative-01", _tone_params(115.0, 0.0)
+    )
     repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
-    second = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 80.0, 0.3)
+    second = repo.append_tone_edit(
+        roll_dir, "rid-1-negative-01", _tone_params(80.0, 0.3)
+    )
 
     # A rotate landed between the two tone ops, so the second appends
     # after it rather than coalescing into the first.
@@ -291,10 +319,12 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
         1,
         False,
         0.0,
-        {"grade_r": 80.0, "snap_gamma": 0.3},
+        _tone_params(80.0, 0.3),
     )
 
-    third = repo.append_tone_edit(roll_dir, "rid-1-negative-01", 60.0, -0.1)
+    third = repo.append_tone_edit(
+        roll_dir, "rid-1-negative-01", _tone_params(60.0, -0.1)
+    )
     # Now the trailing op *is* a tone op: coalesced in place, same row.
     assert third["id"] == second["id"]
     assert third["position"] == second["position"] == 3
@@ -307,40 +337,76 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
         1,
         False,
         0.0,
-        {"grade_r": 60.0, "snap_gamma": -0.1},
+        _tone_params(60.0, -0.1),
     )
 
 
 def test_append_tone_edit_reset_records_null_params(roll_dir):
-    _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+    from scanny_boy import tone
 
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", None, None)
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
+
+    repo.append_tone_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        {key: None for key in tone.TONE_PARAM_KEYS},
+    )
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0, None)
 
 
 def test_append_tone_edit_validates_its_params(roll_dir):
+    from scanny_boy import tone
+
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    for grade, snap in [
-        (49.0, 0.0),
-        (181.0, 0.0),
-        (115.0, -0.6),
-        (115.0, 0.6),
-        (None, 0.0),  # one without the other
-        (115.0, None),
-        ("hard", 0.0),
+    for params in [
+        _tone_params(49.0, 0.0),
+        _tone_params(181.0, 0.0),
+        _tone_params(115.0, -0.6),
+        _tone_params(115.0, 0.6),
+        _tone_params(density=3.0),
+        _tone_params(shadow_density=1.0),
+        _tone_params(115.0, 0.0) | {"density": None},
+        _tone_params(115.0, 0.0) | {"grade_r": "hard"},
     ]:
         with pytest.raises(ValueError):
-            repo.append_tone_edit(roll_dir, "rid-1-negative-01", grade, snap)
+            repo.append_tone_edit(roll_dir, "rid-1-negative-01", params)
 
     assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
 
 
+def test_legacy_two_key_tone_row_reads_with_neutral_defaults(roll_dir):
+    from scanny_boy import tone
+
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.TONE_OP,
+        {"grade_r": 90.0, "snap_gamma": 0.2},
+    )
+
+    _, _, _, tone_params = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert tone_params == _tone_params(90.0, 0.2)
+
+
+def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.TONE_OP,
+        {"grade_r": 90.0, "snap_gamma": 0.2, "density": 99.0},
+    )
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01")[3] is None
+
+
 def test_net_edit_state_degrades_a_malformed_tone_op_to_no_adjustment(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", 90.0, 0.2)
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
     repo.append_edit(roll_dir, "rid-1-negative-01", repo.TONE_OP, {"grade_r": "hard"})
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == (0, False, 0.0, None)

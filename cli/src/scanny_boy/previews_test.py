@@ -232,15 +232,28 @@ def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
     image = (image * 3000).astype(np.uint16)
     roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
 
+    from scanny_boy import tone
+
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
-    repo.append_tone_edit(roll_dir, negative.negative_id, 70.0, 0.3)
+    params = {
+        "grade_r": 70.0,
+        "snap_gamma": 0.3,
+        "density": tone.DENSITY_REFERENCE,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "toe": 0.0,
+        "toe_width": tone.WIDTH_REFERENCE,
+        "shoulder": 0.0,
+        "shoulder_width": tone.WIDTH_REFERENCE,
+    }
+    repo.append_tone_edit(roll_dir, negative.negative_id, params)
     # The same canonical path is rewritten in place.
     toned = previews.ensure_preview(roll_dir, "rid-1", negative, repo.TONE_OP)
 
     toned_pixels = cv2.imread(str(toned), cv2.IMREAD_UNCHANGED)
     assert not np.array_equal(toned_pixels, flat_pixels)
-    lut = tone.build_display_lut(70.0, 0.3)
+    lut = tone.build_display_lut(tone.ToneParams(**params))
     np.testing.assert_array_equal(
         toned_pixels, cv2.cvtColor(lut[image], cv2.COLOR_RGB2BGR)
     )

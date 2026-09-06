@@ -350,8 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     edit_tone = edit_subparsers.add_parser(
         "tone",
         help=(
-            "Record a preview tone adjustment (paper grade + midtone snap) "
-            "for one or more negatives."
+            "Record a preview tone adjustment (paper grade, density, zone "
+            "density, toe/shoulder) for one or more negatives."
         ),
     )
     edit_tone.add_argument("--roll", required=True, metavar="DIR")
@@ -362,17 +362,71 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ID",
         help="negative to adjust; repeat for a selection",
     )
-    edit_tone.add_argument(
+    grade_group = edit_tone.add_mutually_exclusive_group()
+    grade_group.add_argument(
         "--grade",
         type=float,
         metavar="R",
         help="ISO-R paper grade, 50-180 (lower is harder); with --snap",
     )
+    grade_group.add_argument(
+        "--auto-grade",
+        action="store_true",
+        help="solve the grade from the negative's recorded metering",
+    )
     edit_tone.add_argument(
         "--snap",
         type=float,
         metavar="G",
-        help="midtone snap, -0.5..0.5; with --grade",
+        help="midtone snap, -0.5..0.5; with --grade or --auto-grade",
+    )
+    density_group = edit_tone.add_mutually_exclusive_group()
+    density_group.add_argument(
+        "--density",
+        type=float,
+        metavar="D",
+        help="print density, 0.0-2.0 (1.0 neutral, higher is denser)",
+    )
+    density_group.add_argument(
+        "--auto-density",
+        action="store_true",
+        help="solve the density from the negative's recorded metering",
+    )
+    edit_tone.add_argument(
+        "--shadow-density",
+        type=float,
+        metavar="D",
+        help="shadows density, -0.9..0.9 (positive adds density)",
+    )
+    edit_tone.add_argument(
+        "--highlight-density",
+        type=float,
+        metavar="D",
+        help="highlights density, -0.5..0.5 (positive adds density)",
+    )
+    edit_tone.add_argument(
+        "--toe",
+        type=float,
+        metavar="T",
+        help="shadow roll-off, -1..1 (positive lifts the black)",
+    )
+    edit_tone.add_argument(
+        "--toe-width",
+        type=float,
+        metavar="W",
+        help="toe extent, 0.1-5.0 (2.5 neutral)",
+    )
+    edit_tone.add_argument(
+        "--shoulder",
+        type=float,
+        metavar="S",
+        help="highlight roll-off, -1..1 (positive holds the white)",
+    )
+    edit_tone.add_argument(
+        "--shoulder-width",
+        type=float,
+        metavar="W",
+        help="shoulder extent, 0.1-5.0 (2.5 neutral)",
     )
     edit_tone.add_argument(
         "--reset",
@@ -401,6 +455,28 @@ def _usage_error(parser: argparse.ArgumentParser, message: str) -> int:
     except SystemExit as exc:
         return _exit_code(exc)
     raise AssertionError("argparse.ArgumentParser.error() always raises SystemExit")
+
+
+def _tone_params_from_args(args) -> dict[str, float | None] | None:
+    from scanny_boy import tone
+
+    if args.reset:
+        return {key: None for key in tone.TONE_PARAM_KEYS}
+    return {
+        "grade_r": args.grade if args.grade is not None else tone.GRADE_REFERENCE,
+        "snap_gamma": args.snap,
+        "density": args.density if args.density is not None else tone.DENSITY_REFERENCE,
+        "shadow_density": args.shadow_density if args.shadow_density is not None else 0.0,
+        "highlight_density": (
+            args.highlight_density if args.highlight_density is not None else 0.0
+        ),
+        "toe": args.toe if args.toe is not None else 0.0,
+        "toe_width": args.toe_width if args.toe_width is not None else tone.WIDTH_REFERENCE,
+        "shoulder": args.shoulder if args.shoulder is not None else 0.0,
+        "shoulder_width": (
+            args.shoulder_width if args.shoulder_width is not None else tone.WIDTH_REFERENCE
+        ),
+    }
 
 
 def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
@@ -581,6 +657,19 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         negative["tone_snap_gamma"] = (
             None if tone_params is None else tone_params["snap_gamma"]
         )
+        negative["tone_density"] = None if tone_params is None else tone_params["density"]
+        negative["tone_shadow_density"] = (
+            None if tone_params is None else tone_params["shadow_density"]
+        )
+        negative["tone_highlight_density"] = (
+            None if tone_params is None else tone_params["highlight_density"]
+        )
+        negative["tone_toe"] = None if tone_params is None else tone_params["toe"]
+        negative["tone_toe_width"] = None if tone_params is None else tone_params["toe_width"]
+        negative["tone_shoulder"] = None if tone_params is None else tone_params["shoulder"]
+        negative["tone_shoulder_width"] = (
+            None if tone_params is None else tone_params["shoulder_width"]
+        )
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -610,13 +699,16 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = EditRecorded
         elif args.edit_command == "tone":
-            grade = None if args.reset else args.grade
-            snap = None if args.reset else args.snap
-            if not args.reset and (args.grade is None or args.snap is None):
+            if not args.reset and (
+                (not args.auto_grade and args.grade is None) or args.snap is None
+            ):
                 writer.write(
                     ErrorEvent(
                         code=Code.INVALID_EDIT,
-                        message="edit tone needs --grade and --snap together, or --reset",
+                        message=(
+                            "edit tone needs --grade (or --auto-grade) and "
+                            "--snap together, or --reset"
+                        ),
                     )
                 )
                 writer.write(Finished(status="failed", exit_status=1))
@@ -624,8 +716,9 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             results = run_edit_tone(
                 Path(args.roll),
                 args.negative,
-                grade,
-                snap,
+                _tone_params_from_args(args),
+                auto_density=args.auto_density,
+                auto_grade=args.auto_grade,
                 emit=writer.write,
             )
             confirmation = EditRecorded

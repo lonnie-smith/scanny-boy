@@ -198,32 +198,64 @@ def run_edit_flip(
 def run_edit_tone(
     roll_dir: Path,
     negative_ids: str | Sequence[str],
-    grade_r: float | None,
-    snap_gamma: float | None,
+    params: dict[str, float | None] | None,
     *,
+    auto_density: bool = False,
+    auto_grade: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
-    """Records each selected negative's preview tone adjustment — a paper
-    grade (`grade_r`, ISO-R 50–180) plus a midtone snap (`snap_gamma`,
-    −0.5…0.5), or both `None` for the reset to the flat linear look (see
-    `tone.py`). The op is a state, not a transform: the latest one wins and
-    a trailing `tone` op is coalesced in place, so slider commits do not
-    pile up dead rows.
+    """Records each selected negative's preview tone adjustment — the full
+    nine-key tone state, or all `None` for the reset to the flat linear
+    look (see `tone.py`). Auto flags solve density and/or grade from each
+    negative's recorded normalization before validation.
 
-    The preview is regenerated from the published TIFF (the display LUT is
-    where the curve lives — a cached 8-bit PNG cannot be re-curved
-    losslessly); the TIFFs themselves are untouched, and export ignores
-    the tone op. Same contract as `run_edit_rotate` otherwise."""
-    try:
-        repo.validated_tone_params(grade_r, snap_gamma)
-    except ValueError as exc:
-        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+    The op is a state, not a transform: the latest one wins and a trailing
+    `tone` op is coalesced in place. The preview is regenerated from the
+    published TIFF; the TIFFs themselves are untouched, and export ignores
+    the tone op."""
+    from scanny_boy import auto_tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
 
     results: list[dict] = []
     for negative in negatives:
-        edit = repo.append_tone_edit(roll_dir, negative.negative_id, grade_r, snap_gamma)
+        solved = dict(params or {key: None for key in repo.validated_tone_params(None)})
+        if auto_density or auto_grade:
+            record = negative.normalization
+            if auto_density:
+                value = auto_tone.solve_density(record)
+                if value is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: normalization metering "
+                                "unavailable; density left unchanged"
+                            ),
+                        )
+                    )
+                else:
+                    solved["density"] = value
+            if auto_grade:
+                value = auto_tone.solve_grade(record)
+                if value is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: normalization metering "
+                                "unavailable; grade left unchanged"
+                            ),
+                        )
+                    )
+                else:
+                    solved["grade_r"] = value
+        try:
+            validated = repo.validated_tone_params(solved)
+        except ValueError as exc:
+            raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+
+        edit = repo.append_tone_edit(roll_dir, negative.negative_id, validated)
         _refresh_preview(roll_dir, roll, negative, repo.TONE_OP, what="tone", emit=emit)
         quarter_turns, flipped, fine_angle, _tone = repo.net_edit_state(
             roll_dir, negative.negative_id

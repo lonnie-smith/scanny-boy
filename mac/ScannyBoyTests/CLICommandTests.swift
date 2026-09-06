@@ -301,10 +301,16 @@ struct CLICommandTests {
 
     // MARK: - Edit tone
 
-    @Test("edit tone carries the grade and snap, or --reset")
+    @Test("edit tone carries the full adjustment, or --reset")
     func editToneArguments() {
         let command = CLICommand.editTone(
-            roll: Self.out, negatives: ["neg-01"], gradeR: 90, snapGamma: 0.2
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: ToneAdjustment(
+                gradeR: 90, snapGamma: 0.2, density: 1.1, shadowDensity: 0.1,
+                highlightDensity: -0.1, toe: 0.2, toeWidth: 3, shoulder: -0.1,
+                shoulderWidth: 4
+            )
         )
         #expect(
             command.arguments == [
@@ -313,14 +319,21 @@ struct CLICommandTests {
                 "--negative", "neg-01",
                 "--grade", "90.0",
                 "--snap", "0.2",
+                "--density", "1.1",
+                "--shadow-density", "0.1",
+                "--highlight-density", "-0.1",
+                "--toe", "0.2",
+                "--toe-width", "3.0",
+                "--shoulder", "-0.1",
+                "--shoulder-width", "4.0",
             ]
         )
     }
 
-    @Test("edit tone with no grade and no snap is a reset")
+    @Test("edit tone with no adjustment is a reset")
     func editToneResetArguments() {
         let command = CLICommand.editTone(
-            roll: Self.out, negatives: ["neg-01"], gradeR: nil, snapGamma: nil
+            roll: Self.out, negatives: ["neg-01"], adjustment: nil
         )
         #expect(command.arguments.last == "--reset")
         #expect(!command.arguments.contains("--grade"))
