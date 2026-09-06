@@ -306,6 +306,10 @@ class ProbeResult(Event):
     # Present only when `--roll` was given alongside a validated `--files`
     # selection (Phase 3 section 3.5).
     roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
+    # The roll's film-base reference block, verbatim from the roll manifest,
+    # when `--roll` was given (docs/REBATE_ANCHORING.md §7.1) — how the app
+    # gates Convert without starting a run.
+    film_base: dict[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

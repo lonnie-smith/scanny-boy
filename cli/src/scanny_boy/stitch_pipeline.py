@@ -35,6 +35,7 @@ from scanny_boy import composite as composite_module
 from scanny_boy import (
     concurrency,
     disk_check,
+    film_base,
     flatfield,
     hashing,
     previews,
@@ -133,6 +134,7 @@ from scanny_boy.registration import (
     register_pair,
 )
 from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FORMAT_VERSION,
     ROLL_PROFILE_PROCESSING_PARAMS_KEYS,
     ROLL_PROFILE_STITCH_PARAMS_KEYS,
     CameraColor,
@@ -287,6 +289,11 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "rectification_min_accepted_pairs": MIN_ACCEPTED_PAIRS,
         "rectification_min_improvement": MIN_RELATIVE_IMPROVEMENT,
         "rectification_max_excursion": MAX_WEIGHT_EXCURSION,
+        # REBATE_ANCHORING §2.5: the film-base measurement's constants.
+        # No forward shim is needed (§9): rolls stitched before this feature
+        # are invalidated, so no stored stitch_params without a film_base
+        # key is ever compared against a fresh one.
+        "film_base": film_base.build_params(),
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {
@@ -1073,8 +1080,7 @@ def _normalization_aggregate(
 
     def channel_medians(key: str) -> list[float]:
         columns = [
-            [block[key][ch] for block in normalization_blocks]
-            for ch in range(channels)
+            [block[key][ch] for block in normalization_blocks] for ch in range(channels)
         ]
         return [float(np.median(column)) for column in columns]
 
@@ -1288,6 +1294,43 @@ def run_stitch(
     roll = plan.existing_manifest
     assert roll is not None
 
+    # REBATE_ANCHORING §9: check the version once, before anything else. A
+    # roll whose manifest predates film-base anchoring stays readable,
+    # editable and exportable, but cannot take new negatives —
+    # re-stitching its scans under an anchor its published pixels never
+    # had would make the roll internally inconsistent.
+    if roll.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
+        raise StitchError(
+            Code.ROLL_PREDATES_FILM_BASE,
+            "this roll was stitched before film-base anchoring; create a "
+            "new roll and re-stitch its scans to add more negatives",
+        )
+
+    # §3.2 rule 4: a roll with no film-base reference refuses before any
+    # pixel work — the user must not wait through ten minutes of stitching
+    # to be told the roll has no base frame.
+    if roll.film_base is None:
+        raise StitchError(
+            Code.FILM_BASE_REQUIRED,
+            "this roll has no film-base reference; add one with the "
+            "base-frame field before converting scans "
+            "(docs/REBATE_ANCHORING.md)",
+        )
+
+    # §3.3: warn when this run's flat-field profile differs from the one
+    # the base frame was measured with. A warning, not an error: the gain
+    # map is normalised per channel to mean 1, so its effect on the
+    # measurement's medians is second order (§13 risk 7).
+    recorded_profile_id = roll.film_base.get("flat_field_profile_id")
+    if flatfield_profile_id != recorded_profile_id:
+        on_warning(
+            Code.FILM_BASE_FLATFIELD_CONFLICT,
+            "this run's flat-field profile differs from the one the "
+            f"roll's film-base reference was measured with "
+            f"({recorded_profile_id or 'none'} vs "
+            f"{flatfield_profile_id or 'none'})",
+        )
+
     if negatives:
         wanted_members = {
             frozenset(n.members) for n in roll.negatives if n.negative_id in negatives
@@ -1312,6 +1355,27 @@ def run_stitch(
             mono_by_group=mono_by_group,
         )
     )
+
+    # §3.3: the camera comparison's second home. `roll set-base-frame`
+    # compares only when the roll already has a `camera_color` block; a
+    # fresh roll has none until this run seeds one, so the first run
+    # compares here. A warning, not an error: the measurement may still be
+    # fine (§7.2).
+    base_camera_model = roll.film_base.get("camera_model")
+    roll_camera_model = (
+        roll.camera_color.camera_model if roll.camera_color is not None else None
+    )
+    if (
+        base_camera_model
+        and roll_camera_model
+        and base_camera_model != roll_camera_model
+    ):
+        on_warning(
+            Code.FILM_BASE_CAMERA_CONFLICT,
+            "the roll's film-base reference was shot on a "
+            f"{base_camera_model}, but this roll's scans were made on a "
+            f"{roll_camera_model}; the measurement may still be fine",
+        )
 
     try:
         workers = concurrency.resolve_worker_count(
@@ -1423,8 +1487,7 @@ def run_stitch(
                 mono_statistic=mono_by_group.get(entry.group.group_id),
                 film_kind=film_decision.kind,
                 seed_rotation=(
-                    auto_rotate
-                    and entry.record.negative_id in new_negative_ids
+                    auto_rotate and entry.record.negative_id in new_negative_ids
                 ),
             )
         except CancelledError:
@@ -1573,7 +1636,9 @@ def _append_this_run(
     *,
     film_decision: FilmDecision,
     mono_by_group: dict[str, MonoStatistic],
-) -> tuple[RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]], set[str]]:
+) -> tuple[
+    RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]], set[str]
+]:
     """Add this stitch to the roll: its run record, its sources, and one
     negative per group, all per sections 3.3 and 3.4.
 
@@ -2036,9 +2101,7 @@ def _composite_and_publish(
         # The auto-rotation is measured on the composite while its pixels
         # are still in memory — the encoded image is exactly what previews
         # and exports will see, fill sentinel and all.
-        auto_rotation_deg = (
-            estimate_rotation(result.image) if seed_rotation else None
-        )
+        auto_rotation_deg = estimate_rotation(result.image) if seed_rotation else None
 
         # Section 5.4 decision 4: the roll records the capture time the
         # negative's first frame actually carries, which is exactly the value
@@ -2069,7 +2132,9 @@ def _composite_and_publish(
             # is film-kind-dependent — DENSITY_GREY on a mono roll — via
             # this run's decided (or already-frozen) film kind, exactly as
             # the invariant seed above.
-            icc_bytes=load_icc_profile(published_profile_kind(film_kind)),  # section 3.12
+            icc_bytes=load_icc_profile(
+                published_profile_kind(film_kind)
+            ),  # section 3.12
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -2094,6 +2159,14 @@ def _composite_and_publish(
             out_dir, roll, record, previous_capture_time, run_id, emit
         )
         _remove_covered_negatives(out_dir, roll, entry.covered_to_remove, run_id, emit)
+        # REBATE_ANCHORING §3.2 rule 5: the roll's first negative published
+        # against the film-base reference locks it, in the same manifest
+        # write as the negative. This is the only lock write, and rule 7's
+        # "a run that fails before publishing anything leaves the roll
+        # ATTACHED" is automatic because of it: a run that fails mid-way
+        # has published nothing, so `locked_at` stays null.
+        if roll.film_base is not None and roll.film_base.get("locked_at") is None:
+            roll.film_base["locked_at"] = _now_iso()
         write_roll_manifest(out_dir, roll)
 
         # The seeding happens last: the negative row exists (the earlier

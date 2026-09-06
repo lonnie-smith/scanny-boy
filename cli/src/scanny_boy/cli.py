@@ -1558,6 +1558,7 @@ def _dispatch_command(
                 estimated_required_bytes=outcome.estimated_required_bytes,
                 available_bytes=outcome.available_bytes,
                 roll_overlap=outcome.roll_overlap,
+                film_base=outcome.film_base,
             )
         )
         writer.write(Finished(status="success", exit_status=0))

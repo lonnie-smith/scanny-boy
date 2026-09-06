@@ -114,6 +114,9 @@ class ProbeOutcome:
     estimated_required_bytes: int | None = None
     available_bytes: int | None = None
     roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
+    # The roll's film_base block when `--roll` was given
+    # (docs/REBATE_ANCHORING.md §7.1); None otherwise.
+    film_base: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -219,7 +222,7 @@ def _preview_roll(
     roll_dir: Path,
     processing_params: dict,
     profile=None,
-) -> list[RollOverlapEntry]:
+) -> tuple[list[RollOverlapEntry], dict | None]:
     """`probe --roll`'s roll-folder validation and overlap report (section
     3.5). Raises `ProbeFailure` for anything that would also stop `run
     --roll`: an unregistered roll folder, content unrelated to the roll, or
@@ -228,7 +231,9 @@ def _preview_roll(
     Overlap is reported, not rejected: whether a prospective group adopts the
     overlapped negative is decided at `run` time (the replacement rule), so
     the report names what each prospective group shares with the roll and
-    lets the caller decide."""
+    lets the caller decide. The roll's `film_base` block is reported too
+    (docs/REBATE_ANCHORING.md §7.1), so the app can gate Convert on it
+    without starting a run."""
     if not repo.roll_registered(roll_dir):
         raise ProbeFailure(
             Code.ROLL_NOT_FOUND,
@@ -256,7 +261,7 @@ def _preview_roll(
     assert roll is not None
 
     if not groups:
-        return []
+        return [], roll.film_base
 
     # Section 3.5: overlap detection "hashes the selection, compares against
     # `manifest.sources` by `sha256`, and reports per prospective group". A
@@ -287,7 +292,7 @@ def _preview_roll(
                         group_index=group_index,
                     )
                 )
-    return entries
+    return entries, roll.film_base
 
 
 def run_probe(
@@ -422,8 +427,9 @@ def run_probe(
         )
 
     roll_overlap: list[RollOverlapEntry] = []
+    film_base: dict | None = None
     if roll_dir is not None:
-        roll_overlap = _preview_roll(
+        roll_overlap, film_base = _preview_roll(
             input_dir, selection.names, groups, roll_dir, processing_params, profile
         )
 
@@ -434,4 +440,5 @@ def run_probe(
         estimated_required_bytes=preview.estimated_required_bytes if preview else None,
         available_bytes=preview.available_bytes if preview else None,
         roll_overlap=roll_overlap,
+        film_base=film_base,
     )

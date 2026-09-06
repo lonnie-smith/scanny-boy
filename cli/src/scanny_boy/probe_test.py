@@ -513,6 +513,34 @@ def test_probe_accepts_changed_shots_per_negative(tmp_path):
     assert outcome.catalogue
 
 
+@requires_real_samples
+def test_probe_reports_the_film_base_block(tmp_path):
+    """REBATE_ANCHORING §7.1: `probe --roll` reports the roll's film_base
+    block so the app can gate Convert without starting a run."""
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1])
+
+    outcome = run_probe(FIXTURES_DIR, list(NEGATIVE_2), 3, roll_dir=roll)
+
+    assert outcome.film_base is not None
+    assert outcome.film_base["density"] == [-0.42, -0.12, -0.99]
+    assert outcome.film_base["locked_at"] is not None
+
+
+@requires_real_samples
+def test_probe_reports_a_null_film_base_block_when_absent(tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest as load_roll
+    from scanny_boy.roll_manifest import write_roll_manifest as write_roll
+
+    roll = _stitched_roll(tmp_path, groups=[NEGATIVE_1])
+    manifest = load_roll(roll)
+    manifest.film_base = None
+    write_roll(roll, manifest)
+
+    outcome = run_probe(FIXTURES_DIR, list(NEGATIVE_2), 3, roll_dir=roll)
+
+    assert outcome.film_base is None
+
+
 # --- flat-field: --roll does not lock a roll to one profile ----------------
 
 
