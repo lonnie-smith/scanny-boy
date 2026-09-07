@@ -64,6 +64,10 @@ struct CatalogueRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+        .onDrag {
+            guard let url else { return NSItemProvider() }
+            return NSItemProvider(object: url as NSURL)
+        }
         .task(id: url) {
             guard let url else { return }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
