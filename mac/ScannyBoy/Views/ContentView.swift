@@ -359,7 +359,7 @@ struct ContentView: View {
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,
-                isBusy: activity.isBusy || model.isSettingFilmKind,
+                isBusy: activity.isBusy,
                 error: model.filmKindError,
                 onChoose: { choice in
                     Task { await model.setFilmKind(choice.rawValue) }
@@ -367,7 +367,8 @@ struct ContentView: View {
             )
             BaseFrameField(
                 filmBase: model.filmBase,
-                isBusy: activity.isBusy || model.isAttachingBaseFrame,
+                isBusy: activity.isBusy,
+                isAnalyzing: model.isAttachingBaseFrame,
                 error: model.baseFrameError,
                 onChoose: { chooseBaseFrame(replace: false) },
                 onReplace: { chooseBaseFrame(replace: true) }
@@ -409,7 +410,7 @@ struct ContentView: View {
         } header: {
             HStack {
                 Text("Roll Setup")
-                if model.isValidating {
+                if model.isValidating || model.isAttachingBaseFrame {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -427,7 +428,7 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Convert") { handleConvertTap() }
-                    .disabled(!model.runEnabled || model.isValidating || activity.isBusy)
+                    .disabled(!model.runEnabled || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
             }
             // Add Scans shows results for its own invocations only (M9):
