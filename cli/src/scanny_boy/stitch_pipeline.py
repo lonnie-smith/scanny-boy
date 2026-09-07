@@ -1929,7 +1929,6 @@ def _composite_and_publish(
             result, valid_rect, _base_check(roll, result.rebate)
         )
         record.normalized_fill = NORMALIZED_FILL
-        record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])
 

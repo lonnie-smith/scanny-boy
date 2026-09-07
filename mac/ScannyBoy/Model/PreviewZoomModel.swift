@@ -278,15 +278,16 @@ final class PreviewZoomModel {
         fetchCrop()
     }
 
-    /// The crop origin a drag asks for, before clamping: dragging right
-    /// reveals content to the right, so the origin moves right — in display
+    /// The crop origin a drag asks for, before clamping: grab-and-drag —
+    /// dragging right moves the image right, revealing content that was to
+    /// the left, so the origin moves opposite the cursor — in display
     /// pixels, which are `crop.displayScale` per point.
     private static func targetOrigin(
         from gesture: Drag, moved: CGSize, crop: Crop
     ) -> CGPoint {
         CGPoint(
-            x: gesture.originAtStart.x + moved.width * crop.displayScale,
-            y: gesture.originAtStart.y + moved.height * crop.displayScale
+            x: gesture.originAtStart.x - moved.width * crop.displayScale,
+            y: gesture.originAtStart.y - moved.height * crop.displayScale
         )
     }
 
