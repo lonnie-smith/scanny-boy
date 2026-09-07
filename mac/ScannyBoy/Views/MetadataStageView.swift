@@ -40,14 +40,6 @@ struct MetadataStageView: View {
                 )
             }
         }
-        .background {
-            SelectionShortcutButtons(
-                onPrevious: edit.selectPrevious,
-                onNext: edit.selectNext,
-                onSelectAll: edit.selectAll,
-                onDeselectAll: edit.deselectAll
-            )
-        }
         .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted, so the phase can already be `.finished` when the tab

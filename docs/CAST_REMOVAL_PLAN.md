@@ -956,7 +956,7 @@ Record that in `DECISIONS.md`.
   the frame's own highlight greys. Needs a highlight reference; inactive on
   rolls stitched before it was measured."
 
-- The **Auto** button goes in the *Balance* section, under the C/M/Y
+- The **Auto** button goes in the *Color* section, under the C/M/Y
   sliders, labelled `Auto`, with help "Solve the filtration from this
   negative's own neutral estimate". It calls
   `onCommitNow(values, [.cast])`. It is a one-shot commit, not a mode —

@@ -103,7 +103,6 @@
         "STITCH_SCALE_DRIFT",
         "STITCH_GAIN_DRIFT",
         "STITCH_LAYOUT_UNEXPECTED",
-        "STITCH_GRID_ORDER_UNEXPECTED",
         "STITCH_REBATE_CHECK_FAILED",
         "STITCH_CLAHE_FALLBACK_USED",
         "OUTPUT_DIMENSIONS_LARGE",
@@ -142,6 +141,8 @@
         "SCAN_CLIPPED",
         "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
+        "NORMALIZE_FILM_EXTENT_WITHHELD",
+        "NORMALIZE_FILM_EXTENT_EXCESSIVE",
         "TONE_METERING_UNAVAILABLE",
         "FILM_KIND_REQUIRED",
         "FILM_KIND_LOCKED",
@@ -249,12 +250,16 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 16
+      "const": 18
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
       "type": "string",
       "description": "Present when the event belongs to a conversion run."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Present when the event belongs to one request answered by `scanny-boy serve` (protocol 18); one-shot invocations emit events without it."
     }
   },
   "allOf": [

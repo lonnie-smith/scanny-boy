@@ -33,16 +33,10 @@ struct ContentView: View {
     /// delete, export, flat-field calibration — since "one helper at a
     /// time" (section 3.10) is an app-wide rule, not `RunModel`'s alone.
     let activity: AppActivity
-
-    private enum WorkspaceTab {
-        case addScans
-        case edit
-        case metadata
-        case export
-    }
+    @Bindable var keyboard: AppKeyboardState
 
     @State private var selection: Roll.ID?
-    @State private var workspaceTab: WorkspaceTab = .addScans
+    @State private var workspaceTab: AppWorkspaceTab = .addScans
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
@@ -97,6 +91,80 @@ struct ContentView: View {
         .onChange(of: model.rollURL) { _, _ in
             run.clearResults()
             export.clearResults()
+        }
+        .onChange(of: workspaceTab) { _, tab in
+            keyboard.workspaceTab = tab
+            switch tab {
+            case .addScans:
+                columnVisibility = .all
+            case .edit, .metadata, .export:
+                columnVisibility = .detailOnly
+            }
+        }
+        .onChange(of: activity.isBusy) { _, isBusy in
+            keyboard.isBusy = isBusy
+        }
+        .onAppear {
+            keyboard.workspaceTab = workspaceTab
+            keyboard.isBusy = activity.isBusy
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectAll)) { _ in
+            guard keyboard.canSelectAll else { return }
+            switch workspaceTab {
+            case .addScans:
+                model.selectAll()
+            case .edit, .metadata:
+                edit.selectAll()
+            case .export:
+                break
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoyDeselectAll)) { _ in
+            guard keyboard.canDeselectAll else { return }
+            switch workspaceTab {
+            case .addScans:
+                model.deselectAll()
+            case .edit, .metadata:
+                edit.deselectAll()
+            case .export:
+                break
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .scannyBoyRotateCounterClockwise)
+        ) { _ in
+            guard keyboard.canRotate else { return }
+            Task { await edit.rotate(edit.selectionTargets, clockwise: false) }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .scannyBoyRotateClockwise)
+        ) { _ in
+            guard keyboard.canRotate else { return }
+            Task { await edit.rotate(edit.selectionTargets, clockwise: true) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoyToggleZoom)) { _ in
+            guard keyboard.canZoom else { return }
+            keyboard.performToggleZoom()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectPrevious)) {
+            notification in
+            guard keyboard.canNavigate else { return }
+            if !AppKeyboard.forceNavigate(from: notification),
+                AppKeyboard.isTextInputFirstResponder()
+            {
+                return
+            }
+            edit.selectPrevious()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectNext)) {
+            notification in
+            guard keyboard.canNavigate else { return }
+            if !AppKeyboard.forceNavigate(from: notification),
+                AppKeyboard.isTextInputFirstResponder()
+            {
+                return
+            }
+            edit.selectNext()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
@@ -190,10 +258,10 @@ struct ContentView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             Picker("Stage", selection: $workspaceTab) {
-                Text("Add Scans").tag(WorkspaceTab.addScans)
-                Text("Edit").tag(WorkspaceTab.edit)
-                Text("Metadata").tag(WorkspaceTab.metadata)
-                Text("Export").tag(WorkspaceTab.export)
+                Text("Add Scans").tag(AppWorkspaceTab.addScans)
+                Text("Edit").tag(AppWorkspaceTab.edit)
+                Text("Metadata").tag(AppWorkspaceTab.metadata)
+                Text("Export").tag(AppWorkspaceTab.export)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -206,12 +274,18 @@ struct ContentView: View {
                 addScansStage
             case .edit:
                 EditStageView(
-                    edit: edit, run: run, activity: activity,
+                    edit: edit,
+                    run: run,
+                    activity: activity,
+                    keyboard: keyboard,
                     onNegativeDeleted: { library.scan() }
                 )
             case .metadata:
                 MetadataStageView(
-                    library: library, edit: edit, run: run, activity: activity
+                    library: library,
+                    edit: edit,
+                    run: run,
+                    activity: activity
                 )
             case .export:
                 ExportStageView(export: export, edit: edit, run: run, activity: activity)
@@ -244,12 +318,6 @@ struct ContentView: View {
         // only the compact empty state otherwise — and the detail pane then
         // vertically centers that short stack instead of pinning it to the top.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            SelectAllDeselectAllShortcutButtons(
-                onSelectAll: model.selectAll,
-                onDeselectAll: model.deselectAll
-            )
-        }
         .disabled(activity.isBusy)
     }
 
@@ -359,7 +427,7 @@ struct ContentView: View {
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,
-                isBusy: activity.isBusy || model.isSettingFilmKind,
+                isBusy: activity.isBusy,
                 error: model.filmKindError,
                 onChoose: { choice in
                     Task { await model.setFilmKind(choice.rawValue) }
@@ -367,7 +435,8 @@ struct ContentView: View {
             )
             BaseFrameField(
                 filmBase: model.filmBase,
-                isBusy: activity.isBusy || model.isAttachingBaseFrame,
+                isBusy: activity.isBusy,
+                isAnalyzing: model.isAttachingBaseFrame,
                 error: model.baseFrameError,
                 onChoose: { chooseBaseFrame(replace: false) },
                 onReplace: { chooseBaseFrame(replace: true) }
@@ -409,7 +478,7 @@ struct ContentView: View {
         } header: {
             HStack {
                 Text("Roll Setup")
-                if model.isValidating {
+                if model.isValidating || model.isAttachingBaseFrame {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -427,7 +496,7 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Convert") { handleConvertTap() }
-                    .disabled(!model.runEnabled || model.isValidating || activity.isBusy)
+                    .disabled(!model.runEnabled || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
             }
             // Add Scans shows results for its own invocations only (M9):

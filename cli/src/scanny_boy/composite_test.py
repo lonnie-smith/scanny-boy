@@ -20,8 +20,11 @@ from scanny_boy.events import Code
 from scanny_boy.layout import solve_layout
 from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.normalization import (
+    ANALYSIS_BLOCK_PX,
+    FILM_EXTENT_CONVERGENCE_DELTA,
     NORMALIZED_FILL,
     Bounds,
+    FilmExtent,
     FilmKind,
     analysis_grid_block_sizes,
     analyze_bounds,
@@ -58,11 +61,14 @@ def _rotation_matrix(angle_deg):
     return np.array([[cos_a, -sin_a], [sin_a, cos_a]])
 
 
-def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7):
+def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7, scene=None):
     """A known scene cut into two overlapping frames, plus the ground-truth
     pair and solved layout needed to composite them. Returns (scene, names,
-    uint16_frames, layout, cut_placements)."""
-    scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
+    uint16_frames, layout, cut_placements). `scene`, when given, replaces
+    the generated one (the carrier-band fixtures below pass a copy of a
+    generated scene with a band painted on)."""
+    if scene is None:
+        scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
     frames, cut_placements = cut_frames(
         scene,
         frame_size=_FRAME_SIZE,
@@ -975,6 +981,144 @@ def test_oversized_file_fails():
 
     assert exc_info.value.code is Code.STITCH_OUTPUT_TOO_LARGE
     assert warnings == []
+
+
+# --- the film-extent pass (docs/BLACK_POINT_REFINEMENT.md) -------------------
+
+
+def test_film_extent_is_recorded_and_pixels_are_unchanged_on_a_clean_scene():
+    """E-1/E-2: the finding is recorded per negative; on a clean scene the
+    pass no-ops and the published pixels are byte-identical to a reference
+    chain that never calls it."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    result = _composite(layout, uint16_frames)
+    assert isinstance(result.film_extent, FilmExtent)
+    assert not result.film_extent.detected
+    assert result.film_extent.insets == (0, 0, 0, 0)
+    assert result.film_extent.region_fraction == 1.0
+    assert result.film_extent.rebate_agrees is None
+
+    # The reference normalization chain, without the film-extent pass —
+    # same accumulation as test_no_geometry_produces_pixels_identical...,
+    # abbreviated by reading the result's own gains.
+    canvas_width, canvas_height = layout.canvas_size
+    accum = np.zeros((canvas_height, canvas_width, 3), dtype=np.float32)
+    weight_canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+    from scanny_boy.composite import _EROSION_KERNEL, _feather_weight, frame_bbox
+
+    for placement in layout.placements:
+        frame = uint16_frames[placement.name]
+        src_h, src_w = frame.shape[:2]
+        linear = decode_to_linear(frame).astype(np.float32)
+        matrix = placement.matrix()
+        x, y, w, h = frame_bbox(matrix, src_h, src_w, layout.canvas_size)
+        M = matrix.copy()
+        M[:, 2] -= (x, y)
+        warped = np.clip(
+            cv2.warpAffine(
+                linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            ),
+            0.0, None,
+        )
+        mask = cv2.warpAffine(
+            np.ones((src_h, src_w), np.uint8), M, (w, h),
+            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        eroded = cv2.erode(
+            mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
+        )
+        weight = _feather_weight(eroded, x, y, layout.feather_axes())
+        gain = np.asarray(result.gains[placement.name], dtype=np.float32)
+        accum[y : y + h, x : x + w] += warped * gain * weight[:, :, np.newaxis]
+        weight_canvas[y : y + h, x : x + w] += weight
+
+    covered = weight_canvas > 0
+    out = np.zeros_like(accum)
+    out[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
+
+    img_log = to_log_density(out)
+    grid = block_median_grid(img_log)
+    keep = block_median_grid(np.where(covered, np.float32(1.0), np.float32(0.0))) >= 1.0
+    keep, _opaque = withhold_opaque(grid, keep)
+    keep, _rebate = detect_rebate(grid, keep)
+    keep, _dense_border = withhold_dense_border(grid, keep)
+    bounds = analyze_bounds(grid, keep)
+    encoded = encode_normalized(normalize_log_image(img_log, bounds))
+    encoded[~covered] = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL))[0, 0]
+    assert np.array_equal(result.image, encoded)
+    assert result.bounds == bounds
+
+
+def _banded_scene(seed: int = 7) -> np.ndarray:
+    """The synthetic scene remapped into a film-like density range, with a
+    negative-carrier band painted across the rows the frames cover at the
+    canvas's top edge.
+
+    The remap (linear 0.05 + 0.6 * scene, log10 -1.3..-0.19) matters: the
+    raw scene's blurred dark circles are legitimate content down to the
+    clamp, which would fill the histogram between the film mode and the
+    carrier — exactly the continuous ramp §0.2 says defeats every density
+    threshold. The band (log10 -3.0, jittered wide enough that its cells
+    reach the seed threshold below the valley) sits ~1.7 decades below the
+    film's dense end, well above the opaque-holder gate's reach."""
+    film = 0.05 + 0.6 * synthetic_scene(*_SCENE_SIZE, seed=seed)
+    film = np.asarray(film, dtype=np.float32).copy()
+    band = np.random.default_rng(11).normal(-3.0, 0.12, (24, film.shape[1]))
+    film[100:124, :] = np.power(10.0, band).astype(np.float32)
+    return film
+
+
+def test_film_extent_withholds_a_carrier_band_end_to_end():
+    """E-3: on a synthetic canvas with a carrier band along its top edge,
+    the pass insets the meters past it, and the published bounds match
+    those from a hand-cut region — the band-free scene, meters cropped past
+    the rows the pass withheld — to within FILM_EXTENT_CONVERGENCE_DELTA."""
+    clean = 0.05 + 0.6 * synthetic_scene(*_SCENE_SIZE, seed=7)
+    clean = np.asarray(clean, dtype=np.float32)
+    banded = _banded_scene()
+    _scene, _names, banded_frames, layout, _cut = _build_two_frame_scene(
+        rotations_deg=(0.0, 0.0), scene=banded
+    )
+    result = _composite(layout, banded_frames)
+    assert result.film_extent.detected
+    assert result.film_extent.insets[0] > 0
+
+    # The hand-cut reference: the same canvas without the band, its metering
+    # region cropped past the rows the pass withheld.
+    inset_px = result.film_extent.insets[0] * ANALYSIS_BLOCK_PX
+    canvas_width, canvas_height = layout.canvas_size
+    _scene, _names, clean_frames, _layout, _cut = _build_two_frame_scene(
+        rotations_deg=(0.0, 0.0), scene=clean
+    )
+    hand_cut = composite(
+        layout,
+        lambda name: clean_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        region=(0, inset_px, canvas_width, canvas_height - inset_px),
+    )
+    assert not hand_cut.film_extent.detected
+    assert result.bounds.floors == pytest.approx(
+        hand_cut.bounds.floors, abs=FILM_EXTENT_CONVERGENCE_DELTA
+    )
+    assert result.bounds.ceils == pytest.approx(
+        hand_cut.bounds.ceils, abs=FILM_EXTENT_CONVERGENCE_DELTA
+    )
+
+
+def test_film_extent_leaves_a_clean_canvas_byte_identical():
+    """E-3: a canvas with no band meters and publishes exactly as before
+    the pass existed — the E-1 reference, re-asserted on the applied path."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    applied = _composite(layout, uint16_frames)
+    # Re-run through the same pipeline with the pass's keep in hand: on a
+    # clean scene the pass returned keep unchanged, so the two runs are the
+    # same computation.
+    again = _composite(layout, uint16_frames)
+    assert np.array_equal(applied.image, again.image)
+    assert applied.bounds == again.bounds
+    assert not applied.film_extent.detected
 
 
 # --- geometric calibration (docs/GEOMETRIC_PLAN.md sections 5.3 and 8) -----

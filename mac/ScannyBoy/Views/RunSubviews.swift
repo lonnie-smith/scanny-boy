@@ -244,6 +244,7 @@ struct FilmKindField: View {
 struct BaseFrameField: View {
     let filmBase: FilmBase?
     let isBusy: Bool
+    let isAnalyzing: Bool
     let error: ConfigurationModel.Issue?
     let onChoose: () -> Void
     let onReplace: () -> Void
@@ -255,6 +256,14 @@ struct BaseFrameField: View {
                     attachedSummary(filmBase)
                 } else {
                     emptyState
+                }
+                if isAnalyzing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Analyzing…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let error {
                     IssueLabel(issue: error, style: .error)

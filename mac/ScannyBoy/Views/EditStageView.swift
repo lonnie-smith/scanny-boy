@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// Protocol version 5's Edit tab: the selected roll's negatives as a
-/// filmstrip along the bottom, a large preview of the selected negative
-/// above it, and the rotation controls that record nondestructive edits.
+/// filmstrip along the bottom, a tabbed adjustment sidebar on the left,
+/// a large preview of the selected negative beside it, and a slim toolbar
+/// under the preview for zoom and display toggles.
 ///
 /// Roll info and metadata (name, capture date, the extended fields, the
 /// per-image browser) live on the Metadata tab; this tab is about seeing
@@ -15,6 +16,7 @@ struct EditStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
     let activity: AppActivity
+    @Bindable var keyboard: AppKeyboardState
     /// Called after a deletion the user confirmed — `ContentView` uses it
     /// to re-scan the library so the sidebar's negative count keeps up.
     var onNegativeDeleted: () -> Void = {}
@@ -27,6 +29,7 @@ struct EditStageView: View {
                     edit: edit,
                     run: run,
                     runIsActive: activity.isBusy,
+                    keyboard: keyboard,
                     onNegativeDeleted: onNegativeDeleted
                 )
             } else {
@@ -59,19 +62,15 @@ struct EditStageView: View {
                 )
             }
         }
-        .background {
-            SelectionShortcutButtons(
-                onPrevious: edit.selectPrevious,
-                onNext: edit.selectNext,
-                onSelectAll: edit.selectAll,
-                onDeselectAll: edit.deselectAll
-            )
+        .onChange(of: edit.selectedNegative?.negativeID) { _, negativeID in
+            if negativeID == nil {
+                keyboard.toggleZoom = nil
+                keyboard.previewHasOutput = false
+            }
         }
         // Nothing about the roll may change while any helper in the app is
         // busy (`AppActivity`) — not just this app's own run, but a
-        // conversion, export, or flat-field calibration too. This also
-        // disables the (invisible) selection-shortcut buttons above, so
-        // Option-arrow cannot move the selection mid-run either.
+        // conversion, export, or flat-field calibration too.
         .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted (runs are started from Add Scans), so the phase can
@@ -97,35 +96,50 @@ struct EditStageView: View {
     }
 }
 
-/// The selected negative: a preview sized to fill the available space (or,
-/// after space+click, a 1:1 crop of it), the rotate/flip controls, and
-/// the one-line info strip. The controls act on the whole multi-selection
-/// when one exists — `edit.selectionTargets` falls back to the anchor
-/// frame otherwise.
+/// Sidebar modules on the Edit tab, left to right in the tab picker.
+private enum EditSidebarTab: String, CaseIterable, Identifiable {
+    case geometry, tone, color, heal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .geometry: "Geometry"
+        case .tone: "Tone"
+        case .color: "Color"
+        case .heal: "Heal"
+        }
+    }
+}
+
+/// The selected negative: a tabbed sidebar of adjustment controls, a
+/// preview sized to fill the remaining space (or, after ⌘Space+click or Z,
+/// a 1:1 crop of it), and a slim toolbar for zoom and display toggles. The
+/// controls act on the whole multi-selection when one exists —
+/// `edit.selectionTargets` falls back to the anchor frame otherwise.
 private struct PreviewPane: View {
     let negative: RollManifest.Negative
     @Bindable var edit: EditModel
     let run: RunModel
     let runIsActive: Bool
+    @Bindable var keyboard: AppKeyboardState
     let onNegativeDeleted: () -> Void
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
+    @State private var isLoadingPreview = false
     @State private var isConfirmingDelete = false
-    @State private var isTonePanelPresented = false
-    @State private var isColorPanelPresented = false
-    @State private var isSpotsPanelPresented = false
-    /// The sensitivity the "Find spots" popover offers. Not the model's
-    /// state: it seeds from the negative's recorded sensitivity and is
-    /// what the next detect run sends.
+    /// The sensitivity the Heal panel offers. Not the model's state: it
+    /// seeds from the negative's recorded sensitivity and is what the
+    /// next detect run sends.
     @State private var spotsSensitivity: Double = 0.5
     @State private var zoom = PreviewZoomModel()
     @State private var paneSize: CGSize = .zero
-    /// The display mode the pane shows: the CLI's inverted positive, or
-    /// protocol version 11's un-inverted negative for judging densities.
     /// Sticky across negative changes — the point is comparing densities
     /// from frame to frame.
     @State private var showsNegative = false
+    /// Sticky across negative changes, like `showsNegative`.
+    @State private var selectedTab: EditSidebarTab = .tone
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
@@ -135,8 +149,9 @@ private struct PreviewPane: View {
         showsNegative ? .negative : .positive
     }
 
-    private var rotationShortcutsEnabled: Bool {
-        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
+    private var zoomShortcutsEnabled: Bool {
+        negative.output != nil
+            && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
     }
 
     private var isMonochromeRoll: Bool {
@@ -144,192 +159,82 @@ private struct PreviewPane: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            preview
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding([.horizontal, .top], 16)
-
-            HStack(spacing: 12) {
-                Button {
-                    Task { await edit.rotate(targets, clockwise: false) }
-                } label: {
-                    Image(systemName: "rotate.left")
-                }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° counter-clockwise (⌘[)")
-                .accessibilityLabel("Rotate 90° counter-clockwise")
-
-                Button {
-                    Task { await edit.rotate(targets, clockwise: true) }
-                } label: {
-                    Image(systemName: "rotate.right")
-                }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Rotate 90° clockwise (⌘])")
-                .accessibilityLabel("Rotate 90° clockwise")
-
-                Button {
-                    Task { await edit.flip(targets) }
-                } label: {
-                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help("Flip horizontally")
-                .accessibilityLabel("Flip horizontally")
-
-                Button {
-                    zoom.toggle(at: previewCenter)
-                } label: {
-                    Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
-                }
-                .disabled(
-                    negative.output == nil
-                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
-                )
-                .help(zoomButtonHelp)
-                .accessibilityLabel(zoomButtonHelp)
-
-                Button {
-                    showsNegative.toggle()
-                } label: {
-                    Image(systemName: showsNegative
-                        ? "circle.lefthalf.filled.inverse"
-                        : "circle.lefthalf.filled")
-                }
-                .disabled(
-                    negative.output == nil
-                        || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
-                )
-                .help(displayModeButtonHelp)
-                .accessibilityLabel(displayModeButtonHelp)
-
-                Button {
-                    isTonePanelPresented = true
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
-                .help("Tone: print density, paper grade, zone density, toe/shoulder (positive view only)")
-                .accessibilityLabel("Tone adjustment")
-                .popover(isPresented: $isTonePanelPresented, arrowEdge: .bottom) {
-                    ToneAdjustmentPanel(
-                        adjustment: negative.toneAdjustment,
-                        isBusy: edit.isSettingTone || edit.isSettingColor || edit.isRotating || edit.isDeleting,
-                        onScheduleCommit: { adjustment in
-                            edit.scheduleTone(targets, adjustment: adjustment)
-                        },
-                        onCommitNow: { adjustment, auto in
-                            Task {
-                                await edit.commitTone(
-                                    targets, adjustment: adjustment, auto: auto
-                                )
-                            }
-                        },
-                        onReset: {
-                            Task {
-                                await edit.commitTone(targets, adjustment: nil)
-                            }
-                        }
-                    )
-                    .frame(width: 360)
-                }
-
-                Button {
-                    isColorPanelPresented = true
-                } label: {
-                    Image(systemName: "paintpalette")
-                }
-                .disabled(
-                    isMonochromeRoll
-                        || edit.isRotating || edit.isDeleting
-                        || edit.isSettingTone || edit.isSettingColor || runIsActive
-                )
-                .help(
-                    isMonochromeRoll
-                        ? "Colour adjustment is unavailable on a monochrome roll"
-                        : "Colour: balance, cast removal, dye separation (preview only)"
-                )
-                .accessibilityLabel("Colour adjustment")
-                .popover(isPresented: $isColorPanelPresented, arrowEdge: .bottom) {
-                    ColorAdjustmentPanel(
-                        adjustment: negative.colorAdjustment,
-                        isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting,
-                        onScheduleCommit: { adjustment in
-                            edit.scheduleColor(targets, adjustment: adjustment)
-                        },
-                        onCommitNow: { adjustment, auto in
-                            Task {
-                                await edit.commitColor(
-                                    targets, adjustment: adjustment, auto: auto
-                                )
-                            }
-                        },
-                        onReset: {
-                            Task { await edit.commitColor(targets, adjustment: nil) }
-                        }
-                    )
-                    .frame(width: 360)
-                }
-
-                Button {
-                    isSpotsPanelPresented = true
-                } label: {
-                    Image(systemName: "sparkle.magnifyingglass")
-                }
-                .disabled(
-                    negative.output == nil || edit.isDetectingSpots || edit.isReviewingSpots
-                        || edit.isRotating || edit.isDeleting
-                        || edit.isSettingTone || edit.isSettingColor || runIsActive
-                )
-                .help("Find spots: detect crud, review the proposals, repair what survives")
-                .accessibilityLabel("Find spots")
-                .popover(isPresented: $isSpotsPanelPresented, arrowEdge: .bottom) {
-                    SpotsReviewPanel(
-                        negative: negative,
-                        edit: edit,
-                        isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
-                        sensitivity: $spotsSensitivity
-                    )
-                    .frame(width: 300)
-                    .onAppear {
-                        spotsSensitivity = negative.spotsSummary?.sensitivity ?? 0.5
-                    }
-                }
-
-                if edit.isRotating {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                Text(infoLine)
-                    .font(.caption)
-                    .foregroundStyle(negative.isFailed ? .red : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer()
-
-                Button(role: .destructive) {
-                    isConfirmingDelete = true
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
-                .help(deleteButtonHelp)
-                .accessibilityLabel(deleteButtonHelp)
-            }
-            .padding([.horizontal, .bottom], 16)
-        }
-        .background {
-            RotationShortcutButtons(
-                isEnabled: rotationShortcutsEnabled,
-                onRotateCounterClockwise: {
-                    Task { await edit.rotate(targets, clockwise: false) }
-                },
-                onRotateClockwise: {
-                    Task { await edit.rotate(targets, clockwise: true) }
-                }
+        HStack(spacing: 0) {
+            EditSidebar(
+                negative: negative,
+                edit: edit,
+                selectedTab: $selectedTab,
+                spotsSensitivity: $spotsSensitivity,
+                targets: targets,
+                isMonochromeRoll: isMonochromeRoll,
+                runIsActive: runIsActive
             )
+            .frame(width: 360)
+
+            Divider()
+
+            VStack(spacing: 8) {
+                preview
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding([.horizontal, .top], 16)
+
+                HStack(spacing: 12) {
+                    Button {
+                        zoom.toggle(at: previewCenter)
+                    } label: {
+                        Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
+                    }
+                    .disabled(
+                        negative.output == nil
+                            || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                    )
+                    .help(zoomButtonHelp)
+                    .accessibilityLabel(zoomButtonHelp)
+
+                    Button {
+                        showsNegative.toggle()
+                    } label: {
+                        Image(systemName: showsNegative
+                            ? "circle.lefthalf.filled.inverse"
+                            : "circle.lefthalf.filled")
+                    }
+                    .disabled(
+                        negative.output == nil
+                            || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                    )
+                    .help(displayModeButtonHelp)
+                    .accessibilityLabel(displayModeButtonHelp)
+
+                    if edit.isRotating {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Text(infoLine)
+                        .font(.caption)
+                        .foregroundStyle(negative.isFailed ? .red : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+
+                    Button(role: .destructive) {
+                        isConfirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+                    .help(deleteButtonHelp)
+                    .accessibilityLabel(deleteButtonHelp)
+                }
+                .padding([.horizontal, .bottom], 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear(perform: registerKeyboardShortcuts)
+        .onDisappear(perform: unregisterKeyboardShortcuts)
+        .onChange(of: previewKeyboardSyncToken) {
+            syncKeyboardShortcuts()
         }
         .confirmationDialog(
             deleteDialogTitle,
@@ -358,6 +263,10 @@ private struct PreviewPane: View {
         }
         .task(id: displayIdentity) {
             thumbnail = nil
+            let willLoad = showsNegative || previewURL != nil
+            guard willLoad else { return }
+            isLoadingPreview = true
+            defer { isLoadingPreview = false }
             if showsNegative {
                 thumbnail = await edit.renderPreview(negative, mode: .negative)
             } else if let url = previewURL {
@@ -379,8 +288,33 @@ private struct PreviewPane: View {
 
     private var zoomButtonHelp: String {
         zoom.mode == .fit
-            ? "Zoom to 100% (Space+click)"
-            : "Zoom to fit (Space+click)"
+            ? "Zoom to 100% (Z or ⌘Space+click)"
+            : "Toggle zoom (Z)"
+    }
+
+    /// Drives `AppKeyboardState` refresh when preview availability changes.
+    private var previewKeyboardSyncToken: String {
+        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(runIsActive)|\(paneSize.width)|\(paneSize.height)"
+    }
+
+    private func registerKeyboardShortcuts() {
+        keyboard.toggleZoom = { point in
+            zoom.toggle(at: point)
+        }
+        syncKeyboardShortcuts()
+    }
+
+    private func unregisterKeyboardShortcuts() {
+        keyboard.toggleZoom = nil
+        keyboard.previewHasOutput = false
+    }
+
+    private func syncKeyboardShortcuts() {
+        keyboard.previewHasOutput = negative.output != nil
+        keyboard.previewOperationsBlocked =
+            edit.isRotating || edit.isDeleting || edit.isSettingTone
+            || edit.isSettingColor || runIsActive
+        keyboard.zoomToggleCenter = previewCenter
     }
 
     private var displayModeButtonHelp: String {
@@ -471,27 +405,12 @@ private struct PreviewPane: View {
                         .resizable()
                         .interpolation(.medium)
                         .aspectRatio(contentMode: .fit)
+                } else if isLoadingPreview && negative.isCompleted {
+                    PreviewPlaceholder(kind: .loading)
                 } else if negative.isCompleted {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.quaternary)
-                        .overlay {
-                            Image(systemName: "photo")
-                                .font(.largeTitle)
-                                .foregroundStyle(.secondary)
-                        }
+                    PreviewPlaceholder(kind: .empty)
                 } else {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.quaternary)
-                        .overlay {
-                            VStack(spacing: 6) {
-                                Image(systemName: "photo")
-                                    .font(.largeTitle)
-                                    .foregroundStyle(.secondary)
-                                Text("Status: \(negative.status)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                    PreviewPlaceholder(kind: .status(negative.status))
                 }
                 if showsSpotMarkers {
                     spotMarkers
@@ -515,8 +434,8 @@ private struct PreviewPane: View {
     // MARK: - Spot markers (SPOTTING_PLAN §8.3)
 
     /// Markers show while a set exists and repair is off; with repair on
-    /// they hide unless the popover is open — the point of turning repair
-    /// on is to look at the result.
+    /// they hide unless the Heal tab is selected — the point of turning
+    /// repair on is to look at the result.
     private var showsSpotMarkers: Bool {
         guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
             return false
@@ -631,11 +550,7 @@ private struct PreviewPane: View {
                     .offset(zoom.cropScreenOffset)
                     .background(Color.black)
             } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.quaternary)
-                    .overlay {
-                        ProgressView()
-                    }
+                PreviewPlaceholder(kind: .loading)
             }
         }
         .clipped()
@@ -648,6 +563,167 @@ private struct PreviewPane: View {
             tiffSize: CGSize(width: output.width, height: output.height),
             quarterTurns: negative.rotationQuarterTurns
         )
+    }
+}
+
+/// The Edit tab's left sidebar: a segmented tab picker and the active
+/// adjustment module beneath it.
+private struct EditSidebar: View {
+    let negative: RollManifest.Negative
+    @Bindable var edit: EditModel
+    @Binding var selectedTab: EditSidebarTab
+    @Binding var spotsSensitivity: Double
+    let targets: [RollManifest.Negative]
+    let isMonochromeRoll: Bool
+    let runIsActive: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Adjustments", selection: $selectedTab) {
+                ForEach(EditSidebarTab.allCases) { tab in
+                    Text(tab.label).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding()
+            .help(
+                isMonochromeRoll
+                    ? "Colour adjustment is unavailable on a monochrome roll"
+                    : "Adjustment modules"
+            )
+            .onChange(of: selectedTab) { _, tab in
+                guard !isMonochromeRoll || tab != .color else {
+                    selectedTab = .tone
+                    return
+                }
+                edit.showsSpotsPopover = (tab == .heal)
+            }
+            .onChange(of: isMonochromeRoll) { _, mono in
+                if mono, selectedTab == .color { selectedTab = .tone }
+            }
+            .onAppear {
+                edit.showsSpotsPopover = (selectedTab == .heal)
+            }
+
+            ScrollView {
+                tabContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .geometry:
+            GeometryAdjustmentPanel(
+                targets: targets,
+                edit: edit,
+                runIsActive: runIsActive
+            )
+        case .tone:
+            ToneAdjustmentPanel(
+                adjustment: negative.toneAdjustment,
+                isBusy: edit.isSettingTone || edit.isSettingColor || edit.isRotating || edit.isDeleting,
+                onScheduleCommit: { adjustment in
+                    edit.scheduleTone(targets, adjustment: adjustment)
+                },
+                onCommitNow: { adjustment, auto in
+                    Task {
+                        await edit.commitTone(targets, adjustment: adjustment, auto: auto)
+                    }
+                },
+                onReset: {
+                    Task { await edit.commitTone(targets, adjustment: nil) }
+                }
+            )
+        case .color:
+            ColorAdjustmentPanel(
+                adjustment: negative.colorAdjustment,
+                isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting,
+                onScheduleCommit: { adjustment in
+                    edit.scheduleColor(targets, adjustment: adjustment)
+                },
+                onCommitNow: { adjustment, auto in
+                    Task {
+                        await edit.commitColor(targets, adjustment: adjustment, auto: auto)
+                    }
+                },
+                onReset: {
+                    Task { await edit.commitColor(targets, adjustment: nil) }
+                }
+            )
+            .disabled(isMonochromeRoll)
+        case .heal:
+            SpotsReviewPanel(
+                negative: negative,
+                edit: edit,
+                isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
+                sensitivity: $spotsSensitivity
+            )
+            .onAppear {
+                spotsSensitivity = negative.spotsSummary?.sensitivity ?? 0.5
+            }
+        }
+    }
+}
+
+/// Rotate and flip controls for the Geometry sidebar tab.
+private struct GeometryAdjustmentPanel: View {
+    let targets: [RollManifest.Negative]
+    @Bindable var edit: EditModel
+    let runIsActive: Bool
+
+    private var isDisabled: Bool {
+        edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            geometryButton(
+                title: "Rotate 90° Counter-clockwise",
+                systemImage: "rotate.left",
+                help: "Rotate 90° counter-clockwise (⌘[)",
+                accessibilityLabel: "Rotate 90° counter-clockwise"
+            ) {
+                Task { await edit.rotate(targets, clockwise: false) }
+            }
+            geometryButton(
+                title: "Rotate 90° Clockwise",
+                systemImage: "rotate.right",
+                help: "Rotate 90° clockwise (⌘])",
+                accessibilityLabel: "Rotate 90° clockwise"
+            ) {
+                Task { await edit.rotate(targets, clockwise: true) }
+            }
+            geometryButton(
+                title: "Flip Horizontally",
+                systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill",
+                help: "Flip horizontally",
+                accessibilityLabel: "Flip horizontally"
+            ) {
+                Task { await edit.flip(targets) }
+            }
+        }
+    }
+
+    private func geometryButton(
+        title: String,
+        systemImage: String,
+        help: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .disabled(isDisabled)
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
     }
 }
 
@@ -670,9 +746,8 @@ private struct ToneAdjustmentPanel: View {
     @State private var values = ToneAdjustment.neutral
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                sectionHeader("Print")
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader("Print")
                 sliderRow(
                     title: "Print Density",
                     valueLabel: String(format: "%.2f", values.density),
@@ -792,10 +867,7 @@ private struct ToneAdjustmentPanel: View {
                             .controlSize(.small)
                     }
                 }
-            }
-            .padding(16)
         }
-        .frame(maxHeight: 520)
         .onAppear { syncFromModel() }
         .onChange(of: adjustment) { syncFromModel() }
     }
@@ -890,6 +962,7 @@ private struct ToneSlider: View {
     let step: Double
     let resetValue: Double
     var reversed: Bool = false
+    var trackColors: [Color]? = nil
     let onScheduleCommit: () -> Void
     let onCommitNow: () -> Void
 
@@ -923,6 +996,11 @@ private struct ToneSlider: View {
             guard !editing else { return }
             onCommitNow()
         }
+        .background(alignment: .center) {
+            if let trackColors {
+                SliderTrackBackground(colors: trackColors)
+            }
+        }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
                 value = resetValue
@@ -930,6 +1008,45 @@ private struct ToneSlider: View {
             }
         )
     }
+}
+
+private struct SliderTrackBackground: View {
+    let colors: [Color]
+
+    var body: some View {
+        Capsule()
+            .fill(
+                LinearGradient(
+                    colors: colors,
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(height: 4)
+            .padding(.horizontal, 7)
+    }
+}
+
+private enum CMYSliderTrackColors {
+    static let cyan: [Color] = [
+        Color(red: 0.95, green: 0.35, blue: 0.35),
+        Color(white: 0.55),
+        Color(red: 0.20, green: 0.80, blue: 0.90),
+    ]
+    static let magenta: [Color] = [
+        Color(red: 0.35, green: 0.90, blue: 0.35),
+        Color(white: 0.55),
+        Color(red: 0.95, green: 0.20, blue: 0.85),
+    ]
+    static let yellow: [Color] = [
+        Color(red: 0.35, green: 0.55, blue: 0.95),
+        Color(white: 0.55),
+        Color(red: 1.0, green: 0.90, blue: 0.20),
+    ]
+    static let temperature: [Color] = [
+        Color(red: 1.0, green: 0.82, blue: 0.25),
+        Color(red: 0.35, green: 0.55, blue: 0.95),
+    ]
 }
 
 private enum ColorRegion: String, CaseIterable, Identifiable {
@@ -952,9 +1069,8 @@ private struct ColorAdjustmentPanel: View {
     @State private var temperatureKelvin = ColorTemperature.neutralKelvin
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Balance").font(.headline)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Color").font(.headline)
                 Picker("Region", selection: $region) {
                     ForEach(ColorRegion.allCases) { item in
                         Text(item.label).tag(item)
@@ -965,13 +1081,13 @@ private struct ColorAdjustmentPanel: View {
 
                 temperatureSlider
 
-                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02) {
+                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.cyan) {
                     String(format: "%+.2f", cyanBinding.wrappedValue)
                 }
-                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02) {
+                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.magenta) {
                     String(format: "%+.2f", magentaBinding.wrappedValue)
                 }
-                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02) {
+                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.yellow) {
                     String(format: "%+.2f", yellowBinding.wrappedValue)
                 }
 
@@ -1027,8 +1143,6 @@ private struct ColorAdjustmentPanel: View {
                     Spacer()
                     Button("Reset All", role: .destructive) { onReset() }
                 }
-            }
-            .padding()
         }
         .disabled(isBusy)
         .onAppear(perform: syncFromModel)
@@ -1108,6 +1222,7 @@ private struct ColorAdjustmentPanel: View {
         range: ClosedRange<Double>,
         step: Double,
         disabled: Bool = false,
+        trackColors: [Color]? = nil,
         label: @escaping () -> String
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1123,6 +1238,7 @@ private struct ColorAdjustmentPanel: View {
                 range: range,
                 step: step,
                 resetValue: resetValue(for: title),
+                trackColors: trackColors,
                 onScheduleCommit: { onScheduleCommit(values) },
                 onCommitNow: { onCommitNow(values, []) }
             )
@@ -1182,11 +1298,8 @@ private struct ColorAdjustmentPanel: View {
             }
             Slider(
                 value: Binding(
-                    get: {
-                        ColorTemperature.maxKelvin + ColorTemperature.minKelvin - temperatureKelvin
-                    },
-                    set: { reversed in
-                        let kelvin = ColorTemperature.maxKelvin + ColorTemperature.minKelvin - reversed
+                    get: { temperatureKelvin },
+                    set: { kelvin in
                         let snapped = ToneSlider.snap(
                             kelvin, step: 50,
                             range: ColorTemperature.minKelvin...ColorTemperature.maxKelvin
@@ -1207,6 +1320,9 @@ private struct ColorAdjustmentPanel: View {
                     temperatureAnchor = nil
                     onCommitNow(values, [])
                 }
+            }
+            .background(alignment: .center) {
+                SliderTrackBackground(colors: CMYSliderTrackColors.temperature)
             }
         }
     }
@@ -1232,7 +1348,7 @@ private struct ColorAdjustmentPanel: View {
     }
 }
 
-/// The "Find spots" popover (SPOTTING_PLAN §8.3): the sensitivity slider,
+/// The Heal sidebar panel (SPOTTING_PLAN §8.3): the sensitivity slider,
 /// the counts, the whole-negative repair toggle, and Clear. Detect is a
 /// selection-level command but the panel reviews the displayed negative —
 /// `edit.selectionTargets` is what a Detect click sends.
@@ -1290,7 +1406,6 @@ private struct SpotsReviewPanel: View {
                 }
             }
         }
-        .padding(16)
     }
 
     private var spots: NegativeSpots? { edit.spots }

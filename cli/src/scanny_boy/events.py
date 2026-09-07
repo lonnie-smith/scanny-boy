@@ -20,8 +20,7 @@ from typing import IO, Any, ClassVar
 #
 # Protocol 10 (2D grid stitching) adds `--grid AxD` on `probe`, `prepare`,
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
-# down=1 case), the `INVALID_GRID` error code, and the
-# `STITCH_GRID_ORDER_UNEXPECTED` warning code.
+# down=1 case) and the `INVALID_GRID` error code.
 # Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
 # export becomes a rendered positive in Adobe RGB (1998)-compatible colour
 # (grey for a mono roll), with the negative's recorded tone op baked in,
@@ -109,7 +108,28 @@ from typing import IO, Any, ClassVar
 # `grid list` / `grid delete` command family and the `grid_created`,
 # `grid_list`, and `grid_deleted` events. Each preset is a user label for
 # an `across` x `down` shape the app picks when adding scans.
-PROTOCOL_VERSION = 16
+# Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`: cell assignment is
+# geometry-only and capture order is not checked.
+#
+# Protocol 18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`: the
+# resident process that reads newline-delimited JSON *requests* on stdin
+# and answers on this same stdout stream. Every event emitted while a
+# served request is in flight gains an optional `request_id` field, and
+# each request ends with a `finished` carrying its `request_id` and the
+# exit status the one-shot CLI would have returned. One-shot invocations
+# continue to emit events without `request_id`; the app's decoder treats
+# it as optional for exactly that reason.
+#
+# The same protocol 18 adds the film-extent pass
+# (docs/BLACK_POINT_REFINEMENT.md): the per-negative `normalization`
+# block gains a `film_extent` finding, and the stitch stage emits
+# `NORMALIZE_FILM_EXTENT_WITHHELD` (informational: a non-film border band
+# was withheld from the meters, insets named in canvas pixels) and
+# `NORMALIZE_FILM_EXTENT_EXCESSIVE` (warning: the withheld rect kept less
+# than half the analysis region — the frame is unusual, and the user should
+# look at it). Both ride the warning event channel; severity is recorded in
+# CONTRACT.md's code table.
+PROTOCOL_VERSION = 18
 
 
 class EventType(enum.StrEnum):
@@ -210,7 +230,6 @@ class Code(enum.StrEnum):
     STITCH_SCALE_DRIFT = "STITCH_SCALE_DRIFT"
     STITCH_GAIN_DRIFT = "STITCH_GAIN_DRIFT"
     STITCH_LAYOUT_UNEXPECTED = "STITCH_LAYOUT_UNEXPECTED"
-    STITCH_GRID_ORDER_UNEXPECTED = "STITCH_GRID_ORDER_UNEXPECTED"
     STITCH_REBATE_CHECK_FAILED = "STITCH_REBATE_CHECK_FAILED"
     STITCH_CLAHE_FALLBACK_USED = "STITCH_CLAHE_FALLBACK_USED"
     OUTPUT_DIMENSIONS_LARGE = "OUTPUT_DIMENSIONS_LARGE"
@@ -251,6 +270,12 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    # BLACK_POINT_REFINEMENT §E-3: the film-extent pass. WITHHELD is
+    # informational (a carrier band was found and the meters inset past
+    # it); EXCESSIVE warns that what was withheld kept less than half the
+    # analysis region — the frame is unusual.
+    NORMALIZE_FILM_EXTENT_WITHHELD = "NORMALIZE_FILM_EXTENT_WITHHELD"
+    NORMALIZE_FILM_EXTENT_EXCESSIVE = "NORMALIZE_FILM_EXTENT_EXCESSIVE"
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     FILM_KIND_REQUIRED = "FILM_KIND_REQUIRED"
     FILM_KIND_LOCKED = "FILM_KIND_LOCKED"
@@ -751,12 +776,23 @@ class GridDeleted(Event):
 
 
 class EventWriter:
-    """Writes events to a stream as one flushed JSON line each."""
+    """Writes events to a stream as one flushed JSON line each.
 
-    def __init__(self, stream: IO[str]) -> None:
+    `request_id` is `scanny-boy serve`'s addition (docs/OPTIMIZATION.md
+    §2.1): when set, every event written through this writer carries it,
+    which is how one shared stdout stream is partitioned among the
+    requests the resident process answers. One-shot invocations leave it
+    None and emit events without the field, exactly as before.
+    """
+
+    def __init__(self, stream: IO[str], request_id: str | None = None) -> None:
         self._stream = stream
+        self._request_id = request_id
 
     def write(self, event: Event) -> None:
-        line = json.dumps(event.to_dict(), separators=(",", ":"), sort_keys=True)
+        data = event.to_dict()
+        if self._request_id is not None:
+            data["request_id"] = self._request_id
+        line = json.dumps(data, separators=(",", ":"), sort_keys=True)
         self._stream.write(line + "\n")
         self._stream.flush()

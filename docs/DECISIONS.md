@@ -1198,6 +1198,64 @@ worthless base). The documented false positive is a genuinely deep,
 featureless border-touching shadow: mild degradation, never invented data.
 Using the base roll-wide (D-4's staging step 2) is on the punchlist.
 
+## The film extent, and the black point (E-1…E-4)
+
+**The analysis region is not maximal** (docs/BLACK_POINT_REFINEMENT.md §0.1).
+It has to be entirely film and representative of the scene; losing 10% of
+the film costs a percentile meter measured over three million cells
+nothing, and admitting 0.01% of non-film destroys it. That is the opposite
+of the disposition `withhold_dense_border` was written with, and
+deliberately so: that detector withholds a *mask*, and a false positive
+silently deletes picture, so its gates exist to keep it off real scene
+content. The film-extent pass withholds a *rectangle* at the region's
+edge, where a false positive costs a slice of ordinary film and nothing
+else — so every one of its rules is biased toward shrinking.
+
+**The rectangle is the instrument, and that rests on a rig fact**: the
+user's negative carriers have sharp 90° corners (stated 2026-09-07), so the
+incursion is a set of edge-parallel bands at most slightly rotated by
+registration. A per-edge inset driven by each edge's deepest incursion is
+the correct estimator for that geometry. **A user with a different carrier
+geometry — rounded corners, a glass carrier, corner wedges — invalidates
+this** and needs the mask fallback this plan deliberately did not write.
+
+**The rebate detector cannot carry this, and the reason is measured**
+(§0.5): along a stitched canvas's rebate band the base density drifts
+monotonically 0.088 decades across the canvas against a
+`REBATE_DENSITY_TOLERANCE` of 0.10 — the tolerance is almost entirely
+consumed by flat-field residual before any real base variation. A global
+thin anchor cannot trace a film boundary at that drift; any future
+rebate-traced boundary needs a *locally* anchored thin reference. On
+`_DSC5280`'s right edge there is additionally no thin landmark at all —
+the film's own edge content there is *denser* than base, so
+`REBATE_ANCHOR_PERCENTILE − REBATE_DENSITY_TOLERANCE` can never reach it.
+Rebate's value here is corroboration only: `film_extent.rebate_agrees`
+records whether the two mechanisms agree where both fire, and nothing
+reads it (§5.3) — it is the evidence a later plan needs before promoting
+rebate to a hard outer bound.
+
+**`withhold_dense_border` was measured and found insufficient — do not
+re-litigate loosening its constants** (§0.2). The carrier band on
+`_DSC5280` fails two gates: thinness (bbox 37 cells against 33, inflated by
+a 0.46° slant its *mean* width of 26 does not have) and flatness (the band
+fades in partway down the canvas, spread 0.252 against 0.05). With
+`MAX_WIDTH = 40, MAX_SPREAD = 0.30` the detector fires and withholds 2.29%
+of the region — and the floor moves only −3.14 → −2.84, still more than a
+decade wrong. The reason is the transition ramp: the film→carrier boundary
+is a monotone fall through every density film legitimately occupies, so
+whatever a density threshold removes, the ramp behind it still owns the
+floor percentile. Hence the two-part instrument: the gap statistic
+locates the incursion, the rectangle clears it (§0.3 — after the mask, the
+residual floor-setting cells were 100% within 60 cells of the region's
+edge, on all three negatives measured).
+
+**Nothing here crops output.** Like the analysis region it refines, the
+film-extent rect restricts the meters only; `valid_rect` and
+`coverage_fraction` remain the machine-readable coverage answer. And the
+no-op path is load-bearing: most negatives have no carrier in frame, and a
+change that makes the pass fire on a clean frame is a regression even if
+the resulting picture looks fine.
+
 ## Per-negative bounds (D-4), and the uncovered canvas (§3.14)
 
 **Ship per-negative bounds on both axes**: every frame self-normalizes, no
@@ -1424,13 +1482,10 @@ each — the placed centres alone tell neither), and a structural sanity gate
 (the solved centres must form a bijection onto the R×C cells with roughly
 uniform pitch, which catches a frame that slid half a cell or more — a
 failure mode `global_rms_px` is blind to, since a consistently-wrong
-layout can still fit its own pairs well). Capture order buys little — pair
-discovery is exhaustive and the solve needs no seed — and it is fragile: a
-rescan, a rename, or an out-of-order pick would feed a wrong cell map into
-the feather. So serpentine order is a *documented assumption used only for
-one warning* (`STITCH_GRID_ORDER_UNEXPECTED`): the solved geometry always
-wins, and the warning never changes behaviour. Cell assignment is derived
-from the solved geometry, never from member order.
+layout can still fit its own pairs well). Capture order is not used — pair
+discovery is exhaustive, the solve needs no seed, and trusting import order
+would be fragile (rescans, renames, out-of-order picks). Cell assignment is
+derived from the solved geometry, never from member order.
 
 ## The feather is a separable product of two ramps; axes come from the solved rotations
 
@@ -1820,3 +1875,42 @@ rather than renamed.** COLOR_PLAN §7.2 proposed renaming it to
 `METERING_UNAVAILABLE` before it shipped; it has shipped. Renaming a live
 contract code costs more than the wart, so the auto-cast and cast-removal
 metering absences warn with the historical name.
+
+# The Edit tab's latency decisions (docs/OPTIMIZATION.md)
+
+Three choices from the optimization plan a later reader would otherwise
+re-litigate. **OPTIMIZATION.md is authoritative**; this file just makes
+them findable.
+
+**The transport stays stdio; a socket buys nothing here.** §0.4. The
+newline-delimited JSON pipe, its `LineAssembler`, its drained-both-pipes
+session, and its event contract were already built and tested; `serve` only
+reverses which pipe carries the conversation. A socket adds port
+allocation, an auth story, orphaned-daemon cleanup, and sandbox friction in
+a signed app, to buy multiple concurrent clients and reconnect-after-crash
+— neither of which one app talking to its own bundled helper needs. XPC was
+refused for the same reason plus a second service target and a second
+signing story, at the price of abandoning the event contract both sides'
+tests are written against.
+
+**Startup is imports, not `fork`.** §0.1. Process creation measures 20 ms;
+`import scanny_boy.cli` measured ~0.70 s, nearly all of it pulling the
+whole application eagerly (cv2 through `film_base`, scipy through
+`calibration`, alembic through `library.db`). This is what made the
+cheap stage worth doing first: §1's lazy imports recover a real fraction of
+the startup for a few hours of work and no architectural risk, and the same
+work shortens the daemon's cold start. After §1 a bare `import
+scanny_boy.cli` is ~0.05 s; what remains on render commands is cv2 and
+SQLAlchemy, reached through the subcommand modules at dispatch time, and §2
+makes even that a once-per-process cost.
+
+**The daemon caches preview-resolution pixels, not full ones.** §3.1. A
+decoded negative is 712 MB; an LRU of two is 1.4 GB imposed on a machine
+also holding the app's own buffers. The fit view — where every slider
+lives — only ever needs the 1024-edge preview cut (~5.4 MB per negative),
+and 100% zoom keeps the strip reader, which is already good (§0.3). The
+full-resolution single-entry cache stays on the punchlist, gated on
+measuring that sitting on one negative at 100% with repair on is the real
+inspection workflow. The preview cache is keyed on geometry plus the TIFF's
+mtime — tone and colour are <1 ms LUTs applied after it, so a slider drag
+must hit it, and does: 38–54 ms per render, served.

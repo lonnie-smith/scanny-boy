@@ -849,13 +849,13 @@ A second toolbar button beside Tone, opening a Colour popover at ~360 pt:
 
 | section | controls |
 |---|---|
-| **Balance** | region selector (Global / Shadows / Highlights), Temperature, Cyan, Magenta, Yellow, region Reset |
+| **Color** | region selector (Global / Shadows / Highlights), Temperature, Cyan, Magenta, Yellow, region Reset |
 | **Correction** | Cast Removal |
 | **Saturation** | Dye Separation, Separation Damping |
 
 | control | range | step | format | notes |
 |---|---|---|---|---|
-| Temperature | 3000…12000 K | 50 | `%.0fK` | **mired-linear travel**: warm on the right |
+| Temperature | 3000…12000 K | 50 | `%.0fK` | **mired-linear travel**: warm (low K) on the left, cool (high K) on the right; yellow→blue track gradient |
 | Cyan / Magenta / Yellow | −1…1 | 0.02 | `%+.2f` | |
 | Cast Removal | 0…1 | 0.05 | `%.2f` | |
 | Dye Separation | 0.5…1.5 | 0.02 | `%.2f` | |

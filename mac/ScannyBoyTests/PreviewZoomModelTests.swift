@@ -110,7 +110,7 @@ struct PreviewZoomModelTests {
         #expect(pinned.y == 0)
     }
 
-    @Test("space+click in fit view zooms in anchored on the clicked pixel")
+    @Test("⌘Space+click in fit view zooms in anchored on the clicked pixel")
     func clickZoomsInAnchoredAtTheClick() async {
         let zoom = PreviewZoomModel()
         zoom.update(
@@ -119,8 +119,7 @@ struct PreviewZoomModelTests {
             displaySize: Self.tiffSize,
             loader: { _ in Self.thumbnail() }
         )
-        zoom.spaceDown()
-        zoom.mouseDown(at: CGPoint(x: 250, y: 125), kind: .space)
+        zoom.mouseDown(at: CGPoint(x: 250, y: 125), kind: .zoomInAtClick)
         zoom.mouseUp(at: CGPoint(x: 250, y: 125))
         await zoom.waitForCropForTesting()
 
@@ -132,12 +131,10 @@ struct PreviewZoomModelTests {
         #expect(zoom.crop?.rect.minY == 0)
     }
 
-    @Test("space+click at 100% zooms back out")
-    func clickZoomsBackOut() async {
+    @Test("Z toggles back out from 100%")
+    func toggleZoomsBackOut() async {
         let zoom = await zoomedIn()
-        zoom.spaceDown()
-        zoom.mouseDown(at: CGPoint(x: 10, y: 10), kind: .space)
-        zoom.mouseUp(at: CGPoint(x: 10, y: 10))
+        zoom.toggle(at: CGPoint(x: 10, y: 10))
 
         #expect(zoom.mode == .fit)
         #expect(zoom.crop == nil)
@@ -147,28 +144,28 @@ struct PreviewZoomModelTests {
     func dragPans() async {
         let zoom = await zoomedIn()
         let before = zoom.origin
-        zoom.mouseDown(at: CGPoint(x: 250, y: 200), kind: .space)
+        zoom.mouseDown(at: CGPoint(x: 250, y: 200), kind: .pan)
         zoom.mouseDragged(to: CGPoint(x: 100, y: 200))
-        // Viewport-style pan: dragging left reveals content to the left.
-        #expect(zoom.panOffset.width == 150)
+        // Grab-and-drag: dragging left moves the image left.
+        #expect(zoom.panOffset.width == -150)
         zoom.mouseUp(at: CGPoint(x: 100, y: 200))
 
         #expect(zoom.mode == .pixels100)
-        // Dragging left moved the view left by 300 display pixels.
-        #expect(zoom.origin.x == 200)
+        // Dragging left moved the view right by 300 display pixels.
+        #expect(zoom.origin.x == 800)
         #expect(zoom.origin.y == before.y)
         await zoom.waitForCropForTesting()
-        #expect(zoom.crop?.rect.minX == 200)
+        #expect(zoom.crop?.rect.minX == 800)
     }
 
     @Test("a drag wider than the image clamps and does not wrap")
     func dragClampsAtTheEdges() async {
         let zoom = await zoomedIn()
-        zoom.mouseDown(at: CGPoint(x: 250, y: 200), kind: .space)
-        zoom.mouseDragged(to: CGPoint(x: 5_000, y: 200))
+        zoom.mouseDown(at: CGPoint(x: 250, y: 200), kind: .pan)
+        zoom.mouseDragged(to: CGPoint(x: -5_000, y: 200))
         // Live: the view stops at the image's right edge.
         #expect(zoom.panOffset.width == -250)
-        zoom.mouseUp(at: CGPoint(x: 5_000, y: 200))
+        zoom.mouseUp(at: CGPoint(x: -5_000, y: 200))
 
         #expect(zoom.mode == .pixels100)
         await zoom.waitForCropForTesting()
@@ -177,14 +174,14 @@ struct PreviewZoomModelTests {
         #expect(zoom.crop?.rect.minX == 1000)
     }
 
-    @Test("spaceDown and spaceUp publish the cursor state")
-    func spaceStatePublishes() {
-        let zoom = PreviewZoomModel()
-        #expect(!zoom.spaceHeld)
-        zoom.spaceDown()
-        #expect(zoom.spaceHeld)
-        zoom.spaceUp()
-        #expect(!zoom.spaceHeld)
+    @Test("a click at 100% does not zoom back out")
+    func clickAt100DoesNotZoomOut() async {
+        let zoom = await zoomedIn()
+        zoom.mouseDown(at: CGPoint(x: 10, y: 10), kind: .pan)
+        zoom.mouseUp(at: CGPoint(x: 10, y: 10))
+
+        #expect(zoom.mode == .pixels100)
+        #expect(zoom.crop != nil)
     }
 
     @Test("fetchCrop skips a crop already on screen")

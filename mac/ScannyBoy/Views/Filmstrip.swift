@@ -109,71 +109,42 @@ struct FilmstripCell: View {
     }
 }
 
-/// Cmd-A selects every item, Cmd-D deselects them all. Invisible,
-/// hit-test-transparent buttons — the same trick `.keyboardShortcut`
-/// demands, since no focusable control owns these key combinations.
-struct SelectAllDeselectAllShortcutButtons: View {
-    let onSelectAll: () -> Void
-    let onDeselectAll: () -> Void
-
-    var body: some View {
-        Group {
-            Button("Select All") { onSelectAll() }
-                .keyboardShortcut("a", modifiers: .command)
-            Button("Deselect All") { onDeselectAll() }
-                .keyboardShortcut("d", modifiers: .command)
-        }
-        .allowsHitTesting(false)
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
+/// What to show when a large preview has no image yet.
+enum PreviewPlaceholderKind {
+    case loading
+    case empty
+    case status(String)
 }
 
-/// Cmd-[ / Cmd-] rotate the selection 90° counter-clockwise / clockwise.
-/// Invisible, hit-test-transparent buttons — same pattern as
-/// `SelectionShortcutButtons`.
-struct RotationShortcutButtons: View {
-    let isEnabled: Bool
-    let onRotateCounterClockwise: () -> Void
-    let onRotateClockwise: () -> Void
+/// Gray placeholder for a large preview pane — loading spinner, empty
+/// photo icon, or status text for an unconverted negative.
+struct PreviewPlaceholder: View {
+    let kind: PreviewPlaceholderKind
+    var cornerRadius: CGFloat = 6
 
     var body: some View {
-        Group {
-            Button("Rotate Counter-Clockwise") { onRotateCounterClockwise() }
-                .keyboardShortcut("[", modifiers: .command)
-            Button("Rotate Clockwise") { onRotateClockwise() }
-                .keyboardShortcut("]", modifiers: .command)
-        }
-        .disabled(!isEnabled)
-        .allowsHitTesting(false)
-        .opacity(0)
-        .accessibilityHidden(true)
-    }
-}
-
-/// The browser's keyboard shortcuts: Option-left / Option-right move the
-/// selection (collapsing any multi-selection, exactly as the filmstrip's
-/// order defines "next"), Cmd-A selects every frame, Cmd-D deselects them
-/// all. Invisible, hit-test-transparent buttons — the same trick
-/// `.keyboardShortcut` demands, since no focusable control owns these
-/// key combinations.
-struct SelectionShortcutButtons: View {
-    let onPrevious: () -> Void
-    let onNext: () -> Void
-    let onSelectAll: () -> Void
-    let onDeselectAll: () -> Void
-
-    var body: some View {
-        Group {
-            Button("Previous Negative") { onPrevious() }
-                .keyboardShortcut(.leftArrow, modifiers: .option)
-            Button("Next Negative") { onNext() }
-                .keyboardShortcut(.rightArrow, modifiers: .option)
-            SelectAllDeselectAllShortcutButtons(
-                onSelectAll: onSelectAll,
-                onDeselectAll: onDeselectAll
-            )
-        }
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(.quaternary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                switch kind {
+                case .loading:
+                    ProgressView()
+                case .empty:
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                case .status(let status):
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("Status: \(status)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
     }
 }
 
@@ -186,11 +157,15 @@ struct PreviewImageView: View {
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
+    @State private var isLoadingPreview = false
 
     var body: some View {
         preview
             .task(id: previewIdentity) {
                 thumbnail = nil
+                guard previewURL != nil else { return }
+                isLoadingPreview = true
+                defer { isLoadingPreview = false }
                 guard let url = previewURL else { return }
                 thumbnail = await ThumbnailLoader.shared.thumbnail(
                     forPreview: url,
@@ -224,27 +199,12 @@ struct PreviewImageView: View {
                 .resizable()
                 .interpolation(.medium)
                 .aspectRatio(contentMode: .fit)
+        } else if isLoadingPreview && negative.isCompleted {
+            PreviewPlaceholder(kind: .loading)
         } else if negative.isCompleted {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary)
-                .overlay {
-                    Image(systemName: "photo")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                }
+            PreviewPlaceholder(kind: .empty)
         } else {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary)
-                .overlay {
-                    VStack(spacing: 6) {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("Status: \(negative.status)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            PreviewPlaceholder(kind: .status(negative.status))
         }
     }
 }

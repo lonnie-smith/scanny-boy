@@ -130,7 +130,13 @@ NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH  # section 3.14
 # roll re-stitched under v4 gets different bounds on any canvas that is
 # not one frame — that is the point of the change, and the version is what
 # says an old recorded value is not comparable with a fresh one.
-NORMALIZE_FORMAT_VERSION = 4
+#
+# v4 predates the film-extent pass (docs/BLACK_POINT_REFINEMENT.md). A v4
+# roll's recorded bounds are not comparable with a v5 one — that is what
+# the version says — and the same bump folds the REBATE_*, OPAQUE_* and
+# FILM_EXTENT_* families into `build_params()`, all three of which shape
+# published output.
+NORMALIZE_FORMAT_VERSION = 5
 
 # The fraction of pixels the headroom clips past which
 # NORMALIZE_HEADROOM_CLIPPED warns (section 3.6's "the signal that the
@@ -951,6 +957,408 @@ def withhold_opaque(
     return new_keep, opaque
 
 
+# --- BLACK_POINT_REFINEMENT: the film-extent pass -----------------------------
+#
+# The negative carrier beyond the film edge defeats every detector above it:
+# `withhold_opaque`'s absolute gate is decades too dense to reach it, the
+# rebate detector's discriminator runs the wrong way (the carrier is *denser*
+# than film, not thinner), and `withhold_dense_border`'s shape gates exist to
+# keep it off real scene content -- the carrier band fails its thinness gate
+# (slanted ~0.46 degrees, bbox 37 cells against a 33-cell limit) and its
+# flatness gate (it fades in partway down the canvas, spread 0.252 against a
+# 0.05 limit). Loosening both was measured and moves the floor only a decade:
+# the film-to-carrier boundary is not a step but a monotone ramp through
+# every density film legitimately occupies, so whatever a density threshold
+# removes, the ramp behind it still owns the floor percentile.
+#
+# So this pass finds the film's own extent and insets the analysis rect
+# inside it, in two instruments that are not alternatives: a bimodality
+# statistic *locates* the incursion (the dense tail's second mode), and a
+# per-edge rectangle *clears* it -- the residual after the mask is entirely
+# edge-hugging ramp, which an inset rectangle clears and a mask cannot.
+# The rectangle is the instrument because the user's carriers have sharp
+# 90-degree corners (rig fact, 2026-09-07): the incursion is a set of
+# edge-parallel bands at most slightly rotated by registration. A user
+# with different carrier geometry invalidates that and needs the mask path
+# this pass deliberately does not carry.
+#
+# The governing principle (docs/BLACK_POINT_REFINEMENT.md §0.1): the
+# analysis region does not have to be maximal. It has to be entirely film
+# and representative of the scene; losing 10% of the film costs a percentile
+# meter nothing, admitting 0.01% of non-film destroys it. Every rule here is
+# biased toward shrinking.
+
+# The histogram cell for the film/non-film split, in log10 D. Fine enough
+# that the valley is located to better than the ramp's own width (8-12
+# cells across, ~0.15 decades per cell on _DSC5280), coarse enough that
+# a three-million-cell region fills every bin the film lobe occupies.
+FILM_EXTENT_HISTOGRAM_BIN = 0.05
+# A valley bin holds at most this fraction of the film mode's count.
+# Measured across the three negatives: 0.00072, 0.00065, 0.00054 -- the
+# gate carries 28-37x margin. Provisional and unmeasured beyond one roll.
+FILM_EXTENT_VALLEY_DROP = 0.02
+# ... and the contaminant's own mode is at least this many times the
+# valley's count. Measured: 55.5x, 9.9x, 82.4x -- margins of 13.9x, 2.5x
+# and 20.6x. **This is the binding gate of the three**, and _DSC5207's
+# 2.5x is the tightest number in the plan; it is what the measurement tool
+# must scrutinise hardest before the constants are pinned.
+FILM_EXTENT_LOBE_RISE = 4.0
+# A lobe smaller than this fraction of the region is not worth a rect.
+# Sits above BASE_LUMA_CLIP's 0.0001 by 5x, because a contaminant that
+# cannot reach the floor percentile cannot move the floor. Measured:
+# 0.0219, 0.0044, 0.0269 -- margins of 44x, 9x, 54x.
+FILM_EXTENT_MIN_LOBE_FRACTION = 0.0005
+# Decades below the valley a cell must sit to seed a component. Three
+# histogram bins: the seed must be unambiguously in the lobe, not in the
+# valley's noise.
+FILM_EXTENT_SEED_OFFSET = 0.15
+# Added to the mask-derived inset before the convergence loop starts, so
+# the loop begins inside the ramp's shoulder rather than on its lip. The
+# plateau is 100+ cells wide on every negative measured, so this value is
+# not critical: sweeping it 0 -> 32 moved the resulting span by at most
+# 0.04 log10 D.
+FILM_EXTENT_MARGIN_CELLS = 8
+# One convergence step, in cells. 10 cells is 60 source px at
+# ANALYSIS_BLOCK_PX (0.36 mm at the reference rig), about a quarter of the
+# widest ramp measured -- ~40 cells, on _DSC5215.
+FILM_EXTENT_CONVERGENCE_STEP_CELLS = 10
+# Floor movement per step, in log10 D, below which an edge is converged.
+# In-plateau steps measured at <= 0.002 and pre-plateau steps at 0.069 to
+# 0.244, so this sits in empty space between them.
+FILM_EXTENT_CONVERGENCE_DELTA = 0.01
+# Cap on total steps. 24 steps is 240 cells of travel shared across four
+# edges -- 8.6 mm at the reference rig, using the same px/mm as
+# DENSE_BORDER_MAX_WIDTH_CELLS' 1.2 mm. Far beyond any incursion measured
+# (the deepest was 48 cells), and the guard against a pathological grid
+# walking the rect down to nothing.
+FILM_EXTENT_MAX_STEPS = 24
+# The rect must keep at least this fraction of the analysis region. Below
+# it, what the detector found is not a carrier band -- a genuinely dark
+# scene band along an edge, or an analysis rect that was mostly non-film
+# to begin with. The worst case measured was 90.7% kept, on _DSC5215's
+# four-edge carrier -- so this gate sits far from anything observed.
+FILM_EXTENT_MIN_REGION_FRACTION = 0.50
+
+
+@dataclasses.dataclass(frozen=True)
+class FilmExtent:
+    """The film-extent pass's finding. `valley` is the absolute log density
+    the split was made at and `lobe_fraction` the share of the region below
+    it -- recorded because neither is recoverable from `insets`, and they
+    are what a measurement of FILM_EXTENT_VALLEY_DROP / _LOBE_RISE would
+    revise. `insets` is (top, bottom, left, right) in grid cells, always
+    including FILM_EXTENT_MARGIN_CELLS and the convergence loop's travel --
+    the depth actually withheld, not the mask's own extent."""
+
+    detected: bool
+    valley: float | None
+    lobe_fraction: float
+    mask_fraction: float
+    insets: tuple[int, int, int, int]
+    region_fraction: float          # of `keep` surviving
+    convergence_steps: int
+    # §5.3's rebate cross-check: None when no rebate component was detected
+    # on any inset edge, otherwise whether every such component lies
+    # inboard of the corresponding inset. Recorded, read by nothing.
+    rebate_agrees: bool | None = None
+
+
+def _find_valley(lum: np.ndarray, keep: np.ndarray) -> float | None:
+    """The log density separating a contaminant lobe from the film lobe,
+    or None when the dense tail is unimodal (the no-op path, and the
+    common case).
+
+    The statistic deliberately does not look for an empty gap in the sorted
+    dense tail -- there isn't one: the two lobes are joined by a continuous
+    ramp. It looks for a *second mode*. Three conditions, all required: the
+    counts have collapsed relative to the film mode, *and* something rises
+    again below the collapse, *and* what rises is big enough to matter. A
+    smooth unimodal dense tail satisfies the first and never the second.
+
+    The valley returned is the *emptiest bin between the two modes*, not
+    the first qualifying bin: putting the split on the ramp's shoulder
+    rather than in the gap was measured to leave the LOBE_RISE gate
+    clearing by exactly 1.0 -- on the threshold -- where the valley's
+    minimum clears it by an order of magnitude. Same published result,
+    far more robustly reached.
+    """
+    values = lum[keep]
+    edges = np.arange(values.min(), values.max() + FILM_EXTENT_HISTOGRAM_BIN,
+                      FILM_EXTENT_HISTOGRAM_BIN)
+    counts, edges = np.histogram(values, bins=edges)
+    mode = int(np.argmax(counts))                 # the film lobe
+    # 1. walk denser until the counts collapse relative to the film mode
+    first = next(
+        (
+            i
+            for i in range(mode - 1, 0, -1)
+            if counts[i] <= FILM_EXTENT_VALLEY_DROP * counts[mode]
+        ),
+        None,
+    )
+    if first is None or counts[:first].sum() < FILM_EXTENT_MIN_LOBE_FRACTION * values.size:
+        return None
+    # 2. the contaminant's own mode is the tallest bin below the collapse,
+    #    and the valley is the emptiest bin BETWEEN the two modes
+    lobe = int(np.argmax(counts[:first]))
+    between = counts[lobe + 1 : mode]
+    if between.size == 0:
+        return None
+    valley = lobe + 1 + int(np.argmin(between))
+    # 3. gate at the valley, not at `first`
+    if counts[valley] > FILM_EXTENT_VALLEY_DROP * counts[mode]:
+        return None
+    if counts[lobe] < FILM_EXTENT_LOBE_RISE * max(counts[valley], 1):
+        return None
+    if counts[:valley].sum() < FILM_EXTENT_MIN_LOBE_FRACTION * values.size:
+        return None
+    return float(edges[valley] + FILM_EXTENT_HISTOGRAM_BIN / 2)
+
+
+def _keep_bbox(keep: np.ndarray) -> tuple[int, int, int, int]:
+    """(row_top, row_bottom, col_left, col_right), inclusive, of `keep`'s
+    bounding box."""
+    rows = np.nonzero(keep.any(axis=1))[0]
+    cols = np.nonzero(keep.any(axis=0))[0]
+    return int(rows[0]), int(rows[-1]), int(cols[0]), int(cols[-1])
+
+
+def per_edge_insets(keep: np.ndarray, mask: np.ndarray) -> tuple[int, int, int, int]:
+    """§3.1: each mask cell is assigned to the edge of `keep`'s bounding
+    box it is nearest to; the inset for an edge is the deepest such cell's
+    distance from that edge, plus one. Edges with no mask cells get 0.
+
+    Max-per-edge is the correct estimator because the carriers have sharp
+    90-degree corners (rig fact): the incursion is a set of edge-parallel
+    bands, at most slightly rotated by registration. Ties in the
+    nearest-edge assignment resolve toward (top, bottom, left, right) in
+    that order -- immaterial on any real band, which sits along one edge
+    by construction."""
+    mask = mask & keep
+    mrows, mcols = np.nonzero(mask)
+    if mrows.size == 0:
+        return (0, 0, 0, 0)
+    r0, r1, c0, c1 = _keep_bbox(keep)
+    d_top = mrows - r0
+    d_bottom = r1 - mrows
+    d_left = mcols - c0
+    d_right = c1 - mcols
+    depths = (d_top, d_bottom, d_left, d_right)
+    nearest = np.argmin(np.stack(depths), axis=0)
+    insets = [0, 0, 0, 0]
+    for edge in range(4):
+        cells = nearest == edge
+        if cells.any():
+            insets[edge] = int(depths[edge][cells].max()) + 1
+    return tuple(insets)
+
+
+def _inset_rect(
+    keep: np.ndarray, insets: tuple[int, int, int, int]
+) -> np.ndarray:
+    """`keep`'s bounding box shrunk by the (top, bottom, left, right)
+    insets, intersected with `keep`. The rect restricts the meters only --
+    like the analysis region it refines, it never crops output."""
+    r0, r1, c0, c1 = _keep_bbox(keep)
+    top, bottom, left, right = insets
+    rect = np.zeros(keep.shape, dtype=bool)
+    rect[r0 + top : r1 + 1 - bottom, c0 + left : c1 + 1 - right] = True
+    return rect & keep
+
+
+def _region_viable(rect: np.ndarray) -> bool:
+    """The rect must leave at least `NEUTRAL_MIN_PIXELS` cells to meter."""
+    return int(np.count_nonzero(rect)) >= NEUTRAL_MIN_PIXELS
+
+
+def _converge_insets(
+    lum: np.ndarray, keep: np.ndarray, insets: tuple[int, int, int, int]
+) -> tuple[tuple[int, int, int, int], int]:
+    """§3.2: the convergence loop replaces a pinned margin. The margin is
+    measured, per negative, by pushing each edge until the floor stops
+    moving: the probe is the floor itself (`_percentile(lum[rect],
+    BASE_LUMA_CLIP)` -- the same statistic the floor percentile reads, and
+    it must stay that way: if BASE_LUMA_CLIP ever moves, the probe moves
+    with it). Withholding contaminant makes the floor *rise* (less
+    negative), so the test is one-sided.
+
+    All four edges are probed, including edges the mask did not touch:
+    if the valid rect happens to cut through the ramp, there is ramp
+    inside `keep` with no carrier core to seed a component, so that edge's
+    mask-derived inset is 0 and the ramp survives the mask. The probe
+    finds it. On a clean edge the loop exits after one round having moved
+    nothing, so the cost is one percentile per edge."""
+    insets = tuple(insets)
+    steps = 0
+    for _ in range(FILM_EXTENT_MAX_STEPS):
+        moved = False
+        probe_rect = _inset_rect(keep, insets)
+        if not _region_viable(probe_rect):
+            break
+        probe = _percentile(lum[probe_rect], BASE_LUMA_CLIP)
+        for edge in range(4):
+            trial = list(insets)
+            trial[edge] += FILM_EXTENT_CONVERGENCE_STEP_CELLS
+            rect = _inset_rect(keep, tuple(trial))
+            if not _region_viable(rect):
+                continue
+            if (
+                _percentile(lum[rect], BASE_LUMA_CLIP) - probe
+                > FILM_EXTENT_CONVERGENCE_DELTA
+            ):
+                insets, moved, steps = tuple(trial), True, steps + 1
+                break  # re-probe before the next edge
+        if not moved:
+            break
+    return insets, steps
+
+
+def rebate_insets_agreement(
+    rebate_mask: np.ndarray, region: np.ndarray, insets: tuple[int, int, int, int]
+) -> bool | None:
+    """§5.3's cross-check, recorded and read by nothing. It exists so that
+    a later plan deciding whether to promote the rebate detector to a hard
+    outer bound has evidence from real rolls rather than argument: rebate
+    is good for corroboration (anything outboard of a detected rebate
+    component is not film at any density), and this records whether the
+    two mechanisms agree where both fire.
+
+    `None` when no rebate component was detected on any inset edge;
+    otherwise whether every such component lies inboard of the
+    corresponding inset -- no cell of it was withheld by the film-extent
+    rect. In the applied pipeline the rebate detector sees the region the
+    pass left, so a component on an inset edge necessarily starts at the
+    inset line and the check records agreement; while the pass ran
+    report-only the detector saw the full region and the check could
+    disagree. Depths are measured against `region`'s bounding box, so the
+    predicate means the same thing in either regime."""
+    if not rebate_mask.any() or not any(insets):
+        return None
+    r0, r1, c0, c1 = _keep_bbox(region)
+    count, labels = cv2.connectedComponents(
+        rebate_mask.astype(np.uint8), connectivity=8
+    )
+    checked = False
+    agrees = True
+    for label in range(1, count):
+        rows, cols = np.nonzero(labels == label)
+        depths = (rows - r0, r1 - rows, cols - c0, c1 - cols)
+        for edge, depth in enumerate(depths):
+            if insets[edge] <= 0:
+                continue
+            if int(depth.min()) > insets[edge]:
+                continue  # not on this edge
+            checked = True
+            if int(depth.min()) < insets[edge]:
+                agrees = False  # extends outboard of the inset line
+    return agrees if checked else None
+
+
+def withhold_non_film(
+    grid_log: np.ndarray, keep: np.ndarray
+) -> tuple[np.ndarray, FilmExtent]:
+    """Find the film's own extent and inset the analysis rect inside it --
+    the pass that keeps the negative carrier out of the meters
+    (docs/BLACK_POINT_REFINEMENT.md).
+
+    Runs after `withhold_opaque` (a wholly-opaque rect must raise its own
+    diagnostic rather than reach a histogram) and before `detect_rebate`
+    (whose base measurement must happen on film only). The rebate is thin
+    and does not disturb the dense tail, so leaving it in `keep` during
+    the histogram is harmless.
+
+    The statistic (§2.1) locates the incursion: `_find_valley` finds the
+    density splitting a second dense mode from the film lobe. The mask
+    (§2.3) is hysteresis plus border connectivity -- the same two-level
+    trick Canny uses, for the same reason: the loose level alone would
+    leak into film, the tight level alone would miss the ramp. Border
+    connectivity here is physics, not a heuristic: non-film is *outside*
+    the film, so on a canvas it is always connected to the outside -- and
+    it is the only thing standing between this pass and a dark object in
+    the middle of the frame.
+
+    The rectangle (§3.1/§3.2) clears it: mask-derived per-edge insets, plus
+    a margin, then the convergence loop pushing each edge until the floor
+    stops moving. The two ideas are not alternatives -- the gap statistic
+    locates the incursion, the rectangle clears it.
+
+    The no-op path is the important one (§2.4): a negative with no carrier
+    in frame must reach it. `withhold_non_film` returns `keep` unchanged
+    with `FilmExtent(detected=False, ...)` when `_find_valley` returns
+    None, or no seed cell survives, or no component contains both a seed
+    and a border cell.
+
+    The pass never crops output: like the analysis region it refines, it
+    restricts the meters only. Raises `NormalizationError` when the
+    applied rect would leave fewer than `NEUTRAL_MIN_PIXELS` cells -- the
+    fail-loud guard for a detector that latched onto something that is not
+    a carrier band at all; a rect that keeps at least
+    `FILM_EXTENT_MIN_REGION_FRACTION` of the region still applies but is
+    reported, and the stitch stage warns `NORMALIZE_FILM_EXTENT_EXCESSIVE`.
+    """
+    empty = FilmExtent(
+        detected=False,
+        valley=None,
+        lobe_fraction=0.0,
+        mask_fraction=0.0,
+        insets=(0, 0, 0, 0),
+        region_fraction=1.0,
+        convergence_steps=0,
+    )
+    if not keep.any():
+        return keep, empty
+
+    lum = luma_of_log(grid_log)
+    region_cells = int(np.count_nonzero(keep))
+    valley = _find_valley(lum, keep)
+    if valley is None:
+        return keep, empty
+
+    seed = keep & (lum <= valley - FILM_EXTENT_SEED_OFFSET)
+    loose = keep & (lum <= valley)
+    if not seed.any() or not loose.any():
+        return keep, empty
+
+    # Hysteresis: components of `loose` admitted only when they contain a
+    # `seed` cell AND touch the region border.
+    count, labels = cv2.connectedComponents(loose.astype(np.uint8), connectivity=8)
+    border = _region_border(keep)
+    mask = np.zeros(keep.shape, dtype=bool)
+    for label in range(1, count):
+        component = labels == label
+        if (component & seed).any() and (component & border).any():
+            mask |= component
+    if not mask.any():
+        return keep, empty
+
+    lobe_fraction = float(np.count_nonzero(loose)) / region_cells
+    mask_fraction = float(np.count_nonzero(mask)) / region_cells
+
+    insets = per_edge_insets(keep, mask)
+    insets = tuple(v + FILM_EXTENT_MARGIN_CELLS for v in insets)
+    insets, steps = _converge_insets(lum, keep, insets)
+
+    new_keep = _inset_rect(keep, insets)
+    if not _region_viable(new_keep):
+        raise NormalizationError(
+            "the film-extent inset leaves fewer than "
+            f"{NEUTRAL_MIN_PIXELS} cells of the analysis region to meter; "
+            "what the detector found is not a carrier band, or the "
+            "analysis rect is on the negative carrier"
+        )
+    region_fraction = float(np.count_nonzero(new_keep)) / region_cells
+    extent = FilmExtent(
+        detected=True,
+        valley=valley,
+        lobe_fraction=lobe_fraction,
+        mask_fraction=mask_fraction,
+        insets=insets,
+        region_fraction=region_fraction,
+        convergence_steps=steps,
+    )
+    return new_keep, extent
+
+
 # --- section 3.13's dense mirror: the dense-border detector -------------------
 
 # All provisional and unmeasured, like the REBATE_* five. The failure that
@@ -1482,6 +1890,33 @@ def build_params() -> dict:
         "textural_range_clip": TEXTURAL_RANGE_CLIP,
         "scan_clip_level": SCAN_CLIP_LEVEL,
         "scan_clip_warn": SCAN_CLIP_WARN,
+        # BLACK_POINT_REFINEMENT §4.1: the REBATE_*, OPAQUE_* and
+        # FILM_EXTENT_* families all shape published output — the rebate
+        # detector's base measurement feeds `analyze_bounds`' thin end, the
+        # other two withhold cells from the meters — so all three join here
+        # with the film-extent bump that already moved the format version.
+        # `OPAQUE_*` shipped without a version bump of its own; this is the
+        # last moment where folding it in is free.
+        "rebate_anchor_percentile": REBATE_ANCHOR_PERCENTILE,
+        "rebate_density_tolerance": REBATE_DENSITY_TOLERANCE,
+        "rebate_min_area_cells": REBATE_MIN_AREA_CELLS,
+        "rebate_min_area_fraction": REBATE_MIN_AREA_FRACTION,
+        "rebate_max_spread": REBATE_MAX_SPREAD,
+        "rebate_min_separation": REBATE_MIN_SEPARATION,
+        "opaque_max_density_below_base": OPAQUE_MAX_DENSITY_BELOW_BASE,
+        "opaque_dilate_cells": OPAQUE_DILATE_CELLS,
+        "opaque_clamp_density": OPAQUE_CLAMP_DENSITY,
+        "opaque_min_anchor_above_clamp": OPAQUE_MIN_ANCHOR_ABOVE_CLAMP,
+        "film_extent_histogram_bin": FILM_EXTENT_HISTOGRAM_BIN,
+        "film_extent_valley_drop": FILM_EXTENT_VALLEY_DROP,
+        "film_extent_lobe_rise": FILM_EXTENT_LOBE_RISE,
+        "film_extent_min_lobe_fraction": FILM_EXTENT_MIN_LOBE_FRACTION,
+        "film_extent_seed_offset": FILM_EXTENT_SEED_OFFSET,
+        "film_extent_margin_cells": FILM_EXTENT_MARGIN_CELLS,
+        "film_extent_convergence_step_cells": FILM_EXTENT_CONVERGENCE_STEP_CELLS,
+        "film_extent_convergence_delta": FILM_EXTENT_CONVERGENCE_DELTA,
+        "film_extent_max_steps": FILM_EXTENT_MAX_STEPS,
+        "film_extent_min_region_fraction": FILM_EXTENT_MIN_REGION_FRACTION,
         "dense_border_anchor_percentile": DENSE_BORDER_ANCHOR_PERCENTILE,
         "dense_border_tolerance": DENSE_BORDER_TOLERANCE,
         "dense_border_min_area_cells": DENSE_BORDER_MIN_AREA_CELLS,

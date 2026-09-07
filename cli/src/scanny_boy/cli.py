@@ -9,23 +9,15 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from scanny_boy import film_base
-from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
-from scanny_boy.calibration import create_profile
-from scanny_boy.cancellation import sigterm_cancellation
-from scanny_boy.edits import (
-    EditFailure,
-    run_edit_color,
-    run_edit_delete,
-    run_edit_detect_spots,
-    run_edit_flip,
-    run_edit_list_spots,
-    run_edit_render_preview,
-    run_edit_render_region,
-    run_edit_rotate,
-    run_edit_spots,
-    run_edit_tone,
-)
+# docs/OPTIMIZATION.md §1: only the cheap, always-needed modules are
+# imported at module scope. Each subcommand's implementation imports
+# inside the function that dispatches it, so `edit list-spots` does not
+# pay for scipy (via `calibration`) or the rest of the application.
+# `events` stays eager: every command emits, and the parser's error paths
+# reference `Code`. The two large leaves this must keep out of a bare
+# `import scanny_boy.cli` — `scipy` and `alembic` — are pinned by
+# `startup_test.py`.
+from scanny_boy.cancellation import CancellationToken, command_cancellation
 from scanny_boy.events import (
     BaseFrameSet,
     Code,
@@ -57,49 +49,7 @@ from scanny_boy.events import (
     Started,
     WarningEvent,
 )
-from scanny_boy.exporter import ExportFailure, run_export
-from scanny_boy.flatfield import (
-    FlatFieldError,
-    flatfield_profile_summary,
-    load_gain_map,
-)
-from scanny_boy.grid_profile import (
-    GridProfileError,
-    grid_profile_summary,
-    new_grid_profile,
-)
-from scanny_boy.hashing import sha256_file
-from scanny_boy.library import repo
-from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
-from scanny_boy.metadata import (
-    UnreadableRawError,
-    UnsupportedRawError,
-    read_source_settings,
-)
-from scanny_boy.metadata_edit import (
-    MetadataEditFailure,
-    run_metadata_set,
-    run_metadata_values,
-)
-from scanny_boy.pipeline import ConvertFailure, run_convert
-from scanny_boy.probe import ProbeFailure, run_probe
-from scanny_boy.registration import StitchError
-from scanny_boy.roll_folder import (
-    RollFolderError,
-    create_roll,
-    delete_roll,
-    rename_roll,
-    scan_library,
-    set_film_kind,
-)
-from scanny_boy.roll_manifest import (
-    ROLL_MANIFEST_FORMAT_VERSION,
-    _now_iso,
-    load_roll_manifest,
-    write_roll_manifest,
-)
-from scanny_boy.run_pipeline import RunFailure, run_full
 from scanny_boy.selection import (
     MAX_PER_NEGATIVE,
     MIN_PER_NEGATIVE,
@@ -107,7 +57,6 @@ from scanny_boy.selection import (
     InvalidGridError,
     validate_grid,
 )
-from scanny_boy.stitch_pipeline import run_stitch
 
 MAX_SELECTION_FILES = 5000
 MIN_JOBS = 1
@@ -129,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"scanny-boy {importlib.metadata.version('scanny-boy')}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # docs/OPTIMIZATION.md §2.1: the resident helper. It reads
+    # newline-delimited JSON requests on stdin and writes this stream's
+    # events on stdout; each request re-enters `run_argv`, so there is
+    # exactly one implementation of every command.
+    subparsers.add_parser(
+        "serve",
+        help="Answer newline-delimited JSON requests on stdin until it closes.",
+    )
 
     roll = subparsers.add_parser("roll", help="Manage rolls in the library.")
     roll_subparsers = roll.add_subparsers(dest="roll_command", required=True)
@@ -794,14 +752,22 @@ def _validate_color_args(args) -> None:
         )
 
 
-def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
+def _run_stitch_command(
+    args,
+    writer: EventWriter,
+    jobs: int | None,
+    cancel: CancellationToken | None = None,
+) -> int:
     """The `stitch` subcommand: mirrors `convert`'s event and exit-status
     shape exactly, over `run_stitch` instead of `run_convert`."""
+    from scanny_boy.registration import StitchError
+    from scanny_boy.stitch_pipeline import run_stitch
+
     run_id = str(uuid.uuid4())
     writer.write(Started(command="stitch", run_id=run_id))
 
     try:
-        with sigterm_cancellation() as cancel:
+        with command_cancellation(cancel) as scope:
             outcome = run_stitch(
                 Path(args.work),
                 Path(args.roll),
@@ -809,7 +775,7 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 overwrite=args.overwrite,
                 allow_partial=args.allow_partial,
                 jobs=jobs,
-                cancel=cancel,
+                cancel=scope,
                 emit=writer.write,
                 negatives=args.negatives,
                 flatfield_profile_id=args.flatfield,
@@ -870,6 +836,16 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     subcommands (section 3.5; `rename` added at section 5.5). Each mirrors
     the other commands' started/finished bracketing; none carries a
     `run_id`, since none is a pipeline run."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_folder import (
+        RollFolderError,
+        create_roll,
+        delete_roll,
+        rename_roll,
+        scan_library,
+    )
+    from scanny_boy.roll_manifest import load_roll_manifest
+
     if args.roll_command == "init":
         writer.write(Started(command="roll init"))
         try:
@@ -1052,6 +1028,12 @@ def _camera_model_from_source(frame: Path) -> str | None:
     `pipeline.build_curated_metadata` joins a scan's (`docs/EXPORT_PLAN.md
     §3.2`'s recorded `camera_model`). The comparison is a warning, so a
     frame whose EXIF cannot be read measures and attaches regardless."""
+    from scanny_boy.metadata import (
+        UnreadableRawError,
+        UnsupportedRawError,
+        read_source_settings,
+    )
+
     try:
         settings = read_source_settings(frame)
     except (UnsupportedRawError, UnreadableRawError):
@@ -1065,6 +1047,18 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     the roll's film-base reference. A gate failure emits the error and
     changes nothing on disk; a locked roll refuses outright. Emits one
     `base_frame_set` event on success."""
+    from scanny_boy import film_base
+    from scanny_boy.flatfield import FlatFieldError, load_gain_map
+    from scanny_boy.hashing import sha256_file
+    from scanny_boy.library import repo
+    from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_manifest import (
+        ROLL_MANIFEST_FORMAT_VERSION,
+        _now_iso,
+        load_roll_manifest,
+        write_roll_manifest,
+    )
+
     writer.write(Started(command="roll set-base-frame"))
     roll_dir = Path(args.roll)
     if not repo.roll_registered(roll_dir):
@@ -1216,6 +1210,9 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
 def _run_roll_set_film_kind(args, writer: EventWriter) -> int:
     """The `roll set-film-kind` subcommand: attach the roll's film kind
     before its first run. Refuses once the roll has been stitched."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_folder import RollFolderError, set_film_kind
+
     writer.write(Started(command="roll set-film-kind"))
     roll_dir = Path(args.roll)
     if not repo.roll_registered(roll_dir):
@@ -1246,6 +1243,20 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     or remove per selected negative and refresh the previews; bracket like
     every other subcommand. Each event the run produced is written before
     the `finished` line."""
+    from scanny_boy.edits import (
+        EditFailure,
+        run_edit_color,
+        run_edit_delete,
+        run_edit_detect_spots,
+        run_edit_flip,
+        run_edit_list_spots,
+        run_edit_render_preview,
+        run_edit_render_region,
+        run_edit_rotate,
+        run_edit_spots,
+        run_edit_tone,
+    )
+
     writer.write(Started(command=f"edit {args.edit_command}"))
     confirmation: type[Event]
     try:
@@ -1381,6 +1392,14 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
     """The `flatfield create` / `flatfield list` / `flatfield delete`
     subcommands: each mirrors `roll init`/`roll list`'s started/finished
     bracketing and carries no `run_id`, since none is a pipeline run."""
+    from scanny_boy.calibration import create_profile
+    from scanny_boy.flatfield import (
+        FlatFieldError,
+        flatfield_profile_summary,
+    )
+    from scanny_boy.library import repo
+    from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+
     if args.flatfield_command == "create":
         writer.write(Started(command="flatfield create"))
         try:
@@ -1465,6 +1484,13 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
 
 def _run_grid_command(args, writer: EventWriter) -> int:
     """The `grid create` / `grid list` / `grid delete` subcommands."""
+    from scanny_boy.grid_profile import (
+        GridProfileError,
+        grid_profile_summary,
+        new_grid_profile,
+    )
+    from scanny_boy.library import repo
+
     if args.grid_command == "create":
         writer.write(Started(command="grid create"))
         name = args.name.strip()
@@ -1522,6 +1548,12 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
     """The `metadata set` / `metadata values` subcommands: bracket like
     every other subcommand and carry no `run_id` — metadata edits are
     database writes, not pipeline runs."""
+    from scanny_boy.metadata_edit import (
+        MetadataEditFailure,
+        run_metadata_set,
+        run_metadata_values,
+    )
+
     if args.metadata_command == "set":
         writer.write(Started(command="metadata set"))
         try:
@@ -1559,6 +1591,8 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
 
 
 def _run_export_command(args, writer: EventWriter) -> int:
+    from scanny_boy.exporter import ExportFailure, run_export
+
     writer.write(Started(command="export"))
     try:
         outcome = run_export(
@@ -1587,15 +1621,18 @@ def _run_run_command(
     files: list[str] | None,
     jobs: int | None,
     spec: GridSpec | None,
+    cancel: CancellationToken | None = None,
 ) -> int:
     """The `run` subcommand: mirrors `convert`'s and `stitch`'s event and
     exit-status shape exactly, over `run_full` instead of `run_convert` or
     `run_stitch`."""
+    from scanny_boy.run_pipeline import RunFailure, run_full
+
     run_id = str(uuid.uuid4())
     writer.write(Started(command="run", run_id=run_id))
 
     try:
-        with sigterm_cancellation() as cancel:
+        with command_cancellation(cancel) as scope:
             outcome = run_full(
                 Path(args.input),
                 files,
@@ -1605,7 +1642,7 @@ def _run_run_command(
                 work_dir=Path(args.work) if args.work else None,
                 skip_sources=args.skip_sources,
                 jobs=jobs,
-                cancel=cancel,
+                cancel=scope,
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
@@ -1646,13 +1683,26 @@ def _run_run_command(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """The one-shot entry point: parse and run one command line, events on
+    stdout.
+
+    `run_argv` is the body; `scanny-boy serve` calls it per request with a
+    writer carrying the request's `request_id` and the request's own
+    cancellation token, so one implementation serves both paths
+    (docs/OPTIMIZATION.md §2.1)."""
+    return run_argv(argv, EventWriter(sys.stdout))
+
+
+def run_argv(
+    argv: Sequence[str] | None,
+    writer: EventWriter,
+    cancel: CancellationToken | None = None,
+) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return _exit_code(exc)
-
-    writer = EventWriter(sys.stdout)
 
     files = getattr(args, "files", None)
     if files is not None and len(files) > MAX_SELECTION_FILES:
@@ -1735,19 +1785,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
-        return _dispatch_command(args, writer, files, jobs, spec)
-    except LibraryDBError as exc:
-        # A database this helper cannot open is the one failure that can
-        # strike every command alike, so it gets its own sentence rather
-        # than Alembic's.
-        writer.write(ErrorEvent(code=exc.code, message=exc.message))
-        writer.write(Finished(status="failed", exit_status=1))
-        return 1
+        return _dispatch_command(args, writer, files, jobs, spec, cancel)
     except Exception as exc:  # noqa: BLE001 — a crash must still be legible
         # Last resort: an unexpected exception reached the top of the
         # command. Without this, stdout stops after `started` and the app
         # can only say "produced no result"; with it, the user sees the
         # exception itself and the exit is an ordinary failed one.
+        #
+        # docs/OPTIMIZATION.md §1: `library.db` (and its SQLAlchemy leaf)
+        # is no longer imported eagerly, so the one failure that can
+        # strike every command alike is identified here, inside the
+        # handler, at the moment one actually arrives.
+        from scanny_boy.library.db import LibraryDBError
+
+        if isinstance(exc, LibraryDBError):
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
         writer.write(
             ErrorEvent(
                 code=Code.INTERNAL_ERROR,
@@ -1764,7 +1818,13 @@ def _dispatch_command(
     files: list[str] | None,
     jobs: int | None,
     spec: GridSpec | None,
+    cancel: CancellationToken | None = None,
 ) -> int:
+    if args.command == "serve":
+        from scanny_boy.serve import run_serve
+
+        return run_serve()
+
     if args.command == "roll":
         return _run_roll_command(args, writer)
 
@@ -1784,6 +1844,8 @@ def _dispatch_command(
         return _run_export_command(args, writer)
 
     if args.command == "apply-metadata":
+        from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
+
         writer.write(Started(command="apply-metadata"))
         try:
             outcome = run_apply_metadata(Path(args.roll), emit=writer.write)
@@ -1801,6 +1863,8 @@ def _dispatch_command(
         return exit_status
 
     if args.command == "probe":
+        from scanny_boy.probe import ProbeFailure, run_probe
+
         writer.write(Started(command="probe"))
         emitted_warnings: list[str] = []
 
@@ -1839,14 +1903,16 @@ def _dispatch_command(
         return 0
 
     if args.command == "stitch":
-        return _run_stitch_command(args, writer, jobs)
+        return _run_stitch_command(args, writer, jobs, cancel)
 
     if args.command == "run":
-        return _run_run_command(args, writer, files, jobs, spec)
+        return _run_run_command(args, writer, files, jobs, spec, cancel)
 
     # prepare — stage 1 of the pipeline, renamed from `convert`
     # (docs/DECISIONS.md, "Normalization decisions"): "Convert" is reserved,
     # unambiguously, for the whole `run`.
+    from scanny_boy.pipeline import ConvertFailure, run_convert
+
     run_id = str(uuid.uuid4())
     writer.write(Started(command="prepare", run_id=run_id))
 
@@ -1855,7 +1921,7 @@ def _dispatch_command(
     # deletion, manifest update, and final event below happens on this
     # thread through ordinary control flow (section 3.8).
     try:
-        with sigterm_cancellation() as cancel:
+        with command_cancellation(cancel) as scope:
             outcome = run_convert(
                 Path(args.input),
                 files,
@@ -1864,7 +1930,7 @@ def _dispatch_command(
                 run_id=run_id,
                 overwrite=args.overwrite,
                 jobs=jobs,
-                cancel=cancel,
+                cancel=scope,
                 emit=writer.write,
                 flatfield_profile_id=args.flatfield,
                 grid=spec,

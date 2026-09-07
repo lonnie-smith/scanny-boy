@@ -94,6 +94,8 @@ from scanny_boy.manifest import (
     load_manifest,
 )
 from scanny_boy.normalization import (
+    ANALYSIS_BLOCK_PX,
+    FILM_EXTENT_MIN_REGION_FRACTION,
     HEADROOM_CLIP_WARN_FRACTION,
     NORMALIZED_FILL,
     Bounds,
@@ -560,29 +562,6 @@ def _solve_negative(
         )
 
 
-def _serpentine_cell(index: int, cols: int) -> tuple[int, int]:
-    """The serpentine cell for member `index`: start at cell (0, 0),
-    traverse the across dimension, reverse direction each row (§4.4)."""
-    row, order_col = divmod(index, cols)
-    return row, (order_col if row % 2 == 0 else cols - 1 - order_col)
-
-
-def _serpentine_mismatches(
-    members: list[str], grid: GridSpec, cells: dict[str, tuple[int, int]]
-) -> str:
-    """The members whose solved cell disagrees with the serpentine
-    expectation, formatted for a warning message. Cells are keyed by
-    intermediate names, members by source names, so the member is mapped
-    through the same rule `_intermediate_paths` uses."""
-    unexpected = []
-    for index, member in enumerate(members):
-        expected = _serpentine_cell(index, grid.across)
-        solved = cells.get(_intermediate_name(member))
-        if solved is not None and solved != expected:
-            unexpected.append(f"{member} -> cell {solved}")
-    return ", ".join(unexpected)
-
-
 def _attempt_solve(
     group: GroupRecord,
     entry: _SolvedNegative,
@@ -679,8 +658,8 @@ def _attempt_solve(
 
     names = [path.name for path in paths]
     layout = solve_layout(names, frame_size, pairs, rectification, grid=grid)
-    # §4.4: the solved assignment and the regularity measures are recorded
-    # per negative regardless of the order warning's outcome.
+    # The solved cell assignment and regularity measures are recorded from
+    # geometry alone.
     entry.record.grid_cells = (
         {name: list(cell) for name, cell in layout.cells.items()}
         if layout.cells is not None
@@ -749,19 +728,6 @@ def _attempt_solve(
                     Code.STITCH_LAYOUT_UNEXPECTED,
                     f"{group.group_id}: the solved layout is not a regular "
                     f"{grid.across}x{grid.down} grid: " + "; ".join(problems),
-                )
-
-            # §4.4's order warning: serpentine capture order is a documented
-            # assumption used only for this warning — the solved assignment
-            # always wins.
-            unexpected = _serpentine_mismatches(group.members, grid, layout.cells)
-            if unexpected:
-                on_warning(
-                    Code.STITCH_GRID_ORDER_UNEXPECTED,
-                    f"{group.group_id}: capture order is not the serpentine "
-                    f"traversal of the declared {grid.across}x{grid.down} "
-                    "grid; the solved geometry wins, but these frames landed "
-                    f"elsewhere than their order implies: {unexpected}",
                 )
 
     check_output_size(layout.canvas_size, on_warning=on_warning)
@@ -918,6 +884,21 @@ def _normalization_record(
             "detected": result.opaque.detected,
             "mask_fraction": result.opaque.mask_fraction,
             "threshold": result.opaque.threshold,
+        },
+        # The film-extent pass's finding (docs/BLACK_POINT_REFINEMENT.md):
+        # where the film's own extent was judged to sit. `insets` is
+        # (top, bottom, left, right) in GRID CELLS -- the manifest already
+        # records `analysis_block_px`, so pixels are one multiplication
+        # away; `analysis_rect` beside it is in canvas pixels.
+        "film_extent": {
+            "detected": result.film_extent.detected,
+            "valley": result.film_extent.valley,
+            "lobe_fraction": result.film_extent.lobe_fraction,
+            "mask_fraction": result.film_extent.mask_fraction,
+            "insets": list(result.film_extent.insets),
+            "region_fraction": result.film_extent.region_fraction,
+            "convergence_steps": result.film_extent.convergence_steps,
+            "rebate_agrees": result.film_extent.rebate_agrees,
         },
         "clamped": result.clamped,
         "source": "per-negative",
@@ -1901,6 +1882,44 @@ def _composite_and_publish(
                 )
             )
 
+        # The film-extent pass's findings (docs/BLACK_POINT_REFINEMENT.md).
+        # The withheld rect is applied inside `composite`; what reaches here
+        # is the record. The informational event names the four insets in
+        # *canvas pixels* — the user thinks in pixels; the cells they come
+        # from are one multiplication by ANALYSIS_BLOCK_PX away.
+        if result.film_extent.detected:
+            top, bottom, left, right = result.film_extent.insets
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.NORMALIZE_FILM_EXTENT_WITHHELD,
+                    message=(
+                        f"{record.negative_id}: withheld a non-film border band "
+                        f"(likely the negative carrier) from the metering: "
+                        f"insets top {top * ANALYSIS_BLOCK_PX}px, bottom "
+                        f"{bottom * ANALYSIS_BLOCK_PX}px, left "
+                        f"{left * ANALYSIS_BLOCK_PX}px, right "
+                        f"{right * ANALYSIS_BLOCK_PX}px"
+                    ),
+                )
+            )
+            if (
+                result.film_extent.region_fraction
+                < FILM_EXTENT_MIN_REGION_FRACTION
+            ):
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
+                        message=(
+                            f"{record.negative_id}: the withheld border band "
+                            f"kept only {result.film_extent.region_fraction * 100:.0f}% "
+                            "of the metering region; this frame is unusual — "
+                            "check what the analysis region is on"
+                        ),
+                    )
+                )
+
         # Fold the measured photometric numbers back into the pairs and the
         # frames, warn on solved gains far from unity, then apply the honest
         # gate (section 3.4). `overlap_mad` is now the post-gain residual —
@@ -1964,7 +1983,6 @@ def _composite_and_publish(
         record.normalization = _normalization_record(
             result, valid_rect, _base_check(roll, result.rebate)
         )
-        record.normalized_fill = NORMALIZED_FILL
         record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])

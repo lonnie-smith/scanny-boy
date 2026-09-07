@@ -9,6 +9,48 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 18 keeps every event's shape and adds **the resident
+helper** (docs/OPTIMIZATION.md §2): a new `serve` command that reads
+newline-delimited JSON *requests* on stdin — one object per line,
+`{"request_id": "<uuid>", "command": [<the argv a one-shot invocation
+would have received>]}` — and answers on this same stdout event stream.
+Every event emitted while a served request is in flight gains an optional
+`request_id` string field, and each request ends with a `finished` event
+carrying its `request_id` and the exit status the one-shot CLI would have
+returned. A request whose body is instead `{"request_id": "<uuid>",
+"cancel": true}` asks the daemon to cancel **that one request** in band;
+SIGTERM to the daemon keeps its one-shot meaning (shut down: cancel every
+live token, answer the rest as cancelled at exit status 143, exit 0). The
+decoder must treat `request_id` as optional: one-shot invocations, which
+have no daemon to scope an event to, continue to emit events without it.
+The app's ordinary SIGTERM-cancels-everything semantics belong only to the
+one-shot path; a served request's cancellation is its own.
+
+The same bump adds **the film-extent pass**
+(docs/BLACK_POINT_REFINEMENT.md): the stitch stage now locates the film's
+own extent on each negative and insets the meters' analysis region inside
+it, so a negative carrier photographed beyond the film edge no longer owns
+the black point. The published TIFF is never cropped — the pass restricts
+the meters only, exactly like the analysis region it refines. Each
+negative's `normalization` block gains an optional `film_extent` object:
+`{detected, valley, lobe_fraction, mask_fraction, insets (4 integers: top,
+bottom, left, right in **grid cells** — `analysis_block_px` in
+processing_params multiplies to canvas pixels, while `analysis_rect` beside
+it is already in canvas pixels), region_fraction, convergence_steps,
+rebate_agrees (nullable boolean, recorded and read by nothing)}`. The same
+bump declares the previously undeclared `opaque` block beside it. The same
+block's `normalize` processing constants gain the `REBATE_*`, `OPAQUE_*` and
+`FILM_EXTENT_*` families and `format_version` bumps 4 → 5, so a roll
+stitched before this change refuses new runs with `ROLL_INVARIANT_MISMATCH`
+(the upgrade shim absorbs the new keys for comparison; the recorded bounds
+of a v4 roll are not comparable with a v5 one). Two new codes, both riding
+the warning event channel: `NORMALIZE_FILM_EXTENT_WITHHELD` (informational:
+a non-film border band was withheld from the metering; the message names
+the four insets in canvas pixels) and `NORMALIZE_FILM_EXTENT_EXCESSIVE`
+(warning: the withheld band kept less than half the analysis region — the
+frame is unusual and the user should look at it). The Swift results view
+labels the first informationally; neither code fails anything.
+
 Protocol version 16 keeps version 15's roll model and adds **named grid
 configuration presets**: the `grid create` / `grid list` / `grid delete`
 command family and the `grid_created`, `grid_list`, and `grid_deleted`
@@ -202,10 +244,7 @@ here once and referenced elsewhere. `across * down` remains capped at 12.
 Note that **`2x5` is legal and CLI-only**: the Mac app's Down picker caps at
 2, so `--grid 2x5` is reachable only on the command line. A well-formed
 grid that breaks a rule fails with `INVALID_GRID`; a malformed one
-(anything not of the `AxD` form) is a usage error. One new warning:
-`STITCH_GRID_ORDER_UNEXPECTED` — the solved cell assignment disagrees with
-the serpentine capture-order assumption (start at cell (0, 0), traverse
-`across`, reverse each row); warning only, the solved geometry always wins.
+(anything not of the `AxD` form) is a usage error.
 
 **The preview's nondestructive tone adjustment**: the new `edit tone`
 command records an ISO-R paper grade (`--grade`, 50–180) plus a midtone
@@ -795,6 +834,28 @@ computed default is never rejected this way, only lowered.
 record as delivered by `roll info` (format version 7; now persisted in the
 library database rather than a JSON file in the roll folder).
 
+### `serve`
+
+`scanny-boy serve` is the resident helper behind the app's Edit tab
+(docs/OPTIMIZATION.md §2). It reads one JSON request object per stdin line
+and writes the ordinary event stream to stdout; it emits nothing of its
+own, so every line on stdout belongs to exactly one request, identified by
+its `request_id`:
+
+    {"request_id": "0f8…", "command": ["edit", "list-spots", "--roll", "…", …]}
+    {"request_id": "0f8…", "cancel": true}
+
+Requests are answered strictly one at a time, in arrival order; a `cancel`
+line is answered immediately against the request it names, whether that
+request is running or still queued. A request the daemon will not run —
+because the helper was shut down under it, or its `command` was not a
+usable argv — is still answered: a cancelled one with the one-shot SIGTERM
+shape (`error` carrying `CANCELLED`, then `finished` at exit status 143),
+a malformed one with `finished` at exit status 2. Closing stdin is the
+ordinary stop; the daemon lets the in-flight request finish, then exits 0.
+SIGTERM is the backstop: it cancels every live token, answers the queued
+requests as cancelled, lets the in-flight request finish, and exits 0.
+
 ### Event types
 
 | Event | Meaning |
@@ -928,7 +989,6 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
 | `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped (strips), or does not match the declared grid / is not a regular grid (grids) |
-| `STITCH_GRID_ORDER_UNEXPECTED` | Warning: the solved grid cells disagree with the serpentine capture-order assumption; the solved geometry wins |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
@@ -966,6 +1026,8 @@ staging directories, and reruns the incomplete negative.
 | `SCAN_CLIPPED` | Warning: more than 1% of one channel's pixels decoded at or above sensor white; their highlights are clipped and no reconstruction is attempted |
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
+| `NORMALIZE_FILM_EXTENT_WITHHELD` | Informational: the film-extent pass withheld a non-film border band (likely the negative carrier) from the metering; the message names the four insets in canvas pixels. The published pixels are never cropped |
+| `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
 | `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |

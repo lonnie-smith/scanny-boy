@@ -930,6 +930,9 @@ def run_convert(
     try:
         for index, group_record in enumerate(candidate.groups):
             if cancel.cancelled:
+                if pool is not None:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    _discard_from(index)
                 cancelled = True
                 break
 

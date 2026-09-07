@@ -17,10 +17,10 @@ public struct CLIEvent: Sendable, Hashable {
     /// `region_rendered` event: a 1:1 PNG of one display-space region of
     /// a published TIFF, for the 100% zoom. Protocol 10 adds 2D grid
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
-    /// the `INVALID_GRID` error code, and the
-    /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
+    /// the `INVALID_GRID` error code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
     /// required on `roll init` only; `run`/`stitch` read `film.kind` from
     /// the manifest. Protocol 11 added monochrome film support (single-
@@ -59,11 +59,22 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 16
+    /// Protocol 18 (docs/OPTIMIZATION.md §2.1) adds the resident helper:
+    /// events answered by `scanny-boy serve` carry an optional
+    /// `request_id`, and each served request ends with a `finished`
+    /// carrying it and the one-shot exit status. Optional, because a
+    /// one-shot invocation has no daemon to scope an event to. The same
+    /// bump adds the film-extent pass (docs/BLACK_POINT_REFINEMENT.md):
+    /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
+    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
+    public static let supportedProtocolVersion = 18
 
     public let protocolVersion: Int
     public let kind: Kind
     public let runID: String?
+    /// The served request this event belongs to, when the event came from
+    /// the resident helper; `nil` on a one-shot invocation's stream.
+    public let requestID: String?
     /// The whole decoded line, including fields with no typed accessor.
     public let fields: [String: JSONValue]
 
@@ -218,6 +229,7 @@ public struct CLIEvent: Sendable, Hashable {
         self.protocolVersion = version
         self.kind = Kind(name: name)
         self.runID = object["run_id"]?.stringValue
+        self.requestID = object["request_id"]?.stringValue
         self.fields = object
     }
 }
@@ -503,7 +515,6 @@ public enum CLICode: Sendable, Hashable {
     case stitchFailed
     case stitchScaleDrift
     case stitchLayoutUnexpected
-    case stitchGridOrderUnexpected
     case stitchRebateCheckFailed
     case outputDimensionsLarge
     case rollNotFound
@@ -540,6 +551,10 @@ public enum CLICode: Sendable, Hashable {
     case scanClipped
     case normalizeDegenerateBounds
     case normalizeHeadroomClipped
+    // Protocol version 18: the film-extent pass
+    // (docs/BLACK_POINT_REFINEMENT.md).
+    case normalizeFilmExtentWithheld
+    case normalizeFilmExtentExcessive
     case spotLimitReached
     case spotsStale
     case filmKindRequired
@@ -593,7 +608,6 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_FAILED": self = .stitchFailed
         case "STITCH_SCALE_DRIFT": self = .stitchScaleDrift
         case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
-        case "STITCH_GRID_ORDER_UNEXPECTED": self = .stitchGridOrderUnexpected
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
         case "ROLL_NOT_FOUND": self = .rollNotFound
@@ -627,6 +641,8 @@ public enum CLICode: Sendable, Hashable {
         case "SCAN_CLIPPED": self = .scanClipped
         case "NORMALIZE_DEGENERATE_BOUNDS": self = .normalizeDegenerateBounds
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
+        case "NORMALIZE_FILM_EXTENT_WITHHELD": self = .normalizeFilmExtentWithheld
+        case "NORMALIZE_FILM_EXTENT_EXCESSIVE": self = .normalizeFilmExtentExcessive
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
         case "FILM_KIND_REQUIRED": self = .filmKindRequired
@@ -682,7 +698,6 @@ public enum CLICode: Sendable, Hashable {
         case .stitchFailed: "STITCH_FAILED"
         case .stitchScaleDrift: "STITCH_SCALE_DRIFT"
         case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
-        case .stitchGridOrderUnexpected: "STITCH_GRID_ORDER_UNEXPECTED"
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
         case .rollNotFound: "ROLL_NOT_FOUND"
@@ -716,6 +731,8 @@ public enum CLICode: Sendable, Hashable {
         case .scanClipped: "SCAN_CLIPPED"
         case .normalizeDegenerateBounds: "NORMALIZE_DEGENERATE_BOUNDS"
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
+        case .normalizeFilmExtentWithheld: "NORMALIZE_FILM_EXTENT_WITHHELD"
+        case .normalizeFilmExtentExcessive: "NORMALIZE_FILM_EXTENT_EXCESSIVE"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
         case .filmKindRequired: "FILM_KIND_REQUIRED"
