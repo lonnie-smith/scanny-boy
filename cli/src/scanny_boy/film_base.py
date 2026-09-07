@@ -21,9 +21,14 @@ The module owns the decode of one reference frame, the detector, the
 gates, and the params record. It knows nothing about manifests or rolls.
 Every constant of the feature is defined here and nowhere else.
 
-All of §2.1's thresholds are **provisional and unmeasured**, in the same
-status as `normalization.REBATE_*`: §11 pins them, and chunk B-5 (the
-only consumer) must not land before the user has approved the numbers.
+All of §2.1's thresholds were pinned from the v1 slim §11 measurement on
+2026-09-06 (docs/REBATE_ANCHORING.md §11). One colour stock on a Nikon Z f,
+leader-style base frames without flat-field (`gain_map=None`): easy leader
+`normal.NEF` (64.9% rebate area) plus a 1–4 stop exposure series
+(`down-1.NEF` … `down-4.NEF`). Deliberate failure frames and a second stock
+were skipped by user decision; merge/ambiguity on two-band real film remains
+§11b. Chunk B-5 (the only consumer) must not land before the user approves
+these numbers.
 """
 
 from __future__ import annotations
@@ -46,44 +51,57 @@ from scanny_boy.events import Code
 # Log10 D. Width of the candidate band taken below each pass's thin anchor.
 # Wider than normalization.REBATE_DENSITY_TOLERANCE because a base frame's
 # rebate is a large region that may carry a gentle residual gradient.
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_BAND_WIDTH = 0.15
 # Thin-end anchor percentile within each pass's remaining cells.
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_ANCHOR_PERCENTILE = 99.5
 # Log10 D, P90 - P10 within one component: base is featureless.
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06 (exposure series, one stock): chosen-population spread
+# ran 0.038–0.047; per-channel deviation drift across 1–4 stops was 0.0014
+# (max 0.0014 vs this ceiling). Left at 0.05 for margin.
 FILM_BASE_MAX_COMPONENT_SPREAD = 0.05
 # Log10 D. Two populations closer than this are the same population — this
 # is what merges two rebate bands on opposite sides of the frame into one
 # measurement instead of throwing half the data away (§2.2 step 5).
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06: not exercised on real film (no two-band frames); left
+# provisional pending §11b.
 FILM_BASE_MERGE_SEPARATION = 0.06
 # How many peel passes enumerate populations from the thin end down.
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_MAX_PASSES = 4
 
 # --- gating the result ---
 
 # Of the whole grid. "A lot of rebate": the chosen population must be at
-# least this much of the frame. Provisional, unmeasured (§2.1).
+# least this much of the frame.
+# §11 2026-09-06 (easy leader): 64.9% on the measured leader frame. Left
+# at 0.20 — well below the observed cluster.
 FILM_BASE_MIN_AREA_FRACTION = 0.20
 # Ambiguity gate. If some OTHER separated flat population is at least this
 # fraction of the chosen one's area, the frame is refused rather than
-# guessed at (§2.3 gate 6). Provisional, unmeasured (§2.1).
+# guessed at (§2.3 gate 6).
+# §11 2026-09-06: largest rival on the 4-stop frame was 23.9% of the frame
+# (ratio 0.37 vs chosen 64.9%). No deliberate bare-light failure frame;
+# left at 0.60 pending §11b / failure-set confirmation.
 FILM_BASE_AMBIGUOUS_RATIO = 0.60
 # Per-channel fraction of the chosen population's cells at or above
 # normalization.SCAN_CLIP_LEVEL past which the frame is refused. Clipped
 # base is worthless base — the same line detect_rebate already takes.
-# Provisional, unmeasured (§2.1).
+# §11 2026-09-06: 0 on all five measured frames; no clipped-at-scan-exposure
+# failure frame shot. Left at 0.001.
 FILM_BASE_MAX_CLIPPED = 0.001
 # Log10 D. Per-channel median floor inside the chosen population. Blue
 # through an orange mask is the channel that runs out first (§1.2), so this
-# is deliberately per-channel and not a luma test. Provisional, unmeasured
-# (§2.1).
+# is deliberately per-channel and not a luma test.
+# §11 2026-09-06 (exposure series): blue at 1–4 stops ran −1.10, −1.40,
+# −1.70, −1.998; the 4-stop frame clears this floor by 0.002. §1's
+# "not more than three stops" guidance sits comfortably above it (−1.70 at
+# 3 stops). Left at −2.0.
 FILM_BASE_MIN_CHANNEL = -2.0
 # Grid cells in the chosen population. Fewer is too few samples for a
-# stable per-channel median. Provisional, unmeasured (§2.1).
+# stable per-channel median.
+# §11 2026-09-06 (easy leader): 442_181 cells. Left at 1024.
 FILM_BASE_MIN_CELLS = 1024
 
 # Bumped whenever the measurement's arithmetic changes in a way that makes
