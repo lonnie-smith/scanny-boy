@@ -39,6 +39,7 @@ from scanny_boy.normalization import (
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
+    withhold_opaque,
 )
 from scanny_boy.sample_nef_support import (
     REAL_SAMPLE_FILES,
@@ -619,6 +620,163 @@ def test_dense_detector_is_deterministic_and_handles_empty_keep():
     new_keep, finding = withhold_dense_border(_scene_grid(64, 64), empty)
     assert not finding.detected
     assert np.array_equal(new_keep, empty)
+
+
+# --- the opaque-holder gate ---------------------------------------------------
+
+
+def test_opaque_holder_block_is_withheld_whatever_its_shape():
+    """The failure the gate exists for: a section of completely opaque
+    negative holder in the analysis region. It clamps to -6.0, which is
+    three-and-a-half decades past the scene's own dense end, and the floor
+    percentile is pinned there. It is also a *block*, not a stripe, so the
+    dense-border detector's shape gates cannot touch it."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 40), "cols": slice(0, 60)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    # The dense-border detector is powerless here: the block is too large
+    # and too square for its area and thinness gates.
+    dense_keep, dense_border = withhold_dense_border(grid, keep)
+    assert not dense_border.detected
+    assert np.array_equal(dense_keep, keep)
+
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert not new_keep[:40, :60].any()
+    assert opaque.threshold == pytest.approx(-0.4 - 3.2, abs=0.05)
+
+    # The contract: bounds after the withhold match the frame that never
+    # had the holder in it.
+    bounds = analyze_bounds(grid, new_keep)
+    clean = _scene_grid(200, 200)
+    clean_bounds = analyze_bounds(clean, keep)
+    assert bounds.floors == pytest.approx(clean_bounds.floors, abs=0.05)
+    assert bounds.ceils == pytest.approx(clean_bounds.ceils, abs=0.05)
+
+    # And unguarded, the holder owns the floor outright.
+    unguarded = analyze_bounds(grid, keep)
+    assert unguarded.floors[0] < -5.0
+
+
+def test_one_cell_sliver_of_holder_still_pins_the_unguarded_floor():
+    """`BASE_LUMA_CLIP` is 0.01 percent, so the sliver does not have to be
+    big to own the floor -- one cell along a 200-cell edge is 0.5 percent of
+    the region, fifty times what it takes."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 1), "cols": slice(0, 200)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    assert analyze_bounds(grid, keep).floors[0] < -5.0
+
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert analyze_bounds(grid, new_keep).floors[0] > -2.5
+
+
+def test_opaque_gate_unblinds_the_dense_border_detector():
+    """The second-order damage: `DENSE_BORDER_ANCHOR_PERCENTILE` (P0.1)
+    lands inside the holder, so the 0.2-wide candidate band covers holder
+    only and the edge fog the mirror exists to catch sits three decades
+    outside it. With the holder gone first, the stripe is found again."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 8), "cols": slice(0, 200)}, -2.6)
+    _add_strip(grid, {"rows": slice(100, 140), "cols": slice(0, 30)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    # Holder present, gate not run: the stripe is invisible to the mirror.
+    blinded_keep, blinded = withhold_dense_border(grid, keep)
+    assert not blinded.detected
+    assert np.array_equal(blinded_keep, keep)
+
+    # Gate first, then the mirror: the stripe is withheld as it was before
+    # the holder ever entered the region.
+    opaque_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    final_keep, dense_border = withhold_dense_border(grid, opaque_keep)
+    assert dense_border.detected
+    assert not final_keep[:8].any()
+
+
+def test_dilation_removes_the_straddling_edge_cells():
+    """A block median straddling the holder boundary is a median over both
+    populations, so it lands between them -- above the gate, and
+    contaminated. One cell of dilation takes it with the holder."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 20), "cols": slice(0, 200)}, -6.0)
+    # The straddler: one row of half-holder, half-film medians.
+    _add_strip(grid, {"rows": slice(20, 21), "cols": slice(0, 200)}, -3.2)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    # -3.2 sits above the -3.6 threshold, so only dilation reaches it.
+    assert not new_keep[20].any()
+    assert new_keep[21].all()
+
+
+def test_deep_film_density_is_not_withheld():
+    """The gate must not reach real film. A negative whose dense end runs
+    2.6 decades below base -- denser than colour negative Dmax, in
+    black-and-white territory -- keeps every cell."""
+    grid = _scene_grid(200, 200, base=-0.4, dense=-3.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert not opaque.detected
+    assert opaque.mask_fraction == 0.0
+    assert opaque.threshold is None
+    assert np.array_equal(new_keep, keep)
+
+
+def test_opaque_gate_is_deterministic_and_handles_empty_keep():
+    grid = _scene_grid(150, 150)
+    _add_strip(grid, {"rows": slice(0, 20), "cols": slice(0, 40)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    first_keep, first_finding = withhold_opaque(grid, keep)
+    second_keep, second_finding = withhold_opaque(grid, keep)
+    assert np.array_equal(first_keep, second_keep)
+    assert first_finding == second_finding
+
+    empty = np.zeros((64, 64), dtype=bool)
+    new_keep, finding = withhold_opaque(_scene_grid(64, 64), empty)
+    assert not finding.detected
+    assert np.array_equal(new_keep, empty)
+
+
+def test_wholly_opaque_region_raises_rather_than_metering_the_holder():
+    """A rect entirely on the holder is a layout failure, and the relative
+    gate structurally cannot see it: the anchor *is* the holder, so nothing
+    is decades below anything. `OPAQUE_MIN_ANCHOR_ABOVE_CLAMP` is the
+    absolute check that catches it, and it names the layout rather than
+    leaving `analyze_bounds` to report a degenerate channel."""
+    grid = np.full((100, 100, 3), -6.0, dtype=np.float32)
+    keep = np.ones((100, 100), dtype=bool)
+    with pytest.raises(NormalizationError, match="holds no film"):
+        withhold_opaque(grid, keep)
+
+    # Left to fall through, the case does fail -- just not informatively.
+    with pytest.raises(NormalizationError, match="degenerate"):
+        analyze_bounds(grid, keep)
+
+
+def test_underexposed_scan_is_not_mistaken_for_a_holder_rect():
+    """The absolute check's margin: a badly underexposed scan whose base
+    sits a decade and a half down is still film, and still metered."""
+    grid = _scene_grid(200, 200, base=-1.5, dense=-3.5)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert not opaque.detected
+    assert np.array_equal(new_keep, keep)
+
+
+def test_mono_collapsed_grid_is_gated_the_same():
+    """MONOCHROME_PLAN section 4: one channel, and `luma_of_log` returns it
+    unchanged. The gate reads `shape[-1]`-agnostic luma like its
+    neighbours."""
+    grid = _scene_grid(200, 200)[..., :1]
+    grid[0:30, 0:50, 0] = -6.0
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert not new_keep[:30, :50].any()
 
 
 # --- section 3.4's clamp ------------------------------------------------------

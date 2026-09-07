@@ -1229,6 +1229,59 @@ border-touching scene object: scene highlights map slightly brighter —
 mild degradation, never invented data. Withheld fractions are recorded per
 negative (`normalization.dense_border`).
 
+**The opaque-holder gate (the detector that needs no geometry).** Scans
+that catch a section of the negative holder put a *completely opaque* region
+in the analysis rect. Neither existing detector helps: the rebate detector
+withholds thin junk only, and the dense-border mirror reads the film's
+maximum off the frame's own dense tail, so once it has its candidate band
+every remaining gate is about the contaminant's *shape* — border-touching,
+thin, featureless, bounded in area — and a holder section is none of those.
+It is arbitrarily large, arbitrarily shaped, and can sit anywhere the film
+does not.
+
+It is also the one contaminant with an **absolute** discriminator, so it
+needs none of those gates. The holder passes no light, so `to_log_density`'s
+clamp lands it at `log10(_DENSITY_FLOOR) = -6.0`, while a colour negative's
+Dmax runs about 2.0–2.5 above base and a black-and-white negative's about
+2.5–3.0. More than `OPAQUE_MAX_DENSITY_BELOW_BASE` (3.2) decades below the
+thin end is not film at any shape or size. The anchor is the region's
+`REBATE_ANCHOR_PERCENTILE` **thin**-end luma, and the choice of end is the
+point: the holder contaminates the dense tail only, so a dense-end anchor
+would move with the very thing it is measuring, while the thin end is
+untouchable by it. `OPAQUE_DILATE_CELLS` (1) withholds the straddlers — a
+block median across the holder boundary is a median over both populations
+and lands between them, above the gate and contaminated.
+
+**Why it runs before both other detectors** (`composite.py`, immediately
+after `_region_keep`): the holder owns every dense-end percentile it
+touches. `DENSE_BORDER_ANCHOR_PERCENTILE` (P0.1) lands *inside* the holder
+and `DENSE_BORDER_TOLERANCE`'s 0.2-wide band then covers holder only, so the
+edge fog the mirror exists to catch sits three decades outside it,
+undetected — the holder was blinding the mirror as well as pinning the
+floor. Before `detect_rebate` too, so the gate's own anchor still reads the
+film base rather than the thinnest scene content, which is the physical
+statement the constant is written against. The scale of the floor damage it
+prevents: `BASE_LUMA_CLIP` is 0.01 percent, ~70 cells on a 1024-side grid,
+and a one-cell-wide sliver along a 1024-cell edge is fifteen times that — so
+it does not take much holder to move the floor from a real Dmax near −3.0 to
+−6.0, roughly doubling the span and squeezing the picture into the top half
+of `val`.
+
+A *wholly* opaque region is the case the relative gate structurally cannot
+see — with nothing but holder there is no thin end for the holder to be
+decades below, and the anchor is the holder itself — so
+`OPAQUE_MIN_ANCHOR_ABOVE_CLAMP` (1.0 decade above the clamp) is an absolute
+check that raises `NormalizationError` naming the layout. Left to fall
+through the case does still fail, with `analyze_bounds` reporting a
+degenerate channel, but that message sends the reader after the meters when
+the fault is the rect sitting on the holder. The known false positive is
+scene content at literally zero transmission, which real film cannot reach —
+the block-median prefilter already absorbs isolated clipped pixels, so only
+a whole block of them fires the gate. Withheld fractions and the absolute
+threshold are recorded per negative (`normalization.opaque`). All three
+constants are provisional and unmeasured, like the `REBATE_*` and
+`DENSE_BORDER_*` sets they join.
+
 **The roll-population clamp (D-4's safety net, not a policy change).**
 Both detectors can miss a contaminant the per-frame statistics cannot see;
 the run's own already-published negatives are the corrective signal D-4

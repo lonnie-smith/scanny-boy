@@ -34,6 +34,7 @@ from scanny_boy.normalization import (
     Bounds,
     DenseBorder,
     FilmKind,
+    Opaque,
     Rebate,
     analysis_grid_block_sizes,
     analyze_bounds,
@@ -53,6 +54,7 @@ from scanny_boy.normalization import (
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
+    withhold_opaque,
 )
 from scanny_boy.registration import Rectification, StitchError, rectify
 
@@ -110,8 +112,8 @@ class CompositeResult:
     # The normalization meters (docs/DECISIONS.md, "Normalization decisions"
     # 3.7, 3.13): per-negative bounds, the recorded-not-acted-on print-stage
     # statistics, the observed pre-clip extrema (section 3.6), the fraction
-    # of pixels the encode's headroom clipped, and the rebate and
-    # dense-border findings.
+    # of pixels the encode's headroom clipped, and the rebate,
+    # dense-border and opaque-holder findings.
     bounds: Bounds
     shadow_refs: tuple[float, float, float]
     # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral reference
@@ -128,6 +130,7 @@ class CompositeResult:
     headroom_clipped_shadows: tuple[float, float, float]
     rebate: Rebate
     dense_border: DenseBorder
+    opaque: Opaque
     # Section 3.4's clamp: whether the roll-population safety net pulled the
     # bounds toward the run's reference population, and the bounds the
     # frame's own meters measured before it did.
@@ -892,6 +895,12 @@ def composite(
 
     grid = block_median_grid(img_log)
     keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
+    # The opaque-holder gate runs first: the holder owns every dense-end
+    # percentile it touches, so leaving it in blinds `withhold_dense_border`
+    # (its P0.1 anchor lands inside the holder) as well as pinning
+    # `analyze_bounds`' floor. Before `detect_rebate` too, so its own
+    # thin-end anchor still reads the film base.
+    keep, opaque = withhold_opaque(grid, keep)
     keep, rebate = detect_rebate(grid, keep)
     keep, dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep, base_refs)
@@ -972,6 +981,7 @@ def composite(
         headroom_clipped_shadows=headroom_clipped_shadows,
         rebate=rebate,
         dense_border=dense_border,
+        opaque=opaque,
         clamped=clamped,
         unclamped_bounds=unclamped_bounds,
     )

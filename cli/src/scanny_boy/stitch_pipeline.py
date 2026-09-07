@@ -909,6 +909,16 @@ def _normalization_record(
             "detected": result.dense_border.detected,
             "mask_fraction": result.dense_border.mask_fraction,
         },
+        # The opaque-holder gate's finding. `threshold` is the absolute log
+        # density it fired at, null with nothing withheld -- the anchor and
+        # the constant are not recoverable from `mask_fraction`, and they
+        # are what a measurement of OPAQUE_MAX_DENSITY_BELOW_BASE would
+        # revise.
+        "opaque": {
+            "detected": result.opaque.detected,
+            "mask_fraction": result.opaque.mask_fraction,
+            "threshold": result.opaque.threshold,
+        },
         "clamped": result.clamped,
         "source": "per-negative",
     }

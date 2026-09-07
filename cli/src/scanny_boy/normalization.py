@@ -712,6 +712,153 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
     return new_keep, rebate
 
 
+# --- the opaque-holder gate: the detector that needs no geometry -------------
+
+# The rebate detector's discriminator is "no scene content is thinner than
+# unexposed film"; `withhold_dense_border` is its mirror, "no scene content
+# is denser than the film's characteristic maximum". But the mirror reads
+# that maximum off the frame's *own* dense tail, so once it has its
+# candidate band every remaining gate is about how the contaminant is
+# shaped -- border-touching, thin, featureless, bounded in area. A section
+# of the negative holder defeats all four: it is not shaped like a stripe,
+# it is arbitrarily large, and it can sit anywhere the film does not.
+#
+# It is also the one contaminant that does not need those gates, because it
+# has an *absolute* discriminator. The holder passes no light, so
+# `to_log_density`'s clamp lands it at log10(_DENSITY_FLOOR) = -6.0, while a
+# colour negative's Dmax runs about 2.0-2.5 above base and a black-and-white
+# negative's about 2.5-3.0. More than `OPAQUE_MAX_DENSITY_BELOW_BASE`
+# decades below the thin end is not film at any shape or size, so this gate
+# is density and nothing else.
+#
+# Why it must run before both other detectors: the holder owns every
+# dense-end percentile it touches. `DENSE_BORDER_ANCHOR_PERCENTILE` (P0.1)
+# lands *inside* the holder, and `DENSE_BORDER_TOLERANCE`'s 0.2-wide band
+# then covers holder only -- so the edge fog the mirror exists to catch
+# sits three decades outside it, undetected. The same holder pins
+# `analyze_bounds`' floor: `BASE_LUMA_CLIP` is 0.01 percent, which on a
+# 1024-side grid is ~70 cells, and a one-cell-wide sliver along a
+# 1024-cell edge is fifteen times that.
+
+# Decades below the thin-end anchor past which a cell cannot be film. Sits
+# clear of the densest film above base and well clear of the -6.0 clamp, so
+# the gate separates "holder" from "film" rather than "clamped" from
+# "nearly clamped". Provisional and unmeasured, like the REBATE_* and
+# DENSE_BORDER_* constants; recorded per negative either way.
+OPAQUE_MAX_DENSITY_BELOW_BASE = 3.2
+# The block median softens the holder's edge: a block straddling the
+# boundary is a median over holder and film cells together, so it lands
+# between the two populations -- above the gate, and contaminated. One cell
+# of dilation withholds the straddlers along with the holder.
+OPAQUE_DILATE_CELLS = 1
+# The density an opaque cell clamps to: log10(_DENSITY_FLOOR), the one
+# absolute landmark in the transfer.
+OPAQUE_CLAMP_DENSITY = -6.0
+# Decades above that clamp the region's thin end must reach for the region
+# to contain any film at all. A relative gate cannot see a *wholly* opaque
+# region -- its own thin end is the holder, so nothing is decades below
+# anything -- and this is the absolute check that can. Real film base sits
+# within a few tenths of zero on an exposed scan, so a whole decade of
+# margin never fires on film.
+OPAQUE_MIN_ANCHOR_ABOVE_CLAMP = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Opaque:
+    """The opaque-holder detector's finding for one negative. `threshold`
+    is the absolute log density the gate fired at -- the frame's own
+    thin-end anchor less `OPAQUE_MAX_DENSITY_BELOW_BASE` -- recorded
+    because the anchor and the constant together are what a later
+    measurement would revise, and neither is recoverable from
+    `mask_fraction` alone. `None` when nothing fired."""
+
+    detected: bool
+    mask_fraction: float
+    threshold: float | None
+
+
+def withhold_opaque(
+    grid_log: np.ndarray, keep: np.ndarray
+) -> tuple[np.ndarray, Opaque]:
+    """Withhold cells too dense to be film -- opaque negative holder in the
+    analysis region -- from `keep`.
+
+    The anchor is the region's `REBATE_ANCHOR_PERCENTILE` thin-end luma,
+    and the choice of end is the point: the holder contaminates the dense
+    tail only, so a dense-end anchor would move with the very thing it is
+    trying to measure, while the thin end is untouchable by it. Every cell
+    at or below `anchor - OPAQUE_MAX_DENSITY_BELOW_BASE` is withheld, with
+    no connectivity, area, thinness or flatness gate: those exist to keep
+    the dense-border detector off real scene content, and film cannot reach
+    this density to begin with.
+
+    Runs *before* `detect_rebate`, which is also why the anchor reads the
+    film base rather than the thinnest scene content -- the rebate cells are
+    still in `keep` here, and "decades below base" is the physical statement
+    the constant is written against.
+
+    The one caveat, and the reason the constant carries margin: clear
+    sprocket holes inside the analysis region are film-free and therefore
+    thinner than base, and when they exceed 0.1 percent of the region they
+    take the anchor with them. That tightens the gate by the base density
+    (a few tenths on a masked colour negative) and never loosens it, so the
+    failure direction is toward withholding slightly more, and the margin
+    keeps even that clear of real film.
+
+    Raises `NormalizationError` on a *wholly* opaque region, which the
+    relative gate is structurally unable to see: with nothing but holder
+    there is no thin end for the holder to be decades below, and the
+    anchor is the holder itself. `OPAQUE_MIN_ANCHOR_ABOVE_CLAMP` is the
+    absolute check that catches it. Left to fall through, the case does
+    still fail -- `analyze_bounds` finds floors and ceils both at the clamp
+    and reports a degenerate channel -- but that message sends the reader
+    after the meters when the fault is the layout's rect sitting on the
+    holder.
+    """
+    empty = Opaque(detected=False, mask_fraction=0.0, threshold=None)
+    if not keep.any():
+        return keep, empty
+
+    lum = luma_of_log(grid_log)
+    region_cells = int(np.count_nonzero(keep))
+    anchor = _percentile(lum[keep], REBATE_ANCHOR_PERCENTILE)
+    if anchor <= OPAQUE_CLAMP_DENSITY + OPAQUE_MIN_ANCHOR_ABOVE_CLAMP:
+        raise NormalizationError(
+            f"the analysis region holds no film: its thin end ({anchor:.4f}) "
+            f"is within {OPAQUE_MIN_ANCHOR_ABOVE_CLAMP} decade of the opaque "
+            f"clamp at {OPAQUE_CLAMP_DENSITY}; the analysis rect is on the "
+            "negative holder"
+        )
+    threshold = anchor - OPAQUE_MAX_DENSITY_BELOW_BASE
+    mask = keep & (lum <= threshold)
+    if not mask.any():
+        return keep, empty
+
+    if OPAQUE_DILATE_CELLS > 0:
+        side = 2 * OPAQUE_DILATE_CELLS + 1
+        dilated = cv2.dilate(
+            mask.astype(np.uint8), np.ones((side, side), np.uint8)
+        ).astype(bool)
+        mask = dilated & keep
+
+    new_keep = keep & ~mask
+    if not new_keep.any():
+        # Only reachable through the dilation: the threshold alone cannot
+        # withhold the anchor cell that defined it.
+        raise NormalizationError(
+            "the analysis region is entirely opaque: nothing survives the "
+            f"gate at {threshold:.4f}; the analysis rect is on the negative "
+            "holder, not the film"
+        )
+
+    opaque = Opaque(
+        detected=True,
+        mask_fraction=float(np.count_nonzero(mask)) / region_cells,
+        threshold=threshold,
+    )
+    return new_keep, opaque
+
+
 # --- section 3.13's dense mirror: the dense-border detector -------------------
 
 # All provisional and unmeasured, like the REBATE_* five. The failure that

@@ -30,6 +30,8 @@ from scanny_boy.normalization import (
     encode_normalized,
     normalize_log_image,
     to_log_density,
+    withhold_dense_border,
+    withhold_opaque,
 )
 from scanny_boy.registration import PairResult, StitchError
 from scanny_boy.selection import GridSpec
@@ -1029,7 +1031,13 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
     img_log = to_log_density(out)
     grid = block_median_grid(img_log)
     keep = block_median_grid(np.where(covered, np.float32(1.0), np.float32(0.0))) >= 1.0
+    # The same three detectors composite() runs, in the same order. The
+    # synthetic scene clips to pure black, which decodes to linear 0 and
+    # clamps to -6.0, so the opaque gate genuinely fires on it -- this
+    # reference has to mirror the pipeline, not a subset of it.
+    keep, _opaque = withhold_opaque(grid, keep)
     keep, _rebate = detect_rebate(grid, keep)
+    keep, _dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep)
     normalized_img = normalize_log_image(img_log, bounds)
     encoded = encode_normalized(normalized_img)
