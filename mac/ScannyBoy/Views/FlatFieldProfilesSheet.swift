@@ -42,8 +42,8 @@ struct FlatFieldProfilesSheet: View {
 
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(hasNewProfileContent ? .cancelAction : .defaultAction)
                     .disabled(flatField.isCreating)
             }
         }
@@ -130,13 +130,16 @@ struct FlatFieldProfilesSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("New Profile").font(.headline)
 
-            HStack {
-                Button("Choose Reference…") { chooseReference() }
-                Text(referenceURL?.lastPathComponent ?? "No file chosen")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Flat-field reference photo")
+                HStack {
+                    Button("Choose…") { chooseReference() }
+                    Text(referenceURL?.lastPathComponent ?? "No file chosen")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             HStack {
@@ -156,8 +159,11 @@ struct FlatFieldProfilesSheet: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
 
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Profile Name")
+                TextField("", text: $name)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             if let createError {
                 Text(createError)
@@ -182,10 +188,28 @@ struct FlatFieldProfilesSheet: View {
                     }
                 }
                 Spacer()
-                Button("Create") { create() }
-                    .disabled(!isReady)
+                createButton
             }
         }
+    }
+
+    @ViewBuilder
+    private var createButton: some View {
+        let button = Button("Create") { create() }
+            .disabled(!isReady)
+        if hasNewProfileContent {
+            button
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        } else {
+            button
+        }
+    }
+
+    private var hasNewProfileContent: Bool {
+        referenceURL != nil
+            || !calibrationURLs.isEmpty
+            || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var calibrationSummary: String {
