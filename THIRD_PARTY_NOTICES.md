@@ -32,7 +32,7 @@ Embedded in every TIFF Scanny Boy writes, at
   by `cli/tools/generate_icc_profile.py`.
 - Licence: CC0 1.0 Universal for the upstream profile; Scanny Boy's derivation
   is all rights reserved (see [`LICENSE`](LICENSE)).
-- SHA-256: `f2253a1355ad41246c5126a601d147290e5efd04fb2bca6fa44e24179c525536`
+- SHA-256: `3b5600f280c5686b08409a10a803f7a2770cc59840681cacef7f02a41d1ea2f3`
   (verified at startup by `scanny_boy.icc_profile`).
 
 ## ScannyBoy-Export-AdobeRGB-v1.icc / ScannyBoy-Export-Grey-v1.icc (the export profiles)
@@ -41,21 +41,23 @@ Embedded in every JPEG XL Scanny Boy exports, at
 `cli/src/scanny_boy/resources/ScannyBoy-Export-AdobeRGB-v1.icc` and
 `cli/src/scanny_boy/resources/ScannyBoy-Export-Grey-v1.icc`.
 
-- The colorimetry (primaries, white point, chromatic adaptation, and the
+- The colorimetry (the D65 white point, the CIE xy primaries, and the
   563/256 transfer curve) is the published Adobe RGB (1998)
-  specification, cross-checked against the colorant values in Apple's
-  `/System/Library/ColorSync/Profiles/AdobeRGB1998.icc`. **The bytes are
-  this project's own** — generated deterministically by
-  `cli/tools/generate_icc_profile.py` from the published numbers — and
-  the profiles are not an Adobe product and not derived from Adobe's
-  profile. Their `desc` tags say so, and describe the colour space as
-  *compatible with* Adobe RGB (1998) for the same reason: "Adobe RGB" is
-  Adobe's trademark, and the colour space here is an independent profile
-  with the same colorimetry (docs/EXPORT_PLAN.md section 2.3).
+  specification. **The bytes are this project's own** — generated
+  deterministically by `cli/tools/generate_icc_profile.py`, which hands
+  those published chromaticities to lcms2 (via `imagecodecs.cms_profile`)
+  and sets only the description, the copyright and the grey profile's D50
+  white point and `chad`. Neither Adobe's ICC file nor any part of it is
+  redistributed, and the profiles are not an Adobe product and not
+  derived from Adobe's profile. Their `cprt` tags say so, and describe
+  the colour space as *compatible with* Adobe RGB (1998) for the same
+  reason: "Adobe RGB" is Adobe's trademark, and the colour space here is
+  an independent profile with the same colorimetry
+  (docs/EXPORT_PLAN.md section 2.3).
 - Licence: Scanny Boy's own, all rights reserved (see
   [`LICENSE`](LICENSE)). The colorimetry is a published specification.
-- SHA-256: `85fc817bb230d5617578087e35d79e5e89cbae0930b9929e639690a44973a25c`
-  (RGB) and `87a776bac58693beb3de9a6effa0ce82177fe326f0813a5cf888382282a4f86d`
+- SHA-256: `1e399e18f9f6dbba2ecaa053251a51509ca03bd8e0f5168e6675eb4ad0ea250c`
+  (RGB) and `c20576031ab3b1cca6ec7949d74f6fe72bc13b81ee41117f6ac067c088adaccf`
   (Grey), verified at startup by `scanny_boy.icc_profile`.
 
 ## OpenCV
