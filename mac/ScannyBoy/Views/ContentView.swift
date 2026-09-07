@@ -439,7 +439,10 @@ struct ContentView: View {
                 isAnalyzing: model.isAttachingBaseFrame,
                 error: model.baseFrameError,
                 onChoose: { chooseBaseFrame(replace: false) },
-                onReplace: { chooseBaseFrame(replace: true) }
+                onReplace: { chooseBaseFrame(replace: true) },
+                onDropFrame: { url in
+                    Task { await model.attachBaseFrame(at: url) }
+                }
             )
             Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)

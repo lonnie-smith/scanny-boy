@@ -10,6 +10,19 @@ struct ScannyBoyApp: App {
     @State private var grid: GridModel?
     @State private var keyboard = AppKeyboardState()
 
+    /// Drops the render caches written before `PreviewCache` scoped them by
+    /// roll. They are loose in `~/Library/Caches` and name no roll anywhere
+    /// in their paths, so nothing can ever match them against a live roll —
+    /// they would otherwise grow forever. Detached because the set can be
+    /// large after a long run of the old layout, and nothing waits on it:
+    /// these are caches, and re-rendering one is a round trip.
+    init() {
+        let cache = PreviewCache.shared
+        Task.detached(priority: .utility) {
+            cache.purgeUnscopedCaches()
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView(

@@ -367,6 +367,110 @@ struct RollLibraryTests {
         try await library.deleteRoll(roll)
     }
 
+    /// Seeds both render caches for `rollID` and returns the two directories
+    /// that should not survive the roll.
+    private static func seedPreviewCache(
+        _ cache: PreviewCache, rollID: String, negativeID: String
+    ) throws -> [URL] {
+        let urls = [
+            cache.regionURL(
+                rollID: rollID, negativeID: negativeID, generation: "0#false#flat",
+                mode: .positive, rect: CGRect(x: 0, y: 0, width: 8, height: 8)
+            ),
+            cache.previewURL(
+                rollID: rollID, negativeID: negativeID, generation: "0#false#flat",
+                mode: .negative
+            ),
+        ]
+        for url in urls {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data("png".utf8).write(to: url)
+        }
+        return urls
+    }
+
+    @Test("deleteRoll drops the roll's render caches and no one else's")
+    func testDeleteRemovesTheRollsRenderCaches() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryBase = directory.appending(path: "library", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: libraryBase, withIntermediateDirectories: true)
+
+        let rollPath = libraryBase.appending(path: "Roll-To-Delete", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollPath, withIntermediateDirectories: true)
+
+        let cache = PreviewCache(cachesDirectory: directory)
+        let doomed = try Self.seedPreviewCache(cache, rollID: "id-1", negativeID: "aaa-negative-01")
+        let keeper = try Self.seedPreviewCache(cache, rollID: "id-2", negativeID: "bbb-negative-01")
+
+        let executable = try Self.fakeRollExecutable(
+            in: directory,
+            listLines: [Self.rollListEvent(entries: [])],
+            deleteLines: [
+                TestEvents.line(#"{"event":"roll_deleted","roll_id":"id-1","path":"\#(rollPath.path)"}"#)
+            ]
+        )
+        let library = RollLibrary(
+            runner: CLIRunner(executable: executable),
+            libraryBase: libraryBase,
+            defaults: Self.isolatedDefaults(),
+            previewCache: cache
+        )
+        let roll = Roll(
+            path: rollPath, status: .ok, reason: nil,
+            rollID: "id-1", rollName: "Roll To Delete", negativeCount: 1
+        )
+
+        try await library.deleteRoll(roll)
+
+        for url in doomed {
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+        for url in keeper {
+            #expect(FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    @Test("deleteRoll purges caches for an unreadable roll using the CLI's id")
+    func testDeleteRemovesCachesForAnUnreadableRoll() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryBase = directory.appending(path: "library", directoryHint: .isDirectory)
+        let rollPath = libraryBase.appending(path: "Vanished-Roll", directoryHint: .isDirectory)
+
+        // The sidebar row for an unreadable roll carries no roll_id, so the
+        // only id that can name its caches is the one `roll_deleted` reports.
+        let cache = PreviewCache(cachesDirectory: directory)
+        let cached = try Self.seedPreviewCache(cache, rollID: "id-2", negativeID: "ccc-negative-01")
+
+        let executable = try Self.fakeRollExecutable(
+            in: directory,
+            listLines: [Self.rollListEvent(entries: [])],
+            deleteLines: [
+                TestEvents.line(#"{"event":"roll_deleted","roll_id":"id-2","path":"\#(rollPath.path)"}"#)
+            ]
+        )
+        let library = RollLibrary(
+            runner: CLIRunner(executable: executable),
+            libraryBase: libraryBase,
+            defaults: Self.isolatedDefaults(),
+            previewCache: cache
+        )
+        let roll = Roll(
+            path: rollPath, status: .unreadable,
+            reason: Roll.Reason(code: .rollNotFound, message: "gone"),
+            rollID: nil, rollName: "Vanished Roll", negativeCount: nil
+        )
+
+        try await library.deleteRoll(roll)
+
+        for url in cached {
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
     @Test("RollManifest decodes film_base including lockedAt")
     func filmBaseDecodesFromManifest() throws {
         let manifestJSON = """

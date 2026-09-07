@@ -38,6 +38,9 @@ final class RollLibrary {
     let runner: CLIRunner
     private let defaults: UserDefaults
     private let fileManager: FileManager
+    /// The app's own render caches, purged for a roll as it is deleted.
+    /// Injected so tests never touch the real user's caches.
+    private let previewCache: PreviewCache
 
     private(set) var rolls: [Roll] = []
     private(set) var isScanning = false
@@ -60,11 +63,13 @@ final class RollLibrary {
         runner: CLIRunner,
         libraryBase: URL? = nil,
         defaults: UserDefaults = .standard,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        previewCache: PreviewCache = .shared
     ) {
         self.runner = runner
         self.defaults = defaults
         self.fileManager = fileManager
+        self.previewCache = previewCache
         self.libraryBase =
             libraryBase
             ?? Self.loadLibraryBase(defaults: defaults, fileManager: fileManager)
@@ -283,6 +288,13 @@ final class RollLibrary {
     /// steps leaves an orphan registration that reads as `unreadable`, never
     /// a lost folder. Rescans on success so the sidebar drops the roll
     /// immediately.
+    ///
+    /// `roll delete` takes what the CLI wrote for the roll (its rows, and
+    /// `previews/<roll id>/` in Application Support); the app's own render
+    /// caches are Swift's to clean, and go here once the deletion has
+    /// actually succeeded. Last, deliberately: a cache the app can rebuild
+    /// is worth less than not touching anything while the deletion may
+    /// still fail.
     func deleteRoll(_ roll: Roll) async throws {
         if fileManager.fileExists(atPath: roll.path.path) {
             try await withCheckedThrowingContinuation {
@@ -305,6 +317,9 @@ final class RollLibrary {
         var deleted = false
         var failure: DeleteError?
         var outcome: CLIOutcome?
+        // An unreadable roll's sidebar row has no `roll_id` to key its
+        // caches on, but `roll_deleted` always names the one it unregistered.
+        var deletedRollID: String?
         do {
             for await output in try await session.start() {
                 switch output {
@@ -312,6 +327,7 @@ final class RollLibrary {
                     switch event.kind {
                     case .rollDeleted:
                         deleted = true
+                        deletedRollID = event.rollID
                     case .error:
                         failure = DeleteError.failed(event.message ?? "roll delete failed")
                     default:
@@ -330,6 +346,9 @@ final class RollLibrary {
         guard deleted else { throw DeleteError.failed("roll delete produced no result") }
         if let outcome, outcome != .success {
             throw DeleteError.failed("roll delete did not complete successfully")
+        }
+        if let rollID = roll.rollID ?? deletedRollID {
+            previewCache.removeAll(forRoll: rollID)
         }
         scan()
     }

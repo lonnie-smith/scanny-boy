@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Live progress for a conversion in flight: the pipeline step, the file it
 /// names, and how many negatives have been completed so far.
@@ -248,15 +249,18 @@ struct BaseFrameField: View {
     let error: ConfigurationModel.Issue?
     let onChoose: () -> Void
     let onReplace: () -> Void
+    let onDropFrame: (URL) -> Void
+
+    @State private var isDropTarget = false
+
+    private var acceptsDrop: Bool {
+        !isBusy && filmBase?.lockedAt == nil
+    }
 
     var body: some View {
         LabeledContent("Film Base reference") {
             VStack(alignment: .leading, spacing: 8) {
-                if let filmBase {
-                    attachedSummary(filmBase)
-                } else {
-                    emptyState
-                }
+                dropZone
                 if isAnalyzing {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
@@ -270,6 +274,46 @@ struct BaseFrameField: View {
                 }
             }
         }
+    }
+
+    private var dropZone: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let filmBase {
+                attachedSummary(filmBase)
+            } else {
+                emptyState
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isDropTarget ? Color.accentColor : Color.secondary.opacity(filmBase == nil ? 0.35 : 0),
+                    style: StrokeStyle(
+                        lineWidth: isDropTarget ? 2 : 1,
+                        dash: filmBase == nil && !isDropTarget ? [5, 3] : []
+                    )
+                )
+        }
+        .onDrop(of: [.fileURL], isTargeted: acceptsDrop ? $isDropTarget : .constant(false)) { providers in
+            handleDrop(providers)
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard acceptsDrop, let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            Task { @MainActor in
+                onDropFrame(url)
+            }
+        }
+        return true
     }
 
     @ViewBuilder
@@ -299,6 +343,8 @@ struct BaseFrameField: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("Drag a frame here, or choose a file.")
+                .font(.subheadline)
             Button("Choose…") { onChoose() }
                 .disabled(isBusy)
             Text(Self.captureInstructions)
