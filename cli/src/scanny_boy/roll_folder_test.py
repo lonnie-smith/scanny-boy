@@ -8,6 +8,7 @@ from scanny_boy.roll_folder import (
     SLUG_MAX_LENGTH,
     RollFolderError,
     create_roll,
+    delete_roll,
     rename_roll,
     scan_library,
     slugify,
@@ -230,3 +231,62 @@ def test_roll_list_emits_one_event_for_the_whole_library(tmp_path):
 
     assert {listing.roll_name for listing in listings} == {"Roll A", "Roll B"}
     assert all(listing.status == "ok" for listing in listings)
+
+
+# --- delete_roll ----------------------------------------------------------
+
+
+def _preview_file(roll_id: str, name: str):
+    from scanny_boy.previews import previews_root
+
+    path = previews_root() / roll_id / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"png")
+    return path
+
+
+def test_delete_roll_removes_the_rolls_whole_preview_directory(tmp_path):
+    """The recorded previews go, and so does anything else in the roll's
+    preview directory: a preview whose `preview_path` was lost has nothing
+    left that could ever name it, so the directory itself is the unit."""
+    roll_dir = create_roll(tmp_path, "Roll A", film_kind="colour")
+    manifest = load_roll_manifest(roll_dir)
+    recorded = _preview_file(manifest.roll_id, "aaaaaa-negative-01.png")
+    manifest.negatives.append(
+        _negative(negative_id="aaaaaa-negative-01", preview_path=str(recorded))
+    )
+    write_roll_manifest(roll_dir, manifest)
+    # An orphan from some earlier failed unlink: on disk, named by nothing.
+    unrecorded = _preview_file(manifest.roll_id, "aaaaaa-negative-99.png")
+
+    warnings = []
+    fields = delete_roll(roll_dir, emit=warnings.append)
+
+    assert fields == {"roll_id": manifest.roll_id, "path": str(roll_dir)}
+    assert warnings == []
+    assert not recorded.exists()
+    assert not unrecorded.exists()
+    assert not recorded.parent.exists()
+
+
+def test_delete_roll_leaves_other_rolls_previews_alone(tmp_path):
+    keeper = create_roll(tmp_path, "Keeper", film_kind="colour")
+    doomed = create_roll(tmp_path, "Doomed", film_kind="colour")
+    keeper_preview = _preview_file(
+        load_roll_manifest(keeper).roll_id, "bbbbbb-negative-01.png"
+    )
+
+    delete_roll(doomed, emit=lambda event: None)
+
+    assert keeper_preview.exists()
+
+
+def test_delete_roll_without_previews_reports_no_warning(tmp_path):
+    """A roll that was never opened in the Edit tab has no preview
+    directory at all, which is the ordinary case, not a failure."""
+    roll_dir = create_roll(tmp_path, "Roll A", film_kind="colour")
+
+    warnings = []
+    delete_roll(roll_dir, emit=warnings.append)
+
+    assert warnings == []
