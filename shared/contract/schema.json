@@ -141,6 +141,8 @@
         "SCAN_CLIPPED",
         "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
+        "NORMALIZE_FILM_EXTENT_WITHHELD",
+        "NORMALIZE_FILM_EXTENT_EXCESSIVE",
         "TONE_METERING_UNAVAILABLE",
         "FILM_KIND_REQUIRED",
         "FILM_KIND_LOCKED",
@@ -248,7 +250,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 17
+      "const": 18
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {

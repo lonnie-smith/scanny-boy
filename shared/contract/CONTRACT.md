@@ -9,6 +9,31 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 18 keeps version 17's roll model and adds **the film-extent
+pass** (docs/BLACK_POINT_REFINEMENT.md): the stitch stage now locates the
+film's own extent on each negative and insets the meters' analysis region
+inside it, so a negative carrier photographed beyond the film edge no longer
+owns the black point. The published TIFF is never cropped — the pass
+restricts the meters only, exactly like the analysis region it refines. Each
+negative's `normalization` block gains an optional `film_extent` object:
+`{detected, valley, lobe_fraction, mask_fraction, insets (4 integers: top,
+bottom, left, right in **grid cells** — `analysis_block_px` in
+processing_params multiplies to canvas pixels, while `analysis_rect` beside
+it is already in canvas pixels), region_fraction, convergence_steps,
+rebate_agrees (nullable boolean, recorded and read by nothing)}`. The same
+bump declares the previously undeclared `opaque` block beside it. The same
+block's `normalize` processing constants gain the `REBATE_*`, `OPAQUE_*` and
+`FILM_EXTENT_*` families and `format_version` bumps 4 → 5, so a roll
+stitched before this change refuses new runs with `ROLL_INVARIANT_MISMATCH`
+(the upgrade shim absorbs the new keys for comparison; the recorded bounds
+of a v4 roll are not comparable with a v5 one). Two new codes, both riding
+the warning event channel: `NORMALIZE_FILM_EXTENT_WITHHELD` (informational:
+a non-film border band was withheld from the metering; the message names
+the four insets in canvas pixels) and `NORMALIZE_FILM_EXTENT_EXCESSIVE`
+(warning: the withheld band kept less than half the analysis region — the
+frame is unusual and the user should look at it). The Swift results view
+labels the first informationally; neither code fails anything.
+
 Protocol version 16 keeps version 15's roll model and adds **named grid
 configuration presets**: the `grid create` / `grid list` / `grid delete`
 command family and the `grid_created`, `grid_list`, and `grid_deleted`
@@ -962,6 +987,8 @@ staging directories, and reruns the incomplete negative.
 | `SCAN_CLIPPED` | Warning: more than 1% of one channel's pixels decoded at or above sensor white; their highlights are clipped and no reconstruction is attempted |
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
+| `NORMALIZE_FILM_EXTENT_WITHHELD` | Informational: the film-extent pass withheld a non-film border band (likely the negative carrier) from the metering; the message names the four insets in canvas pixels. The published pixels are never cropped |
+| `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
 | `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |

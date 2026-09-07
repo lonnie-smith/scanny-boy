@@ -42,7 +42,6 @@ for the decisions that superseded earlier items.
   EXPORT_PLAN.md §9, `DECISIONS.md`'s Phase 4 note).
 
 ## Monochrome merge weights: measure the real per-channel sigma (docs/MONOCHROME_PLAN.md §8)
-
 `normalization.MONO_MERGE_WEIGHTS = (0.25, 0.50, 0.25)` is a minimum-variance
 estimator built from a Bayer CFA's site counts (green has roughly twice the
 photon count of red or blue), not from a measurement of this rig's actual
@@ -54,6 +53,26 @@ flat-field calibration frames — which is exactly what they exist for — and
 re-deriving the weights from it is worth doing, but needs its own
 measurement protocol; it was explicitly out of scope for
 docs/MONOCHROME_PLAN.md.
+
+## Film-extent constants: replay over more rolls (docs/BLACK_POINT_REFINEMENT.md §1, §7)
+
+All nine `FILM_EXTENT_*` constants in `normalization.py` are **provisional
+and unmeasured** — the same status `REBATE_*`, `DENSE_BORDER_*` and
+`OPAQUE_*` carry. They were fitted to three negatives from one roll on one
+rig; most carry one to two orders of magnitude of margin on that data, but
+`FILM_EXTENT_LOBE_RISE` carries 2.5x on `_DSC5207` and is the binding one.
+The instrument that would close them is `cli/tools/measure_film_extent.py`:
+it replays the meters off published TIFFs (no re-stitching), writes the
+histogram, the inset sweep and the mask overlay per negative, and serves
+the §1 protocol — at least three rolls spanning carrier on one edge,
+carrier on all four, and **no carrier in frame at all** (the no-op case,
+which matters most). Until that replay pins them, they are roll invariants
+(they joined `build_params()` at the v5 bump), so moving any of them costs
+a format version. Two further open items from the plan: the
+`NORMALIZE_HEADROOM_CLIPPED` population may want to become film-only once
+real rolls stitch under corrected bounds, and promoting the rebate
+detector to a hard outer bound waits on `film_extent.rebate_agrees`
+evidence from real rolls (§0.5, §5.3).
 
 ## Spotting escalations (docs/SPOTTING_PLAN.md §11)
 

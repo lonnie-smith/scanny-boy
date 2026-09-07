@@ -59,7 +59,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 17
+    public static let supportedProtocolVersion = 18
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -539,6 +539,10 @@ public enum CLICode: Sendable, Hashable {
     case scanClipped
     case normalizeDegenerateBounds
     case normalizeHeadroomClipped
+    // Protocol version 18: the film-extent pass
+    // (docs/BLACK_POINT_REFINEMENT.md).
+    case normalizeFilmExtentWithheld
+    case normalizeFilmExtentExcessive
     case spotLimitReached
     case spotsStale
     case filmKindRequired
@@ -625,6 +629,8 @@ public enum CLICode: Sendable, Hashable {
         case "SCAN_CLIPPED": self = .scanClipped
         case "NORMALIZE_DEGENERATE_BOUNDS": self = .normalizeDegenerateBounds
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
+        case "NORMALIZE_FILM_EXTENT_WITHHELD": self = .normalizeFilmExtentWithheld
+        case "NORMALIZE_FILM_EXTENT_EXCESSIVE": self = .normalizeFilmExtentExcessive
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
         case "FILM_KIND_REQUIRED": self = .filmKindRequired
@@ -713,6 +719,8 @@ public enum CLICode: Sendable, Hashable {
         case .scanClipped: "SCAN_CLIPPED"
         case .normalizeDegenerateBounds: "NORMALIZE_DEGENERATE_BOUNDS"
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
+        case .normalizeFilmExtentWithheld: "NORMALIZE_FILM_EXTENT_WITHHELD"
+        case .normalizeFilmExtentExcessive: "NORMALIZE_FILM_EXTENT_EXCESSIVE"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
         case .filmKindRequired: "FILM_KIND_REQUIRED"

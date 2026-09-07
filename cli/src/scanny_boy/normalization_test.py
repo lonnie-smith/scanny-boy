@@ -633,6 +633,298 @@ def test_dense_detector_is_deterministic_and_handles_empty_keep():
 # --- the opaque-holder gate ---------------------------------------------------
 
 
+# --- BLACK_POINT_REFINEMENT: the film-extent pass -----------------------------
+
+
+def _carrier_grid(
+    *,
+    height: int = 400,
+    width: int = 400,
+    base_lo: float = -1.1,
+    base_hi: float = -0.7,
+    seed: int = 5,
+) -> np.ndarray:
+    """A film *luma* grid, uniform over [base_lo, base_hi] — flat per
+    0.05-decade bin, so the film mode is large and the detector's gates
+    behave predictably. Callers make it a colour grid with `_colour` (or
+    slice `[..., :1]` for a mono grid)."""
+    rng = np.random.default_rng(seed)
+    return rng.uniform(base_lo, base_hi, (height, width)).astype(np.float32)
+
+
+def _colour(luma: np.ndarray) -> np.ndarray:
+    return np.stack([luma] * 3, axis=-1)
+
+
+def _add_ramped_band(
+    grid: np.ndarray,
+    *,
+    band_rows: int = 15,
+    band_density: float = -3.0,
+    dense_rows: int = 5,
+    dense_end: float = -2.5,
+    ramp_rows: int = 25,
+    ramp_end: float = -1.1,
+    seed: int = 5,
+) -> None:
+    """A carrier band plus the monotone ramp joining it to the film, along
+    the grid's top edge. The ramp's cell counts *increase* toward the film
+    (fewer rows per density bin in the dense half), so the valley — the
+    emptiest bin between the lobes — lands in the ramp's dense half and the
+    convergence loop always has ramp left over behind the mask."""
+    rng = np.random.default_rng(seed)
+    width = grid.shape[1]
+    grid[:band_rows] = rng.normal(
+        band_density, 0.02, (band_rows, width)
+    ).astype(np.float32)
+    dense = np.linspace(band_density, dense_end, dense_rows, dtype=np.float32)
+    grid[band_rows : band_rows + dense_rows] = dense[:, None] + rng.normal(
+        0, 0.02, (dense_rows, width)
+    ).astype(np.float32)
+    thin = np.linspace(dense_end, ramp_end, ramp_rows, dtype=np.float32)
+    start = band_rows + dense_rows
+    grid[start : start + ramp_rows] = thin[:, None] + rng.normal(
+        0, 0.02, (ramp_rows, width)
+    ).astype(np.float32)
+
+
+def test_film_extent_band_with_ramp_is_located_and_inset():
+    """E-1/E-2: a carrier band with its ramp along one edge. The valley
+    lands between the lobes; the mask covers the band and the ramp cells
+    below it; the per-edge insets name that edge; and the convergence loop
+    pushes the inset past the mask-derived value, eating the ramp the mask
+    could not see, until the floor reads the film alone."""
+    luma = _carrier_grid()
+    _add_ramped_band(luma)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    lum = nz.luma_of_log(grid)
+    valley = nz._find_valley(lum, keep)
+    assert valley is not None
+    # Between the lobes: denser than the film's thin content, thinner than
+    # the carrier band.
+    assert -3.0 < valley < -1.1
+
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert extent.valley == pytest.approx(valley, abs=1e-6)
+    assert extent.insets[0] > nz.FILM_EXTENT_MARGIN_CELLS
+    assert extent.convergence_steps > 0
+    # The ramp (and band) run to grid row 44; the inset rect must clear it.
+    assert not new_keep[:45].any()
+    # The floor after the pass reads the film's own dense end.
+    rect = nz._inset_rect(keep, extent.insets)
+    assert np.percentile(lum[rect], nz.BASE_LUMA_CLIP) == pytest.approx(-1.1, abs=0.05)
+
+
+def test_film_extent_no_op_on_a_unimodal_grid():
+    """§2.4: the no-op path is the important one. A grid with no carrier —
+    a plain unimodal dense tail — must return `keep` unchanged, with
+    `detected=False` and zero insets."""
+    grid = _colour(_carrier_grid())
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert not extent.detected
+    assert extent.valley is None
+    assert extent.insets == (0, 0, 0, 0)
+    assert extent.region_fraction == 1.0
+    assert extent.convergence_steps == 0
+    # Contents identical (the plan asks for equality of contents, not
+    # identity -- the no-op returns the input array, as the detectors
+    # beside it do).
+    assert np.array_equal(new_keep, keep)
+
+
+def test_film_extent_interior_dark_object_is_not_withheld():
+    """The gate that keeps the pass off scene content: a dense object in
+    the frame's interior at carrier density forms a lobe and survives the
+    histogram, but no component of it touches the region border, so
+    nothing is withheld."""
+    luma = _carrier_grid()
+    rng = np.random.default_rng(9)
+    luma[190:230, 190:230] = rng.normal(-3.4, 0.15, (40, 40)).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    # The valley statistic genuinely fires — it is the border gate that
+    # refuses the mask.
+    assert nz._find_valley(nz.luma_of_log(grid), keep) is not None
+    assert not extent.detected
+    assert extent.insets == (0, 0, 0, 0)
+    assert np.array_equal(new_keep, keep)
+
+
+def test_film_extent_lobe_below_the_fraction_gate_is_not_detected():
+    """A contaminant too small to reach the floor percentile cannot move
+    it, and is not worth a rect: below FILM_EXTENT_MIN_LOBE_FRACTION the
+    detector declines."""
+    luma = _carrier_grid()
+    luma[:8, :8] = -3.3  # 64 cells on a 160k-cell region: below 0.0005
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert not extent.detected
+    assert np.array_equal(new_keep, keep)
+
+
+def test_film_extent_ramp_cut_by_the_region_is_still_found_by_the_probe():
+    """§3.2's whole justification: a ramp whose core is outside `keep`
+    seeds no component, so that edge's mask-derived inset is 0 — and the
+    convergence probe, which walks all four edges, finds it anyway."""
+    luma = _carrier_grid(height=400, width=500)
+    _add_ramped_band(luma)  # top edge: fires the detector, provides seeds
+    # A left-edge ramp whose core (cols 0..3, denser) sits outside keep and
+    # whose in-keep cells (cols 4..24) sit above the valley.
+    left = np.linspace(-2.4, -1.05, 25, dtype=np.float32)
+    luma[:, :25] = left[None, :] + np.random.default_rng(6).normal(
+        0, 0.01, (400, 25)
+    ).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.zeros(grid.shape[:2], dtype=bool)
+    keep[:, 4:] = True
+
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert extent.convergence_steps > 0
+    # The top edge also has mask cells (the band); the left edge's inset
+    # came from the probe, not the mask — it exceeds the margin-only value
+    # the mask left it.
+    assert extent.insets[0] > nz.FILM_EXTENT_MARGIN_CELLS
+    assert extent.insets[2] > nz.FILM_EXTENT_MARGIN_CELLS
+    assert not new_keep[:, :25].any()
+
+
+def test_film_extent_clean_edges_converge_without_moving():
+    """A detected band over otherwise clean film: the loop probes all four
+    edges and exits having moved only what the ramp required — here,
+    nothing beyond the mask — with convergence_steps recording the travel."""
+    luma = _carrier_grid()
+    # Band with no ramp behind it: the mask covers it all, the probe has
+    # nothing to eat, and steps stay 0. (Jittered, so the seed threshold
+    # below the valley still reaches the band's own cells.)
+    rng = np.random.default_rng(7)
+    luma[:15] = rng.normal(-3.2, 0.02, (15, luma.shape[1])).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert extent.convergence_steps == 0
+    assert extent.insets[0] == 15 + nz.FILM_EXTENT_MARGIN_CELLS
+    assert not new_keep[:15].any()
+
+
+def test_film_extent_max_steps_is_honoured_on_an_adversarial_gradient():
+    """A monotone gradient rising toward the withheld edge moves the floor
+    at every step; the loop must stop at FILM_EXTENT_MAX_STEPS regardless,
+    insets capped at mask + margin + MAX_STEPS * step."""
+    rng = np.random.default_rng(5)
+    height = width = 400
+    luma = np.empty((height, width), dtype=np.float32)
+    film = np.linspace(-1.2, -0.6, height - 15, dtype=np.float32)
+    luma[15:] = film[:, None] + rng.normal(0, 0.01, (height - 15, width)).astype(
+        np.float32
+    )
+    luma[:15] = rng.normal(-3.0, 0.02, (15, width)).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    _new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert extent.convergence_steps == nz.FILM_EXTENT_MAX_STEPS
+    assert extent.insets[0] == 15 + nz.FILM_EXTENT_MARGIN_CELLS + (
+        nz.FILM_EXTENT_MAX_STEPS * nz.FILM_EXTENT_CONVERGENCE_STEP_CELLS
+    )
+
+
+def test_film_extent_region_below_the_fraction_gate_still_applies():
+    """§3.4: a rect that keeps less than
+    FILM_EXTENT_MIN_REGION_FRACTION of the region is not refused — a region
+    that is more than half non-film has a floor that is certainly wrong —
+    it applies and records the fraction. The warning is the stitch stage's."""
+    rng = np.random.default_rng(5)
+    height = width = 400
+    luma = rng.uniform(-0.95, -0.85, (height, width)).astype(np.float32)
+    luma[:140, :260] = rng.normal(-3.0, 0.15, (140, 260)).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert extent.region_fraction < nz.FILM_EXTENT_MIN_REGION_FRACTION
+    assert new_keep.any()
+
+
+def test_film_extent_region_below_viability_raises():
+    """And when the applied rect would leave fewer than
+    NEUTRAL_MIN_PIXELS cells to meter, the pass fails loud rather than
+    metering nothing, naming the region rather than the meters."""
+    rng = np.random.default_rng(5)
+    height = width = 40
+    luma = rng.uniform(-0.86, -0.84, (height, width)).astype(np.float32)
+    luma[:35] = rng.normal(-3.0, 0.4, (35, width)).astype(np.float32)
+    grid = _colour(luma)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    with pytest.raises(NormalizationError, match="film-extent inset"):
+        nz.withhold_non_film(grid, keep)
+
+
+def test_film_extent_empty_keep_is_handled_cleanly():
+    grid = _colour(_carrier_grid(height=64, width=64))
+    keep = np.zeros(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert not extent.detected
+    assert not new_keep.any()
+
+
+def test_rebate_insets_agreement_records_the_cross_check():
+    """§5.3: None when no rebate component was detected on any inset edge;
+    otherwise whether every such component lies inboard of the inset."""
+    keep = np.ones((100, 100), dtype=bool)
+    rebate = np.zeros((100, 100), dtype=bool)
+    rebate[:5, :] = True  # hugging the top edge, depth 5
+    deep = np.zeros((100, 100), dtype=bool)
+    deep[10:15, :] = True  # starting exactly at the inset line, depth 10
+
+    # No insets: nothing to agree with.
+    assert nz.rebate_insets_agreement(rebate, keep, (0, 0, 0, 0)) is None
+    # No rebate: nothing to check.
+    assert nz.rebate_insets_agreement(np.zeros_like(rebate), keep, (10, 0, 0, 0)) is None
+    # Rebate inside the inset band: the inset ate rebate material --
+    # disagrees.
+    assert nz.rebate_insets_agreement(rebate, keep, (10, 0, 0, 0)) is False
+    # Rebate starting exactly at the inset line: agrees.
+    assert nz.rebate_insets_agreement(deep, keep, (10, 0, 0, 0)) is True
+    # Rebate deeper than the inset line, reaching past it: the inset
+    # stopped short of the rebate's outer edge -- disagrees.
+    assert nz.rebate_insets_agreement(rebate, keep, (3, 0, 0, 0)) is False
+    # A component on a non-inset edge (and reaching no inset edge) is not
+    # checked.
+    right = np.zeros((100, 100), dtype=bool)
+    right[40:60, 95:] = True
+    assert nz.rebate_insets_agreement(right, keep, (10, 0, 0, 0)) is None
+
+
+def test_film_extent_on_a_mono_collapsed_grid():
+    """One channel, `luma_of_log` returns it unchanged — the pass reads
+    `shape[-1]`-agnostic luma like its neighbours."""
+    luma = _carrier_grid().copy()
+    # Jittered, so the seed threshold below the valley still reaches the
+    # band's own cells.
+    luma[:15] = np.random.default_rng(7).normal(
+        -3.2, 0.02, (15, luma.shape[1])
+    ).astype(np.float32)
+    grid = luma[..., np.newaxis]
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, extent = nz.withhold_non_film(grid, keep)
+    assert extent.detected
+    assert not new_keep[:15].any()
+
+
+# --- the opaque-holder gate ---------------------------------------------------
+
+
 def test_opaque_holder_block_is_withheld_whatever_its_shape():
     """The failure the gate exists for: a section of completely opaque
     negative holder in the analysis region. It clamps to -6.0, which is
@@ -879,7 +1171,7 @@ def test_build_params_carries_every_constant_and_the_format_version():
     # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants join
     # build_params() because the residual the auto solve reads is recorded
     # per negative against them.
-    assert params["format_version"] == 4
+    assert params["format_version"] == 5
     assert params["analysis_block_px"] == ANALYSIS_BLOCK_PX
     assert params["analysis_passthrough_px"] == nz.ANALYSIS_PASSTHROUGH_PX
     assert params["base_luma_clip"] == nz.BASE_LUMA_CLIP
@@ -909,6 +1201,31 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["clamp_min_samples"] == nz.CLAMP_MIN_SAMPLES
     assert params["clamp_k_mad"] == nz.CLAMP_K_MAD
     assert params["clamp_min_window"] == nz.CLAMP_MIN_WINDOW
+    # BLACK_POINT_REFINEMENT §4.1: the three detector families that shape
+    # published output join build_params() with the v5 bump.
+    assert params["rebate_anchor_percentile"] == nz.REBATE_ANCHOR_PERCENTILE
+    assert params["rebate_density_tolerance"] == nz.REBATE_DENSITY_TOLERANCE
+    assert params["rebate_min_area_cells"] == nz.REBATE_MIN_AREA_CELLS
+    assert params["rebate_min_area_fraction"] == nz.REBATE_MIN_AREA_FRACTION
+    assert params["rebate_max_spread"] == nz.REBATE_MAX_SPREAD
+    assert params["rebate_min_separation"] == nz.REBATE_MIN_SEPARATION
+    assert params["opaque_max_density_below_base"] == nz.OPAQUE_MAX_DENSITY_BELOW_BASE
+    assert params["opaque_dilate_cells"] == nz.OPAQUE_DILATE_CELLS
+    assert params["opaque_clamp_density"] == nz.OPAQUE_CLAMP_DENSITY
+    assert params["opaque_min_anchor_above_clamp"] == nz.OPAQUE_MIN_ANCHOR_ABOVE_CLAMP
+    assert params["film_extent_histogram_bin"] == nz.FILM_EXTENT_HISTOGRAM_BIN
+    assert params["film_extent_valley_drop"] == nz.FILM_EXTENT_VALLEY_DROP
+    assert params["film_extent_lobe_rise"] == nz.FILM_EXTENT_LOBE_RISE
+    assert params["film_extent_min_lobe_fraction"] == nz.FILM_EXTENT_MIN_LOBE_FRACTION
+    assert params["film_extent_seed_offset"] == nz.FILM_EXTENT_SEED_OFFSET
+    assert params["film_extent_margin_cells"] == nz.FILM_EXTENT_MARGIN_CELLS
+    assert (
+        params["film_extent_convergence_step_cells"]
+        == nz.FILM_EXTENT_CONVERGENCE_STEP_CELLS
+    )
+    assert params["film_extent_convergence_delta"] == nz.FILM_EXTENT_CONVERGENCE_DELTA
+    assert params["film_extent_max_steps"] == nz.FILM_EXTENT_MAX_STEPS
+    assert params["film_extent_min_region_fraction"] == nz.FILM_EXTENT_MIN_REGION_FRACTION
     # JSON-serialisable, since it folds into processing_params.
     import json
 
