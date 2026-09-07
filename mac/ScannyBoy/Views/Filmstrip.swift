@@ -129,6 +129,22 @@ struct SelectAllDeselectAllShortcutButtons: View {
     }
 }
 
+/// Z toggles fit ↔ 100% on the Edit tab preview. Invisible,
+/// hit-test-transparent button — same pattern as `RotationShortcutButtons`.
+struct ZoomToggleShortcutButton: View {
+    let isEnabled: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button("Toggle Zoom") { onToggle() }
+            .keyboardShortcut("z")
+            .disabled(!isEnabled)
+            .allowsHitTesting(false)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Cmd-[ / Cmd-] rotate the selection 90° counter-clockwise / clockwise.
 /// Invisible, hit-test-transparent buttons — same pattern as
 /// `SelectionShortcutButtons`.
@@ -151,29 +167,63 @@ struct RotationShortcutButtons: View {
     }
 }
 
-/// The browser's keyboard shortcuts: Option-left / Option-right move the
-/// selection (collapsing any multi-selection, exactly as the filmstrip's
-/// order defines "next"), Cmd-A selects every frame, Cmd-D deselects them
-/// all. Invisible, hit-test-transparent buttons — the same trick
-/// `.keyboardShortcut` demands, since no focusable control owns these
-/// key combinations.
+/// Cmd-A selects every frame, Cmd-D deselects them all. Invisible,
+/// hit-test-transparent buttons — the same trick `.keyboardShortcut`
+/// demands, since no focusable control owns these key combinations.
 struct SelectionShortcutButtons: View {
-    let onPrevious: () -> Void
-    let onNext: () -> Void
     let onSelectAll: () -> Void
     let onDeselectAll: () -> Void
 
     var body: some View {
-        Group {
-            Button("Previous Negative") { onPrevious() }
-                .keyboardShortcut(.leftArrow, modifiers: .option)
-            Button("Next Negative") { onNext() }
-                .keyboardShortcut(.rightArrow, modifiers: .option)
-            SelectAllDeselectAllShortcutButtons(
-                onSelectAll: onSelectAll,
-                onDeselectAll: onDeselectAll
+        SelectAllDeselectAllShortcutButtons(
+            onSelectAll: onSelectAll,
+            onDeselectAll: onDeselectAll
+        )
+        .allowsHitTesting(false)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Left / right arrow move the filmstrip selection (collapsing any
+/// multi-selection, exactly as the filmstrip's order defines "next").
+/// Keys bubble from focused children first, so text fields, sliders, and
+/// pickers keep their arrow bindings; `.focusable()` lets the stage receive
+/// arrows when nothing else owns them.
+private struct FilmstripNavigationShortcuts: ViewModifier {
+    var isEnabled: Bool = true
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .focusable()
+            .onKeyPress(.leftArrow) {
+                guard isEnabled else { return .ignored }
+                onPrevious()
+                return .handled
+            }
+            .onKeyPress(.rightArrow) {
+                guard isEnabled else { return .ignored }
+                onNext()
+                return .handled
+            }
+    }
+}
+
+extension View {
+    func filmstripNavigationShortcuts(
+        isEnabled: Bool = true,
+        onPrevious: @escaping () -> Void,
+        onNext: @escaping () -> Void
+    ) -> some View {
+        modifier(
+            FilmstripNavigationShortcuts(
+                isEnabled: isEnabled,
+                onPrevious: onPrevious,
+                onNext: onNext
             )
-        }
+        )
     }
 }
 

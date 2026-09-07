@@ -1,17 +1,16 @@
 import AppKit
 import SwiftUI
 
-/// The Edit tab preview's AppKit event host: tracks the spacebar, swaps the
-/// cursor to a magnifier (fit) or a hand (100%), and translates space+click /
-/// space+drag into zoom toggles and pans.
+/// The Edit tab preview's AppKit event host: swaps the cursor to a hand at
+/// 100% (or a magnifier at fit when ⌘Space is held), and translates plain
+/// drag into pans at 100% and ⌘Space+click into zoom-in from fit.
 ///
 /// SwiftUI cannot filter a drag on a *held* key the way it filters on
 /// `.shift`, so the pan gesture lives on an NSView overlaid on the preview.
 /// Plain clicks pass straight through — nothing else on the tab needs them,
 /// except the spot markers (SPOTTING_PLAN §8.3): a plain click that hits a
 /// marker toggles its rejection, and one that hits nothing keeps doing
-/// what it has always done (nothing; space+click zoom lives on the space
-/// gesture).
+/// nothing (⌘Space+click zoom lives on the zoom-in gesture).
 struct PreviewEventHost: NSViewRepresentable {
     /// `PreviewZoomModel` is `@MainActor`, like every `NSView`; the host
     /// only touches it from event callbacks and cursor updates, which all
@@ -76,9 +75,10 @@ final class PreviewEventView: NSView {
         window?.invalidateCursorRects(for: self)
     }
 
-    // MARK: - Spacebar
+    // MARK: - ⌘Space modifier
 
     private var spaceMonitor: Any?
+    private var spaceHeld = false
 
     /// The uninstall for the monitor above. `viewDidMoveToWindow(nil)` runs
     /// when the representable's view leaves the hierarchy, which covers the
@@ -89,13 +89,14 @@ final class PreviewEventView: NSView {
             NSEvent.removeMonitor(spaceMonitor)
         }
         spaceMonitor = nil
+        spaceHeld = false
     }
 
     private static let spaceKeyCode: UInt16 = 49
 
-    /// Publishes the spacebar state to `model` while this view is on
-    /// screen. The Edit tab has no text fields, so space has no other
-    /// binding to clash with; the event is never swallowed.
+    /// Tracks the spacebar while this view is on screen so ⌘Space+click can
+    /// zoom in from fit and the magnifier cursor can appear. The Edit tab
+    /// has no text fields, so space has no other binding to clash with.
     private func installSpaceMonitor() {
         guard spaceMonitor == nil else { return }
         spaceMonitor = NSEvent.addLocalMonitorForEvents(
@@ -104,28 +105,37 @@ final class PreviewEventView: NSView {
             guard let self, event.keyCode == Self.spaceKeyCode else {
                 return event
             }
-            if event.type == .keyDown {
-                self.model.spaceDown()
-            } else {
-                self.model.spaceUp()
-            }
+            self.spaceHeld = event.type == .keyDown
             self.window?.invalidateCursorRects(for: self)
             return event
         }
     }
 
+    private var zoomInModifierHeld: Bool {
+        spaceHeld && NSEvent.modifierFlags.contains(.command)
+    }
+
     // MARK: - Mouse
 
     private var gestureIsActive = false
+    private var gestureStart: CGPoint?
 
     override func mouseDown(with event: NSEvent) {
-        guard model.spaceHeld else {
-            super.mouseDown(with: event)
+        if model.mode == .pixels100 {
+            gestureIsActive = true
+            gestureStart = point(for: event)
+            window?.invalidateCursorRects(for: self)
+            model.mouseDown(at: point(for: event), kind: .pan)
             return
         }
-        gestureIsActive = true
-        window?.invalidateCursorRects(for: self)
-        model.mouseDown(at: point(for: event), kind: .space)
+        if zoomInModifierHeld {
+            gestureIsActive = true
+            gestureStart = point(for: event)
+            window?.invalidateCursorRects(for: self)
+            model.mouseDown(at: point(for: event), kind: .zoomInAtClick)
+            return
+        }
+        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -138,16 +148,28 @@ final class PreviewEventView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if gestureIsActive {
+            let end = point(for: event)
+            let wasClick = gestureStart.map { start in
+                abs(end.x - start.x) < PreviewZoomModel.clickTolerance
+                    && abs(end.y - start.y) < PreviewZoomModel.clickTolerance
+            } ?? false
             gestureIsActive = false
+            gestureStart = nil
             window?.invalidateCursorRects(for: self)
-            model.mouseUp(at: point(for: event))
+            model.mouseUp(at: end)
+            if wasClick, model.mode == .pixels100 {
+                tryToggleSpot(at: end)
+            }
             return
         }
-        // A plain click (no space): a marker under the cursor toggles its
-        // rejection; empty space keeps doing what it does today (nothing —
-        // space+click zoom is the space gesture's).
+        tryToggleSpot(at: point(for: event))
+    }
+
+    /// A plain click (no active gesture): a marker under the cursor toggles
+    /// its rejection; empty space keeps doing nothing.
+    private func tryToggleSpot(at panePoint: CGPoint) {
         if let spotHitTester, let onSpotToggled,
-            let spotID = spotHitTester(point(for: event))
+            let spotID = spotHitTester(panePoint)
         {
             onSpotToggled(spotID)
         }
@@ -155,20 +177,16 @@ final class PreviewEventView: NSView {
 
     // MARK: - Cursor
 
-    /// Fit + space → magnifier (macOS 15+); 100% + space → open/closed hand;
+    /// Fit + ⌘Space → magnifier (macOS 15+); 100% → open/closed hand;
     /// otherwise the plain arrow.
     override func resetCursorRects() {
-        guard model.spaceHeld else {
-            super.resetCursorRects()
-            return
-        }
-        if model.mode == .fit, #available(macOS 15.0, *) {
-            addCursorRect(bounds, cursor: NSCursor.zoomIn)
-            return
-        }
         if model.mode == .pixels100 {
             let hand = gestureIsActive ? NSCursor.closedHand : NSCursor.openHand
             addCursorRect(bounds, cursor: hand)
+            return
+        }
+        if zoomInModifierHeld, #available(macOS 15.0, *) {
+            addCursorRect(bounds, cursor: NSCursor.zoomIn)
             return
         }
         super.resetCursorRects()

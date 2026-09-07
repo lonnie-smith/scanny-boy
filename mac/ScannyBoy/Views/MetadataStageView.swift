@@ -40,10 +40,13 @@ struct MetadataStageView: View {
                 )
             }
         }
+        .filmstripNavigationShortcuts(
+            isEnabled: !activity.isBusy,
+            onPrevious: edit.selectPrevious,
+            onNext: edit.selectNext
+        )
         .background {
             SelectionShortcutButtons(
-                onPrevious: edit.selectPrevious,
-                onNext: edit.selectNext,
                 onSelectAll: edit.selectAll,
                 onDeselectAll: edit.deselectAll
             )
