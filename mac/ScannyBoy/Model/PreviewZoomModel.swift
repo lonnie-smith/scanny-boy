@@ -5,9 +5,9 @@ import Observation
 /// Zoom and pan state for the Edit tab's large preview (protocol version
 /// 9's 1:1 zoom).
 ///
-/// The preview scales to fit by default — that stays. Holding space turns
-/// the cursor into a magnifier at fit (or a hand at 100%), space+click
-/// toggles between fit view and 100% view, and space+drag pans at 100%.
+/// The preview scales to fit by default — that stays. `Z` toggles between
+/// fit and 100% view; at 100%, plain click-and-drag pans; from fit,
+/// ⌘Space+click zooms in anchored on the clicked pixel.
 /// "100%" means one image pixel per physical screen pixel
 /// against the underlying TIFF, so the pane shows exactly
 /// `paneSize x displayScale` pixels of the stitched image, letterboxed when
@@ -27,9 +27,10 @@ final class PreviewZoomModel {
         case pixels100
     }
 
-    /// Space+click toggles zoom; space+drag pans at 100%.
+    /// Plain drag pans at 100%; ⌘Space+click zooms in from fit.
     enum GestureKind: Equatable {
-        case space
+        case pan
+        case zoomInAtClick
     }
 
     /// One on-screen crop: the pixels the CLI rendered for `rect`, sized
@@ -42,14 +43,12 @@ final class PreviewZoomModel {
     }
 
     private(set) var mode: Mode = .fit
-    /// Spacebar state, published so the host view can pick the cursor.
-    private(set) var spaceHeld = false
 
     /// Top-left corner of the displayed crop, in display-space pixels.
     private(set) var origin: CGPoint = .zero
     /// The crop currently on screen, if any.
     private(set) var crop: Crop?
-    /// Live pan translation while space+dragging, in points.
+    /// Live pan translation while dragging at 100%, in points.
     private(set) var panOffset: CGSize = .zero
 
     /// A gesture with less total movement than this, in points, is a click.
@@ -212,15 +211,7 @@ final class PreviewZoomModel {
 
     // MARK: - Input (called by the preview's AppKit event host)
 
-    func spaceDown() {
-        spaceHeld = true
-    }
-
-    func spaceUp() {
-        spaceHeld = false
-    }
-
-    /// Remember where the gesture started. Toggle vs pan is decided at
+    /// Remember where the gesture started. Zoom-in vs pan is decided at
     /// `mouseUp`, from how far it moved and which modifier started it.
     func mouseDown(at panePoint: CGPoint, kind: GestureKind) {
         drag = Drag(start: panePoint, originAtStart: origin, kind: kind)
@@ -229,7 +220,7 @@ final class PreviewZoomModel {
     /// Translates the on-screen crop live until the clamped target origin
     /// hits the image's edge. No-op when the image fits the pane at 1:1.
     func mouseDragged(to panePoint: CGPoint) {
-        guard mode == .pixels100, let drag, drag.kind == .space, let crop else { return }
+        guard mode == .pixels100, let drag, drag.kind == .pan, let crop else { return }
         let moved = CGSize(
             width: panePoint.x - drag.start.x,
             height: panePoint.y - drag.start.y
@@ -256,10 +247,12 @@ final class PreviewZoomModel {
             && abs(gesture.total.height) < Self.clickTolerance
         if isClick {
             panOffset = .zero
-            toggle(at: panePoint)
+            if gesture.kind == .zoomInAtClick, mode == .fit {
+                zoomIn(at: panePoint)
+            }
             return
         }
-        guard mode == .pixels100, gesture.kind == .space, let crop else {
+        guard mode == .pixels100, gesture.kind == .pan, let crop else {
             panOffset = .zero
             return
         }
@@ -291,7 +284,7 @@ final class PreviewZoomModel {
         )
     }
 
-    /// Fit → 100% for a space+click at `panePoint`. Zooming in anchors the
+    /// Fit → 100% for a ⌘Space+click at `panePoint`. Zooming in anchors the
     /// 1:1 crop on the pixel the user clicked, Lightroom-style.
     func zoomIn(at panePoint: CGPoint) {
         guard mode == .fit, displaySize.width > 0 else { return }
@@ -312,7 +305,7 @@ final class PreviewZoomModel {
         fetchCrop()
     }
 
-    /// 100% → fit for a space+click.
+    /// 100% → fit for the Z shortcut and toolbar button.
     func zoomOut() {
         guard mode == .pixels100 else { return }
         mode = .fit

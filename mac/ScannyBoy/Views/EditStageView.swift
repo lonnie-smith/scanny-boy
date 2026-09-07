@@ -118,8 +118,8 @@ private enum EditSidebarTab: String, CaseIterable, Identifiable {
 }
 
 /// The selected negative: a tabbed sidebar of adjustment controls, a
-/// preview sized to fill the remaining space (or, after space+click, a 1:1
-/// crop of it), and a slim toolbar for zoom and display toggles. The
+/// preview sized to fill the remaining space (or, after ⌘Space+click or Z,
+/// a 1:1 crop of it), and a slim toolbar for zoom and display toggles. The
 /// controls act on the whole multi-selection when one exists —
 /// `edit.selectionTargets` falls back to the anchor frame otherwise.
 private struct PreviewPane: View {
@@ -151,6 +151,11 @@ private struct PreviewPane: View {
     /// The display encode the pane's renders should use.
     private var displayMode: PreviewDisplayMode {
         showsNegative ? .negative : .positive
+    }
+
+    private var zoomShortcutsEnabled: Bool {
+        negative.output != nil
+            && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
     }
 
     private var rotationShortcutsEnabled: Bool {
@@ -235,6 +240,10 @@ private struct PreviewPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background {
+            ZoomToggleShortcutButton(
+                isEnabled: zoomShortcutsEnabled,
+                onToggle: { zoom.toggle(at: previewCenter) }
+            )
             RotationShortcutButtons(
                 isEnabled: rotationShortcutsEnabled,
                 onRotateCounterClockwise: {
@@ -297,8 +306,8 @@ private struct PreviewPane: View {
 
     private var zoomButtonHelp: String {
         zoom.mode == .fit
-            ? "Zoom to 100% (Space+click)"
-            : "Zoom to fit (Space+click)"
+            ? "Zoom to 100% (Z or ⌘Space+click)"
+            : "Zoom to fit (Z)"
     }
 
     private var displayModeButtonHelp: String {

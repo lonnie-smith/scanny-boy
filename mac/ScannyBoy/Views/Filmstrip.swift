@@ -129,6 +129,22 @@ struct SelectAllDeselectAllShortcutButtons: View {
     }
 }
 
+/// Z toggles fit ↔ 100% on the Edit tab preview. Invisible,
+/// hit-test-transparent button — same pattern as `RotationShortcutButtons`.
+struct ZoomToggleShortcutButton: View {
+    let isEnabled: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button("Toggle Zoom") { onToggle() }
+            .keyboardShortcut("z")
+            .disabled(!isEnabled)
+            .allowsHitTesting(false)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Cmd-[ / Cmd-] rotate the selection 90° counter-clockwise / clockwise.
 /// Invisible, hit-test-transparent buttons — same pattern as
 /// `SelectionShortcutButtons`.
