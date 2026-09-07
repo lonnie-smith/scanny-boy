@@ -43,8 +43,12 @@ from scanny_boy import flatfield, normalization, raw_decode
 from scanny_boy import linear as linear_module
 from scanny_boy.events import Code
 
-# The measurement runs on normalization's block-median grid, at
-# normalization.ANALYSIS_GRID. This module does not define its own.
+# The measurement runs on normalization's block-median grid, with cells of
+# normalization.ANALYSIS_BLOCK_PX source pixels. This module does not
+# define its own. Since that block is pinned rather than derived from the
+# image's size, a base frame's cell is the same piece of film as a
+# stitched negative's, whatever grid the negative was shot in — which is
+# what makes §6's comparison between the two mean anything.
 
 # --- finding the populations ---
 

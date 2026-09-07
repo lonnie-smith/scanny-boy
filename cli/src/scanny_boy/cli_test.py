@@ -3137,7 +3137,17 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
-    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    manifest = load_roll_manifest(roll_dir)
+    negative_id = manifest.negatives[0].negative_id
+    # The state under test is a negative whose recorded normalization holds
+    # no `neutral_residual` — a stitch from before the meter existed, or one
+    # whose region gave the meter nothing to weight. Set it here rather than
+    # leaning on the fixture to fail to produce one: with the analysis cell
+    # pinned (normalization.ANALYSIS_BLOCK_PX) even this small synthetic
+    # negative clears NEUTRAL_RESIDUAL_MIN_CELLS, which is the change doing
+    # its job and not the path this test is about.
+    manifest.negatives[0].normalization["neutral_residual"] = None
+    write_roll_manifest(roll_dir, manifest)
     capsys.readouterr()
 
     status = main(

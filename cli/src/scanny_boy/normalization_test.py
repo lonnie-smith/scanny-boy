@@ -17,7 +17,7 @@ import pytest
 
 from scanny_boy import normalization as nz
 from scanny_boy.normalization import (
-    ANALYSIS_GRID,
+    ANALYSIS_BLOCK_PX,
     NORMALIZED_HEADROOM_HIGH,
     NORMALIZED_HEADROOM_LOW,
     Bounds,
@@ -167,13 +167,13 @@ def test_block_median_grid_vanishes_a_single_hot_pixel():
     img = (rng.uniform(-2.0, -0.5, size=(2100, 2100, 3))).astype(np.float32)
     img[40, 40] = -6.0  # one hot (dense) pixel, e.g. a dust pinhole
     grid = block_median_grid(img)
-    assert grid.shape == (700, 700, 3)
+    assert grid.shape == (350, 350, 3)
     # The hot pixel's own block does not contain it: the block median sits
     # inside the scene's range, not at the outlier's value.
-    assert grid[13, 13].min() > -2.0
+    assert grid[40 // ANALYSIS_BLOCK_PX, 40 // ANALYSIS_BLOCK_PX].min() > -2.0
 
 
-def test_block_median_grid_passthrough_below_the_grid_side():
+def test_block_median_grid_passthrough_below_the_passthrough_size():
     img = np.full((64, 48, 3), -1.0, dtype=np.float32)
     grid = block_median_grid(img)
     assert grid.shape == (64, 48, 3)
@@ -183,9 +183,9 @@ def test_block_median_grid_passthrough_below_the_grid_side():
 @pytest.mark.parametrize(
     ("shape", "expected_grid"),
     [
-        ((1049, 1049, 3), (525, 525)),
-        ((2000, 1500, 3), (1000, 750)),
-        ((1024, 1024, 3), (1024, 1024)),
+        ((1049, 1049, 3), (175, 175)),
+        ((2000, 1500, 3), (334, 250)),
+        ((1024, 1024, 3), (1024, 1024)),  # at the passthrough size, block 1
     ],
 )
 def test_analysis_grid_block_sizes_and_grid_shape(shape, expected_grid):
@@ -193,23 +193,38 @@ def test_analysis_grid_block_sizes_and_grid_shape(shape, expected_grid):
     grid_rows = -(-shape[0] // block_rows)
     grid_cols = -(-shape[1] // block_cols)
     assert (grid_rows, grid_cols) == expected_grid
-    assert grid_rows <= ANALYSIS_GRID and grid_cols <= ANALYSIS_GRID
 
 
-def test_analysis_grid_bounded_for_canvas_sizes_from_1mp_to_200mp():
-    # The 200MP end is only exercised through the block-size rule —
-    # materializing a 200-megapixel canvas is not a fast-tier proposition.
-    for width, height in [
-        (1024, 1024),  # 1.0 MP
-        (4000, 3000),  # 12 MP, a full-size frame
-        (12000, 8000),  # 96 MP canvas
-        (20000, 10000),  # 200 MP canvas
-    ]:
+def test_analysis_cell_is_the_same_size_at_every_canvas_shape():
+    """The invariant the pinned block exists for, and the one the retired
+    long-side-bounded rule did not hold: the *cell* is fixed and the grid's
+    dimensions are what grow with the canvas. Shapes are the grid workload
+    of docs/GRID_STITCH_PLAN.md §7.1, where the old rule ran the cell from
+    6 px on one frame to 22 px on a 5×2 while shrinking the grid from
+    667k cells to 304k.
+    """
+    canvases = {
+        "1x1": (6000, 4000),
+        "2x1 strip": (10000, 4000),
+        "2x2": (10000, 6667),
+        "4x2": (18000, 6667),
+        "5x2": (22000, 6667),
+        "5x2 shot rotated": (14667, 10000),
+    }
+    cells = {}
+    for label, (width, height) in canvases.items():
         block_rows, block_cols = nz.analysis_grid_block_sizes((height, width, 3))
-        grid_rows = -(-height // block_rows)
-        grid_cols = -(-width // block_cols)
-        assert grid_rows <= ANALYSIS_GRID
-        assert grid_cols <= ANALYSIS_GRID
+        assert (block_rows, block_cols) == (ANALYSIS_BLOCK_PX, ANALYSIS_BLOCK_PX), label
+        cells[label] = (-(-height // block_rows)) * (-(-width // block_cols))
+
+    # Cell count therefore tracks canvas *area*, not aspect ratio: a 5×2
+    # holds 6.1x the samples of one frame because it holds 6.1x the film.
+    for label, (width, height) in canvases.items():
+        assert cells[label] == pytest.approx(
+            width * height / ANALYSIS_BLOCK_PX**2, rel=0.01
+        ), label
+    # And the same negative shot rotated 90° meters on the same grid.
+    assert cells["5x2 shot rotated"] == pytest.approx(cells["5x2"], rel=0.01)
 
 
 # --- N-2: the meters ---------------------------------------------------------
@@ -871,8 +886,9 @@ def test_build_params_carries_every_constant_and_the_format_version():
     # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants join
     # build_params() because the residual the auto solve reads is recorded
     # per negative against them.
-    assert params["format_version"] == 3
-    assert params["analysis_grid"] == ANALYSIS_GRID
+    assert params["format_version"] == 4
+    assert params["analysis_block_px"] == ANALYSIS_BLOCK_PX
+    assert params["analysis_passthrough_px"] == nz.ANALYSIS_PASSTHROUGH_PX
     assert params["base_luma_clip"] == nz.BASE_LUMA_CLIP
     assert params["base_color_clip"] == nz.BASE_COLOR_CLIP
     assert params["normalized_headroom_low"] == NORMALIZED_HEADROOM_LOW
@@ -882,15 +898,15 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["scan_clip_warn"] == nz.SCAN_CLIP_WARN
     assert params["dense_border_anchor_percentile"] == nz.DENSE_BORDER_ANCHOR_PERCENTILE
     assert params["dense_border_tolerance"] == nz.DENSE_BORDER_TOLERANCE
+    assert params["dense_border_min_area_cells"] == nz.DENSE_BORDER_MIN_AREA_CELLS
     assert (
         params["dense_border_min_area_fraction"] == nz.DENSE_BORDER_MIN_AREA_FRACTION
     )
-    assert (
-        params["dense_border_max_area_fraction"] == nz.DENSE_BORDER_MAX_AREA_FRACTION
-    )
-    assert (
-        params["dense_border_max_bbox_fraction"] == nz.DENSE_BORDER_MAX_BBOX_FRACTION
-    )
+    assert params["dense_border_max_width_cells"] == nz.DENSE_BORDER_MAX_WIDTH_CELLS
+    # Retired with the pinned cell: both scaled with the canvas.
+    assert "dense_border_max_area_fraction" not in params
+    assert "dense_border_max_bbox_fraction" not in params
+    assert "analysis_grid" not in params
     assert params["dense_border_min_separation"] == nz.DENSE_BORDER_MIN_SEPARATION
     assert (
         params["dense_border_outside_percentile"]
@@ -924,8 +940,11 @@ def test_upgrade_normalize_params_injects_missing_v1_keys():
     v1 = {"format_version": 1, "analysis_grid": 512, "base_luma_clip": 0.02}
     upgraded = nz.upgrade_normalize_params(v1)
     assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
-    assert upgraded["analysis_grid"] == 512
     assert upgraded["base_luma_clip"] == 0.02
+    # `analysis_grid` is the one stored value that is *not* kept: it names
+    # a rule the pinned cell retired, so it is dropped rather than carried
+    # forward under a meaning it no longer has.
+    assert "analysis_grid" not in upgraded
     assert upgraded["base_color_clip"] == nz.BASE_COLOR_CLIP
     assert upgraded["normalized_fill"] == nz.NORMALIZED_FILL
     assert v1["format_version"] == 1  # the stored block is never mutated
@@ -941,13 +960,32 @@ def test_upgrade_normalize_params_covers_keys_added_later(monkeypatch):
     """The forward property the plan demands: a key a later step (§2's
     thresholds, §3's weights) adds to build_params() is absorbed by the
     same shim, with no second migration. Proved by faking such a key."""
-    v1 = {"format_version": 1, "analysis_grid": ANALYSIS_GRID}
+    v1 = {"format_version": 1, "analysis_grid": 1024}
     monkeypatch.setattr(
         nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
     )
     upgraded = nz.upgrade_normalize_params(v1)
     assert upgraded["future_threshold"] == 1.5
     assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
+
+
+def test_upgrade_normalize_params_retires_the_canvas_scaled_keys():
+    """A v3 block carries three keys the pinned cell retired, two of them
+    with values `setdefault` could never overwrite. They must be dropped by
+    name, or every pre-v4 roll fails the exact-dict invariant comparison."""
+    v3 = {
+        **build_params(),
+        "format_version": 3,
+        "analysis_grid": 1024,
+        "dense_border_max_area_fraction": 0.05,
+        "dense_border_max_bbox_fraction": 0.05,
+    }
+    del v3["analysis_block_px"]
+    del v3["analysis_passthrough_px"]
+    del v3["dense_border_min_area_cells"]
+    del v3["dense_border_max_width_cells"]
+
+    assert nz.upgrade_normalize_params(v3) == build_params()
 
 
 def test_upgrade_normalize_params_also_covers_a_v2_block_missing_a_later_key(

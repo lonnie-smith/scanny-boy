@@ -1047,11 +1047,20 @@ def _intersect_with_coverage(
     canvas_shape: tuple[int, ...],
     covered: np.ndarray,
 ) -> np.ndarray:
-    """Withhold every block the blend did not fully cover, even inside the
+    """Withhold every block the blend did not mostly cover, even inside the
     caller's valid rect: the rect comes from the layout's coverage, and the
     blend's `covered` can hold interior holes the layout never saw — a hole
     would meter the fill (linear 0, log -6.0) and garbage the floor
-    percentile (docs/DECISIONS.md, "Normalization decisions")."""
+    percentile (docs/DECISIONS.md, "Normalization decisions").
+
+    "Mostly", not "fully", because the test is `block_median_grid` over the
+    coverage indicator: a block survives while covered pixels are its
+    majority. That is the right threshold rather than a concession — it is
+    exactly the condition under which the *image* cell's median is drawn
+    from covered pixels too, so the fill never reaches the meters either
+    way. It matters more than it used to: with `ANALYSIS_BLOCK_PX` pinned a
+    hole's edge no longer lands on a block boundary by construction, so
+    straddling blocks are the common case rather than the absent one."""
     covered_grid = block_median_grid(
         np.where(covered, np.float32(1.0), np.float32(0.0))
     )

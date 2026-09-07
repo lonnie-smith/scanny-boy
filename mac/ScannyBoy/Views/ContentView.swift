@@ -327,21 +327,7 @@ struct ContentView: View {
             // grouping picker was unreachable for the duration.
             configurationSections
                 .disabled(activity.isBusy)
-            runSection
-            // Add Scans shows this section for its own invocations only
-            // (M9): an apply-metadata started from the Metadata tab is not
-            // a conversion, even though it shares the same `RunModel`.
-            if run.phase != .idle, run.invocation != .applyMetadata {
-                Section("Convert Results") {
-                    if run.isActive {
-                        RunProgressView(run: run)
-                    } else if run.phase == .finishing {
-                        FinishingView()
-                    } else {
-                        RunResultView(run: run)
-                    }
-                }
-            }
+            convertSection
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -350,12 +336,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var configurationSections: some View {
-        Section("Scanning Rig Profile") {
+        Section {
             // Chosen fresh for every run: a roll does not lock to one
             // profile, so different runs into the same roll may each pick
             // a different one. Defaults to the last profile used, across
             // any roll.
-            Picker("Profile", selection: $model.flatFieldProfileID) {
+            Picker("Scanning Rig Profile", selection: $model.flatFieldProfileID) {
                 Text("None").tag(String?.none)
                 ForEach(flatField.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
@@ -370,8 +356,6 @@ struct ContentView: View {
                 flatField.refresh()
                 isPresentingFlatFieldProfiles = true
             }
-        }
-        Section("Film setup") {
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,
@@ -388,14 +372,7 @@ struct ContentView: View {
                 onChoose: { chooseBaseFrame(replace: false) },
                 onReplace: { chooseBaseFrame(replace: true) }
             )
-            if model.filmBase == nil {
-                Text("Choose a film-base reference before converting scans.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        Section {
-            Picker("Configuration", selection: $model.gridProfileID) {
+            Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)
                 ForEach(grid.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
@@ -431,7 +408,7 @@ struct ContentView: View {
             }
         } header: {
             HStack {
-                Text("Grouping")
+                Text("Roll Setup")
                 if model.isValidating {
                     Spacer()
                     ProgressView()
@@ -441,8 +418,8 @@ struct ContentView: View {
         }
     }
 
-    private var runSection: some View {
-        Section {
+    private var convertSection: some View {
+        Section("Convert") {
             HStack {
                 Spacer()
                 if run.isActive {
@@ -452,6 +429,18 @@ struct ContentView: View {
                 Button("Convert") { handleConvertTap() }
                     .disabled(!model.runEnabled || model.isValidating || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
+            }
+            // Add Scans shows results for its own invocations only (M9):
+            // an apply-metadata started from the Metadata tab is not a
+            // conversion, even though it shares the same `RunModel`.
+            if run.phase != .idle, run.invocation != .applyMetadata {
+                if run.isActive {
+                    RunProgressView(run: run)
+                } else if run.phase == .finishing {
+                    FinishingView()
+                } else {
+                    RunResultView(run: run)
+                }
             }
         }
     }

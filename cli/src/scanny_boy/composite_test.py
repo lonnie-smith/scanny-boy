@@ -23,6 +23,7 @@ from scanny_boy.normalization import (
     NORMALIZED_FILL,
     Bounds,
     FilmKind,
+    analysis_grid_block_sizes,
     analyze_bounds,
     block_median_grid,
     decode_normalized,
@@ -797,20 +798,44 @@ def test_region_keep_withholds_uncovered_interior_blocks():
     every candidate region with the blocks the blend actually covered, so
     a hole's cells — linear 0, log -6.0 — can never reach the meters and
     latch the floor percentile (the R1 negative-08 failure)."""
-    canvas_shape = (1200, 1200)  # block = 2: blocks, not cells, get gated
+    canvas_shape = (1200, 1200)  # blocks, not cells, get gated
+    block, _ = analysis_grid_block_sizes(canvas_shape)
+    side = -(-1200 // block)
+    # The hole is given in *block* coordinates, so "the hole's blocks" is
+    # exact rather than a property of where 1200 happens to divide.
+    hole_b0, hole_b1 = 16, 24
     covered = np.ones(canvas_shape, dtype=bool)
-    covered[100:140, 100:140] = False  # an interior hole
-    keep = _region_keep((600, 600), canvas_shape, (0, 0, 1200, 1200), covered)
+    covered[hole_b0 * block : hole_b1 * block, hole_b0 * block : hole_b1 * block] = (
+        False  # an interior hole
+    )
+    keep = _region_keep((side, side), canvas_shape, (0, 0, 1200, 1200), covered)
 
-    block = 2
-    # The hole's blocks — including the partially covered edge blocks — are
-    # withheld; everything else survives.
-    assert not keep[
-        100 // block : -(-140 // block), 100 // block : -(-140 // block)
-    ].any()
+    # The hole's blocks are withheld; everything else survives.
+    assert not keep[hole_b0:hole_b1, hole_b0:hole_b1].any()
     assert keep.any()
     assert keep[0, 0]
-    assert keep[599, 599]
+    assert keep[side - 1, side - 1]
+    assert keep.sum() == side * side - (hole_b1 - hole_b0) ** 2
+
+
+def test_region_keep_withholds_a_block_only_once_the_fill_is_its_majority():
+    """The bound `_intersect_with_coverage` actually provides, made explicit
+    because the block is `ANALYSIS_BLOCK_PX` wide and a hole's edge no
+    longer lands on block boundaries by construction: the coverage test is
+    a *median* over the block, so a block survives while covered pixels are
+    its majority — which is exactly when the image cell's own median is
+    drawn from covered pixels too, and the fill cannot reach the meters."""
+    canvas_shape = (1200, 1200)
+    block, _ = analysis_grid_block_sizes(canvas_shape)
+    side = -(-1200 // block)
+    minority = (block - 1) // 2  # strictly fewer than half the block's rows
+    covered = np.ones(canvas_shape, dtype=bool)
+    covered[40 * block : 40 * block + minority, :] = False
+    covered[50 * block : 50 * block + block, :] = False  # a whole block row
+
+    keep = _region_keep((side, side), canvas_shape, (0, 0, 1200, 1200), covered)
+    assert keep[40].all()  # minority fill: the block's median is still covered
+    assert not keep[50].any()  # wholly uncovered: withheld
 
 
 def test_region_keep_with_a_fully_uncovered_region_falls_back_to_coverage():
@@ -818,16 +843,20 @@ def test_region_keep_with_a_fully_uncovered_region_falls_back_to_coverage():
     not meter the fill again either: the last-resort fallback is the
     covered blocks alone, never the unfiltered grid."""
     canvas_shape = (1200, 1200)
+    block, _ = analysis_grid_block_sizes(canvas_shape)
+    side = -(-1200 // block)
+    hole_b0, hole_b1 = 66, 134  # block coordinates, so the rect maps exactly
+    lo, hi = hole_b0 * block, hole_b1 * block
     covered = np.ones(canvas_shape, dtype=bool)
-    covered[400:800, 400:800] = False  # the middle of the rect is a hole
-    rect = (400, 400, 400, 400)
-    keep = _region_keep((600, 600), canvas_shape, rect, covered)
-    # Every block of the rect is at least partially uncovered, so both rect
-    # fallbacks are empty; the meters fall back to the covered blocks.
+    covered[lo:hi, lo:hi] = False  # the middle of the rect is a hole
+    rect = (lo, lo, hi - lo, hi - lo)
+    keep = _region_keep((side, side), canvas_shape, rect, covered)
+    # Every block of the rect is uncovered, so both rect fallbacks are
+    # empty; the meters fall back to the covered blocks.
     assert keep.any()
-    assert not keep[200:400, 200:400].any()
-    assert keep[0, 0] and keep[599, 599]
-    assert keep.sum() == 600 * 600 - 200 * 200
+    assert not keep[hole_b0:hole_b1, hole_b0:hole_b1].any()
+    assert keep[0, 0] and keep[side - 1, side - 1]
+    assert keep.sum() == side * side - (hole_b1 - hole_b0) ** 2
 
 
 def test_memory_estimate_rejects_an_impossible_canvas():
@@ -1457,6 +1486,17 @@ def _build_rectified_scene():
     scene = cv2.GaussianBlur(
         rng.uniform(0.0, 1.0, size=_RECT_SCENE_SIZE), (0, 0), 12
     )
+    # Blurring uniform noise at sigma 12 leaves everything within a few
+    # thousandths of 0.5, which in log density is a featureless sheet the
+    # rebate detector reads as clear base and withholds whole — leaving the
+    # meters 0.1% of the region and bounds that mean nothing. The error
+    # metric inverts those bounds, so it needs them sane. Stretching the
+    # blurred field back over a real negative's linear range keeps the
+    # scene smooth (a sharp one would put the capture's own resample error
+    # where the misregistration signal belongs) while giving it density to
+    # meter.
+    span = float(scene.max() - scene.min())
+    scene = 0.02 + 0.93 * (scene - float(scene.min())) / span
 
     height, width = _RECT_FRAME_SIZE
     ys, xs = np.mgrid[0:height, 0:width]

@@ -341,8 +341,9 @@ Ship with these starting values, record the measured statistics from day one,
 and change the numbers only at the user gate.
 
 ```python
-# The measurement runs on normalization's block-median grid, at
-# normalization.ANALYSIS_GRID. This module does not define its own.
+# The measurement runs on normalization's block-median grid, with cells of
+# normalization.ANALYSIS_BLOCK_PX source pixels. This module does not
+# define its own.
 
 # --- finding the populations ---
 # Log10 D. Width of the candidate band taken below each pass's thin anchor.
@@ -489,8 +490,15 @@ Implementation notes:
 
 - **Use `normalization.block_median_grid` and `normalization.to_log_density`.
   Do not reimplement either.** The block median is what makes the statistic
-  dust-immune and resolution-invariant, and it is the same reduction the
+  dust-immune and shape-invariant, and it is the same reduction the
   per-negative path uses, which is what makes §6's comparison meaningful.
+  That last clause is only literally true since `ANALYSIS_BLOCK_PX` was
+  pinned: while the block was derived from the image's long side, a base
+  frame reduced at b = 6 was being compared against a 5×2 negative reduced
+  at b = 22. The thin end this measurement reads barely moved with b
+  (−0.006 log10 D from b = 6 to b = 26 on a real frame), so the comparison
+  was not wrong in practice — but it rested on a coincidence rather than on
+  the shared reduction the note claims.
 - **The median, not the mean**, everywhere. A dust shadow that survived the
   block median must not move the answer.
 - If step 3 finds no population at all, return a `BaseMeasurement` with

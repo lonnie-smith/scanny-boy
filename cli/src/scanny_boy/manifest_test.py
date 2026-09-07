@@ -469,7 +469,7 @@ def test_rerun_still_rejects_a_genuinely_different_normalize_block():
     existing = _manifest(
         processing_params={
             "output_bps": 16,
-            "normalize": {**build_params(), "format_version": 1, "analysis_grid": 512},
+            "normalize": {**build_params(), "format_version": 1, "base_luma_clip": 0.02},
         }
     )
     candidate = _manifest(

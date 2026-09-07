@@ -1068,6 +1068,102 @@ observed pre-clip extrema and the clipped fraction are recorded per
 negative so the constants can be tuned from real scans, and
 `NORMALIZE_HEADROOM_CLIPPED` warns when they clip too much.
 
+## The analysis cell is pinned to source pixels, not derived from the canvas (`normalize` format_version 4)
+
+**`ANALYSIS_BLOCK_PX = 6`.** `block_median_grid`'s block used to be
+`b = ceil(max(h, w) / 1024)` — a grid bounded on its long side, which ties
+the cell to the canvas's **aspect ratio** rather than to anything on the
+film. That was invisible while a negative was one frame or a short strip.
+At the grid workload of docs/GRID_STITCH_PLAN.md §7.1 it is not: one
+6000×4000 frame gives b = 6 (36 µm at the reference rig) while a 5×2's
+22000×6667 canvas gives b = 22 (132 µm) — a 13× larger cell over a grid
+holding **2.2× fewer** samples, because the long-side bound makes cell
+count fall as the canvas elongates.
+
+**Measured, on one real frame tiled to each canvas size** so the film
+content per unit area is identical and the only variable is the cell: the
+floor lifted 0.049 log10 D and the span contracted 0.057 (3.8%) from 1×1
+to 5×2, monotonically — roughly 0.19 stop of black point, on the same
+negative, decided by the grid it happened to be shot in. Nothing caught
+it: `CLAMP_MIN_WINDOW` is 0.5 log10 D, nine times too coarse to see it.
+With b pinned the same sweep moves 0.004 across 2×2…5×2. The thin end was
+never the problem (−0.006 log10 D across b = 6…26), which is why
+`film_base`'s anchor kept working; the dense end is where the small-sample
+percentile lives.
+
+**Rejected: making the cell a function of the grid configuration.** That
+keeps the shape dependence and adds plumbing. Every consumer — the two
+meters, both border detectors, the neutral residual's 3×3 neighbourhood —
+is a statement about a physical scale on film, so the fix is to remove the
+variable, not parameterise it. Pinning also makes docs/REBATE_ANCHORING.md
+§2.2's claim that `film_base` uses "the same reduction the per-negative
+path uses" literally true; it was comparing a base frame at b = 6 against
+a 5×2 negative at b = 22.
+
+**It costs nothing.** On a 22000×6667 canvas the reduction runs 6.9 s at
+b = 6 against 7.5 s at b = 22 — the cost is the whole-canvas copy either
+way — and the grid grows from 3.5 MiB to 47 MiB against a 23.8 GB
+estimated peak. (That copy, ~1× the log-density array, is not modelled in
+`estimate_peak_bytes`. It is b-independent and the warp branch dominates,
+so it does not bind; noted, not fixed.)
+
+`ANALYSIS_PASSTHROUGH_PX = 1024` keeps the old "already at analysis
+resolution, pass through unreduced" behaviour under its own name, and
+`analysis_grid_block_sizes` reports block 1 below it so a caller mapping
+canvas coordinates onto cells stays consistent with what the reduction
+actually did. Production never approaches the threshold — the smallest
+canvas is one 6000 px frame — so the step from block 1 to block 6 at the
+boundary is a property of synthetic inputs alone.
+
+## The region gates are absolute, floored by the fractions they replaced
+
+Pinning the cell makes a cell count **an area on film**, which is what let
+the second half of the same change happen. Three gates were fractions of
+the analysis region, so their physical meaning scaled with the negative's
+area while the features they gate scale with the *edge they run along*:
+
+- `REBATE_MIN_AREA_FRACTION` (0.02) demanded 17 mm² on one frame and
+  106 mm² on a 5×2. A 1.5 mm rebate band across the short ends of a
+  132×40 mm canvas is 60 mm² — it cleared 2% of a 2×2 region and missed
+  it on a 5×2. Now `REBATE_MIN_AREA_CELLS = 13_340`.
+- `DENSE_BORDER_MIN_AREA_FRACTION` (0.005), likewise, now
+  `DENSE_BORDER_MIN_AREA_CELLS = 3_335` (4.3 mm²).
+- `DENSE_BORDER_MAX_AREA_FRACTION` (0.05) and
+  `DENSE_BORDER_MAX_BBOX_FRACTION` (0.05) both became
+  `DENSE_BORDER_MAX_WIDTH_CELLS = 33` (1.2 mm), applied to the stripe's
+  **mean width** (`area / bbox long side`) and to its bounding box's thin
+  axis. A stripe's area is its width times the border it runs along, so
+  capping the area as a fraction of the region admitted a 265 mm² component
+  on a 5×2 where one frame admitted 43; and 5% of each grid axis called
+  anything up to 6.6 mm wide a sliver on a 22000 px canvas. Capping the
+  width says what both constants always meant, and is *tighter* than the
+  area fraction on a short component — the direction that keeps scene
+  content out.
+
+**The fractions survive as small-region guards, not as the gate.** One
+helper, `_region_limit(absolute, fraction, extent)`, takes whichever is
+**smaller**. On any region at or above a frame's worth of film the
+absolute binds; below it — a degenerate stitch, a synthetic grid — an
+absolute cell count is not a meaningful piece of film and the old fraction
+takes over. So the change is never stricter than the fraction rule was on
+a small region, never looser than it was on a large one, and every
+absolute is calibrated to reproduce single-frame behaviour exactly by
+construction.
+
+Every number here is still **provisional and unmeasured** in the sense the
+`REBATE_*` and `DENSE_BORDER_*` constants always were — this change fixes
+how they *scale*, not what they are worth. They stay on the punchlist.
+
+**`NORMALIZE_FORMAT_VERSION` → 4**, and this is the first bump where the
+meters' *arithmetic* moved rather than the recorded constant set: a v3
+roll re-stitched under v4 gets different bounds on any canvas that is not
+one frame. `upgrade_normalize_params` gained a strip list alongside its
+`setdefault` injection, because a key whose **value** changed cannot be
+absorbed by `setdefault` — `analysis_grid`,
+`dense_border_max_area_fraction` and `dense_border_max_bbox_fraction` are
+removed by name, or every pre-v4 roll fails the exact-dict invariant
+comparison.
+
 ## Naming: "Convert" in the UI, `prepare` inside the CLI (§3.9)
 
 **`run` stays `run`.** The user-facing verb is "Convert" everywhere in
@@ -1215,10 +1311,10 @@ reported as covered. Raw dense-end percentiles have no defense: the block
 median only removes extremes smaller than one block, and the rebate
 detector withholds *thin* border junk only. The mirror gates on density,
 not geometry: candidates within tolerance of the region's dense-end anchor
-(P0.1 luma), border-touching components gated on area (both ways — too
-small is not a stripe, too large is scene content), thinness (a stripe's
-bounding box is thin perpendicular to its border; scene content spans the
-frame), flatness *along* its length (contamination is featureless along
+(P0.1 luma), border-touching components gated on area (too small is not a
+stripe), thickness (a stripe is thin perpendicular to its border, by
+bounding box and by mean width; scene content dense enough to matter spans
+the frame), flatness *along* its length (contamination is featureless along
 the border; edge fog fades across its thickness, so the test runs on the
 along-length medians), and separation from the scene's own dense tail (the
 gate that makes "no stripe at all" return cleanly). The detector
@@ -1261,11 +1357,24 @@ undetected — the holder was blinding the mirror as well as pinning the
 floor. Before `detect_rebate` too, so the gate's own anchor still reads the
 film base rather than the thinnest scene content, which is the physical
 statement the constant is written against. The scale of the floor damage it
-prevents: `BASE_LUMA_CLIP` is 0.01 percent, ~70 cells on a 1024-side grid,
-and a one-cell-wide sliver along a 1024-cell edge is fifteen times that — so
-it does not take much holder to move the floor from a real Dmax near −3.0 to
-−6.0, roughly doubling the span and squeezing the picture into the top half
-of `val`.
+prevents: `BASE_LUMA_CLIP` is 0.01 percent of the region, a few hundred
+cells on a real negative's grid, and a one-cell-wide sliver along one grid
+edge is several times that — deliberately stated against the region rather
+than a particular prefilter geometry, since the block rule has changed once
+already. It does not take much holder to move the floor from a real Dmax near
+−3.0 to −6.0, roughly doubling the span and squeezing the picture into the
+top half of `val`.
+
+**Measured against real film** (roll `3f8c78d0`, Nikon Z f, colour negative,
+two negatives): reconstructing each published TIFF's log grid through
+`decode_normalized` and the recorded bounds puts the thin-end anchor at
+−0.629/−0.671 and the P0.01 luma floor at −3.140/−3.208 — a film depth of
+**2.51 and 2.54 decades**, against the 3.2 the constant allows. The gate
+fires on neither. Its threshold lands 0.59/0.57 decades below the densest
+cell either negative contains and 2.17 decades above the −6.0 the holder
+clamps to, which is the separation the constant is trading off. Neither
+negative carries holder, so this measures the false-positive margin only; the
+failure itself is still unconfirmed against a scan that has it.
 
 A *wholly* opaque region is the case the relative gate structurally cannot
 see — with nothing but holder there is no thin end for the holder to be

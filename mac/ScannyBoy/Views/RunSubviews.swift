@@ -249,14 +249,16 @@ struct BaseFrameField: View {
     let onReplace: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let filmBase {
-                attachedSummary(filmBase)
-            } else {
-                emptyState
-            }
-            if let error {
-                IssueLabel(issue: error, style: .error)
+        LabeledContent("Film Base reference") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let filmBase {
+                    attachedSummary(filmBase)
+                } else {
+                    emptyState
+                }
+                if let error {
+                    IssueLabel(issue: error, style: .error)
+                }
             }
         }
     }
@@ -288,7 +290,7 @@ struct BaseFrameField: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button("Choose base frame…") { onChoose() }
+            Button("Choose…") { onChoose() }
                 .disabled(isBusy)
             Text(Self.captureInstructions)
                 .font(.caption)
