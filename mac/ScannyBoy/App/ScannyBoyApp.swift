@@ -110,13 +110,17 @@ struct RootView: View {
             let edit = EditModel(runner: runner)
             let run = RunModel(runner: runner)
             let export = ExportModel(runner: runner)
+            let configuration = ConfigurationModel(runner: runner)
             self.flatField = flatField
             self.grid = grid
-            model = ConfigurationModel(runner: runner)
+            model = configuration
             self.edit = edit
             self.run = run
             self.export = export
-            activity = AppActivity(run: run, edit: edit, export: export, flatField: flatField)
+            activity = AppActivity(
+                run: run, edit: edit, export: export, flatField: flatField,
+                configuration: configuration
+            )
         } catch let error as CLILocatorError {
             unavailableReason = error.description
         } catch {
