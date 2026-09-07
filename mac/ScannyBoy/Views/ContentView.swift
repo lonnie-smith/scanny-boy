@@ -398,12 +398,9 @@ struct ContentView: View {
                 IssueLabel(issue: error, style: .error)
             }
         } header: {
-            // A probe in flight only means the Stitch button's enablement
-            // is not yet trustworthy (M3) — the section itself, and every
-            // control in it, stays put and reachable.
             HStack {
                 Text("Grouping")
-                if model.isProbing {
+                if model.isValidating {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -421,17 +418,20 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Convert") { handleConvertTap() }
-                    .disabled(!model.runEnabled || activity.isBusy)
+                    .disabled(!model.runEnabled || model.isValidating || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
             }
         }
     }
 
     private func handleConvertTap() {
-        if Self.shouldConfirmConvert(into: selectedRoll) {
-            isConfirmingConvert = true
-        } else {
-            startRun()
+        Task {
+            guard await model.validateSelection() else { return }
+            if Self.shouldConfirmConvert(into: selectedRoll) {
+                isConfirmingConvert = true
+            } else {
+                startRun()
+            }
         }
     }
 
@@ -461,16 +461,17 @@ struct ContentView: View {
     // `--skip-sources` is exactly that: the covered negative keeps its id
     // and filename, and its TIFF is replaced atomically.
     private func startRun() {
-        guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
-        run.start(
-            command: command,
-            files: model.selectedFilesInCanonicalOrder,
-            outputFolder: rollURL,
-            totalNegatives: model.groups.count
-        )
-        // The roll's contents, and therefore selection validity, change as
-        // soon as this finishes.
-        awaitRunCompletionAndRefresh()
+        Task {
+            guard await model.validateSelection() else { return }
+            guard let command = model.buildRunCommand(), let rollURL = model.rollURL else { return }
+            run.start(
+                command: command,
+                files: model.selectedFilesInCanonicalOrder,
+                outputFolder: rollURL,
+                totalNegatives: model.groups.count
+            )
+            awaitRunCompletionAndRefresh()
+        }
     }
 
     /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
@@ -488,7 +489,7 @@ struct ContentView: View {
     private func awaitRunCompletionAndRefresh() {
         Task {
             await run.waitForCompletion()
-            model.refreshValidation()
+            model.clearValidationState()
             edit.refresh()
             library.scan()
         }

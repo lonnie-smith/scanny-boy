@@ -157,7 +157,8 @@ struct RunIntegrationTests {
     /// profile chosen.
     private static func configuredModel(
         roll: URL,
-        select: [String]
+        select: [String],
+        validate: Bool = false
     ) async throws -> ConfigurationModel {
         let model = ConfigurationModel(
             runner: try runner(), defaults: isolatedDefaults()
@@ -169,14 +170,12 @@ struct RunIntegrationTests {
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
         model.across = 3
-        // The roll fetch pre-selects the profile a first run locked the roll
-        // to — the app does not let the user choose differently. Only a roll
-        // with no profile yet (the first run into it) gets a fresh one.
-        await model.waitForPendingProbes()
         if model.flatFieldProfileID == nil {
             model.flatFieldProfileID = try await Self.createFlatFieldProfile()
         }
-        await model.waitForPendingProbes()
+        if validate {
+            _ = await model.validateSelection()
+        }
         return model
     }
 
@@ -201,7 +200,7 @@ struct RunIntegrationTests {
     func sixFilesStitchBothNegatives() async throws {
         let roll = try await Self.createRoll()
 
-        let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files)
+        let model = try await Self.configuredModel(roll: roll, select: SampleFixtures.files, validate: true)
         #expect(model.groups.count == 2)
         #expect(model.runEnabled)
 
@@ -264,9 +263,10 @@ struct RunIntegrationTests {
             roll: roll, select: Array(SampleFixtures.files.prefix(5))
         )
 
+        #expect(model.runEnabled)
+        #expect(await model.validateSelection() == false)
         #expect(model.selectionError?.code == .notDivisible)
-        #expect(!model.runEnabled)
-        #expect(model.runCommand() == nil)
+        #expect(model.buildRunCommand() != nil)
     }
 
     /// Appendix A: the break between frames 4640 and 4644 is *not* a catalogue
@@ -282,9 +282,10 @@ struct RunIntegrationTests {
         let withGap = [0, 1, 3, 4, 5].map { SampleFixtures.files[$0] }
         let model = try await Self.configuredModel(roll: roll, select: withGap)
 
+        #expect(model.runEnabled)
+        #expect(await model.validateSelection() == false)
         #expect(model.selectionError?.code == .nonContiguousSelection)
-        #expect(!model.runEnabled)
-        #expect(model.runCommand() == nil)
+        #expect(model.buildRunCommand() != nil)
     }
 
     @Test(
@@ -299,9 +300,10 @@ struct RunIntegrationTests {
 
         let model = try await Self.configuredModel(roll: notARoll, select: SampleFixtures.files)
 
+        #expect(model.runEnabled)
+        #expect(await model.validateSelection() == false)
         #expect(model.rollError?.code == .rollNotFound)
-        #expect(!model.runEnabled)
-        #expect(model.runCommand() == nil)
+        #expect(model.buildRunCommand() != nil)
     }
 
     // MARK: - Rerunning against a roll that already holds the negative
@@ -319,10 +321,10 @@ struct RunIntegrationTests {
         let roll = try await Self.createRoll()
         let negativeOne = Array(SampleFixtures.files.prefix(3))
 
-        let first = try await Self.configuredModel(roll: roll, select: negativeOne)
+        let first = try await Self.configuredModel(roll: roll, select: negativeOne, validate: true)
         let firstRun = RunModel(runner: try Self.runner())
         firstRun.start(
-            command: try #require(first.runCommand()),
+            command: try #require(first.buildRunCommand()),
             files: first.selectedFilesInCanonicalOrder,
             outputFolder: roll
         )
@@ -333,9 +335,9 @@ struct RunIntegrationTests {
 
         // A second configuration over the same roll and selection overlaps
         // the negative the first run just published.
-        let second = try await Self.configuredModel(roll: roll, select: negativeOne)
+        let second = try await Self.configuredModel(roll: roll, select: negativeOne, validate: true)
         #expect(second.rollError == nil)
-        let command = try #require(second.runCommand())
+        let command = try #require(second.buildRunCommand())
         #expect(!command.arguments.contains("--skip-sources"))
 
         let secondRun = RunModel(runner: try Self.runner())

@@ -1135,7 +1135,7 @@ final class EditModel {
     // MARK: - Fetching
 
     /// Re-fetches the roll. Callers refresh after Apply finishes, exactly as
-    /// `ConfigurationModel.refreshValidation()` does after a run.
+    /// `ConfigurationModel.clearValidationState()` does after a run.
     func refresh() {
         startRollFetch(rollURL: rollURL)
     }

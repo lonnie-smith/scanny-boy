@@ -173,7 +173,9 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
         model.across = 3
-        await model.waitForPendingProbes()
+
+        #expect(model.groups.isEmpty)
+        #expect(await model.validateSelection())
 
         #expect(model.groups == [
             ["n1.NEF", "n2.NEF", "n3.NEF"],
@@ -182,24 +184,27 @@ struct ConfigurationModelTests {
         #expect(model.selectionError == nil)
     }
 
-    // MARK: - Run remains disabled
+    // MARK: - Convert-time validation
 
     @Test(
-        "Run is disabled while the selection itself is invalid",
+        "validateSelection surfaces selection errors without blocking runEnabled",
         arguments: [
             ("NON_CONTIGUOUS_SELECTION", CLICode.nonContiguousSelection),
             ("NOT_DIVISIBLE", CLICode.notDivisible),
             ("CAPTURE_SETTINGS_DIFFER", CLICode.captureSettingsDiffer),
         ]
     )
-    func runDisabledForSelectionError(_ scenario: (code: String, expected: CLICode)) async throws {
+    func validateSelectionSurfacesSelectionError(_ scenario: (code: String, expected: CLICode)) async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed]
+            withFiles: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed],
+            withFilesAndRoll: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -207,13 +212,15 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
+        model.rollURL = rollDir
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
 
+        #expect(model.runEnabled == true)
+        #expect(await model.validateSelection() == false)
         #expect(model.selectionError?.code == scenario.expected)
         #expect(model.rollError == nil)
-        #expect(model.runEnabled == false)
     }
 
     @Test("Run is disabled until a roll is selected, a grouping and a profile are chosen")
@@ -236,33 +243,28 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
 
         #expect(model.rollURL == nil)
         #expect(model.runEnabled == false)
 
         model.rollURL = rollDir
-        await model.waitForPendingProbes()
 
-        // Everything else validates now, but two choices remain: the
-        // batch's scans-per-negative and the app-required flat-field
-        // profile (docs/FLATFIELD_PLAN.md section 2.5).
+        // Two choices remain: the batch's scans-per-negative and the
+        // app-required flat-field profile (docs/FLATFIELD_PLAN.md section 2.5).
         #expect(model.selectionError == nil)
         #expect(model.rollError == nil)
         #expect(model.runEnabled == false)
 
         model.across = 3
-        await model.waitForPendingProbes()
         #expect(model.runEnabled == false)
 
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
 
         #expect(model.runEnabled == true)
     }
 
-    @Test("Choosing scans-per-negative re-validates the selection")
-    func changingPerNegativeRevalidates() async throws {
+    @Test("Changing grid size clears groups until validateSelection runs")
+    func changingPerNegativeClearsGroups() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -282,23 +284,23 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
-        await model.waitForPendingProbes()
 
         // No grouping chosen: no groups to preview and nothing validated.
         #expect(model.groups.isEmpty)
-        #expect(model.isProbing == false)
+        #expect(model.isValidating == false)
 
         model.across = 3
-        await model.waitForPendingProbes()
+        #expect(model.groups.isEmpty)
 
+        #expect(await model.validateSelection())
         #expect(model.groups == [
             ["n1.NEF", "n2.NEF", "n3.NEF"],
             ["n4.NEF", "n5.NEF", "n6.NEF"],
         ])
     }
 
-    @Test("A roll-related probe failure blocks Run without touching the selection error")
-    func runDisabledForRollError() async throws {
+    @Test("A roll-related probe failure surfaces at validateSelection without blocking runEnabled")
+    func validateSelectionSurfacesRollError() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -321,11 +323,43 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
 
+        #expect(model.runEnabled == true)
+        #expect(await model.validateSelection() == false)
         #expect(model.rollError?.code == .rollNotFound)
         #expect(model.selectionError == nil)
-        #expect(model.runEnabled == false)
+    }
+
+    @Test("Changing selection after a failed validateSelection clears stale errors")
+    func changingSelectionClearsStaleErrors() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.errorEvent(code: "NOT_DIVISIBLE"), Self.finishedFailed]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        model.across = 3
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(await model.validateSelection() == false)
+        #expect(model.selectionError != nil)
+
+        model.selectedFiles = ["a.NEF", "b.NEF"]
+        #expect(model.selectionError == nil)
+        #expect(model.groups.isEmpty)
     }
 
     // MARK: - Chunk P3-11's additions: rolls and the overlap sheet
@@ -352,11 +386,9 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
 
-        let command = try #require(model.runCommand())
+        let command = try #require(model.buildRunCommand())
         #expect(command.arguments.contains("--roll"))
         #expect(command.arguments.contains(rollDir.path))
         #expect(!command.arguments.contains("--film-date"))
@@ -392,14 +424,12 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to
         // withhold the Run command — every group runs and supersedes
         // whatever it overlaps.
-        let command = try #require(model.runCommand())
+        let command = try #require(model.buildRunCommand())
         #expect(!command.arguments.contains("--skip-sources"))
     }
 
@@ -429,13 +459,46 @@ struct ConfigurationModelTests {
         // used — the profile is a per-run choice, so selecting a roll must
         // not disturb it.
         model.rollURL = rollDir
-        await model.waitForPendingProbes()
 
         #expect(model.flatFieldProfileID == "pid-mine")
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         #expect(model.runEnabled == true)
+    }
+
+    @Test("Changing roll or profile does not invoke probe --files before Convert")
+    func configurationChangesDoNotProbeBeforeConvert() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let argvPath = directory.appending(path: "argv", directoryHint: .notDirectory)
+        let script = """
+            printf '%s\\n' "$@" >> '\(argvPath.path)'
+            case "$*" in
+              *--files*) echo 'files probe should not run yet'; exit 1 ;;
+              *) echo '\(Self.started)'
+                 echo '\(Self.catalogueABC)'
+                 echo '\(Self.finishedSuccess)' ;;
+            esac
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+        await model.waitForPendingProbes()
+
+        let argv = try String(contentsOf: argvPath, encoding: .utf8)
+        #expect(!argv.contains("--files"))
     }
 
     @Test("An explicit profile choice survives a relaunch")
@@ -458,18 +521,16 @@ struct ConfigurationModelTests {
         #expect(second.flatFieldProfileID == "pid-1")
     }
 
-    @Test("The validation probe carries --flatfield once a profile is chosen")
+    @Test("validateSelection carries --flatfield when a profile is chosen")
     func validationProbeCarriesFlatField() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        // The fake helper records its argv so the test can assert the probe
-        // invocation's shape, not just the run command's.
         let argvPath = directory.appending(path: "argv", directoryHint: .notDirectory)
         let script = """
             printf '%s\\n' "$@" >> '\(argvPath.path)'
             echo '\(Self.started)'
-            echo '\(Self.catalogueABC)'
+            echo '\(Self.threeFileGroupNoOverlap)'
             echo '\(Self.finishedSuccess)'
             """
         let executable = try TestSupport.writeTestExecutable(script, in: directory)
@@ -486,7 +547,11 @@ struct ConfigurationModelTests {
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
+
+        let argvBefore = try String(contentsOf: argvPath, encoding: .utf8)
+        #expect(!argvBefore.contains("--flatfield"))
+
+        #expect(await model.validateSelection())
 
         let argv = try String(contentsOf: argvPath, encoding: .utf8)
             .split(separator: "\n")

@@ -33,6 +33,11 @@ def natural_sort_key(name: str) -> tuple:
     )
 
 
+def is_catalogue_filename(name: str) -> bool:
+    """True when `name` should appear in an input-folder catalogue."""
+    return not name.startswith(".__") and name.lower().endswith(".nef")
+
+
 def discover_catalogue(input_dir: Path) -> list[str]:
     """List `.nef` files directly inside `input_dir`, case-insensitively and
     without recursion, resolving paths per section 3.2."""
@@ -40,7 +45,7 @@ def discover_catalogue(input_dir: Path) -> list[str]:
     names: list[str] = []
     seen_resolved: set[Path] = set()
     for entry in sorted(input_dir.iterdir(), key=lambda e: e.name):
-        if not entry.is_file() or entry.suffix.lower() != ".nef":
+        if not entry.is_file() or not is_catalogue_filename(entry.name):
             continue
         resolved = entry.resolve()
         if resolved.parent != resolved_input:

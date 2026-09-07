@@ -21,8 +21,9 @@ import Observation
 /// and `CONTRACT.md`'s `probe`). Every rule this type enforces beyond plain
 /// UI bookkeeping — contiguity, divisibility, setting consistency, roll
 /// overlap — is read back from a `probe --roll` call; this type only
-/// decides *when* to call `probe` and how to fold its result into
-/// `runEnabled`.
+/// decides *when* to call `probe` and how to fold its result into the UI.
+/// Selection, grid, roll, and flat-field profile are inert until Convert:
+/// `validateSelection()` runs the probe once, immediately before a run.
 @MainActor
 @Observable
 final class ConfigurationModel {
@@ -47,6 +48,7 @@ final class ConfigurationModel {
             catalogue = []
             catalogueWarnings = []
             catalogueError = nil
+            clearValidationState()
             if let inputFolder {
                 Self.save(inputFolder, forKey: Self.lastInputFolderKey, in: defaults)
                 startCatalogueProbe(inputFolder: inputFolder)
@@ -66,7 +68,7 @@ final class ConfigurationModel {
     var selectedFiles: Set<String> = [] {
         didSet {
             guard selectedFiles != oldValue else { return }
-            scheduleValidation()
+            clearValidationState()
         }
     }
 
@@ -82,7 +84,7 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
-            scheduleValidation()
+            clearValidationState()
         }
     }
 
@@ -92,12 +94,10 @@ final class ConfigurationModel {
     /// `across` runs left-to-right in capture space, `down` top-to-bottom.
     /// `across` is `nil` until the user picks one on the Add Scans stage —
     /// that is the "not chosen yet" state, and it gates `runEnabled`.
-    /// Changing either stored dimension re-validates the selection, since
-    /// grouping and divisibility depend on the product.
     var across: Int? {
         didSet {
             guard across != oldValue else { return }
-            revalidateSelection()
+            clearValidationState()
         }
     }
 
@@ -113,7 +113,7 @@ final class ConfigurationModel {
             if let across, across * down > Self.maxPerNegative {
                 self.across = Self.maxPerNegative / down
             }
-            revalidateSelection()
+            clearValidationState()
         }
     }
 
@@ -125,10 +125,6 @@ final class ConfigurationModel {
     }
 
     static let maxPerNegative = 12
-
-    private func revalidateSelection() {
-        scheduleValidation()
-    }
 
     // MARK: - Flat field
 
@@ -145,7 +141,7 @@ final class ConfigurationModel {
             } else {
                 defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
             }
-            scheduleValidation()
+            clearValidationState()
         }
     }
 
@@ -156,10 +152,9 @@ final class ConfigurationModel {
 
     // MARK: - Status
 
-    /// The catalogue probe and the selection/roll validation probe are
+    /// The catalogue probe and the Convert-time validation probe are
     /// independent round trips; each clears only its own flag when it
-    /// finishes, so a UI gate reading a single shared flag could see "done"
-    /// while the other probe is still in flight.
+    /// finishes.
     private(set) var isCataloguing = false
     private(set) var isValidating = false
     var isProbing: Bool { isCataloguing || isValidating }
@@ -189,16 +184,12 @@ final class ConfigurationModel {
         .outputNotWritable,
     ]
 
-    /// Every gate section 3.10 names — a chosen scans-per-negative, a
-    /// contiguous, divisible selection with consistent settings, targeting a
-    /// roll that validated — plus the flat-field profile the app requires
-    /// (docs/FLATFIELD_PLAN.md section 2.5). The Stitch button is offered
-    /// from here.
+    /// Form completeness for Convert — not validation success. Invalid
+    /// selections are discovered by clicking Convert, which calls
+    /// `validateSelection()`.
     var runEnabled: Bool {
         perNegative != nil
             && !selectedFiles.isEmpty
-            && selectionError == nil
-            && rollError == nil
             && rollURL != nil
             && flatFieldProfileID != nil
     }
@@ -229,13 +220,10 @@ final class ConfigurationModel {
         selectedFiles = []
     }
 
-    /// The `run` invocation this configuration describes, or `nil` when it
-    /// does not yet describe a runnable one. `skipSources` is always empty:
-    /// every group in the selection runs and adopts whatever it overlaps in
-    /// the roll (the replacement rule). The flat-field profile rides along
-    /// as `--flatfield`, freely chosen for this run — the roll does not
-    /// lock to one.
-    func runCommand() -> CLICommand? {
+    /// The `run` invocation this configuration describes from its current
+    /// form fields, or `nil` when the form is incomplete. Does not require
+    /// prior validation — `ContentView` validates before starting a run.
+    func buildRunCommand() -> CLICommand? {
         guard runEnabled, let inputFolder, let rollURL, let across,
             let flatFieldProfileID
         else {
@@ -252,13 +240,64 @@ final class ConfigurationModel {
         )
     }
 
+    /// Backward-compatible alias for tests and call sites that expect the
+    /// old name.
+    func runCommand() -> CLICommand? {
+        buildRunCommand()
+    }
+
     // MARK: - Probing
 
-    /// Re-runs selection and roll validation. Chunk 10 calls this once a
-    /// conversion has ended: the roll now holds negatives it did not
-    /// before, so the selection may need re-validating.
-    func refreshValidation() {
-        scheduleValidation()
+    /// Clears grouping preview and validation results from a prior Convert
+    /// attempt. Called when any inert-until-Convert setting changes.
+    func clearValidationState() {
+        validationTask?.cancel()
+        validationTask = nil
+        groups = []
+        selectionWarnings = []
+        selectionError = nil
+        rollError = nil
+        isValidating = false
+    }
+
+    /// Runs `probe --files` with the current selection, grid, roll, and
+    /// flat-field profile. Returns `true` when the selection is runnable.
+    /// Populates `groups`, warnings, and errors for the UI.
+    @discardableResult
+    func validateSelection() async -> Bool {
+        validationTask?.cancel()
+        guard let inputFolder, !selectedFiles.isEmpty, let across else {
+            clearValidationState()
+            return false
+        }
+
+        let rollURL = rollURL
+        let files = selectedFilesInCanonicalOrder
+        let flatFieldProfileID = flatFieldProfileID
+        let down = down
+
+        isValidating = true
+        let task = Task { [runner] () -> ProbeCallResult in
+            await Self.runProbe(
+                runner: runner,
+                command: .probe(
+                    input: inputFolder,
+                    files: files,
+                    roll: rollURL,
+                    across: across,
+                    down: down,
+                    flatfield: flatFieldProfileID
+                )
+            )
+        }
+        validationTask = Task {
+            _ = await task.value
+        }
+        let result = await task.value
+        guard !Task.isCancelled else { return false }
+        apply(result)
+        isValidating = false
+        return selectionError == nil && rollError == nil
     }
 
     private func startCatalogueProbe(inputFolder: URL) {
@@ -271,59 +310,6 @@ final class ConfigurationModel {
             self.catalogueWarnings = result.warnings
             self.catalogueError = result.error
             self.isCataloguing = false
-        }
-    }
-
-    /// Debounces `probe --roll` calls: a drag-select across many catalogue
-    /// rows fires this once per row, and each one tore down and rebuilt the
-    /// configuration form (see the fix note on `isProbing`'s consumers).
-    private static let validationDebounce = Duration.milliseconds(200)
-
-    private func scheduleValidation() {
-        validationTask?.cancel()
-        guard let inputFolder, !selectedFiles.isEmpty else {
-            groups = []
-            selectionWarnings = []
-            selectionError = nil
-            rollError = nil
-            isValidating = false
-            return
-        }
-
-        // Grouping and divisibility are per-batch: without a chosen
-        // grid width there is nothing to validate against yet.
-        guard let across else {
-            groups = []
-            selectionWarnings = []
-            selectionError = nil
-            rollError = nil
-            isValidating = false
-            return
-        }
-
-        let rollURL = rollURL
-        let files = selectedFilesInCanonicalOrder
-        let flatFieldProfileID = flatFieldProfileID
-        let down = down
-
-        isValidating = true
-        validationTask = Task { [weak self, runner] in
-            try? await Task.sleep(for: Self.validationDebounce)
-            guard !Task.isCancelled else { return }
-            let result = await Self.runProbe(
-                runner: runner,
-                command: .probe(
-                    input: inputFolder,
-                    files: files,
-                    roll: rollURL,
-                    across: across,
-                    down: down,
-                    flatfield: flatFieldProfileID
-                )
-            )
-            guard let self, !Task.isCancelled else { return }
-            self.apply(result)
-            self.isValidating = false
         }
     }
 
