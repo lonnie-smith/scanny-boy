@@ -634,6 +634,7 @@ def composite(
     rectification: Rectification | None = None,
     region: tuple[int, int, int, int] | None = None,
     reference_bounds: list[Bounds] | None = None,
+    base_refs: tuple[float, ...] | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
 ) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
@@ -893,19 +894,23 @@ def composite(
     keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
     keep, rebate = detect_rebate(grid, keep)
     keep, dense_border = withhold_dense_border(grid, keep)
-    bounds = analyze_bounds(grid, keep)
+    bounds = analyze_bounds(grid, keep, base_refs)
     shadow_refs = measure_shadow_refs(grid, keep)
     # CAST_REMOVAL_PLAN R-1: the dense end's neutral reference, beside the
     # other meters. `None` is recorded as null — it is load-bearing
     # information (the plan's §0.4), not an error.
-    highlight_refs = measure_highlight_refs(grid, keep)
+    highlight_refs = measure_highlight_refs(grid, keep, base_refs)
     anchor = measure_anchor(grid, keep)
     textural_range = measure_textural_range(grid, keep)
 
     # Section 3.4's clamp: a frame whose own meters latched contamination
     # the per-frame detectors missed is pulled back toward the roll's
     # population, from references the already-composited negatives
-    # contribute.
+    # contribute. With a fixed roll anchor (REBATE_ANCHORING §4), every
+    # negative's ceils deviations become nearly identical, so the
+    # population MAD collapses toward zero. CLAMP_MIN_WINDOW floors the
+    # window, so the clamp stays inert on legitimate exposure variation —
+    # do not "fix" the now-tiny MAD.
     unclamped_bounds: Bounds | None = None
     clamped = False
     if reference_bounds:

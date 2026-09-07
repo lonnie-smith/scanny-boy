@@ -25,7 +25,7 @@ struct RunIntegrationTests {
     // closure, which cannot reach a main-actor-isolated property.
     private nonisolated static var canRun: Bool {
         HostBundle.isAvailable && SampleFixtures.areAvailable
-            && BareLightReference.isAvailable
+            && BareLightReference.isAvailable && BaseFrameReference.isAvailable
     }
 
     private nonisolated static var unavailable: Comment {
@@ -46,6 +46,9 @@ struct RunIntegrationTests {
         }
         if !BareLightReference.isAvailable {
             reasons.append(BareLightReference.unavailableComment.rawValue)
+        }
+        if !BaseFrameReference.isAvailable {
+            reasons.append(BaseFrameReference.unavailableComment.rawValue)
         }
         return Comment(rawValue: reasons.joined(separator: "\n"))
     }
@@ -170,12 +173,16 @@ struct RunIntegrationTests {
         model.inputFolder = try SampleFixtures.stagedDirectory()
         await model.waitForPendingProbes()
         model.rollURL = roll
+        await model.waitForPendingProbes()
         model.selectedFiles = Set(select)
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
         model.across = 3
         if model.flatFieldProfileID == nil {
             model.flatFieldProfileID = try await Self.createFlatFieldProfile()
+        }
+        if model.filmBase == nil {
+            await model.attachBaseFrame(at: BaseFrameReference.url)
         }
         if validate {
             _ = await model.validateSelection()

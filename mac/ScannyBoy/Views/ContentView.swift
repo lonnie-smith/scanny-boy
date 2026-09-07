@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Section 3.10: `NavigationSplitView` shell — the library sidebar
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
@@ -349,6 +350,20 @@ struct ContentView: View {
 
     @ViewBuilder
     private var configurationSections: some View {
+        Section("Film base reference") {
+            BaseFrameField(
+                filmBase: model.filmBase,
+                isBusy: activity.isBusy || model.isAttachingBaseFrame,
+                error: model.baseFrameError,
+                onChoose: { chooseBaseFrame(replace: false) },
+                onReplace: { chooseBaseFrame(replace: true) }
+            )
+            if model.filmBase == nil {
+                Text("Choose a film-base reference before converting scans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
         Section("Flat Field") {
             // Chosen fresh for every run: a roll does not lock to one
             // profile, so different runs into the same roll may each pick
@@ -506,6 +521,22 @@ struct ContentView: View {
     private func chooseInputFolder() {
         guard let url = Self.pickFolder(startingAt: model.inputFolder) else { return }
         model.inputFolder = url
+    }
+
+    private func chooseBaseFrame(replace: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = replace ? "Replace" : "Choose"
+        if let nef = UTType(filenameExtension: "nef") {
+            panel.allowedContentTypes = [nef]
+        }
+        if let inputFolder = model.inputFolder {
+            panel.directoryURL = inputFolder
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await model.attachBaseFrame(at: url) }
     }
 
     /// Section 3.2's "the last folder the user opened" persists across

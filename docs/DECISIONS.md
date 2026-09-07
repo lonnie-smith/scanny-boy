@@ -1120,6 +1120,35 @@ loses. The fill value is a cosmetic hint, not a sentinel, and nothing in
 the render path may key off it; the machine-readable coverage answer is
 `valid_rect` plus `coverage_fraction`.
 
+## Rebate anchoring: the thin end from a roll-level base frame (protocol version 13)
+
+Each negative's thin-end colour deviation (`Bounds.ceils`) used to come from
+per-channel percentiles of scene content — wrong on high-key frames with no
+shadows. **A dedicated base frame per roll now supplies the orange mask**
+(docs/REBATE_ANCHORING.md): one leader-style shot, attached before the
+first convert, locked when the first negative publishes, measured by
+`film_base.load` and gated before it is ever written.
+
+- **Only the colour axis changes.** `mean_lc` still comes from the
+  negative's own luma percentile; the base frame fixes per-channel
+  *deviation*, not level. §0.2's exposure invariance — a common-mode shift
+  in the measured base cancels in the recombination — was verified on real
+  film before B-5 landed.
+- **Monochrome rolls record but do not consume.** The base frame is still
+  required (one rule, no branches); `len(base_refs) == channels` makes a
+  3-array fall back on the collapsed 1-channel image.
+- **`clamp_bounds` needs no change.** With a fixed anchor every negative's
+  ceils deviations agree, the population MAD collapses, and
+  `CLAMP_MIN_WINDOW = 0.5` floors the window — the clamp stays inert on
+  legitimate exposure variation.
+- **Gate constants** (`FILM_BASE_MIN_AREA_FRACTION = 0.20`,
+  `FILM_BASE_MAX_COMPONENT_SPREAD = 0.05`, and the rest in
+  `film_base.py`) were pinned from the v1 slim §11 measurement on
+  leader-style real film, 2026-09-06.
+- **`NORMALIZE_FORMAT_VERSION` does not move** — no constant in
+  `normalization.build_params()` changed; `analyze_bounds` with
+  `base_refs=None` is byte-identical to before B-5.
+
 ## Auto-rotation: the rebate squared, as an edit (protocol version 7)
 
 A stitched canvas comes out in whatever orientation the strip was scanned.

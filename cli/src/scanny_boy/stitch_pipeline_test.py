@@ -1155,6 +1155,43 @@ def test_reference_bounds_collects_completed_negatives_blocks():
     assert all(isinstance(b, Bounds) for b in references)
 
 
+@pytest.mark.slow
+def test_anchor_consumption_changes_only_ceils_deviations(
+    work_dir, tmp_path, monkeypatch
+):
+    """REBATE_ANCHORING B-5: stitching with the roll anchor differs from
+    the same roll with consumption disabled, and only in the per-channel
+    `ceils` deviations — floors and the ceils level stay put."""
+    out_with = make_roll_dir(tmp_path / "with")
+    roll = load_roll_manifest(out_with)
+    attach_base_frame(roll, density=[-0.50, -0.20, -0.90])
+    write_roll_manifest(out_with, roll)
+
+    assert run_stitch_with_defaults(work_dir, out_with).status == "complete"
+    norm_with = load_roll_manifest(out_with).negatives[0].normalization
+
+    out_without = make_roll_dir(tmp_path / "without")
+    roll2 = load_roll_manifest(out_with)
+    attach_base_frame(roll2, density=[-0.50, -0.20, -0.90])
+    write_roll_manifest(out_without, roll2)
+    monkeypatch.setattr(stitch_pipeline, "_locked_base_refs", lambda _roll: None)
+
+    assert (
+        run_stitch_with_defaults(work_dir, out_without, run_id="stitch-run-2").status
+        == "complete"
+    )
+    norm_without = load_roll_manifest(out_without).negatives[0].normalization
+
+    assert norm_with["floors"] == pytest.approx(norm_without["floors"], abs=1e-4)
+    assert np.median(norm_with["ceils"]) == pytest.approx(
+        np.median(norm_without["ceils"]), abs=1e-3
+    )
+    dev_with = np.asarray(norm_with["ceils"]) - np.median(norm_with["ceils"])
+    dev_without = np.asarray(norm_without["ceils"]) - np.median(norm_without["ceils"])
+    assert not np.allclose(dev_with, dev_without, atol=1e-4)
+    assert norm_with["ceils"] != norm_without["ceils"]
+
+
 def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     """Section 5.4 decision 1: an empty roll cannot know its
     `processing_params` or `stitch_params`, so the first run establishes

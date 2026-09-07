@@ -719,6 +719,26 @@ def test_film_kind_colour_default_matches_omitting_it():
     assert implicit.textural_range == explicit.textural_range
 
 
+def test_base_refs_none_matches_default_composite_output():
+    """REBATE_ANCHORING B-5: explicit `base_refs=None` is byte-identical
+    to omitting it — every other composite test in this file stays a
+    pre-B-5 regression net."""
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    implicit = _composite(layout, uint16_frames)
+    explicit = composite(
+        layout,
+        lambda name: uint16_frames[name],
+        cancel=CancellationToken(),
+        on_progress=lambda: None,
+        base_refs=None,
+    )
+    assert np.array_equal(implicit.image, explicit.image)
+    assert implicit.bounds == explicit.bounds
+    assert implicit.shadow_refs == explicit.shadow_refs
+    assert implicit.anchor == explicit.anchor
+    assert implicit.textural_range == explicit.textural_range
+
+
 def test_monochrome_film_kind_publishes_a_single_channel_composite():
     """§3.3/§3.4: a mono roll's composite collapses to one channel before
     the bounds analysis — a 2-D published image, one-element bounds, and

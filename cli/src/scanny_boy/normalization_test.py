@@ -1244,6 +1244,58 @@ def test_measure_highlight_refs_prefers_a_threaded_base_refs():
     assert nz.measure_highlight_refs(grid, keep, base_refs) is not None
 
 
+# --- REBATE_ANCHORING section 4.1: base_refs at the consumption site ----
+
+
+def test_analyze_bounds_with_base_refs_none_matches_omitting_it():
+    """B-5 regression lock: `base_refs=None` is identical to omitting the
+    argument — the pre-B-5 behaviour every other test in this file assumes."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    omitted = analyze_bounds(img, keep)
+    explicit = analyze_bounds(img, keep, base_refs=None)
+    assert explicit == omitted
+
+
+def test_analyze_bounds_with_base_refs_sets_ceils_deviations_and_keeps_mean_lc():
+    """§4.1: the roll anchor supplies `c_ceils`; only deviations survive
+    recombination and `mean_lc` stays on the luma axis."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    without = analyze_bounds(img, keep)
+    with_refs = analyze_bounds(img, keep, base_refs=base_refs)
+    mean_lc = float(
+        np.percentile(nz.luma_of_log(img).reshape(-1), 100.0 - nz.BASE_LUMA_CLIP)
+    )
+    mean_cc = float(np.median(base_refs))
+    assert with_refs.ceils == pytest.approx(
+        tuple(mean_lc + (base_refs[ch] - mean_cc) for ch in range(3)), abs=1e-5
+    )
+    assert with_refs.floors == pytest.approx(without.floors, abs=1e-5)
+    assert with_refs.ceils != without.ceils
+
+
+def test_analyze_bounds_base_refs_are_exposure_invariant_at_consumption():
+    """§0.2: a common-mode shift in `base_refs` cancels in the
+    recombination — asserted at the consumption site, not only measurement."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    reference = analyze_bounds(img, keep, base_refs=base_refs)
+    shifted = tuple(v + 0.37 for v in base_refs)
+    assert analyze_bounds(img, keep, base_refs=shifted) == reference
+
+
+def test_analyze_bounds_three_array_base_refs_falls_back_on_mono():
+    """§5: a 3-array `base_refs` on a 1-channel image silently falls back."""
+    grid = _ramp_scene_1ch()
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    fallback = analyze_bounds(grid, keep)
+    assert analyze_bounds(grid, keep, base_refs=base_refs) == fallback
+
+
 def test_upgrade_normalize_params_upgrades_a_stored_v2_block_to_v3():
     """CAST_REMOVAL_PLAN R-1: a roll stitched between REBATE anchoring and
     this chunk carries `format_version: 2` and lacks the three new keys;

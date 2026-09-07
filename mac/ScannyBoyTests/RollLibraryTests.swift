@@ -366,4 +366,18 @@ struct RollLibraryTests {
         #expect(roll.status == .unreadable)
         try await library.deleteRoll(roll)
     }
+
+    @Test("RollManifest decodes film_base including lockedAt")
+    func filmBaseDecodesFromManifest() throws {
+        let manifestJSON = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_base":{"density":[-0.42,-0.12,-0.99],"locked_at":"2026-09-06T19:00:00Z","source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}}
+        """
+        let fields = try #require(
+            try JSONDecoder().decode(JSONValue.self, from: Data(manifestJSON.utf8)).objectValue
+        )
+        let manifest = try #require(RollManifest(fields: fields))
+        #expect(manifest.filmBase?.sourceName == "_DSC5012.NEF")
+        #expect(manifest.filmBase?.lockedAt == "2026-09-06T19:00:00Z")
+        #expect(manifest.filmBase?.areaFractionPercent == 44)
+    }
 }

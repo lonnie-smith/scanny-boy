@@ -542,4 +542,27 @@ struct CLICommandTests {
                 ]
         )
     }
+
+    @Test("roll set-base-frame passes roll, frame, and optional flatfield")
+    func rollSetBaseFrameArguments() {
+        let roll = URL(filePath: "/Volumes/Scans/roll-12")
+        let frame = URL(filePath: "/Volumes/Scans/_DSC5012.NEF")
+        #expect(
+            CLICommand.rollSetBaseFrame(roll: roll, frame: frame).arguments
+                == [
+                    "roll", "set-base-frame",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
+                ]
+        )
+        #expect(
+            CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1").arguments
+                == [
+                    "roll", "set-base-frame",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
+                    "--flatfield", "pid-1",
+                ]
+        )
+    }
 }

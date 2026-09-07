@@ -36,20 +36,44 @@ struct ConfigurationModelTests {
     /// `withFilesAndRoll`, `--files` alone (no `--roll`) routes to
     /// `withFiles`, and a bare `--input` routes to `catalogueOnly` — the same
     /// three call shapes `ConfigurationModel` actually makes. `roll info`
-    /// (section 3.1: `roll` is read back through the CLI, never from disk)
-    /// is distinguished by its own leading subcommand, `$1`, rather than
-    /// folded into the `$*` routing below, which only ever sees `probe`
-    /// invocations.
+    /// and `roll set-base-frame` are distinguished by `$1 $2`.
     private static func fakeProbeExecutable(
         in directory: URL,
         catalogueOnly: [String],
         withFiles: [String] = [],
-        withFilesAndRoll: [String] = []
+        withFilesAndRoll: [String] = [],
+        rollInfoLines: [String]? = nil,
+        setBaseFrameLines: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
         }
+        let defaultRollInfo = [
+            TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+            rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+            finishedSuccess,
+        ]
+        let resolvedRollInfo = rollInfoLines ?? defaultRollInfo
+        let marker = directory.appending(path: ".film-base-attached").path
         let script = """
+            MARKER='\(marker)'
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+            if [ -f "$MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+                finishedSuccess,
+            ]))
+            else
+            \(echoLines(resolvedRollInfo))
+            fi
+                exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-base-frame" ]; then
+            touch "$MARKER"
+            \(echoLines(setBaseFrameLines.isEmpty ? defaultSetBaseFrameSuccess : setBaseFrameLines))
+                exit 0
+            fi
             case "$*" in
               *--roll*)
             \(echoLines(withFilesAndRoll))
@@ -64,6 +88,27 @@ struct ConfigurationModelTests {
             """
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
+
+    private static func attachedFilmBaseJSON() -> String {
+        """
+        {"density":[-0.42,-0.12,-0.99],"locked_at":null,"source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}
+        """
+    }
+
+    private static func rollInfoEvent(filmBaseJSON: String) -> String {
+        let manifest = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_base":\(filmBaseJSON)}
+        """
+        return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
+    }
+
+    private static let defaultSetBaseFrameSuccess = [
+        TestEvents.line(#"{"event":"started","command":"roll set-base-frame"}"#),
+        TestEvents.line(
+            #"{"event":"base_frame_set","roll_id":"roll-1","source_name":"_DSC5013.NEF","density":[-0.42,-0.12,-0.99],"area_fraction":0.44,"population_count":1,"locked":false}"#
+        ),
+        finishedSuccess,
+    ]
 
     private static let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
     private static let finishedSuccess =
@@ -213,6 +258,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.flatFieldProfileID = "pid-1"
@@ -249,8 +295,9 @@ struct ConfigurationModelTests {
 
         model.rollURL = rollDir
 
-        // Two choices remain: the batch's scans-per-negative and the
-        // app-required flat-field profile (docs/FLATFIELD_PLAN.md section 2.5).
+        // Three choices remain: the batch's scans-per-negative, the
+        // app-required flat-field profile, and the film-base reference.
+        await model.waitForPendingProbes()
         #expect(model.selectionError == nil)
         #expect(model.rollError == nil)
         #expect(model.runEnabled == false)
@@ -259,8 +306,84 @@ struct ConfigurationModelTests {
         #expect(model.runEnabled == false)
 
         model.flatFieldProfileID = "pid-1"
-
+        #expect(model.filmBase != nil)
         #expect(model.runEnabled == true)
+    }
+
+    @Test("runEnabled stays off until a base frame is attached")
+    func runEnabledGatesOnFilmBase() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: "null"),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(model.filmBase == nil)
+        #expect(model.runEnabled == false)
+    }
+
+    @Test("rollSetBaseFrame command shape")
+    func rollSetBaseFrameCommandShape() throws {
+        let roll = URL(filePath: "/tmp/roll")
+        let frame = URL(filePath: "/tmp/_DSC5012.NEF")
+        let command = CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1")
+        #expect(command.arguments == [
+            "roll", "set-base-frame",
+            "--roll", roll.path,
+            "--frame", frame.path,
+            "--flatfield", "pid-1",
+        ])
+    }
+
+    @Test("attachBaseFrame refreshes filmBase from roll info")
+    func attachBaseFrameRefreshesFilmBase() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let frame = directory.appending(path: "_DSC5013.NEF")
+        try Data().write(to: frame)
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: "null"),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        #expect(model.filmBase == nil)
+
+        await model.attachBaseFrame(at: frame)
+        #expect(model.filmBase?.sourceName == "_DSC5012.NEF")
+        #expect(model.baseFrameError == nil)
     }
 
     @Test("Changing grid size clears groups until validateSelection runs")
@@ -321,6 +444,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.flatFieldProfileID = "pid-1"
@@ -350,6 +474,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.flatFieldProfileID = "pid-1"
@@ -384,6 +509,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"
@@ -422,6 +548,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"
@@ -459,6 +586,7 @@ struct ConfigurationModelTests {
         // used — the profile is a per-run choice, so selecting a roll must
         // not disturb it.
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
 
         #expect(model.flatFieldProfileID == "pid-mine")
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
@@ -492,6 +620,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"
@@ -544,6 +673,7 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"

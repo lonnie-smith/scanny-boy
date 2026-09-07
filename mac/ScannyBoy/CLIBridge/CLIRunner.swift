@@ -55,6 +55,27 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
     }
 
+    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]`
+    ///
+    /// REBATE_ANCHORING §7.1: the only writer of `film_base.density`. The
+    /// app calls this immediately when the user chooses a base frame on
+    /// the Add Scans sheet — never deferred to Convert.
+    public static func rollSetBaseFrame(
+        roll: URL,
+        frame: URL,
+        flatfield: String? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "roll", "set-base-frame",
+            "--roll", roll.path,
+            "--frame", frame.path,
+        ]
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// Appends the grouping flags for one CLI invocation (protocol 10's
     /// rule): `--grid AxD` whenever `down > 1`, `--per-negative N` when
     /// `down == 1` — so a strip run's command line is byte-identical to a

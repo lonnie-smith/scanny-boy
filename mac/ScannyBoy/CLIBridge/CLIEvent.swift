@@ -101,6 +101,7 @@ public struct CLIEvent: Sendable, Hashable {
         case gridList
         case gridDeleted
         case spotsReported
+        case baseFrameSet
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -140,6 +141,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "grid_list": self = .gridList
             case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
+            case "base_frame_set": self = .baseFrameSet
             default: self = .unknown(name)
             }
         }
@@ -179,6 +181,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .gridList: "grid_list"
             case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
+            case .baseFrameSet: "base_frame_set"
             case .unknown(let name): name
             }
         }
@@ -227,6 +230,8 @@ extension CLIEvent {
     public var catalogue: [String]? { fields["catalogue"]?.stringArrayValue }
     public var warnings: [String]? { fields["warnings"]?.stringArrayValue }
     public var groups: [[String]]? { fields["groups"]?.nestedStringArrayValue }
+    /// Present when `--roll` was given (REBATE_ANCHORING §7.1).
+    public var filmBase: [String: JSONValue]? { fields["film_base"]?.objectValue }
     // `probe_result`, present only when `--out` was given alongside `--files`
     // (CONTRACT.md: output-folder validation, disk estimate, and
     // overwrite-conflict preview).
@@ -286,6 +291,15 @@ extension CLIEvent {
     public var height: Int? { fields["height"]?.intValue }
     public var globalRMS: Double? { fields["global_rms_px"]?.doubleValue }
     public var maxOverlapMAD: Double? { fields["max_overlap_mad"]?.doubleValue }
+
+    // `base_frame_set`
+    public var baseFrameSourceName: String? { fields["source_name"]?.stringValue }
+    public var baseFrameDensity: [Double]? {
+        fields["density"]?.arrayValue?.compactMap(\.doubleValue)
+    }
+    public var baseFrameAreaFraction: Double? { fields["area_fraction"]?.doubleValue }
+    public var baseFramePopulationCount: Int? { fields["population_count"]?.intValue }
+    public var baseFrameLocked: Bool? { fields["locked"]?.boolValue }
 
     // `edit_recorded`: the appended ops-log row and the negative's net
     // transform after it (quarter turns plus the horizontal-mirror flag —
@@ -527,6 +541,16 @@ public enum CLICode: Sendable, Hashable {
     case normalizeHeadroomClipped
     case spotLimitReached
     case spotsStale
+    case filmBaseRequired
+    case filmBaseLocked
+    case filmBaseNotFound
+    case filmBaseTooSmall
+    case filmBaseClipped
+    case filmBaseTooDark
+    case filmBaseAmbiguous
+    case rollPredatesFilmBase
+    case filmBaseCameraConflict
+    case filmBaseFlatfieldConflict
     case libraryDBUnsupported
     case internalError
     case unknown(String)
@@ -602,6 +626,16 @@ public enum CLICode: Sendable, Hashable {
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
+        case "FILM_BASE_REQUIRED": self = .filmBaseRequired
+        case "FILM_BASE_LOCKED": self = .filmBaseLocked
+        case "FILM_BASE_NOT_FOUND": self = .filmBaseNotFound
+        case "FILM_BASE_TOO_SMALL": self = .filmBaseTooSmall
+        case "FILM_BASE_CLIPPED": self = .filmBaseClipped
+        case "FILM_BASE_TOO_DARK": self = .filmBaseTooDark
+        case "FILM_BASE_AMBIGUOUS": self = .filmBaseAmbiguous
+        case "ROLL_PREDATES_FILM_BASE": self = .rollPredatesFilmBase
+        case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
+        case "FILM_BASE_FLATFIELD_CONFLICT": self = .filmBaseFlatfieldConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
@@ -679,6 +713,16 @@ public enum CLICode: Sendable, Hashable {
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
+        case .filmBaseRequired: "FILM_BASE_REQUIRED"
+        case .filmBaseLocked: "FILM_BASE_LOCKED"
+        case .filmBaseNotFound: "FILM_BASE_NOT_FOUND"
+        case .filmBaseTooSmall: "FILM_BASE_TOO_SMALL"
+        case .filmBaseClipped: "FILM_BASE_CLIPPED"
+        case .filmBaseTooDark: "FILM_BASE_TOO_DARK"
+        case .filmBaseAmbiguous: "FILM_BASE_AMBIGUOUS"
+        case .rollPredatesFilmBase: "ROLL_PREDATES_FILM_BASE"
+        case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
+        case .filmBaseFlatfieldConflict: "FILM_BASE_FLATFIELD_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name

@@ -86,8 +86,17 @@ final class ConfigurationModel {
         didSet {
             guard rollURL != oldValue else { return }
             clearValidationState()
+            startRollFetch()
         }
     }
+
+    /// The roll's attached film-base reference, read from `roll info` when
+    /// `rollURL` changes (REBATE_ANCHORING §8). Required before Convert.
+    private(set) var filmBase: FilmBase?
+    private(set) var baseFrameError: Issue?
+    private(set) var isAttachingBaseFrame = false
+
+    @ObservationIgnored private var rollTask: Task<Void, Never>?
 
     // MARK: - The batch's grouping
 
@@ -209,6 +218,7 @@ final class ConfigurationModel {
             && !selectedFiles.isEmpty
             && rollURL != nil
             && flatFieldProfileID != nil
+            && filmBase != nil
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -281,7 +291,45 @@ final class ConfigurationModel {
         selectionWarnings = []
         selectionError = nil
         rollError = nil
+        baseFrameError = nil
         isValidating = false
+    }
+
+    /// Attaches or replaces the roll's film-base reference immediately
+    /// (REBATE_ANCHORING §8.1) — gate failures surface inline, not at
+    /// Convert.
+    func attachBaseFrame(at frameURL: URL) async {
+        guard let rollURL else { return }
+        baseFrameError = nil
+        isAttachingBaseFrame = true
+        defer { isAttachingBaseFrame = false }
+
+        let result = await Self.runSetBaseFrame(
+            runner: runner,
+            roll: rollURL,
+            frame: frameURL,
+            flatfield: flatFieldProfileID
+        )
+        for warning in result.warnings {
+            selectionWarnings.append(warning)
+        }
+        if let error = result.error {
+            baseFrameError = error
+            return
+        }
+        filmBase = result.filmBase
+    }
+
+    private func startRollFetch() {
+        rollTask?.cancel()
+        filmBase = nil
+        baseFrameError = nil
+        guard let rollURL else { return }
+        rollTask = Task { [weak self, runner] in
+            let base = await Self.fetchFilmBase(runner: runner, roll: rollURL)
+            guard let self, !Task.isCancelled else { return }
+            self.filmBase = base
+        }
     }
 
     /// Runs `probe --files` with the current selection, grid, roll, and
@@ -413,6 +461,69 @@ final class ConfigurationModel {
         return result
     }
 
+    private struct SetBaseFrameResult: Sendable {
+        var filmBase: FilmBase?
+        var warnings: [Issue] = []
+        var error: Issue?
+    }
+
+    private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {
+        var manifest: RollManifest?
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                guard case .event(let event) = output, event.kind == .rollInfo,
+                    let fields = event.manifest
+                else { continue }
+                manifest = RollManifest(fields: fields)
+            }
+        } catch {
+            return nil
+        }
+        return manifest?.filmBase
+    }
+
+    private static func runSetBaseFrame(
+        runner: CLIRunner,
+        roll: URL,
+        frame: URL,
+        flatfield: String?
+    ) async -> SetBaseFrameResult {
+        var result = SetBaseFrameResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetBaseFrame(roll: roll, frame: frame, flatfield: flatfield)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .baseFrameSet:
+                        succeeded = true
+                    case .warning:
+                        if let code = event.code, let message = event.message {
+                            result.warnings.append(Issue(code: code, message: message))
+                        }
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = Issue(code: code, message: message)
+                        }
+                    default:
+                        break
+                    }
+                case .log, .failure, .completed:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            result.filmBase = await fetchFilmBase(runner: runner, roll: roll)
+        }
+        return result
+    }
+
     // MARK: - Testing
 
     /// Waits for any probe currently in flight to finish applying its
@@ -421,5 +532,6 @@ final class ConfigurationModel {
     func waitForPendingProbes() async {
         await catalogueTask?.value
         await validationTask?.value
+        await rollTask?.value
     }
 }

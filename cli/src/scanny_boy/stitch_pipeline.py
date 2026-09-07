@@ -920,6 +920,19 @@ def _normalization_record(
     return record
 
 
+def _locked_base_refs(roll: RollManifest) -> tuple[float, ...] | None:
+    """The roll's film-base density for normalization (REBATE_ANCHORING
+    §4.3). Present whenever `film_base` carries a `density`; the run gate
+    ensures one exists before any pixel work."""
+    block = roll.film_base
+    if block is None:
+        return None
+    density = block.get("density")
+    if not density:
+        return None
+    return tuple(float(v) for v in density)
+
+
 def _reference_bounds(roll: RollManifest) -> list[Bounds]:
     """The clamp's reference population: every already-completed negative
     on the roll whose manifest carries a normalization block — prior runs'
@@ -1325,6 +1338,7 @@ def run_stitch(
     # are pulled back toward — prior runs' negatives, extended by each
     # negative this run publishes.
     reference_bounds = _reference_bounds(roll)
+    base_refs = _locked_base_refs(roll)
 
     # 8. Composite and publish, negative by negative, in canonical order.
     # Auto-rotation seeds only the negatives this run created fresh: an
@@ -1355,6 +1369,7 @@ def run_stitch(
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
                 reference_bounds=reference_bounds,
+                base_refs=base_refs,
                 film_kind=film_kind,
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
@@ -1771,6 +1786,7 @@ def _composite_and_publish(
     source_index: int,
     profile=None,
     reference_bounds: list[Bounds] | None = None,
+    base_refs: tuple[float, ...] | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
 ) -> dict | None:
@@ -1836,6 +1852,7 @@ def _composite_and_publish(
             rectification=entry.rectification,
             region=valid_rect,
             reference_bounds=reference_bounds,
+            base_refs=base_refs,
             film_kind=film_kind,
         )
         progress.advance(source_index, PipelineStep.BLEND)
