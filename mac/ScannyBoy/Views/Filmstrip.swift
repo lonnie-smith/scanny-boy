@@ -174,6 +174,9 @@ struct SelectionShortcutButtons: View {
                 onDeselectAll: onDeselectAll
             )
         }
+        .allowsHitTesting(false)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 }
 
