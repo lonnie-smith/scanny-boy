@@ -350,21 +350,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var configurationSections: some View {
-        Section("Film base reference") {
-            BaseFrameField(
-                filmBase: model.filmBase,
-                isBusy: activity.isBusy || model.isAttachingBaseFrame,
-                error: model.baseFrameError,
-                onChoose: { chooseBaseFrame(replace: false) },
-                onReplace: { chooseBaseFrame(replace: true) }
-            )
-            if model.filmBase == nil {
-                Text("Choose a film-base reference before converting scans.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        Section("Flat Field") {
+        Section("Scanning Rig Profile") {
             // Chosen fresh for every run: a roll does not lock to one
             // profile, so different runs into the same roll may each pick
             // a different one. Defaults to the last profile used, across
@@ -383,6 +369,20 @@ struct ContentView: View {
             Button("Manage…") {
                 flatField.refresh()
                 isPresentingFlatFieldProfiles = true
+            }
+        }
+        Section("Film base reference") {
+            BaseFrameField(
+                filmBase: model.filmBase,
+                isBusy: activity.isBusy || model.isAttachingBaseFrame,
+                error: model.baseFrameError,
+                onChoose: { chooseBaseFrame(replace: false) },
+                onReplace: { chooseBaseFrame(replace: true) }
+            )
+            if model.filmBase == nil {
+                Text("Choose a film-base reference before converting scans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         Section {
