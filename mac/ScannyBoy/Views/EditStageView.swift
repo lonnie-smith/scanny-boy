@@ -60,10 +60,13 @@ struct EditStageView: View {
                 )
             }
         }
+        .filmstripNavigationShortcuts(
+            isEnabled: !activity.isBusy,
+            onPrevious: edit.selectPrevious,
+            onNext: edit.selectNext
+        )
         .background {
             SelectionShortcutButtons(
-                onPrevious: edit.selectPrevious,
-                onNext: edit.selectNext,
                 onSelectAll: edit.selectAll,
                 onDeselectAll: edit.deselectAll
             )
@@ -72,7 +75,7 @@ struct EditStageView: View {
         // busy (`AppActivity`) — not just this app's own run, but a
         // conversion, export, or flat-field calibration too. This also
         // disables the (invisible) selection-shortcut buttons above, so
-        // Option-arrow cannot move the selection mid-run either.
+        // arrow keys cannot move the selection mid-run either.
         .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted (runs are started from Add Scans), so the phase can

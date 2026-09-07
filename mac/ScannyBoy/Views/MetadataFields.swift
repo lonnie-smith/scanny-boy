@@ -160,7 +160,7 @@ struct TypeaheadField: View {
             if focused, !filteredSuggestions.isEmpty {
                 // A plain list under the field: small enough to stay a
                 // popover-free overlay, keyboard-free by design — the
-                // arrow keys stay owned by the filmstrip navigation.
+                // arrow keys stay owned by the text field while it is focused.
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(filteredSuggestions, id: \.self) { suggestion in
                         Button {

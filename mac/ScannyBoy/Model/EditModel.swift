@@ -232,7 +232,8 @@ final class EditModel {
         selectedNegativeIDs = []
     }
 
-    /// Option-left/Option-right and filmstrip clicks land here. The filmstrip
+    /// Left/right arrow (when no focused control owns them) and filmstrip
+    /// clicks land here. The filmstrip
     /// shows every negative in `visibleNegatives` order, so selection moves
     /// through that same order. Keyboard navigation is single-frame: it
     /// collapses any multi-selection to the frame landed on.
