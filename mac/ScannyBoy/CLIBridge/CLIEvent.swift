@@ -45,8 +45,21 @@ public struct CLIEvent: Sendable, Hashable {
     /// space**, already transformed, so Swift converts no coordinates and
     /// rejects by `id` only — the `SPOT_LIMIT_REACHED` and `SPOTS_STALE`
     /// warning codes, and the per-negative `spots` summary block on
-    /// `roll info`.
-    public static let supportedProtocolVersion = 13
+    /// `roll info`. The same protocol 13 also carries the film-base
+    /// reference (docs/REBATE_ANCHORING.md, merged from
+    /// `feat/rebate-anchoring-and-cast-removal`): the
+    /// `roll set-base-frame` command with its `base_frame_set` event, the
+    /// `film_base` block on the roll manifest (reported verbatim by
+    /// `roll info` and by `probe --roll`), the ten `FILM_BASE_*` /
+    /// `ROLL_PREDATES_FILM_BASE` codes, and the per-negative
+    /// `base_check` meters. Protocol 14 (docs/CAST_REMOVAL_PLAN.md)
+    /// extends `edit color` with `--cast-removal-highlights` and
+    /// `--auto-cast`, adds the derived `color_cast_removal_highlights`
+    /// field to `roll info`, and records the `highlight_refs` /
+    /// `neutral_residual` meters in the per-negative `normalization`
+    /// block; global and regional CMY are now mean-removed. No new
+    /// event kinds the app must decode — the new work is CLI-side.
+    public static let supportedProtocolVersion = 14
 
     public let protocolVersion: Int
     public let kind: Kind
