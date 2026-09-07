@@ -234,6 +234,7 @@ struct RollManifest: Sendable, Hashable {
         let colorHighlightMagenta: Double?
         let colorHighlightYellow: Double?
         let colorCastRemoval: Double?
+        let colorCastRemovalHighlights: Double?
         let colorDyeSeparation: Double?
         let colorSeparationDamping: Double?
         let colorTemperature: Double?
@@ -510,6 +511,7 @@ struct RollManifest: Sendable, Hashable {
             colorHighlightMagenta: fields["color_highlight_magenta"]?.doubleValue,
             colorHighlightYellow: fields["color_highlight_yellow"]?.doubleValue,
             colorCastRemoval: fields["color_cast_removal"]?.doubleValue,
+            colorCastRemovalHighlights: fields["color_cast_removal_highlights"]?.doubleValue,
             colorDyeSeparation: fields["color_dye_separation"]?.doubleValue,
             colorSeparationDamping: fields["color_separation_damping"]?.doubleValue,
             colorTemperature: fields["color_temperature"]?.doubleValue,

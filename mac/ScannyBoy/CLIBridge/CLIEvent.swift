@@ -358,6 +358,7 @@ extension CLIEvent {
                 highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
                 highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
                 castRemoval: params["cast_removal"]?.doubleValue ?? 0,
+                castRemovalHighlights: params["cast_removal_highlights"]?.doubleValue ?? 0,
                 dyeSeparation: params["dye_separation"]?.doubleValue
                     ?? ColorAdjustment.neutral.dyeSeparation,
                 separationDamping: params["separation_damping"]?.doubleValue ?? 0

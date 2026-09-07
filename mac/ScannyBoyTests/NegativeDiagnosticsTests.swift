@@ -133,6 +133,7 @@ struct NegativeDiagnosticsTests {
             colorHighlightMagenta: nil,
             colorHighlightYellow: nil,
             colorCastRemoval: nil,
+            colorCastRemovalHighlights: nil,
             colorDyeSeparation: nil,
             colorSeparationDamping: nil,
             colorTemperature: nil,

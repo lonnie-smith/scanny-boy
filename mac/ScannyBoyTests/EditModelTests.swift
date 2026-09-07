@@ -676,6 +676,49 @@ struct EditModelTests {
         )
     }
 
+    @Test("The render generation token carries the highlight cast removal strength")
+    func testRenderGenerationCarriesCastRemovalHighlights() {
+        let shadowOnly = Self.multiNegative(
+            id: "n1",
+            toneGradeR: nil,
+            toneSnapGamma: nil,
+            colorDyeSeparation: 1.0,
+            colorCastRemovalHighlights: 0
+        )
+        let withHighlights = Self.multiNegative(
+            id: "n1",
+            toneGradeR: nil,
+            toneSnapGamma: nil,
+            colorDyeSeparation: 1.0,
+            colorCastRemovalHighlights: 0.5
+        )
+
+        #expect(
+            EditModel.renderGeneration(of: shadowOnly)
+                != EditModel.renderGeneration(of: withHighlights)
+        )
+    }
+
+    @Test("A roll info payload without highlight cast removal defaults to zero")
+    func testColorAdjustmentDefaultsMissingHighlightCastRemoval() throws {
+        let manifestJSON = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z",\
+        "updated_at":"2026-01-01T00:00:00Z","runs":[],"metadata":{},\
+        "negatives":[{"negative_id":"n1","run_id":"r","members":["a.NEF"],\
+        "expected_output":"n1.tif","status":"completed","capture_time":{},\
+        "color_wb_cyan":0.1,"color_wb_magenta":0.2,"color_wb_yellow":0,\
+        "color_cast_removal":0.3}]}
+        """
+        let fields = try #require(
+            try JSONDecoder().decode(JSONValue.self, from: Data(manifestJSON.utf8)).objectValue
+        )
+        let manifest = try #require(RollManifest(fields: fields))
+        let negative = try #require(manifest.negatives.first)
+        let adjustment = try #require(negative.colorAdjustment)
+        #expect(adjustment.castRemovalHighlights == 0)
+        #expect(adjustment.castRemoval == 0.3)
+    }
+
     @Test("The negative view's cache generation carries the transform but not the tone")
     func testNegativeViewGenerationIgnoresTone() {
         let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
@@ -920,7 +963,8 @@ struct EditModelTests {
         toneGradeR: Double?,
         toneSnapGamma: Double?,
         toneToe: Double? = nil,
-        colorDyeSeparation: Double? = nil
+        colorDyeSeparation: Double? = nil,
+        colorCastRemovalHighlights: Double? = nil
     ) -> RollManifest.Negative {
         RollManifest.Negative(
             negativeID: id,
@@ -963,6 +1007,8 @@ struct EditModelTests {
             colorHighlightMagenta: nil,
             colorHighlightYellow: nil,
             colorCastRemoval: colorDyeSeparation == nil ? nil : 0,
+            colorCastRemovalHighlights: colorCastRemovalHighlights
+                ?? (colorDyeSeparation == nil ? nil : 0),
             colorDyeSeparation: colorDyeSeparation,
             colorSeparationDamping: colorDyeSeparation == nil ? nil : 0,
             colorTemperature: nil,

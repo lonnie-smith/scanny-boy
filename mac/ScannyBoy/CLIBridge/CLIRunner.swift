@@ -327,7 +327,8 @@ public struct CLICommand: Sendable, Hashable {
         negatives: [String],
         adjustment: ColorAdjustment?,
         region: String = "global",
-        temperatureKelvin: Double? = nil
+        temperatureKelvin: Double? = nil,
+        auto: ColorAutoFlags = []
     ) -> CLICommand {
         var arguments = [
             "edit", "color",
@@ -338,16 +339,21 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let adjustment {
             let tempRegion = temperatureKelvin != nil ? region : nil
+            let autoCast = auto.contains(.cast)
 
-            arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
-            if tempRegion == "global", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "global",
-                ])
+            if autoCast {
+                arguments.append("--auto-cast")
             } else {
-                arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
-                arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
+                arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
+                if tempRegion == "global", let temperatureKelvin {
+                    arguments.append(contentsOf: [
+                        "--temperature", String(temperatureKelvin),
+                        "--region", "global",
+                    ])
+                } else {
+                    arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
+                    arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
+                }
             }
 
             arguments.append(contentsOf: ["--shadow-cyan", String(adjustment.shadowCyan)])
@@ -383,6 +389,12 @@ public struct CLICommand: Sendable, Hashable {
             }
 
             arguments.append(contentsOf: ["--cast-removal", String(adjustment.castRemoval)])
+            arguments.append(
+                contentsOf: [
+                    "--cast-removal-highlights",
+                    String(adjustment.castRemovalHighlights),
+                ]
+            )
             arguments.append(contentsOf: [
                 "--dye-separation", String(adjustment.dyeSeparation),
             ])

@@ -366,6 +366,39 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--cyan"))
     }
 
+    @Test("edit color with auto cast omits the global filtration sliders")
+    func editColorAutoCastArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.wbCyan = 0.2
+        adjustment.wbMagenta = -0.1
+        adjustment.wbYellow = 0.05
+        let command = CLICommand.editColor(
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: adjustment,
+            auto: .cast
+        )
+        #expect(command.arguments.contains("--auto-cast"))
+        #expect(!command.arguments.contains { $0 == "--cyan" })
+        #expect(!command.arguments.contains { $0 == "--magenta" })
+        #expect(!command.arguments.contains { $0 == "--yellow" })
+    }
+
+    @Test("edit color emits the highlight cast removal strength")
+    func editColorCastRemovalHighlightsArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.castRemovalHighlights = 0.4
+        let command = CLICommand.editColor(
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: adjustment
+        )
+        #expect(command.arguments.contains("--cast-removal-highlights"))
+        let index = command.arguments.firstIndex(of: "--cast-removal-highlights")
+        #expect(index.map { command.arguments[$0 + 1] } == "0.4")
+        #expect(!command.arguments.contains("--auto-cast"))
+    }
+
     // MARK: - Protocol version 6: flat field
 
     @Test("run carries --flatfield when a profile is chosen")

@@ -29,6 +29,13 @@ for the decisions that superseded earlier items.
   the most saturated pixels; the ordinary, accepted behaviour of every
   matrix-based render. A gamut-compression curve is a feature with its
   own plan (docs/EXPORT_PLAN.md §4.4).
+* **A confidence term on cast removal** — `highlight_refs` is `null` when
+  `_same_pixel_color_floor_refs` fell back, which is exactly the signal
+  `COLOR_PLAN.md` §1.4 wanted for down-weighting untrustworthy dense-end
+  neutrals. `docs/CAST_REMOVAL_PLAN.md` §0.1 declined to multiply the tie
+  sliders by it; surface it only if real rolls show the highlight tie
+  acting on fallback references often enough to matter. Attachment point:
+  `color.cast_slopes` and the Edit tab's Correction sliders.
 * **A print curve distinct from grade/snap, soft-proofing, paper
   simulation, printing** — what the export plan took from Phase 4
   (inversion, tone at full resolution) and what it left (docs/
