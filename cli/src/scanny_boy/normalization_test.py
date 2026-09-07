@@ -10,8 +10,6 @@ equivalent).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -40,11 +38,6 @@ from scanny_boy.normalization import (
     to_log_density,
     withhold_dense_border,
     withhold_opaque,
-)
-from scanny_boy.sample_nef_support import (
-    REAL_SAMPLE_FILES,
-    requires_real_samples,
-    stage_samples,
 )
 
 FILL_LOG = -6.0  # what an uncovered canvas pixel becomes: log10(1e-6)

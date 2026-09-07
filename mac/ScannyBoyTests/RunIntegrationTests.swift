@@ -313,10 +313,13 @@ struct RunIntegrationTests {
 
         let model = try await Self.configuredModel(roll: notARoll, select: SampleFixtures.files)
 
-        #expect(model.runEnabled)
+        // Film type and base frame are roll-scoped: they cannot be set on a
+        // folder the CLI does not recognise as a roll, so the form stays
+        // incomplete even though the selection and profile are chosen.
+        #expect(!model.runEnabled)
         #expect(await model.validateSelection() == false)
         #expect(model.rollError?.code == .rollNotFound)
-        #expect(model.buildRunCommand() != nil)
+        #expect(model.buildRunCommand() == nil)
     }
 
     // MARK: - Rerunning against a roll that already holds the negative

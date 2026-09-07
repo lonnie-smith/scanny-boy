@@ -63,7 +63,7 @@ struct RunModelTests {
         let lines = [
             TestEvents.line(#"{"event":"started","command":"roll info"}"#),
             TestEvents.line(
-                #"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_base":{"density":[-0.42,-0.12,-0.99],"locked_at":null,"source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}}}"#
+                #"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":"colour","film_base":{"density":[-0.42,-0.12,-0.99],"locked_at":null,"source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}}}"#
             ),
             TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#),
         ]

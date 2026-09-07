@@ -114,7 +114,7 @@ def test_create_roll_without_film_kind(tmp_path):
 
 
 def test_create_roll_monochrome_seeds_grey_density_profile(tmp_path):
-    from scanny_boy.icc_profile import profile_record, ProfileKind
+    from scanny_boy.icc_profile import ProfileKind, profile_record
 
     roll_dir = create_roll(tmp_path, "Tri-X", film_kind="monochrome")
     manifest = load_roll_manifest(roll_dir)
@@ -123,7 +123,7 @@ def test_create_roll_monochrome_seeds_grey_density_profile(tmp_path):
 
 
 def test_set_film_kind_updates_manifest(tmp_path):
-    from scanny_boy.icc_profile import profile_record, ProfileKind
+    from scanny_boy.icc_profile import ProfileKind, profile_record
     from scanny_boy.roll_folder import set_film_kind
 
     roll_dir = create_roll(tmp_path, "Fresh")
