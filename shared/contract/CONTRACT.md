@@ -9,6 +9,23 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 18 keeps every event's shape and adds **the resident
+helper** (docs/OPTIMIZATION.md §2): a new `serve` command that reads
+newline-delimited JSON *requests* on stdin — one object per line,
+`{"request_id": "<uuid>", "command": [<the argv a one-shot invocation
+would have received>]}` — and answers on this same stdout event stream.
+Every event emitted while a served request is in flight gains an optional
+`request_id` string field, and each request ends with a `finished` event
+carrying its `request_id` and the exit status the one-shot CLI would have
+returned. A request whose body is instead `{"request_id": "<uuid>",
+"cancel": true}` asks the daemon to cancel **that one request** in band;
+SIGTERM to the daemon keeps its one-shot meaning (shut down: cancel every
+live token, answer the rest as cancelled at exit status 143, exit 0). The
+decoder must treat `request_id` as optional: one-shot invocations, which
+have no daemon to scope an event to, continue to emit events without it.
+The app's ordinary SIGTERM-cancels-everything semantics belong only to the
+one-shot path; a served request's cancellation is its own.
+
 Protocol version 16 keeps version 15's roll model and adds **named grid
 configuration presets**: the `grid create` / `grid list` / `grid delete`
 command family and the `grid_created`, `grid_list`, and `grid_deleted`
@@ -791,6 +808,28 @@ computed default is never rejected this way, only lowered.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
 record as delivered by `roll info` (format version 7; now persisted in the
 library database rather than a JSON file in the roll folder).
+
+### `serve`
+
+`scanny-boy serve` is the resident helper behind the app's Edit tab
+(docs/OPTIMIZATION.md §2). It reads one JSON request object per stdin line
+and writes the ordinary event stream to stdout; it emits nothing of its
+own, so every line on stdout belongs to exactly one request, identified by
+its `request_id`:
+
+    {"request_id": "0f8…", "command": ["edit", "list-spots", "--roll", "…", …]}
+    {"request_id": "0f8…", "cancel": true}
+
+Requests are answered strictly one at a time, in arrival order; a `cancel`
+line is answered immediately against the request it names, whether that
+request is running or still queued. A request the daemon will not run —
+because the helper was shut down under it, or its `command` was not a
+usable argv — is still answered: a cancelled one with the one-shot SIGTERM
+shape (`error` carrying `CANCELLED`, then `finished` at exit status 143),
+a malformed one with `finished` at exit status 2. Closing stdin is the
+ordinary stop; the daemon lets the in-flight request finish, then exits 0.
+SIGTERM is the backstop: it cancels every live token, answers the queued
+requests as cancelled, lets the in-flight request finish, and exits 0.
 
 ### Event types
 

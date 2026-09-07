@@ -243,8 +243,11 @@ def test_protocol_version_is_fourteen():
     `--cast-removal-highlights` and `--auto-cast` on `edit color`, the
     `color_cast_removal_highlights` derived field on `roll info`, and the
     `highlight_refs` / `neutral_residual` meters in the `normalization`
-    block. Protocol 16→17 retires `STITCH_GRID_ORDER_UNEXPECTED`."""
-    assert PROTOCOL_VERSION == 17
+    block. Protocol 16→17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
+    Protocol 17→18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`:
+    the optional `request_id` field on every event, and the terminal
+    `finished` each served request ends with."""
+    assert PROTOCOL_VERSION == 18
 
 
 def test_new_event_kinds_round_trip():

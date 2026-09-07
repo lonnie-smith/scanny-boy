@@ -110,7 +110,16 @@ from typing import IO, Any, ClassVar
 # an `across` x `down` shape the app picks when adding scans.
 # Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`: cell assignment is
 # geometry-only and capture order is not checked.
-PROTOCOL_VERSION = 17
+#
+# Protocol 18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`: the
+# resident process that reads newline-delimited JSON *requests* on stdin
+# and answers on this same stdout stream. Every event emitted while a
+# served request is in flight gains an optional `request_id` field, and
+# each request ends with a `finished` carrying its `request_id` and the
+# exit status the one-shot CLI would have returned. One-shot invocations
+# continue to emit events without `request_id`; the app's decoder treats
+# it as optional for exactly that reason.
+PROTOCOL_VERSION = 18
 
 
 class EventType(enum.StrEnum):
@@ -751,12 +760,23 @@ class GridDeleted(Event):
 
 
 class EventWriter:
-    """Writes events to a stream as one flushed JSON line each."""
+    """Writes events to a stream as one flushed JSON line each.
 
-    def __init__(self, stream: IO[str]) -> None:
+    `request_id` is `scanny-boy serve`'s addition (docs/OPTIMIZATION.md
+    §2.1): when set, every event written through this writer carries it,
+    which is how one shared stdout stream is partitioned among the
+    requests the resident process answers. One-shot invocations leave it
+    None and emit events without the field, exactly as before.
+    """
+
+    def __init__(self, stream: IO[str], request_id: str | None = None) -> None:
         self._stream = stream
+        self._request_id = request_id
 
     def write(self, event: Event) -> None:
-        line = json.dumps(event.to_dict(), separators=(",", ":"), sort_keys=True)
+        data = event.to_dict()
+        if self._request_id is not None:
+            data["request_id"] = self._request_id
+        line = json.dumps(data, separators=(",", ":"), sort_keys=True)
         self._stream.write(line + "\n")
         self._stream.flush()

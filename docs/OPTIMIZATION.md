@@ -179,6 +179,26 @@ regresses when someone adds a convenience import at the top of `cli.py`.
 Re-measure the three commands in §0's table afterwards and record the numbers
 here. Expect roughly 1.14 -> 0.85 s and 1.55 -> 1.26 s.
 
+**Re-measured after §1** (same roll and negatives as §0's table, 3-run
+best-of, this time through the venv console script rather than the packaged
+binary — `uv run` adds ~0.3 s of its own and the packaged binary a little
+more again, so the absolute numbers sit below §0's rather than beside them;
+the delta is the honest part):
+
+| | before §1 | after §1 |
+| --- | --- | --- |
+| `edit list-spots` | 0.79 s | 0.39 s |
+| `edit render-region` | 1.14 s | 0.75 s |
+| `edit render-preview` | 1.55 s | 1.23 s |
+
+A bare `import scanny_boy.cli` went from ~0.70 s to ~0.05 s (warm, measured
+with `-X importtime`). What remains on the render commands is cv2, rawpy and
+SQLAlchemy, all reached through `edits` -> `previews` / `repo` at dispatch
+time — the plan's ~0.45 s estimate did not account for those, and deferring
+them further would mean import surgery inside `previews`/`repo`, which §6's
+scope rules counsel against. §2 makes the remainder a once-per-process cost
+instead.
+
 ### 1.3 Why this is not the fix
 
 It leaves ~0.45 s of startup on every gesture, and it does nothing at all
@@ -294,6 +314,25 @@ existing one-shot tests stay exactly as they are — they are the proof that
 - Kill the daemon mid-request: the app falls back and stays usable.
 - A `run` still goes one-shot and still cancels by SIGTERM.
 
+**Re-measured after §2** (the same roll and negative as §0's table, served
+through the rebuilt packaged helper, per-request wall from the request line
+to its `finished`; before §3, so decode is still in every number):
+
+| | wall |
+| --- | --- |
+| first served `render-region` (cold daemon) | 1.62 s |
+| second served `render-region` | 0.42 s |
+| one-shot `render-preview`, same negative | 2.74 s |
+
+The warm region lands on §2's 0.40 s target. One deviation from the letter
+of §2.5 worth recording: the served routing is opt-in on `CLIRunner`
+(`daemonRouting:`), default off, because dozens of existing suites drive
+fake one-shot executables for `roll list` and `edit *`, and this plan's own
+rule is that the existing one-shot tests stay exactly as they are. The app's
+single runner (`ScannyBoyApp`) is built with routing on; the served variants
+live in `CLIDaemonTests` (fake `serve` executable, fast tier) and
+`CLIIntegrationTests` (the real helper).
+
 ---
 
 ## 3. Cache decoded pixels in the daemon
@@ -325,6 +364,29 @@ array (<1 ms, §0), so a slider drag must hit the cache, and it will.
 
 Bound the cache by total bytes, not entry count, and make the bound one
 constant in one module per this project's convention.
+
+**Re-measured after §3.1** (the same roll and negative as §0's table, served
+through the rebuilt packaged helper, per-request wall from the request line
+to its `finished`):
+
+| | wall |
+| --- | --- |
+| first served `render-preview` (cold daemon: imports + decode) | 3.45 s |
+| second served `render-preview` (cache hit) | 0.054 s |
+| mode change, same negative (cache hit) | 0.038 s |
+| one-shot `render-preview`, same negative | 2.74 s |
+
+The slider round trip is 38–54 ms — well under the 200 ms gate, so §4 stays
+unbuilt (§4.2's own stop-here rule). Note the packaged helper's one-shot is
+slower than §0's table (2.74 s against 1.55 s): PyInstaller's frozen imports
+cost more than the venv's, which is exactly the cost §2 amortizes.
+
+The key gained a spot term beyond the list above: a live spot set's repair
+is the first step of the display replay, so it changes decoded pixels and
+belongs in the key (§3.3). It rides as a hash of the set's canonical JSON;
+Swift's counterpart (`EditModel.spotsTerm`) is a coarser summary of the same
+rule, and both sites are commented at each other because they cannot share
+one definition.
 
 ### 3.2 The full-resolution cache is deferred, not refused
 

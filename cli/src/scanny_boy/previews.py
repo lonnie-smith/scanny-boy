@@ -48,7 +48,12 @@ JPEG: repeated edits would otherwise compound generational loss.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 import cv2
@@ -62,6 +67,114 @@ from scanny_boy.library.db import library_db_path
 PREVIEW_MAX_EDGE = 1024
 
 MAX_CODE = 65535
+
+# docs/OPTIMIZATION.md §3.1: the daemon's decoded-pixel cache is bound by
+# total bytes, not entry count, and this is that bound, in one place. One
+# entry is a negative's preview-resolution display array — 887x1024 at
+# 16-bit RGB, about 5.4 MB — so the bound holds roughly seventeen
+# negatives: a roll stepped through in the fit view stays cached, and the
+# worst case is bounded well under 1% of the 712 MB a full decode costs.
+PREVIEW_CACHE_MAX_BYTES = 96 * 1024 * 1024
+
+_DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_DISPLAY_PREVIEW_CACHE_BYTES = 0
+_DISPLAY_PREVIEW_CACHE_LOCK = threading.Lock()
+
+
+def _spots_cache_key(spots_params: dict | None) -> tuple:
+    """The spot half of the pixel-cache key (docs/OPTIMIZATION.md §3.3).
+
+    A live spot set changes decoded pixels — its repair is the first step
+    of the display replay — so the whole set is folded into the key,
+    hashed rather than compared: the masks can be large and the set is
+    bounded (`MAX_SPOTS`), so a hash of its canonical JSON is both cheap
+    and exact. Swift's counterpart term is `EditModel.spotsTerm`
+    (`repair#count#rejected`), a coarser summary of the same rule; the two
+    sites are commented at each other because they cannot share a
+    definition — one lives in Swift, one here."""
+    if spots_params is None:
+        return (None,)
+    canonical = json.dumps(spots_params, sort_keys=True, default=str)
+    digest = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
+    return ("spots", digest)
+
+
+def cached_preview_codes(
+    tiff_path: Path,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    spots_params: dict | None = None,
+) -> np.ndarray:
+    """The display image's preview-resolution density codes — the decoded,
+    transformed, downscaled array `generate_preview` and `render_preview`
+    encode from — through the daemon's pixel cache.
+
+    docs/OPTIMIZATION.md §3.1: a full decode of a published TIFF is ~600
+    ms and a one-shot process throws the array away, so the resident
+    helper holds the preview-resolution cut instead — the fit view is
+    where sliders live, and it only ever needs preview resolution. The key
+    is the geometry plus the TIFF's identity, **never the tone or
+    colour**: those are LUTs applied after the cached array (<1 ms, §0),
+    so a slider drag must hit this cache, and it does. The `mtime` term is
+    what catches a re-stitch rewriting the published TIFF (§3.3). Tone,
+    colour, and the display mode never reach the key — they are encode
+    steps, not decode steps.
+
+    The returned array is shared, read-only by convention: every encode
+    path indexes it and never writes it."""
+    global _DISPLAY_PREVIEW_CACHE_BYTES
+
+    stat = os.stat(tiff_path)
+    key = (
+        str(tiff_path),
+        stat.st_mtime_ns,
+        stat.st_size,
+        int(quarter_turns) % 4,
+        bool(flipped_horizontally),
+        round(float(fine_angle_deg), 6),
+        _spots_cache_key(spots_params),
+    )
+    with _DISPLAY_PREVIEW_CACHE_LOCK:
+        cached = _DISPLAY_PREVIEW_CACHE.get(key)
+        if cached is not None:
+            _DISPLAY_PREVIEW_CACHE.move_to_end(key)
+            return cached
+    image = _downscale_codes(
+        _display_image(
+            tiff_path,
+            quarter_turns,
+            flipped_horizontally,
+            fine_angle_deg,
+            spots_params,
+        )
+    )
+    with _DISPLAY_PREVIEW_CACHE_LOCK:
+        _DISPLAY_PREVIEW_CACHE[key] = image
+        _DISPLAY_PREVIEW_CACHE_BYTES += image.nbytes
+        while (
+            _DISPLAY_PREVIEW_CACHE_BYTES > PREVIEW_CACHE_MAX_BYTES
+            and len(_DISPLAY_PREVIEW_CACHE) > 1
+        ):
+            _key, evicted = _DISPLAY_PREVIEW_CACHE.popitem(last=False)
+            _DISPLAY_PREVIEW_CACHE_BYTES -= evicted.nbytes
+    return image
+
+
+def _downscale_codes(image: np.ndarray) -> np.ndarray:
+    """The preview-resolution cut of a display image — the downscale of
+    `_write_downscaled`, in normalized density (code space, not linear
+    light: averaging density is what averaging a photographic image means
+    — docs/DECISIONS.md, "Normalization decisions")."""
+    edge = max(image.shape[0], image.shape[1])
+    if edge > PREVIEW_MAX_EDGE:
+        scale = PREVIEW_MAX_EDGE / edge
+        image = cv2.resize(
+            image,
+            (round(image.shape[1] * scale), round(image.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+    return np.ascontiguousarray(image)
 
 
 def _build_display_lut() -> np.ndarray:
@@ -124,14 +237,7 @@ def _write_downscaled(
     averaging density is what averaging a photographic image means —
     docs/DECISIONS.md, "Normalization decisions") plus the display encode.
     Returns the written PNG's `(width, height)`."""
-    edge = max(image.shape[0], image.shape[1])
-    if edge > PREVIEW_MAX_EDGE:
-        scale = PREVIEW_MAX_EDGE / edge
-        image = cv2.resize(
-            image,
-            (round(image.shape[1] * scale), round(image.shape[0] * scale)),
-            interpolation=cv2.INTER_AREA,
-        )
+    image = _downscale_codes(image)
     _encode_display_png(
         image,
         destination,
@@ -277,7 +383,7 @@ def generate_preview(
         return None
 
     tiff_path = Path(roll_dir) / negative.output["name"]
-    image = _display_image(
+    image = cached_preview_codes(
         tiff_path,
         quarter_turns,
         flipped_horizontally,
@@ -286,7 +392,7 @@ def generate_preview(
     )
 
     destination = _preview_path(roll_id, negative.negative_id)
-    _write_downscaled(
+    _encode_display_png(
         image,
         destination,
         tone_params,
@@ -318,15 +424,15 @@ def render_preview(
     there) or `"negative"` (the un-inverted density view, which no tone
     ever reaches — `tone_params` is ignored in that mode). Returns the
     written PNG's `(width, height)`."""
-    image = _display_image(
+    image = cached_preview_codes(
         tiff_path,
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
         spots_params,
     )
-    width, height = _write_downscaled(image, destination, tone_params, mode=mode)
-    return width, height
+    _encode_display_png(image, destination, tone_params, mode=mode)
+    return image.shape[1], image.shape[0]
 
 
 def transform_preview(current_path: Path, op: str) -> Path:
