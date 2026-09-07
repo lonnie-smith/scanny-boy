@@ -876,6 +876,7 @@ private struct ToneSlider: View {
     let step: Double
     let resetValue: Double
     var reversed: Bool = false
+    var trackColors: [Color]? = nil
     let onScheduleCommit: () -> Void
     let onCommitNow: () -> Void
 
@@ -909,6 +910,11 @@ private struct ToneSlider: View {
             guard !editing else { return }
             onCommitNow()
         }
+        .background(alignment: .center) {
+            if let trackColors {
+                SliderTrackBackground(colors: trackColors)
+            }
+        }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
                 value = resetValue
@@ -918,16 +924,14 @@ private struct ToneSlider: View {
     }
 }
 
-/// Yellow→blue bar behind the temperature slider track (warm left, cool right).
-private struct TemperatureTrackBackground: View {
+private struct SliderTrackBackground: View {
+    let colors: [Color]
+
     var body: some View {
         Capsule()
             .fill(
                 LinearGradient(
-                    colors: [
-                        Color(red: 1.0, green: 0.82, blue: 0.25),
-                        Color(red: 0.35, green: 0.55, blue: 0.95),
-                    ],
+                    colors: colors,
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -935,6 +939,28 @@ private struct TemperatureTrackBackground: View {
             .frame(height: 4)
             .padding(.horizontal, 7)
     }
+}
+
+private enum CMYSliderTrackColors {
+    static let cyan: [Color] = [
+        Color(red: 0.95, green: 0.35, blue: 0.35),
+        Color(white: 0.55),
+        Color(red: 0.20, green: 0.80, blue: 0.90),
+    ]
+    static let magenta: [Color] = [
+        Color(red: 0.35, green: 0.90, blue: 0.35),
+        Color(white: 0.55),
+        Color(red: 0.95, green: 0.20, blue: 0.85),
+    ]
+    static let yellow: [Color] = [
+        Color(red: 0.35, green: 0.55, blue: 0.95),
+        Color(white: 0.55),
+        Color(red: 1.0, green: 0.90, blue: 0.20),
+    ]
+    static let temperature: [Color] = [
+        Color(red: 1.0, green: 0.82, blue: 0.25),
+        Color(red: 0.35, green: 0.55, blue: 0.95),
+    ]
 }
 
 private enum ColorRegion: String, CaseIterable, Identifiable {
@@ -959,7 +985,7 @@ private struct ColorAdjustmentPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Balance").font(.headline)
+                Text("Color").font(.headline)
                 Picker("Region", selection: $region) {
                     ForEach(ColorRegion.allCases) { item in
                         Text(item.label).tag(item)
@@ -970,13 +996,13 @@ private struct ColorAdjustmentPanel: View {
 
                 temperatureSlider
 
-                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02) {
+                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.cyan) {
                     String(format: "%+.2f", cyanBinding.wrappedValue)
                 }
-                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02) {
+                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.magenta) {
                     String(format: "%+.2f", magentaBinding.wrappedValue)
                 }
-                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02) {
+                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.yellow) {
                     String(format: "%+.2f", yellowBinding.wrappedValue)
                 }
 
@@ -1113,6 +1139,7 @@ private struct ColorAdjustmentPanel: View {
         range: ClosedRange<Double>,
         step: Double,
         disabled: Bool = false,
+        trackColors: [Color]? = nil,
         label: @escaping () -> String
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1128,6 +1155,7 @@ private struct ColorAdjustmentPanel: View {
                 range: range,
                 step: step,
                 resetValue: resetValue(for: title),
+                trackColors: trackColors,
                 onScheduleCommit: { onScheduleCommit(values) },
                 onCommitNow: { onCommitNow(values, []) }
             )
@@ -1211,7 +1239,7 @@ private struct ColorAdjustmentPanel: View {
                 }
             }
             .background(alignment: .center) {
-                TemperatureTrackBackground()
+                SliderTrackBackground(colors: CMYSliderTrackColors.temperature)
             }
         }
     }

@@ -98,6 +98,14 @@ struct ContentView: View {
             run.clearResults()
             export.clearResults()
         }
+        .onChange(of: workspaceTab) { _, tab in
+            switch tab {
+            case .addScans:
+                columnVisibility = .all
+            case .edit, .metadata, .export:
+                columnVisibility = .detailOnly
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
             restitchWorkDirectory = nil
             restitchOutputFolder = model.rollURL
