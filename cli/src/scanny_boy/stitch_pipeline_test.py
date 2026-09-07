@@ -928,8 +928,19 @@ def test_a_differing_flatfield_profile_warns(work_dir, tmp_path):
     assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
-        e for e in events
-        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+        e
+        for e in events
+        if isinstance(e, WarningEvent)
+        and e.code
+        not in (
+            Code.NORMALIZE_HEADROOM_CLIPPED,
+            # The synthetic scene's blurred dark content forms a second dense
+            # mode, so the film-extent pass reports an informational
+            # withhold on it (docs/BLACK_POINT_REFINEMENT.md §E-3); it is
+            # not the warning this test is about.
+            Code.NORMALIZE_FILM_EXTENT_WITHHELD,
+            Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
+        )
     ]
     assert [w.code for w in warnings] == [Code.FILM_BASE_FLATFIELD_CONFLICT]
     assert "pid-elsewhere" in warnings[0].message
@@ -965,8 +976,19 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp
     assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
-        e for e in events
-        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+        e
+        for e in events
+        if isinstance(e, WarningEvent)
+        and e.code
+        not in (
+            Code.NORMALIZE_HEADROOM_CLIPPED,
+            # The synthetic scene's blurred dark content forms a second dense
+            # mode, so the film-extent pass reports an informational
+            # withhold on it (docs/BLACK_POINT_REFINEMENT.md §E-3); it is
+            # not the warning this test is about.
+            Code.NORMALIZE_FILM_EXTENT_WITHHELD,
+            Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
+        )
     ]
     assert [w.code for w in warnings] == [Code.FILM_BASE_CAMERA_CONFLICT]
     assert "NIKON Z f" in warnings[0].message

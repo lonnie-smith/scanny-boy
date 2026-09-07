@@ -63,7 +63,10 @@ public struct CLIEvent: Sendable, Hashable {
     /// events answered by `scanny-boy serve` carry an optional
     /// `request_id`, and each served request ends with a `finished`
     /// carrying it and the one-shot exit status. Optional, because a
-    /// one-shot invocation has no daemon to scope an event to.
+    /// one-shot invocation has no daemon to scope an event to. The same
+    /// bump adds the film-extent pass (docs/BLACK_POINT_REFINEMENT.md):
+    /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
+    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
     public static let supportedProtocolVersion = 18
 
     public let protocolVersion: Int
@@ -548,6 +551,10 @@ public enum CLICode: Sendable, Hashable {
     case scanClipped
     case normalizeDegenerateBounds
     case normalizeHeadroomClipped
+    // Protocol version 18: the film-extent pass
+    // (docs/BLACK_POINT_REFINEMENT.md).
+    case normalizeFilmExtentWithheld
+    case normalizeFilmExtentExcessive
     case spotLimitReached
     case spotsStale
     case filmKindRequired
@@ -634,6 +641,8 @@ public enum CLICode: Sendable, Hashable {
         case "SCAN_CLIPPED": self = .scanClipped
         case "NORMALIZE_DEGENERATE_BOUNDS": self = .normalizeDegenerateBounds
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
+        case "NORMALIZE_FILM_EXTENT_WITHHELD": self = .normalizeFilmExtentWithheld
+        case "NORMALIZE_FILM_EXTENT_EXCESSIVE": self = .normalizeFilmExtentExcessive
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
         case "FILM_KIND_REQUIRED": self = .filmKindRequired
@@ -722,6 +731,8 @@ public enum CLICode: Sendable, Hashable {
         case .scanClipped: "SCAN_CLIPPED"
         case .normalizeDegenerateBounds: "NORMALIZE_DEGENERATE_BOUNDS"
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
+        case .normalizeFilmExtentWithheld: "NORMALIZE_FILM_EXTENT_WITHHELD"
+        case .normalizeFilmExtentExcessive: "NORMALIZE_FILM_EXTENT_EXCESSIVE"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
         case .filmKindRequired: "FILM_KIND_REQUIRED"

@@ -91,6 +91,14 @@ ALL_EVENTS: list[Event] = [
     ),
     WarningEvent(code=Code.FILENAME_SORT_USED, message="fell back to filenames"),
     ErrorEvent(code=Code.INVALID_PER_NEGATIVE, message="out of range"),
+    WarningEvent(
+        code=Code.NORMALIZE_FILM_EXTENT_WITHHELD,
+        message="neg-0: insets top 168px, bottom 0px, left 0px, right 234px",
+    ),
+    WarningEvent(
+        code=Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
+        message="neg-1: the withheld border band kept only 38% of the region",
+    ),
     Finished(status="success", exit_status=0, run_id="run-1"),
     RollCreated(
         roll_id="00000000-0000-4000-8000-000000000001",
@@ -228,7 +236,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_fourteen():
+def test_protocol_version_is_eighteen():
     """Protocol 10→11: monochrome film support, extended preview tone
     adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
     toggle (`--mode` on `edit render-region`, `edit render-preview` with
@@ -246,7 +254,11 @@ def test_protocol_version_is_fourteen():
     block. Protocol 16→17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     Protocol 17→18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`:
     the optional `request_id` field on every event, and the terminal
-    `finished` each served request ends with."""
+    `finished` each served request ends with. The same bump adds the
+    film-extent pass (docs/BLACK_POINT_REFINEMENT.md): the per-negative
+    `film_extent` normalization block and the
+    `NORMALIZE_FILM_EXTENT_WITHHELD` / `NORMALIZE_FILM_EXTENT_EXCESSIVE`
+    codes, both riding the warning event channel."""
     assert PROTOCOL_VERSION == 18
 
 

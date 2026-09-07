@@ -33,6 +33,7 @@ from scanny_boy.normalization import (
     NORMALIZED_FILL,
     Bounds,
     DenseBorder,
+    FilmExtent,
     FilmKind,
     Opaque,
     Rebate,
@@ -51,9 +52,11 @@ from scanny_boy.normalization import (
     measure_textural_range,
     normalize_log_image,
     observed_extrema,
+    rebate_insets_agreement,
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
+    withhold_non_film,
     withhold_opaque,
 )
 from scanny_boy.registration import Rectification, StitchError, rectify
@@ -131,6 +134,10 @@ class CompositeResult:
     rebate: Rebate
     dense_border: DenseBorder
     opaque: Opaque
+    # BLACK_POINT_REFINEMENT: the film-extent pass's finding — where the
+    # film's own extent was judged to sit and how far the meters' region
+    # was inset inside it. Report-only until chunk E-3 applies the rect.
+    film_extent: FilmExtent
     # Section 3.4's clamp: whether the roll-population safety net pulled the
     # bounds toward the run's reference population, and the bounds the
     # frame's own meters measured before it did.
@@ -705,8 +712,9 @@ def composite(
                    intensity, not density, and biases toward the film
                    base; after the bounds, `analyze_bounds`' colour axis
                    would solve for an orange mask that is not there)
-      keep       = resolve_analysis_region(...); rebate detector excludes
-                   the film rebate from it (section 3.13)
+      keep       = resolve_analysis_region(...); opaque gate, film-extent
+                   pass and rebate detector refine it (section 3.13,
+                   docs/BLACK_POINT_REFINEMENT.md)
       bounds     = analyze_bounds(keep)
       normalized = normalize_log_image(img_log, bounds)
       encoded    = encode_normalized(normalized)
@@ -901,7 +909,23 @@ def composite(
     # `analyze_bounds`' floor. Before `detect_rebate` too, so its own
     # thin-end anchor still reads the film base.
     keep, opaque = withhold_opaque(grid, keep)
+    keep_before_non_film = keep
+    # The film-extent pass (docs/BLACK_POINT_REFINEMENT.md): locate the
+    # negative carrier's incursion and inset the analysis rect inside it.
+    # E-3: the returned keep applies — this is the line that moves
+    # published pixels.
+    keep, film_extent = withhold_non_film(grid, keep)
+    keep_before_rebate = keep
     keep, rebate = detect_rebate(grid, keep)
+    # §5.3's cross-check, recorded and read by nothing: the rebate mask is
+    # what the detector withheld from the region it saw; the agreement is
+    # measured against the region before the film-extent rect.
+    film_extent = dataclasses.replace(
+        film_extent,
+        rebate_agrees=rebate_insets_agreement(
+            keep_before_rebate & ~keep, keep_before_non_film, film_extent.insets
+        ),
+    )
     keep, dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep, base_refs)
     shadow_refs = measure_shadow_refs(grid, keep)
@@ -982,6 +1006,7 @@ def composite(
         rebate=rebate,
         dense_border=dense_border,
         opaque=opaque,
+        film_extent=film_extent,
         clamped=clamped,
         unclamped_bounds=unclamped_bounds,
     )

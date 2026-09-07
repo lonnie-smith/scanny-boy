@@ -352,6 +352,43 @@
             "mask_fraction": { "type": "number" }
           }
         },
+        "opaque": {
+          "type": "object",
+          "description": "The opaque-holder gate's finding (docs/DECISIONS.md, \"Normalization decisions\"). `threshold` is the absolute log density it fired at, null with nothing withheld. Declared late (BLACK_POINT_REFINEMENT §4.1): the block was written by earlier builds but never declared here.",
+          "required": ["detected", "mask_fraction", "threshold"],
+          "properties": {
+            "detected": { "type": "boolean" },
+            "mask_fraction": { "type": "number" },
+            "threshold": { "type": ["number", "null"] }
+          }
+        },
+        "film_extent": {
+          "type": "object",
+          "description": "The film-extent pass's finding (docs/BLACK_POINT_REFINEMENT.md): where the film's own extent was judged to sit and how far the meters' region was inset inside it. `insets` is (top, bottom, left, right) in GRID CELLS -- `analysis_block_px` in processing_params multiplies to canvas pixels, and `analysis_rect` beside it is in canvas pixels. `valley` is the absolute log density the film/non-film split was made at; `rebate_agrees` is the §5.3 cross-check, recorded and read by nothing.",
+          "required": [
+            "detected",
+            "valley",
+            "lobe_fraction",
+            "mask_fraction",
+            "insets",
+            "region_fraction",
+            "convergence_steps",
+            "rebate_agrees"
+          ],
+          "properties": {
+            "detected": { "type": "boolean" },
+            "valley": { "type": ["number", "null"] },
+            "lobe_fraction": { "type": "number" },
+            "mask_fraction": { "type": "number" },
+            "insets": {
+              "type": "array", "items": { "type": "integer", "minimum": 0 },
+              "minItems": 4, "maxItems": 4
+            },
+            "region_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "convergence_steps": { "type": "integer", "minimum": 0 },
+            "rebate_agrees": { "type": ["boolean", "null"] }
+          }
+        },
         "clamped": { "type": "boolean" },
         "unclamped_floors": { "$ref": "#/definitions/channelArray" },
         "unclamped_ceils": { "$ref": "#/definitions/channelArray" },

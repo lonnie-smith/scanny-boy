@@ -33,6 +33,8 @@ extension CLICode {
         case .stitchRebateCheckFailed: "The stitched image failed its safety check"
         case .scanClipped: "Some highlights are clipped in the scan"
         case .normalizeHeadroomClipped: "Normalization clipped some highlights or shadows"
+        case .normalizeFilmExtentWithheld: "A non-film border band was withheld from the metering"
+        case .normalizeFilmExtentExcessive: "More than half the metering region was withheld as non-film"
         case .normalizeDegenerateBounds: "The scan has no usable brightness range"
         case .filmKindRequired: "This roll has no film type"
         case .filmKindLocked: "The film type is locked"

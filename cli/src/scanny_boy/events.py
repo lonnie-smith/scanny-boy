@@ -119,6 +119,16 @@ from typing import IO, Any, ClassVar
 # exit status the one-shot CLI would have returned. One-shot invocations
 # continue to emit events without `request_id`; the app's decoder treats
 # it as optional for exactly that reason.
+#
+# The same protocol 18 adds the film-extent pass
+# (docs/BLACK_POINT_REFINEMENT.md): the per-negative `normalization`
+# block gains a `film_extent` finding, and the stitch stage emits
+# `NORMALIZE_FILM_EXTENT_WITHHELD` (informational: a non-film border band
+# was withheld from the meters, insets named in canvas pixels) and
+# `NORMALIZE_FILM_EXTENT_EXCESSIVE` (warning: the withheld rect kept less
+# than half the analysis region — the frame is unusual, and the user should
+# look at it). Both ride the warning event channel; severity is recorded in
+# CONTRACT.md's code table.
 PROTOCOL_VERSION = 18
 
 
@@ -260,6 +270,12 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
+    # BLACK_POINT_REFINEMENT §E-3: the film-extent pass. WITHHELD is
+    # informational (a carrier band was found and the meters inset past
+    # it); EXCESSIVE warns that what was withheld kept less than half the
+    # analysis region — the frame is unusual.
+    NORMALIZE_FILM_EXTENT_WITHHELD = "NORMALIZE_FILM_EXTENT_WITHHELD"
+    NORMALIZE_FILM_EXTENT_EXCESSIVE = "NORMALIZE_FILM_EXTENT_EXCESSIVE"
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     FILM_KIND_REQUIRED = "FILM_KIND_REQUIRED"
     FILM_KIND_LOCKED = "FILM_KIND_LOCKED"
