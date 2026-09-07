@@ -73,10 +73,11 @@ final class PreviewZoomModel {
     private struct Drag {
         /// The pane point the gesture started at.
         let start: CGPoint
-        /// The crop origin the view had when the gesture started.
-        let originAtStart: CGPoint
+        /// The on-screen crop's origin when the gesture started. After a
+        /// `mouseUp` whose fetch has not finished, this can differ from
+        /// `origin`, which is already committed to the drag target.
+        let cropOriginAtStart: CGPoint
         let kind: GestureKind
-        var total: CGSize = .zero
     }
 
     // MARK: - Geometry (pure, unit-tested)
@@ -209,31 +210,32 @@ final class PreviewZoomModel {
     private var displayScale: CGFloat { context.displayScale }
     private var displaySize: CGSize { context.displaySize }
 
+    /// The 1:1 crop size the pane is asking for now — the same size
+    /// `fetchCrop` will request, not necessarily the stale on-screen crop.
+    private var liveCropSize: CGSize {
+        Self.cropSize(
+            paneSize: paneSize, displayScale: displayScale, displaySize: displaySize
+        )
+    }
+
     // MARK: - Input (called by the preview's AppKit event host)
 
     /// Remember where the gesture started. Zoom-in vs pan is decided at
     /// `mouseUp`, from how far it moved and which modifier started it.
     func mouseDown(at panePoint: CGPoint, kind: GestureKind) {
-        drag = Drag(start: panePoint, originAtStart: origin, kind: kind)
+        drag = Drag(
+            start: panePoint,
+            cropOriginAtStart: crop?.rect.origin ?? origin,
+            kind: kind
+        )
     }
 
     /// Translates the on-screen crop live until the clamped target origin
     /// hits the image's edge. No-op when the image fits the pane at 1:1.
     func mouseDragged(to panePoint: CGPoint) {
         guard mode == .pixels100, let drag, drag.kind == .pan, let crop else { return }
-        let moved = CGSize(
-            width: panePoint.x - drag.start.x,
-            height: panePoint.y - drag.start.y
-        )
-        self.drag?.total = moved
-        let target = Self.clampOrigin(
-            Self.targetOrigin(from: drag, moved: moved, crop: crop),
-            cropSize: crop.rect.size,
-            displaySize: displaySize
-        )
-        panOffset = CGSize(
-            width: (drag.originAtStart.x - target.x) / crop.displayScale,
-            height: (drag.originAtStart.y - target.y) / crop.displayScale
+        applyPan(
+            from: drag, moved: moved(from: drag.start, to: panePoint), crop: crop
         )
     }
 
@@ -243,8 +245,9 @@ final class PreviewZoomModel {
         let gesture = drag
         drag = nil
         guard let gesture else { return }
-        let isClick = abs(gesture.total.width) < Self.clickTolerance
-            && abs(gesture.total.height) < Self.clickTolerance
+        let moved = moved(from: gesture.start, to: panePoint)
+        let isClick = abs(moved.width) < Self.clickTolerance
+            && abs(moved.height) < Self.clickTolerance
         if isClick {
             panOffset = .zero
             if gesture.kind == .zoomInAtClick, mode == .fit {
@@ -256,19 +259,28 @@ final class PreviewZoomModel {
             panOffset = .zero
             return
         }
+        let target = applyPan(from: gesture, moved: moved, crop: crop)
+        origin = target
+        fetchCrop()
+    }
+
+    private func moved(from start: CGPoint, to end: CGPoint) -> CGSize {
+        CGSize(width: end.x - start.x, height: end.y - start.y)
+    }
+
+    /// Updates `panOffset` for a drag and returns the clamped target origin.
+    @discardableResult
+    private func applyPan(from gesture: Drag, moved: CGSize, crop: Crop) -> CGPoint {
         let target = Self.clampOrigin(
-            Self.targetOrigin(from: gesture, moved: gesture.total, crop: crop),
-            cropSize: crop.rect.size,
+            Self.targetOrigin(from: gesture, moved: moved, crop: crop),
+            cropSize: liveCropSize,
             displaySize: displaySize
         )
-        origin = target
-        // The crop stays where the user left it, translated, until the new
-        // pixels arrive and snap the view onto the new origin.
         panOffset = CGSize(
-            width: (gesture.originAtStart.x - target.x) / crop.displayScale,
-            height: (gesture.originAtStart.y - target.y) / crop.displayScale
+            width: (gesture.cropOriginAtStart.x - target.x) / crop.displayScale,
+            height: (gesture.cropOriginAtStart.y - target.y) / crop.displayScale
         )
-        fetchCrop()
+        return target
     }
 
     /// The crop origin a drag asks for, before clamping: grab-and-drag —
@@ -279,8 +291,8 @@ final class PreviewZoomModel {
         from gesture: Drag, moved: CGSize, crop: Crop
     ) -> CGPoint {
         CGPoint(
-            x: gesture.originAtStart.x - moved.width * crop.displayScale,
-            y: gesture.originAtStart.y - moved.height * crop.displayScale
+            x: gesture.cropOriginAtStart.x - moved.width * crop.displayScale,
+            y: gesture.cropOriginAtStart.y - moved.height * crop.displayScale
         )
     }
 
@@ -354,6 +366,7 @@ final class PreviewZoomModel {
         )
         let key = "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
         if crop?.rect == rect, crop?.displayScale == displayScale {
+            panOffset = .zero
             return
         }
         if inFlightKey == key {

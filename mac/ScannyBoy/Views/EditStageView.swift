@@ -542,6 +542,7 @@ private struct PreviewPane: View {
         Group {
             if let crop = zoom.crop {
                 Image(nsImage: crop.image)
+                    .resizable()
                     .interpolation(.none)
                     .frame(
                         width: CGFloat(crop.rect.width) / crop.displayScale,
@@ -553,6 +554,7 @@ private struct PreviewPane: View {
                 PreviewPlaceholder(kind: .loading)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
     }
 
