@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
+import shutil
 import unicodedata
 import uuid
 from pathlib import Path
@@ -172,10 +173,11 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
 
 def delete_roll(roll_dir: Path, *, emit: Any) -> dict:
     """`roll delete`: unregister the roll — its runs, sources, negatives,
-    and edits rows cascade away with it — and unlink the negatives'
-    rendered previews. The folder itself is deliberately not touched: the
-    app trashes it first with `NSWorkspace.recycle`, and `roll list` stops
-    reporting the roll because the registration is gone.
+    and edits rows cascade away with it — and remove the negatives'
+    rendered previews along with the roll's own preview directory. The
+    folder itself is deliberately not touched: the app trashes it first
+    with `NSWorkspace.recycle`, and `roll list` stops reporting the roll
+    because the registration is gone.
 
     Like `run_edit_delete`, the record goes first: a crash then leaves an
     orphan preview file, never a dangling registration. A failed unlink is
@@ -187,14 +189,15 @@ def delete_roll(roll_dir: Path, *, emit: Any) -> dict:
     except RollNotRegisteredError as exc:
         raise RollFolderError(exc.code, exc.message) from exc
 
-    previews = [
+    preview_paths = [
         Path(negative.preview_path)
         for negative in manifest.negatives
         if negative.preview_path
     ]
+    roll_id = manifest.roll_id
     repo.delete_roll(roll_dir)
 
-    for path in previews:
+    for path in preview_paths:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -207,7 +210,39 @@ def delete_roll(roll_dir: Path, *, emit: Any) -> dict:
                 )
             )
 
-    return {"roll_id": manifest.roll_id, "path": str(roll_dir)}
+    _remove_preview_directory(roll_id, emit=emit)
+
+    return {"roll_id": roll_id, "path": str(roll_dir)}
+
+
+def _remove_preview_directory(roll_id: str, *, emit: Any) -> None:
+    """Remove `previews/<roll_id>/` outright, after the loop above has taken
+    the previews the records named.
+
+    The loop cannot stand on its own: it only knows the paths the negatives
+    recorded, and a preview whose record was lost — an unlink that failed on
+    an earlier `edit delete`, a manifest write that lost a `preview_path` —
+    would otherwise sit in the roll's directory with nothing left that could
+    ever name it. Nothing outside the deleted roll lives in there, so the
+    whole tree goes, empty or not. A failure is a warning for the same
+    reason a failed unlink is: the registration is already gone."""
+    # Imported here rather than at module scope: `previews` pulls in numpy
+    # and OpenCV, and `roll list` — which imports this module — must not pay
+    # for that.
+    from scanny_boy.previews import previews_root
+
+    directory = previews_root() / roll_id
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        emit(
+            WarningEvent(
+                code=Code.ORPHAN_FILE_NOT_REMOVED,
+                message=f"{directory} could not be removed: {exc}",
+            )
+        )
 
 
 def scan_library(library: Path) -> list[RollListing]:

@@ -31,6 +31,10 @@ enum PreviewDisplayMode: String {
 final class EditModel {
     let runner: CLIRunner
 
+    /// Where the 1:1 region crops and whole-image renders below are written.
+    /// Injected so tests never touch the real user's caches.
+    @ObservationIgnored private let previewCache: PreviewCache
+
     /// Set by `ContentView` from the sidebar selection, exactly like
     /// `ConfigurationModel.rollURL`.
     var rollURL: URL? {
@@ -118,8 +122,9 @@ final class EditModel {
     @ObservationIgnored private var colorCommitTask: Task<Void, Never>?
     @ObservationIgnored private var activeColorSession: CLISession?
 
-    init(runner: CLIRunner) {
+    init(runner: CLIRunner, previewCache: PreviewCache = .shared) {
         self.runner = runner
+        self.previewCache = previewCache
     }
 
     // MARK: - Derived state
@@ -854,8 +859,9 @@ final class EditModel {
         rect: CGRect,
         mode: PreviewDisplayMode
     ) async -> Thumbnail? {
-        guard let rollURL else { return nil }
-        let output = Self.regionCacheURL(
+        guard let rollURL, let rollID = roll?.rollID else { return nil }
+        let output = previewCache.regionURL(
+            rollID: rollID,
             negativeID: negative.negativeID,
             generation: Self.renderGeneration(of: negative),
             mode: mode,
@@ -898,11 +904,12 @@ final class EditModel {
         _ negative: RollManifest.Negative,
         mode: PreviewDisplayMode
     ) async -> Thumbnail? {
-        guard let rollURL else { return nil }
+        guard let rollURL, let rollID = roll?.rollID else { return nil }
         let generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
             : Self.renderGeneration(of: negative)
-        let output = Self.previewCacheURL(
+        let output = previewCache.previewURL(
+            rollID: rollID,
             negativeID: negative.negativeID,
             generation: generation,
             mode: mode
@@ -927,14 +934,6 @@ final class EditModel {
             return nil
         }
         return Thumbnail(image: image)
-    }
-
-    private static var regionCacheDirectory: URL {
-        URL.cachesDirectory.appending(path: "preview-regions", directoryHint: .isDirectory)
-    }
-
-    private static var previewCacheDirectory: URL {
-        URL.cachesDirectory.appending(path: "rendered-previews", directoryHint: .isDirectory)
     }
 
     /// Everything the CLI's display encode folds into a rendered frame —
@@ -987,22 +986,6 @@ final class EditModel {
     private static func spotsTerm(of negative: RollManifest.Negative) -> String {
         guard let summary = negative.spotsSummary else { return "none" }
         return "\(summary.repair)#\(summary.count)#\(summary.rejected)"
-    }
-
-    private static func regionCacheURL(
-        negativeID: String, generation: String, mode: PreviewDisplayMode, rect: CGRect
-    ) -> URL {
-        regionCacheDirectory.appending(
-            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(mode.rawValue)-\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png"
-        )
-    }
-
-    private static func previewCacheURL(
-        negativeID: String, generation: String, mode: PreviewDisplayMode
-    ) -> URL {
-        previewCacheDirectory.appending(
-            path: "\(negativeID)-g\(generation.replacingOccurrences(of: "#", with: "-"))-\(mode.rawValue).png"
-        )
     }
 
     /// The PNG the CLI rendered, decoded at its native size — a pane-sized
