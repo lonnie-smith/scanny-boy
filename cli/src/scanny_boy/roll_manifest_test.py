@@ -17,7 +17,6 @@ from scanny_boy.roll_manifest import (
     allocate_output_name,
     append_run,
     check_roll_invariants,
-    estimate_roll_manifest_size,
     format_negative_id,
     load_roll_manifest,
     merge_sources,
@@ -397,16 +396,6 @@ def test_schema_rejects_a_rectification_block_missing_fields():
         assert_matches_roll_manifest_schema(data, load_roll_manifest_schema())
 
 
-def test_rebate_deviation_is_always_null(tmp_path):
-    # Phase 2 section 3.12.2: the rebate check cannot be calibrated, so every
-    # negative records `null` and STITCH_REBATE_CHECK_FAILED is never emitted.
-    manifest = _manifest(negatives=[_completed_negative()])
-    write_roll_manifest(tmp_path, manifest)
-
-    for negative in load_roll_manifest(tmp_path).negatives:
-        assert negative.rebate_deviation_px is None
-
-
 def test_write_refreshes_updated_at(tmp_path):
     manifest = _manifest()
     before = manifest.updated_at
@@ -426,10 +415,6 @@ def test_load_rejects_an_unregistered_folder(tmp_path):
     with pytest.raises(RollNotRegisteredError) as exc_info:
         load_roll_manifest(tmp_path)
     assert exc_info.value.code == Code.ROLL_NOT_FOUND
-
-
-def test_estimate_size_is_positive():
-    assert estimate_roll_manifest_size(_manifest()) > 0
 
 
 # --- section 3.4: invariants --------------------------------------------

@@ -102,7 +102,7 @@ anything to open.
    Or build and test from the command line:
 
    ```bash
-   cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
+   ./scripts/test-mac.sh
    ```
 
 The finished app copies `ScannyBoyCLI.app` into
@@ -282,9 +282,22 @@ cd cli && uv run ruff check . && uv run pytest
 ```
 
 ```bash
-cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
+./scripts/test-mac.sh
 ```
 
 Both are also run in CI on every pull request (`.github/workflows/ci.yml`).
+
+The Python run is parallel by default (`-n 8`, from `cli/pyproject.toml`) and
+takes about a minute; add `-n 0` to run it serially while debugging a single
+test. `scripts/test-mac.sh` regenerates the Xcode project before building —
+`mac/ScannyBoy.xcodeproj` is generated and gitignored, so a newly added Swift
+file is absent from it until you do — and runs `xcodebuild` with `-quiet`, so
+a passing run prints a handful of lines rather than about 1700.
+
+Both suites keep their expensive cases behind a flag: `uv run pytest --slow`
+for the Python tier that decodes real RAW frames, stitches real scans, sweeps
+the full tone parameter box, and runs the packaged app;
+`SCANNY_BOY_SLOW_TESTS=1 ./scripts/test-mac.sh` for the Swift integration
+scenarios. Run them when you touch those paths.
 
 

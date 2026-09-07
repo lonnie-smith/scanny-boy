@@ -26,7 +26,7 @@ from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.roll_manifest_test import _negative, _run
-from scanny_boy.stitch_pipeline_test import _roll_dir
+from scanny_boy.work_dir_support import make_roll_dir
 
 _NEGATIVE_ID = "stitch-negative-01"
 
@@ -57,7 +57,7 @@ def _reset_tone_params():
 
 @pytest.fixture()
 def stitched_roll(tmp_path: Path) -> Path:
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     from scanny_boy.manifest import SourceRecord
     from scanny_boy.roll_manifest import append_run, merge_sources
@@ -886,7 +886,7 @@ def spotty_roll(tmp_path: Path, monkeypatch):
     """A registered roll holding one completed negative whose published
     TIFF carries two defects: a 5x5 dark blob and a 3x90 dark hair."""
     monkeypatch.setattr(spots, "MAX_SPOT_MINOR_FRACTION", _SPOT_FRACTION)
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     from scanny_boy.manifest import SourceRecord
     from scanny_boy.roll_manifest import append_run, merge_sources
@@ -1149,7 +1149,7 @@ def test_unstitched_negative_fails_for_all_three_spot_commands(tmp_path):
         run_edit_spots,
     )
 
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     for runner, kwargs in (
         (run_edit_detect_spots, {"sensitivity": 0.5}),
         (run_edit_spots, {"reject": (1,)}),

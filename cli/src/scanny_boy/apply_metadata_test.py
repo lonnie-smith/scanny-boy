@@ -10,8 +10,12 @@ from scanny_boy import hashing
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.events import Code, MetadataApplied, MetadataSkipped
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
-from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
 from scanny_boy.tiff_exif import DATE_TIME_ORIGINAL, SUBSEC_TIME_ORIGINAL
+from scanny_boy.work_dir_support import (
+    make_roll_dir,
+    make_work_dir,
+    run_stitch_with_defaults,
+)
 
 _INTENDED = "2026-01-15T09:30:00.250000"
 
@@ -31,9 +35,9 @@ def _stitched_roll(tmp_path: Path, *, negatives: int = 1) -> Path:
     through `stitch_pipeline_test.py`'s own real-Phase-1-intermediates
     fixtures, so `apply-metadata` operates on a file it could actually see
     in production, not a hand-crafted stand-in."""
-    work_dir = _make_work_dir(tmp_path, negatives=negatives)
-    out_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, out_dir)
+    work_dir = make_work_dir(tmp_path, negatives=negatives)
+    out_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
     assert outcome.status == "complete"
     return out_dir
 

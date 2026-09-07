@@ -31,8 +31,14 @@ cd mac && xcodegen generate
 Then open `ScannyBoy.xcodeproj`, or build and test from the command line:
 
 ```bash
-cd mac && xcodebuild test -scheme ScannyBoy -destination 'platform=macOS'
+./scripts/test-mac.sh
 ```
+
+The script regenerates the project first (so a newly added Swift file is
+never silently missing from it) and passes `-quiet`, which keeps compile
+errors and the failure summary but drops the ~1700-line build transcript.
+Arguments are forwarded, so `./scripts/test-mac.sh
+-only-testing:ScannyBoyTests/EditModelTests` works.
 
 Rerun `build-cli.sh` whenever the Python program changes: the app copies the
 staged helper into `ScannyBoy.app/Contents/Helpers` with Code Sign On Copy, so

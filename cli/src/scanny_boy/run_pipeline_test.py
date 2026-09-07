@@ -93,7 +93,7 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
     P3-4; until then this is `new_roll_manifest`, the same constructor it will
     call, rather than hand-authored JSON. REBATE_ANCHORING §3.2 rule 4: a
     roll with no film-base reference refuses to run, so one is attached."""
-    from scanny_boy.stitch_pipeline_test import _attach_base_frame
+    from scanny_boy.work_dir_support import attach_base_frame
 
     out = tmp_path / name
     out.mkdir()
@@ -102,7 +102,7 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
         roll_name=name,
         film_kind="colour",
     )
-    _attach_base_frame(manifest)
+    attach_base_frame(manifest)
     write_roll_manifest(out, manifest)
     return out
 

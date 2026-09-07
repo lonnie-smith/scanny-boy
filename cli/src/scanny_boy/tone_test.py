@@ -5,6 +5,7 @@ display LUT."""
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 import numpy as np
 import pytest
@@ -145,40 +146,77 @@ def test_toe_width_widens_the_knee():
     assert abs(narrow - straight) > abs(wide - straight)
 
 
+# The corners of the parameter box, and the axis values in between. The full
+# cartesian product is 5*5*3*3*3*3*3*3*3 = 91,125 combinations; sweeping all of
+# them cost 13 seconds, about a twentieth of the whole fast tier.
+_TONE_AXES = {
+    "grade_r": (50.0, 85.0, 115.0, 150.0, 180.0),
+    "snap_gamma": (-0.5, -0.2, 0.0, 0.2, 0.5),
+    "density": (0.0, 1.0, 2.0),
+    "shadow_density": (-0.9, 0.0, 0.9),
+    "highlight_density": (-0.5, 0.0, 0.5),
+    "toe": (-1.0, 0.0, 1.0),
+    "toe_width": (0.1, 2.5, 5.0),
+    "shoulder": (-1.0, 0.0, 1.0),
+    "shoulder_width": (0.1, 2.5, 5.0),
+}
+
+
+def _assert_monotone_and_in_range(values, params):
+    out = tone.curve_values(values, params)
+    assert np.all(np.diff(out) >= -1e-9)
+    assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def _box_corners():
+    """Every combination of each axis's two extremes — 512 points.
+
+    Monotonicity fails at the extremes, where the toe and shoulder are steep
+    enough to fold the curve back on itself, so the corners are the part of
+    the sweep that carries the evidence.
+    """
+    axes = [(name, (vals[0], vals[-1])) for name, vals in _TONE_AXES.items()]
+    for index in range(2 ** len(axes)):
+        yield {
+            name: pair[(index >> position) & 1]
+            for position, (name, pair) in enumerate(axes)
+        }
+
+
 def test_curve_is_monotone_and_in_range_over_the_parameter_box():
+    """§tone: the curve is monotone and stays in [0, 1] anywhere in the
+    parameter box.
+
+    Every corner of the box, plus 1,500 seeded interior draws. The exhaustive
+    91,125-point sweep is `test_curve_is_monotone_over_the_exhaustive_box`
+    below, behind `--slow`: a fixed grid that dense is not stronger evidence
+    than this, because a violation is a continuous region of the box, not an
+    isolated grid point — an interior sample lands in it just as surely.
+    """
     values = np.linspace(0.0, 1.0, 4097)
-    grades = (50.0, 85.0, 115.0, 150.0, 180.0)
-    snaps = (-0.5, -0.2, 0.0, 0.2, 0.5)
-    densities = (0.0, 1.0, 2.0)
-    shadow_densities = (-0.9, 0.0, 0.9)
-    highlight_densities = (-0.5, 0.0, 0.5)
-    toes = (-1.0, 0.0, 1.0)
-    toe_widths = (0.1, 2.5, 5.0)
-    shoulders = (-1.0, 0.0, 1.0)
-    shoulder_widths = (0.1, 2.5, 5.0)
-    for grade_r in grades:
-        for snap in snaps:
-            for density in densities:
-                for shadow_density in shadow_densities:
-                    for highlight_density in highlight_densities:
-                        for toe in toes:
-                            for toe_width in toe_widths:
-                                for shoulder in shoulders:
-                                    for shoulder_width in shoulder_widths:
-                                        params = tone.ToneParams(
-                                            grade_r=grade_r,
-                                            snap_gamma=snap,
-                                            density=density,
-                                            shadow_density=shadow_density,
-                                            highlight_density=highlight_density,
-                                            toe=toe,
-                                            toe_width=toe_width,
-                                            shoulder=shoulder,
-                                            shoulder_width=shoulder_width,
-                                        )
-                                        out = tone.curve_values(values, params)
-                                        assert np.all(np.diff(out) >= -1e-9)
-                                        assert out.min() >= 0.0 and out.max() <= 1.0
+
+    for corner in _box_corners():
+        _assert_monotone_and_in_range(values, tone.ToneParams(**corner))
+
+    rng = np.random.default_rng(20260906)
+    for _ in range(1500):
+        params = {
+            name: float(rng.uniform(min(vals), max(vals)))
+            for name, vals in _TONE_AXES.items()
+        }
+        _assert_monotone_and_in_range(values, tone.ToneParams(**params))
+
+
+@pytest.mark.slow
+def test_curve_is_monotone_over_the_exhaustive_box():
+    """The full 91,125-combination sweep the fast tier samples from. Run it
+    with `--slow` when you change `tone.curve_values` itself."""
+    values = np.linspace(0.0, 1.0, 4097)
+    names = list(_TONE_AXES)
+    for combination in itertools.product(*_TONE_AXES.values()):
+        _assert_monotone_and_in_range(
+            values, tone.ToneParams(**dict(zip(names, combination, strict=True)))
+        )
 
 
 def test_zone_constants_satisfy_monotonicity_bound():

@@ -1,7 +1,5 @@
 import dataclasses
-import datetime
 import math
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +7,7 @@ import pytest
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import hashing, registration, stitch_pipeline
+from scanny_boy import hashing, registration, stitch_pipeline, work_dir_support
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.composite import MEMORY_SAFETY_FACTOR, estimate_peak_bytes
@@ -24,7 +22,7 @@ from scanny_boy.events import (
     Stage,
     WarningEvent,
 )
-from scanny_boy.icc_profile import ProfileKind, load_icc_profile, profile_record
+from scanny_boy.icc_profile import ProfileKind, profile_record
 from scanny_boy.library import repo
 from scanny_boy.linear import encode_from_linear
 from scanny_boy.manifest import (
@@ -48,7 +46,6 @@ from scanny_boy.registration import DETECTOR, StitchError, register_pair
 from scanny_boy.roll_manifest import (
     CameraColor,
     NegativeRecord,
-    RollInvariants,
     RunRecord,
     append_run,
     load_roll_manifest,
@@ -65,91 +62,23 @@ from scanny_boy.sample_nef_support import (
     requires_real_samples,
 )
 from scanny_boy.stitch_pipeline import _seed_camera_color, run_stitch
-from scanny_boy.synthetic_scene_support import cut_frames, synthetic_scene
+from scanny_boy.synthetic_scene_support import synthetic_scene
 from scanny_boy.tiff_exif import (
     DATE_TIME_ORIGINAL,
     SUBSEC_TIME_ORIGINAL,
-    NestedExifFields,
-    finalize_tiff,
 )
-from scanny_boy.tiff_writer import (
-    BaseTiffTags,
-    image_description,
-    software_tag_value,
-    write_base_tiff,
+from scanny_boy.work_dir_support import (
+    FILM_DATE,
+    FRAME_SIZE,
+    attach_base_frame,
+    make_out_dir,
+    make_roll_dir,
+    make_work_dir,
+    negative_frames,
+    roll_invariants,
+    run_stitch_with_defaults,
+    write_intermediate,
 )
-
-# Small enough to keep the suite fast, large enough that AKAZE clears
-# MIN_PAIR_INLIERS on a film-like synthetic scene: measured 68-101 inliers
-# per overlapping pair at this size and overlap.
-_FRAME_SIZE = (700, 900)  # (height, width)
-_SCENE_SIZE = (900, 2000)
-_OVERLAP = 0.35
-_FILM_DATE = "2026-08-02"
-
-
-def _write_intermediate(path: Path, pixels: np.ndarray, source_name: str) -> None:
-    """Write one intermediate exactly as Phase 1's pipeline does, so
-    `run_stitch` reads a genuine Phase 1 output rather than a stand-in."""
-    base_path = path.with_name(f"{path.stem}.base.tif")
-    write_base_tiff(
-        base_path,
-        pixels,
-        BaseTiffTags(
-            description=image_description(source_name),
-            software=software_tag_value(),
-            conversion_time=datetime.datetime(2026, 8, 28, 10, 0, 0),  # noqa: DTZ001
-            icc_profile=load_icc_profile(),
-            make="NIKON CORPORATION",
-            model="NIKON Z f",
-        ),
-    )
-    finalize_tiff(
-        base_path,
-        path,
-        NestedExifFields(
-            date_time_original=datetime.datetime(2026, 8, 2, 12, 33, 41, 450000),  # noqa: DTZ001
-            exposure_time=Fraction(1, 30),
-            f_number=Fraction(8, 1),
-            iso=100,
-            focal_length=Fraction(55, 1),
-            lens_model="55mm f/2.8",
-            date_time_digitized="2026:08:02 12:33:41",
-            subsec_time_digitized="45",
-            offset_time_digitized="-05:00",
-        ),
-    )
-
-
-def _negative_frames(
-    *, overlapping: bool, seed: int, count: int = 3, frame_gains=None
-) -> list[np.ndarray]:
-    """`count` uint16 frames. Overlapping frames come from one scene and
-    register; non-overlapping ones come from unrelated scenes and must be
-    refused. `frame_gains`, when given, scales each frame's linear values
-    per channel (downward only, so nothing clips) — lamp drift between
-    shots."""
-    if overlapping:
-        scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
-        frames, _ = cut_frames(
-            scene,
-            frame_size=_FRAME_SIZE,
-            count=count,
-            overlap=_OVERLAP,
-            rotations_deg=[0.0, 2.0, -1.5][:count],
-            seed=seed,
-        )
-    else:
-        frames = [
-            synthetic_scene(*_FRAME_SIZE, seed=seed * 100 + i) for i in range(count)
-        ]
-    stacked = [np.stack([f, f, f], axis=-1) for f in frames]
-    if frame_gains is not None:
-        stacked = [
-            frame * np.asarray(gain, dtype=np.float32)
-            for frame, gain in zip(stacked, frame_gains, strict=True)
-        ]
-    return [encode_from_linear(frame.astype(np.float32)) for frame in stacked]
 
 
 def _work_manifest(**overrides) -> Manifest:
@@ -159,7 +88,7 @@ def _work_manifest(**overrides) -> Manifest:
         "run_id": "convert-run",
         "status": "complete",
         "input_folder": "/tmp/in",
-        "film_date": _FILM_DATE,
+        "film_date": FILM_DATE,
         "shots_per_negative": 1,
         "processing_params": {"gamma": [1.8, 16]},
         "icc_profile": {"name": "ScannyBoy-Linear-v1.icc", "sha256": "a" * 64},
@@ -213,196 +142,6 @@ def _curated_with_matrix(scale: float = 1.0, camera_model: str | None = "NIKON Z
     )
 
 
-def _make_work_dir(
-    tmp_path: Path,
-    *,
-    negatives: int = 1,
-    overlapping: bool = True,
-    status: str = "complete",
-    group_statuses: list[str] | None = None,
-    film_date: str = _FILM_DATE,
-    shots_per_negative: int = 3,
-    frame_gains: list[tuple[float, float, float]] | None = None,
-    frame_hook=None,
-) -> Path:
-    """A work directory holding real Phase 1 intermediates and a real
-    Phase 1 manifest, built without paying for RAW decoding.
-
-    `frame_hook`, when given, is applied to every uint16 frame after the
-    gains — the tilt-injection tests use it to warp each frame through a
-    known W, making the true inter-frame map `W⁻¹·S·W`."""
-    work_dir = tmp_path / "work"
-    work_dir.mkdir()
-
-    sources: list[SourceRecord] = []
-    groups: list[GroupRecord] = []
-    source_order: list[str] = []
-
-    for negative_index in range(negatives):
-        frames = _negative_frames(
-            overlapping=overlapping,
-            seed=11 + negative_index * 7,
-            frame_gains=frame_gains,
-        )
-        if frame_hook is not None:
-            frames = [frame_hook(frame) for frame in frames]
-        members: list[str] = []
-        outputs: list[OutputRecord] = []
-        for frame_index, pixels in enumerate(frames):
-            source_name = f"IMG_{negative_index}{frame_index}.NEF"
-            output_name = f"IMG_{negative_index}{frame_index}.tif"
-            _write_intermediate(work_dir / output_name, pixels, source_name)
-            path = work_dir / output_name
-            outputs.append(
-                OutputRecord(
-                    name=output_name,
-                    size=path.stat().st_size,
-                    sha256=hashing.sha256_file(path),
-                )
-            )
-            members.append(source_name)
-            source_order.append(source_name)
-            sources.append(
-                SourceRecord(
-                    filename=source_name,
-                    absolute_path=f"/tmp/in/{source_name}",
-                    size=1000 + frame_index,
-                    mtime=1.0,
-                    sha256=f"{negative_index}{frame_index}".ljust(64, "c"),
-                )
-            )
-
-        group_status = group_statuses[negative_index] if group_statuses else "completed"
-        groups.append(
-            GroupRecord(
-                group_id=f"negative-{negative_index + 1:02d}",
-                members=members,
-                expected_outputs=[f"{Path(m).stem}.tif" for m in members],
-                status=group_status,
-                outputs=outputs if group_status == "completed" else [],
-            )
-        )
-
-    write_manifest(
-        work_dir,
-        Manifest(
-            scanny_boy_version=current_scanny_boy_version(),
-            run_id="convert-run",
-            status=status,
-            input_folder="/tmp/in",
-            film_date=film_date,
-            shots_per_negative=shots_per_negative,
-            processing_params={"gamma": [1.8, 16]},
-            icc_profile=profile_record(ProfileKind.LINEAR),
-            source_order=source_order,
-            sources=sources,
-            curated_metadata=CuratedMetadata(
-                exposure_time="1/30",
-                f_number="8",
-                iso=100,
-                focal_length="55",
-                lens_model="55mm f/2.8",
-                orientation=1,
-                camera_whitebalance=(1.69, 1.0, 1.38, 1.0),
-            ),
-            groups=groups,
-            started_at="2026-08-02T00:00:00Z",
-            finished_at="2026-08-02T00:01:00Z",
-        ),
-    )
-    return work_dir
-
-
-def _out_dir(tmp_path: Path, name: str = "out") -> Path:
-    out = tmp_path / name
-    out.mkdir()
-    return out
-
-
-def _roll_dir(tmp_path: Path, name: str = "out", *, film_kind: str = "colour") -> Path:
-    """A real, empty roll, written through P3-2's own writer.
-
-    Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
-    test needs one to exist first. `roll init` does not arrive until P3-4, so
-    this is `new_roll_manifest` — the same constructor `roll init` will call —
-    and not hand-authored JSON. REBATE_ANCHORING §3.2 rule 4: a roll with no
-    film-base reference refuses to stitch, so the tests that do stitch get
-    one attached; `_attach_base_frame` customises or removes it."""
-    roll = _out_dir(tmp_path, name)
-    manifest = new_roll_manifest(
-        roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
-        roll_name=name,
-        film_kind=film_kind,
-    )
-    _attach_base_frame(manifest)
-    write_roll_manifest(roll, manifest)
-    return roll
-
-
-def _base_frame_block(**overrides) -> dict:
-    """A film_base block a gate would accept, for the tests that only need
-    the run-time state machine — the measurement itself is film_base_test's
-    subject. The profile id and camera model are None so no run conflicts
-    with them by default."""
-    block = {
-        "density": [-0.42, -0.12, -0.99],
-        "locked_at": None,
-        "attached_at": "2026-09-06T18:04:11Z",
-        "source_name": "_DSC5012.NEF",
-        "source_sha256": "3" * 64,
-        "flat_field_profile_id": None,
-        "camera_model": None,
-        "chosen_index": 0,
-        "populations": [
-            {
-                "density": [-0.42, -0.12, -0.99],
-                "luma": -0.25,
-                "area_fraction": 0.44,
-                "cells": 34100,
-                "spread": 0.012,
-            }
-        ],
-        "clipped_fractions": [0.0, 0.0, 0.0],
-        "grid_cells": 786432,
-        "measure_version": 1,
-    }
-    block.update(overrides)
-    return block
-
-
-def _attach_base_frame(roll, **overrides) -> None:
-    roll.film_base = _base_frame_block(**overrides)
-
-
-def _roll_invariants(work_dir: Path) -> RollInvariants:
-    """The invariants a stitch of `work_dir` would present, for the tests
-    that drive `plan_rerun` directly."""
-    work = load_manifest(work_dir)
-    return RollInvariants(
-        processing_params=work.processing_params,
-        icc_profile_sha256=work.icc_profile["sha256"],
-        published_icc_profile_sha256=work.icc_profile["sha256"],
-        stitch_params={},
-    )
-
-
-def _stitch(work_dir, out_dir, *, events=None, cancel=None, **kwargs):
-    defaults = {
-        "run_id": "stitch-run",
-        "overwrite": False,
-        "allow_partial": False,
-        "jobs": 1,
-    }
-    defaults.update(kwargs)
-    return run_stitch(
-        work_dir,
-        out_dir,
-        cancel=cancel if cancel is not None else CancellationToken(),
-        emit=(events.append if events is not None else (lambda event: None)),
-        **defaults,
-    )
-
-
 # --- the happy path ------------------------------------------------------
 
 
@@ -412,11 +151,11 @@ def test_end_to_end_on_real_samples(tmp_path):
     stitched TIFF per negative out, named after each group's first frame,
     with a roll manifest that validates against its published schema and
     records a hash matching the file actually on disk."""
-    work_dir = _make_work_dir(tmp_path, negatives=2)
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, negatives=2)
+    out_dir = make_roll_dir(tmp_path)
     events: list = []
 
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
     assert outcome.failed == []
@@ -491,14 +230,14 @@ def _tilt_hook(l_x, l_y):
 
     rect = Rectification(
         l=np.array([l_x, l_y]),
-        centre=np.array([_FRAME_SIZE[1] / 2.0, _FRAME_SIZE[0] / 2.0]),
-        frame_size=_FRAME_SIZE,
+        centre=np.array([FRAME_SIZE[1] / 2.0, FRAME_SIZE[0] / 2.0]),
+        frame_size=FRAME_SIZE,
         rms_before_px=1.0,
         rms_after_px=0.5,
         relative_improvement=0.5,
         pair_count=2,
     )
-    height, width = _FRAME_SIZE
+    height, width = FRAME_SIZE
     ys, xs = np.mgrid[0:height, 0:width]
     pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
     mapped = rectify(pts, rect).reshape(height, width, 2)
@@ -521,10 +260,10 @@ def test_a_tilted_capture_rectifies_end_to_end(tmp_path):
     captures, the fit accepts, pass 2 re-registers in rectified space, and
     the manifest records the correction."""
     hook, rect = _tilt_hook(1.2e-5, -8e-6)
-    work_dir = _make_work_dir(tmp_path, frame_hook=hook)
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, frame_hook=hook)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
     manifest = load_roll_manifest(out_dir)
@@ -537,14 +276,13 @@ def test_a_tilted_capture_rectifies_end_to_end(tmp_path):
     assert block["rms_after_px"] < block["rms_before_px"]
 
 
-def test_a_healthy_capture_stitches_without_a_rectification(tmp_path):
+def test_a_healthy_capture_stitches_without_a_rectification(work_dir, tmp_path):
     """The additive guarantee: a similarity-consistent synthetic negative
     must not grow a tilt. The fit runs and is rejected by the improvement
     gate; no second pass, no manifest block."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
     manifest = load_roll_manifest(out_dir)
@@ -556,13 +294,13 @@ def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
     per-frame gains, and the manifest records both the gains and the two
     overlap-MAD measurements (pre-gain explains why, post-gain is what the
     gate checks)."""
-    work_dir = _make_work_dir(
+    work_dir = make_work_dir(
         tmp_path,
         frame_gains=[(1.0, 1.0, 1.0), (0.85, 0.9, 0.95), (1.0, 1.0, 1.0)],
     )
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
     manifest = load_roll_manifest(out_dir)
@@ -587,7 +325,7 @@ def test_gain_correction_is_recorded_in_the_roll_manifest(tmp_path):
 
 
 def test_calibrated_profile_geometry_reaches_the_composite_warp(
-    tmp_path, monkeypatch
+    work_dir, tmp_path, monkeypatch
 ):
     """A stitch run through a calibrated profile must hand that profile's
     geometry to `composite`, so the warp matches the undistorted coordinates
@@ -600,12 +338,12 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
     # stitches normally — only the plumbing, not the correction, is tested.
     geometry = {
         "format_version": 1,
-        "frame_width": _FRAME_SIZE[0],
-        "frame_height": _FRAME_SIZE[1],
-        "fx": float(_FRAME_SIZE[0]),
-        "fy": float(_FRAME_SIZE[0]),
-        "cx": _FRAME_SIZE[0] / 2.0,
-        "cy": _FRAME_SIZE[1] / 2.0,
+        "frame_width": FRAME_SIZE[0],
+        "frame_height": FRAME_SIZE[1],
+        "fx": float(FRAME_SIZE[0]),
+        "fy": float(FRAME_SIZE[0]),
+        "cx": FRAME_SIZE[0] / 2.0,
+        "cy": FRAME_SIZE[1] / 2.0,
         "k1": 0.0,
         "k2": 0.0,
     }
@@ -619,8 +357,8 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
             gain_map_path=str(path),
             gain_map_sha256=sha256,
             source_path=None,
-            reference_width=_FRAME_SIZE[0],
-            reference_height=_FRAME_SIZE[1],
+            reference_width=FRAME_SIZE[0],
+            reference_height=FRAME_SIZE[1],
             params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
@@ -637,10 +375,9 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 
     monkeypatch.setattr(stitch_pipeline, "composite", spy)
 
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir, flatfield_profile_id="pid-geo")
+    outcome = run_stitch_with_defaults(work_dir, out_dir, flatfield_profile_id="pid-geo")
 
     assert outcome.status == "complete"
     assert captured
@@ -652,14 +389,14 @@ def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkey
     """A solved gain far from unity means something is wrong with the
     capture: warn, by the same pattern as STITCH_SCALE_DRIFT."""
     monkeypatch.setattr(stitch_pipeline, "GAIN_DRIFT_WARN", 1e-6)
-    work_dir = _make_work_dir(
+    work_dir = make_work_dir(
         tmp_path,
         frame_gains=[(1.0, 1.0, 1.0), (0.85, 0.9, 0.95), (1.0, 1.0, 1.0)],
     )
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     events: list = []
 
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
     drift_warnings = [
@@ -671,12 +408,11 @@ def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkey
     assert any("IMG_01.tif" in event.message for event in drift_warnings)
 
 
-def test_progress_events_carry_the_stitch_stage(tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+def test_progress_events_carry_the_stitch_stage(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
     events: list = []
 
-    _stitch(work_dir, out_dir, events=events)
+    run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     progress = [e for e in events if isinstance(e, Progress)]
     assert progress
@@ -690,32 +426,32 @@ def test_progress_events_carry_the_stitch_stage(tmp_path):
 
 
 def test_running_work_manifest_is_rejected(tmp_path):
-    work_dir = _make_work_dir(tmp_path, status="running")
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, status="running")
+    out_dir = make_roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.WORK_MANIFEST_UNUSABLE
 
 
 def test_partial_work_manifest_needs_allow_partial(tmp_path):
-    work_dir = _make_work_dir(
+    work_dir = make_work_dir(
         tmp_path, negatives=2, status="partial", group_statuses=["completed", "failed"]
     )
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.WORK_MANIFEST_UNUSABLE
 
 
 def test_partial_work_manifest_stitches_completed_groups_only(tmp_path):
-    work_dir = _make_work_dir(
+    work_dir = make_work_dir(
         tmp_path, negatives=2, status="partial", group_statuses=["completed", "failed"]
     )
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir, allow_partial=True)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, allow_partial=True)
 
     assert outcome.status == "complete"
     assert outcome.published == ["IMG_00.tif"]
@@ -724,31 +460,29 @@ def test_partial_work_manifest_stitches_completed_groups_only(tmp_path):
 
 
 def test_cancelled_work_manifest_is_rejected(tmp_path):
-    work_dir = _make_work_dir(tmp_path, status="cancelled")
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, status="cancelled")
+    out_dir = make_roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.WORK_MANIFEST_UNUSABLE
 
 
 # --- intermediate verification -------------------------------------------
 
 
-def test_missing_intermediate_is_caught(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+def test_missing_intermediate_is_caught(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
     (work_dir / "IMG_01.tif").unlink()
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.INTERMEDIATE_MISSING
     assert "IMG_01.tif" in exc_info.value.message
 
 
-def test_changed_intermediate_is_caught(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+def test_changed_intermediate_is_caught(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
 
     # Same byte count, different content: only the SHA-256 can catch this,
     # which is why section 3.7 requires both checks and not just the size.
@@ -758,7 +492,7 @@ def test_changed_intermediate_is_caught(tmp_path):
     target.write_bytes(bytes(data))
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.INTERMEDIATE_CHANGED
 
 
@@ -769,16 +503,16 @@ def test_changed_intermediate_is_caught(tmp_path):
 def test_failing_negative_does_not_stop_the_run(tmp_path):
     """Section 3.5: a negative that cannot be stitched fails alone, the run
     continues, and the run ends `partial`."""
-    good = _make_work_dir(tmp_path, negatives=1)
+    good = make_work_dir(tmp_path, negatives=1)
     # Add a second negative whose three frames share no content at all, so
     # its pair graph is disconnected and it must fail.
-    bad_frames = _negative_frames(overlapping=False, seed=5)
+    bad_frames = negative_frames(overlapping=False, seed=5)
     manifest = load_manifest(good)
     outputs = []
     members = []
     for i, pixels in enumerate(bad_frames):
         name = f"IMG_9{i}.tif"
-        _write_intermediate(good / name, pixels, f"IMG_9{i}.NEF")
+        write_intermediate(good / name, pixels, f"IMG_9{i}.NEF")
         path = good / name
         outputs.append(
             OutputRecord(
@@ -808,9 +542,9 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     manifest.source_order.extend(members)
     write_manifest(good, manifest)
 
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     events: list = []
-    outcome = _stitch(good, out_dir, events=events)
+    outcome = run_stitch_with_defaults(good, out_dir, events=events)
 
     assert outcome.status == "partial"
     assert outcome.published == ["IMG_00.tif"]
@@ -867,20 +601,23 @@ def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeyp
     from scanny_boy.linear import encode_from_linear as _encode
 
     def blank_frames(*, overlapping, seed, count=3, frame_gains=None):
-        blank = np.full(_FRAME_SIZE, 0.2, dtype=np.float32)
+        blank = np.full(FRAME_SIZE, 0.2, dtype=np.float32)
         return [
             _encode(np.stack([blank] * 3, axis=-1).astype(np.float32))
             for _ in range(count)
         ]
 
-    import sys
-
-    monkeypatch.setattr(sys.modules[__name__], "_negative_frames", blank_frames)
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    # This is the one caller that cannot take the `work_dir` fixture: it needs
+    # the frames the patch produces, and the fixture's template was built once
+    # per session, long before the patch. Build a work directory here, after
+    # it — patching the name where `make_work_dir` looks it up, in the support
+    # module's own globals rather than in this one's.
+    monkeypatch.setattr(work_dir_support, "negative_frames", blank_frames)
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
     events: list = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "partial"
     failures = [e for e in events if isinstance(e, NegativeFailed)]
@@ -888,12 +625,11 @@ def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeyp
     assert failures[0].code in stitch_pipeline._CLAHE_RETRY_CODES
 
 
-def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypatch):
+def test_clahe_fallback_recovers_an_underconstrained_negative(work_dir, tmp_path, monkeypatch):
     """A negative whose plain-pass registration disconnects the pair graph
     is retried once with CLAHE; a graph that connects on that pass still
     stitches, and the manifest says the fallback was needed."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
     clahe_by_call: list[bool] = []
     real_detect_all = stitch_pipeline._detect_all
@@ -918,7 +654,7 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypa
     monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
 
     events: list = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
     assert clahe_by_call == [False, True]
@@ -944,12 +680,11 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(tmp_path, monkeypa
     assert max(e.completed for e in progress_events) <= total
 
 
-def test_clahe_fallback_is_not_used_for_an_oversized_canvas(tmp_path, monkeypatch):
+def test_clahe_fallback_is_not_used_for_an_oversized_canvas(work_dir, tmp_path, monkeypatch):
     """`STITCH_OUTPUT_TOO_LARGE` is not in `_CLAHE_RETRY_CODES`: a canvas
     that is already too big to write stays too big under CLAHE too, so the
     negative fails on the first pass with no retry."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
     clahe_by_call: list[bool] = []
     real_detect_all = stitch_pipeline._detect_all
@@ -965,7 +700,7 @@ def test_clahe_fallback_is_not_used_for_an_oversized_canvas(tmp_path, monkeypatc
     monkeypatch.setattr(stitch_pipeline, "check_output_size", fake_check_output_size)
 
     events: list = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "partial"
     assert clahe_by_call == [False]
@@ -1012,9 +747,9 @@ def test_real_underconstrained_negative_recovers_with_clahe(tmp_path):
         emit=lambda event: None,
     )
 
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     events = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
 
@@ -1034,8 +769,8 @@ def test_real_underconstrained_negative_recovers_with_clahe(tmp_path):
 def test_cancellation_keeps_completed_negatives(tmp_path):
     """Section 3.5: a cancelled negative is abandoned, not failed — no
     `negative_failed` event, and the manifest ends `cancelled`."""
-    work_dir = _make_work_dir(tmp_path, negatives=2)
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, negatives=2)
+    out_dir = make_roll_dir(tmp_path)
     cancel = CancellationToken()
     events: list = []
 
@@ -1074,32 +809,29 @@ def test_cancellation_keeps_completed_negatives(tmp_path):
     assert roll.negative("stitch-negative-02").status == "pending"
 
 
-def test_work_equal_to_out_is_rejected(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
+def test_work_equal_to_out_is_rejected(work_dir):
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, work_dir)
+        run_stitch_with_defaults(work_dir, work_dir)
     assert exc_info.value.code is Code.WORK_SAME_AS_OUTPUT
 
 
-def test_unrelated_nonempty_output_folder_is_rejected(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+def test_unrelated_nonempty_output_folder_is_rejected(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
     (out_dir / "holiday-snap.jpg").write_bytes(b"not ours")
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
 
-def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
+def test_stitch_without_a_registered_roll_is_rejected(work_dir, tmp_path):
     """Section 5.4 decision 1: `stitch` never creates a roll. An empty
     directory is not one."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
+    out_dir = make_out_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
     assert "registered roll" in exc_info.value.message
     assert not [p for p in out_dir.iterdir()]
@@ -1111,24 +843,25 @@ def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
 def _baseless_roll(tmp_path: Path, name: str = "out") -> Path:
     """A real, registered roll with NO film-base reference: §3.2 rule 4's
     ABSENT state."""
-    out = _out_dir(tmp_path, name)
-    write_roll_manifest(out, new_roll_manifest(roll_id="r-baseless", roll_name=name, film_kind="colour"))
+    out = make_out_dir(tmp_path, name)
+    write_roll_manifest(
+        out, new_roll_manifest(roll_id="r-baseless", roll_name=name, film_kind="colour")
+    )
     return out
 
 
 def test_stitch_without_a_base_frame_is_rejected_before_any_pixel_work(
-    tmp_path,
+    work_dir, tmp_path,
 ):
     """§3.2 rule 4: run/stitch on an ABSENT roll fail FILM_BASE_REQUIRED
     after the roll manifest loads and its invariants are checked, and
     before any pixel work — asserted here on the absence of progress
     events, not just the code."""
-    work_dir = _make_work_dir(tmp_path)
     out_dir = _baseless_roll(tmp_path)
     events: list = []
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir, events=events)
+        run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert exc_info.value.code is Code.FILM_BASE_REQUIRED
     assert "film-base reference" in exc_info.value.message
@@ -1136,32 +869,30 @@ def test_stitch_without_a_base_frame_is_rejected_before_any_pixel_work(
     assert load_roll_manifest(out_dir).film_base is None
 
 
-def test_stitch_on_a_version_7_roll_is_rejected(tmp_path, monkeypatch):
+def test_stitch_on_a_version_7_roll_is_rejected(work_dir, tmp_path, monkeypatch):
     """§9: a roll stitched before film-base anchoring cannot take new
     negatives. The library database does not persist
     `manifest_format_version` — every roll it produces reads back at the
     current version — so the v7 manifest is staged through the loader the
     run-time path actually calls (`plan_rerun` reads through
     `repo.load_roll`)."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     v7_manifest = load_roll_manifest(out_dir)
     v7_manifest.manifest_format_version = 7
     monkeypatch.setattr("scanny_boy.library.repo.load_roll", lambda _dir: v7_manifest)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
 
     assert exc_info.value.code is Code.ROLL_PREDATES_FILM_BASE
 
 
-def test_a_successful_run_locks_the_base_frame(tmp_path):
+def test_a_successful_run_locks_the_base_frame(work_dir, tmp_path):
     """§3.2 rule 5: the roll's first published negative sets `locked_at`,
     in the same manifest write."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     roll = load_roll_manifest(out_dir)
     assert roll.film_base is not None
@@ -1171,12 +902,12 @@ def test_a_successful_run_locks_the_base_frame(tmp_path):
 def test_a_run_that_fails_before_publishing_leaves_the_roll_attached(tmp_path):
     """§3.2 rule 7: the lock is set alongside the first published negative.
     Nothing publishes, so the roll stays ATTACHED."""
-    work_dir = _make_work_dir(
+    work_dir = make_work_dir(
         tmp_path, negatives=2, overlapping=False, shots_per_negative=1
     )
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    outcome = _stitch(work_dir, out_dir)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "partial"
     assert outcome.published == []
@@ -1185,17 +916,16 @@ def test_a_run_that_fails_before_publishing_leaves_the_roll_attached(tmp_path):
     assert roll.film_base["locked_at"] is None
 
 
-def test_a_differing_flatfield_profile_warns(tmp_path):
+def test_a_differing_flatfield_profile_warns(work_dir, tmp_path):
     """§3.3: the run's flat-field profile differs from the one the base
     frame was measured with — a warning, not an error."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
-    _attach_base_frame(roll, flat_field_profile_id="pid-elsewhere")
+    attach_base_frame(roll, flat_field_profile_id="pid-elsewhere")
     write_roll_manifest(out_dir, roll)
     events: list = []
 
-    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
         e for e in events
@@ -1205,12 +935,11 @@ def test_a_differing_flatfield_profile_warns(tmp_path):
     assert "pid-elsewhere" in warnings[0].message
 
 
-def test_a_matching_flatfield_profile_does_not_warn(tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+def test_a_matching_flatfield_profile_does_not_warn(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
     events: list = []
 
-    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
 
     assert not [
         e for e in events
@@ -1218,14 +947,13 @@ def test_a_matching_flatfield_profile_does_not_warn(tmp_path):
     ]
 
 
-def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(tmp_path):
+def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp_path):
     """§3.3: the camera comparison's second home — `roll set-base-frame`
     found no `camera_color` on the fresh roll, so the first run (which
     seeds it) compares instead."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
-    _attach_base_frame(roll, camera_model="NIKON Z f")
+    attach_base_frame(roll, camera_model="NIKON Z f")
     roll.camera_color = CameraColor(
         rgb_xyz_matrix=((0.7, 0.2, 0.1), (0.1, 0.75, 0.15), (0.05, 0.1, 0.85)),
         source="libraw",
@@ -1234,7 +962,7 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(tmp_path):
     write_roll_manifest(out_dir, roll)
     events: list = []
 
-    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
 
     warnings = [
         e for e in events
@@ -1269,7 +997,7 @@ def _forced_rebate(base_density, *, clipped: bool = False):
     return detect
 
 
-def test_base_check_is_recorded_when_both_inputs_exist(tmp_path, monkeypatch):
+def test_base_check_is_recorded_when_both_inputs_exist(work_dir, tmp_path, monkeypatch):
     """§6: present, with the level_offset/shape_residual arithmetic, when
     the roll has a locked anchor and the negative's rebate fired unclipped.
     The anchor is (-0.42, -0.12, -0.99); the forced rebate reads
@@ -1280,13 +1008,12 @@ def test_base_check_is_recorded_when_both_inputs_exist(tmp_path, monkeypatch):
         "scanny_boy.composite.detect_rebate",
         _forced_rebate((-0.40, -0.10, -0.95)),
     )
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
-    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
     write_roll_manifest(out_dir, roll)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     manifest = load_roll_manifest(out_dir)
     record = manifest.negatives[0].normalization
@@ -1295,51 +1022,48 @@ def test_base_check_is_recorded_when_both_inputs_exist(tmp_path, monkeypatch):
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
 
 
-def test_base_check_is_absent_without_a_locked_anchor(tmp_path, monkeypatch):
+def test_base_check_is_absent_without_a_locked_anchor(work_dir, tmp_path, monkeypatch):
     """§6: a roll still ATTACHED at composite time (the first negative of
     its first run) records no base_check even when the rebate fired."""
     monkeypatch.setattr(
         "scanny_boy.composite.detect_rebate",
         _forced_rebate((-0.40, -0.10, -0.95)),
     )
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     record = load_roll_manifest(out_dir).negatives[0].normalization
     assert "base_check" not in record
 
 
-def test_base_check_is_absent_when_the_rebate_did_not_fire(tmp_path):
+def test_base_check_is_absent_when_the_rebate_did_not_fire(work_dir, tmp_path):
     """§6: the synthetic scenes carry no rebate, so detect_rebate declines
     and the comparison is absent even with a locked anchor."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
-    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
     write_roll_manifest(out_dir, roll)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     record = load_roll_manifest(out_dir).negatives[0].normalization
     assert record["rebate"]["detected"] is False
     assert "base_check" not in record
 
 
-def test_base_check_is_absent_when_the_rebate_was_clipped(tmp_path, monkeypatch):
+def test_base_check_is_absent_when_the_rebate_was_clipped(work_dir, tmp_path, monkeypatch):
     """§6: clipped base is worthless base — `base_density` is None and the
     comparison is absent."""
     monkeypatch.setattr(
         "scanny_boy.composite.detect_rebate", _forced_rebate((0.0, 0.0, 0.0), clipped=True)
     )
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
-    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
     write_roll_manifest(out_dir, roll)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     record = load_roll_manifest(out_dir).negatives[0].normalization
     assert record["rebate"]["detected"] is True
@@ -1350,14 +1074,13 @@ def test_base_check_is_absent_when_the_rebate_was_clipped(tmp_path, monkeypatch)
 # --- CAST_REMOVAL_PLAN R-1: the two new meters ------------------------------
 
 
-def test_normalization_record_carries_the_highlight_refs_and_residual(tmp_path):
+def test_normalization_record_carries_the_highlight_refs_and_residual(work_dir, tmp_path):
     """A real stitch writes both keys — `highlight_refs` (3-wide or null)
     and `neutral_residual` (2-wide or null) — and the manifest validates
     against the updated schema."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     manifest = load_roll_manifest(out_dir)
     record = manifest.negatives[0].normalization
@@ -1369,18 +1092,17 @@ def test_normalization_record_carries_the_highlight_refs_and_residual(tmp_path):
 
 
 @pytest.mark.slow
-def test_changed_shots_per_negative_is_accepted(tmp_path):
+def test_changed_shots_per_negative_is_accepted(work_dir, tmp_path):
     """`shots_per_negative` is each batch's own choice, never the roll's: a
     work directory stitched at 2 scans per negative publishes into a roll
     whose earlier batches stitched at 3, with no invariant complaint."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
-    assert _stitch(work_dir, out_dir).status == "complete"
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     (tmp_path / "second").mkdir()
-    other = _make_work_dir(tmp_path / "second", shots_per_negative=2)
+    other = make_work_dir(tmp_path / "second", shots_per_negative=2)
 
-    assert _stitch(other, out_dir, run_id="stitch-run-2").status == "complete"
+    assert run_stitch_with_defaults(other, out_dir, run_id="stitch-run-2").status == "complete"
 
     roll = load_roll_manifest(out_dir)
     assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
@@ -1437,12 +1159,12 @@ def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     """Section 5.4 decision 1: an empty roll cannot know its
     `processing_params` or `stitch_params`, so the first run establishes
     them and every later run is compared against them."""
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     empty = load_roll_manifest(out_dir)
     assert empty.processing_params == {}
     assert empty.stitch_params == {}
 
-    _stitch(_make_work_dir(tmp_path), out_dir)
+    run_stitch_with_defaults(make_work_dir(tmp_path), out_dir)
 
     seeded = load_roll_manifest(out_dir)
     assert seeded.processing_params == {"gamma": [1.8, 16]}
@@ -1450,16 +1172,15 @@ def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
     assert seeded.icc_profile == profile_record(ProfileKind.LINEAR)
 
 
-def test_second_stitch_adopts_the_first_negative(tmp_path):
+def test_second_stitch_adopts_the_first_negative(work_dir, tmp_path):
     """The replacement rule: re-stitching the same group adopts the covered
     negative in place — same `negative_id`, same output name, record
     updated with the new run's data. Two genuine runs, per section 4 — a
     hand-edited manifest would prove nothing."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    first = _stitch(work_dir, out_dir)
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
+    first = run_stitch_with_defaults(work_dir, out_dir)
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2")
 
     assert first.published == ["IMG_00.tif"]
     assert second.published == ["IMG_00.tif"]
@@ -1481,20 +1202,19 @@ def test_second_stitch_adopts_the_first_negative(tmp_path):
     assert hashing.sha256_file(published) == adopted.output["sha256"]
 
 
-def test_second_stitch_keeps_a_suffixed_name_it_adopted(tmp_path):
+def test_second_stitch_keeps_a_suffixed_name_it_adopted(work_dir, tmp_path):
     """Adoption keeps whatever `expected_output` the covered negative held,
     even a `-2` suffix — the name is the negative's, not a re-derivation."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    _stitch(work_dir, out_dir)
+    run_stitch_with_defaults(work_dir, out_dir)
     roll = load_roll_manifest(out_dir)
     roll.negatives[0].expected_output = "IMG_00-2.tif"
     roll.negatives[0].output["name"] = "IMG_00-2.tif"
     write_roll_manifest(out_dir, roll)
     (out_dir / "IMG_00.tif").replace(out_dir / "IMG_00-2.tif")
 
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2")
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2")
 
     assert second.published == ["IMG_00-2.tif"]
     roll = load_roll_manifest(out_dir)
@@ -1509,15 +1229,15 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     negatives, restricted to one already-published `negative_id`, publishes
     only that one — adopting it in place, same `negative_id`, per the
     replacement rule."""
-    work_dir = _make_work_dir(tmp_path, negatives=2)
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path, negatives=2)
+    out_dir = make_roll_dir(tmp_path)
 
-    first = _stitch(work_dir, out_dir)
+    first = run_stitch_with_defaults(work_dir, out_dir)
     assert first.status == "complete"
     roll = load_roll_manifest(out_dir)
     target = roll.negatives[0]
 
-    second = _stitch(
+    second = run_stitch_with_defaults(
         work_dir, out_dir, run_id="stitch-run-2", negatives=[target.negative_id]
     )
 
@@ -1549,17 +1269,16 @@ def _apply_manually(
     assert outcome.applied == [negative_id]
 
 
-def test_restitch_reapplies_metadata(tmp_path):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+def test_restitch_reapplies_metadata(work_dir, tmp_path):
+    out_dir = make_roll_dir(tmp_path)
 
-    first = _stitch(work_dir, out_dir)
+    first = run_stitch_with_defaults(work_dir, out_dir)
     assert first.status == "complete"
     old_id = load_roll_manifest(out_dir).negatives[0].negative_id
     _apply_manually(out_dir, old_id)
 
     events: list = []
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
@@ -1580,18 +1299,17 @@ def test_restitch_reapplies_metadata(tmp_path):
     assert [e.negative_id for e in applied_events] == [old_id]
 
 
-def test_restitch_of_never_applied_negative_does_not_apply(tmp_path):
+def test_restitch_of_never_applied_negative_does_not_apply(work_dir, tmp_path):
     """No prior applied capture time to inherit -- the re-stitch is a
     no-op for metadata, and nothing dirty appears out of nowhere."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
 
-    first = _stitch(work_dir, out_dir)
+    first = run_stitch_with_defaults(work_dir, out_dir)
     assert first.status == "complete"
     old_id = load_roll_manifest(out_dir).negatives[0].negative_id
 
     events: list = []
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
@@ -1602,11 +1320,10 @@ def test_restitch_of_never_applied_negative_does_not_apply(tmp_path):
     assert not [e for e in events if isinstance(e, (MetadataApplied, MetadataSkipped))]
 
 
-def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+def test_failed_reapply_leaves_negative_dirty_not_failed(work_dir, tmp_path, monkeypatch):
+    out_dir = make_roll_dir(tmp_path)
 
-    first = _stitch(work_dir, out_dir)
+    first = run_stitch_with_defaults(work_dir, out_dir)
     assert first.status == "complete"
     old_id = load_roll_manifest(out_dir).negatives[0].negative_id
     _apply_manually(out_dir, old_id)
@@ -1621,7 +1338,7 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
     )
 
     events: list = []
-    second = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
 
     # A stitch is never failed by a metadata problem (section 3.9).
     assert second.status == "complete"
@@ -1643,15 +1360,14 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(tmp_path, monkeypatch):
 # --- the regression guard on the output_folder.py refactor ---------------
 
 
-def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
+def test_phase_one_output_folder_behaviour_is_unchanged(work_dir, tmp_path):
     """The explicit guard on the section 3.7 refactor: generalising
     `output_folder.py` over which manifest it reads must not change what it
     does for Phase 1's. `output_folder_test.py`, `manifest_test.py`, and
     `pipeline_test.py` all still pass unmodified; this adds the direct
     statement that the default is Phase 1's rules and that the two manifest
     kinds do not see each other's folders."""
-    work_dir = _make_work_dir(tmp_path)
-    convert_out = _out_dir(tmp_path, "convert-out")
+    convert_out = make_out_dir(tmp_path, "convert-out")
 
     # A Phase 1 output folder: its own manifest, and its own outputs.
     phase_one = load_manifest(work_dir)
@@ -1673,10 +1389,10 @@ def test_phase_one_output_folder_behaviour_is_unchanged(tmp_path):
 
     # The roll rules do not recognise a Phase 1 folder: it is not registered
     # as a roll, so it reads as unrelated content rather than as a rerun.
-    roll_out = _roll_dir(tmp_path, "roll-out")
-    _stitch(work_dir, roll_out)
+    roll_out = make_roll_dir(tmp_path, "roll-out")
+    run_stitch_with_defaults(work_dir, roll_out)
     with pytest.raises(OutputFolderError) as exc_info:
-        plan_rerun(convert_out, _roll_invariants(work_dir), rules=ROLL_RULES)
+        plan_rerun(convert_out, roll_invariants(work_dir), rules=ROLL_RULES)
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
     # And a stitched folder is likewise not a Phase 1 folder.
@@ -1693,7 +1409,7 @@ def _make_grid_frames(*, across: int, down: int, seed: int = 3):
     2/3-step grid geometry (1/3 overlap), frames unrotated, in serpentine
     capture order (row 0 left-to-right, row 1 right-to-left, ...): index i
     sits at cell `_serpentine_cell(i, across)`."""
-    frame_height, frame_width = _FRAME_SIZE
+    frame_height, frame_width = FRAME_SIZE
     step_x = round(frame_width * 2 / 3)
     step_y = round(frame_height * 2 / 3)
     scene = synthetic_scene(
@@ -1714,7 +1430,7 @@ def _make_grid_frames(*, across: int, down: int, seed: int = 3):
 def _grid_pair_placements(across: int, down: int) -> dict[str, np.ndarray]:
     """Ground-truth placements matching `_make_grid_frames`' cutting, keyed
     by the intermediates' names (`IMG_<index>.tif`, serpentine order)."""
-    frame_height, frame_width = _FRAME_SIZE
+    frame_height, frame_width = FRAME_SIZE
     step_x = round(frame_width * 2 / 3)
     step_y = round(frame_height * 2 / 3)
     placements = {}
@@ -1744,7 +1460,7 @@ def _grid_registration_fixtures(across: int, down: int):
 
     def fake_register_pair(a, b, undistorter=None):
         return _ground_truth_similarity_pair(
-            a.name, b.name, placements[a.name], placements[b.name], _FRAME_SIZE
+            a.name, b.name, placements[a.name], placements[b.name], FRAME_SIZE
         )
 
     return fake_detect_all, fake_register_pair
@@ -1758,7 +1474,7 @@ def test_grid_order_warning_fires_for_reversed_members_and_not_for_serpentine(
     frames that landed elsewhere."""
     across, down = 3, 2
     work_dir = _make_grid_work_dir(tmp_path, across=across, down=down)
-    out_dir = _roll_dir(tmp_path, "gridorder")
+    out_dir = make_roll_dir(tmp_path, "gridorder")
     fake_detect_all, fake_register_pair = _grid_registration_fixtures(
         across, down
     )
@@ -1767,7 +1483,7 @@ def test_grid_order_warning_fires_for_reversed_members_and_not_for_serpentine(
 
     # Serpentine order: no warning.
     events: list = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
     order_warnings = [
         e
         for e in events
@@ -1783,7 +1499,7 @@ def test_grid_order_warning_fires_for_reversed_members_and_not_for_serpentine(
     write_manifest(work_dir, manifest)
 
     events = []
-    outcome = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
     order_warnings = [
         e
         for e in events
@@ -1860,7 +1576,7 @@ def _make_grid_work_dir(tmp_path: Path, *, across: int, down: int) -> Path:
     for frame_index, frame in enumerate(frames):
         source_name = f"IMG_{frame_index:02d}.NEF"
         output_name = f"IMG_{frame_index:02d}.tif"
-        _write_intermediate(work_dir / output_name, frame, source_name)
+        write_intermediate(work_dir / output_name, frame, source_name)
         path = work_dir / output_name
         outputs.append(
             OutputRecord(
@@ -1885,7 +1601,7 @@ def _make_grid_work_dir(tmp_path: Path, *, across: int, down: int) -> Path:
             run_id="convert-run",
             status="complete",
             input_folder="/tmp/in",
-            film_date=_FILM_DATE,
+            film_date=FILM_DATE,
             shots_per_negative=across * down,
             grid={"across": across, "down": down},
             processing_params={"gamma": [1.8, 16]},
@@ -1927,7 +1643,7 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
 
     across, down = 5, 2
     work_dir = _make_grid_work_dir(tmp_path, across=across, down=down)
-    out_dir = _roll_dir(tmp_path, "gridmem")
+    out_dir = make_roll_dir(tmp_path, "gridmem")
 
     # Ground-truth 5x2 geometry: 2/3 step on both axes (1/3 overlap), no
     # rotation, so the solve recovers it exactly and every frame bbox is
@@ -1953,7 +1669,7 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     monkeypatch.setattr(stitch_pipeline, "estimate_peak_bytes", spy)
 
     events: list = []
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
     assert outcome.published == ["IMG_00.tif"]
 
     canvas_size, f_size, bbox_size, f_count = captured[0]
@@ -1974,7 +1690,7 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     monkeypatch.setattr(stitch_pipeline, "estimate_peak_bytes", real_estimate)
 
     events = []
-    outcome = _stitch(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
 
     memory_failures = [
         e for e in events if isinstance(e, NegativeFailed)
@@ -2030,17 +1746,16 @@ def test_peak_estimate_5x2_target_workload_matches_the_formula():
 # --- auto-rotation seeding -------------------------------------------------
 
 
-def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(tmp_path, monkeypatch):
+def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(work_dir, tmp_path, monkeypatch):
     """A newly published negative gets the estimated rebate tilt seeded as
     one `rotate_fine` ops-log entry — emitted as `edit_recorded`, preview
     regenerated through the net transform that already carries it — while
     the published TIFF itself is never rotated."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, "autorot")
+    out_dir = make_roll_dir(tmp_path, "autorot")
     monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
     events: list = []
 
-    outcome = _stitch(work_dir, out_dir, events=events)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
     (edit,) = repo.edits_for(out_dir, "stitch-negative-01")
@@ -2061,47 +1776,44 @@ def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(tmp_path, monkeypatch
 
 
 def test_auto_rotation_seeds_nothing_when_the_estimator_declines(
-    tmp_path, monkeypatch
+    work_dir, tmp_path, monkeypatch
 ):
     """The synthetic fixtures carry no rebate, so the real estimator
     declines; the seeded op log is empty either way."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, "norebate")
+    out_dir = make_roll_dir(tmp_path, "norebate")
 
-    outcome = _stitch(work_dir, out_dir)
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
     assert repo.edits_for(out_dir, "stitch-negative-01") == []
 
 
-def test_auto_rotation_off_seeds_nothing(tmp_path, monkeypatch):
+def test_auto_rotation_off_seeds_nothing(work_dir, tmp_path, monkeypatch):
     def _fail(image):
         raise AssertionError("the estimator must not run with auto-rotate off")
 
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, "norot")
+    out_dir = make_roll_dir(tmp_path, "norot")
     monkeypatch.setattr(stitch_pipeline, "estimate_rotation", _fail)
 
-    outcome = _stitch(work_dir, out_dir, auto_rotate=False)
+    outcome = run_stitch_with_defaults(work_dir, out_dir, auto_rotate=False)
 
     assert outcome.status == "complete"
     assert repo.edits_for(out_dir, "stitch-negative-01") == []
 
 
-def test_a_re_stitch_never_re_seeds_the_auto_rotation(tmp_path, monkeypatch):
+def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkeypatch):
     """An adopted negative keeps the rotation its first publish seeded:
     re-seeding would stack a second fine rotation on top of it."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, "reseeds")
+    out_dir = make_roll_dir(tmp_path, "reseeds")
     monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
 
-    _stitch(work_dir, out_dir)
+    run_stitch_with_defaults(work_dir, out_dir)
 
     def _fail(image):
         raise AssertionError("an adopted negative must not be re-seeded")
 
     monkeypatch.setattr(stitch_pipeline, "estimate_rotation", _fail)
-    second = _stitch(work_dir, out_dir, run_id="restitch-run")
+    second = run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
 
     assert second.status == "complete"
     assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1
@@ -2117,10 +1829,10 @@ def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
 
     from scanny_boy.icc_profile import DENSITY_GREY_PROFILE_SHA256
 
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path, film_kind="monochrome")
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path, film_kind="monochrome")
 
-    assert _stitch(work_dir, out_dir).status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     roll = load_roll_manifest(out_dir)
     assert roll.film == {"kind": "monochrome"}
@@ -2131,27 +1843,27 @@ def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
 
 def test_film_kind_required_when_roll_has_no_film_block(tmp_path):
     """An unseeded roll with no `film` block cannot be stitched."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _out_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_out_dir(tmp_path)
     manifest = new_roll_manifest(
         roll_id="00000000-0000-4000-8000-000000000099",
         roll_name="no-kind",
         film_kind="colour",
     )
     manifest.film = None
-    _attach_base_frame(manifest)
+    attach_base_frame(manifest)
     write_roll_manifest(out_dir, manifest)
 
     with pytest.raises(StitchError) as exc_info:
-        _stitch(work_dir, out_dir)
+        run_stitch_with_defaults(work_dir, out_dir)
     assert exc_info.value.code == Code.FILM_KIND_REQUIRED
 
 
 def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
     """§5.2: a roll that already has runs but no `film` block predates
     explicit film kind and is treated as frozen colour."""
-    work_dir = _make_work_dir(tmp_path)
-    out_dir = _roll_dir(tmp_path)
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
     work_manifest = load_manifest(work_dir)
     append_run(
@@ -2169,7 +1881,7 @@ def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
     roll.film = None
     write_roll_manifest(out_dir, roll)
 
-    assert _stitch(work_dir, out_dir, run_id="stitch-run-2").status == "complete"
+    assert run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status == "complete"
     roll_after = load_roll_manifest(out_dir)
     assert roll_after.published_icc_profile["sha256"] == profile_record(
         ProfileKind.DENSITY
@@ -2177,6 +1889,9 @@ def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
 
 
 # --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
+
+
+def test_seed_camera_color_writes_the_block_on_the_first_run():
     roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     manifest = _work_manifest(
         curated_metadata=_curated_with_matrix(),

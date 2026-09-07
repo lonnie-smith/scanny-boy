@@ -40,7 +40,7 @@ from scanny_boy.roll_manifest import (
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_test import _negative, _run
-from scanny_boy.stitch_pipeline_test import _roll_dir
+from scanny_boy.work_dir_support import make_roll_dir
 
 _NEGATIVE_ID = "stitch-negative-01"
 _OTHER_ID = "stitch-negative-02"
@@ -86,7 +86,7 @@ def two_negative_roll_with_metadata(tmp_path: Path) -> Path:
     overrides its capture date."""
     from scanny_boy.metadata_edit import run_metadata_set
 
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
 
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
@@ -135,7 +135,7 @@ def stitched_roll(tmp_path: Path) -> Path:
     state every real roll was in before the colour-managed export, and
     the state a mono roll is in by design — exports must succeed (§3.4,
     §4.5)."""
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     from scanny_boy.manifest import SourceRecord
     from scanny_boy.roll_manifest import append_run, merge_sources
@@ -189,7 +189,7 @@ def colour_roll(tmp_path: Path) -> Path:
     from scanny_boy.manifest import SourceRecord
     from scanny_boy.roll_manifest import append_run, merge_sources
 
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
@@ -330,7 +330,7 @@ def test_a_colour_roll_without_camera_color_fails_before_writing_anything(
     from scanny_boy.manifest import SourceRecord
     from scanny_boy.roll_manifest import append_run, merge_sources
 
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
