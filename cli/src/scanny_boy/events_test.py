@@ -243,8 +243,8 @@ def test_protocol_version_is_fourteen():
     `--cast-removal-highlights` and `--auto-cast` on `edit color`, the
     `color_cast_removal_highlights` derived field on `roll info`, and the
     `highlight_refs` / `neutral_residual` meters in the `normalization`
-    block. No new codes."""
-    assert PROTOCOL_VERSION == 16
+    block. Protocol 16→17 retires `STITCH_GRID_ORDER_UNEXPECTED`."""
+    assert PROTOCOL_VERSION == 17
 
 
 def test_new_event_kinds_round_trip():

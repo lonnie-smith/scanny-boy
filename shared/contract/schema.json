@@ -103,7 +103,6 @@
         "STITCH_SCALE_DRIFT",
         "STITCH_GAIN_DRIFT",
         "STITCH_LAYOUT_UNEXPECTED",
-        "STITCH_GRID_ORDER_UNEXPECTED",
         "STITCH_REBATE_CHECK_FAILED",
         "STITCH_CLAHE_FALLBACK_USED",
         "OUTPUT_DIMENSIONS_LARGE",
@@ -249,7 +248,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 16
+      "const": 17
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {

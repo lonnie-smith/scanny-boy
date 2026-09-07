@@ -20,8 +20,7 @@ from typing import IO, Any, ClassVar
 #
 # Protocol 10 (2D grid stitching) adds `--grid AxD` on `probe`, `prepare`,
 # and `run` (mutually exclusive with `--per-negative`; a strip is the
-# down=1 case), the `INVALID_GRID` error code, and the
-# `STITCH_GRID_ORDER_UNEXPECTED` warning code.
+# down=1 case) and the `INVALID_GRID` error code.
 # Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
 # export becomes a rendered positive in Adobe RGB (1998)-compatible colour
 # (grey for a mono roll), with the negative's recorded tone op baked in,
@@ -109,7 +108,9 @@ from typing import IO, Any, ClassVar
 # `grid list` / `grid delete` command family and the `grid_created`,
 # `grid_list`, and `grid_deleted` events. Each preset is a user label for
 # an `across` x `down` shape the app picks when adding scans.
-PROTOCOL_VERSION = 16
+# Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`: cell assignment is
+# geometry-only and capture order is not checked.
+PROTOCOL_VERSION = 17
 
 
 class EventType(enum.StrEnum):
@@ -210,7 +211,6 @@ class Code(enum.StrEnum):
     STITCH_SCALE_DRIFT = "STITCH_SCALE_DRIFT"
     STITCH_GAIN_DRIFT = "STITCH_GAIN_DRIFT"
     STITCH_LAYOUT_UNEXPECTED = "STITCH_LAYOUT_UNEXPECTED"
-    STITCH_GRID_ORDER_UNEXPECTED = "STITCH_GRID_ORDER_UNEXPECTED"
     STITCH_REBATE_CHECK_FAILED = "STITCH_REBATE_CHECK_FAILED"
     STITCH_CLAHE_FALLBACK_USED = "STITCH_CLAHE_FALLBACK_USED"
     OUTPUT_DIMENSIONS_LARGE = "OUTPUT_DIMENSIONS_LARGE"

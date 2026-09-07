@@ -129,11 +129,7 @@ Capture order is worth **declaring as a convention but not trusting**:
 - Deriving cell assignment from the *solved* geometry is strictly more
   robust and costs about twenty lines.
 
-So: **serpentine order is a documented assumption used only for the UI
-grouping preview and for a warning.** §4 assigns cells from geometry, then
-compares against the serpentine expectation and warns on disagreement
-(`STITCH_GRID_ORDER_UNEXPECTED`) without changing behaviour. That gives
-the user the diagnostic value of the convention with none of its risk.
+So: **capture order is not trusted.** §4 assigns cells from geometry alone.
 
 ---
 
@@ -234,8 +230,8 @@ one-time landing of the new `_stitch_params` keys.
 
 ### 2.0 Protocol version bump
 
-This plan adds three event codes (`STITCH_GRID_ORDER_UNEXPECTED` §4.4,
-`STITCH_SPILL_TO_DISK` §6a.6, `INVALID_GRID` §2.2) and a CLI flag, so the
+This plan adds two event codes (`STITCH_SPILL_TO_DISK` §6a.6,
+`INVALID_GRID` §2.2) and a CLI flag, so the
 protocol bumps **9 → 10**. The sibling plans do this explicitly
 (`GEOMETRIC_PLAN.md` "6 → 7", `STITCH_QUALITY_PLAN.md` "7 → 8"); the full
 touch list, because it spans both languages:
@@ -716,23 +712,9 @@ under a sign flip, so no sign canonicalisation is needed; say so.
 
 ### 4.4 The order warning
 
-In `_attempt_solve`, after the solve: compute the serpentine cell sequence
-implied by `GridSpec` and the member order in `GroupRecord.members`, and
-compare against `layout.cells`. On disagreement emit a new warning code
-`Code.STITCH_GRID_ORDER_UNEXPECTED` naming the frames that landed
-elsewhere. **Warning only** — the solved assignment always wins. Record
-the solved assignment as `NegativeRecord.grid_cells` regardless.
-
-Add the code to `events.py` and to `CONTRACT.md`'s code table. On the
-Swift side this is a *warning*, so it goes to the warning-message switch
-arms in `CLIEvent.swift` (~411/~482) and the exhaustive code list in
-`CLIEventTests.swift:254` — the §2.0 bump list — **not** to
-`_friendly_failure_message`, which handles failures only and would send
-the implementer to the wrong place.
-
-Serpentine is defined as: start at cell (0, 0), traverse the `across`
-dimension, reverse direction each row. This matches the stated capture
-habit. Do not try to detect other traversals.
+**Removed in protocol 17.** The serpentine capture-order warning
+(`STITCH_GRID_ORDER_UNEXPECTED`) was retired: cell assignment is
+geometry-only and member order is not checked.
 
 ### 4.5 Tests
 
@@ -763,9 +745,6 @@ magnitude boundary of §4.1 step 2 is what the tests pin down:
   here, which is why it was rejected in §4.1).
 - `grid_pitch_ratio` is `None` for a 2×2 (no axis has three positions)
   and not-None for the across-axis of a 5×2.
-
-`stitch_pipeline_test.py`: the order warning fires
-for a reversed member list and does not fire for serpentine order.
 
 ---
 

@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":16,"event":"negative_deleted",\
+                {"protocol_version":17,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -201,7 +201,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":16,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":17,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -288,7 +288,7 @@ struct CLIEventTests {
         "INTERMEDIATE_CHANGED", "STITCH_INSUFFICIENT_MATCHES",
         "STITCH_UNDERCONSTRAINED", "STITCH_RESIDUAL_TOO_HIGH",
         "STITCH_OUTPUT_TOO_LARGE", "STITCH_FAILED", "STITCH_SCALE_DRIFT",
-        "STITCH_LAYOUT_UNEXPECTED", "STITCH_GRID_ORDER_UNEXPECTED",
+        "STITCH_LAYOUT_UNEXPECTED",
         "STITCH_REBATE_CHECK_FAILED",
         "OUTPUT_DIMENSIONS_LARGE",
         "ROLL_NOT_FOUND", "ROLL_MANIFEST_UNSUPPORTED", "ROLL_EXISTS",
@@ -423,7 +423,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":16,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":17,"command":"probe"}"#)
         }
     }
 

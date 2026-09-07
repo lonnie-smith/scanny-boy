@@ -101,12 +101,13 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **10** ([`events.py`](../cli/src/scanny_boy/events.py)).
-Version 10 added 2D grid stitching: `--grid AxD` on `probe`/`prepare`/`run`
-(mutually exclusive with `--per-negative`; a strip is the down=1 case, and
-`min(across, down) <= 2` because every cell must show film rebate — the
-rule's home is CONTRACT.md), the `INVALID_GRID` error code, and the
-`STITCH_GRID_ORDER_UNEXPECTED` warning. Version 9 added the extended
+`PROTOCOL_VERSION` is **17** ([`events.py`](../cli/src/scanny_boy/events.py)).
+Version 17 retires `STITCH_GRID_ORDER_UNEXPECTED` (capture order is not
+checked). Version 10 added 2D grid stitching: `--grid AxD` on
+`probe`/`prepare`/`run` (mutually exclusive with `--per-negative`; a strip
+is the down=1 case, and `min(across, down) <= 2` because every cell must
+show film rebate — the rule's home is CONTRACT.md) and the `INVALID_GRID`
+error code. Version 9 added the extended
 metadata editing and 1:1 region rendering; version 8 added normalization
 and the per-frame scale; version 7 added geometric calibration; version 6
 added flat-field profiles: a `flatfield` command family

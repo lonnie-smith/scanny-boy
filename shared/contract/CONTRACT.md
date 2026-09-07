@@ -202,10 +202,7 @@ here once and referenced elsewhere. `across * down` remains capped at 12.
 Note that **`2x5` is legal and CLI-only**: the Mac app's Down picker caps at
 2, so `--grid 2x5` is reachable only on the command line. A well-formed
 grid that breaks a rule fails with `INVALID_GRID`; a malformed one
-(anything not of the `AxD` form) is a usage error. One new warning:
-`STITCH_GRID_ORDER_UNEXPECTED` — the solved cell assignment disagrees with
-the serpentine capture-order assumption (start at cell (0, 0), traverse
-`across`, reverse each row); warning only, the solved geometry always wins.
+(anything not of the `AxD` form) is a usage error.
 
 **The preview's nondestructive tone adjustment**: the new `edit tone`
 command records an ISO-R paper grade (`--grade`, 50–180) plus a midtone
@@ -928,7 +925,6 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_SCALE_DRIFT` | Warning: similarity fit's scale left `SCALE_DRIFT_WARN` |
 | `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped (strips), or does not match the declared grid / is not a regular grid (grids) |
-| `STITCH_GRID_ORDER_UNEXPECTED` | Warning: the solved grid cells disagree with the serpentine capture-order assumption; the solved geometry wins |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |

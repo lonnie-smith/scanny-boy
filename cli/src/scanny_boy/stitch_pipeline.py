@@ -560,29 +560,6 @@ def _solve_negative(
         )
 
 
-def _serpentine_cell(index: int, cols: int) -> tuple[int, int]:
-    """The serpentine cell for member `index`: start at cell (0, 0),
-    traverse the across dimension, reverse direction each row (§4.4)."""
-    row, order_col = divmod(index, cols)
-    return row, (order_col if row % 2 == 0 else cols - 1 - order_col)
-
-
-def _serpentine_mismatches(
-    members: list[str], grid: GridSpec, cells: dict[str, tuple[int, int]]
-) -> str:
-    """The members whose solved cell disagrees with the serpentine
-    expectation, formatted for a warning message. Cells are keyed by
-    intermediate names, members by source names, so the member is mapped
-    through the same rule `_intermediate_paths` uses."""
-    unexpected = []
-    for index, member in enumerate(members):
-        expected = _serpentine_cell(index, grid.across)
-        solved = cells.get(_intermediate_name(member))
-        if solved is not None and solved != expected:
-            unexpected.append(f"{member} -> cell {solved}")
-    return ", ".join(unexpected)
-
-
 def _attempt_solve(
     group: GroupRecord,
     entry: _SolvedNegative,
@@ -679,8 +656,8 @@ def _attempt_solve(
 
     names = [path.name for path in paths]
     layout = solve_layout(names, frame_size, pairs, rectification, grid=grid)
-    # §4.4: the solved assignment and the regularity measures are recorded
-    # per negative regardless of the order warning's outcome.
+    # The solved cell assignment and regularity measures are recorded from
+    # geometry alone.
     entry.record.grid_cells = (
         {name: list(cell) for name, cell in layout.cells.items()}
         if layout.cells is not None
@@ -749,19 +726,6 @@ def _attempt_solve(
                     Code.STITCH_LAYOUT_UNEXPECTED,
                     f"{group.group_id}: the solved layout is not a regular "
                     f"{grid.across}x{grid.down} grid: " + "; ".join(problems),
-                )
-
-            # §4.4's order warning: serpentine capture order is a documented
-            # assumption used only for this warning — the solved assignment
-            # always wins.
-            unexpected = _serpentine_mismatches(group.members, grid, layout.cells)
-            if unexpected:
-                on_warning(
-                    Code.STITCH_GRID_ORDER_UNEXPECTED,
-                    f"{group.group_id}: capture order is not the serpentine "
-                    f"traversal of the declared {grid.across}x{grid.down} "
-                    "grid; the solved geometry wins, but these frames landed "
-                    f"elsewhere than their order implies: {unexpected}",
                 )
 
     check_output_size(layout.canvas_size, on_warning=on_warning)

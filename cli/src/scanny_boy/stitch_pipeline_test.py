@@ -1443,9 +1443,8 @@ def test_phase_one_output_folder_behaviour_is_unchanged(work_dir, tmp_path):
 
 def _make_grid_frames(*, across: int, down: int, seed: int = 3):
     """`across*down` uint16 frames cut from one synthetic scene at the
-    2/3-step grid geometry (1/3 overlap), frames unrotated, in serpentine
-    capture order (row 0 left-to-right, row 1 right-to-left, ...): index i
-    sits at cell `_serpentine_cell(i, across)`."""
+    2/3-step grid geometry (1/3 overlap), frames unrotated, in row-major
+    order: index i sits at cell `(i // across, i % across)`."""
     frame_height, frame_width = FRAME_SIZE
     step_x = round(frame_width * 2 / 3)
     step_y = round(frame_height * 2 / 3)
@@ -1456,7 +1455,7 @@ def _make_grid_frames(*, across: int, down: int, seed: int = 3):
     )
     frames = []
     for index in range(across * down):
-        row, col = stitch_pipeline._serpentine_cell(index, across)
+        row, col = divmod(index, across)
         x0 = col * step_x
         y0 = row * step_y
         patch = scene[y0 : y0 + frame_height, x0 : x0 + frame_width]
@@ -1466,13 +1465,13 @@ def _make_grid_frames(*, across: int, down: int, seed: int = 3):
 
 def _grid_pair_placements(across: int, down: int) -> dict[str, np.ndarray]:
     """Ground-truth placements matching `_make_grid_frames`' cutting, keyed
-    by the intermediates' names (`IMG_<index>.tif`, serpentine order)."""
+    by the intermediates' names (`IMG_<index>.tif`, row-major order)."""
     frame_height, frame_width = FRAME_SIZE
     step_x = round(frame_width * 2 / 3)
     step_y = round(frame_height * 2 / 3)
     placements = {}
     for index in range(across * down):
-        row, col = stitch_pipeline._serpentine_cell(index, across)
+        row, col = divmod(index, across)
         name = f"IMG_{index:02d}.tif"
         t = np.array([col * step_x, row * step_y], dtype=np.float64)
         placements[name] = np.hstack([np.eye(2), t.reshape(2, 1)])
@@ -1501,56 +1500,6 @@ def _grid_registration_fixtures(across: int, down: int):
         )
 
     return fake_detect_all, fake_register_pair
-
-
-def test_grid_order_warning_fires_for_reversed_members_and_not_for_serpentine(
-    tmp_path, monkeypatch
-):
-    """§4.4: serpentine is a documented assumption used only for the
-    warning — the solved assignment always wins, and the warning names the
-    frames that landed elsewhere."""
-    across, down = 3, 2
-    work_dir = _make_grid_work_dir(tmp_path, across=across, down=down)
-    out_dir = make_roll_dir(tmp_path, "gridorder")
-    fake_detect_all, fake_register_pair = _grid_registration_fixtures(
-        across, down
-    )
-    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
-    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
-
-    # Serpentine order: no warning.
-    events: list = []
-    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
-    order_warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code is Code.STITCH_GRID_ORDER_UNEXPECTED
-    ]
-    assert order_warnings == []
-    assert outcome.published == ["IMG_00.tif"]
-
-    # Reversed member list: the warning fires and names a frame.
-    manifest = load_manifest(work_dir)
-    manifest.groups[0].members.reverse()
-    write_manifest(work_dir, manifest)
-
-    events = []
-    outcome = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
-    order_warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code is Code.STITCH_GRID_ORDER_UNEXPECTED
-    ]
-    assert len(order_warnings) == 1
-    assert "IMG_" in order_warnings[0].message
-
-    # The solved assignment was recorded regardless.
-    roll = load_roll_manifest(out_dir)
-    negative = roll.negative("stitch-negative-01")
-    assert negative.grid_cells is not None
-    assert len(negative.grid_cells) == across * down
 
 
 def _ground_truth_similarity_pair(

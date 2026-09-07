@@ -1424,13 +1424,10 @@ each — the placed centres alone tell neither), and a structural sanity gate
 (the solved centres must form a bijection onto the R×C cells with roughly
 uniform pitch, which catches a frame that slid half a cell or more — a
 failure mode `global_rms_px` is blind to, since a consistently-wrong
-layout can still fit its own pairs well). Capture order buys little — pair
-discovery is exhaustive and the solve needs no seed — and it is fragile: a
-rescan, a rename, or an out-of-order pick would feed a wrong cell map into
-the feather. So serpentine order is a *documented assumption used only for
-one warning* (`STITCH_GRID_ORDER_UNEXPECTED`): the solved geometry always
-wins, and the warning never changes behaviour. Cell assignment is derived
-from the solved geometry, never from member order.
+layout can still fit its own pairs well). Capture order is not used — pair
+discovery is exhaustive, the solve needs no seed, and trusting import order
+would be fragile (rescans, renames, out-of-order picks). Cell assignment is
+derived from the solved geometry, never from member order.
 
 ## The feather is a separable product of two ramps; axes come from the solved rotations
 

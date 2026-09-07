@@ -17,10 +17,10 @@ public struct CLIEvent: Sendable, Hashable {
     /// `region_rendered` event: a 1:1 PNG of one display-space region of
     /// a published TIFF, for the 100% zoom. Protocol 10 adds 2D grid
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
-    /// the `INVALID_GRID` error code, and the
-    /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
+    /// the `INVALID_GRID` error code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
     /// required on `roll init` only; `run`/`stitch` read `film.kind` from
     /// the manifest. Protocol 11 added monochrome film support (single-
@@ -59,7 +59,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 16
+    public static let supportedProtocolVersion = 17
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -503,7 +503,6 @@ public enum CLICode: Sendable, Hashable {
     case stitchFailed
     case stitchScaleDrift
     case stitchLayoutUnexpected
-    case stitchGridOrderUnexpected
     case stitchRebateCheckFailed
     case outputDimensionsLarge
     case rollNotFound
@@ -593,7 +592,6 @@ public enum CLICode: Sendable, Hashable {
         case "STITCH_FAILED": self = .stitchFailed
         case "STITCH_SCALE_DRIFT": self = .stitchScaleDrift
         case "STITCH_LAYOUT_UNEXPECTED": self = .stitchLayoutUnexpected
-        case "STITCH_GRID_ORDER_UNEXPECTED": self = .stitchGridOrderUnexpected
         case "STITCH_REBATE_CHECK_FAILED": self = .stitchRebateCheckFailed
         case "OUTPUT_DIMENSIONS_LARGE": self = .outputDimensionsLarge
         case "ROLL_NOT_FOUND": self = .rollNotFound
@@ -682,7 +680,6 @@ public enum CLICode: Sendable, Hashable {
         case .stitchFailed: "STITCH_FAILED"
         case .stitchScaleDrift: "STITCH_SCALE_DRIFT"
         case .stitchLayoutUnexpected: "STITCH_LAYOUT_UNEXPECTED"
-        case .stitchGridOrderUnexpected: "STITCH_GRID_ORDER_UNEXPECTED"
         case .stitchRebateCheckFailed: "STITCH_REBATE_CHECK_FAILED"
         case .outputDimensionsLarge: "OUTPUT_DIMENSIONS_LARGE"
         case .rollNotFound: "ROLL_NOT_FOUND"
