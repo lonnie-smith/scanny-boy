@@ -16,6 +16,7 @@ from scanny_boy.library import repo
 from scanny_boy.manifest import load_manifest
 from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.pipeline import ConvertOutcome
+from scanny_boy.roll_folder import create_roll
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
@@ -287,7 +288,7 @@ def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
     assert err == ""
 
 
-def test_roll_init_requires_film_kind(capsys, tmp_path):
+def test_roll_init_without_film_kind(capsys, tmp_path):
     status = main(
         [
             "roll",
@@ -299,9 +300,12 @@ def test_roll_init_requires_film_kind(capsys, tmp_path):
         ]
     )
 
-    assert status == 2
-    events, _err = _stdout_events(capsys)
-    assert events == []
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_created", "finished"]
+    manifest = load_roll_manifest(tmp_path / "Roll-A")
+    assert manifest.film is None
+    assert err == ""
 
 
 def test_roll_init_per_negative_is_no_longer_a_flag(capsys, tmp_path):
@@ -812,6 +816,61 @@ def test_roll_info_reports_a_null_film_base_block(capsys, tmp_path):
     assert status == 0
     events, _err = _stdout_events(capsys)
     assert events[1]["manifest"]["film_base"] is None
+
+
+# --- roll set-film-kind ----------------------------------------------------
+
+
+def _set_film_kind(capsys, roll_dir: Path, film_kind: str) -> int:
+    return main(
+        [
+            "roll",
+            "set-film-kind",
+            "--roll",
+            str(roll_dir),
+            "--film-kind",
+            film_kind,
+        ]
+    )
+
+
+def test_roll_set_film_kind_attaches_on_an_unseeded_roll(capsys, tmp_path):
+    roll_dir = create_roll(tmp_path, "Fresh")
+    capsys.readouterr()
+
+    status = _set_film_kind(capsys, roll_dir, "monochrome")
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "finished"]
+    assert events[0]["command"] == "roll set-film-kind"
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "monochrome"}
+
+
+def test_roll_set_film_kind_refuses_a_stitched_roll(capsys, tmp_path):
+    from scanny_boy.roll_manifest import RunRecord, write_roll_manifest
+
+    roll_dir = create_roll(tmp_path, "Stitched", film_kind="colour")
+    manifest = load_roll_manifest(roll_dir)
+    manifest.runs = [
+        RunRecord(
+            run_id="run-1",
+            kind="run",
+            status="success",
+            started_at="2026-01-01T00:00:00Z",
+            short_id="abc123",
+            finished_at="2026-01-01T00:01:00Z",
+        )
+    ]
+    write_roll_manifest(roll_dir, manifest)
+    capsys.readouterr()
+
+    status = _set_film_kind(capsys, roll_dir, "monochrome")
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FILM_KIND_LOCKED"
 
 
 def test_roll_delete_unregisters_the_roll_and_leaves_the_folder(capsys, tmp_path):

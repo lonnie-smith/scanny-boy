@@ -253,6 +253,7 @@ class Code(enum.StrEnum):
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     FILM_KIND_REQUIRED = "FILM_KIND_REQUIRED"
+    FILM_KIND_LOCKED = "FILM_KIND_LOCKED"
     # REBATE_ANCHORING §7.2: the film-base reference. Codes may exist before
     # anything raises them (chunk B-1); the consumers arrive with B-2/B-3.
     FILM_BASE_REQUIRED = "FILM_BASE_REQUIRED"

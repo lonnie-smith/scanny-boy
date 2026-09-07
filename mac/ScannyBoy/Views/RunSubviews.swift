@@ -177,6 +177,67 @@ enum RunFailureText {
     }
 }
 
+enum FilmKindChoice: String, CaseIterable, Identifiable {
+    case colour
+    case monochrome
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .colour: "Color / chromogenic B&W"
+        case .monochrome: "Silver B&W"
+        }
+    }
+}
+
+/// The Add Scans sheet's film-type picker. Choosing a value calls
+/// `roll set-film-kind` immediately; Convert stays disabled until one is set.
+struct FilmKindField: View {
+    let filmKind: String?
+    let isLocked: Bool
+    let isBusy: Bool
+    let error: ConfigurationModel.Issue?
+    let onChoose: (FilmKindChoice) -> Void
+
+    @State private var selection: FilmKindChoice?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Film type", selection: $selection) {
+                Text("Choose…").tag(FilmKindChoice?.none)
+                ForEach(FilmKindChoice.allCases) { choice in
+                    Text(choice.label).tag(Optional.some(choice))
+                }
+            }
+            .disabled(isLocked || isBusy)
+            .accessibilityIdentifier("addScansFilmKindPicker")
+            .onChange(of: selection) { _, newValue in
+                guard let newValue, newValue.rawValue != filmKind else { return }
+                onChoose(newValue)
+            }
+            .onAppear(perform: syncSelection)
+            .onChange(of: filmKind) { _, _ in syncSelection() }
+            if isLocked {
+                Text("Locked when this roll's first negative was converted.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if filmKind == nil {
+                Text("Choose the film type before converting scans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error {
+                IssueLabel(issue: error, style: .error)
+            }
+        }
+    }
+
+    private func syncSelection() {
+        selection = filmKind.flatMap(FilmKindChoice.init(rawValue:))
+    }
+}
+
 /// The Add Scans sheet's film-base reference field (REBATE_ANCHORING §8.1).
 /// Choosing a file calls `roll set-base-frame` immediately; Convert stays
 /// disabled until a frame is attached.

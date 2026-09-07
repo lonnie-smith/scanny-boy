@@ -561,9 +561,17 @@ struct CLICommandTests {
         )
     }
 
-    @Test("roll init passes library, name, and film kind")
+    @Test("roll init passes library and name, with optional film kind")
     func rollInitArguments() {
         let library = URL(filePath: "/Volumes/Scans/library")
+        #expect(
+            CLICommand.rollInit(library: library, name: "Tri-X").arguments
+                == [
+                    "roll", "init",
+                    "--library", "/Volumes/Scans/library",
+                    "--name", "Tri-X",
+                ]
+        )
         #expect(
             CLICommand.rollInit(library: library, name: "Tri-X", filmKind: "monochrome")
                 .arguments
@@ -572,6 +580,19 @@ struct CLICommandTests {
                     "--library", "/Volumes/Scans/library",
                     "--name", "Tri-X",
                     "--film-kind", "monochrome",
+                ]
+        )
+    }
+
+    @Test("roll set-film-kind passes roll and film kind")
+    func rollSetFilmKindArguments() {
+        let roll = URL(filePath: "/Volumes/Scans/roll-12")
+        #expect(
+            CLICommand.rollSetFilmKind(roll: roll, filmKind: "colour").arguments
+                == [
+                    "roll", "set-film-kind",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--film-kind", "colour",
                 ]
         )
     }

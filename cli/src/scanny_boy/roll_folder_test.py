@@ -107,10 +107,27 @@ def test_create_roll_registers_an_empty_roll(tmp_path):
     assert manifest.negatives == []
 
 
+def test_create_roll_without_film_kind(tmp_path):
+    roll_dir = create_roll(tmp_path, "Fresh")
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film is None
+
+
 def test_create_roll_monochrome_seeds_grey_density_profile(tmp_path):
     from scanny_boy.icc_profile import profile_record, ProfileKind
 
     roll_dir = create_roll(tmp_path, "Tri-X", film_kind="monochrome")
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "monochrome"}
+    assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY_GREY)
+
+
+def test_set_film_kind_updates_manifest(tmp_path):
+    from scanny_boy.icc_profile import profile_record, ProfileKind
+    from scanny_boy.roll_folder import set_film_kind
+
+    roll_dir = create_roll(tmp_path, "Fresh")
+    set_film_kind(roll_dir, "monochrome")
     manifest = load_roll_manifest(roll_dir)
     assert manifest.film == {"kind": "monochrome"}
     assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY_GREY)

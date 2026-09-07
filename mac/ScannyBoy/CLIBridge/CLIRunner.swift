@@ -11,16 +11,31 @@ public struct CLICommand: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// `scanny-boy roll init --library DIR --name NAME --film-kind KIND`
+    /// `scanny-boy roll init --library DIR --name NAME [--film-kind KIND]`
     ///
     /// A roll records no grouping of its own: scans-per-negative is each
-    /// stitch batch's choice, chosen on the Add Scans stage. `filmKind` is
-    /// `"colour"` (colour and chromogenic B&W) or `"monochrome"` (silver B&W).
-    public static func rollInit(library: URL, name: String, filmKind: String) -> CLICommand {
-        CLICommand(arguments: [
+    /// stitch batch's choice, chosen on the Add Scans stage. When `--film-kind`
+    /// is omitted, the user chooses on Add Scans via `roll set-film-kind`.
+    public static func rollInit(library: URL, name: String, filmKind: String? = nil) -> CLICommand {
+        var arguments = [
             "roll", "init",
             "--library", library.path,
             "--name", name,
+        ]
+        if let filmKind {
+            arguments.append(contentsOf: ["--film-kind", filmKind])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy roll set-film-kind --roll DIR --film-kind KIND`
+    ///
+    /// Sets the roll's film kind before its first run. The app calls this
+    /// immediately when the user picks a film type on the Add Scans sheet.
+    public static func rollSetFilmKind(roll: URL, filmKind: String) -> CLICommand {
+        CLICommand(arguments: [
+            "roll", "set-film-kind",
+            "--roll", roll.path,
             "--film-kind", filmKind,
         ])
     }

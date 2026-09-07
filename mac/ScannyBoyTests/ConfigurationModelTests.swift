@@ -36,14 +36,16 @@ struct ConfigurationModelTests {
     /// `withFilesAndRoll`, `--files` alone (no `--roll`) routes to
     /// `withFiles`, and a bare `--input` routes to `catalogueOnly` — the same
     /// three call shapes `ConfigurationModel` actually makes. `roll info`
-    /// and `roll set-base-frame` are distinguished by `$1 $2`.
+    /// and `roll set-base-frame` / `roll set-film-kind` are distinguished by
+    /// `$1 $2`.
     private static func fakeProbeExecutable(
         in directory: URL,
         catalogueOnly: [String],
         withFiles: [String] = [],
         withFilesAndRoll: [String] = [],
         rollInfoLines: [String]? = nil,
-        setBaseFrameLines: [String] = []
+        setBaseFrameLines: [String] = [],
+        setFilmKindLines: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
@@ -54,14 +56,26 @@ struct ConfigurationModelTests {
             finishedSuccess,
         ]
         let resolvedRollInfo = rollInfoLines ?? defaultRollInfo
-        let marker = directory.appending(path: ".film-base-attached").path
+        let baseMarker = directory.appending(path: ".film-base-attached").path
+        let kindMarker = directory.appending(path: ".film-kind-set").path
+        let defaultSetFilmKindSuccess = [
+            TestEvents.line(#"{"event":"started","command":"roll set-film-kind"}"#),
+            finishedSuccess,
+        ]
         let script = """
-            MARKER='\(marker)'
+            BASE_MARKER='\(baseMarker)'
+            KIND_MARKER='\(kindMarker)'
             if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
-            if [ -f "$MARKER" ]; then
+            if [ -f "$BASE_MARKER" ]; then
             \(echoLines([
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
                 rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+                finishedSuccess,
+            ]))
+            elif [ -f "$KIND_MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: "null", filmKind: "monochrome"),
                 finishedSuccess,
             ]))
             else
@@ -70,8 +84,13 @@ struct ConfigurationModelTests {
                 exit 0
             fi
             if [ "$1" = "roll" ] && [ "$2" = "set-base-frame" ]; then
-            touch "$MARKER"
+            touch "$BASE_MARKER"
             \(echoLines(setBaseFrameLines.isEmpty ? defaultSetBaseFrameSuccess : setBaseFrameLines))
+                exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-film-kind" ]; then
+            touch "$KIND_MARKER"
+            \(echoLines(setFilmKindLines.isEmpty ? defaultSetFilmKindSuccess : setFilmKindLines))
                 exit 0
             fi
             case "$*" in
@@ -95,9 +114,10 @@ struct ConfigurationModelTests {
         """
     }
 
-    private static func rollInfoEvent(filmBaseJSON: String) -> String {
+    private static func rollInfoEvent(filmBaseJSON: String, filmKind: String? = "colour") -> String {
+        let filmKindJSON = filmKind.map { "\"\($0)\"" } ?? "null"
         let manifest = """
-        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_base":\(filmBaseJSON)}
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON)}
         """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
@@ -295,8 +315,8 @@ struct ConfigurationModelTests {
 
         model.rollURL = rollDir
 
-        // Three choices remain: the batch's scans-per-negative, the
-        // app-required flat-field profile, and the film-base reference.
+        // Four choices remain: film type, the batch's scans-per-negative,
+        // the app-required flat-field profile, and the film-base reference.
         await model.waitForPendingProbes()
         #expect(model.selectionError == nil)
         #expect(model.rollError == nil)
@@ -306,7 +326,44 @@ struct ConfigurationModelTests {
         #expect(model.runEnabled == false)
 
         model.flatFieldProfileID = "pid-1"
+        #expect(model.filmKind == "colour")
         #expect(model.filmBase != nil)
+        #expect(model.runEnabled == true)
+    }
+
+    @Test("runEnabled stays off until a film type is chosen")
+    func runEnabledGatesOnFilmKind() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: Self.attachedFilmBaseJSON(), filmKind: nil),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(model.filmKind == nil)
+        #expect(model.runEnabled == false)
+
+        await model.setFilmKind("monochrome")
+        #expect(model.filmKind == "monochrome")
         #expect(model.runEnabled == true)
     }
 
@@ -322,7 +379,7 @@ struct ConfigurationModelTests {
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
             rollInfoLines: [
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
-                Self.rollInfoEvent(filmBaseJSON: "null"),
+                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
                 Self.finishedSuccess,
             ]
         )
@@ -370,7 +427,7 @@ struct ConfigurationModelTests {
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
             rollInfoLines: [
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
-                Self.rollInfoEvent(filmBaseJSON: "null"),
+                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
                 Self.finishedSuccess,
             ]
         )

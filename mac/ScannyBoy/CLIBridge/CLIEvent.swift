@@ -542,6 +542,8 @@ public enum CLICode: Sendable, Hashable {
     case normalizeHeadroomClipped
     case spotLimitReached
     case spotsStale
+    case filmKindRequired
+    case filmKindLocked
     case filmBaseRequired
     case filmBaseLocked
     case filmBaseNotFound
@@ -627,6 +629,8 @@ public enum CLICode: Sendable, Hashable {
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
+        case "FILM_KIND_REQUIRED": self = .filmKindRequired
+        case "FILM_KIND_LOCKED": self = .filmKindLocked
         case "FILM_BASE_REQUIRED": self = .filmBaseRequired
         case "FILM_BASE_LOCKED": self = .filmBaseLocked
         case "FILM_BASE_NOT_FOUND": self = .filmBaseNotFound
@@ -714,6 +718,8 @@ public enum CLICode: Sendable, Hashable {
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
+        case .filmKindRequired: "FILM_KIND_REQUIRED"
+        case .filmKindLocked: "FILM_KIND_LOCKED"
         case .filmBaseRequired: "FILM_BASE_REQUIRED"
         case .filmBaseLocked: "FILM_BASE_LOCKED"
         case .filmBaseNotFound: "FILM_BASE_NOT_FOUND"

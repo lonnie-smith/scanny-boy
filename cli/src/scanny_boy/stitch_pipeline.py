@@ -449,8 +449,8 @@ def _film_kind_from_manifest(roll: RollManifest) -> FilmKind:
         return FilmKind.COLOUR
     raise StitchError(
         Code.FILM_KIND_REQUIRED,
-        "this roll has no film kind; create a new roll with --film-kind "
-        "colour or --film-kind monochrome",
+        "this roll has no film kind; choose colour or monochrome on the "
+        "Add Scans stage, or run `roll set-film-kind`",
     )
 
 

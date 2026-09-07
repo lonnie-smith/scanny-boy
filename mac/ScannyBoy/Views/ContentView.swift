@@ -371,7 +371,16 @@ struct ContentView: View {
                 isPresentingFlatFieldProfiles = true
             }
         }
-        Section("Film base reference") {
+        Section("Film setup") {
+            FilmKindField(
+                filmKind: model.filmKind,
+                isLocked: model.filmKindLocked,
+                isBusy: activity.isBusy || model.isSettingFilmKind,
+                error: model.filmKindError,
+                onChoose: { choice in
+                    Task { await model.setFilmKind(choice.rawValue) }
+                }
+            )
             BaseFrameField(
                 filmBase: model.filmBase,
                 isBusy: activity.isBusy || model.isAttachingBaseFrame,

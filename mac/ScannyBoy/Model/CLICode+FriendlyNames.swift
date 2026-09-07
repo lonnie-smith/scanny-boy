@@ -35,6 +35,8 @@ extension CLICode {
         case .scanClipped: "Some highlights are clipped in the scan"
         case .normalizeHeadroomClipped: "Normalization clipped some highlights or shadows"
         case .normalizeDegenerateBounds: "The scan has no usable brightness range"
+        case .filmKindRequired: "This roll has no film type"
+        case .filmKindLocked: "The film type is locked"
         case .filmBaseRequired: "This roll has no film-base reference"
         case .filmBaseLocked: "The film-base reference is locked"
         case .filmBaseNotFound: "No usable film-base region was found"

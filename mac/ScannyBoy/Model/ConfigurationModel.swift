@@ -96,6 +96,14 @@ final class ConfigurationModel {
     private(set) var baseFrameError: Issue?
     private(set) var isAttachingBaseFrame = false
 
+    /// The roll's film kind, read from `roll info` when `rollURL` changes
+    /// and set via `roll set-film-kind` from the Add Scans sheet. Required
+    /// before Convert.
+    private(set) var filmKind: String?
+    private(set) var filmKindLocked = false
+    private(set) var filmKindError: Issue?
+    private(set) var isSettingFilmKind = false
+
     @ObservationIgnored private var rollTask: Task<Void, Never>?
 
     // MARK: - The batch's grouping
@@ -218,6 +226,7 @@ final class ConfigurationModel {
             && !selectedFiles.isEmpty
             && rollURL != nil
             && flatFieldProfileID != nil
+            && filmKind != nil
             && filmBase != nil
     }
 
@@ -292,7 +301,29 @@ final class ConfigurationModel {
         selectionError = nil
         rollError = nil
         baseFrameError = nil
+        filmKindError = nil
         isValidating = false
+    }
+
+    /// Sets the roll's film kind immediately — gate failures surface inline,
+    /// not at Convert.
+    func setFilmKind(_ filmKind: String) async {
+        guard let rollURL else { return }
+        filmKindError = nil
+        isSettingFilmKind = true
+        defer { isSettingFilmKind = false }
+
+        let result = await Self.runSetFilmKind(
+            runner: runner,
+            roll: rollURL,
+            filmKind: filmKind
+        )
+        if let error = result.error {
+            filmKindError = error
+            return
+        }
+        self.filmKind = result.filmKind
+        filmKindLocked = result.filmKindLocked
     }
 
     /// Attaches or replaces the roll's film-base reference immediately
@@ -324,11 +355,16 @@ final class ConfigurationModel {
         rollTask?.cancel()
         filmBase = nil
         baseFrameError = nil
+        filmKind = nil
+        filmKindLocked = false
+        filmKindError = nil
         guard let rollURL else { return }
         rollTask = Task { [weak self, runner] in
-            let base = await Self.fetchFilmBase(runner: runner, roll: rollURL)
+            let setup = await Self.fetchRollSetup(runner: runner, roll: rollURL)
             guard let self, !Task.isCancelled else { return }
-            self.filmBase = base
+            self.filmBase = setup.filmBase
+            self.filmKind = setup.filmKind
+            self.filmKindLocked = setup.filmKindLocked
         }
     }
 
@@ -467,7 +503,13 @@ final class ConfigurationModel {
         var error: Issue?
     }
 
-    private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {
+    private struct RollSetup: Sendable {
+        var filmBase: FilmBase?
+        var filmKind: String?
+        var filmKindLocked: Bool
+    }
+
+    private static func fetchRollSetup(runner: CLIRunner, roll: URL) async -> RollSetup {
         var manifest: RollManifest?
         do {
             for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
@@ -477,9 +519,17 @@ final class ConfigurationModel {
                 manifest = RollManifest(fields: fields)
             }
         } catch {
-            return nil
+            return RollSetup(filmBase: nil, filmKind: nil, filmKindLocked: false)
         }
-        return manifest?.filmBase
+        return RollSetup(
+            filmBase: manifest?.filmBase,
+            filmKind: manifest?.filmKind,
+            filmKindLocked: !(manifest?.runs.isEmpty ?? true)
+        )
+    }
+
+    private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {
+        await fetchRollSetup(runner: runner, roll: roll).filmBase
     }
 
     private static func runSetBaseFrame(
@@ -520,6 +570,53 @@ final class ConfigurationModel {
         }
         if succeeded, result.error == nil {
             result.filmBase = await fetchFilmBase(runner: runner, roll: roll)
+        }
+        return result
+    }
+
+    private struct SetFilmKindResult: Sendable {
+        var filmKind: String?
+        var filmKindLocked = false
+        var error: Issue?
+    }
+
+    private static func runSetFilmKind(
+        runner: CLIRunner,
+        roll: URL,
+        filmKind: String
+    ) async -> SetFilmKindResult {
+        var result = SetFilmKindResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetFilmKind(roll: roll, filmKind: filmKind)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = Issue(code: code, message: message)
+                        }
+                    default:
+                        break
+                    }
+                case .completed(let completion):
+                    if completion.outcome == .success {
+                        succeeded = true
+                    }
+                case .log, .failure:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            let setup = await fetchRollSetup(runner: runner, roll: roll)
+            result.filmKind = setup.filmKind
+            result.filmKindLocked = setup.filmKindLocked
         }
         return result
     }

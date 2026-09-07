@@ -96,8 +96,7 @@ struct RunIntegrationTests {
         let session = runner.session(
             for: .rollInit(
                 library: library,
-                name: "Test Roll \(UUID().uuidString.prefix(8))",
-                filmKind: "colour"
+                name: "Test Roll \(UUID().uuidString.prefix(8))"
             )
         )
         for await output in try await session.start() {
@@ -180,6 +179,9 @@ struct RunIntegrationTests {
         model.across = 3
         if model.flatFieldProfileID == nil {
             model.flatFieldProfileID = try await Self.createFlatFieldProfile()
+        }
+        if model.filmKind == nil {
+            await model.setFilmKind("colour")
         }
         if model.filmBase == nil {
             await model.attachBaseFrame(at: BaseFrameReference.url)
