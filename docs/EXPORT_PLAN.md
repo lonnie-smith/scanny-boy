@@ -75,7 +75,8 @@ published TIFF (uint16 normalized log density, negative, 1 or 3 channels)
   -> 3x3 matrix (colour only)                camera primaries -> Adobe RGB
   -> clip to [0, 1]
   -> ^ (1 / GAMMA_ADOBE)                     back to display encoding
-  -> tone curve (the negative's `tone` op)   grade + snap, as the preview shows
+  -> tone + colour curve (the negative's `tone` and `color` ops)
+  -> dye separation when active
   -> uint16
   -> lossless JPEG XL, ICC = Adobe RGB (1998) compatible (or Grey)
      + Exif box + XMP box

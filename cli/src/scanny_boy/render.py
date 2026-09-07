@@ -1,25 +1,24 @@
-"""The export's render: a published TIFF's normalized log density becomes a
-positive, in Adobe RGB (1998)-compatible colour, with the negative's
-recorded tone op baked in (docs/EXPORT_PLAN.md §4).
+"""The positive render: a published TIFF's normalized log density becomes a
+display-encoded positive in Adobe RGB (1998)-compatible colour, with the
+negative's recorded tone and colour ops baked in (docs/EXPORT_PLAN.md §4).
 
 This is the only place the published TIFF's codes become display pixels at
 full resolution — deliberately separate from `exporter.py` (which stays
 about files, edits and error handling) and from `previews.py` (which stays
-8-bit and downscaled). It reproduces `tone.build_display_lut`'s rendering
-at 16 bits instead of 8: that is the regression anchor `render_test` pins,
-and the reason the exported file looks like the Edit tab's preview rather
-than a second, differently-tuned rendering.
+8-bit and downscaled). Preview and export share `render_positive_float` so
+the Edit tab soft-proofs the file Lightroom gets.
 
 The chain, when a camera colour matrix is present, is:
 
-    decode_normalized -> 1 - val (positive, normalized log exposure)
+    decode_normalized -> global CMY -> 1 - val (positive)
     -> ** GAMMA_ADOBE (linear light)
     -> 3x3 matrix (colour only: sensor RGB -> Adobe RGB, §4.3)
     -> clip to [0, 1]
     -> ** (1 / GAMMA_ADOBE) (back to display encoding)
     -> quantize to uint16
-    -> tone curve (the negative's `tone` op), as the preview shows
-    -> uint16
+    -> tone + colour curve (the negative's `tone` and `color` ops)
+    -> dye separation when active
+    -> uint16 / uint8
 
 **Why the matrix sits between the two exponentiations** (§4.2):
 
@@ -37,18 +36,16 @@ The chain, when a camera colour matrix is present, is:
   `decode_normalized` no longer the single inverse of the encode. The
   published TIFF stays what `DECISIONS.md` says it is.
 
-Stage 1 declares the modelling assumption this module is named for: *the
-normalized positive log-exposure is read as an Adobe-RGB-encoded value.*
-That assumption is not new — it is what the preview has always relied on
-implicitly by writing `1 - val` into an 8-bit PNG and letting the viewer
-apply a ~2.2 decode. This module only names it.
+When `matrix is None` on a three-channel image the gamma sandwich is
+skipped — the preview fallback for a colour roll whose stitch has not yet
+written `camera_color`, and the exact mono path (§4.1).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from scanny_boy import normalization, tone
+from scanny_boy import color, normalization, tone
 from scanny_boy.icc_profile import TRC_G_EXPORT
 
 # One constant, three places (docs/EXPORT_PLAN.md §2.2): the profile's TRC
@@ -128,11 +125,110 @@ def export_matrix(rgb_xyz_matrix) -> np.ndarray:
     return m
 
 
-def _display_codes_lut(tone_params: dict[str, float] | None) -> np.ndarray:
-    """The display-encoded code -> display code table the tone curve
-    maps: `TONE_ENCODE_LUT[j] = rint(tone_curve(j / 65535) * 65535)`."""
-    codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
-    return np.rint(tone_curve(codes, tone_params) * MAX_CODE).astype(np.uint16)
+def camera_matrix_from_roll(roll) -> np.ndarray | None:
+    """The roll's frozen camera -> Adobe RGB matrix, or `None` when the
+    block is absent (mono rolls, or a colour roll mid-stitch)."""
+    if roll.camera_color is None:
+        return None
+    return export_matrix(roll.camera_color.rgb_xyz_matrix)
+
+
+def _resolve_render_params(
+    tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None,
+    metering: color.Metering | None,
+    channels: int,
+) -> tuple[tone.ToneParams | None, color.ColorParams, color.Metering]:
+    tone_obj = tone.ToneParams(**tone_params) if tone_params else None
+    color_obj = (
+        color.ColorParams(**color_params) if color_params else color.NEUTRAL_COLOR
+    )
+    meter = metering or color.Metering(
+        ranges=(1.0,) * channels, shadow_refs_norm=None
+    )
+    return tone_obj, color_obj, meter
+
+
+def _flat_positive_lut() -> np.ndarray:
+    """uint16 code -> float positive display with no tone or colour ops."""
+    codes = np.arange(MAX_CODE + 1, dtype=np.float64)
+    return _positive_values(codes).astype(np.float32)
+
+
+def _flat_positive(image: np.ndarray) -> np.ndarray:
+    return _flat_positive_lut()[image]
+
+
+def _is_flat_render(
+    tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None,
+    *,
+    channels: int,
+) -> bool:
+    return tone_params is None and (
+        color_params is None or channels == 1
+    )
+
+
+def _needs_separation(color_obj: color.ColorParams, channels: int) -> bool:
+    return (
+        channels > 1
+        and (
+            color_obj.dye_separation != 1.0
+            or color_obj.separation_damping != 0.0
+        )
+    )
+
+
+def _linear_lut_from_codes(
+    tone_obj: tone.ToneParams,
+    color_obj: color.ColorParams,
+    meter: color.Metering,
+    *,
+    channels: int,
+) -> np.ndarray:
+    """uint16 code -> linear light, shape `(channels, 65536)`."""
+    codes = np.arange(MAX_CODE + 1, dtype=np.float64)
+    norm = normalization.decode_normalized(codes)
+    apply_color = channels > 1
+    offsets = color.cmy_offsets(color_obj, meter) if apply_color else (0.0,) * channels
+    luts = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
+    for ch in range(channels):
+        offset = offsets[ch] if ch < len(offsets) else 0.0
+        if apply_color:
+            positive = np.clip(1.0 - (norm + offset), 0.0, 1.0)
+        else:
+            positive = np.clip(1.0 - norm, 0.0, 1.0)
+        luts[ch] = np.power(positive, GAMMA_ADOBE).astype(np.float32)
+    return luts
+
+
+def _curve_lut_from_display_codes(
+    tone_obj: tone.ToneParams | None,
+    color_obj: color.ColorParams,
+    meter: color.Metering,
+    *,
+    channels: int,
+) -> np.ndarray:
+    """Post-matrix display code j -> curved float, shape `(channels, 65536)`."""
+    if tone_obj is None and color_obj == color.NEUTRAL_COLOR:
+        display_codes = np.arange(MAX_CODE + 1, dtype=np.float32) / MAX_CODE
+        return np.broadcast_to(display_codes, (channels, MAX_CODE + 1)).copy()
+
+    display_codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
+    apply_color = channels > 1
+    tables = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
+    tone_params = tone_obj if tone_obj is not None else tone.NEUTRAL
+    for ch in range(channels):
+        tables[ch] = tone.curve_values(
+            display_codes,
+            tone_params,
+            color_obj,
+            channel=ch if apply_color else None,
+            metering=meter,
+            apply_color=apply_color,
+        ).astype(np.float32)
+    return tables
 
 
 def _positive_values(codes: np.ndarray) -> np.ndarray:
@@ -157,10 +253,121 @@ def _clipped_fractions(
     )
 
 
+def _gather_channel_lut(
+    image: np.ndarray, tables: np.ndarray
+) -> np.ndarray:
+    """Apply per-channel `(C, 65536)` tables to a uint16 `(H, W, C)` image."""
+    channels = image.shape[-1]
+    gathered = np.empty(image.shape, dtype=np.float32)
+    for ch in range(channels):
+        gathered[..., ch] = tables[ch][image[..., ch]]
+    return gathered
+
+
+def _as_density_codes(image: np.ndarray) -> np.ndarray:
+    """Normalise `(H, W)`, `(H, W, 1)`, or `(H, W, 3)` uint16 density codes."""
+    if image.ndim == 3 and image.shape[2] == 1:
+        return image[:, :, 0]
+    return image
+
+
+def render_positive_float(
+    image: np.ndarray,
+    matrix: np.ndarray | None,
+    tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
+) -> tuple[np.ndarray, tuple[float, ...]]:
+    """Render density codes to float display pixels in `[0, 1]`.
+
+    `image` is uint16 `(H, W)` or `(H, W, 3)`. Returns `(float32, clip
+    fractions)` with the same shape as `image` (mono stays 2-D).
+    """
+    if image.dtype != np.uint16:
+        raise ValueError(
+            f"render_positive_float needs uint16 codes; got dtype {image.dtype}"
+        )
+    image = _as_density_codes(image)
+
+    if image.ndim in (1, 2):
+        if matrix is not None:
+            raise ValueError(
+                "a mono (single-channel) image takes no colour matrix; "
+                "pass None"
+            )
+        if _is_flat_render(tone_params, color_params, channels=1):
+            return np.clip(_flat_positive(image), 0.0, 1.0), (0.0,)
+        tone_obj, color_obj, meter = _resolve_render_params(
+            tone_params, color_params, metering, channels=1
+        )
+        tables = tone.build_channel_tables(
+            tone_obj or tone.NEUTRAL, color.NEUTRAL_COLOR, meter, channels=1
+        )
+        result = tables[0][image]
+        return np.clip(result, 0.0, 1.0), (0.0,)
+
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(
+            f"render_positive_float needs a (H, W, 3) colour image; "
+            f"got shape {image.shape}"
+        )
+
+    if _is_flat_render(tone_params, color_params, channels=3) and matrix is None:
+        return np.clip(_flat_positive(image), 0.0, 1.0), (0.0, 0.0, 0.0)
+
+    tone_obj, color_obj, meter = _resolve_render_params(
+        tone_params, color_params, metering, channels=3
+    )
+
+    if matrix is None:
+        tables = tone.build_channel_tables(
+            tone_obj or tone.NEUTRAL, color_obj, meter, channels=3
+        )
+        result = _gather_channel_lut(image, tables.astype(np.float32))
+        if _needs_separation(color_obj, channels=3):
+            result = color.apply_separation(result, color_obj)
+        return np.clip(result, 0.0, 1.0), (0.0, 0.0, 0.0)
+
+    linear_luts = _linear_lut_from_codes(
+        tone_obj or tone.NEUTRAL, color_obj, meter, channels=3
+    )
+    linear = _gather_channel_lut(image, linear_luts)
+    linear = linear @ np.asarray(matrix, dtype=np.float32).T
+    preclip = linear
+    linear = np.clip(preclip, 0.0, 1.0)
+    fractions = _clipped_fractions(preclip, linear)
+
+    display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
+    j = np.rint(display * MAX_CODE).astype(np.uint16)
+    curve_luts = _curve_lut_from_display_codes(
+        tone_obj, color_obj, meter, channels=3
+    )
+    result = _gather_channel_lut(j, curve_luts)
+    if _needs_separation(color_obj, channels=3):
+        result = color.apply_separation(result, color_obj)
+    return np.clip(result, 0.0, 1.0), fractions
+
+
+def encode_positive_uint8(
+    image: np.ndarray,
+    matrix: np.ndarray | None,
+    tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
+) -> np.ndarray:
+    """The shared positive render, quantized to 8-bit display codes."""
+    floats, _ = render_positive_float(
+        image, matrix, tone_params, color_params, metering
+    )
+    return np.rint(floats * 255).astype(np.uint8)
+
+
 def render_export(
     image: np.ndarray,
     matrix: np.ndarray | None,
     tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
 ) -> tuple[np.ndarray, tuple[float, ...]]:
     """Renders one published TIFF's codes to the export's display pixels.
 
@@ -170,37 +377,17 @@ def render_export(
     mono roll has one channel, no primaries to rotate, and its published
     channel is a noise-argument collapse, not a colorimetric one, so
     applying a colour matrix to it would be inventing a luminance
-    weighting nobody measured). `tone_params` is the net `tone` op's
-    params, or `None`.
+    weighting nobody measured). `tone_params` and `color_params` are the
+    net ops' param dicts, or `None`.
 
     Returns `(rendered, clipped_fractions)`, rendered uint16 of the same
     shape.
-
-    Two paths, and the no-matrix one is a single table (§4.1): with no
-    matrix between them the two gamma steps are a mathematical no-op, and
-    writing them out only costs precision — so the mono path (and the
-    anchor tests) is one precomputed 65536-entry LUT reproducing
-    `tone.build_display_lut` exactly, at 16 bits instead of 8.
     """
-    if image.dtype != np.uint16:
-        raise ValueError(
-            f"render_export needs uint16 codes; got dtype {image.dtype}"
-        )
     if image.ndim in (1, 2):
-        # A mono roll's published TIFF is 2-D (§4.5 — selected on the
-        # channel count, the fact the writer actually sees; a 1-D array is
-        # the full-ramp domain the anchor tests index). One LUT, no
-        # exponentiation, no matrix stage.
-        if matrix is not None:
-            raise ValueError(
-                "a mono (single-channel) image takes no colour matrix; "
-                "pass None"
-            )
-        lut = np.rint(
-            tone_curve(_positive_values(np.arange(MAX_CODE + 1)), tone_params)
-            * MAX_CODE
-        ).astype(np.uint16)
-        return lut[image], (0.0,)
+        floats, fractions = render_positive_float(
+            image, matrix, tone_params, color_params, metering
+        )
+        return np.rint(floats * MAX_CODE).astype(np.uint16), fractions
 
     if matrix is None:
         raise ValueError(
@@ -208,35 +395,8 @@ def render_export(
             "identity fallback is precisely the bug the export plan "
             "exists to remove (EXPORT_PLAN §3.4)"
         )
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(
-            f"render_export needs a (H, W, 3) colour image; got shape {image.shape}"
-        )
 
-    # Stage 1 — code to linear, via a float32 LUT.
-    codes = np.arange(MAX_CODE + 1, dtype=np.float64)
-    linear_lut = (
-        np.clip(1.0 - normalization.decode_normalized(codes), 0.0, 1.0)
-        ** GAMMA_ADOBE
-    ).astype(np.float32)
-    linear = linear_lut[image]
-
-    # Stage 2 — the matrix (colour only), then the gamut clip. Work in
-    # float32; the camera gamut is not contained in Adobe RGB, so
-    # saturated colours land outside [0, 1] and are clipped per channel —
-    # measured and recorded (§4.4), not corrected (gamut compression is a
-    # feature with its own plan).
-    linear = linear @ np.asarray(matrix, dtype=np.float32).T
-    preclip = linear
-    linear = np.clip(preclip, 0.0, 1.0)
-    fractions = _clipped_fractions(preclip, linear)
-
-    # Stage 3 — back to display, tone, quantize, via a second LUT. The
-    # quantize-before-LUT is why the colour path is not bit-exact against
-    # the no-matrix path: a half-code rounding error enters the tone
-    # curve, whose slope reaches 4.0. Measured worst case is 3 codes of
-    # 65535; §4.7 pins the bound at 4.
-    display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
-    j = np.rint(display * MAX_CODE).astype(np.uint16)
-    tone_lut = _display_codes_lut(tone_params)
-    return tone_lut[j], fractions
+    floats, fractions = render_positive_float(
+        image, matrix, tone_params, color_params, metering
+    )
+    return np.rint(floats * MAX_CODE).astype(np.uint16), fractions

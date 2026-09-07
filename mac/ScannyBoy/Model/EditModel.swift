@@ -863,7 +863,7 @@ final class EditModel {
         let output = previewCache.regionURL(
             rollID: rollID,
             negativeID: negative.negativeID,
-            generation: Self.renderGeneration(of: negative),
+            generation: Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor),
             mode: mode,
             rect: rect
         )
@@ -907,7 +907,7 @@ final class EditModel {
         guard let rollURL, let rollID = roll?.rollID else { return nil }
         let generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
-            : Self.renderGeneration(of: negative)
+            : Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor)
         let output = previewCache.previewURL(
             rollID: rollID,
             negativeID: negative.negativeID,
@@ -954,7 +954,10 @@ final class EditModel {
     /// commented at each other and must keep agreeing on the rule:
     /// everything that changes pixels before the display LUT is in, and
     /// nothing that comes after.
-    static func renderGeneration(of negative: RollManifest.Negative) -> String {
+    static func renderGeneration(
+        of negative: RollManifest.Negative,
+        cameraColor: RollManifest.CameraColor? = nil
+    ) -> String {
         let tone: String
         if let adjustment = negative.toneAdjustment {
             tone = String(adjustment.hashValue)
@@ -967,7 +970,8 @@ final class EditModel {
         } else {
             colour = "neutral"
         }
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(spotsTerm(of: negative))"
+        let matrix = cameraColor?.cacheTerm ?? "none"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(spotsTerm(of: negative))#\(matrix)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the

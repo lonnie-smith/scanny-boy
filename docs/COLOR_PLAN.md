@@ -23,10 +23,11 @@ Every one of them is **disabled on a monochrome roll**, which has no
 layers to balance and no colour to separate (§6).
 
 They land as a new `color` op (`repo.COLOR_OP`), a sibling of the `tone`
-op and subject to the same two boundaries `docs/DECISIONS.md` already
-established for it: **the op is preview-only** — the published TIFF and
-`export` never see it — and **it is a state, not a transform**, coalesced
-in place as the latest op.
+op and subject to the same boundaries `docs/DECISIONS.md` established for
+it: **the op is a state, not a transform**, coalesced in place as the latest
+op; the published TIFF never carries it; and the export's render bakes the
+same curve the preview shows — through the shared `render_positive_float`
+path, after the camera matrix and Adobe RGB encode on colour rolls.
 
 This plan follows the conventions of `docs/DENSITY_PLAN.md` and
 `docs/GRID_STITCH_PLAN.md`: numbered chunks, each independently green,
@@ -147,7 +148,7 @@ Twelve stored colour values on top of the tone op's nine would make one
 colour". A sibling op keeps both states complete, independently resettable
 and independently coalesced, and it keeps `validated_tone_params` readable.
 
-Both ops are preview-only states. `net_edit_state` returns them together
+Both ops are states recorded in the ops log. `net_edit_state` returns them together
 (§4), which is the moment its 4-tuple should become a value object.
 
 ### 0.6 Our normalization has already defeated the mask, so Cast Removal defaults to 0
@@ -774,7 +775,7 @@ state rides the recorded op's `params`, as the tone state does.
   the usage line; an `edit color` section covering the thirteen flags,
   their ranges and sign conventions, the partial-update rule (§7.1), the
   temperature lever, the monochrome refusal, and the fact that the op is
-  preview-only.
+  baked at export through the shared render.
 - **`shared/contract/schema.json`** — `"edit color"` into the `command`
   enum. Verify whether anything else constrains op names; do not assume.
 - **`shared/contract/roll-manifest.schema.json`** — the thirteen
@@ -808,8 +809,8 @@ state rides the recorded op's `params`, as the tone state does.
 - A monochrome roll refuses `edit color` but accepts `--reset`.
 - `edit color` on a negative with `normalization = None` and a non-zero
   `--cast-removal` warns and still records.
-- The published TIFF is untouched; `export` output is unchanged with a
-  colour op recorded.
+- The published TIFF is untouched; a recorded colour op changes the
+  export's pixels and is named in XMP provenance (`rendered.color`).
 - Emitted lines carry `protocol_version: 12`.
 
 ---

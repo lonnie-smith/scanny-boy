@@ -71,7 +71,8 @@ TONE_OP = "tone"
 # (docs/CAST_REMOVAL_PLAN.md R-2), of which the original twelve are the
 # compatibility floor (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None`
 # for the reset (see `color.py`). A sibling of `tone`:
-# preview-only, independently resettable, coalesced in place.
+# preview-only, independently resettable, coalesced in place. Baked at export
+# through the same render as the preview (docs/EXPORT_PLAN.md §4.6).
 COLOR_OP = "color"
 
 # `spots` params are the spot detector's proposals plus the whole-negative

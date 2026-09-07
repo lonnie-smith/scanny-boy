@@ -102,12 +102,10 @@ def test_the_8_bit_preview_lut_and_the_16_bit_render_agree_within_one_8_bit_code
 
 
 def preview_lut(tone_params) -> np.ndarray:
-    """The 8-bit preview LUT with the tone curve composed in — the same
-    construction `previews.py` and `tone.build_display_lut` use."""
-    codes = np.arange(tone.MAX_CODE + 1, dtype=np.float64)
-    base = np.clip(1.0 - normalization.decode_normalized(codes), 0.0, 1.0)
-    toned = tone_curve_reference(base, tone_params)
-    return np.rint(toned * 255).astype(np.uint8)
+    """The 8-bit preview LUT with the tone curve composed in — the shared
+    `render.encode_positive_uint8` ramp."""
+    codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    return render.encode_positive_uint8(codes, None, tone_params)
 
 
 # --- export_matrix ---------------------------------------------------------
@@ -233,3 +231,27 @@ def test_preview_reference_matches_the_preview_module_s_luts():
     assert np.array_equal(
         preview_lut(None), _previews.NORMALIZED_DISPLAY_LUT
     )
+
+
+def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
+    """The shared render: 8-bit preview encode and 16-bit export agree
+    when a camera matrix and a colour op are both active."""
+    from scanny_boy import color
+
+    matrix = _TEST_MATRIX
+    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0}
+    color_params = {"wb_cyan": 0.05, "dye_separation": 1.2}
+    metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
+    codes = np.stack(
+        [np.arange(tone.MAX_CODE + 1, dtype=np.uint16)] * 3, axis=-1
+    ).reshape(1, -1, 3)
+
+    rendered, _ = render.render_export(
+        codes, matrix, tone_params, color_params, metering
+    )
+    preview_8 = render.encode_positive_uint8(
+        codes, matrix, tone_params, color_params, metering
+    )
+    rendered_8 = np.rint(rendered / 257.0).astype(np.uint8)
+    difference = np.abs(rendered_8.astype(np.int32) - preview_8.astype(np.int32))
+    assert difference.max() <= 1

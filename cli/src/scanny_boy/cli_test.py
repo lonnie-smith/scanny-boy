@@ -1346,9 +1346,12 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     composed into the positive render's display LUT and never reaches the
     negative render."""
     import cv2
+    import numpy as np
     import tifffile
 
-    from scanny_boy import tone
+    from scanny_boy import render
+    from scanny_boy.previews import PREVIEW_MAX_EDGE
+    from scanny_boy.roll_manifest import load_roll_manifest
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -1397,14 +1400,13 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
 
     # The negative view is byte-for-byte unaffected...
     assert _render("negative", "negative-after.png").read_bytes() == negative_before
-    # ...while the positive render carries the tone curve: the graded LUT,
-    # not the flat one, encodes the published TIFF — after the same
-    # PREVIEW_MAX_EDGE density-space downscale the command applies.
+    # ...while the positive render carries the tone curve through the shared
+    # render — after the same PREVIEW_MAX_EDGE density-space downscale.
     _render("positive", "positive-after.png")
-    import numpy as np
 
-    from scanny_boy.previews import PREVIEW_MAX_EDGE
-
+    roll = load_roll_manifest(roll_dir)
+    matrix = render.camera_matrix_from_roll(roll)
+    tone_params = {"grade_r": 160.0, "snap_gamma": 0.3}
     tiff = tifffile.imread(roll_dir / negative.output["name"])
     edge = max(tiff.shape[0], tiff.shape[1])
     if edge > PREVIEW_MAX_EDGE:
@@ -1415,7 +1417,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
             interpolation=cv2.INTER_AREA,
         )
     graded = cv2.cvtColor(
-        tone.build_display_lut(tone.ToneParams(grade_r=160.0, snap_gamma=0.3))[tiff],
+        render.encode_positive_uint8(tiff, matrix, tone_params),
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)

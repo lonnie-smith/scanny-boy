@@ -1704,15 +1704,17 @@ paper's physical Dmin; our ceiling is display white with no paper model,
 so the same sharpening branch used for negative toe is applied to the
 shoulder too.
 
-## The preview's colour adjustment: a preview-only `color` op (protocol version 12)
+## The preview's colour adjustment: the `color` op (protocol version 12)
 
 Six controls from NegPy's Colour panel — temperature (a Kelvin lever over
 magenta and yellow, derived never stored), global/shadow/highlight CMY,
 cast removal, dye separation, and separation damping — land as a second
-preview-only op (`repo.COLOR_OP`), sibling to `tone`. The same three
-boundaries apply: the published TIFF and export never see it; the op is a
-state coalesced in place; and the numbers are judgement aids, not calibrated
-colorimetry.
+op (`repo.COLOR_OP`), sibling to `tone`. The same boundaries apply as
+tone after the colour-managed export landed: the published TIFF never
+carries it; the op is a state coalesced in place; the numbers are
+judgement aids, not calibrated colorimetry; and **the export bakes it**
+through the same `render_positive_float` the preview uses (after the
+camera matrix and Adobe RGB encode on colour rolls).
 
 What is not obvious from the code:
 

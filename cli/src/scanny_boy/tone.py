@@ -13,7 +13,8 @@ preview and export cannot drift apart. The published TIFF itself is never
 touched; the curve owns pixels only where a *rendering* is made.
 
 Colour shaping (global/regional CMY, cast removal) composes in the same
-per-channel tables; dye separation is the one control that is not a LUT
+per-channel tables after the camera matrix and Adobe RGB encode on the
+export path; dye separation is the one control that is not a LUT
 (see `color.py` and `previews.py`).
 
 The math is a simplified port of NegPy's print curve
