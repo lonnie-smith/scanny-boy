@@ -224,17 +224,23 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_thirteen():
+def test_protocol_version_is_fourteen():
     """Protocol 10→11: monochrome film support, extended preview tone
     adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
     toggle (`--mode` on `edit render-region`, `edit render-preview` with
     its `preview_rendered` event). Protocol 11→12: the preview colour
     adjustment (`edit color`, `color_*` fields, docs/COLOR_PLAN.md).
-    Protocol 12→13 (SPOTTING_PLAN): the three spotting commands, the
-    `spots_reported` event (display-space rects, no rle), the
-    `SPOT_LIMIT_REACHED` and `SPOTS_STALE` codes, and the per-negative
-    `spots` summary block on `roll info`."""
-    assert PROTOCOL_VERSION == 13
+    Protocol 12→13, both halves: the film-base reference
+    (docs/REBATE_ANCHORING.md) and — merged from origin/main — spotting
+    (SPOTTING_PLAN): the three spotting commands, the `spots_reported`
+    event (display-space rects, no rle), the `SPOT_LIMIT_REACHED` and
+    `SPOTS_STALE` codes, and the per-negative `spots` summary block on
+    `roll info`. Protocol 13→14 (docs/CAST_REMOVAL_PLAN.md):
+    `--cast-removal-highlights` and `--auto-cast` on `edit color`, the
+    `color_cast_removal_highlights` derived field on `roll info`, and the
+    `highlight_refs` / `neutral_residual` meters in the `normalization`
+    block. No new codes."""
+    assert PROTOCOL_VERSION == 14
 
 
 def test_new_event_kinds_round_trip():

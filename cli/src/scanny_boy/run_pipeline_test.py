@@ -91,16 +91,18 @@ def _out_dir(tmp_path: Path, name: str = "out") -> Path:
     Section 5.4 decision 1: `stitch` -- and therefore `run`, which calls it --
     never creates a roll, so one has to exist first. `roll init` arrives in
     P3-4; until then this is `new_roll_manifest`, the same constructor it will
-    call, rather than hand-authored JSON."""
+    call, rather than hand-authored JSON. REBATE_ANCHORING §3.2 rule 4: a
+    roll with no film-base reference refuses to run, so one is attached."""
+    from scanny_boy.stitch_pipeline_test import _attach_base_frame
+
     out = tmp_path / name
     out.mkdir()
-    write_roll_manifest(
-        out,
-        new_roll_manifest(
-            roll_id="00000000-0000-4000-8000-00000000000a",
-            roll_name=name,
-        ),
+    manifest = new_roll_manifest(
+        roll_id="00000000-0000-4000-8000-00000000000a",
+        roll_name=name,
     )
+    _attach_base_frame(manifest)
+    write_roll_manifest(out, manifest)
     return out
 
 

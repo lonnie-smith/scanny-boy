@@ -44,6 +44,8 @@ from scanny_boy.normalization import (
     encode_normalized,
     headroom_clip_fractions,
     measure_anchor,
+    measure_highlight_refs,
+    measure_neutral_residual,
     measure_shadow_refs,
     measure_textural_range,
     normalize_log_image,
@@ -112,6 +114,12 @@ class CompositeResult:
     # dense-border findings.
     bounds: Bounds
     shadow_refs: tuple[float, float, float]
+    # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral reference
+    # (None when the band held no trustworthy neutrals) and the frame's
+    # residual neutral offset — both recorded, read by nothing in the
+    # stitch stage.
+    highlight_refs: tuple[float, ...] | None
+    neutral_residual: tuple[float, float] | None
     anchor: float
     textural_range: float
     observed_min: tuple[float, float, float]
@@ -887,9 +895,12 @@ def composite(
     keep, dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep)
     shadow_refs = measure_shadow_refs(grid, keep)
+    # CAST_REMOVAL_PLAN R-1: the dense end's neutral reference, beside the
+    # other meters. `None` is recorded as null — it is load-bearing
+    # information (the plan's §0.4), not an error.
+    highlight_refs = measure_highlight_refs(grid, keep)
     anchor = measure_anchor(grid, keep)
     textural_range = measure_textural_range(grid, keep)
-    del grid, keep
 
     # Section 3.4's clamp: a frame whose own meters latched contamination
     # the per-frame detectors missed is pulled back toward the roll's
@@ -902,6 +913,12 @@ def composite(
         if clamped:
             unclamped_bounds = bounds
             bounds = clamped_bounds
+
+    # CAST_REMOVAL_PLAN R-1: the residual is measured against the *clamped*
+    # bounds — the ones the published pixels are actually stretched by —
+    # which is why `del grid, keep` waits until here.
+    neutral_residual = measure_neutral_residual(grid, keep, bounds)
+    del grid, keep
 
     normalized = normalize_log_image(img_log, bounds)
     del img_log
@@ -940,6 +957,8 @@ def composite(
         coverage_fraction=coverage_fraction,
         bounds=bounds,
         shadow_refs=shadow_refs,
+        highlight_refs=highlight_refs,
+        neutral_residual=neutral_residual,
         anchor=anchor,
         textural_range=textural_range,
         observed_min=observed_min,

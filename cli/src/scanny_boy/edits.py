@@ -300,12 +300,20 @@ def _merge_color_params(
     import dataclasses
 
     from scanny_boy import color
+    from scanny_boy.library.repo import _color_neutral_defaults
 
-    base = (
-        dict(recorded)
-        if recorded is not None
-        else dataclasses.asdict(color.NEUTRAL_COLOR)
-    )
+    # Build the base from the neutral defaults and overlay the recorded
+    # dict, instead of indexing the recorded dict directly
+    # (docs/CAST_REMOVAL_PLAN.md R-2 §6.2): a twelve-key recorded state —
+    # an op written before the thirteenth key existed — must not raise,
+    # and a missing newer key keeps its neutral default.
+    base = _color_neutral_defaults()
+    if recorded is not None:
+        for key, value in recorded.items():
+            if key in base:
+                base[key] = value
+    else:
+        base = dataclasses.asdict(color.NEUTRAL_COLOR)
     merged = {key: base[key] for key in color.COLOR_PARAM_KEYS}
     for key, value in updates.items():
         if value is not None:
@@ -321,11 +329,21 @@ def run_edit_color(
     reset: bool = False,
     temperature: float | None = None,
     region: str = "global",
+    auto_cast: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview colour adjustment — the full
-    twelve-key colour state, or all `None` for the reset."""
-    from scanny_boy import color
+    thirteen-key colour state (docs/CAST_REMOVAL_PLAN.md R-2), or all
+    `None` for the reset.
+
+    `auto_cast` (docs/CAST_REMOVAL_PLAN.md §7.2) solves the global CMY
+    from the negative's recorded neutral estimate and writes the three
+    values over whatever the merge produced — composing with explicit
+    flags exactly as `--auto-density` does: the auto result wins over a
+    recorded value and loses to nothing, because a caller that wants both
+    would be contradicting itself. Without an estimate the filtration is
+    left unchanged and the metering warning fires once."""
+    from scanny_boy import auto_color, color, tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
     if not reset and roll_is_monochrome(roll):
@@ -356,10 +374,20 @@ def run_edit_color(
                 updates[mag_key] = m
                 updates[yellow_key] = y
             solved = _merge_color_params(state.color, updates)
-            cast = solved.get("cast_removal", 0.0)
-            if cast and float(cast) != 0.0:
+            # The metering warning, widened (docs/CAST_REMOVAL_PLAN.md
+            # §7.2): fire when EITHER tie strength is non-zero and the
+            # metering it needs is missing — one warning per negative, not
+            # two.
+            cast_shadow = float(solved.get("cast_removal", 0.0) or 0.0) != 0.0
+            cast_highlights = (
+                float(solved.get("cast_removal_highlights", 0.0) or 0.0) != 0.0
+            )
+            if cast_shadow or cast_highlights:
                 meter = color.read_metering(negative.normalization)
-                if meter.shadow_refs_norm is None:
+                missing = (cast_shadow and meter.shadow_refs_norm is None) or (
+                    cast_highlights and meter.highlight_refs_norm is None
+                )
+                if missing:
                     emit(
                         WarningEvent(
                             code=Code.TONE_METERING_UNAVAILABLE,
@@ -369,6 +397,32 @@ def run_edit_color(
                             ),
                         )
                     )
+            if auto_cast:
+                tone_state = state.tone
+                tone_params = (
+                    tone.ToneParams(**tone_state) if tone_state else tone.NEUTRAL
+                )
+                slope, pivot_in = tone.base_slope_and_pivot(tone_params)
+                solved_cmy = auto_color.solve_cmy(
+                    negative.normalization,
+                    color.ColorParams(**solved),
+                    slope,
+                    pivot_in,
+                )
+                if solved_cmy is None:
+                    emit(
+                        WarningEvent(
+                            code=Code.TONE_METERING_UNAVAILABLE,
+                            message=(
+                                f"{negative.negative_id}: no neutral estimate "
+                                "recorded; filtration left unchanged"
+                            ),
+                        )
+                    )
+                else:
+                    solved["wb_cyan"] = solved_cmy[0]
+                    solved["wb_magenta"] = solved_cmy[1]
+                    solved["wb_yellow"] = solved_cmy[2]
         try:
             validated = repo.validated_color_params(solved)
         except ValueError as exc:

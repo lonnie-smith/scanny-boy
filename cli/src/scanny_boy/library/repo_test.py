@@ -920,3 +920,100 @@ def test_pre_0004_row_reads_back_with_four_nones():
     assert flatfield.profile_token(loaded) == flatfield.profile_token(profile)
     assert flatfield.flatfield_profile_summary(loaded).has_geometry is False
     assert flatfield.flatfield_profile_summary(loaded).chromatic_aberration_mode is None
+
+
+# --- the thirteenth colour key (docs/CAST_REMOVAL_PLAN.md R-2) --------------
+
+
+def _twelve_key_color_params(**overrides: float) -> dict[str, float]:
+    import dataclasses
+
+    from scanny_boy import color
+
+    params = {
+        key: value
+        for key, value in dataclasses.asdict(color.NEUTRAL_COLOR).items()
+        if key != "cast_removal_highlights"
+    }
+    params.update(overrides)
+    return params
+
+
+def test_a_twelve_key_color_op_parses_with_the_new_default(roll_dir):
+    """R-2 §6.1: an op written before docs/CAST_REMOVAL_PLAN.md has no
+    thirteenth key and is still a complete colour state — it parses to the
+    thirteen-key state with `cast_removal_highlights` at its neutral
+    default and every other value preserved. A gate on all thirteen keys
+    would silently discard real user state."""
+    from scanny_boy import color
+
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.COLOR_OP,
+        _twelve_key_color_params(wb_cyan=0.1, cast_removal=0.4),
+    )
+
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+
+    assert set(state.color) == set(color.COLOR_PARAM_KEYS)
+    assert state.color["cast_removal_highlights"] == 0.0
+    assert state.color["wb_cyan"] == 0.1
+    assert state.color["cast_removal"] == 0.4
+    assert state.color["dye_separation"] == 1.0
+
+
+def test_a_twelve_key_color_op_that_is_all_none_still_reads_as_a_reset(roll_dir):
+    from scanny_boy import color
+
+    _negative_in(roll_dir, "rid-1-negative-01")
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.COLOR_OP,
+        {key: None for key in color.COLOR_PARAM_KEYS_V1},
+    )
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").color is None
+
+
+def test_a_thirteen_key_color_op_round_trips(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    params = _color_params(
+        cast_removal=0.2, cast_removal_highlights=0.6, wb_yellow=-0.1
+    )
+
+    repo.append_color_edit(roll_dir, "rid-1-negative-01", params)
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(color=params)
+
+
+def test_validated_color_params_accepts_a_twelve_key_dict():
+    from scanny_boy import color
+    from scanny_boy.library.repo import validated_color_params
+
+    validated = validated_color_params(_twelve_key_color_params(wb_cyan=0.1))
+
+    assert set(validated) == set(color.COLOR_PARAM_KEYS)
+    assert validated["cast_removal_highlights"] == 0.0
+    assert validated["wb_cyan"] == 0.1
+
+
+def test_validated_color_params_rejects_an_out_of_range_new_key():
+    import pytest
+
+    from scanny_boy.library.repo import validated_color_params
+
+    with pytest.raises(ValueError):
+        validated_color_params(_color_params(cast_removal_highlights=1.5))
+
+
+def test_validated_color_params_still_rejects_a_mixed_dict():
+    import pytest
+
+    from scanny_boy.library.repo import validated_color_params
+
+    mixed = _color_params() | {"wb_cyan": None}
+    with pytest.raises(ValueError):
+        validated_color_params(mixed)

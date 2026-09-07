@@ -9,8 +9,75 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
-Protocol version 13 keeps version 12's roll model and adds **spotting**
-(docs/SPOTTING_PLAN.md).
+Protocol version 14 keeps version 13's roll model — the film-base
+reference and spotting both stay as protocol 13 shipped them — and adds
+**cast removal's second tie and auto solve** (docs/CAST_REMOVAL_PLAN.md):
+`edit color` gains `--cast-removal-highlights V` (the highlight-end tie
+strength, 0..1, 0 neutral — with a highlight reference recorded in the
+negative's `normalization` block and a non-zero strength, the per-channel
+tie becomes a genuine affine, gain *and* offset) and `--auto-cast` (solve
+the global filtration from the negative's recorded neutral estimate;
+exclusive with `--reset` and with an explicit `--cyan`, `--magenta` or
+`--yellow`, which it would overwrite). The auto reads a stitch-time meter
+(`neutral_residual` in the `normalization` block), so it is unavailable on
+rolls stitched by an older build — that absence warns
+`TONE_METERING_UNAVAILABLE` and records the state unchanged, as does a
+non-zero tie strength on a negative with no reference for the end it
+drives. `roll info` gains the derived `color_cast_removal_highlights`
+field beside the other `color_*` fields. Global and regional CMY are now
+**mean-removed**, so filtration changes hue and never the display's
+channel mean — this changes how already-recorded colour ops render, which
+is accepted because the op is preview-only. No new codes.
+
+Protocol version 13 keeps version 12's roll model and adds **the film-base
+reference** (docs/REBATE_ANCHORING.md).
+
+**The film-base reference**: a new `roll set-base-frame --roll DIR --frame
+FILE [--flatfield PROFILE_ID]` command attaches one measured per-roll
+film-base reference — the per-channel median log density inside the film
+rebate of one dedicated reference frame, shot once per roll showing as much
+clear rebate as possible, exposed about two stops darker than the roll's
+scans. The measurement is exposure-invariant (only per-channel deviations
+from the median are consumed), so the base frame's exposure never has to
+match the roll's; it does have to be the same film, the same light source,
+the same camera body, and the same flat-field profile. The block is a new
+optional top-level `film_base` object on the roll manifest, reported by
+`roll info` verbatim and by `probe --roll` (as `film_base` on
+`probe_result`) so the app can gate Convert without starting a run:
+`{density (3-array), locked_at, attached_at, source_name, source_sha256,
+flat_field_profile_id, camera_model, chosen_index, populations (array of
+{density, luma, area_fraction, cells, spread}, thinnest first),
+clipped_fractions, grid_cells, measure_version}`. `density` is always a
+3-array, even on a monochrome roll (the block is provenance there, not
+consumed). The state machine: ABSENT (`film_base` null) → ATTACHED
+(`locked_at` null) → LOCKED (`locked_at` set). `set-base-frame` attaches or
+replaces freely while unlocked and emits one `base_frame_set` event
+(`roll_id`, `source_name`, `density`, `area_fraction`, `population_count`,
+`locked` — always false); a locked roll refuses with `FILM_BASE_LOCKED`;
+a gate failure emits the error and changes nothing on disk. The first
+negative published against the reference sets `locked_at` in the same
+manifest write; a run that fails before publishing anything leaves it null.
+`run`/`stitch` on an ABSENT roll fail `FILM_BASE_REQUIRED` before any pixel
+work. Ten new codes: `FILM_BASE_REQUIRED` (error), `FILM_BASE_LOCKED`
+(error), `FILM_BASE_NOT_FOUND` (error), `FILM_BASE_TOO_SMALL` (error),
+`FILM_BASE_CLIPPED` (error), `FILM_BASE_TOO_DARK` (error),
+`FILM_BASE_AMBIGUOUS` (error), `ROLL_PREDATES_FILM_BASE` (error),
+`FILM_BASE_CAMERA_CONFLICT` (warning), `FILM_BASE_FLATFIELD_CONFLICT`
+(warning). Each negative's `normalization` block gains an optional
+`base_check` object — `{level_offset, shape_residual}` — recorded whenever
+the roll has a locked anchor and the negative's own rebate detector fired
+unclipped, and read by nothing (§6). It also gains `highlight_refs` (the
+dense end's same-pixel neutral reference, or `null` when the band held no
+trustworthy neutrals) and `neutral_residual` (the frame's `(R-G, B-G)`
+offset in normalized units, or `null` when there was no estimate) — both
+recorded by the stitch stage and read only by `--auto-cast`
+(docs/CAST_REMOVAL_PLAN.md §3). Roll manifest format version bumps
+**7 → 8**: rolls stitched before this feature stay readable, editable and
+exportable, but cannot take new negatives or a base frame
+(`ROLL_PREDATES_FILM_BASE`). There is no migration.
+
+The same protocol 13 also adds **spotting** (docs/SPOTTING_PLAN.md,
+merged from origin/main).
 
 **The spotting feature**: dust, hairs, water spots and scratches are
 detected, reviewed, and repaired — the published TIFF is never touched, and
@@ -256,6 +323,7 @@ scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
+scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N | --grid AxD] [--roll DIR]
                       [--flatfield ID]
@@ -281,7 +349,7 @@ scanny-boy metadata values --field FIELD
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
-scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--dye-separation V] [--separation-damping V] | --reset
+scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--cast-removal-highlights V] [--auto-cast] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
                               [--mode positive|negative]
@@ -565,16 +633,21 @@ The op is a state, not a transform — the latest `color` op wins and a
 trailing one coalesces in place. The published TIFF and export are
 untouched; previews are regenerated with per-channel display LUTs plus
 optional per-pixel dye separation. `edit_recorded` is emitted per negative
-with all twelve keys in `params` (`null` for reset). Refused on a
+with all thirteen keys in `params` (`null` for reset). Refused on a
 monochrome roll (`INVALID_EDIT`) except `--reset`. Emits
-`TONE_METERING_UNAVAILABLE` per negative when `--cast-removal` is non-zero
-but normalization metering is absent (the op is still recorded). `roll info`
+`TONE_METERING_UNAVAILABLE` per negative when a cast-removal strength is
+non-zero but the metering that end needs is absent, or when `--auto-cast`
+found no recorded neutral estimate (the op is still recorded; the
+filtration is left unchanged). `--auto-cast` is exclusive with `--reset`
+and with an explicit `--cyan`/`--magenta`/`--yellow`. `roll info`
 reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
 `color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
 `color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
-`color_cast_removal`, `color_dye_separation`, `color_separation_damping`,
+`color_cast_removal`, `color_cast_removal_highlights`,
+`color_dye_separation`, `color_separation_damping`,
 and derived `color_temperature` (null when no op), plus `film_kind` on the
-roll.
+roll. The auto cast solve reads a stitch-time meter, so it is unavailable
+on rolls stitched by an older build.
 
 **Spotting (protocol 13).** `edit detect-spots` runs the defect detector
 over each selected negative's published TIFF and records one `spots` op per
@@ -849,7 +922,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 7` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 8` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
@@ -883,6 +956,16 @@ staging directories, and reruns the incomplete negative.
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `MONO_DETECT_AMBIGUOUS` | Warning: an unseeded roll's film-kind statistic landed between the monochrome and colour thresholds; colour was assumed |
 | `MONO_DECISION_CONFLICT` | Warning: this run's fresh film-kind evidence disagrees with the roll's already-frozen kind; the frozen kind is kept |
+| `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |
+| `FILM_BASE_LOCKED` | The roll's film-base reference is locked (its first negative was converted) and cannot be replaced |
+| `FILM_BASE_NOT_FOUND` | No flat film-base region was found in the base frame |
+| `FILM_BASE_TOO_SMALL` | The chosen flat population is below the area or cell floor |
+| `FILM_BASE_CLIPPED` | The base frame's rebate is sensor-clipped |
+| `FILM_BASE_TOO_DARK` | A channel's median inside the rebate is below the per-channel floor |
+| `FILM_BASE_AMBIGUOUS` | Two large flat populations of different density; the frame is refused rather than guessed at |
+| `ROLL_PREDATES_FILM_BASE` | This roll was stitched before film-base anchoring and cannot take new negatives or a base frame |
+| `FILM_BASE_CAMERA_CONFLICT` | Warning: the base frame's EXIF camera model differs from the roll's; the measurement may still be fine |
+| `FILM_BASE_FLATFIELD_CONFLICT` | Warning: the run's flat-field profile differs from the one the base frame was measured with |
 | `SPOT_LIMIT_REACHED` | Warning: the spot detector found more than 500 proposals on a negative and kept the highest-scoring 500; the remedy is a lower `--sensitivity` |
 | `SPOTS_STALE` | Warning: the negative's spot set was detected against a canvas a re-stitch has replaced; it repairs nothing and needs re-detecting |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |

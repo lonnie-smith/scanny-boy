@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.metadata
 import json
 import sys
@@ -8,6 +9,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+from scanny_boy import film_base
 from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
 from scanny_boy.calibration import create_profile
 from scanny_boy.cancellation import sigterm_cancellation
@@ -25,6 +27,7 @@ from scanny_boy.edits import (
     run_edit_tone,
 )
 from scanny_boy.events import (
+    BaseFrameSet,
     Code,
     EditRecorded,
     ErrorEvent,
@@ -55,11 +58,17 @@ from scanny_boy.exporter import ExportFailure, run_export
 from scanny_boy.flatfield import (
     FlatFieldError,
     flatfield_profile_summary,
+    load_gain_map,
 )
+from scanny_boy.hashing import sha256_file
 from scanny_boy.library import repo
 from scanny_boy.library.db import LibraryDBError
 from scanny_boy.manifest import BadManifestError
-from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+from scanny_boy.metadata import (
+    UnreadableRawError,
+    UnsupportedRawError,
+    read_source_settings,
+)
 from scanny_boy.metadata_edit import (
     MetadataEditFailure,
     run_metadata_set,
@@ -75,7 +84,12 @@ from scanny_boy.roll_folder import (
     rename_roll,
     scan_library,
 )
-from scanny_boy.roll_manifest import load_roll_manifest
+from scanny_boy.roll_manifest import (
+    ROLL_MANIFEST_FORMAT_VERSION,
+    _now_iso,
+    load_roll_manifest,
+    write_roll_manifest,
+)
 from scanny_boy.run_pipeline import RunFailure, run_full
 from scanny_boy.selection import (
     MAX_PER_NEGATIVE,
@@ -132,6 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
         "delete", help="Unregister a roll; the app trashes its folder."
     )
     roll_delete.add_argument("--roll", required=True, metavar="DIR")
+
+    # REBATE_ANCHORING §7.1: a subcommand that mutates roll state outside a
+    # run, on the `roll rename` precedent. §3.4: this is the ONLY writer of
+    # `film_base.density` — `run`/`stitch` take no `--base-frame` flag.
+    roll_set_base = roll_subparsers.add_parser(
+        "set-base-frame",
+        help="Attach or replace the roll's film-base reference frame.",
+    )
+    roll_set_base.add_argument("--roll", required=True, metavar="DIR")
+    roll_set_base.add_argument("--frame", required=True, metavar="FILE")
+    roll_set_base.add_argument("--flatfield", metavar="PROFILE_ID")
 
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
@@ -279,7 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
         "metadata",
         help="Edit the roll-level and per-negative metadata held in the library.",
     )
-    metadata_subparsers = metadata.add_subparsers(dest="metadata_command", required=True)
+    metadata_subparsers = metadata.add_subparsers(
+        dest="metadata_command", required=True
+    )
 
     metadata_set = metadata_subparsers.add_parser(
         "set",
@@ -291,9 +318,9 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="JSON",
         help=(
-            "JSON object: {\"roll\": {field: value}, \"negatives\": "
+            'JSON object: {"roll": {field: value}, "negatives": '
             "{negative_id: {field: value}}}; absent keys are untouched, "
-            "null or \"\" clears"
+            'null or "" clears'
         ),
     )
 
@@ -511,8 +538,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("--highlight-cyan", "highlights cyan, -1..1"),
         ("--highlight-magenta", "highlights magenta, -1..1"),
         ("--highlight-yellow", "highlights yellow, -1..1"),
+        ("--cast-removal-highlights", "highlight-end cast removal strength, 0..1 (0 neutral)"),
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
+    edit_color.add_argument(
+        "--auto-cast",
+        action="store_true",
+        help="solve global filtration from this negative's recorded neutral estimate",
+    )
     edit_color.add_argument(
         "--cast-removal",
         type=float,
@@ -657,15 +690,21 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
         "grade_r": args.grade if args.grade is not None else tone.GRADE_REFERENCE,
         "snap_gamma": args.snap,
         "density": args.density if args.density is not None else tone.DENSITY_REFERENCE,
-        "shadow_density": args.shadow_density if args.shadow_density is not None else 0.0,
+        "shadow_density": args.shadow_density
+        if args.shadow_density is not None
+        else 0.0,
         "highlight_density": (
             args.highlight_density if args.highlight_density is not None else 0.0
         ),
         "toe": args.toe if args.toe is not None else 0.0,
-        "toe_width": args.toe_width if args.toe_width is not None else tone.WIDTH_REFERENCE,
+        "toe_width": args.toe_width
+        if args.toe_width is not None
+        else tone.WIDTH_REFERENCE,
         "shoulder": args.shoulder if args.shoulder is not None else 0.0,
         "shoulder_width": (
-            args.shoulder_width if args.shoulder_width is not None else tone.WIDTH_REFERENCE
+            args.shoulder_width
+            if args.shoulder_width is not None
+            else tone.WIDTH_REFERENCE
         ),
     }
 
@@ -685,6 +724,7 @@ def _color_flag_updates(args) -> dict[str, float | None]:
         "highlight_magenta": "highlight_magenta",
         "highlight_yellow": "highlight_yellow",
         "cast_removal": "cast_removal",
+        "cast_removal_highlights": "cast_removal_highlights",
         "dye_separation": "dye_separation",
         "separation_damping": "separation_damping",
     }
@@ -695,16 +735,27 @@ def _color_flag_updates(args) -> dict[str, float | None]:
     return updates
 
 
-def _validate_color_temperature_args(args) -> None:
+def _validate_color_args(args) -> None:
+    """docs/CAST_REMOVAL_PLAN.md §7.3: `--auto-cast` owns all three global
+    CMY sliders outright — it is a usage error with `--reset` (which
+    contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
+    (which it would overwrite). The `--temperature` exclusivity rules are
+    unchanged; the function only outgrew its temperature-only name."""
+    if args.auto_cast:
+        if args.reset:
+            raise ValueError("--auto-cast is mutually exclusive with --reset")
+        if args.cyan is not None or args.magenta is not None or args.yellow is not None:
+            raise ValueError(
+                "--auto-cast is mutually exclusive with --cyan, --magenta and "
+                "--yellow; the auto owns all three"
+            )
     if args.temperature is None:
         return
     region = args.region
     if region == "global" and args.magenta is not None:
         raise ValueError("--temperature is mutually exclusive with --magenta")
     if region == "shadows" and args.shadow_magenta is not None:
-        raise ValueError(
-            "--temperature is mutually exclusive with --shadow-magenta"
-        )
+        raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
     if region == "highlights" and args.highlight_magenta is not None:
         raise ValueError(
             "--temperature is mutually exclusive with --highlight-magenta"
@@ -858,6 +909,9 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
+    if args.roll_command == "set-base-frame":
+        return _run_roll_set_base_frame(args, writer)
+
     # info
     writer.write(Started(command="roll info"))
     roll_dir = Path(args.roll)
@@ -885,11 +939,15 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         negative["flipped_horizontally"] = state.flipped
         negative["fine_rotation_deg"] = state.fine_angle_deg
         tone_params = state.tone
-        negative["tone_grade_r"] = None if tone_params is None else tone_params["grade_r"]
+        negative["tone_grade_r"] = (
+            None if tone_params is None else tone_params["grade_r"]
+        )
         negative["tone_snap_gamma"] = (
             None if tone_params is None else tone_params["snap_gamma"]
         )
-        negative["tone_density"] = None if tone_params is None else tone_params["density"]
+        negative["tone_density"] = (
+            None if tone_params is None else tone_params["density"]
+        )
         negative["tone_shadow_density"] = (
             None if tone_params is None else tone_params["shadow_density"]
         )
@@ -897,8 +955,12 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             None if tone_params is None else tone_params["highlight_density"]
         )
         negative["tone_toe"] = None if tone_params is None else tone_params["toe"]
-        negative["tone_toe_width"] = None if tone_params is None else tone_params["toe_width"]
-        negative["tone_shoulder"] = None if tone_params is None else tone_params["shoulder"]
+        negative["tone_toe_width"] = (
+            None if tone_params is None else tone_params["toe_width"]
+        )
+        negative["tone_shoulder"] = (
+            None if tone_params is None else tone_params["shoulder"]
+        )
         negative["tone_shoulder_width"] = (
             None if tone_params is None else tone_params["shoulder_width"]
         )
@@ -945,6 +1007,172 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     else:
         info["film_kind"] = None
     writer.write(RollInfo(manifest=info))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
+def _camera_model_from_source(frame: Path) -> str | None:
+    """The base frame's EXIF camera model, joined the way
+    `pipeline.build_curated_metadata` joins a scan's (`docs/EXPORT_PLAN.md
+    §3.2`'s recorded `camera_model`). The comparison is a warning, so a
+    frame whose EXIF cannot be read measures and attaches regardless."""
+    try:
+        settings = read_source_settings(frame)
+    except (UnsupportedRawError, UnreadableRawError):
+        return None
+    return " ".join(part for part in (settings.make, settings.model) if part) or None
+
+
+def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
+    """The `roll set-base-frame` subcommand (docs/REBATE_ANCHORING.md
+    §7.1, §3.2 rules 1-3): decode, measure, gate, and attach (or replace)
+    the roll's film-base reference. A gate failure emits the error and
+    changes nothing on disk; a locked roll refuses outright. Emits one
+    `base_frame_set` event on success."""
+    writer.write(Started(command="roll set-base-frame"))
+    roll_dir = Path(args.roll)
+    if not repo.roll_registered(roll_dir):
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} is not a registered roll",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    try:
+        manifest = load_roll_manifest(roll_dir)
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    # §9: check the version once, before anything else. A roll whose
+    # manifest predates film-base anchoring cannot be given one —
+    # retrofitting an anchor onto a roll whose negatives were normalized
+    # without one would make the roll internally inconsistent.
+    if manifest.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_PREDATES_FILM_BASE,
+                message=(
+                    "this roll was stitched before film-base anchoring; "
+                    "create a new roll and re-stitch its scans to add more "
+                    "negatives"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    # §3.2 rule 3: the lock is the only state — `locked_at` set means the
+    # reference is frozen for the life of the roll.
+    if manifest.film_base is not None and manifest.film_base.get("locked_at"):
+        writer.write(
+            ErrorEvent(
+                code=Code.FILM_BASE_LOCKED,
+                message=(
+                    "this roll's film-base reference was locked on "
+                    f"{str(manifest.film_base['locked_at'])[:10]} when its "
+                    "first negative was converted and cannot be changed; "
+                    "create a new roll to use a different base frame"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    frame = Path(args.frame)
+    gain_map = None
+    if args.flatfield is not None:
+        try:
+            profile = repo.load_flatfield_profile(args.flatfield)
+            gain_map = load_gain_map(profile)
+        except FlatFieldError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+
+    # Measure, then gate. The measurement is recorded nowhere on a gate
+    # failure: §3.2 rule 1 changes nothing on disk unless the frame passed.
+    try:
+        measurement = film_base.load(frame, gain_map)
+        film_base.gate(measurement)
+    except film_base.FilmBaseError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except UnsupportedRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNSUPPORTED_RAW,
+                message=f"{frame.name} cannot be read by LibRaw; a base frame "
+                "must be a NEF",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except UnreadableRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNREADABLE_RAW,
+                message=f"{frame.name} could not be decoded",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    # §3.3: the camera comparison lives here when the roll already has a
+    # `camera_color` block (a fresh roll has none until its first run seeds
+    # one — `run_stitch` compares then, §3.3).
+    camera_model = _camera_model_from_source(frame)
+    if (
+        manifest.camera_color is not None
+        and manifest.camera_color.camera_model
+        and camera_model
+        and manifest.camera_color.camera_model != camera_model
+    ):
+        writer.write(
+            WarningEvent(
+                code=Code.FILM_BASE_CAMERA_CONFLICT,
+                message=(
+                    "the base frame was shot on a "
+                    f"{camera_model}, but this roll's scans were made on a "
+                    f"{manifest.camera_color.camera_model}; the measurement "
+                    "may still be fine"
+                ),
+            )
+        )
+
+    manifest.film_base = {
+        "density": list(measurement.density),
+        "locked_at": None,
+        "attached_at": _now_iso(),
+        "source_name": frame.name,
+        "source_sha256": sha256_file(frame),
+        "flat_field_profile_id": args.flatfield,
+        "camera_model": camera_model,
+        "chosen_index": measurement.chosen_index,
+        "populations": [
+            dataclasses.asdict(population) for population in measurement.populations
+        ],
+        "clipped_fractions": list(measurement.clipped_fractions),
+        "grid_cells": measurement.grid_cells,
+        "measure_version": measurement.measure_version,
+    }
+    write_roll_manifest(roll_dir, manifest)
+
+    chosen = measurement.populations[measurement.chosen_index]
+    writer.write(
+        BaseFrameSet(
+            roll_id=manifest.roll_id,
+            source_name=frame.name,
+            density=list(measurement.density),
+            area_fraction=chosen.area_fraction,
+            population_count=len(measurement.populations),
+            locked=False,
+        )
+    )
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
@@ -998,7 +1226,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             confirmation = EditRecorded
         elif args.edit_command == "color":
             try:
-                _validate_color_temperature_args(args)
+                _validate_color_args(args)
             except ValueError as exc:
                 writer.write(ErrorEvent(code=Code.INVALID_EDIT, message=str(exc)))
                 writer.write(Finished(status="failed", exit_status=1))
@@ -1010,6 +1238,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 reset=args.reset,
                 temperature=args.temperature,
                 region=args.region,
+                auto_cast=args.auto_cast,
                 emit=writer.write,
             )
             confirmation = EditRecorded
@@ -1021,26 +1250,30 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = NegativeDeleted
         elif args.edit_command == "render-region":
-            results = [run_edit_render_region(
-                Path(args.roll),
-                args.negative,
-                args.x,
-                args.y,
-                args.width,
-                args.height,
-                Path(args.output),
-                mode=args.mode,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_render_region(
+                    Path(args.roll),
+                    args.negative,
+                    args.x,
+                    args.y,
+                    args.width,
+                    args.height,
+                    Path(args.output),
+                    mode=args.mode,
+                    emit=writer.write,
+                )
+            ]
             confirmation = RegionRendered
         elif args.edit_command == "render-preview":
-            results = [run_edit_render_preview(
-                Path(args.roll),
-                args.negative,
-                Path(args.output),
-                mode=args.mode,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_render_preview(
+                    Path(args.roll),
+                    args.negative,
+                    Path(args.output),
+                    mode=args.mode,
+                    emit=writer.write,
+                )
+            ]
             confirmation = PreviewRendered
         elif args.edit_command == "detect-spots":
             results = run_edit_detect_spots(
@@ -1324,15 +1557,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser,
             "--grid and --per-negative are mutually exclusive; use one",
         )
-    if args.command in ("prepare", "run") and grid_text is None and per_negative is None:
+    if (
+        args.command in ("prepare", "run")
+        and grid_text is None
+        and per_negative is None
+    ):
         return _usage_error(
             parser,
             "one of the following arguments is required: --grid, --per-negative",
         )
-    if args.command == "probe" and files is not None and per_negative is None and grid_text is None:
-        return _usage_error(
-            parser, "probe --files requires --per-negative or --grid"
-        )
+    if (
+        args.command == "probe"
+        and files is not None
+        and per_negative is None
+        and grid_text is None
+    ):
+        return _usage_error(parser, "probe --files requires --per-negative or --grid")
 
     # `spec` is the single source of the scans-per-negative count from
     # here down: `--per-negative N` becomes `GridSpec(across=N, down=1)`,
@@ -1343,10 +1583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec: GridSpec | None = None
     if grid_text is not None:
         parts = str(grid_text).lower().split("x")
-        malformed = (
-            len(parts) != 2
-            or not all(part.isdigit() for part in parts)
-        )
+        malformed = len(parts) != 2 or not all(part.isdigit() for part in parts)
         if malformed:
             return _usage_error(
                 parser, f"--grid must be of the form AxD (e.g. 3x2), got {grid_text!r}"
@@ -1474,6 +1711,7 @@ def _dispatch_command(
                 estimated_required_bytes=outcome.estimated_required_bytes,
                 available_bytes=outcome.available_bytes,
                 roll_overlap=outcome.roll_overlap,
+                film_base=outcome.film_base,
             )
         )
         writer.write(Finished(status="success", exit_status=0))

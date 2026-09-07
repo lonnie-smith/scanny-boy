@@ -81,7 +81,10 @@ NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH  # section 3.14
 # never published output); §2's thresholds and §3's merge weights join in
 # their own steps, and `upgrade_normalize_params` absorbs the invariant
 # break each addition would otherwise cause.
-NORMALIZE_FORMAT_VERSION = 2
+# CAST_REMOVAL_PLAN R-1: v2 predates the two meters; the constants join
+# `build_params()` because the residual the auto solve reads is recorded
+# per negative against them.
+NORMALIZE_FORMAT_VERSION = 3
 
 # The fraction of pixels the headroom clips past which
 # NORMALIZE_HEADROOM_CLIPPED warns (section 3.6's "the signal that the
@@ -328,7 +331,35 @@ def _same_pixel_color_floor_refs(
     ]
 
 
-def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
+def _thin_end_refs(
+    values: np.ndarray,
+    channels: int,
+    base_refs: tuple[float, ...] | None = None,
+) -> list[float]:
+    """The thin-end per-channel colour references: the roll's measured film
+    base when it has one (REBATE_ANCHORING §4), else plain per-channel
+    percentiles of scene content. Lifted out of `analyze_bounds` (whose
+    fallback branch and `len(base_refs) == channels` guard are that plan's)
+    so `measure_highlight_refs` can measure the dense end against the same
+    physically anchored thin end the published pixels use
+    (docs/CAST_REMOVAL_PLAN.md §0.6 point 3).
+
+    With `base_refs=None` — and on a mono roll, where a 3-array cannot
+    match a 1-channel image — this is exactly what `analyze_bounds` computed
+    before the extraction."""
+    if base_refs is not None and len(base_refs) == channels:
+        return [float(v) for v in base_refs]
+    return [
+        _percentile(values[:, channel], 100.0 - BASE_COLOR_CLIP)
+        for channel in range(channels)
+    ]
+
+
+def analyze_bounds(
+    grid_log: np.ndarray,
+    keep: np.ndarray,
+    base_refs: tuple[float, ...] | None = None,
+) -> Bounds:
     """The bounds meters, ported from NegPy's
     `analyze_log_exposure_bounds_from_log` (section 3.4).
 
@@ -373,12 +404,12 @@ def analyze_bounds(grid_log: np.ndarray, keep: np.ndarray) -> Bounds:
     mean_lf = _percentile(lum, BASE_LUMA_CLIP)
     mean_lc = _percentile(lum, 100.0 - BASE_LUMA_CLIP)
 
-    # Colour pass. Thin end: plain per-channel percentiles — physically
-    # anchored at film base.
-    c_ceils = [
-        _percentile(values[:, channel], 100.0 - BASE_COLOR_CLIP)
-        for channel in range(channels)
-    ]
+    # Colour pass. Thin end: the roll's measured film base when it has one
+    # (docs/REBATE_ANCHORING.md §4), falling back to plain per-channel
+    # percentiles of scene content. Only the deviation from the median
+    # survives the recombination below, so the base frame's own exposure
+    # cancels and never has to match the roll's (§0.2 of that plan).
+    c_ceils = _thin_end_refs(values, channels, base_refs)
     # Dense end: the shared, chroma-gated pixel set, falling back to plain
     # per-channel percentiles when the band holds no trustworthy neutrals.
     base = np.asarray(c_ceils, dtype=np.float64)
@@ -1014,6 +1045,127 @@ def _is_featureless(component: np.ndarray, lum: np.ndarray) -> bool:
     ) <= DENSE_BORDER_MAX_SPREAD
 
 
+# --- CAST_REMOVAL_PLAN R-1: the highlight reference and the neutral
+# --- residual meter ---------------------------------------------------------
+
+
+def measure_highlight_refs(
+    grid_log: np.ndarray,
+    keep: np.ndarray,
+    base_refs: tuple[float, ...] | None = None,
+) -> tuple[float, ...] | None:
+    """The dense end's colour references: the same shared, chroma-gated,
+    same-pixel neutral set `_same_pixel_color_floor_refs` returns for
+    `analyze_bounds` (docs/CAST_REMOVAL_PLAN.md §0.4/§3.2). Independent
+    per-channel percentiles at the dense end read a *different scene object
+    per channel*, so the highlight reference reuses the gated set rather
+    than mirroring the shadow percentile.
+
+    The thin-end anchor it measures chroma against is `_thin_end_refs` —
+    the roll's measured film base when one is threaded in, else the
+    percentile fallback, exactly what `analyze_bounds` uses — so the
+    highlight reference is measured against the same thin end the
+    published pixels are stretched by.
+
+    Returns `None` for a single-channel grid, and — load-bearing, not an
+    error — when the band held no trustworthy neutrals: that `None` is
+    recorded as `null` and is precisely when a user-driven highlight tie
+    has the most to do. Recorded, never acted on by the stitch stage."""
+    if grid_log.shape[-1] != 3:
+        return None
+    g_flat = grid_log.reshape(-1, 3)
+    keep_flat = keep.reshape(-1)
+    lum_full = luma_of_log(grid_log).reshape(-1)
+    base = np.asarray(_thin_end_refs(g_flat[keep_flat], 3, base_refs))
+    return _same_pixel_color_floor_refs(g_flat, keep_flat, lum_full, base)
+
+
+# Ported from darktable's DT_ILLUMINANT_DETECT_SURFACES weighting
+# (src/iop/channelmixerrgb.c:_auto_detect_WB) into our coordinates
+# (docs/CAST_REMOVAL_PLAN.md §3.1).
+# darktable's Minkowski p, unchanged: downweights strongly-coloured
+# patches.
+NEUTRAL_RESIDUAL_P_NORM = 8.0
+# Below this many contributing cells there is no estimate.
+NEUTRAL_RESIDUAL_MIN_CELLS = 64
+# darktable's NORM_MIN, same role.
+NEUTRAL_RESIDUAL_EPS = 1e-6
+
+_BSPLINE_KERNEL = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], np.float32) / 16.0
+
+
+def measure_neutral_residual(
+    grid_log: np.ndarray, keep: np.ndarray, bounds: Bounds
+) -> tuple[float, float] | None:
+    """The frame's residual neutral offset, `(R-G, B-G)` in normalized
+    units, over structured low-chroma regions — the meter `auto_color`'s
+    solve reads back (docs/CAST_REMOVAL_PLAN.md §3.1/§3.3). Runs on the
+    block-median grid, normalized by the same `bounds` the published image
+    is stretched by, so the per-channel stretch is already removed and
+    what is left is exactly the residual the auto solve wants. Recorded,
+    never acted on by the stitch stage — same status as `shadow_refs` and
+    `anchor`.
+
+    Returns `None` for a single-channel grid, when fewer than
+    `NEUTRAL_RESIDUAL_MIN_CELLS` cells contribute weight, or when the
+    weight sum is non-positive."""
+    if grid_log.shape[-1] != 3:
+        return None
+    norm = normalize_log_image(grid_log, bounds)
+    a = norm[..., 0] - norm[..., 1]
+    b = norm[..., 2] - norm[..., 1]
+
+    # Local statistics over a 3x3 neighbourhood: the B-spline blur
+    # darktable uses for the means, and box means for the variances and
+    # covariance. Every filter replicates its border.
+    border = cv2.BORDER_REPLICATE
+    a_bar = cv2.filter2D(a, -1, _BSPLINE_KERNEL, borderType=border)
+    b_bar = cv2.filter2D(b, -1, _BSPLINE_KERNEL, borderType=border)
+
+    def box3(values: np.ndarray) -> np.ndarray:
+        return cv2.boxFilter(values, -1, (3, 3), borderType=border)
+
+    var_a = box3(a * a) - box3(a) ** 2
+    var_b = box3(b * b) - box3(b) ** 2
+    cov_ab = box3(a * b) - box3(a) * box3(b)
+
+    # Deliberate deviation from the port: darktable lets a negative
+    # covariance subtract from the accumulation, but on our grid a negative
+    # weight can flip the sign of the estimate on a noisy frame, and a
+    # patch whose two chroma coordinates are anti-correlated is not
+    # evidence about the illuminant either way. Clamp, don't subtract.
+    w = np.maximum(var_a * var_b * cov_ab, 0.0)
+
+    # Cells whose whole 3x3 neighbourhood is inside the analysis region, so
+    # a withheld rebate or dense border never leaks into a neighbourhood —
+    # the same idiom `_region_border` uses, eroding `keep` itself. The
+    # constant-zero border makes grid-edge cells ineligible, as their
+    # neighbourhood is not fully inside the grid.
+    keep_eroded = keep & (
+        cv2.erode(
+            keep.astype(np.uint8),
+            np.ones((3, 3), np.uint8),
+            borderType=border,
+            borderValue=0,
+        ).astype(bool)
+    )
+
+    p_norm = (
+        np.power(np.abs(a_bar), NEUTRAL_RESIDUAL_P_NORM)
+        + np.power(np.abs(b_bar), NEUTRAL_RESIDUAL_P_NORM)
+    ) ** (1.0 / NEUTRAL_RESIDUAL_P_NORM) + NEUTRAL_RESIDUAL_EPS
+
+    weight = np.where(keep_eroded, w / p_norm, np.float32(0.0))
+    total = float(weight.sum())
+    contributing = int(np.count_nonzero(weight > 0.0))
+    if total <= 0.0 or contributing < NEUTRAL_RESIDUAL_MIN_CELLS:
+        return None
+    return (
+        float((a_bar * weight).sum() / total),
+        float((b_bar * weight).sum() / total),
+    )
+
+
 # --- section 3.4's clamp: the roll-population safety net ----------------------
 
 # The per-negative bounds a clamp needs before it will act.
@@ -1197,6 +1349,11 @@ def build_params() -> dict:
         "mono_chroma_max": MONO_CHROMA_MAX,
         "colour_chroma_min": COLOUR_CHROMA_MIN,
         "mono_merge_weights": list(MONO_MERGE_WEIGHTS),
+        # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants and
+        # the highlight reference's provenance.
+        "neutral_residual_p_norm": NEUTRAL_RESIDUAL_P_NORM,
+        "neutral_residual_min_cells": NEUTRAL_RESIDUAL_MIN_CELLS,
+        "highlight_neutral_source": "same_pixel_color_refs",
     }
 
 

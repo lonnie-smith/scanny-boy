@@ -61,18 +61,52 @@ from typing import IO, Any, ClassVar
 # `color_temperature`) and `film_kind` on `roll info`, and the `color` op
 # in the ops log.
 #
-# Protocol 13 (SPOTTING_PLAN) adds spotting: `edit detect-spots` (the
-# detector's proposals, one `spots` op per negative), `edit spots`
-# (review — reject/accept ids by id, the whole-negative repair switch,
-# clear), and `edit list-spots` (a pure query). One new event,
-# `spots_reported` — carrying the spots as **display-space** rects, ids
-# unchanged, never the RLE masks (Swift converts no coordinates) — plus
-# `SPOT_LIMIT_REACHED` (the detector capped its proposals) and
-# `SPOTS_STALE` (a re-stitch changed the canvas; the set needs
-# re-detecting). `roll info` gains a per-negative `spots` summary block.
-# No new error codes: every failure here is `INVALID_EDIT`,
-# `ROLL_NOT_FOUND` or `NEGATIVE_NOT_FOUND`.
-PROTOCOL_VERSION = 13
+# Protocol 13 is the film-base reference (docs/REBATE_ANCHORING.md): the
+# new `roll set-base-frame` command (with its `base_frame_set` event)
+# attaches a measured per-roll film-base reference — the thin-end colour
+# anchor for every negative on the roll — through a new top-level
+# `film_base` block on the roll manifest (`roll info` reports it verbatim).
+# The reference is replaceable until the roll's first negative is
+# published, then locked (`FILM_BASE_LOCKED`); a run/stitch on a roll
+# without one fails `FILM_BASE_REQUIRED`; a roll whose manifest predates
+# the feature cannot take new negatives or a base frame
+# (`ROLL_PREDATES_FILM_BASE`); `run`/`stitch`/`set-base-frame` refuse old
+# manifests. Seven gate/diagnostic codes (`FILM_BASE_NOT_FOUND`,
+# `_TOO_SMALL`, `_CLIPPED`, `_TOO_DARK`, `_AMBIGUOUS`) shape the attach
+# path, and two warnings (`FILM_BASE_CAMERA_CONFLICT`,
+# `FILM_BASE_FLATFIELD_CONFLICT`) record rig disagreements. `probe --roll`
+# reports `film_base` so the app can gate Convert without starting a run.
+#
+# The same protocol 13 also carries spotting (SPOTTING_PLAN, merged from
+# origin/main): `edit detect-spots` (the detector's proposals, one `spots`
+# op per negative), `edit spots` (review — reject/accept ids by id, the
+# whole-negative repair switch, clear), and `edit list-spots` (a pure
+# query). One new event, `spots_reported` — carrying the spots as
+# **display-space** rects, ids unchanged, never the RLE masks (Swift
+# converts no coordinates) — plus `SPOT_LIMIT_REACHED` (the detector
+# capped its proposals) and `SPOTS_STALE` (a re-stitch changed the canvas;
+# the set needs re-detecting). `roll info` gains a per-negative `spots`
+# summary block. No new error codes of its own: every failure there is
+# `INVALID_EDIT`, `ROLL_NOT_FOUND` or `NEGATIVE_NOT_FOUND`.
+#
+# Protocol 14 is cast removal's second tie and auto solve
+# (docs/CAST_REMOVAL_PLAN.md): `edit color` gains `--cast-removal-highlights`
+# (the highlight-end tie strength, 0..1) and `--auto-cast` (solve the global
+# filtration from the negative's recorded neutral estimate — exclusive with
+# `--reset` and with an explicit `--cyan`/`--magenta`/`--yellow`), the
+# `color_cast_removal_highlights` derived field joins the other `color_*`
+# fields on `roll info`, and the per-negative `normalization` block gains
+# two recorded meters — `highlight_refs` (the dense end's same-pixel
+# neutral set, null when the band held no trustworthy neutrals) and
+# `neutral_residual` (the `(R-G, B-G)` offset the auto solve reads). The
+# auto reads a stitch-time meter, so it is unavailable on rolls stitched by
+# an older build — that absence warns `TONE_METERING_UNAVAILABLE`, reused
+# for the colour-only condition rather than renamed (it shipped in protocol
+# 11; renaming a live contract code costs more than the wart). Global and
+# regional CMY are now mean-removed, which changes how already-recorded
+# colour ops render — accepted, the op being preview-only (§0.3). No new
+# codes.
+PROTOCOL_VERSION = 14
 
 
 class EventType(enum.StrEnum):
@@ -105,6 +139,7 @@ class EventType(enum.StrEnum):
     FLATFIELD_LIST = "flatfield_list"
     FLATFIELD_DELETED = "flatfield_deleted"
     FLATFIELD_PROGRESS = "flatfield_progress"
+    BASE_FRAME_SET = "base_frame_set"
     SPOTS_REPORTED = "spots_reported"
 
 
@@ -211,6 +246,18 @@ class Code(enum.StrEnum):
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
     MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
+    # REBATE_ANCHORING §7.2: the film-base reference. Codes may exist before
+    # anything raises them (chunk B-1); the consumers arrive with B-2/B-3.
+    FILM_BASE_REQUIRED = "FILM_BASE_REQUIRED"
+    FILM_BASE_LOCKED = "FILM_BASE_LOCKED"
+    FILM_BASE_NOT_FOUND = "FILM_BASE_NOT_FOUND"
+    FILM_BASE_TOO_SMALL = "FILM_BASE_TOO_SMALL"
+    FILM_BASE_CLIPPED = "FILM_BASE_CLIPPED"
+    FILM_BASE_TOO_DARK = "FILM_BASE_TOO_DARK"
+    FILM_BASE_AMBIGUOUS = "FILM_BASE_AMBIGUOUS"
+    ROLL_PREDATES_FILM_BASE = "ROLL_PREDATES_FILM_BASE"
+    FILM_BASE_CAMERA_CONFLICT = "FILM_BASE_CAMERA_CONFLICT"
+    FILM_BASE_FLATFIELD_CONFLICT = "FILM_BASE_FLATFIELD_CONFLICT"
     # SPOTTING_PLAN §1.4: the detector found more spots than it may
     # propose; the highest-scoring ones were kept. The remedy is a lower
     # --sensitivity.
@@ -298,6 +345,10 @@ class ProbeResult(Event):
     # Present only when `--roll` was given alongside a validated `--files`
     # selection (Phase 3 section 3.5).
     roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
+    # The roll's film-base reference block, verbatim from the roll manifest,
+    # when `--roll` was given (docs/REBATE_ANCHORING.md §7.1) — how the app
+    # gates Convert without starting a run.
+    film_base: dict[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -561,6 +612,25 @@ class ExportDone(Event):
     output: str
     width: int
     height: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class BaseFrameSet(Event):
+    """`roll set-base-frame`'s confirmation (docs/REBATE_ANCHORING.md
+    §7.1): the attached (or replaced) film-base reference's identity and
+    measurement summary. `density` is the per-channel median log10 density
+    of the chosen population; `area_fraction` is its share of the frame;
+    `population_count` is every population the detector found; `locked` is
+    always false — a locked roll refuses the command outright."""
+
+    event_type: ClassVar[EventType] = EventType.BASE_FRAME_SET
+
+    roll_id: str
+    source_name: str
+    density: list[float]
+    area_fraction: float
+    population_count: int
+    locked: bool
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

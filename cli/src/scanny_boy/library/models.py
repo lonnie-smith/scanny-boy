@@ -99,6 +99,13 @@ class RollRow(Base):
     # NULL until the first stitch run seeds it. Not to be confused with
     # `film` above, the free-text film-stock metadata string.
     film_kind: Mapped[dict | None] = mapped_column(JSONText)
+    # REBATE_ANCHORING §3.1: the roll's film-base reference — a JSON object
+    # (`density`, `locked_at`, `attached_at`, `source_name`, `source_sha256`,
+    # `flat_field_profile_id`, `camera_model`, `chosen_index`, `populations`,
+    # `clipped_fractions`, `grid_cells`, `measure_version`) or NULL until
+    # `roll set-base-frame` attaches one. Nullable throughout — pre-0012
+    # rows read back with NULL and no block.
+    film_base: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class RunRow(Base):

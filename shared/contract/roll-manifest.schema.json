@@ -4,6 +4,96 @@
   "description": "scanny-boy-roll.json: one roll's durable record. See docs/PHASE3_IMPLEMENTATION_PLAN.md section 3.3.",
   "type": "object",
   "definitions": {
+    "filmBase": {
+      "type": "object",
+      "description": "REBATE_ANCHORING section 3.1: the roll's film-base reference — the per-channel median log density inside the film rebate of one dedicated reference frame, the thin-end colour anchor for every negative on the roll. Attached by `roll set-base-frame`; replaceable while `locked_at` is null; frozen for the life of the roll once the first negative has been published against it. `density` is always a 3-array, even on a monochrome roll (section 5); `populations` is the full detector output, thinnest first, kept as evidence.",
+      "required": [
+        "density",
+        "locked_at",
+        "attached_at",
+        "source_name",
+        "source_sha256",
+        "flat_field_profile_id",
+        "camera_model",
+        "chosen_index",
+        "populations",
+        "clipped_fractions",
+        "grid_cells",
+        "measure_version"
+      ],
+      "properties": {
+        "density": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "The chosen population's per-channel median log10 density."
+        },
+        "locked_at": {
+          "type": ["string", "null"],
+          "description": "Null while replaceable; an ISO-8601 UTC timestamp once the roll's first negative has been published against the reference. The only lock state."
+        },
+        "attached_at": { "type": "string" },
+        "source_name": { "type": "string" },
+        "source_sha256": { "$ref": "#/definitions/sha256" },
+        "flat_field_profile_id": {
+          "type": ["string", "null"],
+          "description": "The profile whose gain map the measurement used; null when none was given."
+        },
+        "camera_model": {
+          "type": ["string", "null"],
+          "description": "The base frame's EXIF camera model; null when the EXIF carries none."
+        },
+        "chosen_index": { "type": "integer", "minimum": -1 },
+        "populations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["density", "luma", "area_fraction", "cells", "spread"],
+            "properties": {
+              "density": {
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "luma": { "type": "number" },
+              "area_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+              "cells": { "type": "integer", "minimum": 0 },
+              "spread": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "clipped_fractions": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Per-channel clipped fraction inside the chosen population only."
+        },
+        "grid_cells": { "type": "integer", "minimum": 1 },
+        "measure_version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "baseCheck": {
+      "type": "object",
+      "description": "REBATE_ANCHORING section 6: how this negative's own rebate compares with the roll's locked anchor. Recorded, read by nothing — the evidence a future drift threshold would need.",
+      "required": ["level_offset", "shape_residual"],
+      "properties": {
+        "level_offset": {
+          "type": "number",
+          "description": "The common-mode difference, median(neg) - median(roll): capture-exposure drift across the roll."
+        },
+        "shape_residual": {
+          "type": "number",
+          "minimum": 0,
+          "description": "The largest per-channel disagreement AFTER removing that common mode: the direct measure of whether the roll anchor is right."
+        }
+      },
+      "additionalProperties": false
+    },
     "cameraColor": {
       "type": "object",
       "required": ["rgb_xyz_matrix", "source", "camera_model", "matrix_version"],
@@ -265,6 +355,23 @@
         "clamped": { "type": "boolean" },
         "unclamped_floors": { "$ref": "#/definitions/channelArray" },
         "unclamped_ceils": { "$ref": "#/definitions/channelArray" },
+        "highlight_refs": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/channelArray" }],
+          "description": "CAST_REMOVAL_PLAN R-1 (section 3.2): the dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read by nothing in the stitch stage."
+        },
+        "neutral_residual": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "description": "CAST_REMOVAL_PLAN R-1 (section 3.1): the frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read by nothing in the stitch stage."
+        },
+        "base_check": { "$ref": "#/definitions/baseCheck" },
         "source": { "type": "string" }
       }
     },
@@ -552,6 +659,10 @@
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — separation damping from the latest `color` op."
         },
+        "color_cast_removal_highlights": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op (docs/CAST_REMOVAL_PLAN.md §7.4)."
+        },
         "color_temperature": {
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."
@@ -606,7 +717,7 @@
     "metadata"
   ],
   "properties": {
-    "manifest_format_version": { "type": "integer", "const": 7 },
+    "manifest_format_version": { "type": "integer", "const": 8 },
     "manifest_kind": { "type": "string", "const": "roll" },
     "scanny_boy_version": { "type": "string" },
     "roll_id": { "type": "string" },
@@ -637,6 +748,10 @@
     "film": {
       "description": "MONOCHROME_PLAN section 2.3. Optional (unlike every other top-level field) even though current builds always write it: a manifest predating section 2 has none, and section 5.2 treats a missing block as an implicit frozen colour rather than requiring a migration.",
       "oneOf": [{ "$ref": "#/definitions/filmDecision" }, { "type": "null" }]
+    },
+    "film_base": {
+      "description": "REBATE_ANCHORING section 3.1. Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a roll with FILM_BASE_REQUIRED.",
+      "oneOf": [{ "$ref": "#/definitions/filmBase" }, { "type": "null" }]
     }
   }
 }

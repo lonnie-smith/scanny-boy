@@ -325,16 +325,52 @@ def _roll_dir(tmp_path: Path, name: str = "out") -> Path:
     Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
     test needs one to exist first. `roll init` does not arrive until P3-4, so
     this is `new_roll_manifest` — the same constructor `roll init` will call —
-    and not hand-authored JSON."""
+    and not hand-authored JSON. REBATE_ANCHORING §3.2 rule 4: a roll with no
+    film-base reference refuses to stitch, so the tests that do stitch get
+    one attached; `_attach_base_frame` customises or removes it."""
     roll = _out_dir(tmp_path, name)
-    write_roll_manifest(
-        roll,
-        new_roll_manifest(
-            roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
-            roll_name=name,
-        ),
+    manifest = new_roll_manifest(
+        roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
+        roll_name=name,
     )
+    _attach_base_frame(manifest)
+    write_roll_manifest(roll, manifest)
     return roll
+
+
+def _base_frame_block(**overrides) -> dict:
+    """A film_base block a gate would accept, for the tests that only need
+    the run-time state machine — the measurement itself is film_base_test's
+    subject. The profile id and camera model are None so no run conflicts
+    with them by default."""
+    block = {
+        "density": [-0.42, -0.12, -0.99],
+        "locked_at": None,
+        "attached_at": "2026-09-06T18:04:11Z",
+        "source_name": "_DSC5012.NEF",
+        "source_sha256": "3" * 64,
+        "flat_field_profile_id": None,
+        "camera_model": None,
+        "chosen_index": 0,
+        "populations": [
+            {
+                "density": [-0.42, -0.12, -0.99],
+                "luma": -0.25,
+                "area_fraction": 0.44,
+                "cells": 34100,
+                "spread": 0.012,
+            }
+        ],
+        "clipped_fractions": [0.0, 0.0, 0.0],
+        "grid_cells": 786432,
+        "measure_version": 1,
+    }
+    block.update(overrides)
+    return block
+
+
+def _attach_base_frame(roll, **overrides) -> None:
+    roll.film_base = _base_frame_block(**overrides)
 
 
 def _roll_invariants(work_dir: Path) -> RollInvariants:
@@ -1073,6 +1109,269 @@ def test_stitch_without_a_registered_roll_is_rejected(tmp_path):
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
     assert "registered roll" in exc_info.value.message
     assert not [p for p in out_dir.iterdir()]
+
+
+# --- the film-base state machine (docs/REBATE_ANCHORING.md section 3.2) ---
+
+
+def _baseless_roll(tmp_path: Path, name: str = "out") -> Path:
+    """A real, registered roll with NO film-base reference: §3.2 rule 4's
+    ABSENT state."""
+    out = _out_dir(tmp_path, name)
+    write_roll_manifest(out, new_roll_manifest(roll_id="r-baseless", roll_name=name))
+    return out
+
+
+def test_stitch_without_a_base_frame_is_rejected_before_any_pixel_work(
+    tmp_path,
+):
+    """§3.2 rule 4: run/stitch on an ABSENT roll fail FILM_BASE_REQUIRED
+    after the roll manifest loads and its invariants are checked, and
+    before any pixel work — asserted here on the absence of progress
+    events, not just the code."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _baseless_roll(tmp_path)
+    events: list = []
+
+    with pytest.raises(StitchError) as exc_info:
+        _stitch(work_dir, out_dir, events=events)
+
+    assert exc_info.value.code is Code.FILM_BASE_REQUIRED
+    assert "film-base reference" in exc_info.value.message
+    assert not [e for e in events if isinstance(e, Progress)]
+    assert load_roll_manifest(out_dir).film_base is None
+
+
+def test_stitch_on_a_version_7_roll_is_rejected(tmp_path, monkeypatch):
+    """§9: a roll stitched before film-base anchoring cannot take new
+    negatives. The library database does not persist
+    `manifest_format_version` — every roll it produces reads back at the
+    current version — so the v7 manifest is staged through the loader the
+    run-time path actually calls (`plan_rerun` reads through
+    `repo.load_roll`)."""
+    work_dir = _make_work_dir(tmp_path)
+    out_dir = _roll_dir(tmp_path)
+    v7_manifest = load_roll_manifest(out_dir)
+    v7_manifest.manifest_format_version = 7
+    monkeypatch.setattr("scanny_boy.library.repo.load_roll", lambda _dir: v7_manifest)
+
+    with pytest.raises(StitchError) as exc_info:
+        _stitch(work_dir, out_dir)
+
+    assert exc_info.value.code is Code.ROLL_PREDATES_FILM_BASE
+
+
+def test_a_successful_run_locks_the_base_frame(tmp_path):
+    """§3.2 rule 5: the roll's first published negative sets `locked_at`,
+    in the same manifest write."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    assert roll.film_base is not None
+    assert roll.film_base["locked_at"] is not None
+
+
+def test_a_run_that_fails_before_publishing_leaves_the_roll_attached(tmp_path):
+    """§3.2 rule 7: the lock is set alongside the first published negative.
+    Nothing publishes, so the roll stays ATTACHED."""
+    work_dir = _make_work_dir(
+        tmp_path, negatives=2, overlapping=False, shots_per_negative=1
+    )
+    out_dir = _roll_dir(tmp_path)
+
+    outcome = _stitch(work_dir, out_dir)
+
+    assert outcome.status == "partial"
+    assert outcome.published == []
+    roll = load_roll_manifest(out_dir)
+    assert roll.film_base is not None
+    assert roll.film_base["locked_at"] is None
+
+
+def test_a_differing_flatfield_profile_warns(tmp_path):
+    """§3.3: the run's flat-field profile differs from the one the base
+    frame was measured with — a warning, not an error."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, flat_field_profile_id="pid-elsewhere")
+    write_roll_manifest(out_dir, roll)
+    events: list = []
+
+    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+
+    warnings = [
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+    ]
+    assert [w.code for w in warnings] == [Code.FILM_BASE_FLATFIELD_CONFLICT]
+    assert "pid-elsewhere" in warnings[0].message
+
+
+def test_a_matching_flatfield_profile_does_not_warn(tmp_path):
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    events: list = []
+
+    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+
+    assert not [
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.FILM_BASE_FLATFIELD_CONFLICT
+    ]
+
+
+def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(tmp_path):
+    """§3.3: the camera comparison's second home — `roll set-base-frame`
+    found no `camera_color` on the fresh roll, so the first run (which
+    seeds it) compares instead."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, camera_model="NIKON Z f")
+    roll.camera_color = CameraColor(
+        rgb_xyz_matrix=((0.7, 0.2, 0.1), (0.1, 0.75, 0.15), (0.05, 0.1, 0.85)),
+        source="libraw",
+        camera_model="NIKON Z 7",
+    )
+    write_roll_manifest(out_dir, roll)
+    events: list = []
+
+    assert _stitch(work_dir, out_dir, events=events).status == "complete"
+
+    warnings = [
+        e for e in events
+        if isinstance(e, WarningEvent) and e.code is not Code.NORMALIZE_HEADROOM_CLIPPED
+    ]
+    assert [w.code for w in warnings] == [Code.FILM_BASE_CAMERA_CONFLICT]
+    assert "NIKON Z f" in warnings[0].message
+    assert "NIKON Z 7" in warnings[0].message
+
+
+# --- the drift evidence (docs/REBATE_ANCHORING.md section 6) ---------------
+
+
+def _forced_rebate(base_density, *, clipped: bool = False):
+    """A `detect_rebate` stand-in that fires on a thin band along one edge
+    of the analysis region, with a known `base_density`. The synthetic
+    scenes carry no rebate of their own (the real detector declines on
+    them), so the recorded-arithmetic tests need one that always does."""
+    from scanny_boy.normalization import Rebate
+
+    def detect(grid_log, keep):
+        band = keep & (np.arange(keep.shape[0])[:, None] >= keep.shape[0] - 8)
+        kept = max(int(np.count_nonzero(keep)), 1)
+        rebate = Rebate(
+            detected=True,
+            mask_fraction=float(np.count_nonzero(band)) / kept,
+            base_density=None if clipped else base_density,
+            clipped=clipped,
+        )
+        return keep & ~band, rebate
+
+    return detect
+
+
+def test_base_check_is_recorded_when_both_inputs_exist(tmp_path, monkeypatch):
+    """§6: present, with the level_offset/shape_residual arithmetic, when
+    the roll has a locked anchor and the negative's rebate fired unclipped.
+    The anchor is (-0.42, -0.12, -0.99); the forced rebate reads
+    (-0.40, -0.10, -0.95): level_offset = median diff = +0.02, and the
+    residuals agree per channel except blue's 0.02, so shape_residual
+    = 0.02."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate",
+        _forced_rebate((-0.40, -0.10, -0.95)),
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["base_check"]["level_offset"] == pytest.approx(0.02, abs=1e-9)
+    assert record["base_check"]["shape_residual"] == pytest.approx(0.02, abs=1e-9)
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+
+
+def test_base_check_is_absent_without_a_locked_anchor(tmp_path, monkeypatch):
+    """§6: a roll still ATTACHED at composite time (the first negative of
+    its first run) records no base_check even when the rebate fired."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate",
+        _forced_rebate((-0.40, -0.10, -0.95)),
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert "base_check" not in record
+
+
+def test_base_check_is_absent_when_the_rebate_did_not_fire(tmp_path):
+    """§6: the synthetic scenes carry no rebate, so detect_rebate declines
+    and the comparison is absent even with a locked anchor."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert record["rebate"]["detected"] is False
+    assert "base_check" not in record
+
+
+def test_base_check_is_absent_when_the_rebate_was_clipped(tmp_path, monkeypatch):
+    """§6: clipped base is worthless base — `base_density` is None and the
+    comparison is absent."""
+    monkeypatch.setattr(
+        "scanny_boy.composite.detect_rebate", _forced_rebate((0.0, 0.0, 0.0), clipped=True)
+    )
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    _attach_base_frame(roll, locked_at="2026-09-06T19:00:00Z")
+    write_roll_manifest(out_dir, roll)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    record = load_roll_manifest(out_dir).negatives[0].normalization
+    assert record["rebate"]["detected"] is True
+    assert record["rebate"]["clipped"] is True
+    assert "base_check" not in record
+
+
+# --- CAST_REMOVAL_PLAN R-1: the two new meters ------------------------------
+
+
+def test_normalization_record_carries_the_highlight_refs_and_residual(tmp_path):
+    """A real stitch writes both keys — `highlight_refs` (3-wide or null)
+    and `neutral_residual` (2-wide or null) — and the manifest validates
+    against the updated schema."""
+    work_dir = _make_work_dir(tmp_path, negatives=1)
+    out_dir = _roll_dir(tmp_path)
+
+    assert _stitch(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["highlight_refs"] is None or len(record["highlight_refs"]) == 3
+    assert (
+        record["neutral_residual"] is None or len(record["neutral_residual"]) == 2
+    )
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
 
 
 @pytest.mark.slow
