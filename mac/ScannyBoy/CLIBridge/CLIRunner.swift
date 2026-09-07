@@ -688,14 +688,93 @@ public struct CLIRunner: Sendable {
     /// bundled helper use this to point `SCANNY_BOY_LIBRARY_DB` at a
     /// per-test database, so they never touch the user's real library.
     public let environmentOverrides: [String: String]
+    /// Whether the interactive queries §2.4 routes to the resident helper
+    /// actually go there. The app's runner is built with this on; tests
+    /// that drive fake one-shot executables keep the default off, so the
+    /// existing one-shot tests stay exactly as they are.
+    public let daemonRoutingEnabled: Bool
 
-    public init(executable: URL, environmentOverrides: [String: String] = [:]) {
+    /// The runner's shared daemon, created on the first routed command.
+    /// A reference box because `CLIRunner` is a value type: every copy
+    /// shares one daemon, so one runner — and the app has exactly one —
+    /// means one resident helper.
+    private final class SharedDaemon: @unchecked Sendable {
+        private let lock = NSLock()
+        private var daemon: CLIDaemon?
+        private let executable: URL
+        private let environmentOverrides: [String: String]
+
+        init(executable: URL, environmentOverrides: [String: String]) {
+            self.executable = executable
+            self.environmentOverrides = environmentOverrides
+        }
+
+        func get() -> CLIDaemon {
+            lock.lock()
+            defer { lock.unlock() }
+            if let daemon {
+                return daemon
+            }
+            let created = CLIDaemon(
+                executable: executable,
+                environmentOverrides: environmentOverrides
+            )
+            daemon = created
+            return created
+        }
+    }
+
+    private let sharedDaemon: SharedDaemon
+
+    public init(
+        executable: URL,
+        environmentOverrides: [String: String] = [:],
+        daemonRouting: Bool = false
+    ) {
         self.executable = executable
         self.environmentOverrides = environmentOverrides
+        self.daemonRoutingEnabled = daemonRouting
+        self.sharedDaemon = SharedDaemon(
+            executable: executable,
+            environmentOverrides: environmentOverrides
+        )
     }
 
     public init(locator: CLILocator = .mainBundle()) throws {
-        self.init(executable: try locator.locate())
+        // The app's one runner routes the Edit tab's queries through the
+        // resident helper (§2.4); tests build their own runners and keep
+        // the default.
+        self.init(executable: try locator.locate(), daemonRouting: true)
+    }
+
+    /// docs/OPTIMIZATION.md §2.4's routing: the Edit tab's cheap queries go
+    /// to the resident helper; long jobs keep their own one-shot process,
+    /// with their own cancellation and progress semantics, and a crash in
+    /// one cannot take the interactive session down. `probe`, `prepare`,
+    /// `apply-metadata`, `export`, `run`, `stitch` and `flatfield
+    /// create`/`delete` stay one-shot; `roll init`/`rename`/`delete`/
+    /// `set-base-frame`/`set-film-kind` mutate the roll folder and stay
+    /// one-shot with them.
+    static func routesThroughDaemon(_ command: CLICommand) -> Bool {
+        var parts = command.arguments.makeIterator()
+        guard let head = parts.next() else { return false }
+        switch head {
+        case "edit":
+            return true
+        case "roll":
+            let sub = parts.next()
+            return sub == "info" || sub == "list"
+        case "metadata":
+            let sub = parts.next()
+            return sub == "set" || sub == "values"
+        case "grid":
+            let sub = parts.next()
+            return sub == "create" || sub == "list" || sub == "delete"
+        case "flatfield":
+            return parts.next() == "list"
+        default:
+            return false
+        }
     }
 
     public func session(for command: CLICommand) -> CLISession {
@@ -704,11 +783,19 @@ public struct CLIRunner: Sendable {
             environment = ProcessInfo.processInfo.environment
             environment!.merge(environmentOverrides) { _, override in override }
         }
+        let served: CLISession.ServedRequest? =
+            daemonRoutingEnabled && Self.routesThroughDaemon(command)
+            ? CLISession.ServedRequest(
+                daemon: sharedDaemon.get(),
+                requestID: UUID().uuidString
+            )
+            : nil
         return CLISession(
             configuration: CLISession.Configuration(
                 executable: executable,
                 arguments: command.arguments,
-                environment: environment
+                environment: environment,
+                served: served
             )
         )
     }

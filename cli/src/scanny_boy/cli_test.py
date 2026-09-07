@@ -492,7 +492,7 @@ def test_an_internal_crash_reaches_the_stream_as_an_error_event(
     def _raise(make_roll_dir):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", _raise)
+    monkeypatch.setattr("scanny_boy.roll_manifest.load_roll_manifest", _raise)
 
     status = main(["roll", "info", "--roll", str(tmp_path / "Roll-A")])
 
@@ -600,7 +600,7 @@ def test_roll_set_base_frame_attaches_on_an_absent_roll(capsys, tmp_path, monkey
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
 
     status = _set_base_frame(capsys, roll_dir, frame)
@@ -640,7 +640,7 @@ def test_roll_set_base_frame_replaces_on_an_attached_roll(
     first = write_fake_nef(tmp_path / "_DSC5012.NEF")
     second = write_fake_nef(tmp_path / "_DSC5013.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
 
     assert _set_base_frame(capsys, roll_dir, first) == 0
@@ -658,7 +658,7 @@ def test_roll_set_base_frame_refuses_a_locked_roll(capsys, tmp_path, monkeypatch
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
     assert _set_base_frame(capsys, roll_dir, frame) == 0
     capsys.readouterr()
@@ -689,7 +689,7 @@ def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
 
     def _too_small(_measurement):
@@ -698,7 +698,7 @@ def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(
             "the largest flat rebate region covers only 9% of the base frame",
         )
 
-    monkeypatch.setattr("scanny_boy.cli.film_base.gate", _too_small)
+    monkeypatch.setattr("scanny_boy.film_base.gate", _too_small)
 
     status = _set_base_frame(capsys, roll_dir, frame)
 
@@ -717,7 +717,7 @@ def test_roll_set_base_frame_refuses_a_version_7_roll(capsys, tmp_path, monkeypa
     roll_dir = _init_roll(capsys, tmp_path)
     v7_manifest = load_roll_manifest(roll_dir)
     v7_manifest.manifest_format_version = 7
-    monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", lambda _dir: v7_manifest)
+    monkeypatch.setattr("scanny_boy.roll_manifest.load_roll_manifest", lambda _dir: v7_manifest)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
 
     status = _set_base_frame(capsys, roll_dir, frame)
@@ -738,10 +738,10 @@ def test_roll_set_base_frame_warns_on_camera_conflict(capsys, tmp_path, monkeypa
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
     monkeypatch.setattr(
-        "scanny_boy.cli.read_source_settings",
+        "scanny_boy.metadata.read_source_settings",
         lambda _frame: SimpleNamespace(make="NIKON CORPORATION", model="NIKON Z f"),
     )
     manifest = load_roll_manifest(roll_dir)
@@ -780,7 +780,7 @@ def test_roll_set_base_frame_records_the_flatfield_profile_id(
         captured["gain_map_given"] = gain_map is not None
         return _base_measurement()
 
-    monkeypatch.setattr("scanny_boy.cli.film_base.load", _fake_load)
+    monkeypatch.setattr("scanny_boy.film_base.load", _fake_load)
 
     # An unknown profile id fails before anything is written.
     status = _set_base_frame(capsys, roll_dir, frame, "--flatfield", "nope")
@@ -794,7 +794,7 @@ def test_roll_info_reports_the_film_base_block(capsys, tmp_path, monkeypatch):
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.cli.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
     )
     assert _set_base_frame(capsys, roll_dir, frame) == 0
     capsys.readouterr()
@@ -2260,7 +2260,7 @@ def test_a_cancelled_run_emits_cancelled_and_exits_143(capsys, monkeypatch, tmp_
             workers=1,
         )
 
-    monkeypatch.setattr("scanny_boy.cli.run_convert", _cancelled_run)
+    monkeypatch.setattr("scanny_boy.pipeline.run_convert", _cancelled_run)
 
     status = main(_convert_argv("/tmp/in", tmp_path, ["a.NEF", "b.NEF"]))
 

@@ -59,11 +59,19 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 17
+    /// Protocol 18 (docs/OPTIMIZATION.md §2.1) adds the resident helper:
+    /// events answered by `scanny-boy serve` carry an optional
+    /// `request_id`, and each served request ends with a `finished`
+    /// carrying it and the one-shot exit status. Optional, because a
+    /// one-shot invocation has no daemon to scope an event to.
+    public static let supportedProtocolVersion = 18
 
     public let protocolVersion: Int
     public let kind: Kind
     public let runID: String?
+    /// The served request this event belongs to, when the event came from
+    /// the resident helper; `nil` on a one-shot invocation's stream.
+    public let requestID: String?
     /// The whole decoded line, including fields with no typed accessor.
     public let fields: [String: JSONValue]
 
@@ -218,6 +226,7 @@ public struct CLIEvent: Sendable, Hashable {
         self.protocolVersion = version
         self.kind = Kind(name: name)
         self.runID = object["run_id"]?.stringValue
+        self.requestID = object["request_id"]?.stringValue
         self.fields = object
     }
 }

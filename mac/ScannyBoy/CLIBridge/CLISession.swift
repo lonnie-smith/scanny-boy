@@ -16,17 +16,48 @@ public actor CLISession {
         /// Replaces the child's whole environment when set; `nil` inherits
         /// this process's environment.
         public var environment: [String: String]?
+        /// What the child reads. The one-shot CLI reads nothing and gets
+        /// `/dev/null`; the resident `serve` helper reads newline-delimited
+        /// requests and gets a pipe (docs/OPTIMIZATION.md §2.4).
+        public var standardInput: StandardInput
+        /// When set, this session represents one request answered by the
+        /// resident helper rather than a process of its own: `start()`
+        /// submits the command to the daemon and returns its per-request
+        /// stream. `arguments` is still the command's argv — it is what a
+        /// fallback to a one-shot process launches when the daemon cannot.
+        public var served: ServedRequest?
 
         public init(
             executable: URL,
             arguments: [String] = [],
             currentDirectory: URL? = nil,
-            environment: [String: String]? = nil
+            environment: [String: String]? = nil,
+            standardInput: StandardInput = .nullDevice,
+            served: ServedRequest? = nil
         ) {
             self.executable = executable
             self.arguments = arguments
             self.currentDirectory = currentDirectory
             self.environment = environment
+            self.standardInput = standardInput
+            self.served = served
+        }
+    }
+
+    /// What a child reads on stdin.
+    public enum StandardInput: Sendable {
+        case nullDevice
+        case pipe
+    }
+
+    /// One request's identity inside the shared daemon (§2.4).
+    public struct ServedRequest: Sendable {
+        public let daemon: CLIDaemon
+        public let requestID: String
+
+        public init(daemon: CLIDaemon, requestID: String) {
+            self.daemon = daemon
+            self.requestID = requestID
         }
     }
 
@@ -42,6 +73,9 @@ public actor CLISession {
     private var didStart = false
     private var hasTerminated = false
     private var didForceTerminate = false
+    /// The write end of the child's stdin, when it was given a pipe
+    /// (`serve`); the daemon writes request envelopes through it.
+    private var standardInputPipe: Pipe?
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -52,12 +86,38 @@ public actor CLISession {
     /// Throws `CLISessionFailure.launch` if the process cannot be started;
     /// that failure is deliberately separate from the stream, because a
     /// process that never ran has no completion to report.
-    public func start() throws -> AsyncStream<CLISessionOutput> {
+    ///
+    /// A served session (§2.4) launches nothing: it submits its command to
+    /// the resident helper and returns the request's own event stream. If
+    /// the daemon cannot be reached, this request falls back to a one-shot
+    /// process — the app must never become unusable because a helper died —
+    /// and the daemon is restarted behind it.
+    public func start() async throws -> AsyncStream<CLISessionOutput> {
         guard !didStart else {
             throw CLISessionFailure.launch("this session has already been started")
         }
         didStart = true
 
+        if let served = configuration.served {
+            do {
+                return try await served.daemon.submit(
+                    requestID: served.requestID,
+                    arguments: configuration.arguments
+                )
+            } catch {
+                Self.logFallback(error)
+            }
+        }
+        return try startOneShot()
+    }
+
+    /// The write end of the child's stdin when it reads a pipe, for the
+    /// daemon's request envelopes. `nil` for a `/dev/null` child.
+    public func standardInputFileHandle() -> FileHandle? {
+        standardInputPipe?.fileHandleForWriting
+    }
+
+    private func startOneShot() throws -> AsyncStream<CLISessionOutput> {
         let process = Process()
         process.executableURL = configuration.executable
         process.arguments = configuration.arguments
@@ -68,9 +128,15 @@ public actor CLISession {
         let standardError = Pipe()
         process.standardOutput = standardOutput
         process.standardError = standardError
-        // The CLI reads no input; giving it /dev/null keeps it from ever
-        // blocking on a terminal this app does not have.
-        process.standardInput = FileHandle.nullDevice
+        // The one-shot CLI reads no input and gets /dev/null; the `serve`
+        // helper gets a pipe and reads requests from it (§2.4).
+        if configuration.standardInput == .pipe {
+            let pipe = Pipe()
+            process.standardInput = pipe
+            self.standardInputPipe = pipe
+        } else {
+            process.standardInput = FileHandle.nullDevice
+        }
 
         do {
             try process.run()
@@ -184,9 +250,16 @@ public actor CLISession {
         return stream
     }
 
-    /// Asks the CLI to cancel cooperatively (section 3.8: the app requests
-    /// cancellation with SIGTERM).
+    /// Asks the CLI to cancel cooperatively (section 3.8).
+    ///
+    /// A one-shot child is cancelled with SIGTERM. A served request is
+    /// cancelled in band (§2.2): the message sets that one request's
+    /// token, and every other request the helper is answering is untouched.
     public func requestCancellation() {
+        if let served = configuration.served {
+            Task { await served.daemon.cancelRequest(served.requestID) }
+            return
+        }
         signalChild(SIGTERM)
     }
 
@@ -197,7 +270,12 @@ public actor CLISession {
     /// The run is only recorded as forced when the signal was actually
     /// delivered, so a CLI that stopped on its own a moment earlier is still
     /// reported as the ordinary cooperative cancellation it was.
+    ///
+    /// A served request has no process of its own to kill — the resident
+    /// helper is every request's — so this is a no-op there; the served
+    /// request ends however its own `finished` event says it did.
     public func forceTerminate() {
+        guard configuration.served == nil else { return }
         if signalChild(SIGKILL) {
             didForceTerminate = true
         }
@@ -239,6 +317,14 @@ public actor CLISession {
 
     private func stopChildIfNeeded() {
         signalChild(SIGTERM)
+    }
+
+    /// §2.4: a daemon that failed to start or died mid-request is logged to
+    /// stderr, never surfaced; the request already fell back to one-shot.
+    private static func logFallback(_ error: Error) {
+        let text = "scanny-boy: the resident helper was unavailable "
+            + "(\(error)); falling back to a one-shot process\n"
+        FileHandle.standardError.write(Data(text.utf8))
     }
 
     // MARK: - Reading
@@ -450,4 +536,14 @@ public struct CLICompletion: Sendable, Hashable {
     public let terminationStatus: Int32
     public let terminationReason: CLITerminationReason
     public let outcome: CLIOutcome
+
+    public init(
+        terminationStatus: Int32,
+        terminationReason: CLITerminationReason,
+        outcome: CLIOutcome
+    ) {
+        self.terminationStatus = terminationStatus
+        self.terminationReason = terminationReason
+        self.outcome = outcome
+    }
 }

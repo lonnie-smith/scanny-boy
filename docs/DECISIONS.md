@@ -1817,3 +1817,42 @@ rather than renamed.** COLOR_PLAN §7.2 proposed renaming it to
 `METERING_UNAVAILABLE` before it shipped; it has shipped. Renaming a live
 contract code costs more than the wart, so the auto-cast and cast-removal
 metering absences warn with the historical name.
+
+# The Edit tab's latency decisions (docs/OPTIMIZATION.md)
+
+Three choices from the optimization plan a later reader would otherwise
+re-litigate. **OPTIMIZATION.md is authoritative**; this file just makes
+them findable.
+
+**The transport stays stdio; a socket buys nothing here.** §0.4. The
+newline-delimited JSON pipe, its `LineAssembler`, its drained-both-pipes
+session, and its event contract were already built and tested; `serve` only
+reverses which pipe carries the conversation. A socket adds port
+allocation, an auth story, orphaned-daemon cleanup, and sandbox friction in
+a signed app, to buy multiple concurrent clients and reconnect-after-crash
+— neither of which one app talking to its own bundled helper needs. XPC was
+refused for the same reason plus a second service target and a second
+signing story, at the price of abandoning the event contract both sides'
+tests are written against.
+
+**Startup is imports, not `fork`.** §0.1. Process creation measures 20 ms;
+`import scanny_boy.cli` measured ~0.70 s, nearly all of it pulling the
+whole application eagerly (cv2 through `film_base`, scipy through
+`calibration`, alembic through `library.db`). This is what made the
+cheap stage worth doing first: §1's lazy imports recover a real fraction of
+the startup for a few hours of work and no architectural risk, and the same
+work shortens the daemon's cold start. After §1 a bare `import
+scanny_boy.cli` is ~0.05 s; what remains on render commands is cv2 and
+SQLAlchemy, reached through the subcommand modules at dispatch time, and §2
+makes even that a once-per-process cost.
+
+**The daemon caches preview-resolution pixels, not full ones.** §3.1. A
+decoded negative is 712 MB; an LRU of two is 1.4 GB imposed on a machine
+also holding the app's own buffers. The fit view — where every slider
+lives — only ever needs the 1024-edge preview cut (~5.4 MB per negative),
+and 100% zoom keeps the strip reader, which is already good (§0.3). The
+full-resolution single-entry cache stays on the punchlist, gated on
+measuring that sitting on one negative at 100% with repair on is the real
+inspection workflow. The preview cache is keyed on geometry plus the TIFF's
+mtime — tone and colour are <1 ms LUTs applied after it, so a slider drag
+must hit it, and does: 38–54 ms per render, served.

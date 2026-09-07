@@ -74,6 +74,29 @@ enum TestSupport {
         return url
     }
 
+    /// Writes an executable Python 3 script and returns its path.
+    ///
+    /// The daemon tests need a fake `scanny-boy serve` that reads requests
+    /// on stdin, answers them out of order when one is slow, honours in-band
+    /// cancellation, and can exit mid-request on command — JSON parsing and
+    /// threads that `sh` does not have. `/usr/bin/python3` ships with the
+    /// Xcode the Swift job already requires.
+    @discardableResult
+    static func writePythonExecutable(
+        _ source: String,
+        named name: String,
+        in directory: URL
+    ) throws -> URL {
+        let url = directory.appending(path: name, directoryHint: .notDirectory)
+        let contents = "#!/usr/bin/env python3\n" + source
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: url.path
+        )
+        return url
+    }
+
     /// Collects a session's whole output stream.
     static func drain(
         _ stream: AsyncStream<CLISessionOutput>

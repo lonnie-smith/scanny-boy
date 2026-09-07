@@ -248,12 +248,16 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 17
+      "const": 18
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
       "type": "string",
       "description": "Present when the event belongs to a conversion run."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Present when the event belongs to one request answered by `scanny-boy serve` (protocol 18); one-shot invocations emit events without it."
     }
   },
   "allOf": [

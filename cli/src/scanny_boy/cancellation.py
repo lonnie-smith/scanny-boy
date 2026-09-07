@@ -86,3 +86,21 @@ def sigterm_cancellation() -> Iterator[CancellationToken]:
         yield token
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+@contextmanager
+def command_cancellation(
+    token: CancellationToken | None,
+) -> Iterator[CancellationToken]:
+    """The cancellation scope one pipeline command runs under.
+
+    docs/OPTIMIZATION.md §2.2: the served path supplies its request's own
+    token in band — a `cancel` request sets it — while the one-shot path
+    installs the SIGTERM handler exactly as before. The pipeline call site
+    is identical either way, so there is one implementation of every
+    command and the served path cannot drift from the one-shot path."""
+    if token is not None:
+        yield token
+        return
+    with sigterm_cancellation() as installed:
+        yield installed

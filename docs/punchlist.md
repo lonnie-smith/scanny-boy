@@ -88,3 +88,22 @@ point named so it can land without a redesign:
   positives cluster there.
 * **Copying a spot set between negatives** — useful if the same holder
   dust recurs across a roll, meaningless if it does not. Wait for evidence.
+
+## The Edit tab's deferred latency work (docs/OPTIMIZATION.md)
+
+* **A single-entry full-resolution cache in the daemon** (§3.2) — one
+  negative's 712 MB decoded display array, dropped the moment the
+  selection changes. It would fix the repair/fine-rotation region
+  fallback at 100% zoom (§0.3's 772 ms path) for a user sitting on one
+  negative inspecting repairs. Not built in §3.1 because it is the right
+  answer for exactly one workflow and a real cost for everyone else:
+  ship §3.1 (done), then measure how long users actually sit on one
+  negative at 100% with repair on before committing the RAM. Attachment
+  point: `previews.cached_preview_codes`, beside the preview-resolution
+  cache it already holds, with its own measurement first.
+* **Publishing TIFFs that are cheaper to decode** (§6) — tiled rather
+  than stripped, or a pyramid/sub-resolution page. It would cut the
+  ~600 ms decode directly and help the one-shot path too, but it changes
+  the published artifact format, which is a decision with archival
+  consequences and needs its own plan. Attachment point:
+  `stitched_tiff.write` and every reader of the published TIFF.

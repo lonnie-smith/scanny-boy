@@ -944,6 +944,16 @@ final class EditModel {
     /// rendered pixels change: repair flips, spots are rejected (a
     /// rejected spot's mask leaves the repair), or the set is
     /// re-detected.
+    ///
+    /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`,
+    /// docs/OPTIMIZATION.md §3.1/§3.3) keys on the same idea minus the
+    /// tone and colour terms — its array is pre-LUT, so tone and colour
+    /// are encode steps there, not decode steps — and folds the whole
+    /// spot set in hashed rather than summarized. The two sites cannot
+    /// share one definition (one is Swift, one Python); they are
+    /// commented at each other and must keep agreeing on the rule:
+    /// everything that changes pixels before the display LUT is in, and
+    /// nothing that comes after.
     static func renderGeneration(of negative: RollManifest.Negative) -> String {
         let tone: String
         if let adjustment = negative.toneAdjustment {

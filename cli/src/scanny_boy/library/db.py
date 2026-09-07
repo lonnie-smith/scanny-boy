@@ -15,23 +15,35 @@ launched constantly and must stay cheap).
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from alembic import command
-from alembic.config import Config
-from alembic.script import ScriptDirectory
-from alembic.util.exc import CommandError
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 
 from scanny_boy.events import Code
 
+if TYPE_CHECKING:
+    from alembic.config import Config
+
 ENGINES: dict[str, Engine] = {}
 _ENGINES_LOCK = threading.Lock()
 
 _BUSY_TIMEOUT_MS = 30_000
+
+# docs/OPTIMIZATION.md §1: Alembic is imported only on the migration path
+# (below), never at module scope — a database already at head, which is
+# every command's ordinary case, must not pay for it. The fast path reads
+# the version table through SQLAlchemy and compares it against a revision
+# graph parsed straight from the versions directory, so "already current"
+# is decided without Alembic in the process. The regexes match the
+# generated shape of every file in `versions/` (`revision = "0013"`,
+# `down_revision = "0012"` or `None`).
+_REVISION_RE = re.compile(r'^revision = "([^"]+)"', re.MULTILINE)
+_DOWN_REVISION_RE = re.compile(r'^down_revision = (?:"([^"]+)"|None)', re.MULTILINE)
 
 
 class LibraryDBError(Exception):
@@ -83,6 +95,32 @@ def reset_engine_cache() -> None:
         ENGINES.clear()
 
 
+def _revision_graph() -> tuple[set[str], str | None]:
+    """The revision ids in the packaged `versions/` directory and the
+    single head among them, parsed from the files' `revision` and
+    `down_revision` assignments.
+
+    Returns `(known, head)`; `head` is None when the directory does not
+    parse into exactly one head (a branch or a malformed file) — the
+    caller then falls back to Alembic, which owns the real graph."""
+    versions_dir = _script_location() / "versions"
+    known: set[str] = set()
+    down_of: set[str] = set()
+    for path in sorted(versions_dir.glob("*.py")):
+        source = path.read_text()
+        revision = _REVISION_RE.search(source)
+        down_revision = _DOWN_REVISION_RE.search(source)
+        if revision is None or down_revision is None:
+            return set(), None
+        known.add(revision.group(1))
+        if down_revision.group(1) is not None:
+            down_of.add(down_revision.group(1))
+    heads = known - down_of
+    if len(heads) == 1 and len(known) == len(down_of) + 1:
+        return known, heads.pop()
+    return known, None
+
+
 def open_engine() -> Engine:
     """The shared engine for the library database, migrated to head."""
     path = library_db_path()
@@ -102,6 +140,45 @@ def open_engine() -> Engine:
 
 
 def _upgrade_to_head(engine: Engine, path: Path) -> None:
+    """Bring the database to the migrations' head revision.
+
+    The fast path — a database already at head, which is every ordinary
+    command's case — needs only one cheap SELECT plus the parsed revision
+    graph and returns without importing Alembic at all. Anything else
+    (a fresh database, a stale one catching up, an unknown revision)
+    takes the Alembic path."""
+    known, head = _revision_graph()
+    current = _recorded_revision(engine)
+    if current is not None and known and current not in known:
+        raise LibraryDBError(
+            f"the library database at {path} is at migration revision "
+            f"{current}, which this helper does not know (it knows up to "
+            f"{head}); it was written by a newer Scanny Boy. Update this "
+            "helper, or point SCANNY_BOY_LIBRARY_DB at a fresh database."
+        ) from None
+    if current is not None and head is not None and current == head:
+        return
+    # No version table, no recorded revision, a revision this pass could
+    # not place, or a stale one: Alembic owns the upgrade from here.
+    _run_alembic_upgrade(engine, path)
+
+
+def _recorded_revision(engine: Engine) -> str | None:
+    """The database's recorded Alembic revision, or None when there is no
+    version table yet (a fresh database). One SELECT through the caller's
+    engine, so the connect pragmas apply."""
+    with engine.connect() as connection:
+        if not inspect(connection).has_table("alembic_version"):
+            return None
+        return connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
+
+
+def _run_alembic_upgrade(engine: Engine, path: Path) -> None:
+    from alembic import command
+    from alembic.config import Config
+
     config = Config()
     config.set_main_option("script_location", str(_script_location()))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
@@ -117,8 +194,10 @@ def _refuse_unknown_revision(engine: Engine, config: Config, path: Path) -> None
     down; `command.upgrade` would raise Alembic's own `ResolutionError`
     and kill the process after nothing but `started` reached stdout. The
     revision table read here is one cheap SELECT on a connection that is
-    about to run a migration anyway, so the constant `probe` traffic pays
-    nothing when the database is current."""
+    about to run a migration anyway."""
+    from alembic.script import ScriptDirectory
+    from alembic.util.exc import CommandError
+
     script = ScriptDirectory.from_config(config)
     with engine.connect() as connection:
         if not inspect(connection).has_table("alembic_version"):

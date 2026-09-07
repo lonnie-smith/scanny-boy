@@ -121,6 +121,75 @@ struct CLIIntegrationTests {
         #expect(collected.terminalCompletion?.outcome == .usageError)
     }
 
+    // MARK: - The resident helper (docs/OPTIMIZATION.md §2.5)
+
+    /// The same runner, with the daemon routing the app's own runner has.
+    private static func servingRunner() throws -> CLIRunner {
+        CLIRunner(
+            executable: try #require(HostBundle.helperExecutableURL),
+            environmentOverrides: ["SCANNY_BOY_LIBRARY_DB": libraryDatabaseURL.path],
+            daemonRouting: true
+        )
+    }
+
+    @Test(
+        "a served query answers through the resident helper, one-shot does not",
+        .enabled(if: CLIIntegrationTests.canRun, CLIIntegrationTests.unavailable)
+    )
+    func servedQueryCarriesRequestID() async throws {
+        let runner = try Self.servingRunner()
+        let libraryDirectory = Self.libraryDatabaseURL.deletingLastPathComponent()
+        let served = await TestSupport.drain(
+            try await runner
+                .session(for: .rollList(library: libraryDirectory))
+                .start()
+        )
+        #expect(served.failures.isEmpty)
+        let servedEvents = served.events
+        #expect(servedEvents.map(\.kind) == [.started, .rollList, .finished])
+        // Every event of a served request carries its request_id.
+        #expect(servedEvents.allSatisfy { $0.requestID != nil })
+        #expect(served.terminalCompletion?.outcome == .success)
+
+        // A not-routed command stays one-shot: no request_id on its events.
+        let oneShot = await TestSupport.drain(
+            try await runner
+                .session(for: .probe(input: SampleFixtures.directory))
+                .start()
+        )
+        #expect(oneShot.failures.isEmpty)
+        #expect(oneShot.events.allSatisfy { $0.requestID == nil })
+        #expect(oneShot.terminalCompletion?.outcome == .success)
+    }
+
+    @Test(
+        "two served queries partition the shared stream by request_id",
+        .enabled(if: CLIIntegrationTests.canRun, CLIIntegrationTests.unavailable)
+    )
+    func servedQueriesPartition() async throws {
+        let runner = try Self.servingRunner()
+        let libraryDirectory = Self.libraryDatabaseURL.deletingLastPathComponent()
+        let first = runner.session(for: .rollList(library: libraryDirectory))
+        let second = runner.session(for: .flatfieldList())
+        async let firstCollected = TestSupport.drain(try await first.start())
+        async let secondCollected = TestSupport.drain(try await second.start())
+        let (one, two) = try await (firstCollected, secondCollected)
+
+        for collected in [one, two] {
+            #expect(collected.failures.isEmpty)
+            let kinds = collected.events.map { $0.kind }
+            #expect(kinds.contains(.finished))
+            #expect(collected.events.allSatisfy { $0.requestID != nil })
+            #expect(collected.terminalCompletion?.outcome == .success)
+        }
+        // The two requests' ids differ, and each stream saw only its own.
+        let firstIDs = Set(one.events.compactMap { $0.requestID })
+        let secondIDs = Set(two.events.compactMap { $0.requestID })
+        #expect(firstIDs.count == 1)
+        #expect(secondIDs.count == 1)
+        #expect(firstIDs != secondIDs)
+    }
+
     /// Section 3.8: "A forced stop cannot clean files, update the manifest, or
     /// emit a final event... The next probe or conversion detects a manifest
     /// left as `running` and staging directories owned by that run. It removes

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from scanny_boy import normalization
 from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, transform_preview
@@ -468,13 +469,15 @@ def test_sync_previews_keeps_untouched_cached_previews(tmp_path):
 # --- 1:1 region rendering ----------------------------------------------------
 
 
-def _write_published_tiff(tmp_path: Path, image: np.ndarray) -> Path:
+def _write_published_tiff(
+    tmp_path: Path, image: np.ndarray, name: str = "out.tif"
+) -> Path:
     """A compressed single-page TIFF written the way `write_base_tiff` does
     (Adobe Deflate + horizontal predictor), so the strip-level reader is
     exercised against the real storage layout."""
     import tifffile
 
-    path = tmp_path / "out.tif"
+    path = tmp_path / name
     tifffile.imwrite(
         path,
         image,
@@ -861,3 +864,163 @@ def test_ensure_preview_regenerates_on_a_spots_op(tmp_path):
     np.testing.assert_array_equal(
         cv2.imread(str(preview), cv2.IMREAD_UNCHANGED), flat_pixels
     )
+
+
+# --- the daemon's decoded-pixel cache (docs/OPTIMIZATION.md §3.1) ---------
+
+
+@pytest.fixture(autouse=True)
+def _empty_preview_cache():
+    """The cache is process state; every test here starts from empty and
+    leaves nothing behind for the next one."""
+    from scanny_boy import previews
+
+    previews._DISPLAY_PREVIEW_CACHE.clear()
+    previews._DISPLAY_PREVIEW_CACHE_BYTES = 0
+    yield
+    previews._DISPLAY_PREVIEW_CACHE.clear()
+    previews._DISPLAY_PREVIEW_CACHE_BYTES = 0
+
+
+def test_preview_cache_hits_across_tone_changes(tmp_path):
+    """§3.1's whole point: the key is the geometry, never the tone, so a
+    slider drag — two renders of the same negative with different tone
+    params — decodes once."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    decode_calls = []
+    real_decode = previews._display_image
+
+    def counting(*args, **kwargs):
+        decode_calls.append(args)
+        return real_decode(*args, **kwargs)
+
+    previews._display_image = counting
+    try:
+        previews.render_preview(
+            tiff_path,
+            tmp_path / "flat.png",
+            mode="positive",
+        )
+        previews.render_preview(
+            tiff_path,
+            tmp_path / "graded.png",
+            tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+            mode="positive",
+        )
+    finally:
+        previews._display_image = real_decode
+
+    assert len(decode_calls) == 1
+    flat = cv2.imread(str(tmp_path / "flat.png"), cv2.IMREAD_UNCHANGED)
+    graded = cv2.imread(str(tmp_path / "graded.png"), cv2.IMREAD_UNCHANGED)
+    assert not np.array_equal(flat, graded)
+
+
+def test_preview_cache_invalidates_on_geometry_and_pixels(tmp_path):
+    """§3.3: the key must include everything that changes decoded pixels
+    before the LUT — the transform, and the TIFF itself (a re-stitch
+    rewrites it, which is what the mtime term catches) — and the spot set,
+    whose repair is the first step of the replay."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    decode_calls = []
+    real_decode = previews._display_image
+
+    def counting(*args, **kwargs):
+        decode_calls.append(args)
+        return real_decode(*args, **kwargs)
+
+    previews._display_image = counting
+    try:
+        previews.render_preview(tiff_path, tmp_path / "a.png", mode="negative")
+        previews.render_preview(tiff_path, tmp_path / "b.png", mode="negative")
+        assert len(decode_calls) == 1
+
+        # A different net transform decodes afresh...
+        previews.render_preview(
+            tiff_path, tmp_path / "c.png", quarter_turns=1, mode="negative"
+        )
+        assert len(decode_calls) == 2
+        # ...as does a rewritten TIFF at the same path — a re-stitch's
+        # shape, and what the mtime term exists to catch (§3.3).
+        rewritten = (
+            np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 251
+        ) % 60000
+        _write_published_tiff(tmp_path, rewritten, name=tiff_path.name)
+        previews.render_preview(tiff_path, tmp_path / "d.png", mode="negative")
+        assert len(decode_calls) == 3
+    finally:
+        previews._display_image = real_decode
+
+
+def test_preview_cache_folds_the_spot_set_into_its_key(tmp_path):
+    """A live spot set's repair changes pixels, so the whole set is in the
+    key: an identical set hits, a changed one misses."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+    spots_params = {
+        "repair": True,
+        "spots": [{"rect": [10, 10, 4, 4], "rejected": False, "rle": "1x4"}],
+    }
+
+    decode_calls = []
+    real_decode = previews._display_image
+
+    def counting(*args, **kwargs):
+        decode_calls.append(args)
+        return real_decode(*args, **kwargs)
+
+    previews._display_image = counting
+    try:
+        previews.render_preview(
+            tiff_path, tmp_path / "a.png", spots_params=spots_params, mode="negative"
+        )
+        previews.render_preview(
+            tiff_path,
+            tmp_path / "b.png",
+            spots_params=dict(spots_params),
+            mode="negative",
+        )
+        assert len(decode_calls) == 1
+        changed = {
+            "repair": True,
+            "spots": [{"rect": [12, 12, 4, 4], "rejected": False, "rle": "1x4"}],
+        }
+        previews.render_preview(
+            tiff_path, tmp_path / "c.png", spots_params=changed, mode="negative"
+        )
+        assert len(decode_calls) == 2
+    finally:
+        previews._display_image = real_decode
+
+
+def test_preview_cache_is_bounded_by_total_bytes(tmp_path, monkeypatch):
+    """The bound is total bytes, not entry count, and it is one constant
+    in one module."""
+    from scanny_boy import previews
+
+    monkeypatch.setattr(previews, "PREVIEW_CACHE_MAX_BYTES", 1)
+    for index in range(4):
+        image = (
+            np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * (index + 1) * 137
+        ) % 60000
+        roll = tmp_path / f"roll-{index}"
+        roll.mkdir()
+        tiff_path = _write_published_tiff(roll, image)
+        previews.render_preview(tiff_path, tmp_path / f"out-{index}.png", mode="negative")
+
+    # Total bytes bound the cache; the newest entry always survives (the
+    # eviction never empties it), so the steady state is exactly that one
+    # entry and nothing else.
+    assert len(previews._DISPLAY_PREVIEW_CACHE) == 1
+    (_, kept,) = previews._DISPLAY_PREVIEW_CACHE.popitem()
+    assert kept.nbytes == previews._DISPLAY_PREVIEW_CACHE_BYTES
