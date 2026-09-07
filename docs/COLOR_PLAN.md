@@ -849,7 +849,7 @@ A second toolbar button beside Tone, opening a Colour popover at ~360 pt:
 
 | section | controls |
 |---|---|
-| **Balance** | region selector (Global / Shadows / Highlights), Temperature, Cyan, Magenta, Yellow, region Reset |
+| **Color** | region selector (Global / Shadows / Highlights), Temperature, Cyan, Magenta, Yellow, region Reset |
 | **Correction** | Cast Removal |
 | **Saturation** | Dye Separation, Separation Damping |
 
