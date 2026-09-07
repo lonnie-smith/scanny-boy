@@ -171,6 +171,14 @@ final class RunModel {
     private(set) var invocation: Invocation?
     /// The selection in canonical order, so a `source_index` can be named.
     @ObservationIgnored private var sourceNames: [String] = []
+    /// Bumped by every `reset()`. An invocation's `finish()` is only allowed
+    /// to touch state while its generation is still the current one: without
+    /// this, a run started (or results cleared) while a previous run was
+    /// still suspended inside `finish()`'s manifest read-back would have the
+    /// stale `finish()` resume and clobber it — cancelling the new run's
+    /// elapsed timer, pinning `phase` to `.finishing` (which also disables
+    /// cancellation for the whole new run), and reading the wrong manifest.
+    @ObservationIgnored private var invocationGeneration = 0
     /// The output folder the running or most recently finished invocation
     /// used — not necessarily `ConfigurationModel.outputFolder`, since
     /// re-stitch (Chunk P2-10) can target a folder of its own. Views read
@@ -491,6 +499,7 @@ final class RunModel {
     ) {
         guard !isActive else { return }
         reset()
+        let generation = invocationGeneration
         sourceNames = files
         self.outputFolder = outputFolder
         self.totalNegatives = totalNegatives
@@ -500,11 +509,11 @@ final class RunModel {
         let session = runner.session(for: command)
         self.session = session
         runTask = Task { [weak self] in
-            await self?.consume(session)
+            await self?.consume(session, generation: generation)
         }
     }
 
-    private func consume(_ session: CLISession) async {
+    private func consume(_ session: CLISession, generation: Int) async {
         do {
             for await output in try await session.start() {
                 apply(output)
@@ -514,7 +523,7 @@ final class RunModel {
         } catch {
             streamFailures.append(.launch(error.localizedDescription))
         }
-        await finish()
+        await finish(generation: generation)
     }
 
     private func apply(_ output: CLISessionOutput) {
@@ -541,8 +550,17 @@ final class RunModel {
             }
             currentStep = event.step
             stage = event.stage
-            if let index = event.sourceIndex, sourceNames.indices.contains(index) {
-                currentFilename = sourceNames[index]
+            if let index = event.sourceIndex {
+                if event.stage == "stitch" {
+                    // The stitch stage's `source_index` is the index of the
+                    // *negative* within the batch (`stitch_pipeline.py`'s
+                    // `source_index_by_group`), not of a file in the
+                    // selection — mapping it through `sourceNames` would
+                    // name a frame from the wrong half of the selection.
+                    currentFilename = index >= 0 ? "Negative \(index + 1)" : nil
+                } else if sourceNames.indices.contains(index) {
+                    currentFilename = sourceNames[index]
+                }
             }
         case .itemDone:
             // The only event that means a file reached the output folder.
@@ -611,7 +629,12 @@ final class RunModel {
         }
     }
 
-    private func finish() async {
+    private func finish(generation: Int) async {
+        // A `start()` or `clearResults()` that ran while this `finish()` was
+        // suspended on its manifest read-back has already reset the model;
+        // resuming and writing here would clobber the newer invocation's
+        // state. `finish()` is a no-op once its generation is stale.
+        guard generation == invocationGeneration else { return }
         forceTask?.cancel()
         forceTask = nil
         phase = .finishing
@@ -620,11 +643,15 @@ final class RunModel {
         // work directory `scanny-boy-manifest.json` still lives in may
         // already be gone by the time this runs (section 3.5's cleanup).
         if touchesRollManifest {
-            rollManifestReport = await Self.readRollManifest(
+            let report = await Self.readRollManifest(
                 runner: runner, roll: outputFolder, runID: runID
             )
+            guard generation == invocationGeneration else { return }
+            rollManifestReport = report
         } else {
-            manifestReport = await Self.readManifest(in: outputFolder)
+            let report = await Self.readManifest(in: outputFolder)
+            guard generation == invocationGeneration else { return }
+            manifestReport = report
         }
         session = nil
         phase = .finished
@@ -664,6 +691,7 @@ final class RunModel {
     }
 
     private func reset() {
+        invocationGeneration += 1
         runTask?.cancel()
         forceTask?.cancel()
         runTask = nil
