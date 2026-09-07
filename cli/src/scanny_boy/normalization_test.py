@@ -10,14 +10,12 @@ equivalent).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 from scanny_boy import normalization as nz
 from scanny_boy.normalization import (
-    ANALYSIS_GRID,
+    ANALYSIS_BLOCK_PX,
     NORMALIZED_HEADROOM_HIGH,
     NORMALIZED_HEADROOM_LOW,
     Bounds,
@@ -39,11 +37,7 @@ from scanny_boy.normalization import (
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
-)
-from scanny_boy.sample_nef_support import (
-    REAL_SAMPLE_FILES,
-    requires_real_samples,
-    stage_samples,
+    withhold_opaque,
 )
 
 FILL_LOG = -6.0  # what an uncovered canvas pixel becomes: log10(1e-6)
@@ -166,13 +160,13 @@ def test_block_median_grid_vanishes_a_single_hot_pixel():
     img = (rng.uniform(-2.0, -0.5, size=(2100, 2100, 3))).astype(np.float32)
     img[40, 40] = -6.0  # one hot (dense) pixel, e.g. a dust pinhole
     grid = block_median_grid(img)
-    assert grid.shape == (700, 700, 3)
+    assert grid.shape == (350, 350, 3)
     # The hot pixel's own block does not contain it: the block median sits
     # inside the scene's range, not at the outlier's value.
-    assert grid[13, 13].min() > -2.0
+    assert grid[40 // ANALYSIS_BLOCK_PX, 40 // ANALYSIS_BLOCK_PX].min() > -2.0
 
 
-def test_block_median_grid_passthrough_below_the_grid_side():
+def test_block_median_grid_passthrough_below_the_passthrough_size():
     img = np.full((64, 48, 3), -1.0, dtype=np.float32)
     grid = block_median_grid(img)
     assert grid.shape == (64, 48, 3)
@@ -182,9 +176,9 @@ def test_block_median_grid_passthrough_below_the_grid_side():
 @pytest.mark.parametrize(
     ("shape", "expected_grid"),
     [
-        ((1049, 1049, 3), (525, 525)),
-        ((2000, 1500, 3), (1000, 750)),
-        ((1024, 1024, 3), (1024, 1024)),
+        ((1049, 1049, 3), (175, 175)),
+        ((2000, 1500, 3), (334, 250)),
+        ((1024, 1024, 3), (1024, 1024)),  # at the passthrough size, block 1
     ],
 )
 def test_analysis_grid_block_sizes_and_grid_shape(shape, expected_grid):
@@ -192,23 +186,38 @@ def test_analysis_grid_block_sizes_and_grid_shape(shape, expected_grid):
     grid_rows = -(-shape[0] // block_rows)
     grid_cols = -(-shape[1] // block_cols)
     assert (grid_rows, grid_cols) == expected_grid
-    assert grid_rows <= ANALYSIS_GRID and grid_cols <= ANALYSIS_GRID
 
 
-def test_analysis_grid_bounded_for_canvas_sizes_from_1mp_to_200mp():
-    # The 200MP end is only exercised through the block-size rule —
-    # materializing a 200-megapixel canvas is not a fast-tier proposition.
-    for width, height in [
-        (1024, 1024),  # 1.0 MP
-        (4000, 3000),  # 12 MP, a full-size frame
-        (12000, 8000),  # 96 MP canvas
-        (20000, 10000),  # 200 MP canvas
-    ]:
+def test_analysis_cell_is_the_same_size_at_every_canvas_shape():
+    """The invariant the pinned block exists for, and the one the retired
+    long-side-bounded rule did not hold: the *cell* is fixed and the grid's
+    dimensions are what grow with the canvas. Shapes are the grid workload
+    of docs/GRID_STITCH_PLAN.md §7.1, where the old rule ran the cell from
+    6 px on one frame to 22 px on a 5×2 while shrinking the grid from
+    667k cells to 304k.
+    """
+    canvases = {
+        "1x1": (6000, 4000),
+        "2x1 strip": (10000, 4000),
+        "2x2": (10000, 6667),
+        "4x2": (18000, 6667),
+        "5x2": (22000, 6667),
+        "5x2 shot rotated": (14667, 10000),
+    }
+    cells = {}
+    for label, (width, height) in canvases.items():
         block_rows, block_cols = nz.analysis_grid_block_sizes((height, width, 3))
-        grid_rows = -(-height // block_rows)
-        grid_cols = -(-width // block_cols)
-        assert grid_rows <= ANALYSIS_GRID
-        assert grid_cols <= ANALYSIS_GRID
+        assert (block_rows, block_cols) == (ANALYSIS_BLOCK_PX, ANALYSIS_BLOCK_PX), label
+        cells[label] = (-(-height // block_rows)) * (-(-width // block_cols))
+
+    # Cell count therefore tracks canvas *area*, not aspect ratio: a 5×2
+    # holds 6.1x the samples of one frame because it holds 6.1x the film.
+    for label, (width, height) in canvases.items():
+        assert cells[label] == pytest.approx(
+            width * height / ANALYSIS_BLOCK_PX**2, rel=0.01
+        ), label
+    # And the same negative shot rotated 90° meters on the same grid.
+    assert cells["5x2 shot rotated"] == pytest.approx(cells["5x2"], rel=0.01)
 
 
 # --- N-2: the meters ---------------------------------------------------------
@@ -621,6 +630,163 @@ def test_dense_detector_is_deterministic_and_handles_empty_keep():
     assert np.array_equal(new_keep, empty)
 
 
+# --- the opaque-holder gate ---------------------------------------------------
+
+
+def test_opaque_holder_block_is_withheld_whatever_its_shape():
+    """The failure the gate exists for: a section of completely opaque
+    negative holder in the analysis region. It clamps to -6.0, which is
+    three-and-a-half decades past the scene's own dense end, and the floor
+    percentile is pinned there. It is also a *block*, not a stripe, so the
+    dense-border detector's shape gates cannot touch it."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 40), "cols": slice(0, 60)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    # The dense-border detector is powerless here: the block is too large
+    # and too square for its area and thinness gates.
+    dense_keep, dense_border = withhold_dense_border(grid, keep)
+    assert not dense_border.detected
+    assert np.array_equal(dense_keep, keep)
+
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert not new_keep[:40, :60].any()
+    assert opaque.threshold == pytest.approx(-0.4 - 3.2, abs=0.05)
+
+    # The contract: bounds after the withhold match the frame that never
+    # had the holder in it.
+    bounds = analyze_bounds(grid, new_keep)
+    clean = _scene_grid(200, 200)
+    clean_bounds = analyze_bounds(clean, keep)
+    assert bounds.floors == pytest.approx(clean_bounds.floors, abs=0.05)
+    assert bounds.ceils == pytest.approx(clean_bounds.ceils, abs=0.05)
+
+    # And unguarded, the holder owns the floor outright.
+    unguarded = analyze_bounds(grid, keep)
+    assert unguarded.floors[0] < -5.0
+
+
+def test_one_cell_sliver_of_holder_still_pins_the_unguarded_floor():
+    """`BASE_LUMA_CLIP` is 0.01 percent, so the sliver does not have to be
+    big to own the floor -- one cell along a 200-cell edge is 0.5 percent of
+    the region, fifty times what it takes."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 1), "cols": slice(0, 200)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    assert analyze_bounds(grid, keep).floors[0] < -5.0
+
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert analyze_bounds(grid, new_keep).floors[0] > -2.5
+
+
+def test_opaque_gate_unblinds_the_dense_border_detector():
+    """The second-order damage: `DENSE_BORDER_ANCHOR_PERCENTILE` (P0.1)
+    lands inside the holder, so the 0.2-wide candidate band covers holder
+    only and the edge fog the mirror exists to catch sits three decades
+    outside it. With the holder gone first, the stripe is found again."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 8), "cols": slice(0, 200)}, -2.6)
+    _add_strip(grid, {"rows": slice(100, 140), "cols": slice(0, 30)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+
+    # Holder present, gate not run: the stripe is invisible to the mirror.
+    blinded_keep, blinded = withhold_dense_border(grid, keep)
+    assert not blinded.detected
+    assert np.array_equal(blinded_keep, keep)
+
+    # Gate first, then the mirror: the stripe is withheld as it was before
+    # the holder ever entered the region.
+    opaque_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    final_keep, dense_border = withhold_dense_border(grid, opaque_keep)
+    assert dense_border.detected
+    assert not final_keep[:8].any()
+
+
+def test_dilation_removes_the_straddling_edge_cells():
+    """A block median straddling the holder boundary is a median over both
+    populations, so it lands between them -- above the gate, and
+    contaminated. One cell of dilation takes it with the holder."""
+    grid = _scene_grid(200, 200)
+    _add_strip(grid, {"rows": slice(0, 20), "cols": slice(0, 200)}, -6.0)
+    # The straddler: one row of half-holder, half-film medians.
+    _add_strip(grid, {"rows": slice(20, 21), "cols": slice(0, 200)}, -3.2)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    # -3.2 sits above the -3.6 threshold, so only dilation reaches it.
+    assert not new_keep[20].any()
+    assert new_keep[21].all()
+
+
+def test_deep_film_density_is_not_withheld():
+    """The gate must not reach real film. A negative whose dense end runs
+    2.6 decades below base -- denser than colour negative Dmax, in
+    black-and-white territory -- keeps every cell."""
+    grid = _scene_grid(200, 200, base=-0.4, dense=-3.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert not opaque.detected
+    assert opaque.mask_fraction == 0.0
+    assert opaque.threshold is None
+    assert np.array_equal(new_keep, keep)
+
+
+def test_opaque_gate_is_deterministic_and_handles_empty_keep():
+    grid = _scene_grid(150, 150)
+    _add_strip(grid, {"rows": slice(0, 20), "cols": slice(0, 40)}, -6.0)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    first_keep, first_finding = withhold_opaque(grid, keep)
+    second_keep, second_finding = withhold_opaque(grid, keep)
+    assert np.array_equal(first_keep, second_keep)
+    assert first_finding == second_finding
+
+    empty = np.zeros((64, 64), dtype=bool)
+    new_keep, finding = withhold_opaque(_scene_grid(64, 64), empty)
+    assert not finding.detected
+    assert np.array_equal(new_keep, empty)
+
+
+def test_wholly_opaque_region_raises_rather_than_metering_the_holder():
+    """A rect entirely on the holder is a layout failure, and the relative
+    gate structurally cannot see it: the anchor *is* the holder, so nothing
+    is decades below anything. `OPAQUE_MIN_ANCHOR_ABOVE_CLAMP` is the
+    absolute check that catches it, and it names the layout rather than
+    leaving `analyze_bounds` to report a degenerate channel."""
+    grid = np.full((100, 100, 3), -6.0, dtype=np.float32)
+    keep = np.ones((100, 100), dtype=bool)
+    with pytest.raises(NormalizationError, match="holds no film"):
+        withhold_opaque(grid, keep)
+
+    # Left to fall through, the case does fail -- just not informatively.
+    with pytest.raises(NormalizationError, match="degenerate"):
+        analyze_bounds(grid, keep)
+
+
+def test_underexposed_scan_is_not_mistaken_for_a_holder_rect():
+    """The absolute check's margin: a badly underexposed scan whose base
+    sits a decade and a half down is still film, and still metered."""
+    grid = _scene_grid(200, 200, base=-1.5, dense=-3.5)
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert not opaque.detected
+    assert np.array_equal(new_keep, keep)
+
+
+def test_mono_collapsed_grid_is_gated_the_same():
+    """MONOCHROME_PLAN section 4: one channel, and `luma_of_log` returns it
+    unchanged. The gate reads `shape[-1]`-agnostic luma like its
+    neighbours."""
+    grid = _scene_grid(200, 200)[..., :1]
+    grid[0:30, 0:50, 0] = -6.0
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    new_keep, opaque = withhold_opaque(grid, keep)
+    assert opaque.detected
+    assert not new_keep[:30, :50].any()
+
+
 # --- section 3.4's clamp ------------------------------------------------------
 
 
@@ -713,8 +879,9 @@ def test_build_params_carries_every_constant_and_the_format_version():
     # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants join
     # build_params() because the residual the auto solve reads is recorded
     # per negative against them.
-    assert params["format_version"] == 3
-    assert params["analysis_grid"] == ANALYSIS_GRID
+    assert params["format_version"] == 4
+    assert params["analysis_block_px"] == ANALYSIS_BLOCK_PX
+    assert params["analysis_passthrough_px"] == nz.ANALYSIS_PASSTHROUGH_PX
     assert params["base_luma_clip"] == nz.BASE_LUMA_CLIP
     assert params["base_color_clip"] == nz.BASE_COLOR_CLIP
     assert params["normalized_headroom_low"] == NORMALIZED_HEADROOM_LOW
@@ -724,15 +891,15 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["scan_clip_warn"] == nz.SCAN_CLIP_WARN
     assert params["dense_border_anchor_percentile"] == nz.DENSE_BORDER_ANCHOR_PERCENTILE
     assert params["dense_border_tolerance"] == nz.DENSE_BORDER_TOLERANCE
+    assert params["dense_border_min_area_cells"] == nz.DENSE_BORDER_MIN_AREA_CELLS
     assert (
         params["dense_border_min_area_fraction"] == nz.DENSE_BORDER_MIN_AREA_FRACTION
     )
-    assert (
-        params["dense_border_max_area_fraction"] == nz.DENSE_BORDER_MAX_AREA_FRACTION
-    )
-    assert (
-        params["dense_border_max_bbox_fraction"] == nz.DENSE_BORDER_MAX_BBOX_FRACTION
-    )
+    assert params["dense_border_max_width_cells"] == nz.DENSE_BORDER_MAX_WIDTH_CELLS
+    # Retired with the pinned cell: both scaled with the canvas.
+    assert "dense_border_max_area_fraction" not in params
+    assert "dense_border_max_bbox_fraction" not in params
+    assert "analysis_grid" not in params
     assert params["dense_border_min_separation"] == nz.DENSE_BORDER_MIN_SEPARATION
     assert (
         params["dense_border_outside_percentile"]
@@ -747,16 +914,8 @@ def test_build_params_carries_every_constant_and_the_format_version():
 
     assert json.loads(json.dumps(params)) == params
 
-    # §1's detector constants stay out of build_params(): they shape
-    # recorded evidence, never published output (MONOCHROME_PLAN §1.4).
-    assert "mono_chroma_percentile" not in params
-    assert "mono_detect_max_samples" not in params
-    assert "mono_mad_floor" not in params
-
-    # §2's gate and §3's merge weights DO shape published output, so they
-    # are roll invariants from the step that introduces them.
-    assert params["mono_chroma_max"] == nz.MONO_CHROMA_MAX
-    assert params["colour_chroma_min"] == nz.COLOUR_CHROMA_MIN
+    # §3's merge weights shape published output on mono rolls, so they are
+    # roll invariants from the step that introduces them.
     assert params["mono_merge_weights"] == list(nz.MONO_MERGE_WEIGHTS)
 
     # CAST_REMOVAL_PLAN R-1: the two meters' record.
@@ -774,8 +933,11 @@ def test_upgrade_normalize_params_injects_missing_v1_keys():
     v1 = {"format_version": 1, "analysis_grid": 512, "base_luma_clip": 0.02}
     upgraded = nz.upgrade_normalize_params(v1)
     assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
-    assert upgraded["analysis_grid"] == 512
     assert upgraded["base_luma_clip"] == 0.02
+    # `analysis_grid` is the one stored value that is *not* kept: it names
+    # a rule the pinned cell retired, so it is dropped rather than carried
+    # forward under a meaning it no longer has.
+    assert "analysis_grid" not in upgraded
     assert upgraded["base_color_clip"] == nz.BASE_COLOR_CLIP
     assert upgraded["normalized_fill"] == nz.NORMALIZED_FILL
     assert v1["format_version"] == 1  # the stored block is never mutated
@@ -791,13 +953,32 @@ def test_upgrade_normalize_params_covers_keys_added_later(monkeypatch):
     """The forward property the plan demands: a key a later step (§2's
     thresholds, §3's weights) adds to build_params() is absorbed by the
     same shim, with no second migration. Proved by faking such a key."""
-    v1 = {"format_version": 1, "analysis_grid": ANALYSIS_GRID}
+    v1 = {"format_version": 1, "analysis_grid": 1024}
     monkeypatch.setattr(
         nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
     )
     upgraded = nz.upgrade_normalize_params(v1)
     assert upgraded["future_threshold"] == 1.5
     assert upgraded["format_version"] == nz.NORMALIZE_FORMAT_VERSION
+
+
+def test_upgrade_normalize_params_retires_the_canvas_scaled_keys():
+    """A v3 block carries three keys the pinned cell retired, two of them
+    with values `setdefault` could never overwrite. They must be dropped by
+    name, or every pre-v4 roll fails the exact-dict invariant comparison."""
+    v3 = {
+        **build_params(),
+        "format_version": 3,
+        "analysis_grid": 1024,
+        "dense_border_max_area_fraction": 0.05,
+        "dense_border_max_bbox_fraction": 0.05,
+    }
+    del v3["analysis_block_px"]
+    del v3["analysis_passthrough_px"]
+    del v3["dense_border_min_area_cells"]
+    del v3["dense_border_max_width_cells"]
+
+    assert nz.upgrade_normalize_params(v3) == build_params()
 
 
 def test_upgrade_normalize_params_also_covers_a_v2_block_missing_a_later_key(
@@ -863,207 +1044,6 @@ def test_v1_roll_invariant_survives_the_v2_build():
     check_roll_invariants(manifest, candidate)
 
 
-# --- MONOCHROME_PLAN section 1: the mono detector -------------------------------
-
-
-def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
-    """One log-density plane, in linear light: a smooth ramp plus noise,
-    spanning the range a real negative's composite occupies."""
-    rng = np.random.default_rng(seed)
-    ys, xs = np.mgrid[0:side, 0:side]
-    plane_log = (
-        -1.5
-        + 0.8 * (xs + ys) / (2 * side)
-        + 0.05 * rng.standard_normal((side, side))
-    )
-    return np.power(10.0, plane_log.astype(np.float32))
-
-
-def _affine_stack(
-    plane_linear: np.ndarray,
-    gains: tuple[float, ...] = (1.0, 1.25, 0.8),
-    offsets: tuple[float, ...] = (0.0, 0.1, -0.15),
-) -> np.ndarray:
-    """Three channels that are one plane under a per-channel affine *in
-    log density* (the CFA gain and the film-base offset), linearised back
-    to the light the statistic reads. `offsets` stands in for the orange
-    mask; `gains` for the CFA passband."""
-    log = np.log10(np.clip(plane_linear, 1e-6, None))
-    return np.power(
-        10.0,
-        np.stack(
-            [log * g + o for g, o in zip(gains, offsets, strict=True)], axis=-1
-        ).astype(np.float32),
-    )
-
-
-def test_mono_statistic_is_near_zero_for_one_plane_under_affines():
-    plane = _mono_plane()
-    for gains, offsets in (
-        ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
-        ((1.0, 1.25, 0.8), (0.0, 0.1, -0.15)),
-        # A strong offset that stands in for the orange mask at full
-        # strength — the load-bearing case of §1.1.
-        ((1.0, 1.4, 0.7), (0.0, 0.5, -0.3)),
-        ((0.6, 1.0, 1.9), (0.2, 0.0, -0.25)),
-    ):
-        statistic = nz.measure_mono_statistic(_affine_stack(plane, gains, offsets))
-        assert statistic.sampled
-        assert statistic.chroma == pytest.approx(0.0, abs=1e-4), (gains, offsets)
-
-
-def test_mono_statistic_is_invariant_to_a_per_channel_gain_and_offset():
-    """The property the whole design rests on, asserted directly (§1.5)."""
-    plane = _mono_plane()
-    stack = _affine_stack(plane)
-    reference = nz.measure_mono_statistic(stack).chroma
-    # Re-affine the stack's channels: the statistic may not move.
-    for gains, offsets in (
-        ((1.1, 0.9, 1.3), (0.05, -0.05, 0.12)),
-        ((0.7, 1.6, 1.0), (-0.1, 0.2, 0.0)),
-    ):
-        log = np.log10(np.clip(stack, 1e-6, None))
-        re_affined = np.power(
-            10.0,
-            np.stack(
-                [log[..., i] * g + o for i, (g, o) in enumerate(zip(gains, offsets, strict=True))],
-                axis=-1,
-            ).astype(np.float32),
-        )
-        assert nz.measure_mono_statistic(re_affined).chroma == pytest.approx(
-            reference, abs=1e-4
-        )
-
-
-def test_mono_statistic_with_independent_noise_stays_below_the_colour_band():
-    """Noise is O(1) in MAD-normalized units — the statistic cannot be
-    near zero with independent per-channel noise, whatever its magnitude;
-    what separates the classes is that noise stays in a small band while
-    colour content towers over it. Assert the ordering §1.5 asks for:
-    noise rides above the exact case but far below genuine per-channel
-    content."""
-    plane = _mono_plane(seed=3)
-    exact = nz.measure_mono_statistic(_affine_stack(plane)).chroma
-    # Independent per-channel noise on top of the shared plane.
-    rng = np.random.default_rng(11)
-    log = np.log10(np.clip(plane, 1e-6, None))
-    noisy = np.power(
-        10.0,
-        np.stack(
-            [
-                log + 0.05 * rng.standard_normal(plane.shape),
-                log + 0.05 * rng.standard_normal(plane.shape),
-                log + 0.05 * rng.standard_normal(plane.shape),
-            ],
-            axis=-1,
-        ).astype(np.float32),
-    )
-    noisy_statistic = nz.measure_mono_statistic(noisy).chroma
-    assert noisy_statistic > exact  # noise contributes chroma the exact case lacks
-    assert noisy_statistic < 4.0  # three standardized samples spread O(1), P90 ≈ 2.5
-
-    # Genuine per-channel content: a colour negative's channels are not
-    # affine copies of one plane, whatever affine you remove.
-    xs, ys = np.mgrid[0:plane.shape[0], 0:plane.shape[1]]
-    colour_log = np.stack(
-        [
-            log + 1.2 * np.sin(2 * np.pi * xs / 16.0),
-            log,
-            log + 0.9 * np.cos(2 * np.pi * ys / 16.0),
-        ],
-        axis=-1,
-    ).astype(np.float32)
-    colour = nz.measure_mono_statistic(np.power(10.0, colour_log)).chroma
-    assert colour > 2.0 * noisy_statistic
-    assert colour > 10.0 * exact
-
-
-def test_mono_statistic_mad_floor_keeps_a_flat_channel_quiet_and_structure_loud():
-    """§1.1's floor and its defined behaviour when it trips: a genuinely
-    near-constant channel contributes no chroma (numerator flat too); a
-    channel with real structure under a vanishing MAD inflates the
-    statistic toward colour — the lossless direction."""
-    # A rebate-dominated, near-constant frame: every channel the same
-    # constant. Statistic ~0 — the floor costs nothing here.
-    flat = np.full((64, 64, 3), 0.02, dtype=np.float32)
-    assert nz.measure_mono_statistic(flat).chroma == pytest.approx(0.0, abs=1e-4)
-
-    # Structure on one channel only: the chroma is real, and the near-zero
-    # MAD of the flat pair cannot mute it — it reads as colour.
-    log = np.full((64, 64, 3), -1.5, dtype=np.float32)
-    xs, _ys = np.mgrid[0:64, 0:64]
-    log[..., 0] += 0.5 * np.sin(2 * np.pi * xs / 16.0)
-    structured = np.power(10.0, log).astype(np.float32)
-    assert nz.measure_mono_statistic(structured).chroma > 1.0
-
-
-@pytest.mark.slow
-@requires_real_samples
-def test_real_colour_negatives_score_above_every_synthetic_mono_fixture(tmp_path):
-    """§1.5's slow check, relative per the plan: each real sample NEF —
-    colour — scores above every synthetic mono fixture under the same
-    statistic. No threshold is asserted: none is pinned until §2."""
-    from scanny_boy.pipeline import run_convert
-
-    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
-    out_dir = tmp_path / "convert"
-    out_dir.mkdir()
-    outcome = run_convert(
-        input_dir,
-        list(REAL_SAMPLE_FILES),
-        out_dir,
-        3,
-        run_id="mono-detect",
-        jobs=4,
-        emit=lambda event: None,
-    )
-    assert outcome.status == "complete"
-
-    plane = _mono_plane(seed=7)
-    fixtures = [
-        nz.measure_mono_statistic(_affine_stack(plane, gains, offsets)).chroma
-        for gains, offsets in (
-            ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
-            ((1.0, 1.4, 0.7), (0.0, 0.3, -0.2)),
-        )
-    ]
-    floor = max(fixtures)
-    import tifffile
-
-    for name in REAL_SAMPLE_FILES:
-        pixels = tifffile.imread(out_dir / f"{Path(name).stem}.tif")
-        statistic = nz.measure_mono_statistic(pixels)
-        assert statistic.chroma > floor, name
-
-
-# --- MONOCHROME_PLAN section 2: the roll decision -------------------------------
-
-
-def test_classify_mono_chroma_at_and_below_the_mono_ceiling():
-    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX)
-    assert gate.kind is nz.FilmKind.MONOCHROME
-    assert not gate.ambiguous
-    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX - 0.05)
-    assert gate.kind is nz.FilmKind.MONOCHROME
-    assert not gate.ambiguous
-
-
-def test_classify_mono_chroma_at_and_above_the_colour_floor():
-    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert not gate.ambiguous
-    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN + 0.5)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert not gate.ambiguous
-
-
-def test_classify_mono_chroma_between_the_thresholds_is_ambiguous_and_defaults_colour():
-    midpoint = (nz.MONO_CHROMA_MAX + nz.COLOUR_CHROMA_MIN) / 2.0
-    gate = nz.classify_mono_chroma(midpoint)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert gate.ambiguous
-
-
 def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
     """FilmKind must drop into `icc_profile.published_profile_kind`'s
     plain-string comparison unchanged (MONOCHROME_PLAN §2/§4)."""
@@ -1076,6 +1056,18 @@ def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
 
 
 # --- MONOCHROME_PLAN section 3: the collapse -------------------------------------
+
+
+def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
+    """One log-density plane, in linear light: a smooth ramp plus noise."""
+    rng = np.random.default_rng(seed)
+    ys, xs = np.mgrid[0:side, 0:side]
+    plane_log = (
+        -1.5
+        + 0.8 * (xs + ys) / (2 * side)
+        + 0.05 * rng.standard_normal((side, side))
+    )
+    return np.power(10.0, plane_log.astype(np.float32))
 
 
 def test_collapse_to_mono_recovers_the_plane_up_to_a_constant_offset():
@@ -1439,6 +1431,58 @@ def test_measure_highlight_refs_prefers_a_threaded_base_refs():
     base_refs = (0.0, 0.0, -0.6)
 
     assert nz.measure_highlight_refs(grid, keep, base_refs) is not None
+
+
+# --- REBATE_ANCHORING section 4.1: base_refs at the consumption site ----
+
+
+def test_analyze_bounds_with_base_refs_none_matches_omitting_it():
+    """B-5 regression lock: `base_refs=None` is identical to omitting the
+    argument — the pre-B-5 behaviour every other test in this file assumes."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    omitted = analyze_bounds(img, keep)
+    explicit = analyze_bounds(img, keep, base_refs=None)
+    assert explicit == omitted
+
+
+def test_analyze_bounds_with_base_refs_sets_ceils_deviations_and_keeps_mean_lc():
+    """§4.1: the roll anchor supplies `c_ceils`; only deviations survive
+    recombination and `mean_lc` stays on the luma axis."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    without = analyze_bounds(img, keep)
+    with_refs = analyze_bounds(img, keep, base_refs=base_refs)
+    mean_lc = float(
+        np.percentile(nz.luma_of_log(img).reshape(-1), 100.0 - nz.BASE_LUMA_CLIP)
+    )
+    mean_cc = float(np.median(base_refs))
+    assert with_refs.ceils == pytest.approx(
+        tuple(mean_lc + (base_refs[ch] - mean_cc) for ch in range(3)), abs=1e-5
+    )
+    assert with_refs.floors == pytest.approx(without.floors, abs=1e-5)
+    assert with_refs.ceils != without.ceils
+
+
+def test_analyze_bounds_base_refs_are_exposure_invariant_at_consumption():
+    """§0.2: a common-mode shift in `base_refs` cancels in the
+    recombination — asserted at the consumption site, not only measurement."""
+    img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
+    keep = np.ones(img.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    reference = analyze_bounds(img, keep, base_refs=base_refs)
+    shifted = tuple(v + 0.37 for v in base_refs)
+    assert analyze_bounds(img, keep, base_refs=shifted) == reference
+
+
+def test_analyze_bounds_three_array_base_refs_falls_back_on_mono():
+    """§5: a 3-array `base_refs` on a 1-channel image silently falls back."""
+    grid = _ramp_scene_1ch()
+    keep = np.ones(grid.shape[:2], dtype=bool)
+    base_refs = (-0.42, -0.12, -0.99)
+    fallback = analyze_bounds(grid, keep)
+    assert analyze_bounds(grid, keep, base_refs=base_refs) == fallback
 
 
 def test_upgrade_normalize_params_upgrades_a_stored_v2_block_to_v3():

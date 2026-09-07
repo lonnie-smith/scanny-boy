@@ -21,11 +21,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    /// Protocol 11 adds monochrome film support (the
-    /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
-    /// the roll manifest's top-level `film` block, and the
-    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes),
-    /// extends the preview tone adjustment (seven curve controls and two
+    /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
+    /// required on `roll init` only; `run`/`stitch` read `film.kind` from
+    /// the manifest. Protocol 11 added monochrome film support (single-
+    /// channel published TIFFs and the `ScannyBoy-Density-Grey-v1.icc`
+    /// profile), the preview tone extension (seven curve controls and two
     /// auto flags on `edit tone`, the matching `tone_*` fields in the roll
     /// manifest, and the `TONE_METERING_UNAVAILABLE` warning code), and
     /// the positive/negative display toggle for the Edit tab (`--mode
@@ -59,7 +59,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 14
+    public static let supportedProtocolVersion = 16
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -97,7 +97,11 @@ public struct CLIEvent: Sendable, Hashable {
         case flatfieldList
         case flatfieldDeleted
         case flatfieldProgress
+        case gridCreated
+        case gridList
+        case gridDeleted
         case spotsReported
+        case baseFrameSet
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -133,7 +137,11 @@ public struct CLIEvent: Sendable, Hashable {
             case "flatfield_list": self = .flatfieldList
             case "flatfield_deleted": self = .flatfieldDeleted
             case "flatfield_progress": self = .flatfieldProgress
+            case "grid_created": self = .gridCreated
+            case "grid_list": self = .gridList
+            case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
+            case "base_frame_set": self = .baseFrameSet
             default: self = .unknown(name)
             }
         }
@@ -169,7 +177,11 @@ public struct CLIEvent: Sendable, Hashable {
             case .flatfieldList: "flatfield_list"
             case .flatfieldDeleted: "flatfield_deleted"
             case .flatfieldProgress: "flatfield_progress"
+            case .gridCreated: "grid_created"
+            case .gridList: "grid_list"
+            case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
+            case .baseFrameSet: "base_frame_set"
             case .unknown(let name): name
             }
         }
@@ -218,6 +230,8 @@ extension CLIEvent {
     public var catalogue: [String]? { fields["catalogue"]?.stringArrayValue }
     public var warnings: [String]? { fields["warnings"]?.stringArrayValue }
     public var groups: [[String]]? { fields["groups"]?.nestedStringArrayValue }
+    /// Present when `--roll` was given (REBATE_ANCHORING §7.1).
+    public var filmBase: [String: JSONValue]? { fields["film_base"]?.objectValue }
     // `probe_result`, present only when `--out` was given alongside `--files`
     // (CONTRACT.md: output-folder validation, disk estimate, and
     // overwrite-conflict preview).
@@ -278,6 +292,15 @@ extension CLIEvent {
     public var globalRMS: Double? { fields["global_rms_px"]?.doubleValue }
     public var maxOverlapMAD: Double? { fields["max_overlap_mad"]?.doubleValue }
 
+    // `base_frame_set`
+    public var baseFrameSourceName: String? { fields["source_name"]?.stringValue }
+    public var baseFrameDensity: [Double]? {
+        fields["density"]?.arrayValue?.compactMap(\.doubleValue)
+    }
+    public var baseFrameAreaFraction: Double? { fields["area_fraction"]?.doubleValue }
+    public var baseFramePopulationCount: Int? { fields["population_count"]?.intValue }
+    public var baseFrameLocked: Bool? { fields["locked"]?.boolValue }
+
     // `edit_recorded`: the appended ops-log row and the negative's net
     // transform after it (quarter turns plus the horizontal-mirror flag —
     // a flip and a rotation do not commute, so one number cannot carry
@@ -335,6 +358,7 @@ extension CLIEvent {
                 highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
                 highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
                 castRemoval: params["cast_removal"]?.doubleValue ?? 0,
+                castRemovalHighlights: params["cast_removal_highlights"]?.doubleValue ?? 0,
                 dyeSeparation: params["dye_separation"]?.doubleValue
                     ?? ColorAdjustment.neutral.dyeSeparation,
                 separationDamping: params["separation_damping"]?.doubleValue ?? 0
@@ -365,6 +389,16 @@ extension CLIEvent {
 
     // `flatfield_progress`
     public var flatFieldPhase: String? { fields["phase"]?.stringValue }
+
+    // `grid_created` and `grid_list`
+    public var gridProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
+    public var gridProfiles: [[String: JSONValue]]? {
+        fields["profiles"]?.arrayValue?.compactMap { entry in
+            entry.objectValue
+        }
+    }
+    // `grid_deleted`
+    public var gridProfileID: String? { fields["profile_id"]?.stringValue }
 
     // `spots_reported` (protocol version 13): a negative's spot set as the
     // app draws it. Every rect is display space, already transformed — the
@@ -493,6 +527,8 @@ public enum CLICode: Sendable, Hashable {
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
+    case gridProfileNotFound
+    case gridProfileExists
     // Protocol version 7: geometric calibration.
     case geometryInsufficientFrames
     case geometryBoardNotDetected
@@ -506,6 +542,18 @@ public enum CLICode: Sendable, Hashable {
     case normalizeHeadroomClipped
     case spotLimitReached
     case spotsStale
+    case filmKindRequired
+    case filmKindLocked
+    case filmBaseRequired
+    case filmBaseLocked
+    case filmBaseNotFound
+    case filmBaseTooSmall
+    case filmBaseClipped
+    case filmBaseTooDark
+    case filmBaseAmbiguous
+    case rollPredatesFilmBase
+    case filmBaseCameraConflict
+    case filmBaseFlatfieldConflict
     case libraryDBUnsupported
     case internalError
     case unknown(String)
@@ -567,6 +615,8 @@ public enum CLICode: Sendable, Hashable {
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
+        case "GRID_PROFILE_NOT_FOUND": self = .gridProfileNotFound
+        case "GRID_PROFILE_EXISTS": self = .gridProfileExists
         case "GEOMETRY_INSUFFICIENT_FRAMES": self = .geometryInsufficientFrames
         case "GEOMETRY_BOARD_NOT_DETECTED": self = .geometryBoardNotDetected
         case "GEOMETRY_FRAME_SIZE_MISMATCH": self = .geometryFrameSizeMismatch
@@ -579,6 +629,18 @@ public enum CLICode: Sendable, Hashable {
         case "NORMALIZE_HEADROOM_CLIPPED": self = .normalizeHeadroomClipped
         case "SPOT_LIMIT_REACHED": self = .spotLimitReached
         case "SPOTS_STALE": self = .spotsStale
+        case "FILM_KIND_REQUIRED": self = .filmKindRequired
+        case "FILM_KIND_LOCKED": self = .filmKindLocked
+        case "FILM_BASE_REQUIRED": self = .filmBaseRequired
+        case "FILM_BASE_LOCKED": self = .filmBaseLocked
+        case "FILM_BASE_NOT_FOUND": self = .filmBaseNotFound
+        case "FILM_BASE_TOO_SMALL": self = .filmBaseTooSmall
+        case "FILM_BASE_CLIPPED": self = .filmBaseClipped
+        case "FILM_BASE_TOO_DARK": self = .filmBaseTooDark
+        case "FILM_BASE_AMBIGUOUS": self = .filmBaseAmbiguous
+        case "ROLL_PREDATES_FILM_BASE": self = .rollPredatesFilmBase
+        case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
+        case "FILM_BASE_FLATFIELD_CONFLICT": self = .filmBaseFlatfieldConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
@@ -642,6 +704,8 @@ public enum CLICode: Sendable, Hashable {
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
+        case .gridProfileNotFound: "GRID_PROFILE_NOT_FOUND"
+        case .gridProfileExists: "GRID_PROFILE_EXISTS"
         case .geometryInsufficientFrames: "GEOMETRY_INSUFFICIENT_FRAMES"
         case .geometryBoardNotDetected: "GEOMETRY_BOARD_NOT_DETECTED"
         case .geometryFrameSizeMismatch: "GEOMETRY_FRAME_SIZE_MISMATCH"
@@ -654,6 +718,18 @@ public enum CLICode: Sendable, Hashable {
         case .normalizeHeadroomClipped: "NORMALIZE_HEADROOM_CLIPPED"
         case .spotLimitReached: "SPOT_LIMIT_REACHED"
         case .spotsStale: "SPOTS_STALE"
+        case .filmKindRequired: "FILM_KIND_REQUIRED"
+        case .filmKindLocked: "FILM_KIND_LOCKED"
+        case .filmBaseRequired: "FILM_BASE_REQUIRED"
+        case .filmBaseLocked: "FILM_BASE_LOCKED"
+        case .filmBaseNotFound: "FILM_BASE_NOT_FOUND"
+        case .filmBaseTooSmall: "FILM_BASE_TOO_SMALL"
+        case .filmBaseClipped: "FILM_BASE_CLIPPED"
+        case .filmBaseTooDark: "FILM_BASE_TOO_DARK"
+        case .filmBaseAmbiguous: "FILM_BASE_AMBIGUOUS"
+        case .rollPredatesFilmBase: "ROLL_PREDATES_FILM_BASE"
+        case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
+        case .filmBaseFlatfieldConflict: "FILM_BASE_FLATFIELD_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name

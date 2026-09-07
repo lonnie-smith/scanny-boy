@@ -9,6 +9,13 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 16 keeps version 15's roll model and adds **named grid
+configuration presets**: the `grid create` / `grid list` / `grid delete`
+command family and the `grid_created`, `grid_list`, and `grid_deleted`
+events. Each preset is a user label for an `across` x `down` shape the app
+picks when adding scans. Two new codes: `GRID_PROFILE_NOT_FOUND` and
+`GRID_PROFILE_EXISTS`.
+
 Protocol version 14 keeps version 13's roll model — the film-base
 reference and spotting both stay as protocol 13 shipped them — and adds
 **cast removal's second tie and auto solve** (docs/CAST_REMOVAL_PLAN.md):
@@ -139,33 +146,22 @@ and a graded density is not the density). Both are pure rendering queries:
 nothing is recorded, the published TIFF is never modified. The managed,
 on-disk preview stays a positive in every mode.
 
-**Monochrome film support** (docs/MONOCHROME_PLAN.md): `stitch` and `run`
-accept `--film-kind {auto,colour,monochrome}` (default `auto`), which
-decides whether a roll's three warped channels merge into one before
-publishing. Detection is per **roll**, not per negative (a roll is one film
-stock): a pre-pass samples up to six negatives, spread across the roll, and
-reads a chroma statistic that survives removing each channel's own gain and
-offset — near zero on a silver B&W negative, well above it on anything with
-a real orange mask or colour content. The decision is frozen on the roll's
-first stitch run in a new top-level `film` object —
-`{kind, source, statistic, samples, detector_version}`, `kind` one of
-`"colour"`/`"monochrome"`, `source` one of `"auto"`/`"manual"` — and never
-changes after that: a later run whose fresh evidence disagrees only warns
-(`MONO_DECISION_CONFLICT`); an ambiguous first-run statistic defaults to
-colour and warns (`MONO_DETECT_AMBIGUOUS`); naming the *other* kind via
-`--film-kind` on a roll that already has runs fails
-`ROLL_INVARIANT_MISMATCH` (re-stitch the whole roll to change it). `roll
-info` reports `film` verbatim, `null` for a manifest written before this
-protocol version. A monochrome roll's published TIFFs are single-channel
-(`photometric=minisblack`), tagged with the new
-`ScannyBoy-Density-Grey-v1.icc` profile instead of the colour density
-profile; every per-channel roll-manifest field (`floors`, `ceils`,
-`shadow_refs`, `observed_min`/`_max`, the headroom-clip fractions,
-`unclamped_floors`/`_ceils`) carries one entry instead of three, and
-`rebate.base_density` is `null`, a 1-array, or a 3-array. The per-frame
-`gain` array is unaffected and stays 3-wide even on a monochrome roll's
-negatives, since the photometric solve that produces it still runs in
-linear light on three channels.
+**Monochrome film support** (docs/MONOCHROME_PLAN.md): `roll init` requires
+`--film-kind {colour,monochrome}` — the user chooses once at roll creation.
+`"colour"` is the path for colour negatives and chromogenic B&W (XP2, BW400CN,
+stained pyro); `"monochrome"` is silver B&W only. `run` and `stitch` read the
+frozen `film.kind` from the roll manifest; an unseeded roll with no `film`
+block fails `FILM_KIND_REQUIRED`. Legacy rolls that already have runs but no
+`film` block are treated as frozen colour. A monochrome roll's published
+TIFFs are single-channel (`photometric=minisblack`), tagged with
+`ScannyBoy-Density-Grey-v1.icc` instead of the colour density profile; every
+per-channel roll-manifest field (`floors`, `ceils`, `shadow_refs`,
+`observed_min`/`_max`, the headroom-clip fractions, `unclamped_floors`/`_ceils`)
+carries one entry instead of three, and `rebate.base_density` is `null`, a
+1-array, or a 3-array. The per-frame `gain` array is unaffected and stays
+3-wide even on a monochrome roll's negatives, since the photometric solve that
+produces it still runs in linear light on three channels. `roll info` reports
+`film_kind` (the `kind` field only).
 
 **The colour-managed export** (docs/EXPORT_PLAN.md): `export` renders each
 negative as a positive in Adobe RGB (1998)-compatible colour — the
@@ -318,7 +314,7 @@ than guess at the new fields.
 ## Invocation
 
 ```text
-scanny-boy roll init   --library DIR --name NAME
+scanny-boy roll init   --library DIR --name NAME --film-kind {colour,monochrome}
 scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
@@ -334,12 +330,10 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ...] [--flatfield ID]
-                      [--film-kind {auto,colour,monochrome}]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
-                      [--film-kind {auto,colour,monochrome}]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -367,6 +361,10 @@ scanny-boy flatfield create --reference FILE --name NAME
                             [--calibration FILE [FILE ...]]
 scanny-boy flatfield list
 scanny-boy flatfield delete --profile ID
+
+scanny-boy grid create --name NAME --across N --down N
+scanny-boy grid list
+scanny-boy grid delete --profile ID
 ```
 
 `--roll` replaces `--out` on `stitch` and `run`. `prepare` keeps `--out`,
@@ -453,6 +451,16 @@ any roll's invariants name the profile — in either invariant bucket,
 removes the row and the `.npz`, emitting `flatfield_deleted` carrying
 `profile_id`. Each command brackets like `roll init`/`roll list` and carries
 no `run_id`; none is a pipeline run.
+
+`grid create --name NAME --across N --down N` validates the shape with the
+same rules as `--grid AxD` (`INVALID_GRID` when refused), refuses duplicate
+names with `GRID_PROFILE_EXISTS`, inserts the preset, and emits
+`grid_created` carrying the profile (`profile_id`, `name`, `across`, `down`,
+`created_at`). `grid list` emits `grid_list` carrying `profiles`, an array
+of the same shape. `grid delete --profile ID` refuses unknown ids with
+`GRID_PROFILE_NOT_FOUND`, removes the row, and emits `grid_deleted` carrying
+`profile_id`. Each command brackets like `flatfield list` and carries no
+`run_id`.
 
 `roll init` creates a folder under `--library` (slug + collision rule) and
 registers an empty v5 roll in the library database. It emits `roll_created`
@@ -817,6 +825,9 @@ library database rather than a JSON file in the roll folder).
 | `flatfield_list` | The flat-field profile list. Carries `profiles`. |
 | `flatfield_deleted` | A flat-field profile was deleted. Carries `profile_id`. |
 | `flatfield_progress` | A long `flatfield create` is progressing. Carries `phase`, `completed`, `total`. Carries no `run_id`. |
+| `grid_created` | A grid configuration preset was created. Carries `profile`. |
+| `grid_list` | The grid configuration preset list. Carries `profiles`. |
+| `grid_deleted` | A grid configuration preset was deleted. Carries `profile_id`. |
 | `spots_reported` | A negative's spot set was reported by `edit detect-spots`, `edit spots`, or `edit list-spots`: display-space rects (the app converts nothing), `found` before the cap, `preview_path` null for the pure query. Carries no `run_id`. |
 | `warning` | A non-fatal condition, identified by a stable code. |
 | `error` | A fatal condition, identified by a stable code. |
@@ -939,6 +950,8 @@ staging directories, and reruns the incomplete negative.
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
 | `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |
 | `FLATFIELD_PROFILE_EXISTS` | A flat-field profile with that name already exists |
+| `GRID_PROFILE_NOT_FOUND` | No grid configuration preset with the given id |
+| `GRID_PROFILE_EXISTS` | A grid configuration preset with that name already exists |
 | `FLATFIELD_PROFILE_IN_USE` | The profile is locked into a roll's invariants and cannot be deleted |
 | `FLATFIELD_GAIN_MAP_MISSING` | The profile's `.npz` is missing or corrupt |
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
@@ -954,8 +967,7 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_DEGENERATE_BOUNDS` | The bounds meters produced a degenerate (non-finite or zero-span) bound; the negative fails |
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
-| `MONO_DETECT_AMBIGUOUS` | Warning: an unseeded roll's film-kind statistic landed between the monochrome and colour thresholds; colour was assumed |
-| `MONO_DECISION_CONFLICT` | Warning: this run's fresh film-kind evidence disagrees with the roll's already-frozen kind; the frozen kind is kept |
+| `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
 | `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |
 | `FILM_BASE_LOCKED` | The roll's film-base reference is locked (its first negative was converted) and cannot be replaced |
 | `FILM_BASE_NOT_FOUND` | No flat film-base region was found in the base frame |

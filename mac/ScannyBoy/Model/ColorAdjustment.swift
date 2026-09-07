@@ -1,6 +1,6 @@
 import Foundation
 
-/// The preview's complete colour state — the twelve keys the `color` op records.
+/// The preview's complete colour state — the thirteen keys the `color` op records.
 public struct ColorAdjustment: Equatable, Sendable, Hashable {
     public var wbCyan: Double
     public var wbMagenta: Double
@@ -12,6 +12,7 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
     public var highlightMagenta: Double
     public var highlightYellow: Double
     public var castRemoval: Double
+    public var castRemovalHighlights: Double
     public var dyeSeparation: Double
     public var separationDamping: Double
 
@@ -26,6 +27,7 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         highlightMagenta: 0,
         highlightYellow: 0,
         castRemoval: 0,
+        castRemovalHighlights: 0,
         dyeSeparation: 1,
         separationDamping: 0
     )
@@ -41,6 +43,7 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         highlightMagenta: Double,
         highlightYellow: Double,
         castRemoval: Double,
+        castRemovalHighlights: Double,
         dyeSeparation: Double,
         separationDamping: Double
     ) {
@@ -54,9 +57,21 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         self.highlightMagenta = highlightMagenta
         self.highlightYellow = highlightYellow
         self.castRemoval = castRemoval
+        self.castRemovalHighlights = castRemovalHighlights
         self.dyeSeparation = dyeSeparation
         self.separationDamping = separationDamping
     }
+}
+
+/// Auto Cast is a momentary commit request, not persisted state.
+public struct ColorAutoFlags: OptionSet, Sendable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    public static let cast = ColorAutoFlags(rawValue: 1 << 0)
 }
 
 extension RollManifest.Negative {
@@ -73,6 +88,7 @@ extension RollManifest.Negative {
             highlightMagenta: colorHighlightMagenta ?? 0,
             highlightYellow: colorHighlightYellow ?? 0,
             castRemoval: colorCastRemoval ?? 0,
+            castRemovalHighlights: colorCastRemovalHighlights ?? 0,
             dyeSeparation: colorDyeSeparation ?? ColorAdjustment.neutral.dyeSeparation,
             separationDamping: colorSeparationDamping ?? 0
         )

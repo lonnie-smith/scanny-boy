@@ -92,7 +92,7 @@ def test_unique_folder_name_raises_roll_exists_after_exhaustion(tmp_path):
 
 
 def test_create_roll_registers_an_empty_roll(tmp_path):
-    roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998")
+    roll_dir = create_roll(tmp_path, "Tri-X, Portland 1998", film_kind="colour")
 
     assert roll_dir == tmp_path / "Tri-X-Portland-1998"
     # The record lives in the library database; the folder holds only
@@ -101,16 +101,43 @@ def test_create_roll_registers_an_empty_roll(tmp_path):
 
     manifest = load_roll_manifest(roll_dir)
     assert manifest.roll_name == "Tri-X, Portland 1998"
+    assert manifest.film == {"kind": "colour"}
     assert manifest.runs == []
     assert manifest.sources == []
     assert manifest.negatives == []
+
+
+def test_create_roll_without_film_kind(tmp_path):
+    roll_dir = create_roll(tmp_path, "Fresh")
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film is None
+
+
+def test_create_roll_monochrome_seeds_grey_density_profile(tmp_path):
+    from scanny_boy.icc_profile import ProfileKind, profile_record
+
+    roll_dir = create_roll(tmp_path, "Tri-X", film_kind="monochrome")
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "monochrome"}
+    assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY_GREY)
+
+
+def test_set_film_kind_updates_manifest(tmp_path):
+    from scanny_boy.icc_profile import ProfileKind, profile_record
+    from scanny_boy.roll_folder import set_film_kind
+
+    roll_dir = create_roll(tmp_path, "Fresh")
+    set_film_kind(roll_dir, "monochrome")
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "monochrome"}
+    assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY_GREY)
 
 
 # --- rename_roll ---------------------------------------------------------
 
 
 def test_rename_roll_moves_folder_and_updates_name(tmp_path):
-    roll_dir = create_roll(tmp_path, "Old Name")
+    roll_dir = create_roll(tmp_path, "Old Name", film_kind="colour")
 
     new_dir = rename_roll(roll_dir, "New Name")
 
@@ -122,7 +149,7 @@ def test_rename_roll_moves_folder_and_updates_name(tmp_path):
 
 
 def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypatch):
-    roll_dir = create_roll(tmp_path, "Old Name")
+    roll_dir = create_roll(tmp_path, "Old Name", film_kind="colour")
     original_manifest = load_roll_manifest(roll_dir)
 
     def _failing_rename(*_args, **_kwargs):
@@ -147,7 +174,7 @@ def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypat
 
 
 def test_scan_library_ignores_directories_without_a_registered_roll(tmp_path):
-    create_roll(tmp_path, "Roll A")
+    create_roll(tmp_path, "Roll A", film_kind="colour")
     (tmp_path / "not-a-roll").mkdir()
     (tmp_path / "some-file.txt").write_text("hello")
 
@@ -157,8 +184,8 @@ def test_scan_library_ignores_directories_without_a_registered_roll(tmp_path):
 
 
 def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
-    ok_dir = create_roll(tmp_path, "Roll A")
-    vanished_dir = create_roll(tmp_path, "Vanished Roll")
+    ok_dir = create_roll(tmp_path, "Roll A", film_kind="colour")
+    vanished_dir = create_roll(tmp_path, "Vanished Roll", film_kind="colour")
     import shutil
 
     shutil.rmtree(vanished_dir)
@@ -177,7 +204,7 @@ def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
 
 
 def test_scan_library_negative_count_is_every_negative(tmp_path):
-    roll_dir = create_roll(tmp_path, "Roll A")
+    roll_dir = create_roll(tmp_path, "Roll A", film_kind="colour")
     manifest = load_roll_manifest(roll_dir)
     manifest.negatives.append(_negative(negative_id="aaaaaa-negative-01"))
     manifest.negatives.append(
@@ -196,8 +223,8 @@ def test_scan_library_negative_count_is_every_negative(tmp_path):
 
 
 def test_roll_list_emits_one_event_for_the_whole_library(tmp_path):
-    create_roll(tmp_path, "Roll A")
-    create_roll(tmp_path, "Roll B")
+    create_roll(tmp_path, "Roll A", film_kind="colour")
+    create_roll(tmp_path, "Roll B", film_kind="colour")
 
     listings = scan_library(tmp_path)
 

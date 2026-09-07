@@ -1,5 +1,64 @@
 import Foundation
 
+/// The roll's film-base reference block (REBATE_ANCHORING §3.1), decoded
+/// from `roll info`'s `film_base` field.
+struct FilmBase: Sendable, Hashable {
+    struct Population: Sendable, Hashable {
+        let density: [Double]
+        let luma: Double
+        let areaFraction: Double
+        let cells: Int
+        let spread: Double
+    }
+
+    let density: [Double]
+    let lockedAt: String?
+    let sourceName: String
+    let populations: [Population]
+
+    /// The chosen population's rebate area as a percentage for display.
+    var areaFractionPercent: Int? {
+        guard let chosen = populations.first(where: { $0.density == density })
+            ?? populations.first
+        else { return nil }
+        return Int((chosen.areaFraction * 100).rounded())
+    }
+
+    init?(fields: [String: JSONValue]) {
+        guard
+            let density = fields["density"]?.arrayValue?.compactMap(\.doubleValue),
+            density.count == 3,
+            let sourceName = fields["source_name"]?.stringValue
+        else { return nil }
+
+        let populationFields = fields["populations"]?.arrayValue ?? []
+        let populations = populationFields.compactMap { entry -> Population? in
+            guard
+                let object = entry.objectValue,
+                let popDensity = object["density"]?.arrayValue?.compactMap(\.doubleValue),
+                popDensity.count == 3,
+                let luma = object["luma"]?.doubleValue,
+                let areaFraction = object["area_fraction"]?.doubleValue,
+                let cells = object["cells"]?.intValue,
+                let spread = object["spread"]?.doubleValue
+            else { return nil }
+            return Population(
+                density: popDensity,
+                luma: luma,
+                areaFraction: areaFraction,
+                cells: cells,
+                spread: spread
+            )
+        }
+        guard populations.count == populationFields.count else { return nil }
+
+        self.density = density
+        self.lockedAt = fields["locked_at"]?.stringValue
+        self.sourceName = sourceName
+        self.populations = populations
+    }
+}
+
 /// The parts of a roll's durable record the app needs, decoded from
 /// `roll info`'s `manifest` field — never read from disk (the record now
 /// lives in the library database; the shape came from the roll manifest
@@ -175,6 +234,7 @@ struct RollManifest: Sendable, Hashable {
         let colorHighlightMagenta: Double?
         let colorHighlightYellow: Double?
         let colorCastRemoval: Double?
+        let colorCastRemovalHighlights: Double?
         let colorDyeSeparation: Double?
         let colorSeparationDamping: Double?
         let colorTemperature: Double?
@@ -264,6 +324,9 @@ struct RollManifest: Sendable, Hashable {
     let metadata: Metadata
     /// The roll's frozen film kind (`colour` or `monochrome`), protocol 12.
     let filmKind: String?
+    /// The roll's film-base reference (REBATE_ANCHORING §3.1). `nil` when
+    /// the roll has none attached yet.
+    let filmBase: FilmBase?
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -285,7 +348,8 @@ struct RollManifest: Sendable, Hashable {
             runs: runs,
             negatives: negatives,
             metadata: metadata,
-            filmKind: filmKind
+            filmKind: filmKind,
+            filmBase: filmBase
         )
     }
 
@@ -299,7 +363,8 @@ struct RollManifest: Sendable, Hashable {
         runs: [Run],
         negatives: [Negative],
         metadata: Metadata,
-        filmKind: String? = nil
+        filmKind: String? = nil,
+        filmBase: FilmBase? = nil
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -309,6 +374,7 @@ struct RollManifest: Sendable, Hashable {
         self.negatives = negatives
         self.metadata = metadata
         self.filmKind = filmKind
+        self.filmBase = filmBase
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -345,6 +411,7 @@ struct RollManifest: Sendable, Hashable {
         self.negatives = negatives
         self.metadata = metadata
         self.filmKind = fields["film_kind"]?.stringValue
+        self.filmBase = fields["film_base"]?.objectValue.flatMap(FilmBase.init(fields:))
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {
@@ -444,6 +511,7 @@ struct RollManifest: Sendable, Hashable {
             colorHighlightMagenta: fields["color_highlight_magenta"]?.doubleValue,
             colorHighlightYellow: fields["color_highlight_yellow"]?.doubleValue,
             colorCastRemoval: fields["color_cast_removal"]?.doubleValue,
+            colorCastRemovalHighlights: fields["color_cast_removal_highlights"]?.doubleValue,
             colorDyeSeparation: fields["color_dye_separation"]?.doubleValue,
             colorSeparationDamping: fields["color_separation_damping"]?.doubleValue,
             colorTemperature: fields["color_temperature"]?.doubleValue,

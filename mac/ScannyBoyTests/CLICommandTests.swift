@@ -366,6 +366,39 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--cyan"))
     }
 
+    @Test("edit color with auto cast omits the global filtration sliders")
+    func editColorAutoCastArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.wbCyan = 0.2
+        adjustment.wbMagenta = -0.1
+        adjustment.wbYellow = 0.05
+        let command = CLICommand.editColor(
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: adjustment,
+            auto: .cast
+        )
+        #expect(command.arguments.contains("--auto-cast"))
+        #expect(!command.arguments.contains { $0 == "--cyan" })
+        #expect(!command.arguments.contains { $0 == "--magenta" })
+        #expect(!command.arguments.contains { $0 == "--yellow" })
+    }
+
+    @Test("edit color emits the highlight cast removal strength")
+    func editColorCastRemovalHighlightsArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.castRemovalHighlights = 0.4
+        let command = CLICommand.editColor(
+            roll: Self.out,
+            negatives: ["neg-01"],
+            adjustment: adjustment
+        )
+        #expect(command.arguments.contains("--cast-removal-highlights"))
+        let index = command.arguments.firstIndex(of: "--cast-removal-highlights")
+        #expect(index.map { command.arguments[$0 + 1] } == "0.4")
+        #expect(!command.arguments.contains("--auto-cast"))
+    }
+
     // MARK: - Protocol version 6: flat field
 
     @Test("run carries --flatfield when a profile is chosen")
@@ -425,6 +458,29 @@ struct CLICommandTests {
         #expect(
             CLICommand.flatfieldDelete(profile: "pid-1").arguments == [
                 "flatfield", "delete", "--profile", "pid-1",
+            ]
+        )
+    }
+
+    @Test("grid create names the preset and its dimensions")
+    func gridCreateArguments() {
+        let command = CLICommand.gridCreate(name: "Hasselblad", across: 4, down: 2)
+        #expect(
+            command.arguments == [
+                "grid", "create",
+                "--name", "Hasselblad",
+                "--across", "4",
+                "--down", "2",
+            ]
+        )
+    }
+
+    @Test("grid list and delete are shaped like CONTRACT.md says")
+    func gridListAndDeleteArguments() {
+        #expect(CLICommand.gridList().arguments == ["grid", "list"])
+        #expect(
+            CLICommand.gridDelete(profile: "pid-1").arguments == [
+                "grid", "delete", "--profile", "pid-1",
             ]
         )
     }
@@ -502,6 +558,65 @@ struct CLICommandTests {
             CLICommand.editListSpots(roll: Self.roll, negative: "n1").arguments
                 == ["edit", "list-spots", "--roll", "/Volumes/Scans/roll-12",
                     "--negative", "n1"]
+        )
+    }
+
+    @Test("roll init passes library and name, with optional film kind")
+    func rollInitArguments() {
+        let library = URL(filePath: "/Volumes/Scans/library")
+        #expect(
+            CLICommand.rollInit(library: library, name: "Tri-X").arguments
+                == [
+                    "roll", "init",
+                    "--library", "/Volumes/Scans/library",
+                    "--name", "Tri-X",
+                ]
+        )
+        #expect(
+            CLICommand.rollInit(library: library, name: "Tri-X", filmKind: "monochrome")
+                .arguments
+                == [
+                    "roll", "init",
+                    "--library", "/Volumes/Scans/library",
+                    "--name", "Tri-X",
+                    "--film-kind", "monochrome",
+                ]
+        )
+    }
+
+    @Test("roll set-film-kind passes roll and film kind")
+    func rollSetFilmKindArguments() {
+        let roll = URL(filePath: "/Volumes/Scans/roll-12")
+        #expect(
+            CLICommand.rollSetFilmKind(roll: roll, filmKind: "colour").arguments
+                == [
+                    "roll", "set-film-kind",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--film-kind", "colour",
+                ]
+        )
+    }
+
+    @Test("roll set-base-frame passes roll, frame, and optional flatfield")
+    func rollSetBaseFrameArguments() {
+        let roll = URL(filePath: "/Volumes/Scans/roll-12")
+        let frame = URL(filePath: "/Volumes/Scans/_DSC5012.NEF")
+        #expect(
+            CLICommand.rollSetBaseFrame(roll: roll, frame: frame).arguments
+                == [
+                    "roll", "set-base-frame",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
+                ]
+        )
+        #expect(
+            CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1").arguments
+                == [
+                    "roll", "set-base-frame",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
+                    "--flatfield", "pid-1",
+                ]
         )
     }
 }

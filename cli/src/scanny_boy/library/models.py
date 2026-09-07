@@ -258,3 +258,14 @@ class FlatFieldProfileRow(Base):
     geometry: Mapped[dict | None] = mapped_column(JSONText)
     chromatic_aberration: Mapped[dict | None] = mapped_column(JSONText)
     calibration_report: Mapped[dict | None] = mapped_column(JSONText)
+
+
+class GridProfileRow(Base):
+    __tablename__ = "grid_profiles"
+
+    profile_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Unique so the app's grouping picker is unambiguous.
+    name: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    across: Mapped[int] = mapped_column(Integer)
+    down: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(Text)

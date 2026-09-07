@@ -21,8 +21,9 @@ import Observation
 /// and `CONTRACT.md`'s `probe`). Every rule this type enforces beyond plain
 /// UI bookkeeping — contiguity, divisibility, setting consistency, roll
 /// overlap — is read back from a `probe --roll` call; this type only
-/// decides *when* to call `probe` and how to fold its result into
-/// `runEnabled`.
+/// decides *when* to call `probe` and how to fold its result into the UI.
+/// Selection, grid, roll, and flat-field profile are inert until Convert:
+/// `validateSelection()` runs the probe once, immediately before a run.
 @MainActor
 @Observable
 final class ConfigurationModel {
@@ -34,6 +35,7 @@ final class ConfigurationModel {
 
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
     static let lastFlatFieldProfileKey = "com.lonniesmith.scanny-boy.lastFlatFieldProfile"
+    static let lastGridProfileKey = "com.lonniesmith.scanny-boy.lastGridProfile"
 
     let runner: CLIRunner
     private let defaults: UserDefaults
@@ -47,6 +49,7 @@ final class ConfigurationModel {
             catalogue = []
             catalogueWarnings = []
             catalogueError = nil
+            clearValidationState()
             if let inputFolder {
                 Self.save(inputFolder, forKey: Self.lastInputFolderKey, in: defaults)
                 startCatalogueProbe(inputFolder: inputFolder)
@@ -66,7 +69,7 @@ final class ConfigurationModel {
     var selectedFiles: Set<String> = [] {
         didSet {
             guard selectedFiles != oldValue else { return }
-            scheduleValidation()
+            clearValidationState()
         }
     }
 
@@ -82,9 +85,26 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
-            scheduleValidation()
+            clearValidationState()
+            startRollFetch()
         }
     }
+
+    /// The roll's attached film-base reference, read from `roll info` when
+    /// `rollURL` changes (REBATE_ANCHORING §8). Required before Convert.
+    private(set) var filmBase: FilmBase?
+    private(set) var baseFrameError: Issue?
+    private(set) var isAttachingBaseFrame = false
+
+    /// The roll's film kind, read from `roll info` when `rollURL` changes
+    /// and set via `roll set-film-kind` from the Add Scans sheet. Required
+    /// before Convert.
+    private(set) var filmKind: String?
+    private(set) var filmKindLocked = false
+    private(set) var filmKindError: Issue?
+    private(set) var isSettingFilmKind = false
+
+    @ObservationIgnored private var rollTask: Task<Void, Never>?
 
     // MARK: - The batch's grouping
 
@@ -92,12 +112,10 @@ final class ConfigurationModel {
     /// `across` runs left-to-right in capture space, `down` top-to-bottom.
     /// `across` is `nil` until the user picks one on the Add Scans stage —
     /// that is the "not chosen yet" state, and it gates `runEnabled`.
-    /// Changing either stored dimension re-validates the selection, since
-    /// grouping and divisibility depend on the product.
     var across: Int? {
         didSet {
             guard across != oldValue else { return }
-            revalidateSelection()
+            clearValidationState()
         }
     }
 
@@ -113,7 +131,22 @@ final class ConfigurationModel {
             if let across, across * down > Self.maxPerNegative {
                 self.across = Self.maxPerNegative / down
             }
-            revalidateSelection()
+            clearValidationState()
+        }
+    }
+
+    /// The saved grid configuration preset chosen for this batch. When set,
+    /// `applyGridDimensions(from:)` fills `across` and `down` from the preset.
+    /// Persisted as the user's last choice, the same as the flat-field profile.
+    var gridProfileID: String? {
+        didSet {
+            guard gridProfileID != oldValue else { return }
+            if let gridProfileID {
+                defaults.set(gridProfileID, forKey: Self.lastGridProfileKey)
+            } else {
+                defaults.removeObject(forKey: Self.lastGridProfileKey)
+            }
+            clearValidationState()
         }
     }
 
@@ -125,10 +158,6 @@ final class ConfigurationModel {
     }
 
     static let maxPerNegative = 12
-
-    private func revalidateSelection() {
-        scheduleValidation()
-    }
 
     // MARK: - Flat field
 
@@ -145,7 +174,7 @@ final class ConfigurationModel {
             } else {
                 defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
             }
-            scheduleValidation()
+            clearValidationState()
         }
     }
 
@@ -156,10 +185,9 @@ final class ConfigurationModel {
 
     // MARK: - Status
 
-    /// The catalogue probe and the selection/roll validation probe are
+    /// The catalogue probe and the Convert-time validation probe are
     /// independent round trips; each clears only its own flag when it
-    /// finishes, so a UI gate reading a single shared flag could see "done"
-    /// while the other probe is still in flight.
+    /// finishes.
     private(set) var isCataloguing = false
     private(set) var isValidating = false
     var isProbing: Bool { isCataloguing || isValidating }
@@ -172,6 +200,7 @@ final class ConfigurationModel {
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
         flatFieldProfileID = defaults.string(forKey: Self.lastFlatFieldProfileKey)
+        gridProfileID = defaults.string(forKey: Self.lastGridProfileKey)
         if let inputFolder {
             startCatalogueProbe(inputFolder: inputFolder)
         }
@@ -189,18 +218,16 @@ final class ConfigurationModel {
         .outputNotWritable,
     ]
 
-    /// Every gate section 3.10 names — a chosen scans-per-negative, a
-    /// contiguous, divisible selection with consistent settings, targeting a
-    /// roll that validated — plus the flat-field profile the app requires
-    /// (docs/FLATFIELD_PLAN.md section 2.5). The Stitch button is offered
-    /// from here.
+    /// Form completeness for Convert — not validation success. Invalid
+    /// selections are discovered by clicking Convert, which calls
+    /// `validateSelection()`.
     var runEnabled: Bool {
         perNegative != nil
             && !selectedFiles.isEmpty
-            && selectionError == nil
-            && rollError == nil
             && rollURL != nil
             && flatFieldProfileID != nil
+            && filmKind != nil
+            && filmBase != nil
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -229,13 +256,17 @@ final class ConfigurationModel {
         selectedFiles = []
     }
 
-    /// The `run` invocation this configuration describes, or `nil` when it
-    /// does not yet describe a runnable one. `skipSources` is always empty:
-    /// every group in the selection runs and adopts whatever it overlaps in
-    /// the roll (the replacement rule). The flat-field profile rides along
-    /// as `--flatfield`, freely chosen for this run — the roll does not
-    /// lock to one.
-    func runCommand() -> CLICommand? {
+    /// Applies one saved grid preset's dimensions without clearing
+    /// `gridProfileID`.
+    func applyGridDimensions(from profile: GridProfile) {
+        down = profile.down
+        across = profile.across
+    }
+
+    /// The `run` invocation this configuration describes from its current
+    /// form fields, or `nil` when the form is incomplete. Does not require
+    /// prior validation — `ContentView` validates before starting a run.
+    func buildRunCommand() -> CLICommand? {
         guard runEnabled, let inputFolder, let rollURL, let across,
             let flatFieldProfileID
         else {
@@ -252,13 +283,129 @@ final class ConfigurationModel {
         )
     }
 
+    /// Backward-compatible alias for tests and call sites that expect the
+    /// old name.
+    func runCommand() -> CLICommand? {
+        buildRunCommand()
+    }
+
     // MARK: - Probing
 
-    /// Re-runs selection and roll validation. Chunk 10 calls this once a
-    /// conversion has ended: the roll now holds negatives it did not
-    /// before, so the selection may need re-validating.
-    func refreshValidation() {
-        scheduleValidation()
+    /// Clears grouping preview and validation results from a prior Convert
+    /// attempt. Called when any inert-until-Convert setting changes.
+    func clearValidationState() {
+        validationTask?.cancel()
+        validationTask = nil
+        groups = []
+        selectionWarnings = []
+        selectionError = nil
+        rollError = nil
+        baseFrameError = nil
+        filmKindError = nil
+        isValidating = false
+    }
+
+    /// Sets the roll's film kind immediately — gate failures surface inline,
+    /// not at Convert.
+    func setFilmKind(_ filmKind: String) async {
+        guard let rollURL else { return }
+        filmKindError = nil
+        isSettingFilmKind = true
+        defer { isSettingFilmKind = false }
+
+        let result = await Self.runSetFilmKind(
+            runner: runner,
+            roll: rollURL,
+            filmKind: filmKind
+        )
+        if let error = result.error {
+            filmKindError = error
+            return
+        }
+        self.filmKind = result.filmKind
+        filmKindLocked = result.filmKindLocked
+    }
+
+    /// Attaches or replaces the roll's film-base reference immediately
+    /// (REBATE_ANCHORING §8.1) — gate failures surface inline, not at
+    /// Convert.
+    func attachBaseFrame(at frameURL: URL) async {
+        guard let rollURL else { return }
+        baseFrameError = nil
+        isAttachingBaseFrame = true
+        defer { isAttachingBaseFrame = false }
+
+        let result = await Self.runSetBaseFrame(
+            runner: runner,
+            roll: rollURL,
+            frame: frameURL,
+            flatfield: flatFieldProfileID
+        )
+        for warning in result.warnings {
+            selectionWarnings.append(warning)
+        }
+        if let error = result.error {
+            baseFrameError = error
+            return
+        }
+        filmBase = result.filmBase
+    }
+
+    private func startRollFetch() {
+        rollTask?.cancel()
+        filmBase = nil
+        baseFrameError = nil
+        filmKind = nil
+        filmKindLocked = false
+        filmKindError = nil
+        guard let rollURL else { return }
+        rollTask = Task { [weak self, runner] in
+            let setup = await Self.fetchRollSetup(runner: runner, roll: rollURL)
+            guard let self, !Task.isCancelled else { return }
+            self.filmBase = setup.filmBase
+            self.filmKind = setup.filmKind
+            self.filmKindLocked = setup.filmKindLocked
+        }
+    }
+
+    /// Runs `probe --files` with the current selection, grid, roll, and
+    /// flat-field profile. Returns `true` when the selection is runnable.
+    /// Populates `groups`, warnings, and errors for the UI.
+    @discardableResult
+    func validateSelection() async -> Bool {
+        validationTask?.cancel()
+        guard let inputFolder, !selectedFiles.isEmpty, let across else {
+            clearValidationState()
+            return false
+        }
+
+        let rollURL = rollURL
+        let files = selectedFilesInCanonicalOrder
+        let flatFieldProfileID = flatFieldProfileID
+        let down = down
+
+        isValidating = true
+        let task = Task { [runner] () -> ProbeCallResult in
+            await Self.runProbe(
+                runner: runner,
+                command: .probe(
+                    input: inputFolder,
+                    files: files,
+                    roll: rollURL,
+                    across: across,
+                    down: down,
+                    flatfield: flatFieldProfileID
+                )
+            )
+        }
+        validationTask = Task {
+            _ = await task.value
+        }
+        let result = await task.value
+        guard !Task.isCancelled else { return false }
+        apply(result)
+        isValidating = false
+        return selectionError == nil && rollError == nil
     }
 
     private func startCatalogueProbe(inputFolder: URL) {
@@ -271,59 +418,6 @@ final class ConfigurationModel {
             self.catalogueWarnings = result.warnings
             self.catalogueError = result.error
             self.isCataloguing = false
-        }
-    }
-
-    /// Debounces `probe --roll` calls: a drag-select across many catalogue
-    /// rows fires this once per row, and each one tore down and rebuilt the
-    /// configuration form (see the fix note on `isProbing`'s consumers).
-    private static let validationDebounce = Duration.milliseconds(200)
-
-    private func scheduleValidation() {
-        validationTask?.cancel()
-        guard let inputFolder, !selectedFiles.isEmpty else {
-            groups = []
-            selectionWarnings = []
-            selectionError = nil
-            rollError = nil
-            isValidating = false
-            return
-        }
-
-        // Grouping and divisibility are per-batch: without a chosen
-        // grid width there is nothing to validate against yet.
-        guard let across else {
-            groups = []
-            selectionWarnings = []
-            selectionError = nil
-            rollError = nil
-            isValidating = false
-            return
-        }
-
-        let rollURL = rollURL
-        let files = selectedFilesInCanonicalOrder
-        let flatFieldProfileID = flatFieldProfileID
-        let down = down
-
-        isValidating = true
-        validationTask = Task { [weak self, runner] in
-            try? await Task.sleep(for: Self.validationDebounce)
-            guard !Task.isCancelled else { return }
-            let result = await Self.runProbe(
-                runner: runner,
-                command: .probe(
-                    input: inputFolder,
-                    files: files,
-                    roll: rollURL,
-                    across: across,
-                    down: down,
-                    flatfield: flatFieldProfileID
-                )
-            )
-            guard let self, !Task.isCancelled else { return }
-            self.apply(result)
-            self.isValidating = false
         }
     }
 
@@ -403,6 +497,130 @@ final class ConfigurationModel {
         return result
     }
 
+    private struct SetBaseFrameResult: Sendable {
+        var filmBase: FilmBase?
+        var warnings: [Issue] = []
+        var error: Issue?
+    }
+
+    private struct RollSetup: Sendable {
+        var filmBase: FilmBase?
+        var filmKind: String?
+        var filmKindLocked: Bool
+    }
+
+    private static func fetchRollSetup(runner: CLIRunner, roll: URL) async -> RollSetup {
+        var manifest: RollManifest?
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                guard case .event(let event) = output, event.kind == .rollInfo,
+                    let fields = event.manifest
+                else { continue }
+                manifest = RollManifest(fields: fields)
+            }
+        } catch {
+            return RollSetup(filmBase: nil, filmKind: nil, filmKindLocked: false)
+        }
+        return RollSetup(
+            filmBase: manifest?.filmBase,
+            filmKind: manifest?.filmKind,
+            filmKindLocked: !(manifest?.runs.isEmpty ?? true)
+        )
+    }
+
+    private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {
+        await fetchRollSetup(runner: runner, roll: roll).filmBase
+    }
+
+    private static func runSetBaseFrame(
+        runner: CLIRunner,
+        roll: URL,
+        frame: URL,
+        flatfield: String?
+    ) async -> SetBaseFrameResult {
+        var result = SetBaseFrameResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetBaseFrame(roll: roll, frame: frame, flatfield: flatfield)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .baseFrameSet:
+                        succeeded = true
+                    case .warning:
+                        if let code = event.code, let message = event.message {
+                            result.warnings.append(Issue(code: code, message: message))
+                        }
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = Issue(code: code, message: message)
+                        }
+                    default:
+                        break
+                    }
+                case .log, .failure, .completed:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            result.filmBase = await fetchFilmBase(runner: runner, roll: roll)
+        }
+        return result
+    }
+
+    private struct SetFilmKindResult: Sendable {
+        var filmKind: String?
+        var filmKindLocked = false
+        var error: Issue?
+    }
+
+    private static func runSetFilmKind(
+        runner: CLIRunner,
+        roll: URL,
+        filmKind: String
+    ) async -> SetFilmKindResult {
+        var result = SetFilmKindResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetFilmKind(roll: roll, filmKind: filmKind)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = Issue(code: code, message: message)
+                        }
+                    default:
+                        break
+                    }
+                case .completed(let completion):
+                    if completion.outcome == .success {
+                        succeeded = true
+                    }
+                case .log, .failure:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            let setup = await fetchRollSetup(runner: runner, roll: roll)
+            result.filmKind = setup.filmKind
+            result.filmKindLocked = setup.filmKindLocked
+        }
+        return result
+    }
+
     // MARK: - Testing
 
     /// Waits for any probe currently in flight to finish applying its
@@ -411,5 +629,6 @@ final class ConfigurationModel {
     func waitForPendingProbes() async {
         await catalogueTask?.value
         await validationTask?.value
+        await rollTask?.value
     }
 }

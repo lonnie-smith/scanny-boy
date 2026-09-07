@@ -176,3 +176,141 @@ enum RunFailureText {
         }
     }
 }
+
+enum FilmKindChoice: String, CaseIterable, Identifiable {
+    case colour
+    case monochrome
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .colour: "Color / chromogenic B&W"
+        case .monochrome: "Silver B&W"
+        }
+    }
+}
+
+/// The Add Scans sheet's film-type picker. Choosing a value calls
+/// `roll set-film-kind` immediately; Convert stays disabled until one is set.
+struct FilmKindField: View {
+    let filmKind: String?
+    let isLocked: Bool
+    let isBusy: Bool
+    let error: ConfigurationModel.Issue?
+    let onChoose: (FilmKindChoice) -> Void
+
+    @State private var selection: FilmKindChoice?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Film type", selection: $selection) {
+                Text("Choose…").tag(FilmKindChoice?.none)
+                ForEach(FilmKindChoice.allCases) { choice in
+                    Text(choice.label).tag(Optional.some(choice))
+                }
+            }
+            .disabled(isLocked || isBusy)
+            .accessibilityIdentifier("addScansFilmKindPicker")
+            .onChange(of: selection) { _, newValue in
+                guard let newValue, newValue.rawValue != filmKind else { return }
+                onChoose(newValue)
+            }
+            .onAppear(perform: syncSelection)
+            .onChange(of: filmKind) { _, _ in syncSelection() }
+            if isLocked {
+                Text("Locked when this roll's first negative was converted.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if filmKind == nil {
+                Text("Choose the film type before converting scans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error {
+                IssueLabel(issue: error, style: .error)
+            }
+        }
+    }
+
+    private func syncSelection() {
+        selection = filmKind.flatMap(FilmKindChoice.init(rawValue:))
+    }
+}
+
+/// The Add Scans sheet's film-base reference field (REBATE_ANCHORING §8.1).
+/// Choosing a file calls `roll set-base-frame` immediately; Convert stays
+/// disabled until a frame is attached.
+struct BaseFrameField: View {
+    let filmBase: FilmBase?
+    let isBusy: Bool
+    let error: ConfigurationModel.Issue?
+    let onChoose: () -> Void
+    let onReplace: () -> Void
+
+    var body: some View {
+        LabeledContent("Film Base reference") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let filmBase {
+                    attachedSummary(filmBase)
+                } else {
+                    emptyState
+                }
+                if let error {
+                    IssueLabel(issue: error, style: .error)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func attachedSummary(_ filmBase: FilmBase) -> some View {
+        Text(filmBase.sourceName)
+            .font(.body.monospaced())
+        Text(densitySummary(filmBase.density))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        if let percent = filmBase.areaFractionPercent {
+            Text("rebate: \(percent)% of frame")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        if let lockedAt = filmBase.lockedAt {
+            Text("locked when this roll's first negative was converted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Locked \(Self.formatLockDate(lockedAt)).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Button("Replace…") { onReplace() }
+                .disabled(isBusy)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button("Choose…") { onChoose() }
+                .disabled(isBusy)
+            Text(Self.captureInstructions)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func densitySummary(_ density: [Double]) -> String {
+        density.map { String(format: "%.2f", $0) }.joined(separator: ", ")
+    }
+
+    private static let captureInstructions = """
+        Frame a piece of leader (or any stretch where clear rebate dominates \
+        the frame). Keep bare light and sprocket holes out of the frame. \
+        Expose about two stops darker than your scans, so the rebate sits \
+        near the middle of the camera's histogram. Don't go past three stops.
+        """
+
+    private static func formatLockDate(_ iso: String) -> String {
+        String(iso.prefix(10))
+    }
+}

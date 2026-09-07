@@ -36,20 +36,63 @@ struct ConfigurationModelTests {
     /// `withFilesAndRoll`, `--files` alone (no `--roll`) routes to
     /// `withFiles`, and a bare `--input` routes to `catalogueOnly` — the same
     /// three call shapes `ConfigurationModel` actually makes. `roll info`
-    /// (section 3.1: `roll` is read back through the CLI, never from disk)
-    /// is distinguished by its own leading subcommand, `$1`, rather than
-    /// folded into the `$*` routing below, which only ever sees `probe`
-    /// invocations.
+    /// and `roll set-base-frame` / `roll set-film-kind` are distinguished by
+    /// `$1 $2`.
     private static func fakeProbeExecutable(
         in directory: URL,
         catalogueOnly: [String],
         withFiles: [String] = [],
-        withFilesAndRoll: [String] = []
+        withFilesAndRoll: [String] = [],
+        rollInfoLines: [String]? = nil,
+        setBaseFrameLines: [String] = [],
+        setFilmKindLines: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
         }
+        let defaultRollInfo = [
+            TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+            rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+            finishedSuccess,
+        ]
+        let resolvedRollInfo = rollInfoLines ?? defaultRollInfo
+        let baseMarker = directory.appending(path: ".film-base-attached").path
+        let kindMarker = directory.appending(path: ".film-kind-set").path
+        let defaultSetFilmKindSuccess = [
+            TestEvents.line(#"{"event":"started","command":"roll set-film-kind"}"#),
+            finishedSuccess,
+        ]
         let script = """
+            BASE_MARKER='\(baseMarker)'
+            KIND_MARKER='\(kindMarker)'
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+            if [ -f "$BASE_MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+                finishedSuccess,
+            ]))
+            elif [ -f "$KIND_MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: "null", filmKind: "monochrome"),
+                finishedSuccess,
+            ]))
+            else
+            \(echoLines(resolvedRollInfo))
+            fi
+                exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-base-frame" ]; then
+            touch "$BASE_MARKER"
+            \(echoLines(setBaseFrameLines.isEmpty ? defaultSetBaseFrameSuccess : setBaseFrameLines))
+                exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-film-kind" ]; then
+            touch "$KIND_MARKER"
+            \(echoLines(setFilmKindLines.isEmpty ? defaultSetFilmKindSuccess : setFilmKindLines))
+                exit 0
+            fi
             case "$*" in
               *--roll*)
             \(echoLines(withFilesAndRoll))
@@ -64,6 +107,28 @@ struct ConfigurationModelTests {
             """
         return try TestSupport.writeTestExecutable(script, in: directory)
     }
+
+    private static func attachedFilmBaseJSON() -> String {
+        """
+        {"density":[-0.42,-0.12,-0.99],"locked_at":null,"source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}
+        """
+    }
+
+    private static func rollInfoEvent(filmBaseJSON: String, filmKind: String? = "colour") -> String {
+        let filmKindJSON = filmKind.map { "\"\($0)\"" } ?? "null"
+        let manifest = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON)}
+        """
+        return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
+    }
+
+    private static let defaultSetBaseFrameSuccess = [
+        TestEvents.line(#"{"event":"started","command":"roll set-base-frame"}"#),
+        TestEvents.line(
+            #"{"event":"base_frame_set","roll_id":"roll-1","source_name":"_DSC5013.NEF","density":[-0.42,-0.12,-0.99],"area_fraction":0.44,"population_count":1,"locked":false}"#
+        ),
+        finishedSuccess,
+    ]
 
     private static let started = TestEvents.line(#"{"event":"started","command":"probe"}"#)
     private static let finishedSuccess =
@@ -173,7 +238,9 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
         model.across = 3
-        await model.waitForPendingProbes()
+
+        #expect(model.groups.isEmpty)
+        #expect(await model.validateSelection())
 
         #expect(model.groups == [
             ["n1.NEF", "n2.NEF", "n3.NEF"],
@@ -182,24 +249,27 @@ struct ConfigurationModelTests {
         #expect(model.selectionError == nil)
     }
 
-    // MARK: - Run remains disabled
+    // MARK: - Convert-time validation
 
     @Test(
-        "Run is disabled while the selection itself is invalid",
+        "validateSelection surfaces selection errors without blocking runEnabled",
         arguments: [
             ("NON_CONTIGUOUS_SELECTION", CLICode.nonContiguousSelection),
             ("NOT_DIVISIBLE", CLICode.notDivisible),
             ("CAPTURE_SETTINGS_DIFFER", CLICode.captureSettingsDiffer),
         ]
     )
-    func runDisabledForSelectionError(_ scenario: (code: String, expected: CLICode)) async throws {
+    func validateSelectionSurfacesSelectionError(_ scenario: (code: String, expected: CLICode)) async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
         let executable = try Self.fakeProbeExecutable(
             in: directory,
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
-            withFiles: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed]
+            withFiles: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed],
+            withFilesAndRoll: [Self.started, Self.errorEvent(code: scenario.code), Self.finishedFailed]
         )
         let model = ConfigurationModel(
             runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
@@ -207,13 +277,16 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
 
+        #expect(model.runEnabled == true)
+        #expect(await model.validateSelection() == false)
         #expect(model.selectionError?.code == scenario.expected)
         #expect(model.rollError == nil)
-        #expect(model.runEnabled == false)
     }
 
     @Test("Run is disabled until a roll is selected, a grouping and a profile are chosen")
@@ -236,33 +309,142 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
 
         #expect(model.rollURL == nil)
         #expect(model.runEnabled == false)
 
         model.rollURL = rollDir
-        await model.waitForPendingProbes()
 
-        // Everything else validates now, but two choices remain: the
-        // batch's scans-per-negative and the app-required flat-field
-        // profile (docs/FLATFIELD_PLAN.md section 2.5).
+        // Four choices remain: film type, the batch's scans-per-negative,
+        // the app-required flat-field profile, and the film-base reference.
+        await model.waitForPendingProbes()
         #expect(model.selectionError == nil)
         #expect(model.rollError == nil)
         #expect(model.runEnabled == false)
 
         model.across = 3
-        await model.waitForPendingProbes()
         #expect(model.runEnabled == false)
 
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
-
+        #expect(model.filmKind == "colour")
+        #expect(model.filmBase != nil)
         #expect(model.runEnabled == true)
     }
 
-    @Test("Choosing scans-per-negative re-validates the selection")
-    func changingPerNegativeRevalidates() async throws {
+    @Test("runEnabled stays off until a film type is chosen")
+    func runEnabledGatesOnFilmKind() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: Self.attachedFilmBaseJSON(), filmKind: nil),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(model.filmKind == nil)
+        #expect(model.runEnabled == false)
+
+        await model.setFilmKind("monochrome")
+        #expect(model.filmKind == "monochrome")
+        #expect(model.runEnabled == true)
+    }
+
+    @Test("runEnabled stays off until a base frame is attached")
+    func runEnabledGatesOnFilmBase() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(model.filmBase == nil)
+        #expect(model.runEnabled == false)
+    }
+
+    @Test("rollSetBaseFrame command shape")
+    func rollSetBaseFrameCommandShape() throws {
+        let roll = URL(filePath: "/tmp/roll")
+        let frame = URL(filePath: "/tmp/_DSC5012.NEF")
+        let command = CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1")
+        #expect(command.arguments == [
+            "roll", "set-base-frame",
+            "--roll", roll.path,
+            "--frame", frame.path,
+            "--flatfield", "pid-1",
+        ])
+    }
+
+    @Test("attachBaseFrame refreshes filmBase from roll info")
+    func attachBaseFrameRefreshesFilmBase() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let frame = directory.appending(path: "_DSC5013.NEF")
+        try Data().write(to: frame)
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        #expect(model.filmBase == nil)
+
+        await model.attachBaseFrame(at: frame)
+        #expect(model.filmBase?.sourceName == "_DSC5012.NEF")
+        #expect(model.baseFrameError == nil)
+    }
+
+    @Test("Changing grid size clears groups until validateSelection runs")
+    func changingPerNegativeClearsGroups() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -282,23 +464,23 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.selectedFiles = Set(Self.sixFileNames)
-        await model.waitForPendingProbes()
 
         // No grouping chosen: no groups to preview and nothing validated.
         #expect(model.groups.isEmpty)
-        #expect(model.isProbing == false)
+        #expect(model.isValidating == false)
 
         model.across = 3
-        await model.waitForPendingProbes()
+        #expect(model.groups.isEmpty)
 
+        #expect(await model.validateSelection())
         #expect(model.groups == [
             ["n1.NEF", "n2.NEF", "n3.NEF"],
             ["n4.NEF", "n5.NEF", "n6.NEF"],
         ])
     }
 
-    @Test("A roll-related probe failure blocks Run without touching the selection error")
-    func runDisabledForRollError() async throws {
+    @Test("A roll-related probe failure surfaces at validateSelection without blocking runEnabled")
+    func validateSelectionSurfacesRollError() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -319,13 +501,47 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        await model.waitForPendingProbes()
+        model.flatFieldProfileID = "pid-1"
 
+        #expect(model.runEnabled == true)
+        #expect(await model.validateSelection() == false)
         #expect(model.rollError?.code == .rollNotFound)
         #expect(model.selectionError == nil)
-        #expect(model.runEnabled == false)
+    }
+
+    @Test("Changing selection after a failed validateSelection clears stale errors")
+    func changingSelectionClearsStaleErrors() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            withFilesAndRoll: [Self.started, Self.errorEvent(code: "NOT_DIVISIBLE"), Self.finishedFailed]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.flatFieldProfileID = "pid-1"
+
+        #expect(await model.validateSelection() == false)
+        #expect(model.selectionError != nil)
+
+        model.selectedFiles = ["a.NEF", "b.NEF"]
+        #expect(model.selectionError == nil)
+        #expect(model.groups.isEmpty)
     }
 
     // MARK: - Chunk P3-11's additions: rolls and the overlap sheet
@@ -350,13 +566,12 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
 
-        let command = try #require(model.runCommand())
+        let command = try #require(model.buildRunCommand())
         #expect(command.arguments.contains("--roll"))
         #expect(command.arguments.contains(rollDir.path))
         #expect(!command.arguments.contains("--film-date"))
@@ -390,16 +605,15 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
 
         // Overlapping a negative already in the roll is never a reason to
         // withhold the Run command — every group runs and supersedes
         // whatever it overlaps.
-        let command = try #require(model.runCommand())
+        let command = try #require(model.buildRunCommand())
         #expect(!command.arguments.contains("--skip-sources"))
     }
 
@@ -434,8 +648,43 @@ struct ConfigurationModelTests {
         #expect(model.flatFieldProfileID == "pid-mine")
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        await model.waitForPendingProbes()
         #expect(model.runEnabled == true)
+    }
+
+    @Test("Changing roll or profile does not invoke probe --files before Convert")
+    func configurationChangesDoNotProbeBeforeConvert() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let argvPath = directory.appending(path: "argv", directoryHint: .notDirectory)
+        let script = """
+            printf '%s\\n' "$@" >> '\(argvPath.path)'
+            case "$*" in
+              *--files*) echo 'files probe should not run yet'; exit 1 ;;
+              *) echo '\(Self.started)'
+                 echo '\(Self.catalogueABC)'
+                 echo '\(Self.finishedSuccess)' ;;
+            esac
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.across = 3
+        model.flatFieldProfileID = "pid-1"
+        await model.waitForPendingProbes()
+
+        let argv = try String(contentsOf: argvPath, encoding: .utf8)
+        #expect(!argv.contains("--files"))
     }
 
     @Test("An explicit profile choice survives a relaunch")
@@ -458,18 +707,16 @@ struct ConfigurationModelTests {
         #expect(second.flatFieldProfileID == "pid-1")
     }
 
-    @Test("The validation probe carries --flatfield once a profile is chosen")
+    @Test("validateSelection carries --flatfield when a profile is chosen")
     func validationProbeCarriesFlatField() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        // The fake helper records its argv so the test can assert the probe
-        // invocation's shape, not just the run command's.
         let argvPath = directory.appending(path: "argv", directoryHint: .notDirectory)
         let script = """
             printf '%s\\n' "$@" >> '\(argvPath.path)'
             echo '\(Self.started)'
-            echo '\(Self.catalogueABC)'
+            echo '\(Self.threeFileGroupNoOverlap)'
             echo '\(Self.finishedSuccess)'
             """
         let executable = try TestSupport.writeTestExecutable(script, in: directory)
@@ -483,10 +730,15 @@ struct ConfigurationModelTests {
         model.inputFolder = directory
         await model.waitForPendingProbes()
         model.rollURL = rollDir
+        await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         model.flatFieldProfileID = "pid-1"
-        await model.waitForPendingProbes()
+
+        let argvBefore = try String(contentsOf: argvPath, encoding: .utf8)
+        #expect(!argvBefore.contains("--flatfield"))
+
+        #expect(await model.validateSelection())
 
         let argv = try String(contentsOf: argvPath, encoding: .utf8)
             .split(separator: "\n")

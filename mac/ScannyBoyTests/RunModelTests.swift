@@ -59,6 +59,18 @@ struct RunModelTests {
 
     private static let runID = "run-0001"
 
+    private static func rollInfoShellBlock() -> String {
+        let lines = [
+            TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+            TestEvents.line(
+                #"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":"colour","film_base":{"density":[-0.42,-0.12,-0.99],"locked_at":null,"source_name":"_DSC5012.NEF","populations":[{"density":[-0.42,-0.12,-0.99],"luma":-0.25,"area_fraction":0.44,"cells":34100,"spread":0.012}]}}}"#
+            ),
+            TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#),
+        ]
+        return lines.map { "echo '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
+            .joined(separator: "\n")
+    }
+
     private static let started =
         TestEvents.line(#"{"event":"started","command":"prepare","run_id":"run-0001"}"#)
 
@@ -67,9 +79,12 @@ struct RunModelTests {
     }
 
     private static func progress(
-        sourceIndex: Int, step: String, completed: Int, total: Int
+        sourceIndex: Int, step: String, completed: Int, total: Int, stage: String? = nil
     ) -> String {
-        TestEvents.line(#"{"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)}"#)
+        let stageField = stage.map { #","stage":"\#($0)""# } ?? ""
+        return TestEvents.line(
+            #"{"event":"progress","run_id":"run-0001","source_index":\#(sourceIndex),"step":"\#(step)","completed":\#(completed),"total":\#(total)\#(stageField)}"#
+        )
     }
 
     private static func itemDone(sourceIndex: Int, output: String) -> String {
@@ -445,6 +460,113 @@ struct RunModelTests {
         #expect(run.completionSummary == "The command-line helper could not be run.")
     }
 
+    // MARK: - Re-entry during `.finishing`
+
+    /// `finish()` includes a real CLI round trip (`roll info` read-back), so
+    /// the model sits in `.finishing` for real seconds. Starting a run — or
+    /// clearing results — during that window must not let the stale
+    /// `finish()` resume and clobber the newer state.
+    @Test(
+        "A run started while the previous run is finishing is not clobbered by it",
+        .timeLimit(.minutes(2))
+    )
+    func startDuringFinishingIsNotClobbered() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // The main invocation answers immediately; the follow-up `roll info`
+        // that `finish()` waits on sleeps, holding the model in `.finishing`.
+        // Once the marker file exists, the same script drives the *second*
+        // run: its main invocation stays alive long enough to still be
+        // running when the stale `finish()` resumes.
+        let marker = directory.appending(path: "second-run", directoryHint: .notDirectory)
+        let rollInfo = Self.rollInfoEvent(runStatus: "complete", negativeStatus: "completed")
+        let script = """
+            if [ "$1" = "roll" ]; then
+            sleep 1
+            echo '\(rollInfo)'
+            exit 0
+            fi
+            if [ -f "\(marker.path)" ]; then
+            sleep 2.5
+            fi
+            echo '\(Self.started)'
+            echo '\(Self.finished(status: "success", exitStatus: 0))'
+            exit 0
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+
+        let run = RunModel(runner: CLIRunner(executable: executable))
+        run.start(
+            command: CLICommand(arguments: ["run"]),
+            files: ["a.NEF"],
+            outputFolder: directory
+        )
+        // Wait until the stale finish() is suspended on its roll-info read-back.
+        try await Self.waitUntil { run.phase == .finishing }
+
+        FileManager.default.createFile(atPath: marker.path, contents: Data())
+        run.start(
+            command: CLICommand(arguments: ["run"]),
+            files: ["b.NEF"],
+            outputFolder: directory
+        )
+
+        // Wait until the stale finish() has resumed (its roll-info sleep ends
+        // ~1s in) and confirm the new run is still in flight: without the
+        // generation guard the stale finish() would pin phase to `.finished`.
+        try await Task.sleep(for: .milliseconds(1400))
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(run.phase == .running)
+
+        await run.waitForCompletion()
+        #expect(run.phase == .finished)
+        #expect(run.outcome == .success)
+        #expect(run.invocation == .run)
+        #expect(run.outputFolder == directory)
+    }
+
+    @Test(
+        "Clearing results while the previous run is finishing stays cleared",
+        .timeLimit(.minutes(2))
+    )
+    func clearDuringFinishingStaysCleared() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollInfo = Self.rollInfoEvent(runStatus: "complete", negativeStatus: "completed")
+        let script = """
+            if [ "$1" = "roll" ]; then
+            sleep 1
+            echo '\(rollInfo)'
+            exit 0
+            fi
+            echo '\(Self.started)'
+            echo '\(Self.finished(status: "success", exitStatus: 0))'
+            exit 0
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+
+        let run = RunModel(runner: CLIRunner(executable: executable))
+        run.start(
+            command: CLICommand(arguments: ["run"]),
+            files: ["a.NEF"],
+            outputFolder: directory
+        )
+        try await Self.waitUntil { run.phase == .finishing }
+
+        run.clearResults()
+        #expect(run.phase == .idle)
+
+        // Give the suspended finish() time to resume if it would resurrect
+        // the cleared state — it used to restore `.finished` and the manifest
+        // report onto the model that was just cleared.
+        try await Task.sleep(for: .seconds(1.5))
+        #expect(run.phase == .idle)
+        #expect(run.rollManifestReport == nil)
+        #expect(run.outcome == nil)
+    }
+
     // MARK: - The manifest a run leaves behind
 
     @Test("A complete manifest is read back as a final one")
@@ -544,7 +666,8 @@ struct RunModelTests {
             #"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[{"negative_id":"r-negative-01","expected_output":"a.tif","run_id":"r","overlapping_sources":["a.NEF","b.NEF","c.NEF"],"group_index":0}]}"#
         )
         let script = """
-            if [ "$1" = "roll" ]; then
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+            \(Self.rollInfoShellBlock())
             exit 0
             fi
             case "$*" in
@@ -598,7 +721,8 @@ struct RunModelTests {
             #"{"event":"probe_result","catalogue":["a.NEF","b.NEF","c.NEF"],"warnings":[],"groups":[["a.NEF","b.NEF","c.NEF"]],"roll_overlap":[]}"#
         )
         let script = """
-            if [ "$1" = "roll" ]; then
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+            \(Self.rollInfoShellBlock())
             exit 0
             fi
             case "$*" in
@@ -718,6 +842,34 @@ struct RunModelTests {
 
         #expect(run.stage == "stitch")
         #expect(run.currentStep == .warp)
+    }
+
+    /// The stitch stage's `source_index` is the index of the *negative*
+    /// within the batch (`stitch_pipeline.py`'s `source_index_by_group`), not
+    /// of a file in the selection — mapping it through `sourceNames` names a
+    /// frame from the wrong half of the selection.
+    @Test("A stitch-stage progress names the negative, not a selection file")
+    func stitchStageProgressNamesTheNegative() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.fakeConvertExecutable(
+            emitting: [
+                Self.started,
+                Self.progress(sourceIndex: 1, step: "warp", completed: 8, total: 10, stage: "stitch"),
+                Self.finished(status: "success", exitStatus: 0),
+            ],
+            in: directory
+        )
+
+        let run = RunModel(runner: CLIRunner(executable: executable))
+        run.start(
+            command: CLICommand(arguments: ["run"]), files: Self.sixFiles, outputFolder: directory
+        )
+        await run.waitForCompletion()
+
+        #expect(run.stage == "stitch")
+        #expect(run.currentFilename == "Negative 2")
     }
 
     @Test("A run reads the roll manifest, not the convert manifest, from the output folder")

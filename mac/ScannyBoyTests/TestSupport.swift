@@ -197,6 +197,26 @@ enum BareLightReference {
         """
 }
 
+/// The committed synthetic base frame at `tests/fixtures/base-frame/base-frame.dng`
+/// — regenerate with `cli/tools/generate_base_frame_dng.py`. Integration
+/// scenarios attach it through `roll set-base-frame` before converting.
+enum BaseFrameReference {
+    static let url = TestSupport.repositoryRoot
+        .appending(path: "tests/fixtures/base-frame/base-frame.dng")
+
+    static var isAvailable: Bool {
+        FileManager.default.isReadableFile(atPath: url.path)
+    }
+
+    static let unavailableComment: Comment = """
+        The synthetic base-frame fixture is not present at \
+        tests/fixtures/base-frame/base-frame.dng. Regenerate it with \
+        uv run --project cli python cli/tools/generate_base_frame_dng.py. \
+        No base frame could be attached, so the scenarios that need one did \
+        not run.
+        """
+}
+
 /// The slow integration scenarios — real multi-minute conversions, runs,
 /// and forced-stop/recovery cycles against the bundled helper. They skip
 /// unless the run explicitly asks for them, so an ordinary `xcodebuild

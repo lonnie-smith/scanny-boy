@@ -89,10 +89,16 @@ def unique_folder_name(library: Path, slug: str) -> str:
     )
 
 
-def create_roll(library: Path, name: str) -> Path:
+def create_roll(
+    library: Path, name: str, film_kind: str | None = None
+) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
     write an empty v3 manifest into it via `new_roll_manifest`. Returns the
     roll's directory.
+
+    `film_kind`, when given, is `"colour"` or `"monochrome"`. When omitted,
+    the roll is created without a `film` block; the user chooses on the Add
+    Scans stage via `roll set-film-kind`.
 
     A roll records no grouping of its own: `shots_per_negative` is each
     stitch batch's choice (`run`/`convert --per-negative`, stored in the
@@ -105,9 +111,27 @@ def create_roll(library: Path, name: str) -> Path:
     manifest = new_roll_manifest(
         roll_id=str(uuid.uuid4()),
         roll_name=name,
+        film_kind=film_kind,
     )
     write_roll_manifest(roll_dir, manifest)
     return roll_dir
+
+
+def set_film_kind(roll_dir: Path, film_kind: str) -> None:
+    """Attach the roll's film kind before its first run. Refuses once the
+    roll has been stitched — the kind is frozen for the life of the roll."""
+    manifest = repo.load_roll(roll_dir)
+    if manifest.runs:
+        raise RollFolderError(
+            Code.FILM_KIND_LOCKED,
+            "this roll's film kind was frozen when its first negative was "
+            "converted; create a new roll to use a different film kind",
+        )
+    from scanny_boy.icc_profile import profile_record, published_profile_kind
+
+    manifest.film = {"kind": film_kind}
+    manifest.published_icc_profile = profile_record(published_profile_kind(film_kind))
+    write_roll_manifest(roll_dir, manifest)
 
 
 def rename_roll(roll_dir: Path, new_name: str) -> Path:

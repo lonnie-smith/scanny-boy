@@ -237,7 +237,7 @@ def make_out_dir(tmp_path: Path, name: str = "out") -> Path:
     return out
 
 
-def make_roll_dir(tmp_path: Path, name: str = "out") -> Path:
+def make_roll_dir(tmp_path: Path, name: str = "out", *, film_kind: str = "colour") -> Path:
     """A real, empty roll, written through P3-2's own writer.
 
     Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
@@ -250,6 +250,7 @@ def make_roll_dir(tmp_path: Path, name: str = "out") -> Path:
     manifest = new_roll_manifest(
         roll_id=f"00000000-0000-4000-8000-0000000000{len(name):02d}",
         roll_name=name,
+        film_kind=film_kind,
     )
     attach_base_frame(manifest)
     write_roll_manifest(roll, manifest)
@@ -309,12 +310,6 @@ def run_stitch_with_defaults(work_dir, out_dir, *, events=None, cancel=None, **k
         "overwrite": False,
         "allow_partial": False,
         "jobs": 1,
-        # These synthetic fixtures stack one plane into all three channels
-        # (perfectly indistinguishable from a real monochrome negative
-        # under MONOCHROME_PLAN §1's detector), which is not what most of
-        # these tests are exercising; force the colour path explicitly. A
-        # test of the monochrome feature itself overrides this.
-        "film_kind": "colour",
     }
     defaults.update(kwargs)
     return run_stitch(

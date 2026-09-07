@@ -388,9 +388,15 @@ in linear light, which is where they are physically correct:
 1. `to_log_density`: `D = log10(clamp(I, 1e-6, 1))` — where a negative's
    picture information lives (a linear uint16 spends ~11.3 effective bits
    at the dense end; log-encoding is uniform 16 at the same file size).
-2. `block_median_grid`: a b×b block-median prefilter to an `ANALYSIS_GRID`
-   (1024)-bounded grid — isolated extremes vanish, and the statistics are
-   nearly resolution-invariant.
+2. `block_median_grid`: a b×b block-median prefilter with b pinned at
+   `ANALYSIS_BLOCK_PX` (6) source pixels — isolated extremes vanish, and
+   the statistics are shape-invariant. The cell is fixed and the grid's
+   dimensions grow with the canvas, so one frame, a strip and an R×C grid
+   all meter on the same piece of film. (Until protocol v4 the rule
+   bounded the grid's *long side* at 1024 instead, which tied the cell to
+   the canvas's aspect ratio: 6 px on one frame, 22 px on a 5×2's canvas,
+   and a floor that drifted 0.049 log10 D between them on identical
+   content.)
 3. The **rebate detector** (`detect_rebate`) excludes film rebate / clear
    base from the analysis region; the region itself is the caller's
    `largest_valid_rect` — see §12 for why it is applied now.

@@ -39,8 +39,48 @@ from scanny_boy.events import Code
 # --- section 3.3: the constants, ported verbatim from NegPy's
 # EXPOSURE_CONSTANTS. Production code reads them from here and nowhere else.
 
-# Side of the block-median prefilter grid.
-ANALYSIS_GRID = 1024
+# Side of the block-median prefilter's cell, in *source-frame* pixels.
+#
+# Pinned, deliberately, rather than derived from the canvas. The rule this
+# replaced was `b = ceil(max(h, w) / 1024)`, which bounded the grid's long
+# side and so tied the cell to the canvas's *aspect ratio*: at the target
+# grid workload (docs/GRID_STITCH_PLAN.md section 7.1) one 6000x4000 frame
+# gives b = 6 while a 5x2's 22000x6667 canvas gives b = 22, a 13x larger
+# cell over a grid holding 2.2x *fewer* samples. Measured on one frame
+# tiled to each canvas size, so the film content per unit area is
+# identical, the meters drifted monotonically with grid shape: the floor
+# lifted 0.049 log10 D and the span contracted 0.057 (3.8%) from 1x1 to
+# 5x2 — about 0.19 stop of black point, on the same negative. Nothing
+# caught it: `CLAMP_MIN_WINDOW` is 0.5 log10 D, nine times too coarse.
+#
+# A pinned cell removes the variable instead of making it a function of
+# the grid, which is what every consumer actually wants — the meters, both
+# border detectors and the neutral residual's 3x3 neighbourhood are all
+# statements about a physical scale on film. It also makes
+# `film_base`'s measurement, which always runs on a single frame, use
+# literally the same reduction as the per-negative path, which is what
+# docs/REBATE_ANCHORING.md section 2.2 already claims.
+#
+# 6 source pixels is the value the single-frame case had all along: at the
+# reference rig (24MP over a 36x24mm patch, 166.7 px/mm) it is 36 um on
+# film. It is a per-rig constant, not a physical one — a different capture
+# magnification rescales it — but it is uniform across every negative and
+# every grid shape on a roll, which is the invariant the meters need.
+#
+# It costs nothing. On a 22000x6667 canvas the reduction takes 6.9 s at
+# b = 6 against 7.5 s at b = 22 (the cost is the whole-canvas copy either
+# way), and the grid it produces grows from 3.5 MiB to 47 MiB against a
+# 23.8 GB estimated peak.
+ANALYSIS_BLOCK_PX = 6
+# An image whose long side is at or below this is already at analysis
+# resolution and passes through unreduced — reducing it further would
+# throw away the samples the meters need. Production never approaches it
+# (the smallest canvas is one 6000 px frame), so the step from block 1 to
+# block `ANALYSIS_BLOCK_PX` at the boundary is a property of synthetic
+# inputs alone. `analysis_grid_block_sizes` reports block 1 below the
+# threshold so a caller mapping canvas coordinates onto cells stays
+# consistent with what `block_median_grid` actually did.
+ANALYSIS_PASSTHROUGH_PX = 1024
 # Per-tail percentile clip for the luma axis / the colour axis.
 BASE_LUMA_CLIP = 0.01
 BASE_COLOR_CLIP = 1.0
@@ -84,7 +124,13 @@ NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH  # section 3.14
 # CAST_REMOVAL_PLAN R-1: v2 predates the two meters; the constants join
 # `build_params()` because the residual the auto solve reads is recorded
 # per negative against them.
-NORMALIZE_FORMAT_VERSION = 3
+# v3 predates the pinned analysis cell (`ANALYSIS_BLOCK_PX`) and the two
+# region gates it let become absolute. This is the first bump where the
+# meters' *arithmetic* moved, not just the recorded constant set: a v3
+# roll re-stitched under v4 gets different bounds on any canvas that is
+# not one frame — that is the point of the change, and the version is what
+# says an old recorded value is not comparable with a fresh one.
+NORMALIZE_FORMAT_VERSION = 4
 
 # The fraction of pixels the headroom clips past which
 # NORMALIZE_HEADROOM_CLIPPED warns (section 3.6's "the signal that the
@@ -171,34 +217,44 @@ def analysis_grid_block_sizes(image_shape: tuple[int, ...]) -> tuple[int, int]:
     of `image_shape` — the single place the downscale rule lives, so a
     caller can map canvas coordinates onto grid cells without guessing.
 
-    The blocks are square, `b = ceil(max(h, w) / ANALYSIS_GRID)` on a side:
-    a b x b median is what makes a single hot pixel vanish for any b >= 2
-    (a 2x1 median is just the mean of two values and would only halve it),
-    and the resulting grid never exceeds `ANALYSIS_GRID` on a side.
+    The blocks are square and `ANALYSIS_BLOCK_PX` on a side, *whatever the
+    image's size or shape* — a b x b median is what makes a single hot
+    pixel vanish for any b >= 2 (a 2x1 median is just the mean of two
+    values and would only halve it), and pinning b is what keeps a cell
+    the same piece of film on a single frame and on a 5x2 grid's canvas
+    alike. The grid's dimensions, not its cell, are what grow with the
+    canvas.
+
+    Below `ANALYSIS_PASSTHROUGH_PX` the reduction does not run, and the
+    reported block is 1 to match.
     """
     height, width = int(image_shape[0]), int(image_shape[1])
-    block = max(1, -(-max(height, width) // ANALYSIS_GRID))
-    return block, block
+    if max(height, width) <= ANALYSIS_PASSTHROUGH_PX:
+        return 1, 1
+    return ANALYSIS_BLOCK_PX, ANALYSIS_BLOCK_PX
 
 
 def block_median_grid(img_log: np.ndarray) -> np.ndarray:
-    """Reduce the analysis image to an `ANALYSIS_GRID`-bounded side by
-    taking the median of each b x b block (section 3.5).
+    """Reduce the analysis image by taking the median of each b x b block,
+    `b = ANALYSIS_BLOCK_PX` (section 3.5).
 
     Isolated extremes — speculars, dust pinholes, a scratch — vanish
     inside their block's median, so the extreme percentiles are robust
-    without clipping the histogram hard; and the statistics become nearly
-    resolution-invariant, which matters because a canvas size varies with
-    how much the frames overlap.
+    without clipping the histogram hard; and the statistics become
+    shape-invariant, which matters because a negative's canvas is one
+    frame, a strip, or an R x C grid, and the older long-side-bounded rule
+    made the *cell* vary with that choice (see `ANALYSIS_BLOCK_PX`).
 
-    Images at or below the grid side pass through unchanged. Edge blocks
-    are padded by replicating the image edge, so the median of a partial
-    block stays representative. Single-threaded, per section 3.5: the
-    composite accumulator is deliberately single-threaded and a 1024-grid
-    median on a stitched canvas is milliseconds.
+    Images at or below `ANALYSIS_PASSTHROUGH_PX` pass through unchanged.
+    Edge blocks are padded by replicating the image edge, so the median of
+    a partial block stays representative. Single-threaded, per section
+    3.5: the composite accumulator is deliberately single-threaded, and
+    the reduction's cost is the whole-canvas copy rather than the block
+    size — 6.9 s on the largest canvas in scope, against 7.5 s for the
+    coarser rule it replaced.
     """
     height, width = img_log.shape[0], img_log.shape[1]
-    if max(height, width) <= ANALYSIS_GRID:
+    if max(height, width) <= ANALYSIS_PASSTHROUGH_PX:
         return np.asarray(img_log, dtype=np.float32)
 
     block_rows, block_cols = analysis_grid_block_sizes(img_log.shape)
@@ -486,141 +542,17 @@ def measure_clip_fractions(linear: np.ndarray) -> tuple[float, float, float]:
     return tuple(float(np.mean(values[..., ch] >= SCAN_CLIP_LEVEL)) for ch in range(3))
 
 
-# --- MONOCHROME_PLAN section 1: the mono detector, recorded, never acted on ---
-
-# The chroma percentile the detector reads (§1.1). A high percentile, not a
-# mean: a colour negative of a mostly-neutral scene still has colour
-# somewhere, and the mean drowns it.
-MONO_CHROMA_PERCENTILE = 90.0
-# How many negatives the detector pre-pass samples per roll, one frame each
-# (§1.2) — six bounded reads, not one per negative.
-MONO_DETECT_MAX_SAMPLES = 6
-# Log10 density. The MAD floor (§1.1): a channel whose MAD sits below it
-# carries no usable spread. A genuinely flat channel has a flat numerator
-# too and contributes no chroma; a channel with real structure under a
-# vanishing MAD has its residual inflated — pushing the statistic *up*,
-# toward "colour", the lossless direction for a misclassification. Likely
-# to matter, because §1.2 deliberately samples the rebate, and a dense or
-# heavily rebate-dominated frame can leave a channel near-constant.
-MONO_MAD_FLOOR = 1e-3
-
-
-@dataclasses.dataclass(frozen=True)
-class MonoStatistic:
-    """§1.3's per-negative detector evidence, recorded beside the other
-    section 3.7 meters and acted on by nothing. `channel_correlation` is
-    the per-pair channel correlation against green — `[corr(R, G), corr(B,
-    G)]`, the diagnostic the plan considered and declined to decide on."""
-
-    sampled: bool
-    chroma: float
-    channel_correlation: tuple[float, float]
-
-
-def measure_mono_statistic(linear: np.ndarray) -> MonoStatistic:
-    """§1: is this frame a silver B&W negative or a colour one?
-
-    A silver B&W negative photographed through a Bayer CFA under white
-    light gives three channels recording *the same* image, differing only
-    by a per-channel gain and offset — the CFA passband times the light
-    times silver's near-neutral absorption. Removing that affine first is
-    load-bearing: without it, the orange mask is an enormous per-channel
-    offset that swamps everything and the statistic says nothing. What
-    survives the removal is, on a silver negative, noise; on a colour
-    negative, the picture.
-
-    Per channel: subtract its median, divide by its MAD (floored at
-    `MONO_MAD_FLOOR`, see the constant's comment), take the per-pixel
-    spread across channels, and read the `MONO_CHROMA_PERCENTILE`
-    percentile of that spread. The input is one staged **linear**
-    intermediate, as `_read_intermediate` returns it (uint16 codes or
-    float linear); the function does its own `to_log_density` and
-    block-median decimation. The whole frame is measured, rebate included
-    — on colour film the rebate is the orange mask at full strength, the
-    single strongest mono/colour discriminator available (§1.2).
-    """
-    values = np.asarray(linear)
-    if values.dtype == np.uint16:
-        values = values.astype(np.float32) / 65535.0
-    else:
-        values = values.astype(np.float32)
-    grid = block_median_grid(to_log_density(values))
-
-    median_ch = np.median(grid, axis=(0, 1))
-    mad_ch = np.median(np.abs(grid - median_ch), axis=(0, 1))
-    resid = (grid - median_ch) / np.maximum(mad_ch, np.float32(MONO_MAD_FLOOR))
-    chroma = resid.max(axis=-1) - resid.min(axis=-1)
-    statistic = _percentile(chroma, MONO_CHROMA_PERCENTILE)
-
-    # The diagnostic, not the decision: per-pair correlation against green
-    # (scale-invariant, so it needs no affine removal — but it measures
-    # shape agreement only, and a low-colour-variance colour scene
-    # correlates near 1.0 too; the chroma percentile above measures
-    # magnitude and decides).
-    flat = grid.reshape(-1, grid.shape[-1])
-    correlations = tuple(_pair_correlation(flat[:, i], flat[:, j]) for i, j in ((0, 1), (2, 1)))
-    return MonoStatistic(
-        sampled=True, chroma=statistic, channel_correlation=correlations
-    )
-
-
-def _pair_correlation(a: np.ndarray, b: np.ndarray) -> float:
-    """Pearson correlation of two flattened channel grids; 0.0 for a
-    constant channel (no variance — the correlation is undefined, and a
-    flat channel carries no evidence either way)."""
-    a = a - a.mean()
-    b = b - b.mean()
-    denominator = float(np.sqrt(np.sum(a * a) * np.sum(b * b)))
-    if denominator == 0.0:
-        return 0.0
-    return float(np.sum(a * b) / denominator)
-
-
-# --- MONOCHROME_PLAN section 2: the roll decision -----------------------------
+# --- MONOCHROME_PLAN: film kind and channel collapse -------------------------
 
 
 class FilmKind(enum.StrEnum):
-    """§2: a roll's frozen film kind, once decided — never per-negative
+    """A roll's film kind, set at `roll init` and never per-negative
     (§0.3). A plain `str` subclass: it serializes into the roll manifest's
     `film.kind` and `icc_profile.published_profile_kind`'s comparison
     unchanged."""
 
     COLOUR = "colour"
     MONOCHROME = "monochrome"
-
-
-# §2.1's gate, pinned from measurements over the real roll library on
-# 2026-09-05 (see docs/MONOCHROME_PLAN.md §1.4/§7 step 2): one monochrome
-# roll's sampled per-negative chroma ran 0.053-0.122 (roll median 0.101),
-# one colour roll's ran 0.612-2.340 (roll median 1.051) — no overlap. The
-# pair below sits near the log-midpoint of that gap, leaving margin on
-# both sides of the two measured clusters for a roll not yet seen.
-MONO_CHROMA_MAX = 0.20  # roll median at or below -> monochrome
-COLOUR_CHROMA_MIN = 0.35  # roll median at or above -> colour
-
-
-@dataclasses.dataclass(frozen=True)
-class FilmKindGate:
-    """§2.1's gate outcome for one roll's sampled statistics."""
-
-    kind: FilmKind
-    ambiguous: bool
-
-
-def classify_mono_chroma(statistic: float) -> FilmKindGate:
-    """§2.1: classify a roll from the **median** of its sampled
-    `MonoStatistic.chroma` values (never the mean — a single outlier
-    sample must not flip the roll). At or below `MONO_CHROMA_MAX` decides
-    monochrome; at or above `COLOUR_CHROMA_MIN` decides colour. Between
-    them is ambiguous, and the lossless choice wins: a colour roll is
-    never wrong to publish as three channels, so an ambiguous statistic is
-    called colour and `ambiguous=True` tells the caller to warn
-    (`MONO_DETECT_AMBIGUOUS`)."""
-    if statistic <= MONO_CHROMA_MAX:
-        return FilmKindGate(kind=FilmKind.MONOCHROME, ambiguous=False)
-    if statistic >= COLOUR_CHROMA_MIN:
-        return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=False)
-    return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=True)
 
 
 # --- MONOCHROME_PLAN section 3: the collapse ----------------------------------
@@ -690,12 +622,42 @@ def collapse_to_mono(img_log: np.ndarray, covered: np.ndarray) -> np.ndarray:
 REBATE_ANCHOR_PERCENTILE = 99.9
 # Log10 D below that anchor a cell may sit.
 REBATE_DENSITY_TOLERANCE = 0.10
-# Of the region; smaller is not rebate.
+# Smaller is not rebate. Absolute, in cells: with `ANALYSIS_BLOCK_PX`
+# pinned a cell is a fixed piece of film, so a cell count *is* an area on
+# film and this gate means the same millimetres on a single frame and on a
+# grid's canvas. 13_340 cells is 17 mm^2 at the reference rig — the value
+# the retired 2%-of-the-region rule produced on a single 6000x4000 frame,
+# so single-frame behaviour is unchanged by construction.
+#
+# The fraction it replaced scaled with the *negative's area* while a
+# rebate band scales with the edge it runs along, so it tightened as the
+# negative grew: a 1.5 mm band across the short ends of a 5x2's 132x40 mm
+# canvas is 60 mm^2, which cleared 2% of a 2x2 region and missed it on a
+# 5x2. `REBATE_MIN_AREA_FRACTION` survives only as the small-region guard
+# — the gate takes whichever of the two is *smaller*, so a region below a
+# frame's worth of film is never asked for more than its own 2%.
+REBATE_MIN_AREA_CELLS = 13_340
 REBATE_MIN_AREA_FRACTION = 0.02
 # Log10 D, P90-P10 within a component: base is featureless.
 REBATE_MAX_SPREAD = 0.05
 # Log10 D between the component and the scene.
 REBATE_MIN_SEPARATION = 0.08
+
+
+def _region_limit(absolute: int, fraction: float, extent: float) -> float:
+    """A gate expressed in cells: the absolute physical value, or the
+    retired canvas-scaled fraction, whichever is *smaller*.
+
+    Used the same way by all three region gates the pinned cell made
+    absolute. The absolute value is what a gate means on real film and is
+    the one that binds at any production canvas; the fraction binds only
+    on a region smaller than the frame it was calibrated against, where an
+    absolute cell count is not a meaningful piece of film — a degenerate
+    stitch, or a synthetic grid. Taking the smaller keeps the gate no
+    stricter than the fraction rule ever was on a small region (for a
+    floor) and no looser than it was (for a ceiling), while stopping both
+    from scaling with a large canvas."""
+    return min(float(absolute), fraction * extent)
 
 
 def _region_border(keep: np.ndarray) -> np.ndarray:
@@ -745,6 +707,9 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
 
     lum = luma_of_log(grid_log)
     region_cells = int(np.count_nonzero(keep))
+    min_area = _region_limit(
+        REBATE_MIN_AREA_CELLS, REBATE_MIN_AREA_FRACTION, region_cells
+    )
     anchor = _percentile(lum[keep], REBATE_ANCHOR_PERCENTILE)
     candidates = keep & (lum >= anchor - REBATE_DENSITY_TOLERANCE)
     if not candidates.any():
@@ -772,7 +737,7 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
         component = labels == label
         if not (component & border).any():
             continue
-        if int(np.count_nonzero(component)) < REBATE_MIN_AREA_FRACTION * region_cells:
+        if int(np.count_nonzero(component)) < min_area:
             continue
         half_band = (
             component
@@ -836,6 +801,156 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
     return new_keep, rebate
 
 
+# --- the opaque-holder gate: the detector that needs no geometry -------------
+
+# The rebate detector's discriminator is "no scene content is thinner than
+# unexposed film"; `withhold_dense_border` is its mirror, "no scene content
+# is denser than the film's characteristic maximum". But the mirror reads
+# that maximum off the frame's *own* dense tail, so once it has its
+# candidate band every remaining gate is about how the contaminant is
+# shaped -- border-touching, thin, featureless, bounded in area. A section
+# of the negative holder defeats all four: it is not shaped like a stripe,
+# it is arbitrarily large, and it can sit anywhere the film does not.
+#
+# It is also the one contaminant that does not need those gates, because it
+# has an *absolute* discriminator. The holder passes no light, so
+# `to_log_density`'s clamp lands it at log10(_DENSITY_FLOOR) = -6.0, while a
+# colour negative's Dmax runs about 2.0-2.5 above base and a black-and-white
+# negative's about 2.5-3.0. More than `OPAQUE_MAX_DENSITY_BELOW_BASE`
+# decades below the thin end is not film at any shape or size, so this gate
+# is density and nothing else.
+#
+# Why it must run before both other detectors: the holder owns every
+# dense-end percentile it touches. `DENSE_BORDER_ANCHOR_PERCENTILE` (P0.1)
+# lands *inside* the holder, and `DENSE_BORDER_TOLERANCE`'s 0.2-wide band
+# then covers holder only -- so the edge fog the mirror exists to catch
+# sits three decades outside it, undetected. The same holder pins
+# `analyze_bounds`' floor: `BASE_LUMA_CLIP` is 0.01 percent, which on one
+# frame's grid is ~70 cells, and a one-cell-wide sliver along that grid's
+# 1000-cell edge is fourteen times that. The ratio only widens on a
+# stitched canvas, where the sliver runs a longer edge — with
+# `ANALYSIS_BLOCK_PX` pinned the grid grows with the canvas, so the tail
+# the floor reads grows with it too rather than shrinking.
+
+# Decades below the thin-end anchor past which a cell cannot be film. Sits
+# clear of the densest film above base and well clear of the -6.0 clamp, so
+# the gate separates "holder" from "film" rather than "clamped" from
+# "nearly clamped". Provisional and unmeasured, like the REBATE_* and
+# DENSE_BORDER_* constants; recorded per negative either way.
+OPAQUE_MAX_DENSITY_BELOW_BASE = 3.2
+# The block median softens the holder's edge: a block straddling the
+# boundary is a median over holder and film cells together, so it lands
+# between the two populations -- above the gate, and contaminated. One cell
+# of dilation withholds the straddlers along with the holder.
+OPAQUE_DILATE_CELLS = 1
+# The density an opaque cell clamps to: log10(_DENSITY_FLOOR), the one
+# absolute landmark in the transfer.
+OPAQUE_CLAMP_DENSITY = -6.0
+# Decades above that clamp the region's thin end must reach for the region
+# to contain any film at all. A relative gate cannot see a *wholly* opaque
+# region -- its own thin end is the holder, so nothing is decades below
+# anything -- and this is the absolute check that can. Real film base sits
+# within a few tenths of zero on an exposed scan, so a whole decade of
+# margin never fires on film.
+OPAQUE_MIN_ANCHOR_ABOVE_CLAMP = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Opaque:
+    """The opaque-holder detector's finding for one negative. `threshold`
+    is the absolute log density the gate fired at -- the frame's own
+    thin-end anchor less `OPAQUE_MAX_DENSITY_BELOW_BASE` -- recorded
+    because the anchor and the constant together are what a later
+    measurement would revise, and neither is recoverable from
+    `mask_fraction` alone. `None` when nothing fired."""
+
+    detected: bool
+    mask_fraction: float
+    threshold: float | None
+
+
+def withhold_opaque(
+    grid_log: np.ndarray, keep: np.ndarray
+) -> tuple[np.ndarray, Opaque]:
+    """Withhold cells too dense to be film -- opaque negative holder in the
+    analysis region -- from `keep`.
+
+    The anchor is the region's `REBATE_ANCHOR_PERCENTILE` thin-end luma,
+    and the choice of end is the point: the holder contaminates the dense
+    tail only, so a dense-end anchor would move with the very thing it is
+    trying to measure, while the thin end is untouchable by it. Every cell
+    at or below `anchor - OPAQUE_MAX_DENSITY_BELOW_BASE` is withheld, with
+    no connectivity, area, thinness or flatness gate: those exist to keep
+    the dense-border detector off real scene content, and film cannot reach
+    this density to begin with.
+
+    Runs *before* `detect_rebate`, which is also why the anchor reads the
+    film base rather than the thinnest scene content -- the rebate cells are
+    still in `keep` here, and "decades below base" is the physical statement
+    the constant is written against.
+
+    The one caveat, and the reason the constant carries margin: clear
+    sprocket holes inside the analysis region are film-free and therefore
+    thinner than base, and when they exceed 0.1 percent of the region they
+    take the anchor with them. That tightens the gate by the base density
+    (a few tenths on a masked colour negative) and never loosens it, so the
+    failure direction is toward withholding slightly more, and the margin
+    keeps even that clear of real film.
+
+    Raises `NormalizationError` on a *wholly* opaque region, which the
+    relative gate is structurally unable to see: with nothing but holder
+    there is no thin end for the holder to be decades below, and the
+    anchor is the holder itself. `OPAQUE_MIN_ANCHOR_ABOVE_CLAMP` is the
+    absolute check that catches it. Left to fall through, the case does
+    still fail -- `analyze_bounds` finds floors and ceils both at the clamp
+    and reports a degenerate channel -- but that message sends the reader
+    after the meters when the fault is the layout's rect sitting on the
+    holder.
+    """
+    empty = Opaque(detected=False, mask_fraction=0.0, threshold=None)
+    if not keep.any():
+        return keep, empty
+
+    lum = luma_of_log(grid_log)
+    region_cells = int(np.count_nonzero(keep))
+    anchor = _percentile(lum[keep], REBATE_ANCHOR_PERCENTILE)
+    if anchor <= OPAQUE_CLAMP_DENSITY + OPAQUE_MIN_ANCHOR_ABOVE_CLAMP:
+        raise NormalizationError(
+            f"the analysis region holds no film: its thin end ({anchor:.4f}) "
+            f"is within {OPAQUE_MIN_ANCHOR_ABOVE_CLAMP} decade of the opaque "
+            f"clamp at {OPAQUE_CLAMP_DENSITY}; the analysis rect is on the "
+            "negative holder"
+        )
+    threshold = anchor - OPAQUE_MAX_DENSITY_BELOW_BASE
+    mask = keep & (lum <= threshold)
+    if not mask.any():
+        return keep, empty
+
+    if OPAQUE_DILATE_CELLS > 0:
+        side = 2 * OPAQUE_DILATE_CELLS + 1
+        dilated = cv2.dilate(
+            mask.astype(np.uint8), np.ones((side, side), np.uint8)
+        ).astype(bool)
+        mask = dilated & keep
+
+    new_keep = keep & ~mask
+    if not new_keep.any():
+        # Only reachable through the dilation: the threshold alone cannot
+        # withhold the anchor cell that defined it.
+        raise NormalizationError(
+            "the analysis region is entirely opaque: nothing survives the "
+            f"gate at {threshold:.4f}; the analysis rect is on the negative "
+            "holder, not the film"
+        )
+
+    opaque = Opaque(
+        detected=True,
+        mask_fraction=float(np.count_nonzero(mask)) / region_cells,
+        threshold=threshold,
+    )
+    return new_keep, opaque
+
+
 # --- section 3.13's dense mirror: the dense-border detector -------------------
 
 # All provisional and unmeasured, like the REBATE_* five. The failure that
@@ -854,14 +969,38 @@ DENSE_BORDER_ANCHOR_PERCENTILE = 0.1
 # detector's tolerance: a gradient stripe's core must be reachable in one
 # band, and the area cap bounds what a wide band can withhold.
 DENSE_BORDER_TOLERANCE = 0.2
-# Of the region; a smaller candidate is not a stripe.
+# A smaller candidate is not a stripe. Absolute, in cells, for the reason
+# `REBATE_MIN_AREA_CELLS` is: a pinned `ANALYSIS_BLOCK_PX` makes a cell
+# count an area on film. 3_335 cells is 4.3 mm^2 at the reference rig, the
+# value 0.5% of a single 6000x4000 frame's grid produced.
+# `DENSE_BORDER_MIN_AREA_FRACTION` survives as the small-region guard, the
+# smaller of the two winning (`_min_area_cells`).
+DENSE_BORDER_MIN_AREA_CELLS = 3_335
 DENSE_BORDER_MIN_AREA_FRACTION = 0.005
-# Of the region; a larger candidate is scene content, not contamination.
-DENSE_BORDER_MAX_AREA_FRACTION = 0.05
-# A border stripe's bounding box is thin along at least one axis: at most
-# this fraction of that axis. Scene content dense enough to matter for the
-# meters spans the frame.
-DENSE_BORDER_MAX_BBOX_FRACTION = 0.05
+# How thick contamination may be, in cells — 33 is 1.2 mm at the reference
+# rig. Two gates, one physical statement, replacing two fractions that
+# both scaled with the canvas:
+#
+# - the stripe's *mean* width, `area / bbox long side`, replacing
+#   `DENSE_BORDER_MAX_AREA_FRACTION` (0.05 of the region). A stripe's area
+#   is its width times the border it runs along, so capping the area as a
+#   fraction of the region let a 5x2's canvas admit a 265 mm^2 component
+#   where a single frame admitted 43. Capping the width says what the
+#   constant always meant, and is *tighter* than the fraction on a short
+#   component, which is the direction that keeps scene content out.
+# - the bounding box's thin axis, replacing `DENSE_BORDER_MAX_BBOX_FRACTION`
+#   (0.05 of each grid axis, which on a 22000x6667 canvas called anything
+#   up to 6.6 mm wide a sliver). Scene content dense enough to matter for
+#   the meters spans the frame.
+#
+# `DENSE_BORDER_MAX_WIDTH_FRACTION` is the surviving fraction, applied to
+# the grid's *short* side as the small-region guard (`_region_limit`): 33
+# cells is 5% of one frame's short side and binds on anything at or above
+# a frame, while on a region below that — a degenerate stitch, a synthetic
+# grid — an absolute 1.2 mm is not a meaningful thickness and the fraction
+# takes over.
+DENSE_BORDER_MAX_WIDTH_CELLS = 33
+DENSE_BORDER_MAX_WIDTH_FRACTION = 0.05
 # Log10 D along the stripe's length: contamination is featureless.
 DENSE_BORDER_MAX_SPREAD = 0.05
 # Log10 D between the stripe and the scene's own dense tail.
@@ -902,10 +1041,10 @@ def withhold_dense_border(
        region's `DENSE_BORDER_ANCHOR_PERCENTILE` dense-end luma anchor;
     2. connected components of the candidate mask survive only when they
        touch the region border;
-    3. each survivor is gated on area (both ways: too small is not a
-       stripe, too large is scene content), thinness — a border stripe is
-       thin perpendicular to its border, while scene content dense enough
-       to matter spans the frame — and flatness along its length: a stripe
+    3. each survivor is gated on area (too small is not a stripe),
+       thickness — a border stripe is thin perpendicular to its border, by
+       bounding box and by mean width, while scene content dense enough to
+       matter spans the frame — and flatness along its length: a stripe
        is featureless *along* the border, while a photograph's dark edge
        (vignette, a wall's shading) varies along it. Edge fog fades across
        its thickness, so the flatness test runs on the medians along the
@@ -936,6 +1075,14 @@ def withhold_dense_border(
 
     lum = luma_of_log(grid_log)
     region_cells = int(np.count_nonzero(keep))
+    min_area = _region_limit(
+        DENSE_BORDER_MIN_AREA_CELLS, DENSE_BORDER_MIN_AREA_FRACTION, region_cells
+    )
+    max_width = _region_limit(
+        DENSE_BORDER_MAX_WIDTH_CELLS,
+        DENSE_BORDER_MAX_WIDTH_FRACTION,
+        min(grid_log.shape[0], grid_log.shape[1]),
+    )
     total_mask = np.zeros(keep.shape, dtype=bool)
     passes = 0
     while passes < DENSE_BORDER_MAX_PASSES:
@@ -962,11 +1109,9 @@ def withhold_dense_border(
             if not (component & border).any():
                 continue
             area = int(np.count_nonzero(component))
-            if area < DENSE_BORDER_MIN_AREA_FRACTION * region_cells:
+            if area < min_area:
                 continue
-            if area > DENSE_BORDER_MAX_AREA_FRACTION * region_cells:
-                continue
-            if not _is_thin(component, grid_log.shape[:2]):
+            if not _is_thin(component, max_width):
                 continue
             if not _is_featureless(component, lum):
                 continue
@@ -1009,17 +1154,24 @@ def withhold_dense_border(
     return new_keep, dense_border
 
 
-def _is_thin(component: np.ndarray, grid_shape: tuple[int, int]) -> bool:
-    """A border stripe's bounding box is thin along at least one axis:
-    scene content dense enough to matter for the meters spans the frame."""
+def _is_thin(component: np.ndarray, max_width: float) -> bool:
+    """Contamination is no thicker than `max_width` cells, measured two
+    ways: its bounding box is thin along at least one axis, and its mean
+    width along its own long axis (area over that axis' extent) is within
+    the same bound. Scene content dense enough to matter for the meters
+    spans the frame; a component that is thin only because its bounding
+    box is small, but solid within it, is not a stripe.
+
+    Both tests read the *component's* own extent rather than the grid's,
+    so what a caller passes as `max_width` is the only thing tying the
+    gate to the region — see `DENSE_BORDER_MAX_WIDTH_CELLS`."""
     rows, cols = np.nonzero(component)
-    height = rows.max() - rows.min() + 1
-    width = cols.max() - cols.min() + 1
-    grid_rows, grid_cols = grid_shape
-    return (
-        height <= DENSE_BORDER_MAX_BBOX_FRACTION * grid_rows
-        or width <= DENSE_BORDER_MAX_BBOX_FRACTION * grid_cols
-    )
+    height = int(rows.max() - rows.min() + 1)
+    width = int(cols.max() - cols.min() + 1)
+    if min(height, width) > max_width:
+        return False
+    mean_width = int(np.count_nonzero(component)) / max(height, width)
+    return mean_width <= max_width
 
 
 def _is_featureless(component: np.ndarray, lum: np.ndarray) -> bool:
@@ -1316,7 +1468,8 @@ def build_params() -> dict:
     this record and `decode_normalized`."""
     return {
         "format_version": NORMALIZE_FORMAT_VERSION,
-        "analysis_grid": ANALYSIS_GRID,
+        "analysis_block_px": ANALYSIS_BLOCK_PX,
+        "analysis_passthrough_px": ANALYSIS_PASSTHROUGH_PX,
         "base_luma_clip": BASE_LUMA_CLIP,
         "base_color_clip": BASE_COLOR_CLIP,
         "color_bounds_band_width": COLOR_BOUNDS_BAND_WIDTH,
@@ -1331,9 +1484,10 @@ def build_params() -> dict:
         "scan_clip_warn": SCAN_CLIP_WARN,
         "dense_border_anchor_percentile": DENSE_BORDER_ANCHOR_PERCENTILE,
         "dense_border_tolerance": DENSE_BORDER_TOLERANCE,
+        "dense_border_min_area_cells": DENSE_BORDER_MIN_AREA_CELLS,
         "dense_border_min_area_fraction": DENSE_BORDER_MIN_AREA_FRACTION,
-        "dense_border_max_area_fraction": DENSE_BORDER_MAX_AREA_FRACTION,
-        "dense_border_max_bbox_fraction": DENSE_BORDER_MAX_BBOX_FRACTION,
+        "dense_border_max_width_cells": DENSE_BORDER_MAX_WIDTH_CELLS,
+        "dense_border_max_width_fraction": DENSE_BORDER_MAX_WIDTH_FRACTION,
         "dense_border_min_separation": DENSE_BORDER_MIN_SEPARATION,
         "dense_border_outside_percentile": DENSE_BORDER_OUTSIDE_PERCENTILE,
         "dense_border_max_passes": DENSE_BORDER_MAX_PASSES,
@@ -1343,11 +1497,9 @@ def build_params() -> dict:
         "normalized_headroom_low": NORMALIZED_HEADROOM_LOW,
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,
-        # MONOCHROME_PLAN §2/§3: these shape published output (they gate
-        # and perform the collapse), so — unlike §1's detector constants —
-        # they are roll invariants from the step that introduces them.
-        "mono_chroma_max": MONO_CHROMA_MAX,
-        "colour_chroma_min": COLOUR_CHROMA_MIN,
+        # MONOCHROME_PLAN §3: the merge weights shape published output on
+        # mono rolls, so they are roll invariants from the step that
+        # introduces them.
         "mono_merge_weights": list(MONO_MERGE_WEIGHTS),
         # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants and
         # the highlight reference's provenance.
@@ -1381,5 +1533,19 @@ def upgrade_normalize_params(params: dict) -> dict:
         if key == "format_version":
             continue
         upgraded.setdefault(key, value)
+    # Retired with the auto-detector (protocol 15), and — v4 — with the
+    # pinned analysis cell and the region gates it let become absolute:
+    # strip if an older roll still carries them so invariant comparison
+    # stays equal. A key whose *value* changed cannot be absorbed by
+    # `setdefault`, so a retired key must be removed by name here and
+    # reintroduced under a new one above.
+    for deprecated in (
+        "mono_chroma_max",
+        "colour_chroma_min",
+        "analysis_grid",
+        "dense_border_max_area_fraction",
+        "dense_border_max_bbox_fraction",
+    ):
+        upgraded.pop(deprecated, None)
     upgraded["format_version"] = NORMALIZE_FORMAT_VERSION
     return upgraded

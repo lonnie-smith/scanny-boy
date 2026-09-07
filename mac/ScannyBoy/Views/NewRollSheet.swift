@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Section 3.10: creating a roll asks for a name and nothing else — no
-/// location, since every roll lives under the library base (section 3.1),
-/// and no scans-per-negative, since that is each stitch batch's choice,
-/// selected on the Add Scans stage before every run.
+/// Section 3.10: creating a roll asks for a name only — no location, since
+/// every roll lives under the library base (section 3.1), no scans-per-
+/// negative, since that is each stitch batch's choice on Add Scans, and no
+/// film kind, since that is chosen on the Add Scans stage before every run.
 struct NewRollSheet: View {
     let library: RollLibrary
     /// Called with the newly created roll, right before the sheet dismisses.

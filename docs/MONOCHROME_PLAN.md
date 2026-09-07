@@ -1,5 +1,10 @@
 # Monochrome plan: detect the film, merge the channels
 
+**2026-09 update:** The chroma-based auto-detector (§1–§2) has been retired.
+Film kind is chosen at `roll init` (`--film-kind colour|monochrome`); `run`/
+`stitch` read the frozen `film.kind` from the roll manifest. The channel
+collapse (§3) and one-channel plumbing (§4) are unchanged.
+
 Two changes to the normalization path, in order. First a **detector** that
 decides, per roll, whether the film is a silver black-and-white negative or a
 colour negative, recording its evidence and acting on nothing. Then a

@@ -13,9 +13,9 @@ manifest, where **nothing ever reads it back**.
 
 This plan closes that loop with a dedicated capture step:
 
-1. The user shoots **one extra frame per roll**, showing a lot of film
-   rebate, exposed about two stops darker than the roll's scans. Call it the
-   **base frame**.
+1. The user shoots **one extra frame per roll** — a piece of leader or any
+   stretch where clear rebate dominates the frame — exposed about two stops
+   darker than the roll's scans. Call it the **base frame**.
 2. The base frame is attached to the roll **before any scans are
    converted**, through its own command and its own field in the Add Scans
    sheet. It can be replaced freely until it is used; the first successful
@@ -28,8 +28,9 @@ This plan follows the conventions of `docs/MONOCHROME_PLAN.md`,
 `docs/DENSITY_PLAN.md` and `docs/GRID_STITCH_PLAN.md`: numbered chunks, each
 independently green; every constant in exactly one module; every threshold
 that shapes an output recorded in the roll manifest; and **no threshold
-pinned without a measurement the user has approved** — §11 exists to produce
-that measurement, and chunk B-5 must not land before it.
+pinned without a measurement the user has approved** — the v1 slim §11
+exists to produce that measurement (§11b covers two-band follow-up), and
+chunk B-5 must not land before it.
 
 **Existing rolls are invalidated on purpose** (§9). This is a decision the
 user has taken: rolls stitched before this feature stay readable, editable
@@ -163,6 +164,14 @@ Nothing in a photograph can be thinner than base, so the discriminator is
 clean in one direction. The detector's whole job is to pick population 3 out
 of that ordering, and its safety rule is **refuse rather than guess** (§2.3).
 
+**v1 product stance.** §1 and §8 steer the user toward the easy case — a
+piece of leader or any stretch where clear rebate dominates the frame. The
+detector still accepts two-band and picture-in-frame framings (the bullets
+above); v1 UX simply does not advertise them. Real-film validation of merge
+and ambiguity on those framings is deferred to §11b; the code path stays,
+and the synthetic fixture in `tests/fixtures/base-frame/` still exercises it
+in the fast tier.
+
 ### 0.5 Why the roll, and why locked
 
 Film base is a property of the film stock and its development. A roll is one
@@ -210,12 +219,33 @@ All three are requirements of this plan, not nice-to-haves.
   its command, the run-time gate, then the drift evidence. Through B-4
   nothing the pipeline publishes changes: the anchor is measured, stored,
   locked, and read by nobody.
-- **§11's measurement gate sits between B-4 and B-5.** B-5 is the only chunk
-  that changes published pixels and must not land until the user has approved
-  the numbers §11 produces.
+- **§11's measurement gate (v1) sits between B-4 and B-5.** B-5 is the only
+  chunk that changes published pixels and must not land until the user has
+  approved the slim §11 numbers. §11b is deferred follow-up, not a B-5
+  blocker.
 - **B-6 (the Mac app) can be developed in parallel with B-2…B-4** but must
   land before or with B-3, because B-3 is what makes a run fail without a
   base frame and the app needs the field by then.
+
+### 0.8 v1 product stance: easy case first
+
+Three layers are aligned for v1:
+
+- **Product UX (§1, §8)** asks explicitly for a **leader-style base frame** —
+  mostly clear rebate dominating the frame. The attached summary's area
+  fraction ("rebate: 44% of frame") confirms the user met the bar.
+- **§11 calibration** measures primarily what v1 asks for, plus the
+  non-negotiable safety checks (exposure invariance on real film, deliberate
+  failure frames). It is run **once** before B-5, not per roll.
+- **The detector (§2)** is unchanged: merge, largest-population-wins, and
+  the ambiguity gate still handle two-band and picture-in-frame uploads if a
+  user ignores the guidance. v1 real-film validation of those paths is
+  deferred to **§11b**.
+
+Per-roll anchor **density** still varies by stock and is stored in each roll's
+`film_base` block. §11 pins only the global **gate** constants — boundaries
+between a usable base frame and a rejected one — with margin from the slim
+test set.
 
 ---
 
@@ -225,11 +255,11 @@ This is what the user does, and what the Add Scans sheet must say.
 
 > **Shoot one base frame per roll, before you scan the roll.**
 >
-> Frame a stretch of the film that shows **as much rebate (clear film base)
-> as you can find** — a piece of leader is ideal, and the gap between two
-> negatives works too. Some image content in the frame is fine; the rebate
-> just has to be the largest flat area. Keep bare light and sprocket holes
-> out of the frame.
+> Frame a piece of **leader** — or any stretch of the film where **clear
+> rebate (film base) covers most of the frame**. The rebate must be the
+> largest flat region in the shot; aim for at least **20% of the frame**
+> (the attached summary shows the measured percentage). Keep bare light,
+> sprocket holes, and film edges out of the frame.
 >
 > **Expose about two stops darker than your scanning exposure**, so that the
 > rebate sits roughly in the middle of the camera's histogram. Do not go
@@ -238,6 +268,10 @@ This is what the user does, and what the Add Scans sheet must say.
 > Same camera, same lens, same light panel, same flat-field profile as the
 > roll's scans. The exposure does *not* need to match — only the film, the
 > light and the rig do.
+
+Two-band framing (rebate on both sides of a strip of picture) remains
+supported by the detector if a user uploads it anyway, but v1 copy does not
+steer there — see §0.8 and §11b.
 
 ### 1.1 Why two stops, and why "the middle of the histogram" is the right cue
 
@@ -301,13 +335,15 @@ params record. It knows nothing about manifests or rolls.
 ### 2.1 Constants
 
 All of these are **provisional and unmeasured**, in the same status as
-`REBATE_*` and `DENSE_BORDER_*` in `normalization.py`. §11 pins them. Ship
-with these starting values, record the measured statistics from day one, and
-change the numbers only at the user gate.
+`REBATE_*` and `DENSE_BORDER_*` in `normalization.py`. The v1 slim §11 pins
+them; §11b may re-pin merge and ambiguity thresholds on two-band real film.
+Ship with these starting values, record the measured statistics from day one,
+and change the numbers only at the user gate.
 
 ```python
-# The measurement runs on normalization's block-median grid, at
-# normalization.ANALYSIS_GRID. This module does not define its own.
+# The measurement runs on normalization's block-median grid, with cells of
+# normalization.ANALYSIS_BLOCK_PX source pixels. This module does not
+# define its own.
 
 # --- finding the populations ---
 # Log10 D. Width of the candidate band taken below each pass's thin anchor.
@@ -454,8 +490,15 @@ Implementation notes:
 
 - **Use `normalization.block_median_grid` and `normalization.to_log_density`.
   Do not reimplement either.** The block median is what makes the statistic
-  dust-immune and resolution-invariant, and it is the same reduction the
+  dust-immune and shape-invariant, and it is the same reduction the
   per-negative path uses, which is what makes §6's comparison meaningful.
+  That last clause is only literally true since `ANALYSIS_BLOCK_PX` was
+  pinned: while the block was derived from the image's long side, a base
+  frame reduced at b = 6 was being compared against a 5×2 negative reduced
+  at b = 22. The thin end this measurement reads barely moved with b
+  (−0.006 log10 D from b = 6 to b = 26 on a real frame), so the comparison
+  was not wrong in practice — but it rested on a coincidence rather than on
+  the shared reduction the note claims.
 - **The median, not the mean**, everywhere. A dust shadow that survived the
   block median must not move the answer.
 - If step 3 finds no population at all, return a `BaseMeasurement` with
@@ -718,8 +761,9 @@ near-neutral gate measures chroma against the actual orange mask.
 
 **No code change here — but a re-check is required.** `NEUTRAL_CHROMA_CAP`
 (0.29) and `NEUTRAL_FIRST_PASS_CAP` (0.55) were calibrated against the old,
-scene-derived anchor. §11 step 4 measures the shift; if the gate's acceptance
-rate moves materially, the caps are re-pinned at the same user gate.
+scene-derived anchor. §11 step 5 (or §11b if deferred) measures the shift; if
+the gate's acceptance rate moves materially, the caps are re-pinned at the
+same user gate.
 
 ### 4.3 Threading it through
 
@@ -891,12 +935,14 @@ picker (so the reading order is: base frame → flat-field → grid → files):
 - **Label:** "Film base reference"
 - **Empty state:** a file well with "Choose base frame…" and the §1 capture
   instruction as visible help text, not a tooltip. It must say, in this
-  order: show as much clear rebate as you can; some picture in the frame is
-  fine; **expose about two stops darker than your scans, so the rebate sits
-  near the middle of the camera's histogram**; don't go past three stops.
+  order: frame a piece of **leader** (or any stretch where clear rebate
+  dominates the frame); keep bare light and sprocket holes out; **expose
+  about two stops darker than your scans, so the rebate sits near the middle
+  of the camera's histogram**; don't go past three stops.
 - **Attached, unlocked:** the file name, the measured density, the rebate's
   area fraction as a percentage ("rebate: 44% of frame"), and a "Replace…"
-  button.
+  button. The area fraction is the user's confirmation they met the ≥20%
+  bar.
 - **Locked:** the same summary, the lock date, no Replace button, and one
   line: "locked when this roll's first negative was converted."
 - **Convert is disabled** while the field is empty, with the reason shown —
@@ -1094,12 +1140,17 @@ decisions" recording the locked decisions.
    differs from the same roll stitched without one, and the difference is
    confined to the per-channel `ceils` deviations.
 
-**Green when:** all five pass and the user has approved §11's numbers.
+**Green when:** all five pass and the user has approved the slim §11 numbers
+(exposure invariance passes; gate constants pinned with margin from the v1
+test set). §11b (two-band real-film validation) is deferred and not a B-5
+blocker.
 
 ### B-6 — the Mac app
 
 **Files:** `mac/`, per §8. May be developed in parallel with B-2…B-4; must
 land no later than B-3.
+
+**Do:** per §8, with leader-first copy from §1/§8.1.
 
 **Tests:** `ConfigurationModelTests` — `runEnabled` is false without a base
 frame; the `set-base-frame` command shape; `RollLibraryTests` — the block
@@ -1113,26 +1164,31 @@ decodes, including `lockedAt`; `CLICommandTests` — argument shape.
 **Do:** a generator for a synthetic base frame — flat orange field, two
 rebate bands with a picture strip between them, an optional bright sliver —
 modelled on `cli/tools/generate_bare_light_dng.py`. Commit the output so the
-fast tier has a realistic fixture, per `AGENTS.md`'s fixture rules.
+fast tier has a realistic fixture, per `AGENTS.md`'s fixture rules. The
+two-band layout exercises merge and ambiguity in unit tests even though v1 UX
+and §11 steer users toward the easy leader case.
 
 May land any time after B-1; B-3's and B-5's slow-tier tests want it.
 
 ---
 
-## 11. The measurement gate — run this between B-4 and B-5
+## 11. The measurement gate (v1) — run this between B-4 and B-5
 
-Nine thresholds in §2.1 are provisional. This is how they get pinned. **B-5
-must not merge until the user has seen these numbers and approved them.**
+Nine thresholds in §2.1 are provisional. This is how they get pinned for v1.
+**B-5 must not merge until the user has seen these numbers and approved them.**
 
-**Step 1 — shoot the frames.** For at least three rolls already in the
-library, covering at least two film stocks, shoot base frames:
+The v1 gate aligns calibration with what §1 asks users to shoot: leader-style
+frames with significant clear rebate. It is run **once**, not per roll. Per-roll
+anchor density still varies by stock and is stored in each roll's `film_base`
+block; §11 pins only the global accept/reject boundaries.
 
-- one "easy" frame per roll (mostly clear leader);
-- one "realistic" frame per roll (two rebate bands with picture between);
-- for **one** roll, the same framing at 1, 2, 3 and 4 stops down;
-- a set of deliberate failures: sprocket holes in view, bare light along one
-  edge, a frame at the roll's own scanning exposure (probably clipped), a
-  frame with only a sliver of rebate.
+**Step 1 — shoot the frames.**
+
+| Frame | Count | Purpose |
+|---|---|---|
+| Easy leader | **2 stocks × 1 frame** | Pin area, spread, and `FILM_BASE_MIN_CHANNEL` on what v1 asks for |
+| Exposure series (same leader framing) | **1 roll: 1, 2, 3, and 4 stops down** | Verify §0.2 exposure invariance — **cannot drop** |
+| Deliberate failures | **4 frames** (one set, any stock): clipped at the roll's scanning exposure; too dark (3+ stops down); bare light along one edge; sliver of rebate only | Confirm gates 4–6 and ambiguity refuse correctly |
 
 **Step 2 — verify the exposure-invariance claim (§0.2) on real film.** Run
 `film_base.load` on the four-exposure set. Report `luma` for each exposure
@@ -1143,9 +1199,9 @@ the feature is wrong and §4.1 must not land.** The likely culprits would be
 sensor non-linearity near clipping or stray light; both are guarded by the
 "stop down" capture rule, which is why the 1-stop sample is in the set.
 
-**Step 3 — pin the detector and the gates.** For every frame in step 1,
-report the full `populations` list — area fraction, luma, spread — plus the
-per-channel densities and clipped fractions of the chosen one. Pin
+**Step 3 — pin the detector and the gates.** For every frame in the v1 set
+(step 1), report the full `populations` list — area fraction, luma, spread
+— plus the per-channel densities and clipped fractions of the chosen one. Pin
 `FILM_BASE_MAX_COMPONENT_SPREAD`, `FILM_BASE_MERGE_SEPARATION`,
 `FILM_BASE_MIN_AREA_FRACTION` and `FILM_BASE_AMBIGUOUS_RATIO` to sit clear of
 both clusters, the way `MONO_CHROMA_MAX` / `COLOUR_CHROMA_MIN` were pinned
@@ -1160,22 +1216,53 @@ same exposure. Set the floor where the MAD starts to matter against
 `FILM_BASE_MAX_COMPONENT_SPREAD`, and confirm the §1 guidance ("two stops,
 not more than three") sits comfortably above it on every stock tested.
 
-**Step 5 — check the dense-end neutral gate (§4.2).** For one roll, run
-`analyze_bounds` with and without `base_refs` and report, per negative, how
-often `_same_pixel_color_floor_refs` returned `None` (the fallback) in each
-case, and the median chroma of the surviving neutral set. If either moves
-materially, re-pin `NEUTRAL_CHROMA_CAP` and `NEUTRAL_FIRST_PASS_CAP` at this
-same gate.
+**Steps 5–6 — deferrable for B-5.** If the easy-case pinning in steps 3–4
+looks clean, B-5 may land without them; run them in §11b if deferred:
 
-**Step 6 — check the anchor against the per-negative rebate (§6).** For every
-negative in the sample rolls where `detect_rebate` fired unclipped, report
-`base_check.shape_residual`. This is the direct test of whether the roll
-anchor agrees with what the negatives themselves show, and it is also the
-data a future `FILM_BASE_DRIFT` threshold would need.
+- **Step 5** — check the dense-end neutral gate (§4.2): for one roll, run
+  `analyze_bounds` with and without `base_refs` and report, per negative,
+  how often `_same_pixel_color_floor_refs` returned `None` (the fallback) in
+  each case, and the median chroma of the surviving neutral set. If either
+  moves materially, re-pin `NEUTRAL_CHROMA_CAP` and `NEUTRAL_FIRST_PASS_CAP`.
+- **Step 6** — check the anchor against the per-negative rebate (§6): for
+  every negative in the sample rolls where `detect_rebate` fired unclipped,
+  report `base_check.shape_residual`. B-4 already records this once B-5
+  lands; §11b uses it for a future drift threshold.
 
 Record every pinned number, with its date and the measurement it came from,
 in the constant's own comment in `film_base.py` — the way `MONO_CHROMA_MAX`'s
 comment does.
+
+---
+
+## 11b. Deferred two-band validation
+
+v1 §11 does not shoot realistic two-band frames (rebate on both sides of a
+strip of picture — §0.4's common case in the wild). The detector and synthetic
+fixture still cover that path; this section is the follow-up real-film gate.
+
+**When to run §11b:**
+
+- before widening UX copy to treat "gap between two negatives" as co-equal
+  guidance with leader, or
+- if field reports suggest merge or ambiguity misfires on non-leader uploads.
+
+**What to shoot:**
+
+- one **realistic two-band** frame per stock (the item dropped from v1 §11
+  step 1);
+- optionally expand to three rolls if a new stock sits near a pinned floor.
+
+**What to check:**
+
+- re-check `FILM_BASE_MERGE_SEPARATION` and `FILM_BASE_AMBIGUOUS_RATIO` on
+  real film;
+- confirm the bare-light deliberate failure does not silently win on a
+  two-band upload;
+- run deferred §11 steps 5–6 if not done at B-5 time.
+
+Re-pin constants only if the measured gap moves; record the new numbers in
+`film_base.py` with date and source, same as §11.
 
 ---
 
@@ -1225,9 +1312,10 @@ comment does.
 3. **The user overshoots and stops down too far.** Caught by gate 5, which is
    per-channel because blue through the mask runs out first (§1.2).
 4. **Bare light wins the "largest population" rule.** Only possible when bare
-   light covers more of the frame than the rebate does, which the capture
-   instruction and gate 6 both target. §11 step 3 must confirm it on a real
-   frame with bare light in it.
+   light covers more of the frame than the rebate does. v1 mitigation is
+   leader-first UX (§1, §8) plus gate 6; §11 confirms the bare-light
+   deliberate failure is refused, and §11b confirms it on two-band real film
+   before that framing is advertised as co-equal guidance.
 5. **The base frame is not from that roll.** Undetectable. The UI text is the
    only defence; §6's `shape_residual` is the after-the-fact evidence.
 6. **A mono roll's user resents shooting a frame that is then ignored.**

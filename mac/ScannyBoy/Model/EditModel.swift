@@ -398,19 +398,21 @@ final class EditModel {
 
     func scheduleColor(
         _ targets: [RollManifest.Negative],
-        adjustment: ColorAdjustment
+        adjustment: ColorAdjustment,
+        auto: ColorAutoFlags = []
     ) {
         colorScheduleTask?.cancel()
         colorScheduleTask = Task { [weak self] in
             try? await Task.sleep(for: Self.colorDebounce)
             guard !Task.isCancelled, let self else { return }
-            await self.commitColor(targets, adjustment: adjustment)
+            await self.commitColor(targets, adjustment: adjustment, auto: auto)
         }
     }
 
     func commitColor(
         _ targets: [RollManifest.Negative],
-        adjustment: ColorAdjustment?
+        adjustment: ColorAdjustment?,
+        auto: ColorAutoFlags = []
     ) async {
         colorScheduleTask?.cancel()
         colorScheduleTask = nil
@@ -420,7 +422,7 @@ final class EditModel {
         }
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
-            await self.performColorCommit(targets, adjustment: adjustment)
+            await self.performColorCommit(targets, adjustment: adjustment, auto: auto)
         }
         colorCommitTask = task
         await task.value
@@ -428,14 +430,16 @@ final class EditModel {
 
     func setColor(
         _ targets: [RollManifest.Negative],
-        adjustment: ColorAdjustment?
+        adjustment: ColorAdjustment?,
+        auto: ColorAutoFlags = []
     ) async {
-        await commitColor(targets, adjustment: adjustment)
+        await commitColor(targets, adjustment: adjustment, auto: auto)
     }
 
     private func performColorCommit(
         _ targets: [RollManifest.Negative],
-        adjustment: ColorAdjustment?
+        adjustment: ColorAdjustment?,
+        auto: ColorAutoFlags = []
     ) async {
         guard let rollURL, !isRotating, !isDeleting, !targets.isEmpty else { return }
 
@@ -451,7 +455,8 @@ final class EditModel {
         let command = CLICommand.editColor(
             roll: rollURL,
             negatives: targets.map(\.negativeID),
-            adjustment: adjustment
+            adjustment: adjustment,
+            auto: auto
         )
         let session = runner.session(for: command)
         activeColorSession = session
@@ -721,6 +726,7 @@ final class EditModel {
         var colorHighlightMagenta = negative.colorHighlightMagenta
         var colorHighlightYellow = negative.colorHighlightYellow
         var colorCastRemoval = negative.colorCastRemoval
+        var colorCastRemovalHighlights = negative.colorCastRemovalHighlights
         var colorDyeSeparation = negative.colorDyeSeparation
         var colorSeparationDamping = negative.colorSeparationDamping
         var colorTemperature = negative.colorTemperature
@@ -759,6 +765,7 @@ final class EditModel {
                 colorHighlightMagenta = color.highlightMagenta
                 colorHighlightYellow = color.highlightYellow
                 colorCastRemoval = color.castRemoval
+                colorCastRemovalHighlights = color.castRemovalHighlights
                 colorDyeSeparation = color.dyeSeparation
                 colorSeparationDamping = color.separationDamping
                 colorTemperature = nil
@@ -773,6 +780,7 @@ final class EditModel {
                 colorHighlightMagenta = nil
                 colorHighlightYellow = nil
                 colorCastRemoval = nil
+                colorCastRemovalHighlights = nil
                 colorDyeSeparation = nil
                 colorSeparationDamping = nil
                 colorTemperature = nil
@@ -815,6 +823,7 @@ final class EditModel {
                 colorHighlightMagenta: colorHighlightMagenta,
                 colorHighlightYellow: colorHighlightYellow,
                 colorCastRemoval: colorCastRemoval,
+                colorCastRemovalHighlights: colorCastRemovalHighlights,
                 colorDyeSeparation: colorDyeSeparation,
                 colorSeparationDamping: colorSeparationDamping,
                 colorTemperature: colorTemperature,
@@ -1135,7 +1144,7 @@ final class EditModel {
     // MARK: - Fetching
 
     /// Re-fetches the roll. Callers refresh after Apply finishes, exactly as
-    /// `ConfigurationModel.refreshValidation()` does after a run.
+    /// `ConfigurationModel.clearValidationState()` does after a run.
     func refresh() {
         startRollFetch(rollURL: rollURL)
     }

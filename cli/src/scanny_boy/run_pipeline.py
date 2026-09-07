@@ -119,7 +119,6 @@ def run_full(
     flatfield_profile_id: str | None = None,
     auto_rotate: bool = True,
     grid: GridSpec | None = None,
-    film_kind: str = "auto",
 ) -> RunOutcome:
     """Convert `files` into a work directory, then stitch it into `out_dir`
     (a roll).
@@ -145,9 +144,6 @@ def run_full(
     regenerates it. Only a caller-supplied `--work` directory ever survives,
     because deleting a folder the user pointed at is never this program's
     decision.
-
-    `film_kind` is `--film-kind`'s value, passed straight through to
-    `run_stitch` (MONOCHROME_PLAN §2.2).
     """
     created_work_dir = work_dir is None
     if created_work_dir:
@@ -207,7 +203,6 @@ def run_full(
                     emit=stitch_emit,
                     flatfield_profile_id=flatfield_profile_id,
                     auto_rotate=auto_rotate,
-                    film_kind=film_kind,
                 )
             except StitchError as exc:
                 raise RunFailure(exc.code, exc.message) from exc

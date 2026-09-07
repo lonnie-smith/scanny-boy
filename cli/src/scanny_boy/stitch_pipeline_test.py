@@ -790,7 +790,6 @@ def test_cancellation_keeps_completed_negatives(tmp_path):
         jobs=1,
         cancel=cancel,
         emit=emit,
-        film_kind="colour",
     )
 
     assert outcome.status == "cancelled"
@@ -845,7 +844,9 @@ def _baseless_roll(tmp_path: Path, name: str = "out") -> Path:
     """A real, registered roll with NO film-base reference: §3.2 rule 4's
     ABSENT state."""
     out = make_out_dir(tmp_path, name)
-    write_roll_manifest(out, new_roll_manifest(roll_id="r-baseless", roll_name=name))
+    write_roll_manifest(
+        out, new_roll_manifest(roll_id="r-baseless", roll_name=name, film_kind="colour")
+    )
     return out
 
 
@@ -1131,7 +1132,7 @@ def test_reference_bounds_collects_completed_negatives_blocks():
     then this run's publishes as they land. Blocks without bounds (a
     pre-normalization record) are skipped, and an empty roll yields an
     empty population, which clamps nothing."""
-    roll = new_roll_manifest(roll_id="r", roll_name="r")
+    roll = new_roll_manifest(roll_id="r", roll_name="r", film_kind="colour")
     assert stitch_pipeline._reference_bounds(roll) == []
 
     roll.negatives.append(
@@ -1152,6 +1153,43 @@ def test_reference_bounds_collects_completed_negatives_blocks():
     assert references[0].floors == (-1.5, -1.6, -1.7)
     assert references[1].ceils == (-0.35, -0.32, -0.48)
     assert all(isinstance(b, Bounds) for b in references)
+
+
+@pytest.mark.slow
+def test_anchor_consumption_changes_only_ceils_deviations(
+    work_dir, tmp_path, monkeypatch
+):
+    """REBATE_ANCHORING B-5: stitching with the roll anchor differs from
+    the same roll with consumption disabled, and only in the per-channel
+    `ceils` deviations — floors and the ceils level stay put."""
+    out_with = make_roll_dir(tmp_path / "with")
+    roll = load_roll_manifest(out_with)
+    attach_base_frame(roll, density=[-0.50, -0.20, -0.90])
+    write_roll_manifest(out_with, roll)
+
+    assert run_stitch_with_defaults(work_dir, out_with).status == "complete"
+    norm_with = load_roll_manifest(out_with).negatives[0].normalization
+
+    out_without = make_roll_dir(tmp_path / "without")
+    roll2 = load_roll_manifest(out_with)
+    attach_base_frame(roll2, density=[-0.50, -0.20, -0.90])
+    write_roll_manifest(out_without, roll2)
+    monkeypatch.setattr(stitch_pipeline, "_locked_base_refs", lambda _roll: None)
+
+    assert (
+        run_stitch_with_defaults(work_dir, out_without, run_id="stitch-run-2").status
+        == "complete"
+    )
+    norm_without = load_roll_manifest(out_without).negatives[0].normalization
+
+    assert norm_with["floors"] == pytest.approx(norm_without["floors"], abs=1e-4)
+    assert np.median(norm_with["ceils"]) == pytest.approx(
+        np.median(norm_without["ceils"]), abs=1e-3
+    )
+    dev_with = np.asarray(norm_with["ceils"]) - np.median(norm_with["ceils"])
+    dev_without = np.asarray(norm_without["ceils"]) - np.median(norm_without["ceils"])
+    assert not np.allclose(dev_with, dev_without, atol=1e-4)
+    assert norm_with["ceils"] != norm_without["ceils"]
 
 
 def test_roll_invariants_are_seeded_by_the_first_run(tmp_path):
@@ -1818,88 +1856,80 @@ def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkey
     assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1
 
 
-# --- MONOCHROME_PLAN section 1: the detector pre-pass ---------------------------
+# --- explicit film kind at roll init -------------------------------------
 
 
-def test_mono_statistic_is_recorded_for_every_sampled_negative(work_dir, tmp_path):
-    """§1: the pre-pass samples up to MONO_DETECT_MAX_SAMPLES negatives and
-    records the statistic in each one's normalization block — sampled,
-    acted on by nothing. The synthetic scenes are three copies of one
-    plane, so the chroma is near zero, which is the evidence the roll
-    would carry into §2's threshold decision."""
-    out_dir = make_roll_dir(tmp_path)
+def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
+    """A roll created with `film_kind=monochrome` publishes a true 2-D TIFF
+    and seeds the grey density profile at init."""
+    import tifffile
+
+    from scanny_boy.icc_profile import DENSITY_GREY_PROFILE_SHA256
+
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path, film_kind="monochrome")
 
     assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
 
     roll = load_roll_manifest(out_dir)
-    assert len(roll.negatives) == 1
-    block = roll.negatives[0].normalization
-    assert block is not None
-    mono = block["mono"]
-    assert mono["sampled"] is True
-    assert isinstance(mono["chroma"], float)
-    assert mono["chroma"] < 0.01
-    assert len(mono["channel_correlation"]) == 2
+    assert roll.film == {"kind": "monochrome"}
+    assert roll.published_icc_profile["sha256"] == DENSITY_GREY_PROFILE_SHA256
+    published = out_dir / roll.negatives[0].output["name"]
+    assert tifffile.imread(published).ndim == 2
 
 
-@pytest.mark.parametrize("group_count", [1, 2, 5, 6, 8, 40])
-def test_mono_sampling_spreads_across_the_run_and_caps_at_max_samples(
-    group_count, tmp_path, monkeypatch
-):
-    """§1.2: six bounded reads, spread evenly across canonical order — with
-    more groups than MONO_DETECT_MAX_SAMPLES, exactly that many distinct
-    groups are sampled, first and last among them.
-
-    What is under test here is which groups get picked, which is index
-    arithmetic over the group list. The measurement itself is the subject of
-    the tests above — this used to build eight real negatives (24 synthetic
-    scenes and 24 TIFFs, 12 seconds) to look at six strings — so the sampler
-    is stubbed and only the selection is asserted. Stubbing it also lets the
-    case sweep the boundary: fewer groups than the cap, exactly the cap, and
-    well over it.
-    """
-    sampled: list[Path] = []
-
-    def fake_sample(path, cancel):
-        sampled.append(path)
-        return object()
-
-    monkeypatch.setattr(stitch_pipeline, "_sample_mono_statistic", fake_sample)
-
-    groups = [
-        GroupRecord(
-            group_id=f"negative-{i + 1:02d}",
-            members=[f"IMG_{i}0.NEF"],
-            expected_outputs=[f"IMG_{i}0.tif"],
-            status="completed",
-            # `_intermediate_paths` resolves members through `outputs`, so the
-            # record has to be here even though the stub never opens the file.
-            outputs=[
-                OutputRecord(name=f"IMG_{i}0.tif", size=1, sha256="0" * 64)
-            ],
-        )
-        for i in range(group_count)
-    ]
-
-    samples = stitch_pipeline._measure_mono_samples(
-        tmp_path, groups, CancellationToken()
+def test_film_kind_required_when_roll_has_no_film_block(tmp_path):
+    """An unseeded roll with no `film` block cannot be stitched."""
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_out_dir(tmp_path)
+    manifest = new_roll_manifest(
+        roll_id="00000000-0000-4000-8000-000000000099",
+        roll_name="no-kind",
+        film_kind="colour",
     )
+    manifest.film = None
+    attach_base_frame(manifest)
+    write_roll_manifest(out_dir, manifest)
 
-    expected = min(stitch_pipeline.MONO_DETECT_MAX_SAMPLES, group_count)
-    group_ids = [g.group_id for g in groups]
-    assert len(samples) == expected
-    assert set(samples) <= set(group_ids)
-    assert group_ids[0] in samples
-    assert group_ids[-1] in samples
-    # One bounded read per sampled group, never one per negative.
-    assert len(sampled) == expected
+    with pytest.raises(StitchError) as exc_info:
+        run_stitch_with_defaults(work_dir, out_dir)
+    assert exc_info.value.code == Code.FILM_KIND_REQUIRED
+
+
+def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
+    """§5.2: a roll that already has runs but no `film` block predates
+    explicit film kind and is treated as frozen colour."""
+    work_dir = make_work_dir(tmp_path)
+    out_dir = make_roll_dir(tmp_path)
+    roll = load_roll_manifest(out_dir)
+    work_manifest = load_manifest(work_dir)
+    append_run(
+        roll,
+        RunRecord(
+            run_id="legacy-run",
+            kind="stitch",
+            status="complete",
+            started_at="2026-01-01T00:00:00Z",
+        ),
+    )
+    roll.processing_params = work_manifest.processing_params
+    roll.icc_profile = work_manifest.icc_profile
+    roll.stitch_params = stitch_pipeline._stitch_params(None)
+    roll.film = None
+    write_roll_manifest(out_dir, roll)
+
+    assert run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status == "complete"
+    roll_after = load_roll_manifest(out_dir)
+    assert roll_after.published_icc_profile["sha256"] == profile_record(
+        ProfileKind.DENSITY
+    )["sha256"]
 
 
 # --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
 
 
 def test_seed_camera_color_writes_the_block_on_the_first_run():
-    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     manifest = _work_manifest(
         curated_metadata=_curated_with_matrix(),
     )
@@ -1916,7 +1946,7 @@ def test_seed_camera_color_writes_the_block_on_the_first_run():
 
 
 def test_seed_camera_color_is_frozen_and_warns_on_a_conflict():
-    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     roll.camera_color = CameraColor(
         rgb_xyz_matrix=_matrix(),
         source="libraw",
@@ -1938,7 +1968,7 @@ def test_seed_camera_color_is_frozen_and_warns_on_a_conflict():
 
 
 def test_seed_camera_color_tolerates_an_identical_matrix_silently():
-    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     roll.camera_color = CameraColor(
         rgb_xyz_matrix=_matrix(),
         source="libraw",
@@ -1954,148 +1984,8 @@ def test_seed_camera_color_tolerates_an_identical_matrix_silently():
 
 
 def test_seed_camera_color_no_ops_without_a_matrix():
-    roll = new_roll_manifest(roll_id="r", roll_name="roll")
+    roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     _seed_camera_color(
         roll, _work_manifest(), emit=lambda event: None  # type: ignore[arg-type]
     )
     assert roll.camera_color is None
-
-# --- MONOCHROME_PLAN section 2: the roll decision --------------------------------
-
-
-def test_mono_roll_freezes_film_on_first_run_and_never_rewrites(work_dir, tmp_path):
-    """§2.3: a fresh roll's first stitch decides and freezes `film`
-    (the synthetic scenes are three copies of one plane, so the roll
-    decides monochrome); a second stitch into the same roll re-measures
-    but does not rewrite the frozen block."""
-    out_dir = make_roll_dir(tmp_path)
-
-    assert run_stitch_with_defaults(work_dir, out_dir, film_kind="auto").status == "complete"
-    roll = load_roll_manifest(out_dir)
-    assert roll.film is not None
-    assert roll.film["kind"] == "monochrome"
-    assert roll.film["source"] == "auto"
-    assert roll.film["detector_version"] == stitch_pipeline.FILM_DETECTOR_VERSION
-    assert roll.film["samples"] == [roll.negatives[0].negative_id]
-    first_film = dict(roll.film)
-
-    assert (
-        run_stitch_with_defaults(work_dir, out_dir, film_kind="auto", run_id="stitch-run-2").status
-        == "complete"
-    )
-    roll_again = load_roll_manifest(out_dir)
-    assert roll_again.film == first_film
-
-
-def test_mono_decision_conflict_warns_and_keeps_the_frozen_kind(work_dir, tmp_path):
-    """§2.3: once frozen, later evidence that disagrees only warns — it
-    never flips the kind. This roll is frozen colour by manual override
-    even though its content reads as monochrome; the second run's fresh
-    auto evidence disagrees and warns, but the roll stays colour."""
-    out_dir = make_roll_dir(tmp_path)
-
-    assert run_stitch_with_defaults(work_dir, out_dir, film_kind="colour").status == "complete"
-    roll = load_roll_manifest(out_dir)
-    assert roll.film["kind"] == "colour"
-    assert roll.film["source"] == "manual"
-
-    events: list = []
-    outcome = run_stitch_with_defaults(
-        work_dir, out_dir, film_kind="auto", run_id="stitch-run-2", events=events
-    )
-    assert outcome.status == "complete"
-    warnings = [e for e in events if isinstance(e, WarningEvent)]
-    assert any(w.code == Code.MONO_DECISION_CONFLICT for w in warnings)
-
-    roll_after = load_roll_manifest(out_dir)
-    assert roll_after.film == roll.film
-    assert (
-        roll_after.published_icc_profile["sha256"]
-        == profile_record(ProfileKind.DENSITY)["sha256"]
-    )
-
-
-def test_film_kind_override_naming_the_other_kind_errors_on_a_roll_with_runs(
-    work_dir, tmp_path,
-):
-    """§2.3: `--film-kind` naming the *other* kind on a roll that already
-    has runs is an error, surfacing through the published-ICC invariant —
-    no special-case check needed."""
-    out_dir = make_roll_dir(tmp_path)
-    assert run_stitch_with_defaults(work_dir, out_dir, film_kind="colour").status == "complete"
-
-    with pytest.raises(StitchError) as exc_info:
-        run_stitch_with_defaults(work_dir, out_dir, film_kind="monochrome", run_id="stitch-run-2")
-    assert exc_info.value.code == Code.ROLL_INVARIANT_MISMATCH
-
-
-def test_mono_roll_seeds_the_density_grey_profile_and_publishes_one_channel(work_dir, tmp_path):
-    """§2.3/§4: a mono roll's seeded `published_icc_profile_sha256` is the
-    `DENSITY_GREY` record's, and its published TIFF is a true 2-D array."""
-    import tifffile
-
-    from scanny_boy.icc_profile import DENSITY_GREY_PROFILE_SHA256
-
-    out_dir = make_roll_dir(tmp_path)
-    assert run_stitch_with_defaults(work_dir, out_dir, film_kind="auto").status == "complete"
-
-    roll = load_roll_manifest(out_dir)
-    assert roll.published_icc_profile["sha256"] == DENSITY_GREY_PROFILE_SHA256
-    published = out_dir / roll.negatives[0].output["name"]
-    assert tifffile.imread(published).ndim == 2
-
-
-def test_decide_film_kind_ambiguous_defaults_to_colour_and_warns(tmp_path):
-    """§2.1: a statistic landing between the two thresholds is ambiguous —
-    the roll decides colour (the lossless choice) and warns."""
-    from scanny_boy.normalization import (
-        COLOUR_CHROMA_MIN,
-        MONO_CHROMA_MAX,
-        MonoStatistic,
-    )
-
-    out_dir = make_roll_dir(tmp_path)  # fresh, unseeded roll
-    midpoint = (MONO_CHROMA_MAX + COLOUR_CHROMA_MIN) / 2.0
-    mono_by_group = {
-        "negative-01": MonoStatistic(
-            sampled=True, chroma=midpoint, channel_correlation=(0.9, 0.9)
-        )
-    }
-    warnings: list[tuple] = []
-
-    decision = stitch_pipeline._decide_film_kind(
-        out_dir,
-        mono_by_group,
-        "auto",
-        lambda code, message: warnings.append((code, message)),
-    )
-
-    assert decision.kind is stitch_pipeline.FilmKind.COLOUR
-    assert decision.freeze_template is not None
-    assert decision.freeze_template["source"] == "auto"
-    assert decision.freeze_template["statistic"] == pytest.approx(midpoint)
-    assert any(code == Code.MONO_DETECT_AMBIGUOUS for code, _ in warnings)
-
-
-def test_decide_film_kind_treats_a_legacy_roll_as_frozen_colour(tmp_path):
-    """§5.2: a roll manifest with runs but no `film` block predates §2
-    entirely and is treated as already-frozen colour; this run must write
-    the default block out."""
-    out_dir = make_roll_dir(tmp_path)
-    roll = load_roll_manifest(out_dir)
-    append_run(
-        roll,
-        RunRecord(
-            run_id="legacy-run",
-            kind="stitch",
-            status="complete",
-            started_at="2026-01-01T00:00:00Z",
-        ),
-    )
-    write_roll_manifest(out_dir, roll)
-    assert roll.film is None
-
-    decision = stitch_pipeline._decide_film_kind(out_dir, {}, "auto", lambda *a: None)
-
-    assert decision.kind is stitch_pipeline.FilmKind.COLOUR
-    assert decision.freeze_template == stitch_pipeline._legacy_film_block()

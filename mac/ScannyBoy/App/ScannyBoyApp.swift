@@ -7,10 +7,11 @@ struct ScannyBoyApp: App {
     @State private var library: RollLibrary?
     /// Shared with the Add Scans stage's profile picker, same as `library`.
     @State private var flatField: FlatFieldModel?
+    @State private var grid: GridModel?
 
     var body: some Scene {
         WindowGroup {
-            RootView(library: $library, flatField: $flatField)
+            RootView(library: $library, flatField: $flatField, grid: $grid)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -21,6 +22,11 @@ struct ScannyBoyApp: App {
                 Button("Flat-Field Profiles…") {
                     NotificationCenter.default.post(
                         name: .scannyBoyRequestFlatFieldProfiles, object: nil
+                    )
+                }
+                Button("Grid Configurations…") {
+                    NotificationCenter.default.post(
+                        name: .scannyBoyRequestGridProfiles, object: nil
                     )
                 }
             }
@@ -50,6 +56,9 @@ extension Notification.Name {
     static let scannyBoyRequestFlatFieldProfiles = Notification.Name(
         "com.lonniesmith.scanny-boy.requestFlatFieldProfiles"
     )
+    static let scannyBoyRequestGridProfiles = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestGridProfiles"
+    )
 }
 
 /// Resolves the CLI helper exactly once and shows either the configuration
@@ -59,6 +68,7 @@ extension Notification.Name {
 struct RootView: View {
     @Binding var library: RollLibrary?
     @Binding var flatField: FlatFieldModel?
+    @Binding var grid: GridModel?
     @State private var model: ConfigurationModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
@@ -68,10 +78,11 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let library, let flatField, let model, let edit, let run, let export, let activity {
+            if let library, let flatField, let grid, let model, let edit, let run, let export, let activity {
                 ContentView(
                     library: library,
                     flatField: flatField,
+                    grid: grid,
                     model: model,
                     edit: edit,
                     run: run,
@@ -95,10 +106,12 @@ struct RootView: View {
             let runner = try CLIRunner(locator: .mainBundle())
             library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
             let flatField = FlatFieldModel(runner: runner)
+            let grid = GridModel(runner: runner)
             let edit = EditModel(runner: runner)
             let run = RunModel(runner: runner)
             let export = ExportModel(runner: runner)
             self.flatField = flatField
+            self.grid = grid
             model = ConfigurationModel(runner: runner)
             self.edit = edit
             self.run = run

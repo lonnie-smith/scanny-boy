@@ -131,7 +131,8 @@ def _assert_matches_v5_roll_manifest_schema(
     if data.get("film") is not None:
         _require_keys(data["film"], defs["filmDecision"]["required"])
         assert data["film"]["kind"] in defs["filmDecision"]["properties"]["kind"]["enum"]
-        assert data["film"]["source"] in defs["filmDecision"]["properties"]["source"]["enum"]
+        if "source" in data["film"]:
+            assert data["film"]["source"] in defs["filmDecision"]["properties"]["source"]["enum"]
 
     if data.get("film_base") is not None:
         # REBATE_ANCHORING §3.1.

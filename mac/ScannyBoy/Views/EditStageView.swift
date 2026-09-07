@@ -257,8 +257,12 @@ private struct PreviewPane: View {
                         onScheduleCommit: { adjustment in
                             edit.scheduleColor(targets, adjustment: adjustment)
                         },
-                        onCommitNow: { adjustment in
-                            Task { await edit.commitColor(targets, adjustment: adjustment) }
+                        onCommitNow: { adjustment, auto in
+                            Task {
+                                await edit.commitColor(
+                                    targets, adjustment: adjustment, auto: auto
+                                )
+                            }
                         },
                         onReset: {
                             Task { await edit.commitColor(targets, adjustment: nil) }
@@ -938,7 +942,7 @@ private struct ColorAdjustmentPanel: View {
     let adjustment: ColorAdjustment?
     let isBusy: Bool
     let onScheduleCommit: (_ adjustment: ColorAdjustment) -> Void
-    let onCommitNow: (_ adjustment: ColorAdjustment) -> Void
+    let onCommitNow: (_ adjustment: ColorAdjustment, _ auto: ColorAutoFlags) -> Void
     let onReset: () -> Void
 
     @State private var region: ColorRegion = .global
@@ -971,10 +975,37 @@ private struct ColorAdjustmentPanel: View {
                     String(format: "%+.2f", yellowBinding.wrappedValue)
                 }
 
+                Button {
+                    onCommitNow(values, .cast)
+                } label: {
+                    Label("Auto", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderless)
+                .disabled(isBusy)
+                .help("Solve the filtration from this negative's own neutral estimate")
+
                 Text("Correction").font(.headline)
-                colorSlider("Cast Removal", value: $values.castRemoval, range: 0...1, step: 0.05) {
+                colorSlider(
+                    "Cast Removal — Shadows",
+                    value: $values.castRemoval,
+                    range: 0...1,
+                    step: 0.05
+                ) {
                     String(format: "%.2f", values.castRemoval)
                 }
+                .help("Balances each layer against the frame's own shadow greys.")
+                colorSlider(
+                    "Cast Removal — Highlights",
+                    value: $values.castRemovalHighlights,
+                    range: 0...1,
+                    step: 0.05
+                ) {
+                    String(format: "%.2f", values.castRemovalHighlights)
+                }
+                .help(
+                    "Balances each layer against the frame's own highlight greys. "
+                        + "Needs a highlight reference; inactive on rolls stitched before it was measured."
+                )
 
                 Text("Saturation").font(.headline)
                 colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
@@ -1093,7 +1124,7 @@ private struct ColorAdjustmentPanel: View {
                 step: step,
                 resetValue: resetValue(for: title),
                 onScheduleCommit: { onScheduleCommit(values) },
-                onCommitNow: { onCommitNow(values) }
+                onCommitNow: { onCommitNow(values, []) }
             )
             .disabled(disabled)
         }
@@ -1101,7 +1132,7 @@ private struct ColorAdjustmentPanel: View {
 
     private func resetValue(for title: String) -> Double {
         switch title {
-        case "Cast Removal", "Separation Damping": 0
+        case "Cast Removal — Shadows", "Cast Removal — Highlights", "Separation Damping": 0
         case "Dye Separation": 1
         default: 0
         }
@@ -1116,7 +1147,7 @@ private struct ColorAdjustmentPanel: View {
         case .highlights:
             values.highlightCyan = 0; values.highlightMagenta = 0; values.highlightYellow = 0
         }
-        onCommitNow(values)
+        onCommitNow(values, [])
     }
 
     private func syncFromModel() {
@@ -1174,7 +1205,7 @@ private struct ColorAdjustmentPanel: View {
                     temperatureAnchor = (pair.magenta, pair.yellow)
                 } else {
                     temperatureAnchor = nil
-                    onCommitNow(values)
+                    onCommitNow(values, [])
                 }
             }
         }

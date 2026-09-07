@@ -6,6 +6,7 @@ from scanny_boy.catalogue import (
     CatalogueError,
     compute_canonical_order,
     discover_catalogue,
+    is_catalogue_filename,
     natural_sort_key,
 )
 from scanny_boy.fake_nef_support import write_fake_nef
@@ -16,10 +17,19 @@ def test_natural_sort_key_orders_dsc9_before_dsc10():
     assert sorted(names, key=natural_sort_key) == ["DSC_2.NEF", "DSC_9.NEF", "DSC_10.NEF"]
 
 
+def test_is_catalogue_filename():
+    assert is_catalogue_filename("a.NEF")
+    assert is_catalogue_filename("b.nef")
+    assert not is_catalogue_filename(".__a.NEF")
+    assert not is_catalogue_filename("not-a-raw.txt")
+    assert not is_catalogue_filename("a.NEF.txt")
+
+
 def test_discover_catalogue_is_case_insensitive_and_non_recursive(tmp_path):
     write_fake_nef(tmp_path / "a.NEF")
     write_fake_nef(tmp_path / "b.nef")
     write_fake_nef(tmp_path / "c.Nef")
+    write_fake_nef(tmp_path / ".__resource.NEF")
     (tmp_path / "not-a-raw.txt").write_text("ignore me")
     sub = tmp_path / "subdir"
     sub.mkdir()

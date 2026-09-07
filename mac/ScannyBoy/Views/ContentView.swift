@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Section 3.10: `NavigationSplitView` shell — the library sidebar
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
@@ -23,6 +24,7 @@ import SwiftUI
 struct ContentView: View {
     let library: RollLibrary
     let flatField: FlatFieldModel
+    let grid: GridModel
     @Bindable var model: ConfigurationModel
     let edit: EditModel
     let run: RunModel
@@ -46,6 +48,7 @@ struct ContentView: View {
     @State private var restitchOutputFolder: URL?
     @State private var isPresentingNewRollSheet = false
     @State private var isPresentingFlatFieldProfiles = false
+    @State private var isPresentingGridProfiles = false
     @State private var isConfirmingConvert = false
     @State private var pendingConvertAfterNewRoll = false
     // Left explicit: `.automatic`'s default can collapse to no visible
@@ -106,6 +109,21 @@ struct ContentView: View {
             flatField.refresh()
             isPresentingFlatFieldProfiles = true
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .scannyBoyRequestGridProfiles)
+        ) { _ in
+            grid.refresh()
+            isPresentingGridProfiles = true
+        }
+        .onChange(of: grid.profiles) { _, profiles in
+            syncGridProfileSelection(with: profiles)
+        }
+        .onChange(of: model.gridProfileID) { _, profileID in
+            guard let profileID,
+                let profile = grid.profiles.first(where: { $0.profileID == profileID })
+            else { return }
+            model.applyGridDimensions(from: profile)
+        }
         .sheet(isPresented: $isPresentingRestitch) {
             RestitchSheet(
                 run: run,
@@ -154,6 +172,19 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
             FlatFieldProfilesSheet(flatField: flatField)
         }
+        .sheet(isPresented: $isPresentingGridProfiles) {
+            GridProfilesSheet(grid: grid)
+        }
+    }
+
+    private func syncGridProfileSelection(with profiles: [GridProfile]) {
+        guard let profileID = model.gridProfileID else { return }
+        guard let profile = profiles.first(where: { $0.profileID == profileID }) else {
+            model.gridProfileID = nil
+            model.across = nil
+            return
+        }
+        model.applyGridDimensions(from: profile)
     }
 
     private var workspace: some View {
@@ -296,21 +327,7 @@ struct ContentView: View {
             // grouping picker was unreachable for the duration.
             configurationSections
                 .disabled(activity.isBusy)
-            runSection
-            // Add Scans shows this section for its own invocations only
-            // (M9): an apply-metadata started from the Metadata tab is not
-            // a conversion, even though it shares the same `RunModel`.
-            if run.phase != .idle, run.invocation != .applyMetadata {
-                Section("Convert Results") {
-                    if run.isActive {
-                        RunProgressView(run: run)
-                    } else if run.phase == .finishing {
-                        FinishingView()
-                    } else {
-                        RunResultView(run: run)
-                    }
-                }
-            }
+            convertSection
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -319,12 +336,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var configurationSections: some View {
-        Section("Flat Field") {
+        Section {
             // Chosen fresh for every run: a roll does not lock to one
             // profile, so different runs into the same roll may each pick
             // a different one. Defaults to the last profile used, across
             // any roll.
-            Picker("Profile", selection: $model.flatFieldProfileID) {
+            Picker("Scanning Rig Profile", selection: $model.flatFieldProfileID) {
                 Text("None").tag(String?.none)
                 ForEach(flatField.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
@@ -339,51 +356,43 @@ struct ContentView: View {
                 flatField.refresh()
                 isPresentingFlatFieldProfiles = true
             }
-        }
-        Section {
-            // The batch's grid (protocol 10): width × height pickers (1…12
-            // clamped so across * down stays within the CLI's 12-scan cap,
-            // and 1…2 rows). Down defaults to 1 and is not optional — a
-            // plain strip run needs one selection, not two — so only
-            // across carries the "not chosen yet" state that gates the
-            // Convert button. `down == 1` emits `--per-negative`;
-            // `down > 1` emits `--grid AxD` (docs/GRID_STITCH_PLAN.md
-            // section 2.5).
-            LabeledContent("Grid size") {
-                HStack(spacing: 8) {
-                    Picker("", selection: $model.across) {
-                        Text("Choose…").tag(Int?.none)
-                        ForEach(1...(ConfigurationModel.maxPerNegative / model.down), id: \.self) { count in
-                            Text("\(count)").tag(Int?.some(count))
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 72)
-                    .accessibilityIdentifier("perNegativePicker")
-
-                    Text("×")
-                        .foregroundStyle(.secondary)
-
-                    Picker("", selection: $model.down) {
-                        ForEach(1...2, id: \.self) { count in
-                            Text("\(count)").tag(count)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 72)
-                    .accessibilityIdentifier("downPicker")
+            FilmKindField(
+                filmKind: model.filmKind,
+                isLocked: model.filmKindLocked,
+                isBusy: activity.isBusy || model.isSettingFilmKind,
+                error: model.filmKindError,
+                onChoose: { choice in
+                    Task { await model.setFilmKind(choice.rawValue) }
+                }
+            )
+            BaseFrameField(
+                filmBase: model.filmBase,
+                isBusy: activity.isBusy || model.isAttachingBaseFrame,
+                error: model.baseFrameError,
+                onChoose: { chooseBaseFrame(replace: false) },
+                onReplace: { chooseBaseFrame(replace: true) }
+            )
+            Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
+                Text("Choose…").tag(String?.none)
+                ForEach(grid.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
-
-            if let across = model.across {
-                Text("\(across * model.down) scans per negative")
+            if let profileID = model.gridProfileID,
+                let profile = grid.profiles.first(where: { $0.profileID == profileID })
+            {
+                Text("\(profile.dimensionSummary) — \(profile.scanCount) scans per negative")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("How the scans are arranged in each negative. Choose a grid size to enable Convert.")
+                Text("How the scans are arranged in each negative. Choose a configuration to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")
+            }
+            Button("Manage…") {
+                grid.refresh()
+                isPresentingGridProfiles = true
             }
             if !model.groups.isEmpty {
                 GroupingPreview(groups: model.groups)
@@ -398,12 +407,9 @@ struct ContentView: View {
                 IssueLabel(issue: error, style: .error)
             }
         } header: {
-            // A probe in flight only means the Stitch button's enablement
-            // is not yet trustworthy (M3) — the section itself, and every
-            // control in it, stays put and reachable.
             HStack {
-                Text("Grouping")
-                if model.isProbing {
+                Text("Roll Setup")
+                if model.isValidating {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -412,8 +418,8 @@ struct ContentView: View {
         }
     }
 
-    private var runSection: some View {
-        Section {
+    private var convertSection: some View {
+        Section("Convert") {
             HStack {
                 Spacer()
                 if run.isActive {
@@ -421,17 +427,32 @@ struct ContentView: View {
                         .disabled(!run.canCancel)
                 }
                 Button("Convert") { handleConvertTap() }
-                    .disabled(!model.runEnabled || activity.isBusy)
+                    .disabled(!model.runEnabled || model.isValidating || activity.isBusy)
                     .keyboardShortcut(.defaultAction)
+            }
+            // Add Scans shows results for its own invocations only (M9):
+            // an apply-metadata started from the Metadata tab is not a
+            // conversion, even though it shares the same `RunModel`.
+            if run.phase != .idle, run.invocation != .applyMetadata {
+                if run.isActive {
+                    RunProgressView(run: run)
+                } else if run.phase == .finishing {
+                    FinishingView()
+                } else {
+                    RunResultView(run: run)
+                }
             }
         }
     }
 
     private func handleConvertTap() {
-        if Self.shouldConfirmConvert(into: selectedRoll) {
-            isConfirmingConvert = true
-        } else {
-            startRun()
+        Task {
+            guard await model.validateSelection() else { return }
+            if Self.shouldConfirmConvert(into: selectedRoll) {
+                isConfirmingConvert = true
+            } else {
+                startRun()
+            }
         }
     }
 
@@ -461,16 +482,17 @@ struct ContentView: View {
     // `--skip-sources` is exactly that: the covered negative keeps its id
     // and filename, and its TIFF is replaced atomically.
     private func startRun() {
-        guard let command = model.runCommand(), let rollURL = model.rollURL else { return }
-        run.start(
-            command: command,
-            files: model.selectedFilesInCanonicalOrder,
-            outputFolder: rollURL,
-            totalNegatives: model.groups.count
-        )
-        // The roll's contents, and therefore selection validity, change as
-        // soon as this finishes.
-        awaitRunCompletionAndRefresh()
+        Task {
+            guard await model.validateSelection() else { return }
+            guard let command = model.buildRunCommand(), let rollURL = model.rollURL else { return }
+            run.start(
+                command: command,
+                files: model.selectedFilesInCanonicalOrder,
+                outputFolder: rollURL,
+                totalNegatives: model.groups.count
+            )
+            awaitRunCompletionAndRefresh()
+        }
     }
 
     /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
@@ -488,7 +510,7 @@ struct ContentView: View {
     private func awaitRunCompletionAndRefresh() {
         Task {
             await run.waitForCompletion()
-            model.refreshValidation()
+            model.clearValidationState()
             edit.refresh()
             library.scan()
         }
@@ -497,6 +519,22 @@ struct ContentView: View {
     private func chooseInputFolder() {
         guard let url = Self.pickFolder(startingAt: model.inputFolder) else { return }
         model.inputFolder = url
+    }
+
+    private func chooseBaseFrame(replace: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = replace ? "Replace" : "Choose"
+        if let nef = UTType(filenameExtension: "nef") {
+            panel.allowedContentTypes = [nef]
+        }
+        if let inputFolder = model.inputFolder {
+            panel.directoryURL = inputFolder
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await model.attachBaseFrame(at: url) }
     }
 
     /// Section 3.2's "the last folder the user opened" persists across

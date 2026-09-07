@@ -250,7 +250,7 @@ def _roll_with_published_negative(tmp_path: Path, image: np.ndarray):
 
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
-    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour")
     negative = NegativeRecord(
         negative_id="rid-1-negative-01",
         run_id="run-1",

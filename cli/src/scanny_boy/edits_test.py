@@ -285,7 +285,7 @@ def test_rotate_rejects_another_rolls_negative_id(tmp_path):
         (roll_b, "rid-b", "bbb-negative-01"),
     ):
         roll_dir.mkdir()
-        manifest = new_roll_manifest(roll_id=roll_id, roll_name=roll_dir.name)
+        manifest = new_roll_manifest(roll_id=roll_id, roll_name=roll_dir.name, film_kind="colour")
         manifest.negatives.append(_negative(negative_id=negative_id, run_id="run-1"))
         write_roll_manifest(roll_dir, manifest)
 

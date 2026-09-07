@@ -11,15 +11,32 @@ public struct CLICommand: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// `scanny-boy roll init --library DIR --name NAME`
+    /// `scanny-boy roll init --library DIR --name NAME [--film-kind KIND]`
     ///
     /// A roll records no grouping of its own: scans-per-negative is each
-    /// stitch batch's choice, chosen on the Add Scans stage.
-    public static func rollInit(library: URL, name: String) -> CLICommand {
-        CLICommand(arguments: [
+    /// stitch batch's choice, chosen on the Add Scans stage. When `--film-kind`
+    /// is omitted, the user chooses on Add Scans via `roll set-film-kind`.
+    public static func rollInit(library: URL, name: String, filmKind: String? = nil) -> CLICommand {
+        var arguments = [
             "roll", "init",
             "--library", library.path,
             "--name", name,
+        ]
+        if let filmKind {
+            arguments.append(contentsOf: ["--film-kind", filmKind])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy roll set-film-kind --roll DIR --film-kind KIND`
+    ///
+    /// Sets the roll's film kind before its first run. The app calls this
+    /// immediately when the user picks a film type on the Add Scans sheet.
+    public static func rollSetFilmKind(roll: URL, filmKind: String) -> CLICommand {
+        CLICommand(arguments: [
+            "roll", "set-film-kind",
+            "--roll", roll.path,
+            "--film-kind", filmKind,
         ])
     }
 
@@ -51,6 +68,27 @@ public struct CLICommand: Sendable, Hashable {
     /// registration untouched.
     public static func rollDelete(roll: URL) -> CLICommand {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
+    }
+
+    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]`
+    ///
+    /// REBATE_ANCHORING §7.1: the only writer of `film_base.density`. The
+    /// app calls this immediately when the user chooses a base frame on
+    /// the Add Scans sheet — never deferred to Convert.
+    public static func rollSetBaseFrame(
+        roll: URL,
+        frame: URL,
+        flatfield: String? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "roll", "set-base-frame",
+            "--roll", roll.path,
+            "--frame", frame.path,
+        ]
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// Appends the grouping flags for one CLI invocation (protocol 10's
@@ -304,7 +342,8 @@ public struct CLICommand: Sendable, Hashable {
         negatives: [String],
         adjustment: ColorAdjustment?,
         region: String = "global",
-        temperatureKelvin: Double? = nil
+        temperatureKelvin: Double? = nil,
+        auto: ColorAutoFlags = []
     ) -> CLICommand {
         var arguments = [
             "edit", "color",
@@ -315,16 +354,21 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let adjustment {
             let tempRegion = temperatureKelvin != nil ? region : nil
+            let autoCast = auto.contains(.cast)
 
-            arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
-            if tempRegion == "global", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "global",
-                ])
+            if autoCast {
+                arguments.append("--auto-cast")
             } else {
-                arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
-                arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
+                arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
+                if tempRegion == "global", let temperatureKelvin {
+                    arguments.append(contentsOf: [
+                        "--temperature", String(temperatureKelvin),
+                        "--region", "global",
+                    ])
+                } else {
+                    arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
+                    arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
+                }
             }
 
             arguments.append(contentsOf: ["--shadow-cyan", String(adjustment.shadowCyan)])
@@ -360,6 +404,12 @@ public struct CLICommand: Sendable, Hashable {
             }
 
             arguments.append(contentsOf: ["--cast-removal", String(adjustment.castRemoval)])
+            arguments.append(
+                contentsOf: [
+                    "--cast-removal-highlights",
+                    String(adjustment.castRemovalHighlights),
+                ]
+            )
             arguments.append(contentsOf: [
                 "--dye-separation", String(adjustment.dyeSeparation),
             ])
@@ -603,6 +653,26 @@ public struct CLICommand: Sendable, Hashable {
     /// invariants name the profile; the app surfaces that as an alert.
     public static func flatfieldDelete(profile: String) -> CLICommand {
         CLICommand(arguments: ["flatfield", "delete", "--profile", profile])
+    }
+
+    /// `scanny-boy grid create --name NAME --across N --down N`
+    public static func gridCreate(name: String, across: Int, down: Int) -> CLICommand {
+        CLICommand(arguments: [
+            "grid", "create",
+            "--name", name,
+            "--across", String(across),
+            "--down", String(down),
+        ])
+    }
+
+    /// `scanny-boy grid list`
+    public static func gridList() -> CLICommand {
+        CLICommand(arguments: ["grid", "list"])
+    }
+
+    /// `scanny-boy grid delete --profile ID`
+    public static func gridDelete(profile: String) -> CLICommand {
+        CLICommand(arguments: ["grid", "delete", "--profile", profile])
     }
 }
 

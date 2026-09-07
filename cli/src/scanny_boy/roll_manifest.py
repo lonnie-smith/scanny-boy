@@ -448,10 +448,10 @@ class RollManifest:
     # `None` on a roll whose runs predate the block; a colour roll in that
     # state fails the export (`CAMERA_MATRIX_MISSING`).
     camera_color: CameraColor | None = None
-    # MONOCHROME_PLAN §2.3: the roll's frozen film-kind decision — `None`
-    # until the first stitch run seeds it (§5.2: also `None` for a roll
-    # manifest written before §2 existed at all). Never rewritten once set,
-    # except by `_append_this_run`'s one-time §5.2 legacy upgrade.
+    # The roll's film kind — set via `roll set-film-kind` on the Add Scans
+    # stage (or optionally at `roll init`), never rewritten once the roll
+    # has runs. `None` only on manifests predating explicit film kind (§5.2:
+    # treated as frozen colour when the roll already has runs).
     film: dict[str, Any] | None = None
     # REBATE_ANCHORING §3.1: the roll's film-base reference. `None` until
     # `roll set-base-frame` attaches one; replaceable while `locked_at` is
@@ -509,18 +509,23 @@ class RollManifest:
         }
 
 
-def new_roll_manifest(*, roll_id: str, roll_name: str) -> RollManifest:
+def new_roll_manifest(
+    *, roll_id: str, roll_name: str, film_kind: str | None = None
+) -> RollManifest:
     """Section 5.4 decision 1: the one constructor of an empty roll. No runs,
     no sources, no negatives — and no grouping of its own, since
     `shots_per_negative` is each stitch batch's choice, not the roll's.
 
     `icc_profile` is seeded from the bundled linear profile's compile-time
-    constants and `published_icc_profile` from the density profile's,
-    because section 3.4 makes both hashes roll invariants.
+    constants and `published_icc_profile` from the density profile matching
+    `film_kind` when set (DENSITY vs DENSITY_GREY), because section 3.4 makes
+    both hashes roll invariants. `film.kind` is chosen on the Add Scans
+    stage via `roll set-film-kind` when `film_kind` is omitted here.
     `processing_params` and `stitch_params` stay empty — they are
     established by the first run, and `check_roll_invariants` knows not to
     compare them until then.
     """
+    from scanny_boy.icc_profile import published_profile_kind
     from scanny_boy.manifest import current_scanny_boy_version
 
     now = _now_iso()
@@ -532,8 +537,11 @@ def new_roll_manifest(*, roll_id: str, roll_name: str) -> RollManifest:
         updated_at=now,
         processing_params={},
         icc_profile=profile_record(ProfileKind.LINEAR),
-        published_icc_profile=profile_record(ProfileKind.DENSITY),
+        published_icc_profile=profile_record(
+            published_profile_kind(film_kind or "colour")
+        ),
         stitch_params={},
+        film=None if film_kind is None else {"kind": film_kind},
     )
 
 

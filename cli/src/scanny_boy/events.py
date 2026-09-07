@@ -42,16 +42,15 @@ from typing import IO, Any, ClassVar
 # the cached preview. The negative mode is the un-inverted density view;
 # no tone ever reaches it.
 #
-# Protocol 11 (MONOCHROME_PLAN) adds monochrome film support: `--film-kind
-# {auto,colour,monochrome}` on `stitch` and `run`, the top-level `film`
-# block in the roll manifest and `roll info` (the roll's frozen film-kind
-# decision — `kind`, `source`, `statistic`, `samples`,
-# `detector_version`), and two warning codes — `MONO_DETECT_AMBIGUOUS` (an
-# unseeded roll's statistic landed between the thresholds; colour was
-# assumed) and `MONO_DECISION_CONFLICT` (a later run's fresh evidence
-# disagrees with the roll's already-frozen kind; the frozen kind is kept).
-# A monochrome roll's published TIFFs are single-channel, tagged with the
-# new `ScannyBoy-Density-Grey-v1.icc` profile.
+# Protocol 15 retires the film-kind auto-detector: `--film-kind` moves to
+# `roll init` (required, `colour` or `monochrome` only); `run`/`stitch`
+# read the roll manifest's `film.kind` instead. The `MONO_DETECT_AMBIGUOUS`
+# and `MONO_DECISION_CONFLICT` warning codes are removed; `FILM_KIND_REQUIRED`
+# is added for unseeded rolls with no `film` block.
+#
+# Protocol 11 (MONOCHROME_PLAN) added monochrome film support: single-channel
+# published TIFFs on silver B&W rolls, the top-level `film` block, and the
+# `ScannyBoy-Density-Grey-v1.icc` profile.
 #
 # Protocol 11 also extends the preview tone adjustment: seven curve
 # controls and two auto flags on `edit tone`, matching `tone_*` fields on
@@ -106,7 +105,11 @@ from typing import IO, Any, ClassVar
 # regional CMY are now mean-removed, which changes how already-recorded
 # colour ops render — accepted, the op being preview-only (§0.3). No new
 # codes.
-PROTOCOL_VERSION = 14
+# Protocol 16 adds named grid configuration presets: the `grid create` /
+# `grid list` / `grid delete` command family and the `grid_created`,
+# `grid_list`, and `grid_deleted` events. Each preset is a user label for
+# an `across` x `down` shape the app picks when adding scans.
+PROTOCOL_VERSION = 16
 
 
 class EventType(enum.StrEnum):
@@ -139,6 +142,9 @@ class EventType(enum.StrEnum):
     FLATFIELD_LIST = "flatfield_list"
     FLATFIELD_DELETED = "flatfield_deleted"
     FLATFIELD_PROGRESS = "flatfield_progress"
+    GRID_CREATED = "grid_created"
+    GRID_LIST = "grid_list"
+    GRID_DELETED = "grid_deleted"
     BASE_FRAME_SET = "base_frame_set"
     SPOTS_REPORTED = "spots_reported"
 
@@ -233,6 +239,8 @@ class Code(enum.StrEnum):
     FLATFIELD_GAIN_MAP_MISSING = "FLATFIELD_GAIN_MAP_MISSING"
     FLATFIELD_ASPECT_MISMATCH = "FLATFIELD_ASPECT_MISMATCH"
     FLATFIELD_HIGHLIGHT_CLIPPED = "FLATFIELD_HIGHLIGHT_CLIPPED"
+    GRID_PROFILE_NOT_FOUND = "GRID_PROFILE_NOT_FOUND"
+    GRID_PROFILE_EXISTS = "GRID_PROFILE_EXISTS"
     GEOMETRY_INSUFFICIENT_FRAMES = "GEOMETRY_INSUFFICIENT_FRAMES"
     GEOMETRY_BOARD_NOT_DETECTED = "GEOMETRY_BOARD_NOT_DETECTED"
     GEOMETRY_FRAME_SIZE_MISMATCH = "GEOMETRY_FRAME_SIZE_MISMATCH"
@@ -244,8 +252,8 @@ class Code(enum.StrEnum):
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
-    MONO_DETECT_AMBIGUOUS = "MONO_DETECT_AMBIGUOUS"
-    MONO_DECISION_CONFLICT = "MONO_DECISION_CONFLICT"
+    FILM_KIND_REQUIRED = "FILM_KIND_REQUIRED"
+    FILM_KIND_LOCKED = "FILM_KIND_LOCKED"
     # REBATE_ANCHORING §7.2: the film-base reference. Codes may exist before
     # anything raises them (chunk B-1); the consumers arrive with B-2/B-3.
     FILM_BASE_REQUIRED = "FILM_BASE_REQUIRED"
@@ -708,6 +716,38 @@ class FlatFieldProgress(Event):
     phase: str  # "detect" | "fit" | "chromatic" | "reference"
     completed: int
     total: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GridProfileSummary:
+    """The fields a `grid` event carries — a label and its grid shape."""
+
+    profile_id: str
+    name: str
+    across: int
+    down: int
+    created_at: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GridCreated(Event):
+    event_type: ClassVar[EventType] = EventType.GRID_CREATED
+
+    profile: GridProfileSummary
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GridList(Event):
+    event_type: ClassVar[EventType] = EventType.GRID_LIST
+
+    profiles: list[GridProfileSummary]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GridDeleted(Event):
+    event_type: ClassVar[EventType] = EventType.GRID_DELETED
+
+    profile_id: str
 
 
 class EventWriter:

@@ -34,6 +34,7 @@ from scanny_boy.normalization import (
     Bounds,
     DenseBorder,
     FilmKind,
+    Opaque,
     Rebate,
     analysis_grid_block_sizes,
     analyze_bounds,
@@ -53,6 +54,7 @@ from scanny_boy.normalization import (
     resolve_analysis_region,
     to_log_density,
     withhold_dense_border,
+    withhold_opaque,
 )
 from scanny_boy.registration import Rectification, StitchError, rectify
 
@@ -110,8 +112,8 @@ class CompositeResult:
     # The normalization meters (docs/DECISIONS.md, "Normalization decisions"
     # 3.7, 3.13): per-negative bounds, the recorded-not-acted-on print-stage
     # statistics, the observed pre-clip extrema (section 3.6), the fraction
-    # of pixels the encode's headroom clipped, and the rebate and
-    # dense-border findings.
+    # of pixels the encode's headroom clipped, and the rebate,
+    # dense-border and opaque-holder findings.
     bounds: Bounds
     shadow_refs: tuple[float, float, float]
     # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral reference
@@ -128,6 +130,7 @@ class CompositeResult:
     headroom_clipped_shadows: tuple[float, float, float]
     rebate: Rebate
     dense_border: DenseBorder
+    opaque: Opaque
     # Section 3.4's clamp: whether the roll-population safety net pulled the
     # bounds toward the run's reference population, and the bounds the
     # frame's own meters measured before it did.
@@ -634,6 +637,7 @@ def composite(
     rectification: Rectification | None = None,
     region: tuple[int, int, int, int] | None = None,
     reference_bounds: list[Bounds] | None = None,
+    base_refs: tuple[float, ...] | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
 ) -> CompositeResult:
     """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
@@ -891,21 +895,31 @@ def composite(
 
     grid = block_median_grid(img_log)
     keep = _region_keep(grid.shape[:2], img_log.shape, region, covered)
+    # The opaque-holder gate runs first: the holder owns every dense-end
+    # percentile it touches, so leaving it in blinds `withhold_dense_border`
+    # (its P0.1 anchor lands inside the holder) as well as pinning
+    # `analyze_bounds`' floor. Before `detect_rebate` too, so its own
+    # thin-end anchor still reads the film base.
+    keep, opaque = withhold_opaque(grid, keep)
     keep, rebate = detect_rebate(grid, keep)
     keep, dense_border = withhold_dense_border(grid, keep)
-    bounds = analyze_bounds(grid, keep)
+    bounds = analyze_bounds(grid, keep, base_refs)
     shadow_refs = measure_shadow_refs(grid, keep)
     # CAST_REMOVAL_PLAN R-1: the dense end's neutral reference, beside the
     # other meters. `None` is recorded as null — it is load-bearing
     # information (the plan's §0.4), not an error.
-    highlight_refs = measure_highlight_refs(grid, keep)
+    highlight_refs = measure_highlight_refs(grid, keep, base_refs)
     anchor = measure_anchor(grid, keep)
     textural_range = measure_textural_range(grid, keep)
 
     # Section 3.4's clamp: a frame whose own meters latched contamination
     # the per-frame detectors missed is pulled back toward the roll's
     # population, from references the already-composited negatives
-    # contribute.
+    # contribute. With a fixed roll anchor (REBATE_ANCHORING §4), every
+    # negative's ceils deviations become nearly identical, so the
+    # population MAD collapses toward zero. CLAMP_MIN_WINDOW floors the
+    # window, so the clamp stays inert on legitimate exposure variation —
+    # do not "fix" the now-tiny MAD.
     unclamped_bounds: Bounds | None = None
     clamped = False
     if reference_bounds:
@@ -967,6 +981,7 @@ def composite(
         headroom_clipped_shadows=headroom_clipped_shadows,
         rebate=rebate,
         dense_border=dense_border,
+        opaque=opaque,
         clamped=clamped,
         unclamped_bounds=unclamped_bounds,
     )
@@ -1032,11 +1047,20 @@ def _intersect_with_coverage(
     canvas_shape: tuple[int, ...],
     covered: np.ndarray,
 ) -> np.ndarray:
-    """Withhold every block the blend did not fully cover, even inside the
+    """Withhold every block the blend did not mostly cover, even inside the
     caller's valid rect: the rect comes from the layout's coverage, and the
     blend's `covered` can hold interior holes the layout never saw — a hole
     would meter the fill (linear 0, log -6.0) and garbage the floor
-    percentile (docs/DECISIONS.md, "Normalization decisions")."""
+    percentile (docs/DECISIONS.md, "Normalization decisions").
+
+    "Mostly", not "fully", because the test is `block_median_grid` over the
+    coverage indicator: a block survives while covered pixels are its
+    majority. That is the right threshold rather than a concession — it is
+    exactly the condition under which the *image* cell's median is drawn
+    from covered pixels too, so the fill never reaches the meters either
+    way. It matters more than it used to: with `ANALYSIS_BLOCK_PX` pinned a
+    hole's edge no longer lands on a block boundary by construction, so
+    straddling blocks are the common case rather than the absent one."""
     covered_grid = block_median_grid(
         np.where(covered, np.float32(1.0), np.float32(0.0))
     )
