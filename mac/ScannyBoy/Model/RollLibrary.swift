@@ -159,11 +159,11 @@ final class RollLibrary {
         case failure(CLICode, String)
     }
 
-    /// `roll init --library --name`. Rescans on success, so the sidebar
+    /// `roll init --library --name --film-kind`. Rescans on success, so the sidebar
     /// picks up the new roll immediately.
-    func createRoll(name: String) async -> CreateResult {
+    func createRoll(name: String, filmKind: String) async -> CreateResult {
         let session = runner.session(
-            for: .rollInit(library: libraryBase, name: name)
+            for: .rollInit(library: libraryBase, name: name, filmKind: filmKind)
         )
         // Recorded rather than returned immediately (M4): returning from
         // inside the loop abandons the `AsyncStream`, which fires

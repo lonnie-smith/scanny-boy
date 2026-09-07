@@ -95,15 +95,10 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.normalization import (
     HEADROOM_CLIP_WARN_FRACTION,
-    MONO_DETECT_MAX_SAMPLES,
     NORMALIZED_FILL,
     Bounds,
     FilmKind,
-    FilmKindGate,
-    MonoStatistic,
     Rebate,
-    classify_mono_chroma,
-    measure_mono_statistic,
 )
 from scanny_boy.output_folder import (
     ROLL_RULES,
@@ -441,182 +436,22 @@ def _intermediate_paths(work_dir: Path, group: GroupRecord) -> list[Path]:
     return [by_name[_intermediate_name(member)] for member in group.members]
 
 
-def _sample_mono_statistic(
-    path: Path, cancel: CancellationToken
-) -> MonoStatistic | None:
-    """One §1.2 sample: read the intermediate and measure it. Recorded
-    evidence must never fail the run, so a read failure — an intermediate
-    `_verify_intermediates` would refuse anyway — leaves the negative
-    unsampled rather than raising."""
-    try:
-        cancel.raise_if_cancelled()
-        return measure_mono_statistic(_read_intermediate(path))
-    except Exception:  # noqa: BLE001
-        return None
+def _film_kind_from_manifest(roll: RollManifest) -> FilmKind:
+    """The roll's film kind, read from the manifest set at `roll init`.
 
-
-def _measure_mono_samples(
-    work_dir: Path, groups: list[GroupRecord], cancel: CancellationToken
-) -> dict[str, MonoStatistic]:
-    """MONOCHROME_PLAN section 1.2's detector pre-pass: sample up to
-    `MONO_DETECT_MAX_SAMPLES` negatives, one frame each (the group's first
-    member), spread evenly across the run's canonical order — six bounded
-    reads, not one per negative. The whole frame is measured, rebate
-    included, because on colour film the rebate is the orange mask at full
-    strength: the single strongest mono/colour discriminator available.
-
-    Recorded evidence only, acted on by nothing."""
-    if not groups:
-        return {}
-    count = min(MONO_DETECT_MAX_SAMPLES, len(groups))
-    indexes = sorted(
-        {
-            round(i * (len(groups) - 1) / (count - 1)) if count > 1 else 0
-            for i in range(count)
-        }
-    )
-    samples: dict[str, MonoStatistic] = {}
-    for index in indexes:
-        group = groups[index]
-        statistic = _sample_mono_statistic(
-            _intermediate_paths(work_dir, group)[0], cancel
-        )
-        if statistic is not None:
-            samples[group.group_id] = statistic
-    return samples
-
-
-# MONOCHROME_PLAN §2: the current detector's version, recorded in the
-# frozen `film` block. §5.2's legacy default (a roll with runs but no
-# `film` block, predating §2 entirely) carries 0 instead.
-FILM_DETECTOR_VERSION = 1
-
-
-@dataclasses.dataclass(frozen=True)
-class FilmDecision:
-    """§2's outcome for this run: `kind` feeds the invariant candidate
-    (§2.3) and the collapse (§3.3). `freeze_template` is the top-level
-    `film` block this run must write — because the roll has none yet, a
-    fresh roll's first run or a legacy pre-§2 roll's first post-§2 run
-    (§5.2) — with `"samples"` still to fill in once this run's negative
-    ids exist; `None` means the roll is already frozen and nothing is
-    written."""
-
-    kind: FilmKind
-    freeze_template: dict[str, Any] | None
-
-
-def _legacy_film_block() -> dict[str, Any]:
-    """§5.2: a roll manifest with runs but no `film` block predates §2
-    entirely and is treated as already-frozen colour."""
-    return {
-        "kind": FilmKind.COLOUR.value,
-        "source": "auto",
-        "statistic": None,
-        "samples": [],
-        "detector_version": 0,
-    }
-
-
-def _median_chroma(mono_by_group: dict[str, MonoStatistic]) -> float | None:
-    if not mono_by_group:
-        return None
-    return float(np.median([m.chroma for m in mono_by_group.values()]))
-
-
-def _peek_film_state(out_dir: Path) -> RollManifest | None:
-    """MONOCHROME_PLAN §2.3: read the roll's frozen film state, if any,
-    before this run's `RollInvariants` are built — the published-ICC
-    invariant is film-kind-dependent. A read separate from `plan_rerun`'s
-    own load; nothing here is mutated or reused afterward, it only answers
-    "is a kind already frozen, and what is it". Answers `None` for a roll
-    that does not exist yet (or fails to load) — `run_stitch`'s own
-    `ROLL_NOT_FOUND` / `BAD_MANIFEST` checks are what actually enforce
-    that, later."""
-    if not repo.roll_registered(out_dir):
-        return None
-    try:
-        return load_roll_manifest(out_dir)
-    except (BadManifestError, repo.RollNotRegisteredError):
-        return None
-
-
-def _decide_film_kind(
-    out_dir: Path,
-    mono_by_group: dict[str, MonoStatistic],
-    override: str,
-    on_warning,
-) -> FilmDecision:
-    """MONOCHROME_PLAN §2: decide the film kind this run's candidate
-    carries. Once a roll has runs, its frozen kind **never changes**
-    (§0.3) — `override` naming the other kind on such a roll is left to
-    surface as `ROLL_INVARIANT_MISMATCH` through the published-ICC
-    invariant (§2.3), with no special-case check needed here. `override`
-    is `--film-kind`'s value: `"auto"` defers to the detector;
-    `"colour"`/`"monochrome"` skip it outright, but the statistic is still
-    recorded either way (§2.2: free evidence).
+    Legacy rolls that already have runs but no `film` block predate explicit
+    film kind and are treated as frozen colour. An unseeded roll with no
+    `film` block cannot be stitched — create a new roll with `--film-kind`.
     """
-    existing_roll = _peek_film_state(out_dir)
-    has_runs = bool(existing_roll and existing_roll.runs)
-    statistic = _median_chroma(mono_by_group)
-
-    if has_runs:
-        frozen_film = existing_roll.film
-        needs_legacy_write = frozen_film is None
-        if frozen_film is None:
-            frozen_film = _legacy_film_block()
-        frozen_kind = FilmKind(frozen_film["kind"])
-
-        if override != "auto":
-            kind = FilmKind(override)
-        else:
-            kind = frozen_kind
-            if statistic is not None:
-                gate = classify_mono_chroma(statistic)
-                if gate.kind is not frozen_kind:
-                    on_warning(
-                        Code.MONO_DECISION_CONFLICT,
-                        f"this run's evidence (median chroma {statistic:.4f}) "
-                        f"suggests {gate.kind.value}, but the roll is frozen "
-                        f"as {frozen_kind.value}; keeping the frozen kind — "
-                        "re-stitch the whole roll to change it",
-                    )
-        return FilmDecision(
-            kind=kind, freeze_template=frozen_film if needs_legacy_write else None
-        )
-
-    # An unseeded roll: this run decides and freezes.
-    if override != "auto":
-        kind = FilmKind(override)
-        freeze = {
-            "kind": kind.value,
-            "source": "manual",
-            "statistic": None,
-            "samples": [],
-            "detector_version": FILM_DETECTOR_VERSION,
-        }
-        return FilmDecision(kind=kind, freeze_template=freeze)
-
-    gate = (
-        classify_mono_chroma(statistic)
-        if statistic is not None
-        else FilmKindGate(kind=FilmKind.COLOUR, ambiguous=True)
+    if roll.film is not None and roll.film.get("kind") is not None:
+        return FilmKind(roll.film["kind"])
+    if roll.runs:
+        return FilmKind.COLOUR
+    raise StitchError(
+        Code.FILM_KIND_REQUIRED,
+        "this roll has no film kind; create a new roll with --film-kind "
+        "colour or --film-kind monochrome",
     )
-    if gate.ambiguous:
-        stat_text = "no samples" if statistic is None else f"{statistic:.4f}"
-        on_warning(
-            Code.MONO_DETECT_AMBIGUOUS,
-            f"the film-kind statistic ({stat_text}) landed between the "
-            "monochrome and colour thresholds; defaulting to colour",
-        )
-    freeze = {
-        "kind": gate.kind.value,
-        "source": "auto",
-        "statistic": statistic,
-        "samples": [],
-        "detector_version": FILM_DETECTOR_VERSION,
-    }
-    return FilmDecision(kind=gate.kind, freeze_template=freeze)
 
 
 def _detect_all(
@@ -1027,7 +862,6 @@ def _base_check(roll: RollManifest, rebate: Rebate) -> dict[str, float] | None:
 def _normalization_record(
     result: composite_module.CompositeResult,
     analysis_rect: tuple[int, int, int, int],
-    mono_statistic: MonoStatistic | None = None,
     base_check: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
@@ -1037,11 +871,7 @@ def _normalization_record(
     finding (section 3.13, recorded but not yet consumed), and the
     dense-border finding and clamp outcome. `source` names D-4's
     per-negative policy; the clamp is a safety net on top of it, not a
-    policy change.
-
-    `mono_statistic`, when the negative was one of the detector pre-pass's
-    samples, records §1's evidence beside the other meters — sampled,
-    never acted on (MONOCHROME_PLAN §1.3)."""
+    policy change."""
     bounds = result.bounds
     record: dict[str, Any] = {
         "floors": list(bounds.floors),
@@ -1082,12 +912,6 @@ def _normalization_record(
         "clamped": result.clamped,
         "source": "per-negative",
     }
-    if mono_statistic is not None:
-        record["mono"] = {
-            "chroma": mono_statistic.chroma,
-            "channel_correlation": list(mono_statistic.channel_correlation),
-            "sampled": True,
-        }
     if base_check is not None:
         record["base_check"] = base_check
     if result.unclamped_bounds is not None:
@@ -1192,7 +1016,6 @@ def run_stitch(
     negatives: list[str] | None = None,
     flatfield_profile_id: str | None = None,
     auto_rotate: bool = True,
-    film_kind: str = "auto",
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -1224,12 +1047,8 @@ def run_stitch(
     emitted as `edit_recorded` — never an adopted negative, whose log (and
     any user edits) already reflects its first publish.
 
-    `film_kind` is `--film-kind`'s value (MONOCHROME_PLAN §2.2):
-    `"auto"` (the default) defers to the detector pre-pass; `"colour"` or
-    `"monochrome"` decide it outright. Once a roll has runs its frozen
-    kind never changes — naming the other kind then fails
-    `ROLL_INVARIANT_MISMATCH`, with the message directing a re-stitch from
-    scratch.
+    Film kind is read from the roll manifest (set at `roll init`), not from
+    a CLI flag.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -1281,14 +1100,20 @@ def run_stitch(
     for group in groups:
         _verify_intermediates(work_dir, group)
 
-    # MONOCHROME_PLAN §1.2/§2.3: the film-kind detector pre-pass and the
-    # roll decision it feeds, at the very top of the run — before the
-    # calibration profile's geometry check below, and well before the
-    # roll invariants are seeded (§5), whose published-profile record is
-    # film-kind-dependent (§2.3). §1's pre-pass only records; §2's
-    # decision is what `invariants` and the composite below need.
-    mono_by_group = _measure_mono_samples(work_dir, groups, cancel)
-    film_decision = _decide_film_kind(out_dir, mono_by_group, film_kind, on_warning)
+    # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
+    #    creates one). Load it early: film kind and invariants both come from
+    #    the manifest.
+    if not repo.roll_registered(out_dir):
+        raise StitchError(
+            Code.ROLL_NOT_FOUND,
+            f"{out_dir} is not a registered roll; create the roll first",
+        )
+    try:
+        roll_peek = load_roll_manifest(out_dir)
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
+        raise StitchError(exc.code, exc.message) from exc
+
+    film_kind = _film_kind_from_manifest(roll_peek)
 
     # The calibration profile, if any: its geometry reaches the stitch warp
     # (docs/GEOMETRIC_PLAN.md sections 3.6 and 5.4). Loaded before the
@@ -1308,13 +1133,6 @@ def run_stitch(
             except flatfield.FlatFieldError as exc:
                 raise StitchError(exc.code, exc.message) from exc
 
-    # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
-    #    creates one) and this run's parameters must match its invariants.
-    if not repo.roll_registered(out_dir):
-        raise StitchError(
-            Code.ROLL_NOT_FOUND,
-            f"{out_dir} is not a registered roll; create the roll first",
-        )
     invariants = RollInvariants(
         processing_params=work_manifest.processing_params,
         icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
@@ -1323,9 +1141,9 @@ def run_stitch(
         # `icc_profile.PROFILES` — not from the work manifest, which only
         # knows the intermediates'. It is film-kind-dependent
         # (MONOCHROME_PLAN §2.3/§4): a mono roll seeds DENSITY_GREY, via
-        # this run's decided (or already-frozen) film kind.
+        # the roll's film kind set at init.
         published_icc_profile_sha256=profile_record(
-            published_profile_kind(film_decision.kind)
+            published_profile_kind(film_kind)
         )["sha256"],
         stitch_params=_stitch_params(profile),
     )
@@ -1406,8 +1224,6 @@ def run_stitch(
             invariants,
             work_dir,
             emit=emit,
-            film_decision=film_decision,
-            mono_by_group=mono_by_group,
         )
     )
 
@@ -1539,8 +1355,7 @@ def run_stitch(
                 source_index=source_index_by_group[entry.group.group_id],
                 profile=profile,
                 reference_bounds=reference_bounds,
-                mono_statistic=mono_by_group.get(entry.group.group_id),
-                film_kind=film_decision.kind,
+                film_kind=film_kind,
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
                 ),
@@ -1688,9 +1503,6 @@ def _append_this_run(
     invariants: RollInvariants,
     work_dir: Path,
     emit: EmitFn = lambda event: None,
-    *,
-    film_decision: FilmDecision,
-    mono_by_group: dict[str, MonoStatistic],
 ) -> tuple[
     RunRecord, dict[str, NegativeRecord], dict[str, list[NegativeRecord]], set[str]
 ]:
@@ -1716,12 +1528,6 @@ def _append_this_run(
     geometry bucket are instead refreshed from every run, keeping the roll's
     recorded params in step with whichever profile this run actually used.
 
-    `film_decision.freeze_template`, when not `None` (MONOCHROME_PLAN
-    §2.3/§5.2), is written to `roll.film` here too — the same "seeding, not
-    an overwrite" reasoning applies, since `_decide_film_kind` only ever
-    produces one when the roll has no `film` block yet. Its `"samples"`
-    list is filled in from this run's own negative ids, once they exist.
-
     Returns the run record, this run's negatives keyed by work-manifest
     group id (because the group id is what the solving loop carries), per
     group the covered records to remove at publish, and the ids of the
@@ -1732,15 +1538,6 @@ def _append_this_run(
         roll.processing_params = invariants.processing_params
         roll.stitch_params = invariants.stitch_params
         roll.icc_profile = work_manifest.icc_profile
-        # MONOCHROME_PLAN §2.3: the published-ICC invariant is
-        # film-kind-dependent and was not among the three `new_roll_
-        # manifest` seeds at roll creation (it defaults to DENSITY there,
-        # before any stitch has decided the kind) — it must be seeded here
-        # too, from this run's decided film kind, or a mono roll would
-        # carry a colour profile record forever.
-        roll.published_icc_profile = profile_record(
-            published_profile_kind(film_decision.kind)
-        )
     else:
         for key in ROLL_PROFILE_PROCESSING_PARAMS_KEYS:
             if key in invariants.processing_params:
@@ -1811,15 +1608,6 @@ def _append_this_run(
             roll.negatives.append(record)
             records[group.group_id] = record
             new_negative_ids.add(negative_id)
-
-    if film_decision.freeze_template is not None:
-        block = dict(film_decision.freeze_template)
-        block["samples"] = [
-            records[group_id].negative_id
-            for group_id in mono_by_group
-            if group_id in records
-        ]
-        roll.film = block
 
     return run_record, records, removals, new_negative_ids
 
@@ -1983,7 +1771,6 @@ def _composite_and_publish(
     source_index: int,
     profile=None,
     reference_bounds: list[Bounds] | None = None,
-    mono_statistic: MonoStatistic | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
 ) -> dict | None:
@@ -2148,7 +1935,7 @@ def _composite_and_publish(
 
         record.valid_rect = valid_rect
         record.normalization = _normalization_record(
-            result, valid_rect, mono_statistic, _base_check(roll, result.rebate)
+            result, valid_rect, _base_check(roll, result.rebate)
         )
         record.normalized_fill = NORMALIZED_FILL
         record.normalized_fill = NORMALIZED_FILL

@@ -486,141 +486,17 @@ def measure_clip_fractions(linear: np.ndarray) -> tuple[float, float, float]:
     return tuple(float(np.mean(values[..., ch] >= SCAN_CLIP_LEVEL)) for ch in range(3))
 
 
-# --- MONOCHROME_PLAN section 1: the mono detector, recorded, never acted on ---
-
-# The chroma percentile the detector reads (§1.1). A high percentile, not a
-# mean: a colour negative of a mostly-neutral scene still has colour
-# somewhere, and the mean drowns it.
-MONO_CHROMA_PERCENTILE = 90.0
-# How many negatives the detector pre-pass samples per roll, one frame each
-# (§1.2) — six bounded reads, not one per negative.
-MONO_DETECT_MAX_SAMPLES = 6
-# Log10 density. The MAD floor (§1.1): a channel whose MAD sits below it
-# carries no usable spread. A genuinely flat channel has a flat numerator
-# too and contributes no chroma; a channel with real structure under a
-# vanishing MAD has its residual inflated — pushing the statistic *up*,
-# toward "colour", the lossless direction for a misclassification. Likely
-# to matter, because §1.2 deliberately samples the rebate, and a dense or
-# heavily rebate-dominated frame can leave a channel near-constant.
-MONO_MAD_FLOOR = 1e-3
-
-
-@dataclasses.dataclass(frozen=True)
-class MonoStatistic:
-    """§1.3's per-negative detector evidence, recorded beside the other
-    section 3.7 meters and acted on by nothing. `channel_correlation` is
-    the per-pair channel correlation against green — `[corr(R, G), corr(B,
-    G)]`, the diagnostic the plan considered and declined to decide on."""
-
-    sampled: bool
-    chroma: float
-    channel_correlation: tuple[float, float]
-
-
-def measure_mono_statistic(linear: np.ndarray) -> MonoStatistic:
-    """§1: is this frame a silver B&W negative or a colour one?
-
-    A silver B&W negative photographed through a Bayer CFA under white
-    light gives three channels recording *the same* image, differing only
-    by a per-channel gain and offset — the CFA passband times the light
-    times silver's near-neutral absorption. Removing that affine first is
-    load-bearing: without it, the orange mask is an enormous per-channel
-    offset that swamps everything and the statistic says nothing. What
-    survives the removal is, on a silver negative, noise; on a colour
-    negative, the picture.
-
-    Per channel: subtract its median, divide by its MAD (floored at
-    `MONO_MAD_FLOOR`, see the constant's comment), take the per-pixel
-    spread across channels, and read the `MONO_CHROMA_PERCENTILE`
-    percentile of that spread. The input is one staged **linear**
-    intermediate, as `_read_intermediate` returns it (uint16 codes or
-    float linear); the function does its own `to_log_density` and
-    block-median decimation. The whole frame is measured, rebate included
-    — on colour film the rebate is the orange mask at full strength, the
-    single strongest mono/colour discriminator available (§1.2).
-    """
-    values = np.asarray(linear)
-    if values.dtype == np.uint16:
-        values = values.astype(np.float32) / 65535.0
-    else:
-        values = values.astype(np.float32)
-    grid = block_median_grid(to_log_density(values))
-
-    median_ch = np.median(grid, axis=(0, 1))
-    mad_ch = np.median(np.abs(grid - median_ch), axis=(0, 1))
-    resid = (grid - median_ch) / np.maximum(mad_ch, np.float32(MONO_MAD_FLOOR))
-    chroma = resid.max(axis=-1) - resid.min(axis=-1)
-    statistic = _percentile(chroma, MONO_CHROMA_PERCENTILE)
-
-    # The diagnostic, not the decision: per-pair correlation against green
-    # (scale-invariant, so it needs no affine removal — but it measures
-    # shape agreement only, and a low-colour-variance colour scene
-    # correlates near 1.0 too; the chroma percentile above measures
-    # magnitude and decides).
-    flat = grid.reshape(-1, grid.shape[-1])
-    correlations = tuple(_pair_correlation(flat[:, i], flat[:, j]) for i, j in ((0, 1), (2, 1)))
-    return MonoStatistic(
-        sampled=True, chroma=statistic, channel_correlation=correlations
-    )
-
-
-def _pair_correlation(a: np.ndarray, b: np.ndarray) -> float:
-    """Pearson correlation of two flattened channel grids; 0.0 for a
-    constant channel (no variance — the correlation is undefined, and a
-    flat channel carries no evidence either way)."""
-    a = a - a.mean()
-    b = b - b.mean()
-    denominator = float(np.sqrt(np.sum(a * a) * np.sum(b * b)))
-    if denominator == 0.0:
-        return 0.0
-    return float(np.sum(a * b) / denominator)
-
-
-# --- MONOCHROME_PLAN section 2: the roll decision -----------------------------
+# --- MONOCHROME_PLAN: film kind and channel collapse -------------------------
 
 
 class FilmKind(enum.StrEnum):
-    """§2: a roll's frozen film kind, once decided — never per-negative
+    """A roll's film kind, set at `roll init` and never per-negative
     (§0.3). A plain `str` subclass: it serializes into the roll manifest's
     `film.kind` and `icc_profile.published_profile_kind`'s comparison
     unchanged."""
 
     COLOUR = "colour"
     MONOCHROME = "monochrome"
-
-
-# §2.1's gate, pinned from measurements over the real roll library on
-# 2026-09-05 (see docs/MONOCHROME_PLAN.md §1.4/§7 step 2): one monochrome
-# roll's sampled per-negative chroma ran 0.053-0.122 (roll median 0.101),
-# one colour roll's ran 0.612-2.340 (roll median 1.051) — no overlap. The
-# pair below sits near the log-midpoint of that gap, leaving margin on
-# both sides of the two measured clusters for a roll not yet seen.
-MONO_CHROMA_MAX = 0.20  # roll median at or below -> monochrome
-COLOUR_CHROMA_MIN = 0.35  # roll median at or above -> colour
-
-
-@dataclasses.dataclass(frozen=True)
-class FilmKindGate:
-    """§2.1's gate outcome for one roll's sampled statistics."""
-
-    kind: FilmKind
-    ambiguous: bool
-
-
-def classify_mono_chroma(statistic: float) -> FilmKindGate:
-    """§2.1: classify a roll from the **median** of its sampled
-    `MonoStatistic.chroma` values (never the mean — a single outlier
-    sample must not flip the roll). At or below `MONO_CHROMA_MAX` decides
-    monochrome; at or above `COLOUR_CHROMA_MIN` decides colour. Between
-    them is ambiguous, and the lossless choice wins: a colour roll is
-    never wrong to publish as three channels, so an ambiguous statistic is
-    called colour and `ambiguous=True` tells the caller to warn
-    (`MONO_DETECT_AMBIGUOUS`)."""
-    if statistic <= MONO_CHROMA_MAX:
-        return FilmKindGate(kind=FilmKind.MONOCHROME, ambiguous=False)
-    if statistic >= COLOUR_CHROMA_MIN:
-        return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=False)
-    return FilmKindGate(kind=FilmKind.COLOUR, ambiguous=True)
 
 
 # --- MONOCHROME_PLAN section 3: the collapse ----------------------------------
@@ -1343,11 +1219,9 @@ def build_params() -> dict:
         "normalized_headroom_low": NORMALIZED_HEADROOM_LOW,
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,
-        # MONOCHROME_PLAN §2/§3: these shape published output (they gate
-        # and perform the collapse), so — unlike §1's detector constants —
-        # they are roll invariants from the step that introduces them.
-        "mono_chroma_max": MONO_CHROMA_MAX,
-        "colour_chroma_min": COLOUR_CHROMA_MIN,
+        # MONOCHROME_PLAN §3: the merge weights shape published output on
+        # mono rolls, so they are roll invariants from the step that
+        # introduces them.
         "mono_merge_weights": list(MONO_MERGE_WEIGHTS),
         # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants and
         # the highlight reference's provenance.
@@ -1381,5 +1255,9 @@ def upgrade_normalize_params(params: dict) -> dict:
         if key == "format_version":
             continue
         upgraded.setdefault(key, value)
+    # Retired with the auto-detector (protocol 15): strip if an older roll
+    # still carries them so invariant comparison stays equal.
+    for deprecated in ("mono_chroma_max", "colour_chroma_min"):
+        upgraded.pop(deprecated, None)
     upgraded["format_version"] = NORMALIZE_FORMAT_VERSION
     return upgraded

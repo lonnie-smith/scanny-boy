@@ -1,10 +1,24 @@
 import SwiftUI
 
-/// Section 3.10: creating a roll asks for a name and nothing else — no
+/// Section 3.10: creating a roll asks for a name and film kind — no
 /// location, since every roll lives under the library base (section 3.1),
 /// and no scans-per-negative, since that is each stitch batch's choice,
 /// selected on the Add Scans stage before every run.
 struct NewRollSheet: View {
+    enum FilmKindChoice: String, CaseIterable, Identifiable {
+        case colour
+        case monochrome
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .colour: "Color / chromogenic B&W"
+            case .monochrome: "Silver B&W"
+            }
+        }
+    }
+
     let library: RollLibrary
     /// Called with the newly created roll, right before the sheet dismisses.
     let onCreated: (Roll) -> Void
@@ -12,6 +26,7 @@ struct NewRollSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
+    @State private var filmKind: FilmKindChoice = .colour
     @State private var isCreating = false
     @State private var errorMessage: String?
 
@@ -22,6 +37,17 @@ struct NewRollSheet: View {
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("newRollNameField")
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Film kind").font(.headline)
+                Picker("Film kind", selection: $filmKind) {
+                    ForEach(FilmKindChoice.allCases) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .accessibilityIdentifier("newRollFilmKindPicker")
+            }
 
             if let errorMessage {
                 Text(errorMessage)
@@ -70,7 +96,7 @@ struct NewRollSheet: View {
         isCreating = true
         errorMessage = nil
         Task {
-            let result = await library.createRoll(name: name)
+            let result = await library.createRoll(name: name, filmKind: filmKind.rawValue)
             isCreating = false
             switch result {
             case .success(let roll):

@@ -91,7 +91,11 @@ struct RunIntegrationTests {
         let library = try Self.makeTemporaryDirectory()
         let runner = try Self.runner()
         let session = runner.session(
-            for: .rollInit(library: library, name: "Test Roll \(UUID().uuidString.prefix(8))")
+            for: .rollInit(
+                library: library,
+                name: "Test Roll \(UUID().uuidString.prefix(8))",
+                filmKind: "colour"
+            )
         )
         for await output in try await session.start() {
             if case .event(let event) = output, event.kind == .rollCreated, let path = event.rollPath {

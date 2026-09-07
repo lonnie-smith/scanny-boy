@@ -583,7 +583,7 @@ def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
 
     input_dir = _catalogue_dir(tmp_path)
     roll_dir = tmp_path / "Roll"
-    write_roll_manifest(roll_dir, new_roll_manifest(roll_id="rid-1", roll_name="Roll"))
+    write_roll_manifest(roll_dir, new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour"))
 
     with pytest.raises(ProbeFailure) as excinfo:
         run_probe(input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id="nope")
@@ -609,7 +609,7 @@ def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
     input_dir = _catalogue_dir(tmp_path)
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
-    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour")
     # An unseeded roll accepts anything; the invariants only bind once a
     # run has established them — so seed the roll exactly as a first run
     # with profile A would have.
@@ -658,7 +658,7 @@ def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
     input_dir = _catalogue_dir(tmp_path)
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
-    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour")
     manifest.runs.append(
         RunRecord(run_id="run-1", kind="stitch", status="complete", started_at="t")
     )

@@ -14,6 +14,10 @@ from scanny_boy.events import (
     FlatFieldList,
     FlatFieldProfileSummary,
     FlatFieldProgress,
+    GridCreated,
+    GridDeleted,
+    GridList,
+    GridProfileSummary,
     GroupDone,
     GroupFailed,
     ItemDone,
@@ -240,7 +244,7 @@ def test_protocol_version_is_fourteen():
     `color_cast_removal_highlights` derived field on `roll info`, and the
     `highlight_refs` / `neutral_residual` meters in the `normalization`
     block. No new codes."""
-    assert PROTOCOL_VERSION == 14
+    assert PROTOCOL_VERSION == 16
 
 
 def test_new_event_kinds_round_trip():
@@ -279,6 +283,17 @@ def test_new_event_kinds_round_trip():
         FlatFieldDeleted(profile_id="pid-1"),
         FlatFieldProgress(phase="detect", completed=3, total=12),
         FlatFieldProgress(phase="chromatic", completed=12, total=12),
+        GridCreated(
+            profile=GridProfileSummary(
+                profile_id="pid-1",
+                name="Hasselblad",
+                across=4,
+                down=2,
+                created_at="2026-09-06T00:00:00Z",
+            )
+        ),
+        GridList(profiles=[]),
+        GridDeleted(profile_id="pid-1"),
         NegativeDeleted(negative_id="neg-5", output="out.tif"),
         NegativeDeleted(negative_id="neg-6", output=None),
         RegionRendered(

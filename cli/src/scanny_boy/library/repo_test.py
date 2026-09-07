@@ -28,7 +28,7 @@ def roll_dir(tmp_path: Path) -> Path:
     directory.mkdir()
     write_roll_manifest(
         directory,
-        new_roll_manifest(roll_id="rid-1", roll_name="Roll"),
+        new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour"),
     )
     return directory
 
@@ -828,14 +828,14 @@ def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
     profile = _flatfield_profile()
     repo.save_flatfield_profile(profile)
 
-    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked")
+    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked", film_kind="colour")
     locked.processing_params = {
         "output_bps": 16,
         "flat_field": flatfield.profile_token(profile),
     }
     write_roll_manifest(tmp_roll_dir("locked"), locked)
 
-    other = new_roll_manifest(roll_id="rid-other", roll_name="Other")
+    other = new_roll_manifest(roll_id="rid-other", roll_name="Other", film_kind="colour")
     other.processing_params = {"output_bps": 16}
     write_roll_manifest(tmp_roll_dir("other"), other)
 
@@ -850,7 +850,7 @@ def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
     profile = _flatfield_profile()
     repo.save_flatfield_profile(profile)
 
-    locked = new_roll_manifest(roll_id="rid-geo", roll_name="Geo")
+    locked = new_roll_manifest(roll_id="rid-geo", roll_name="Geo", film_kind="colour")
     locked.stitch_params = {
         "geometry": {"profile_id": profile.profile_id, "geometry": {"k1": 0.0}},
     }

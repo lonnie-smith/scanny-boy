@@ -205,7 +205,7 @@ def test_write_touches_no_files_in_the_roll_folder(tmp_path):
 
 
 def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
-    manifest = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998")
+    manifest = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998", film_kind="colour")
     assert manifest.runs == []
     assert manifest.sources == []
     assert manifest.negatives == []
@@ -215,6 +215,8 @@ def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
     # profile it will embed, because there is exactly one.
 
     assert manifest.icc_profile == profile_record(ProfileKind.LINEAR)
+    assert manifest.film == {"kind": "colour"}
+    assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY)
 
     write_roll_manifest(tmp_path, manifest)
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
@@ -482,7 +484,7 @@ def test_check_roll_invariants_seeds_on_an_unseeded_roll():
     """Section 5.4: an empty roll has no `processing_params` or
     `stitch_params` yet, so the first run establishes them rather than being
     compared against `{}`."""
-    empty = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Fresh")
+    empty = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Fresh", film_kind="colour")
 
     check_roll_invariants(empty, _invariants())
     assert empty.processing_params == {}, "check must never mutate"

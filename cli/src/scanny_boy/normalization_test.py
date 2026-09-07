@@ -747,16 +747,8 @@ def test_build_params_carries_every_constant_and_the_format_version():
 
     assert json.loads(json.dumps(params)) == params
 
-    # §1's detector constants stay out of build_params(): they shape
-    # recorded evidence, never published output (MONOCHROME_PLAN §1.4).
-    assert "mono_chroma_percentile" not in params
-    assert "mono_detect_max_samples" not in params
-    assert "mono_mad_floor" not in params
-
-    # §2's gate and §3's merge weights DO shape published output, so they
-    # are roll invariants from the step that introduces them.
-    assert params["mono_chroma_max"] == nz.MONO_CHROMA_MAX
-    assert params["colour_chroma_min"] == nz.COLOUR_CHROMA_MIN
+    # §3's merge weights shape published output on mono rolls, so they are
+    # roll invariants from the step that introduces them.
     assert params["mono_merge_weights"] == list(nz.MONO_MERGE_WEIGHTS)
 
     # CAST_REMOVAL_PLAN R-1: the two meters' record.
@@ -863,207 +855,6 @@ def test_v1_roll_invariant_survives_the_v2_build():
     check_roll_invariants(manifest, candidate)
 
 
-# --- MONOCHROME_PLAN section 1: the mono detector -------------------------------
-
-
-def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
-    """One log-density plane, in linear light: a smooth ramp plus noise,
-    spanning the range a real negative's composite occupies."""
-    rng = np.random.default_rng(seed)
-    ys, xs = np.mgrid[0:side, 0:side]
-    plane_log = (
-        -1.5
-        + 0.8 * (xs + ys) / (2 * side)
-        + 0.05 * rng.standard_normal((side, side))
-    )
-    return np.power(10.0, plane_log.astype(np.float32))
-
-
-def _affine_stack(
-    plane_linear: np.ndarray,
-    gains: tuple[float, ...] = (1.0, 1.25, 0.8),
-    offsets: tuple[float, ...] = (0.0, 0.1, -0.15),
-) -> np.ndarray:
-    """Three channels that are one plane under a per-channel affine *in
-    log density* (the CFA gain and the film-base offset), linearised back
-    to the light the statistic reads. `offsets` stands in for the orange
-    mask; `gains` for the CFA passband."""
-    log = np.log10(np.clip(plane_linear, 1e-6, None))
-    return np.power(
-        10.0,
-        np.stack(
-            [log * g + o for g, o in zip(gains, offsets, strict=True)], axis=-1
-        ).astype(np.float32),
-    )
-
-
-def test_mono_statistic_is_near_zero_for_one_plane_under_affines():
-    plane = _mono_plane()
-    for gains, offsets in (
-        ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
-        ((1.0, 1.25, 0.8), (0.0, 0.1, -0.15)),
-        # A strong offset that stands in for the orange mask at full
-        # strength — the load-bearing case of §1.1.
-        ((1.0, 1.4, 0.7), (0.0, 0.5, -0.3)),
-        ((0.6, 1.0, 1.9), (0.2, 0.0, -0.25)),
-    ):
-        statistic = nz.measure_mono_statistic(_affine_stack(plane, gains, offsets))
-        assert statistic.sampled
-        assert statistic.chroma == pytest.approx(0.0, abs=1e-4), (gains, offsets)
-
-
-def test_mono_statistic_is_invariant_to_a_per_channel_gain_and_offset():
-    """The property the whole design rests on, asserted directly (§1.5)."""
-    plane = _mono_plane()
-    stack = _affine_stack(plane)
-    reference = nz.measure_mono_statistic(stack).chroma
-    # Re-affine the stack's channels: the statistic may not move.
-    for gains, offsets in (
-        ((1.1, 0.9, 1.3), (0.05, -0.05, 0.12)),
-        ((0.7, 1.6, 1.0), (-0.1, 0.2, 0.0)),
-    ):
-        log = np.log10(np.clip(stack, 1e-6, None))
-        re_affined = np.power(
-            10.0,
-            np.stack(
-                [log[..., i] * g + o for i, (g, o) in enumerate(zip(gains, offsets, strict=True))],
-                axis=-1,
-            ).astype(np.float32),
-        )
-        assert nz.measure_mono_statistic(re_affined).chroma == pytest.approx(
-            reference, abs=1e-4
-        )
-
-
-def test_mono_statistic_with_independent_noise_stays_below_the_colour_band():
-    """Noise is O(1) in MAD-normalized units — the statistic cannot be
-    near zero with independent per-channel noise, whatever its magnitude;
-    what separates the classes is that noise stays in a small band while
-    colour content towers over it. Assert the ordering §1.5 asks for:
-    noise rides above the exact case but far below genuine per-channel
-    content."""
-    plane = _mono_plane(seed=3)
-    exact = nz.measure_mono_statistic(_affine_stack(plane)).chroma
-    # Independent per-channel noise on top of the shared plane.
-    rng = np.random.default_rng(11)
-    log = np.log10(np.clip(plane, 1e-6, None))
-    noisy = np.power(
-        10.0,
-        np.stack(
-            [
-                log + 0.05 * rng.standard_normal(plane.shape),
-                log + 0.05 * rng.standard_normal(plane.shape),
-                log + 0.05 * rng.standard_normal(plane.shape),
-            ],
-            axis=-1,
-        ).astype(np.float32),
-    )
-    noisy_statistic = nz.measure_mono_statistic(noisy).chroma
-    assert noisy_statistic > exact  # noise contributes chroma the exact case lacks
-    assert noisy_statistic < 4.0  # three standardized samples spread O(1), P90 ≈ 2.5
-
-    # Genuine per-channel content: a colour negative's channels are not
-    # affine copies of one plane, whatever affine you remove.
-    xs, ys = np.mgrid[0:plane.shape[0], 0:plane.shape[1]]
-    colour_log = np.stack(
-        [
-            log + 1.2 * np.sin(2 * np.pi * xs / 16.0),
-            log,
-            log + 0.9 * np.cos(2 * np.pi * ys / 16.0),
-        ],
-        axis=-1,
-    ).astype(np.float32)
-    colour = nz.measure_mono_statistic(np.power(10.0, colour_log)).chroma
-    assert colour > 2.0 * noisy_statistic
-    assert colour > 10.0 * exact
-
-
-def test_mono_statistic_mad_floor_keeps_a_flat_channel_quiet_and_structure_loud():
-    """§1.1's floor and its defined behaviour when it trips: a genuinely
-    near-constant channel contributes no chroma (numerator flat too); a
-    channel with real structure under a vanishing MAD inflates the
-    statistic toward colour — the lossless direction."""
-    # A rebate-dominated, near-constant frame: every channel the same
-    # constant. Statistic ~0 — the floor costs nothing here.
-    flat = np.full((64, 64, 3), 0.02, dtype=np.float32)
-    assert nz.measure_mono_statistic(flat).chroma == pytest.approx(0.0, abs=1e-4)
-
-    # Structure on one channel only: the chroma is real, and the near-zero
-    # MAD of the flat pair cannot mute it — it reads as colour.
-    log = np.full((64, 64, 3), -1.5, dtype=np.float32)
-    xs, _ys = np.mgrid[0:64, 0:64]
-    log[..., 0] += 0.5 * np.sin(2 * np.pi * xs / 16.0)
-    structured = np.power(10.0, log).astype(np.float32)
-    assert nz.measure_mono_statistic(structured).chroma > 1.0
-
-
-@pytest.mark.slow
-@requires_real_samples
-def test_real_colour_negatives_score_above_every_synthetic_mono_fixture(tmp_path):
-    """§1.5's slow check, relative per the plan: each real sample NEF —
-    colour — scores above every synthetic mono fixture under the same
-    statistic. No threshold is asserted: none is pinned until §2."""
-    from scanny_boy.pipeline import run_convert
-
-    input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
-    out_dir = tmp_path / "convert"
-    out_dir.mkdir()
-    outcome = run_convert(
-        input_dir,
-        list(REAL_SAMPLE_FILES),
-        out_dir,
-        3,
-        run_id="mono-detect",
-        jobs=4,
-        emit=lambda event: None,
-    )
-    assert outcome.status == "complete"
-
-    plane = _mono_plane(seed=7)
-    fixtures = [
-        nz.measure_mono_statistic(_affine_stack(plane, gains, offsets)).chroma
-        for gains, offsets in (
-            ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)),
-            ((1.0, 1.4, 0.7), (0.0, 0.3, -0.2)),
-        )
-    ]
-    floor = max(fixtures)
-    import tifffile
-
-    for name in REAL_SAMPLE_FILES:
-        pixels = tifffile.imread(out_dir / f"{Path(name).stem}.tif")
-        statistic = nz.measure_mono_statistic(pixels)
-        assert statistic.chroma > floor, name
-
-
-# --- MONOCHROME_PLAN section 2: the roll decision -------------------------------
-
-
-def test_classify_mono_chroma_at_and_below_the_mono_ceiling():
-    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX)
-    assert gate.kind is nz.FilmKind.MONOCHROME
-    assert not gate.ambiguous
-    gate = nz.classify_mono_chroma(nz.MONO_CHROMA_MAX - 0.05)
-    assert gate.kind is nz.FilmKind.MONOCHROME
-    assert not gate.ambiguous
-
-
-def test_classify_mono_chroma_at_and_above_the_colour_floor():
-    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert not gate.ambiguous
-    gate = nz.classify_mono_chroma(nz.COLOUR_CHROMA_MIN + 0.5)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert not gate.ambiguous
-
-
-def test_classify_mono_chroma_between_the_thresholds_is_ambiguous_and_defaults_colour():
-    midpoint = (nz.MONO_CHROMA_MAX + nz.COLOUR_CHROMA_MIN) / 2.0
-    gate = nz.classify_mono_chroma(midpoint)
-    assert gate.kind is nz.FilmKind.COLOUR
-    assert gate.ambiguous
-
-
 def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
     """FilmKind must drop into `icc_profile.published_profile_kind`'s
     plain-string comparison unchanged (MONOCHROME_PLAN §2/§4)."""
@@ -1076,6 +867,18 @@ def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
 
 
 # --- MONOCHROME_PLAN section 3: the collapse -------------------------------------
+
+
+def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
+    """One log-density plane, in linear light: a smooth ramp plus noise."""
+    rng = np.random.default_rng(seed)
+    ys, xs = np.mgrid[0:side, 0:side]
+    plane_log = (
+        -1.5
+        + 0.8 * (xs + ys) / (2 * side)
+        + 0.05 * rng.standard_normal((side, side))
+    )
+    return np.power(10.0, plane_log.astype(np.float32))
 
 
 def test_collapse_to_mono_recovers_the_plane_up_to_a_constant_offset():

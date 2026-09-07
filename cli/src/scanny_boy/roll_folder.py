@@ -89,10 +89,13 @@ def unique_folder_name(library: Path, slug: str) -> str:
     )
 
 
-def create_roll(library: Path, name: str) -> Path:
+def create_roll(library: Path, name: str, film_kind: str) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
     write an empty v3 manifest into it via `new_roll_manifest`. Returns the
     roll's directory.
+
+    `film_kind` is `"colour"` or `"monochrome"` — chosen by the user at roll
+    creation and frozen for the life of the roll.
 
     A roll records no grouping of its own: `shots_per_negative` is each
     stitch batch's choice (`run`/`convert --per-negative`, stored in the
@@ -105,6 +108,7 @@ def create_roll(library: Path, name: str) -> Path:
     manifest = new_roll_manifest(
         roll_id=str(uuid.uuid4()),
         roll_name=name,
+        film_kind=film_kind,
     )
     write_roll_manifest(roll_dir, manifest)
     return roll_dir
