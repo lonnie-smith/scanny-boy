@@ -111,6 +111,7 @@ private struct PreviewPane: View {
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
+    @State private var isLoadingPreview = false
     @State private var isConfirmingDelete = false
     @State private var isTonePanelPresented = false
     @State private var isColorPanelPresented = false
@@ -358,6 +359,10 @@ private struct PreviewPane: View {
         }
         .task(id: displayIdentity) {
             thumbnail = nil
+            let willLoad = showsNegative || previewURL != nil
+            guard willLoad else { return }
+            isLoadingPreview = true
+            defer { isLoadingPreview = false }
             if showsNegative {
                 thumbnail = await edit.renderPreview(negative, mode: .negative)
             } else if let url = previewURL {
@@ -471,27 +476,12 @@ private struct PreviewPane: View {
                         .resizable()
                         .interpolation(.medium)
                         .aspectRatio(contentMode: .fit)
+                } else if isLoadingPreview && negative.isCompleted {
+                    PreviewPlaceholder(kind: .loading)
                 } else if negative.isCompleted {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.quaternary)
-                        .overlay {
-                            Image(systemName: "photo")
-                                .font(.largeTitle)
-                                .foregroundStyle(.secondary)
-                        }
+                    PreviewPlaceholder(kind: .empty)
                 } else {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.quaternary)
-                        .overlay {
-                            VStack(spacing: 6) {
-                                Image(systemName: "photo")
-                                    .font(.largeTitle)
-                                    .foregroundStyle(.secondary)
-                                Text("Status: \(negative.status)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                    PreviewPlaceholder(kind: .status(negative.status))
                 }
                 if showsSpotMarkers {
                     spotMarkers
@@ -631,11 +621,7 @@ private struct PreviewPane: View {
                     .offset(zoom.cropScreenOffset)
                     .background(Color.black)
             } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.quaternary)
-                    .overlay {
-                        ProgressView()
-                    }
+                PreviewPlaceholder(kind: .loading)
             }
         }
         .clipped()
