@@ -24,7 +24,11 @@ struct PreviewEventHost: NSViewRepresentable {
     var onSpotToggled: (@MainActor (Int) -> Void)? = nil
 
     func makeNSView(context: Context) -> PreviewEventView {
-        PreviewEventView(zoom: zoom, spotHitTester: spotHitTester, onSpotToggled: onSpotToggled)
+        PreviewEventView(
+            zoom: zoom,
+            spotHitTester: spotHitTester,
+            onSpotToggled: onSpotToggled
+        )
     }
 
     func updateNSView(_ view: PreviewEventView, context: Context) {

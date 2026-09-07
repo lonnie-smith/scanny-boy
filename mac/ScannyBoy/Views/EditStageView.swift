@@ -16,6 +16,7 @@ struct EditStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
     let activity: AppActivity
+    @Bindable var keyboard: AppKeyboardState
     /// Called after a deletion the user confirmed — `ContentView` uses it
     /// to re-scan the library so the sidebar's negative count keeps up.
     var onNegativeDeleted: () -> Void = {}
@@ -28,6 +29,7 @@ struct EditStageView: View {
                     edit: edit,
                     run: run,
                     runIsActive: activity.isBusy,
+                    keyboard: keyboard,
                     onNegativeDeleted: onNegativeDeleted
                 )
             } else {
@@ -60,22 +62,15 @@ struct EditStageView: View {
                 )
             }
         }
-        .filmstripNavigationShortcuts(
-            isEnabled: !activity.isBusy,
-            onPrevious: edit.selectPrevious,
-            onNext: edit.selectNext
-        )
-        .background {
-            SelectionShortcutButtons(
-                onSelectAll: edit.selectAll,
-                onDeselectAll: edit.deselectAll
-            )
+        .onChange(of: edit.selectedNegative?.negativeID) { _, negativeID in
+            if negativeID == nil {
+                keyboard.toggleZoom = nil
+                keyboard.previewHasOutput = false
+            }
         }
         // Nothing about the roll may change while any helper in the app is
         // busy (`AppActivity`) — not just this app's own run, but a
-        // conversion, export, or flat-field calibration too. This also
-        // disables the (invisible) selection-shortcut buttons above, so
-        // arrow keys cannot move the selection mid-run either.
+        // conversion, export, or flat-field calibration too.
         .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted (runs are started from Add Scans), so the phase can
@@ -127,6 +122,7 @@ private struct PreviewPane: View {
     @Bindable var edit: EditModel
     let run: RunModel
     let runIsActive: Bool
+    @Bindable var keyboard: AppKeyboardState
     let onNegativeDeleted: () -> Void
 
     @Environment(\.displayScale) private var displayScale
@@ -156,10 +152,6 @@ private struct PreviewPane: View {
     private var zoomShortcutsEnabled: Bool {
         negative.output != nil
             && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
-    }
-
-    private var rotationShortcutsEnabled: Bool {
-        !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
     }
 
     private var isMonochromeRoll: Bool {
@@ -239,20 +231,10 @@ private struct PreviewPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background {
-            ZoomToggleShortcutButton(
-                isEnabled: zoomShortcutsEnabled,
-                onToggle: { zoom.toggle(at: previewCenter) }
-            )
-            RotationShortcutButtons(
-                isEnabled: rotationShortcutsEnabled,
-                onRotateCounterClockwise: {
-                    Task { await edit.rotate(targets, clockwise: false) }
-                },
-                onRotateClockwise: {
-                    Task { await edit.rotate(targets, clockwise: true) }
-                }
-            )
+        .onAppear(perform: registerKeyboardShortcuts)
+        .onDisappear(perform: unregisterKeyboardShortcuts)
+        .onChange(of: previewKeyboardSyncToken) {
+            syncKeyboardShortcuts()
         }
         .confirmationDialog(
             deleteDialogTitle,
@@ -307,7 +289,32 @@ private struct PreviewPane: View {
     private var zoomButtonHelp: String {
         zoom.mode == .fit
             ? "Zoom to 100% (Z or ⌘Space+click)"
-            : "Zoom to fit (Z)"
+            : "Toggle zoom (Z)"
+    }
+
+    /// Drives `AppKeyboardState` refresh when preview availability changes.
+    private var previewKeyboardSyncToken: String {
+        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(runIsActive)|\(paneSize.width)|\(paneSize.height)"
+    }
+
+    private func registerKeyboardShortcuts() {
+        keyboard.toggleZoom = { point in
+            zoom.toggle(at: point)
+        }
+        syncKeyboardShortcuts()
+    }
+
+    private func unregisterKeyboardShortcuts() {
+        keyboard.toggleZoom = nil
+        keyboard.previewHasOutput = false
+    }
+
+    private func syncKeyboardShortcuts() {
+        keyboard.previewHasOutput = negative.output != nil
+        keyboard.previewOperationsBlocked =
+            edit.isRotating || edit.isDeleting || edit.isSettingTone
+            || edit.isSettingColor || runIsActive
+        keyboard.zoomToggleCenter = previewCenter
     }
 
     private var displayModeButtonHelp: String {

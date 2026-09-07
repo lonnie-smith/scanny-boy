@@ -40,17 +40,6 @@ struct MetadataStageView: View {
                 )
             }
         }
-        .filmstripNavigationShortcuts(
-            isEnabled: !activity.isBusy,
-            onPrevious: edit.selectPrevious,
-            onNext: edit.selectNext
-        )
-        .background {
-            SelectionShortcutButtons(
-                onSelectAll: edit.selectAll,
-                onDeselectAll: edit.deselectAll
-            )
-        }
         .disabled(activity.isBusy)
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted, so the phase can already be `.finished` when the tab

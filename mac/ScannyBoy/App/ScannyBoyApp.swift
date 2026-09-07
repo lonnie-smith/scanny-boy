@@ -8,10 +8,16 @@ struct ScannyBoyApp: App {
     /// Shared with the Add Scans stage's profile picker, same as `library`.
     @State private var flatField: FlatFieldModel?
     @State private var grid: GridModel?
+    @State private var keyboard = AppKeyboardState()
 
     var body: some Scene {
         WindowGroup {
-            RootView(library: $library, flatField: $flatField, grid: $grid)
+            RootView(
+                library: $library,
+                flatField: $flatField,
+                grid: $grid,
+                keyboard: keyboard
+            )
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -30,6 +36,7 @@ struct ScannyBoyApp: App {
                     )
                 }
             }
+            AppKeyboardCommands(keyboard: keyboard)
         }
 
         // Section 3.1: the library base is relocatable through a Settings
@@ -69,6 +76,7 @@ struct RootView: View {
     @Binding var library: RollLibrary?
     @Binding var flatField: FlatFieldModel?
     @Binding var grid: GridModel?
+    let keyboard: AppKeyboardState
     @State private var model: ConfigurationModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
@@ -87,7 +95,8 @@ struct RootView: View {
                     edit: edit,
                     run: run,
                     export: export,
-                    activity: activity
+                    activity: activity,
+                    keyboard: keyboard
                 )
             } else if let unavailableReason {
                 HelperUnavailableView(reason: unavailableReason)
