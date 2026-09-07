@@ -267,6 +267,8 @@ def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
 
@@ -276,7 +278,26 @@ def test_roll_init_creates_roll_and_emits_roll_created(capsys, tmp_path):
     assert events[0]["command"] == "roll init"
     assert events[1]["roll_name"] == "Roll A"
     assert events[1]["path"] == str(tmp_path / "Roll-A")
+    manifest = load_roll_manifest(tmp_path / "Roll-A")
+    assert manifest.film == {"kind": "colour"}
     assert err == ""
+
+
+def test_roll_init_requires_film_kind(capsys, tmp_path):
+    status = main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Roll A",
+        ]
+    )
+
+    assert status == 2
+    events, _err = _stdout_events(capsys)
+    assert events == []
 
 
 def test_roll_init_per_negative_is_no_longer_a_flag(capsys, tmp_path):
@@ -290,6 +311,8 @@ def test_roll_init_per_negative_is_no_longer_a_flag(capsys, tmp_path):
             "Roll A",
             "--per-negative",
             "3",
+            "--film-kind",
+            "colour",
         ]
     )
 
@@ -309,6 +332,8 @@ def test_roll_init_collision_reports_roll_exists(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "roll-a",
+            "--film-kind",
+            "colour",
         ]
     )
     assert status == 0
@@ -327,6 +352,8 @@ def test_roll_list_emits_roll_list_with_every_roll(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     main(
@@ -337,6 +364,8 @@ def test_roll_list_emits_roll_list_with_every_roll(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll B",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -370,6 +399,8 @@ def test_roll_info_emits_the_manifest(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -414,6 +445,8 @@ def test_roll_info_on_a_newer_database_reports_library_db_unsupported(capsys, tm
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -442,6 +475,8 @@ def test_an_internal_crash_reaches_the_stream_as_an_error_event(
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -470,6 +505,8 @@ def test_roll_rename_moves_the_folder_and_updates_the_name(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -521,7 +558,18 @@ def _base_measurement(
 
 
 def _init_roll(capsys, tmp_path, name: str = "Roll A") -> Path:
-    main(["roll", "init", "--library", str(tmp_path), "--name", name])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            name,
+            "--film-kind",
+            "colour",
+        ]
+    )
     capsys.readouterr()
     return tmp_path / name.replace(" ", "-")
 
@@ -771,6 +819,8 @@ def test_roll_delete_unregisters_the_roll_and_leaves_the_folder(capsys, tmp_path
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     created = _stdout_events(capsys)[0][1]
@@ -837,6 +887,8 @@ def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
             str(tmp_path),
             "--name",
             "Roll A",
+            "--film-kind",
+            "colour",
         ]
     )
     capsys.readouterr()
@@ -2398,7 +2450,7 @@ def test_flatfield_delete_refuses_a_profile_locked_into_a_roll(capsys, tmp_path)
 
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
-    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll")
+    manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour")
     manifest.processing_params = {
         "output_bps": 16,
         "flat_field": flatfield.profile_token(
@@ -2434,6 +2486,86 @@ def test_flatfield_delete_removes_the_row_and_the_npz(capsys, tmp_path):
     assert events[1]["profile_id"] == "pid-Copy stand"
     assert repo.list_flatfield_profiles() == []
     assert not Path(profile.gain_map_path).exists()
+
+
+def _save_grid_profile(name: str, *, across: int = 4, down: int = 2) -> str:
+    from scanny_boy.grid_profile import new_grid_profile
+    from scanny_boy.library import repo
+
+    profile = new_grid_profile(name=name, across=across, down=down)
+    repo.save_grid_profile(profile)
+    return profile.profile_id
+
+
+def test_grid_list_reports_an_empty_library(capsys):
+    status = main(["grid", "list"])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "grid_list", "finished"]
+    assert events[0]["command"] == "grid list"
+    assert events[1]["profiles"] == []
+
+
+def test_grid_create_persists_a_preset(capsys):
+    status = main(["grid", "create", "--name", "Hasselblad", "--across", "4", "--down", "2"])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert events[1]["event"] == "grid_created"
+    profile = events[1]["profile"]
+    assert profile["name"] == "Hasselblad"
+    assert profile["across"] == 4
+    assert profile["down"] == 2
+
+    from scanny_boy.library import repo
+
+    loaded = repo.list_grid_profiles()
+    assert len(loaded) == 1
+    assert loaded[0].name == "Hasselblad"
+    assert loaded[0].across == 4
+    assert loaded[0].down == 2
+
+
+def test_grid_create_rejects_a_taken_name(capsys):
+    _save_grid_profile("Hasselblad")
+
+    status = main(["grid", "create", "--name", "Hasselblad", "--across", "3", "--down", "1"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "GRID_PROFILE_EXISTS"
+
+
+def test_grid_create_rejects_an_invalid_shape(capsys):
+    status = main(["grid", "create", "--name", "Too big", "--across", "4", "--down", "4"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "INVALID_GRID"
+
+
+def test_grid_delete_unknown_profile_is_not_found(capsys):
+    status = main(["grid", "delete", "--profile", "nope"])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "GRID_PROFILE_NOT_FOUND"
+
+
+def test_grid_delete_removes_the_row(capsys):
+    _save_grid_profile("Hasselblad")
+    from scanny_boy.library import repo
+
+    profile = repo.load_grid_profile_by_name("Hasselblad")
+
+    status = main(["grid", "delete", "--profile", profile.profile_id])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "grid_deleted", "finished"]
+    assert events[1]["profile_id"] == profile.profile_id
+    assert repo.list_grid_profiles() == []
 
 
 @requires_real_samples
@@ -2630,7 +2762,18 @@ def _spots_roll(capsys, tmp_path):
     from scanny_boy.roll_manifest import CaptureTime
     from scanny_boy.roll_manifest_test import _negative, _run
 
-    main(["roll", "init", "--library", str(tmp_path), "--name", "Spots"])
+    main(
+        [
+            "roll",
+            "init",
+            "--library",
+            str(tmp_path),
+            "--name",
+            "Spots",
+            "--film-kind",
+            "colour",
+        ]
+    )
     capsys.readouterr()
     roll_dir = tmp_path / "Spots"
     manifest = load_roll_manifest(roll_dir)

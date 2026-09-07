@@ -11,15 +11,17 @@ public struct CLICommand: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// `scanny-boy roll init --library DIR --name NAME`
+    /// `scanny-boy roll init --library DIR --name NAME --film-kind KIND`
     ///
     /// A roll records no grouping of its own: scans-per-negative is each
-    /// stitch batch's choice, chosen on the Add Scans stage.
-    public static func rollInit(library: URL, name: String) -> CLICommand {
+    /// stitch batch's choice, chosen on the Add Scans stage. `filmKind` is
+    /// `"colour"` (colour and chromogenic B&W) or `"monochrome"` (silver B&W).
+    public static func rollInit(library: URL, name: String, filmKind: String) -> CLICommand {
         CLICommand(arguments: [
             "roll", "init",
             "--library", library.path,
             "--name", name,
+            "--film-kind", filmKind,
         ])
     }
 
@@ -603,6 +605,26 @@ public struct CLICommand: Sendable, Hashable {
     /// invariants name the profile; the app surfaces that as an alert.
     public static func flatfieldDelete(profile: String) -> CLICommand {
         CLICommand(arguments: ["flatfield", "delete", "--profile", profile])
+    }
+
+    /// `scanny-boy grid create --name NAME --across N --down N`
+    public static func gridCreate(name: String, across: Int, down: Int) -> CLICommand {
+        CLICommand(arguments: [
+            "grid", "create",
+            "--name", name,
+            "--across", String(across),
+            "--down", String(down),
+        ])
+    }
+
+    /// `scanny-boy grid list`
+    public static func gridList() -> CLICommand {
+        CLICommand(arguments: ["grid", "list"])
+    }
+
+    /// `scanny-boy grid delete --profile ID`
+    public static func gridDelete(profile: String) -> CLICommand {
+        CLICommand(arguments: ["grid", "delete", "--profile", profile])
     }
 }
 

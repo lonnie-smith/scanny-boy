@@ -605,6 +605,7 @@ final class RunModel {
              .previewRendered,
              .metadataUpdated, .metadataValues,
              .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+             .gridCreated, .gridList, .gridDeleted,
              .spotsReported:
             break
         }

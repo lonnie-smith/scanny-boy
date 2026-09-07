@@ -173,6 +173,7 @@ final class ExportModel {
             .rollInfo, .rollRenamed, .rollDeleted, .metadataApplied, .metadataSkipped,
             .metadataUpdated, .metadataValues,
             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+            .gridCreated, .gridList, .gridDeleted,
             .spotsReported,
             .unknown:
             break

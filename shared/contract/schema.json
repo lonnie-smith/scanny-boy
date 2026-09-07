@@ -34,6 +34,9 @@
         "flatfield_list",
         "flatfield_deleted",
         "flatfield_progress",
+        "grid_created",
+        "grid_list",
+        "grid_deleted",
         "metadata_updated",
         "metadata_values",
         "base_frame_set",
@@ -127,6 +130,8 @@
         "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH",
         "FLATFIELD_HIGHLIGHT_CLIPPED",
+        "GRID_PROFILE_NOT_FOUND",
+        "GRID_PROFILE_EXISTS",
         "GEOMETRY_INSUFFICIENT_FRAMES",
         "GEOMETRY_BOARD_NOT_DETECTED",
         "GEOMETRY_FRAME_SIZE_MISMATCH",
@@ -138,8 +143,7 @@
         "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
         "TONE_METERING_UNAVAILABLE",
-        "MONO_DETECT_AMBIGUOUS",
-        "MONO_DECISION_CONFLICT",
+        "FILM_KIND_REQUIRED",
         "FILM_BASE_REQUIRED",
         "FILM_BASE_LOCKED",
         "FILM_BASE_NOT_FOUND",
@@ -214,6 +218,17 @@
         "calibration_report": { "type": ["object", "null"] }
       }
     },
+    "gridProfile": {
+      "type": "object",
+      "required": ["profile_id", "name", "across", "down", "created_at"],
+      "properties": {
+        "profile_id": { "type": "string" },
+        "name": { "type": "string" },
+        "across": { "type": "integer", "minimum": 1 },
+        "down": { "type": "integer", "minimum": 1 },
+        "created_at": { "type": "string" }
+      }
+    },
     "rollListingEntry": {
       "type": "object",
       "required": ["path", "status", "reason", "roll_id", "roll_name", "negative_count"],
@@ -233,7 +248,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 14
+      "const": 16
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -366,7 +381,10 @@
               "export",
               "flatfield create",
               "flatfield list",
-              "flatfield delete"
+              "flatfield delete",
+              "grid create",
+              "grid list",
+              "grid delete"
             ]
           }
         }
@@ -521,6 +539,36 @@
           },
           "completed": { "type": "integer", "minimum": 0 },
           "total": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "grid_created" } } },
+      "then": {
+        "required": ["profile"],
+        "properties": {
+          "profile": { "$ref": "#/definitions/gridProfile" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "grid_list" } } },
+      "then": {
+        "required": ["profiles"],
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/gridProfile" }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "grid_deleted" } } },
+      "then": {
+        "required": ["profile_id"],
+        "properties": {
+          "profile_id": { "type": "string" }
         }
       }
     },

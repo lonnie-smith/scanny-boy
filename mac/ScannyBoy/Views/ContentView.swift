@@ -23,6 +23,7 @@ import SwiftUI
 struct ContentView: View {
     let library: RollLibrary
     let flatField: FlatFieldModel
+    let grid: GridModel
     @Bindable var model: ConfigurationModel
     let edit: EditModel
     let run: RunModel
@@ -46,6 +47,7 @@ struct ContentView: View {
     @State private var restitchOutputFolder: URL?
     @State private var isPresentingNewRollSheet = false
     @State private var isPresentingFlatFieldProfiles = false
+    @State private var isPresentingGridProfiles = false
     @State private var isConfirmingConvert = false
     @State private var pendingConvertAfterNewRoll = false
     // Left explicit: `.automatic`'s default can collapse to no visible
@@ -106,6 +108,21 @@ struct ContentView: View {
             flatField.refresh()
             isPresentingFlatFieldProfiles = true
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .scannyBoyRequestGridProfiles)
+        ) { _ in
+            grid.refresh()
+            isPresentingGridProfiles = true
+        }
+        .onChange(of: grid.profiles) { _, profiles in
+            syncGridProfileSelection(with: profiles)
+        }
+        .onChange(of: model.gridProfileID) { _, profileID in
+            guard let profileID,
+                let profile = grid.profiles.first(where: { $0.profileID == profileID })
+            else { return }
+            model.applyGridDimensions(from: profile)
+        }
         .sheet(isPresented: $isPresentingRestitch) {
             RestitchSheet(
                 run: run,
@@ -154,6 +171,19 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
             FlatFieldProfilesSheet(flatField: flatField)
         }
+        .sheet(isPresented: $isPresentingGridProfiles) {
+            GridProfilesSheet(grid: grid)
+        }
+    }
+
+    private func syncGridProfileSelection(with profiles: [GridProfile]) {
+        guard let profileID = model.gridProfileID else { return }
+        guard let profile = profiles.first(where: { $0.profileID == profileID }) else {
+            model.gridProfileID = nil
+            model.across = nil
+            return
+        }
+        model.applyGridDimensions(from: profile)
     }
 
     private var workspace: some View {
@@ -341,49 +371,27 @@ struct ContentView: View {
             }
         }
         Section {
-            // The batch's grid (protocol 10): width × height pickers (1…12
-            // clamped so across * down stays within the CLI's 12-scan cap,
-            // and 1…2 rows). Down defaults to 1 and is not optional — a
-            // plain strip run needs one selection, not two — so only
-            // across carries the "not chosen yet" state that gates the
-            // Convert button. `down == 1` emits `--per-negative`;
-            // `down > 1` emits `--grid AxD` (docs/GRID_STITCH_PLAN.md
-            // section 2.5).
-            LabeledContent("Grid size") {
-                HStack(spacing: 8) {
-                    Picker("", selection: $model.across) {
-                        Text("Choose…").tag(Int?.none)
-                        ForEach(1...(ConfigurationModel.maxPerNegative / model.down), id: \.self) { count in
-                            Text("\(count)").tag(Int?.some(count))
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 72)
-                    .accessibilityIdentifier("perNegativePicker")
-
-                    Text("×")
-                        .foregroundStyle(.secondary)
-
-                    Picker("", selection: $model.down) {
-                        ForEach(1...2, id: \.self) { count in
-                            Text("\(count)").tag(count)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 72)
-                    .accessibilityIdentifier("downPicker")
+            Picker("Configuration", selection: $model.gridProfileID) {
+                Text("Choose…").tag(String?.none)
+                ForEach(grid.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
-
-            if let across = model.across {
-                Text("\(across * model.down) scans per negative")
+            if let profileID = model.gridProfileID,
+                let profile = grid.profiles.first(where: { $0.profileID == profileID })
+            {
+                Text("\(profile.dimensionSummary) — \(profile.scanCount) scans per negative")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("How the scans are arranged in each negative. Choose a grid size to enable Convert.")
+                Text("How the scans are arranged in each negative. Choose a configuration to enable Convert.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("perNegativeHint")
+            }
+            Button("Manage…") {
+                grid.refresh()
+                isPresentingGridProfiles = true
             }
             if !model.groups.isEmpty {
                 GroupingPreview(groups: model.groups)

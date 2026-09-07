@@ -37,6 +37,9 @@ from scanny_boy.events import (
     FlatFieldCreated,
     FlatFieldDeleted,
     FlatFieldList,
+    GridCreated,
+    GridDeleted,
+    GridList,
     MetadataUpdated,
     MetadataValues,
     NegativeDeleted,
@@ -59,6 +62,11 @@ from scanny_boy.flatfield import (
     FlatFieldError,
     flatfield_profile_summary,
     load_gain_map,
+)
+from scanny_boy.grid_profile import (
+    GridProfileError,
+    grid_profile_summary,
+    new_grid_profile,
 )
 from scanny_boy.hashing import sha256_file
 from scanny_boy.library import repo
@@ -127,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     roll_init = roll_subparsers.add_parser("init", help="Create a new roll.")
     roll_init.add_argument("--library", required=True, metavar="DIR")
     roll_init.add_argument("--name", required=True, metavar="NAME")
+    roll_init.add_argument(
+        "--film-kind",
+        choices=("colour", "monochrome"),
+        required=True,
+        dest="film_kind",
+        help="the roll's film kind — colour (including chromogenic B&W) or "
+        "silver monochrome",
+    )
 
     roll_list = roll_subparsers.add_parser(
         "list", help="Scan the library and list its rolls."
@@ -222,15 +238,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
-    stitch.add_argument(
-        "--film-kind",
-        choices=("auto", "colour", "monochrome"),
-        default="auto",
-        dest="film_kind",
-        help="skip the film-kind detector's decision (MONOCHROME_PLAN §2.2); "
-        "the statistic is still recorded either way",
-    )
-
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
     )
@@ -259,15 +266,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
-    run.add_argument(
-        "--film-kind",
-        choices=("auto", "colour", "monochrome"),
-        default="auto",
-        dest="film_kind",
-        help="skip the film-kind detector's decision (MONOCHROME_PLAN §2.2); "
-        "the statistic is still recorded either way",
-    )
-
     flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
     flatfield_subparsers = flatfield.add_subparsers(
         dest="flatfield_command", required=True
@@ -293,6 +291,26 @@ def build_parser() -> argparse.ArgumentParser:
         "delete", help="Delete one flat-field profile."
     )
     flatfield_delete.add_argument("--profile", required=True, metavar="ID")
+
+    grid = subparsers.add_parser(
+        "grid", help="Manage named grid configuration presets."
+    )
+    grid_subparsers = grid.add_subparsers(dest="grid_command", required=True)
+
+    grid_create = grid_subparsers.add_parser(
+        "create",
+        help="Save a labelled grid shape for the grouping picker.",
+    )
+    grid_create.add_argument("--name", required=True, metavar="NAME")
+    grid_create.add_argument("--across", required=True, type=int, metavar="N")
+    grid_create.add_argument("--down", required=True, type=int, metavar="N")
+
+    grid_subparsers.add_parser("list", help="List the grid configuration presets.")
+
+    grid_delete = grid_subparsers.add_parser(
+        "delete", help="Delete one grid configuration preset."
+    )
+    grid_delete.add_argument("--profile", required=True, metavar="ID")
 
     apply_metadata = subparsers.add_parser(
         "apply-metadata",
@@ -782,7 +800,6 @@ def _run_stitch_command(args, writer: EventWriter, jobs: int | None) -> int:
                 negatives=args.negatives,
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
-                film_kind=args.film_kind,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -842,7 +859,9 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     if args.roll_command == "init":
         writer.write(Started(command="roll init"))
         try:
-            roll_dir = create_roll(Path(args.library), args.name)
+            roll_dir = create_roll(
+                Path(args.library), args.name, film_kind=args.film_kind
+            )
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
@@ -1399,6 +1418,61 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
     return 0
 
 
+def _run_grid_command(args, writer: EventWriter) -> int:
+    """The `grid create` / `grid list` / `grid delete` subcommands."""
+    if args.grid_command == "create":
+        writer.write(Started(command="grid create"))
+        name = args.name.strip()
+        if not name:
+            writer.write(
+                ErrorEvent(code=Code.INVALID_GRID, message="profile name must not be empty")
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            repo.load_grid_profile_by_name(name)
+        except GridProfileError:
+            pass
+        else:
+            writer.write(
+                ErrorEvent(
+                    code=Code.GRID_PROFILE_EXISTS,
+                    message=f"a grid configuration named {name!r} already exists",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            profile = new_grid_profile(name=name, across=args.across, down=args.down)
+        except GridProfileError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        repo.save_grid_profile(profile)
+        writer.write(GridCreated(profile=grid_profile_summary(profile)))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.grid_command == "list":
+        writer.write(Started(command="grid list"))
+        profiles = repo.list_grid_profiles()
+        writer.write(GridList(profiles=[grid_profile_summary(p) for p in profiles]))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    writer.write(Started(command="grid delete"))
+    try:
+        repo.load_grid_profile(args.profile)
+    except GridProfileError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    repo.delete_grid_profile(args.profile)
+    writer.write(GridDeleted(profile_id=args.profile))
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_metadata_command(args, writer: EventWriter) -> int:
     """The `metadata set` / `metadata values` subcommands: bracket like
     every other subcommand and carry no `run_id` — metadata edits are
@@ -1491,7 +1565,6 @@ def _run_run_command(
                 flatfield_profile_id=args.flatfield,
                 auto_rotate=args.auto_rotate,
                 grid=spec,
-                film_kind=args.film_kind,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -1658,6 +1731,9 @@ def _dispatch_command(
 
     if args.command == "flatfield":
         return _run_flatfield_command(args, writer)
+
+    if args.command == "grid":
+        return _run_grid_command(args, writer)
 
     if args.command == "export":
         return _run_export_command(args, writer)

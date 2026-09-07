@@ -35,6 +35,7 @@ final class ConfigurationModel {
 
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
     static let lastFlatFieldProfileKey = "com.lonniesmith.scanny-boy.lastFlatFieldProfile"
+    static let lastGridProfileKey = "com.lonniesmith.scanny-boy.lastGridProfile"
 
     let runner: CLIRunner
     private let defaults: UserDefaults
@@ -117,6 +118,21 @@ final class ConfigurationModel {
         }
     }
 
+    /// The saved grid configuration preset chosen for this batch. When set,
+    /// `applyGridDimensions(from:)` fills `across` and `down` from the preset.
+    /// Persisted as the user's last choice, the same as the flat-field profile.
+    var gridProfileID: String? {
+        didSet {
+            guard gridProfileID != oldValue else { return }
+            if let gridProfileID {
+                defaults.set(gridProfileID, forKey: Self.lastGridProfileKey)
+            } else {
+                defaults.removeObject(forKey: Self.lastGridProfileKey)
+            }
+            clearValidationState()
+        }
+    }
+
     /// Scans stitched into each negative — the product the grouping
     /// preview uses. Computed from the stored grid dimensions; `nil` until
     /// Across is chosen.
@@ -167,6 +183,7 @@ final class ConfigurationModel {
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
         flatFieldProfileID = defaults.string(forKey: Self.lastFlatFieldProfileKey)
+        gridProfileID = defaults.string(forKey: Self.lastGridProfileKey)
         if let inputFolder {
             startCatalogueProbe(inputFolder: inputFolder)
         }
@@ -218,6 +235,13 @@ final class ConfigurationModel {
     /// Cmd-D: the selection empties out.
     func deselectAll() {
         selectedFiles = []
+    }
+
+    /// Applies one saved grid preset's dimensions without clearing
+    /// `gridProfileID`.
+    func applyGridDimensions(from profile: GridProfile) {
+        down = profile.down
+        across = profile.across
     }
 
     /// The `run` invocation this configuration describes from its current

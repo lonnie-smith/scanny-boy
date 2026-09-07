@@ -21,11 +21,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// `STITCH_GRID_ORDER_UNEXPECTED` warning code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
     /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
-    /// Protocol 11 adds monochrome film support (the
-    /// `--film-kind {auto,colour,monochrome}` flag on `stitch` and `run`,
-    /// the roll manifest's top-level `film` block, and the
-    /// `MONO_DETECT_AMBIGUOUS`/`MONO_DECISION_CONFLICT` warning codes),
-    /// extends the preview tone adjustment (seven curve controls and two
+    /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
+    /// required on `roll init` only; `run`/`stitch` read `film.kind` from
+    /// the manifest. Protocol 11 added monochrome film support (single-
+    /// channel published TIFFs and the `ScannyBoy-Density-Grey-v1.icc`
+    /// profile), the preview tone extension (seven curve controls and two
     /// auto flags on `edit tone`, the matching `tone_*` fields in the roll
     /// manifest, and the `TONE_METERING_UNAVAILABLE` warning code), and
     /// the positive/negative display toggle for the Edit tab (`--mode
@@ -59,7 +59,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    public static let supportedProtocolVersion = 14
+    public static let supportedProtocolVersion = 16
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -97,6 +97,9 @@ public struct CLIEvent: Sendable, Hashable {
         case flatfieldList
         case flatfieldDeleted
         case flatfieldProgress
+        case gridCreated
+        case gridList
+        case gridDeleted
         case spotsReported
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
@@ -133,6 +136,9 @@ public struct CLIEvent: Sendable, Hashable {
             case "flatfield_list": self = .flatfieldList
             case "flatfield_deleted": self = .flatfieldDeleted
             case "flatfield_progress": self = .flatfieldProgress
+            case "grid_created": self = .gridCreated
+            case "grid_list": self = .gridList
+            case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
             default: self = .unknown(name)
             }
@@ -169,6 +175,9 @@ public struct CLIEvent: Sendable, Hashable {
             case .flatfieldList: "flatfield_list"
             case .flatfieldDeleted: "flatfield_deleted"
             case .flatfieldProgress: "flatfield_progress"
+            case .gridCreated: "grid_created"
+            case .gridList: "grid_list"
+            case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
             case .unknown(let name): name
             }
@@ -366,6 +375,16 @@ extension CLIEvent {
     // `flatfield_progress`
     public var flatFieldPhase: String? { fields["phase"]?.stringValue }
 
+    // `grid_created` and `grid_list`
+    public var gridProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
+    public var gridProfiles: [[String: JSONValue]]? {
+        fields["profiles"]?.arrayValue?.compactMap { entry in
+            entry.objectValue
+        }
+    }
+    // `grid_deleted`
+    public var gridProfileID: String? { fields["profile_id"]?.stringValue }
+
     // `spots_reported` (protocol version 13): a negative's spot set as the
     // app draws it. Every rect is display space, already transformed — the
     // app never converts coordinates, rejects by `id`, and never sees an
@@ -493,6 +512,8 @@ public enum CLICode: Sendable, Hashable {
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
+    case gridProfileNotFound
+    case gridProfileExists
     // Protocol version 7: geometric calibration.
     case geometryInsufficientFrames
     case geometryBoardNotDetected
@@ -567,6 +588,8 @@ public enum CLICode: Sendable, Hashable {
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
+        case "GRID_PROFILE_NOT_FOUND": self = .gridProfileNotFound
+        case "GRID_PROFILE_EXISTS": self = .gridProfileExists
         case "GEOMETRY_INSUFFICIENT_FRAMES": self = .geometryInsufficientFrames
         case "GEOMETRY_BOARD_NOT_DETECTED": self = .geometryBoardNotDetected
         case "GEOMETRY_FRAME_SIZE_MISMATCH": self = .geometryFrameSizeMismatch
@@ -642,6 +665,8 @@ public enum CLICode: Sendable, Hashable {
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
+        case .gridProfileNotFound: "GRID_PROFILE_NOT_FOUND"
+        case .gridProfileExists: "GRID_PROFILE_EXISTS"
         case .geometryInsufficientFrames: "GEOMETRY_INSUFFICIENT_FRAMES"
         case .geometryBoardNotDetected: "GEOMETRY_BOARD_NOT_DETECTED"
         case .geometryFrameSizeMismatch: "GEOMETRY_FRAME_SIZE_MISMATCH"

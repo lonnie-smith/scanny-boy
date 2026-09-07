@@ -30,12 +30,14 @@ from sqlalchemy.orm import Session
 
 from scanny_boy.events import Code
 from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
+from scanny_boy.grid_profile import GridProfile, GridProfileError
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
     METADATA_FIELDS,
     ROLL_ONLY_METADATA_FIELDS,
     EditRow,
     FlatFieldProfileRow,
+    GridProfileRow,
     MetadataValueRow,
     NegativeRow,
     RollRow,
@@ -1122,6 +1124,76 @@ def rolls_using_profile_geometry(profile_id: str) -> list[str]:
             if (roll.stitch_params or {}).get("geometry", {}).get("profile_id")
             == profile_id
         )
+
+
+# --- grid configuration presets ----------------------------------------------
+
+
+def _grid_profile_row(session: Session, profile_id: str) -> GridProfileRow:
+    row = session.get(GridProfileRow, profile_id)
+    if row is None:
+        raise GridProfileError(
+            Code.GRID_PROFILE_NOT_FOUND,
+            f"no grid configuration with id {profile_id}",
+        )
+    return row
+
+
+def _to_grid_profile(row: GridProfileRow) -> GridProfile:
+    return GridProfile(
+        profile_id=row.profile_id,
+        name=row.name,
+        across=row.across,
+        down=row.down,
+        created_at=row.created_at,
+    )
+
+
+def save_grid_profile(profile: GridProfile) -> None:
+    with _session() as session:
+        session.merge(
+            GridProfileRow(
+                profile_id=profile.profile_id,
+                name=profile.name,
+                across=profile.across,
+                down=profile.down,
+                created_at=profile.created_at,
+            )
+        )
+
+
+def list_grid_profiles() -> list[GridProfile]:
+    with _session() as session:
+        rows = session.scalars(
+            select(GridProfileRow).order_by(
+                GridProfileRow.created_at, GridProfileRow.name
+            )
+        ).all()
+        return [_to_grid_profile(row) for row in rows]
+
+
+def load_grid_profile(profile_id: str) -> GridProfile:
+    with _session() as session:
+        return _to_grid_profile(_grid_profile_row(session, profile_id))
+
+
+def load_grid_profile_by_name(name: str) -> GridProfile:
+    with _session() as session:
+        row = session.scalar(
+            select(GridProfileRow).where(GridProfileRow.name == name)
+        )
+        if row is None:
+            raise GridProfileError(
+                Code.GRID_PROFILE_NOT_FOUND,
+                f"no grid configuration named {name!r}",
+            )
+        return _to_grid_profile(row)
+
+
+def delete_grid_profile(profile_id: str) -> None:
+    with _session() as session:
+        row = _grid_profile_row(session, profile_id)
+        session.delete(row)
 
 
 # --- the extended-metadata value catalog -------------------------------------

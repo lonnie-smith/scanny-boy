@@ -428,6 +428,29 @@ struct CLICommandTests {
             ]
         )
     }
+
+    @Test("grid create names the preset and its dimensions")
+    func gridCreateArguments() {
+        let command = CLICommand.gridCreate(name: "Hasselblad", across: 4, down: 2)
+        #expect(
+            command.arguments == [
+                "grid", "create",
+                "--name", "Hasselblad",
+                "--across", "4",
+                "--down", "2",
+            ]
+        )
+    }
+
+    @Test("grid list and delete are shaped like CONTRACT.md says")
+    func gridListAndDeleteArguments() {
+        #expect(CLICommand.gridList().arguments == ["grid", "list"])
+        #expect(
+            CLICommand.gridDelete(profile: "pid-1").arguments == [
+                "grid", "delete", "--profile", "pid-1",
+            ]
+        )
+    }
     // MARK: - Spotting (protocol 13)
 
     private static let roll = URL(filePath: "/Volumes/Scans/roll-12")
@@ -502,6 +525,21 @@ struct CLICommandTests {
             CLICommand.editListSpots(roll: Self.roll, negative: "n1").arguments
                 == ["edit", "list-spots", "--roll", "/Volumes/Scans/roll-12",
                     "--negative", "n1"]
+        )
+    }
+
+    @Test("roll init passes library, name, and film kind")
+    func rollInitArguments() {
+        let library = URL(filePath: "/Volumes/Scans/library")
+        #expect(
+            CLICommand.rollInit(library: library, name: "Tri-X", filmKind: "monochrome")
+                .arguments
+                == [
+                    "roll", "init",
+                    "--library", "/Volumes/Scans/library",
+                    "--name", "Tri-X",
+                    "--film-kind", "monochrome",
+                ]
         )
     }
 }
