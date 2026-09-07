@@ -491,11 +491,19 @@ def test_guard_nothing_outside_the_write_path_imports_the_loader():
     """The load-bearing rule of section 3.12: the profile must never creep
     into the render path, where a wrong TRC could corrupt pixels instead of
     merely looking odd. A grep-shaped test is the cheapest way to hold that
-    line."""
+    line.
+
+    `*_test.py` and `*_support.py` are exempt for the same reason: neither
+    ships in the render path. The support modules build fixtures that stand in
+    for real pipeline output — `work_dir_support.write_intermediate` writes a
+    genuine Phase 1 TIFF, profile and all — so they need the loader precisely
+    because they are imitating the write path this rule protects."""
     package = Path(__file__).resolve().parent
     offenders = []
     for path in sorted(package.glob("*.py")):
-        if path.name in PROFILE_LOADER_MODULES or path.name.endswith("_test.py"):
+        if path.name in PROFILE_LOADER_MODULES or path.name.endswith(
+            ("_test.py", "_support.py")
+        ):
             continue
         text = path.read_text(encoding="utf-8")
         if "load_icc_profile" in text:

@@ -441,7 +441,6 @@ struct CLIEventTests {
             "schema.json declares protocol_version \(schemaVersion.map(String.init) ?? "nil"), but the app supports \(CLIEvent.supportedProtocolVersion)"
         )
     }
-}
 
     // MARK: - spots_reported (protocol 13)
 
@@ -533,3 +532,4 @@ struct CLIEventTests {
         #expect(stale.code == .spotsStale)
         #expect(stale.code?.name == "SPOTS_STALE")
     }
+}

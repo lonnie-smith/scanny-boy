@@ -1,9 +1,18 @@
 """Shared film-like synthetic scene generator for registration tests and
 `scripts/measure-registration.py` (section 6: synthetic fixtures must be
 film-like — gradients, blobs, and light grain — never pure noise).
+
+Generation is not cheap: the circle loop allocates a full-canvas mask per
+circle, so a scene costs roughly 0.75 s at 700x1300 and 3.8 s at 1700x3400.
+The tests ask for very few distinct scenes and ask for them over and over —
+`registration_test` alone built the same 1700x3400 seed-1 scene eleven times,
+once per test — so `synthetic_scene` memoises on its arguments. See the note
+on `_scene_cached` for why that is safe.
 """
 
 from __future__ import annotations
+
+import functools
 
 import cv2
 import numpy as np
@@ -12,11 +21,33 @@ _CIRCLE_COUNT = 220
 _BLUR_SIGMA = 1.4
 _GRAIN_SIGMA = 0.012
 
+# Large enough for every distinct (size, seed) the suite asks for, with room
+# spare; small enough that a stray parametrisation cannot grow without bound.
+_SCENE_CACHE_SIZE = 32
+
 
 def synthetic_scene(height: int, width: int, *, seed: int) -> np.ndarray:
     """float32 in [0, 1]: smooth sinusoidal gradients, ~220 filled circles
     of random radius and value, Gaussian blur sigma 1.4, then Gaussian grain
-    at sigma 0.012."""
+    at sigma 0.012.
+
+    The result is memoised and **read-only**. Callers only ever read a scene —
+    `cut_frames` warps out of it, never into it — so sharing one array is
+    safe, and the write flag turns a caller that starts mutating it into an
+    immediate error rather than a scene silently poisoned for the next test.
+    Copy it (`scene.copy()`) if you genuinely need to modify one.
+    """
+    return _scene_cached(height, width, seed)
+
+
+@functools.lru_cache(maxsize=_SCENE_CACHE_SIZE)
+def _scene_cached(height: int, width: int, seed: int) -> np.ndarray:
+    scene = _build_scene(height, width, seed)
+    scene.setflags(write=False)
+    return scene
+
+
+def _build_scene(height: int, width: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:height, 0:width].astype(np.float64)
 

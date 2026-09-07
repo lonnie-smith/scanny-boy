@@ -24,7 +24,11 @@ from scanny_boy.sample_nef_support import (
     stage_samples,
 )
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
-from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
+from scanny_boy.work_dir_support import (
+    make_roll_dir,
+    make_work_dir,
+    run_stitch_with_defaults,
+)
 
 SCHEMA = load_schema()
 
@@ -446,7 +450,7 @@ def test_an_internal_crash_reaches_the_stream_as_an_error_event(
     )
     capsys.readouterr()
 
-    def _raise(_roll_dir):
+    def _raise(make_roll_dir):
         raise RuntimeError("boom")
 
     monkeypatch.setattr("scanny_boy.cli.load_roll_manifest", _raise)
@@ -809,8 +813,29 @@ def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
-def test_roll_without_subcommand_returns_status_2(capsys):
-    status = main(["roll"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["frobnicate"], id="unknown-command"),
+        pytest.param(["roll"], id="roll-without-subcommand"),
+        pytest.param(
+            ["edit", "delete", "--roll", "/tmp/roll"], id="edit-delete-no-negative"
+        ),
+        pytest.param(
+            ["edit", "flip", "--roll", "/tmp/roll"], id="edit-flip-no-negative"
+        ),
+    ],
+)
+def test_usage_errors_exit_2_with_a_clean_stdout(argv, capsys):
+    """CONTRACT.md: argparse-level rejections exit 2, say why on stderr, and
+    put nothing on stdout — stdout carries the event stream and must stay
+    parseable even when the invocation was nonsense.
+
+    One table rather than a function per flag: these were four identical
+    bodies, and every new command that grows a required argument added a
+    fifth. Add a row instead.
+    """
+    status = main(argv)
 
     assert status == 2
     events, err = _stdout_events(capsys)
@@ -850,10 +875,9 @@ def test_apply_metadata_with_nothing_dirty_exits_0(capsys, tmp_path):
     assert err == ""
 
 
-def test_edit_delete_removes_the_negative_and_its_tiff(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_delete_removes_the_negative_and_its_tiff(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     output_name = load_roll_manifest(roll_dir).negatives[0].output["name"]
@@ -888,24 +912,16 @@ def test_edit_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
-def test_edit_delete_without_negative_id_returns_status_2(capsys):
-    status = main(["edit", "delete", "--roll", "/tmp/roll"])
-
-    assert status == 2
-    events, err = _stdout_events(capsys)
-    assert events == []
-    assert err != ""
 
 
-def test_edit_render_region_renders_the_requested_region(capsys, tmp_path):
+def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_path):
     import cv2
     import tifffile
 
     from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     tiff = tifffile.imread(roll_dir / negative.output["name"])
@@ -953,7 +969,7 @@ def test_edit_render_region_renders_the_requested_region(capsys, tmp_path):
     np.testing.assert_array_equal(stored, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
 
 
-def test_edit_render_region_folds_in_the_net_transform(capsys, tmp_path):
+def test_edit_render_region_folds_in_the_net_transform(work_dir, capsys, tmp_path):
     """The region comes back in display space — the net transform applied —
     so a region asked for in preview coordinates matches the preview."""
     import cv2
@@ -962,9 +978,8 @@ def test_edit_render_region_folds_in_the_net_transform(capsys, tmp_path):
     from scanny_boy.library import repo
     from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     roll = load_roll_manifest(roll_dir)
     negative = roll.negatives[0]
@@ -1016,10 +1031,9 @@ def test_edit_render_region_folds_in_the_net_transform(capsys, tmp_path):
     np.testing.assert_array_equal(stored, expected)
 
 
-def test_edit_render_region_rejects_a_bad_region(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_render_region_rejects_a_bad_region(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     capsys.readouterr()
@@ -1053,7 +1067,7 @@ def test_edit_render_region_rejects_a_bad_region(capsys, tmp_path):
     assert not destination.exists()
 
 
-def test_edit_render_region_negative_mode_encodes_without_inversion(capsys, tmp_path):
+def test_edit_render_region_negative_mode_encodes_without_inversion(work_dir, capsys, tmp_path):
     """`--mode negative` renders the same display-space rect through the
     un-inverted density LUT — the published TIFF's own appearance, which
     the region route also honours."""
@@ -1062,9 +1076,8 @@ def test_edit_render_region_negative_mode_encodes_without_inversion(capsys, tmp_
 
     from scanny_boy.previews import NEGATIVE_DISPLAY_LUT, NORMALIZED_DISPLAY_LUT
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     tiff = tifffile.imread(roll_dir / negative.output["name"])
@@ -1112,10 +1125,9 @@ def test_edit_render_region_negative_mode_encodes_without_inversion(capsys, tmp_
     assert not np.array_equal(stored, positive_view)
 
 
-def test_edit_render_region_unknown_mode_is_a_usage_error(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_render_region_unknown_mode_is_a_usage_error(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     capsys.readouterr()
@@ -1149,7 +1161,7 @@ def test_edit_render_region_unknown_mode_is_a_usage_error(capsys, tmp_path):
     assert err != ""
 
 
-def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
+def test_edit_render_preview_renders_the_underlying_negative(work_dir, capsys, tmp_path):
     """`edit render-preview --mode negative` writes the whole display image
     — net transform folded in — through the un-inverted LUT, and
     `preview_rendered` carries the written PNG's pixel dimensions."""
@@ -1159,9 +1171,8 @@ def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
     from scanny_boy.library import repo
     from scanny_boy.previews import NEGATIVE_DISPLAY_LUT
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     repo.append_edit(
@@ -1219,7 +1230,7 @@ def test_edit_render_preview_renders_the_underlying_negative(capsys, tmp_path):
     )
 
 
-def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
+def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tmp_path):
     """The negative view is a density view: a recorded tone adjustment is
     composed into the positive render's display LUT and never reaches the
     negative render."""
@@ -1228,9 +1239,8 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(capsys, tmp_path):
 
     from scanny_boy import tone
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative = load_roll_manifest(roll_dir).negatives[0]
     capsys.readouterr()
@@ -1322,10 +1332,9 @@ def test_edit_render_preview_missing_roll_reports_roll_not_found(capsys, tmp_pat
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
-def test_edit_flip_records_the_flip_and_refreshes_the_preview(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_flip_records_the_flip_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1346,9 +1355,9 @@ def test_edit_flip_records_the_flip_and_refreshes_the_preview(capsys, tmp_path):
 
 
 def test_edit_rotate_accepts_a_selection(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=2)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    work_dir = make_work_dir(tmp_path, negatives=2)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_ids = [n.negative_id for n in load_roll_manifest(roll_dir).negatives]
     capsys.readouterr()
@@ -1380,19 +1389,11 @@ def test_edit_rotate_accepts_a_selection(capsys, tmp_path):
     assert err == ""
 
 
-def test_edit_flip_without_negative_id_returns_status_2(capsys):
-    status = main(["edit", "flip", "--roll", "/tmp/roll"])
-
-    assert status == 2
-    events, err = _stdout_events(capsys)
-    assert events == []
-    assert err != ""
 
 
-def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1423,10 +1424,9 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_
     assert err == ""
 
 
-def test_edit_tone_reset_records_null_params(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     assert (
@@ -1464,10 +1464,9 @@ def test_edit_tone_reset_records_null_params(capsys, tmp_path):
     assert edits[0]["params"] == _reset_tone_params()
 
 
-def test_edit_tone_needs_grade_and_snap_together(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1491,10 +1490,9 @@ def test_edit_tone_needs_grade_and_snap_together(capsys, tmp_path):
     assert events[1]["code"] == "INVALID_EDIT"
 
 
-def test_edit_tone_round_trips_all_nine_flags_through_roll_info(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1555,10 +1553,9 @@ def _color_params(**overrides: float):
     return params
 
 
-def test_edit_color_records_the_adjustment_and_refreshes_the_preview(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_color_records_the_adjustment_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1596,10 +1593,9 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(capsys, tmp
     assert err == ""
 
 
-def test_edit_color_partial_update_preserves_recorded_values(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_color_partial_update_preserves_recorded_values(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
@@ -1646,10 +1642,9 @@ def test_edit_color_partial_update_preserves_recorded_values(capsys, tmp_path):
     assert params["cast_removal"] == pytest.approx(0.3)
 
 
-def test_edit_color_temperature_is_exclusive_with_region_magenta(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_color_temperature_is_exclusive_with_region_magenta(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1674,12 +1669,11 @@ def test_edit_color_temperature_is_exclusive_with_region_magenta(capsys, tmp_pat
     assert events[1]["code"] == "INVALID_EDIT"
 
 
-def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
+def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     from scanny_boy import color
 
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     params = _color_params(
@@ -1730,10 +1724,9 @@ def test_edit_color_round_trips_through_roll_info(capsys, tmp_path):
     )
 
 
-def test_edit_tone_auto_density_records_a_solved_value(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1760,10 +1753,9 @@ def test_edit_tone_auto_density_records_a_solved_value(capsys, tmp_path):
     assert grade != 115.0
 
 
-def test_edit_tone_auto_on_missing_normalization_warns(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     roll = load_roll_manifest(roll_dir)
     negative_id = roll.negatives[0].negative_id
@@ -1792,10 +1784,9 @@ def test_edit_tone_auto_on_missing_normalization_warns(capsys, tmp_path):
     assert all(event["code"] == "TONE_METERING_UNAVAILABLE" for event in warnings)
 
 
-def test_edit_tone_rejects_density_with_auto_density(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_rejects_density_with_auto_density(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1820,10 +1811,9 @@ def test_edit_tone_rejects_density_with_auto_density(capsys, tmp_path):
     assert status == 2
 
 
-def test_edit_tone_toe_only_change_regenerates_the_preview(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_edit_tone_toe_only_change_regenerates_the_preview(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -1872,10 +1862,9 @@ def test_edit_tone_toe_only_change_regenerates_the_preview(capsys, tmp_path):
     assert toe_preview != base_preview
 
 
-def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_exit_status_one_when_anything_was_skipped(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
 
     roll = load_roll_manifest(roll_dir)
@@ -1898,12 +1887,6 @@ def test_exit_status_one_when_anything_was_skipped(capsys, tmp_path):
     assert events[2]["exit_status"] == 1
 
 
-def test_invalid_command_returns_status_2_with_no_stdout_events(capsys):
-    status = main(["frobnicate"])
-    assert status == 2
-    events, err = _stdout_events(capsys)
-    assert events == []
-    assert err != ""
 
 
 def test_film_date_argument_is_rejected(capsys):
@@ -2867,10 +2850,9 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
 # --- --cast-removal-highlights and --auto-cast (docs/CAST_REMOVAL_PLAN.md R-3)
 
 
-def test_cast_removal_highlights_round_trips_through_roll_info(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_cast_removal_highlights_round_trips_through_roll_info(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -2901,10 +2883,9 @@ def test_cast_removal_highlights_round_trips_through_roll_info(capsys, tmp_path)
     assert negative["color_dye_separation"] == pytest.approx(1.0)
 
 
-def test_auto_cast_writes_nulling_filtration(capsys, tmp_path, monkeypatch):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeypatch):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     # Record a neutral residual for the negative to solve from.
@@ -2949,11 +2930,10 @@ def test_auto_cast_writes_nulling_filtration(capsys, tmp_path, monkeypatch):
 
 
 def test_auto_cast_without_a_residual_warns_and_records_unchanged(
-    capsys, tmp_path
+    work_dir, capsys, tmp_path
 ):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -2985,10 +2965,9 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     assert params["cast_removal"] == pytest.approx(0.0)
 
 
-def test_auto_cast_is_exclusive_with_reset_and_global_sliders(capsys, tmp_path):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+def test_auto_cast_is_exclusive_with_reset_and_global_sliders(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
@@ -3013,14 +2992,13 @@ def test_auto_cast_is_exclusive_with_reset_and_global_sliders(capsys, tmp_path):
 
 
 def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch(
-    capsys, tmp_path
+    work_dir, capsys, tmp_path
 ):
     """§7.3's tie-compensation test at the CLI level: with the highlight
     strength at rest, the solved CMY does not move when a shadow tie is
     already recorded."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     roll = load_roll_manifest(roll_dir)
@@ -3046,11 +3024,10 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
 
 
 def test_cast_removal_highlights_warns_without_a_highlight_reference(
-    capsys, tmp_path
+    work_dir, capsys, tmp_path
 ):
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    roll_dir = _roll_dir(tmp_path)
-    outcome = _stitch(work_dir, roll_dir)
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     # R-1's stitch may well have measured a usable highlight reference;

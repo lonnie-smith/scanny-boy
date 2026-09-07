@@ -25,7 +25,10 @@ from scanny_boy.roll_manifest import RollInvariants, load_roll_manifest
 
 # The roll tests below need a folder a genuine `stitch` produced (section 4);
 # the stitch fixtures are the one place that machinery lives.
-from scanny_boy.stitch_pipeline_test import _make_work_dir, _roll_dir, _stitch
+from scanny_boy.work_dir_support import (
+    make_roll_dir,
+    run_stitch_with_defaults,
+)
 
 GOOD_SHA = "a" * 64
 
@@ -221,16 +224,15 @@ def _candidate_from(manifest) -> RollInvariants:
     )
 
 
-def test_roll_folder_with_prior_outputs_is_valid(tmp_path):
+def test_roll_folder_with_prior_outputs_is_valid(work_dir, tmp_path):
     """Section 3.4: a nonempty roll folder holding published outputs from
     earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and under `ROLL_RULES`
     those outputs are neither conflicts nor stale. The roll is built by a
     genuine `stitch` through P3-2's writer (section 4) — a hand-authored
     manifest proves nothing about what the folder really holds. The dot-dir
     skip covers `.work`, which `run --roll` will use for scratch."""
-    work_dir = _make_work_dir(tmp_path, negatives=1)
-    out_dir = _roll_dir(tmp_path)
-    _stitch(work_dir, out_dir)
+    out_dir = make_roll_dir(tmp_path)
+    run_stitch_with_defaults(work_dir, out_dir)
 
     manifest = load_roll_manifest(out_dir)
     [negative] = manifest.negatives

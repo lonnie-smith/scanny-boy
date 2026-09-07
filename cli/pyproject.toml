@@ -23,6 +23,7 @@ scanny-boy = "scanny_boy.cli:main"
 dev = [
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
     "ruff",
     "pyinstaller",
 ]
@@ -36,6 +37,23 @@ packages = ["src/scanny_boy"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+# `-n 8` matches this machine's performance cores, leaving the two efficiency
+# cores for everything else. The suite was already safe to parallelise — the
+# autouse `isolated_library_db` fixture in src/scanny_boy/conftest.py gives
+# every test its own tmp_path database, and nothing else touches shared state.
+#
+# Left on xdist's default `--dist load`, which hands out individual tests. The
+# obvious-looking `--dist loadfile` is worse here and was measured at 110s
+# against this mode's 52s: the session-scoped caches (the work-directory
+# template, the synthetic-scene memo) are per-worker-process whichever mode is
+# used, so keeping a file together buys no cache reuse — it only pins the one
+# heaviest file, stitch_pipeline_test.py, to a single worker and lets the other
+# seven finish early.
+#
+# Pass `-n 0` to turn parallelism off when you are actually debugging a single
+# test — xdist swallows `-s` and live output, and a crashed worker reports less
+# usefully than a serial failure.
+addopts = "-n 8"
 markers = [
     "slow: really decodes sample RAW frames, stitches real scans, or runs the packaged app (minutes); skipped unless pytest is passed --slow",
 ]
