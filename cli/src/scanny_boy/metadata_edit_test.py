@@ -26,7 +26,7 @@ from scanny_boy.roll_manifest import (
 )
 from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
-from scanny_boy.stitch_pipeline_test import _roll_dir
+from scanny_boy.work_dir_support import make_roll_dir
 
 _NEGATIVE_A = "stitch-negative-01"
 _NEGATIVE_B = "stitch-negative-02"
@@ -34,7 +34,7 @@ _NEGATIVE_B = "stitch-negative-02"
 
 @pytest.fixture()
 def two_negative_roll(tmp_path: Path) -> Path:
-    roll_dir = _roll_dir(tmp_path)
+    roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     manifest.metadata.roll_capture_date = "2026-08-01"
     from scanny_boy.roll_manifest import append_run

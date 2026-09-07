@@ -78,14 +78,10 @@ jobs:
       - name: Build and stage the CLI helper
         run: ./scripts/build-cli.sh
 
-      - name: Generate the Xcode project
-        working-directory: mac
-        run: xcodegen generate
-
+      # The same script developers run, so a green CI and a green local run
+      # mean the same thing. It generates the Xcode project itself, so there
+      # is no separate xcodegen step, and it passes `-quiet` — a failing job's
+      # log then opens on the compile error or the failing test name instead
+      # of ~1700 lines of build transcript.
       - name: Test
-        working-directory: mac
-        run: |
-          xcodebuild test \
-            -scheme ScannyBoy \
-            -destination 'platform=macOS' \
-            -resultBundlePath TestResults.xcresult
+        run: ./scripts/test-mac.sh -resultBundlePath TestResults.xcresult

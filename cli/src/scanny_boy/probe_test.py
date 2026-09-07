@@ -29,11 +29,11 @@ from scanny_boy.sample_nef_support import (
 # The rolls the --roll tests probe are built by a genuine `stitch` through
 # P3-2's writer (section 4); the stitch fixtures are the one place that
 # machinery lives.
-from scanny_boy.stitch_pipeline_test import (
-    _negative_frames,
-    _roll_dir,
-    _stitch,
-    _write_intermediate,
+from scanny_boy.work_dir_support import (
+    make_roll_dir,
+    negative_frames,
+    run_stitch_with_defaults,
+    write_intermediate,
 )
 
 
@@ -368,13 +368,13 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
 
     group_records = []
     for index, group_members in enumerate(groups):
-        frames = _negative_frames(
+        frames = negative_frames(
             overlapping=True, seed=11 + index * 7, count=len(group_members)
         )
         outputs = []
         for member, pixels in zip(group_members, frames):
             output_name = f"{member[:-4]}.tif"
-            _write_intermediate(work_dir / output_name, pixels, member)
+            write_intermediate(work_dir / output_name, pixels, member)
             outputs.append(
                 OutputRecord(
                     name=output_name,
@@ -412,8 +412,8 @@ def _stitched_roll(tmp_path, *, groups: list[list[str]], run_id: str = "stitch-r
         ),
     )
 
-    roll = _roll_dir(tmp_path, "roll")
-    outcome = _stitch(work_dir, roll, run_id=run_id)
+    roll = make_roll_dir(tmp_path, "roll")
+    outcome = run_stitch_with_defaults(work_dir, roll, run_id=run_id)
     assert outcome.status == "complete"
     assert outcome.failed == []
     return roll

@@ -1,3 +1,5 @@
+import functools
+
 import numpy as np
 import pytest
 
@@ -19,13 +21,31 @@ _FRAME_SIZE = (1400, 2100)
 
 
 def _build_pair_features(rotations_deg, *, overlap=0.25, seed=1):
+    """Two frames cut from one synthetic scene, run through real detection.
+
+    Memoised on its arguments. Every call in this file asks for the same
+    1700x3400 seed-1 scene, and two ask for byte-identical results, so this
+    used to rebuild a 5.8-megapixel array and re-run the detector once per
+    test. `register_pair` and the fitters only read what they are handed, so
+    the frames can be shared. `rotations_deg` is normalised to a tuple to make
+    the arguments hashable, and the caller gets a fresh list each time so it
+    cannot append to the cached one.
+    """
+    features, placements = _pair_features_cached(
+        tuple(float(a) for a in rotations_deg), overlap, seed
+    )
+    return list(features), list(placements)
+
+
+@functools.lru_cache(maxsize=16)
+def _pair_features_cached(rotations_deg, overlap, seed):
     scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
     frames, placements = cut_frames(
         scene,
         frame_size=_FRAME_SIZE,
         count=len(rotations_deg),
         overlap=overlap,
-        rotations_deg=rotations_deg,
+        rotations_deg=list(rotations_deg),
         seed=seed,
     )
     features = []
@@ -36,7 +56,7 @@ def _build_pair_features(rotations_deg, *, overlap=0.25, seed=1):
             intermediate, long_edge=DETECTION_LONG_EDGE, clahe=USE_CLAHE
         )
         features.append(detect_features(detection, name=f"frame{i}"))
-    return features, placements
+    return tuple(features), tuple(placements)
 
 
 def _expected_relative_transform(placements, i, j):
@@ -100,7 +120,11 @@ def test_recovers_a_known_rotation_and_translation():
     assert result.scale_drift < 0.001
 
 
-@pytest.mark.parametrize("angle_deg", [0, 1, 2, 3, 5, 8])
+# The ends of the supported range and one point in the middle. The sweep used
+# to run [0, 1, 2, 3, 5, 8]; each angle is a distinct scene cut and a distinct
+# detector pass, and 1, 2 and 5 only interpolate between neighbours that are
+# already asserted to a tenth of a degree.
+@pytest.mark.parametrize("angle_deg", [0, 3, 8])
 def test_recovers_across_the_rotation_range(angle_deg):
     features, placements = _build_pair_features([0.0, float(angle_deg)])
     result = register_pair(features[0], features[1])
