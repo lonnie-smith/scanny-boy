@@ -932,6 +932,25 @@ private struct ToneSlider: View {
     }
 }
 
+/// Yellow→blue bar behind the temperature slider track (warm left, cool right).
+private struct TemperatureTrackBackground: View {
+    var body: some View {
+        Capsule()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 1.0, green: 0.82, blue: 0.25),
+                        Color(red: 0.35, green: 0.55, blue: 0.95),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(height: 4)
+            .padding(.horizontal, 7)
+    }
+}
+
 private enum ColorRegion: String, CaseIterable, Identifiable {
     case global, shadows, highlights
     var id: String { rawValue }
@@ -1182,11 +1201,8 @@ private struct ColorAdjustmentPanel: View {
             }
             Slider(
                 value: Binding(
-                    get: {
-                        ColorTemperature.maxKelvin + ColorTemperature.minKelvin - temperatureKelvin
-                    },
-                    set: { reversed in
-                        let kelvin = ColorTemperature.maxKelvin + ColorTemperature.minKelvin - reversed
+                    get: { temperatureKelvin },
+                    set: { kelvin in
                         let snapped = ToneSlider.snap(
                             kelvin, step: 50,
                             range: ColorTemperature.minKelvin...ColorTemperature.maxKelvin
@@ -1207,6 +1223,9 @@ private struct ColorAdjustmentPanel: View {
                     temperatureAnchor = nil
                     onCommitNow(values, [])
                 }
+            }
+            .background(alignment: .center) {
+                TemperatureTrackBackground()
             }
         }
     }
