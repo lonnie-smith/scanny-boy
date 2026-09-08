@@ -1068,6 +1068,15 @@ observed pre-clip extrema and the clipped fraction are recorded per
 negative so the constants can be tuned from real scans, and
 `NORMALIZE_HEADROOM_CLIPPED` warns when they clip too much.
 
+**The headroom is now used, not merely reserved (docs/HEADROOM.md).** The
+display render carries inverted values on `[0, DISPLAY_CEILING]` — where
+`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW` — from the `1 - val` flip
+through the matrix encode and into the tone curve, which compresses the
+extra range back to display white. Flat renders without a tone op keep the
+old `[0, 1]` clip; `_clipped_fractions` on export now counts only
+genuinely out-of-gamut excursions past `DISPLAY_CEILING`, not recoverable
+highlight detail.
+
 ## The analysis cell is pinned to source pixels, not derived from the canvas (`normalize` format_version 4)
 
 **`ANALYSIS_BLOCK_PX = 6`.** `block_median_grid`'s block used to be

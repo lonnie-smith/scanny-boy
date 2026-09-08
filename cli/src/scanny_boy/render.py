@@ -13,8 +13,8 @@ The chain, when a camera colour matrix is present, is:
     decode_normalized -> global CMY -> 1 - val (positive)
     -> ** GAMMA_ADOBE (linear light)
     -> 3x3 matrix (colour only: sensor RGB -> Adobe RGB, §4.3)
-    -> clip to [0, 1]
-    -> ** (1 / GAMMA_ADOBE) (back to display encoding)
+    -> clip linear light to [0, DISPLAY_CEILING ** GAMMA_ADOBE]
+    -> ** (1 / GAMMA_ADOBE) (back to display encoding on [0, DISPLAY_CEILING])
     -> quantize to uint16
     -> tone + colour curve (the negative's `tone` and `color` ops)
     -> dye separation when active
@@ -56,6 +56,15 @@ from scanny_boy.icc_profile import TRC_G_EXPORT
 GAMMA_ADOBE = TRC_G_EXPORT / 65536.0
 
 MAX_CODE = 65535
+
+# The display value the encode's dense-end headroom reaches: normalized
+# -NORMALIZED_HEADROOM_LOW inverts to 1 + NORMALIZED_HEADROOM_LOW. Every
+# stage between the inversion and the tone curve carries values on
+# [0, DISPLAY_CEILING] rather than [0, 1]; the curve is what brings them
+# back (docs/HEADROOM.md §1).
+DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
+
+_LINEAR_CEILING = DISPLAY_CEILING**GAMMA_ADOBE
 
 
 def tone_curve(
@@ -152,7 +161,7 @@ def _resolve_render_params(
 def _flat_positive_lut() -> np.ndarray:
     """uint16 code -> float positive display with no tone or colour ops."""
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
-    return _positive_values(codes).astype(np.float32)
+    return np.clip(_positive_values(codes), 0.0, 1.0).astype(np.float32)
 
 
 def _flat_positive(image: np.ndarray) -> np.ndarray:
@@ -186,6 +195,7 @@ def _linear_lut_from_codes(
     meter: color.Metering,
     *,
     channels: int,
+    allow_headroom: bool = True,
 ) -> np.ndarray:
     """uint16 code -> linear light, shape `(channels, 65536)`."""
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
@@ -196,9 +206,11 @@ def _linear_lut_from_codes(
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
         if apply_color:
-            positive = np.clip(1.0 - (norm + offset), 0.0, 1.0)
+            positive = np.maximum(1.0 - (norm + offset), 0.0)
         else:
-            positive = np.clip(1.0 - norm, 0.0, 1.0)
+            positive = np.maximum(1.0 - norm, 0.0)
+        if not allow_headroom:
+            positive = np.clip(positive, 0.0, 1.0)
         luts[ch] = np.power(positive, GAMMA_ADOBE).astype(np.float32)
     return luts
 
@@ -215,7 +227,9 @@ def _curve_lut_from_display_codes(
         display_codes = np.arange(MAX_CODE + 1, dtype=np.float32) / MAX_CODE
         return np.broadcast_to(display_codes, (channels, MAX_CODE + 1)).copy()
 
-    display_codes = np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE
+    display_codes = (
+        np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * DISPLAY_CEILING
+    )
     apply_color = channels > 1
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
     tone_params = tone_obj if tone_obj is not None else tone.NEUTRAL
@@ -235,7 +249,7 @@ def _positive_values(codes: np.ndarray) -> np.ndarray:
     """Codes -> positive normalized log exposure: `1 - decode_normalized`,
     clipped at 0 — the fill sentinel (above 1.0 decoded) renders black,
     exactly as the stitch-side property (MONOCHROME_PLAN §3.4) expects."""
-    return np.clip(1.0 - normalization.decode_normalized(codes), 0.0, 1.0)
+    return np.maximum(1.0 - normalization.decode_normalized(codes), 0.0)
 
 
 def _clipped_fractions(
@@ -329,16 +343,22 @@ def render_positive_float(
         return np.clip(result, 0.0, 1.0), (0.0, 0.0, 0.0)
 
     linear_luts = _linear_lut_from_codes(
-        tone_obj or tone.NEUTRAL, color_obj, meter, channels=3
+        tone_obj or tone.NEUTRAL,
+        color_obj,
+        meter,
+        channels=3,
+        allow_headroom=tone_obj is not None,
     )
     linear = _gather_channel_lut(image, linear_luts)
     linear = linear @ np.asarray(matrix, dtype=np.float32).T
     preclip = linear
-    linear = np.clip(preclip, 0.0, 1.0)
+    linear_ceiling = _LINEAR_CEILING if tone_obj is not None else 1.0
+    linear = np.clip(preclip, 0.0, linear_ceiling)
     fractions = _clipped_fractions(preclip, linear)
 
     display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
-    j = np.rint(display * MAX_CODE).astype(np.uint16)
+    display_ceiling = DISPLAY_CEILING if tone_obj is not None else 1.0
+    j = np.rint(display / display_ceiling * MAX_CODE).astype(np.uint16)
     curve_luts = _curve_lut_from_display_codes(
         tone_obj, color_obj, meter, channels=3
     )

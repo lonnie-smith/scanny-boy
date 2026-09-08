@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from scanny_boy import normalization, render, tone
+from scanny_boy import color
 from scanny_boy import previews as _previews
 from scanny_boy.normalization import encode_normalized
 
@@ -55,7 +56,11 @@ def test_the_no_matrix_path_is_exact_against_the_tone_curve(tone_params):
     codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
     rendered, fractions = render.render_export(codes, None, tone_params)
 
-    positive = np.clip(1.0 - normalization.decode_normalized(codes.astype(np.float64)), 0.0, 1.0)
+    positive = np.maximum(
+        1.0 - normalization.decode_normalized(codes.astype(np.float64)), 0.0
+    )
+    if tone_params is None:
+        positive = np.clip(positive, 0.0, 1.0)
     expected = np.rint(tone_curve_reference(positive, tone_params) * tone.MAX_CODE)
     assert np.array_equal(rendered, expected.astype(np.uint16))
     assert fractions == (0.0,)
@@ -154,6 +159,49 @@ def test_a_neutral_wedge_survives_the_full_colour_chain_unchanged():
     assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
 
 
+def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
+    """The encode's white point inverts to DISPLAY_CEILING; neutrals must
+    still track (docs/HEADROOM.md §7.0)."""
+    white_code = int(
+        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
+    )
+    wedge = np.full((1, 4, 3), white_code, dtype=np.uint16)
+    rendered, fractions = render.render_export(
+        wedge, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
+    )
+    assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
+    assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
+    assert fractions == (0.0, 0.0, 0.0)
+
+
+def test_the_uint16_gather_round_trips_the_extended_display_domain():
+    """§2.3: rescaling the gather and the curve LUT must stay paired."""
+    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0, "shoulder": 0.3}
+    codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    rendered, _ = render.render_export(
+        np.stack([codes] * 3, axis=-1).reshape(1, -1, 3),
+        _TEST_MATRIX,
+        tone_params,
+    )
+    assert rendered.max() <= tone.MAX_CODE
+    white_code = int(
+        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
+    )
+    assert rendered[0, white_code, 0] > rendered[0, white_code + 1, 0]
+
+
+def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
+    """§2.2: recoverable headroom is no longer reported as clipping."""
+    white_code = int(
+        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
+    )
+    image = np.full((2, 2, 3), white_code, dtype=np.uint16)
+    _, fractions = render.render_export(
+        image, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
+    )
+    assert fractions == (0.0, 0.0, 0.0)
+
+
 # --- the fill, mono, and clip fraction -------------------------------------
 
 
@@ -236,8 +284,6 @@ def test_preview_reference_matches_the_preview_module_s_luts():
 def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     """The shared render: 8-bit preview encode and 16-bit export agree
     when a camera matrix and a colour op are both active."""
-    from scanny_boy import color
-
     matrix = _TEST_MATRIX
     tone_params = {"grade_r": 115.0, "snap_gamma": 0.0}
     color_params = {"wb_cyan": 0.05, "dye_separation": 1.2}
@@ -255,3 +301,27 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     rendered_8 = np.rint(rendered / 257.0).astype(np.uint8)
     difference = np.abs(rendered_8.astype(np.int32) - preview_8.astype(np.int32))
     assert difference.max() <= 1
+
+
+def test_preview_and_export_agree_with_headroom_and_shoulder():
+    """EXPORT_PLAN §4.7 with source codes inside the encode headroom."""
+    matrix = _TEST_MATRIX
+    tone_params = {
+        "grade_r": 115.0,
+        "snap_gamma": 0.0,
+        "shoulder": 0.5,
+        "shoulder_width": 2.5,
+    }
+    white_code = int(
+        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
+    )
+    headroom_codes = np.arange(white_code, dtype=np.uint16)
+    codes = np.stack([headroom_codes] * 3, axis=-1).reshape(1, -1, 3)
+
+    rendered, _ = render.render_export(codes, matrix, tone_params)
+    preview_8 = render.encode_positive_uint8(codes, matrix, tone_params)
+    rendered_8 = np.rint(rendered / 257.0).astype(np.uint8)
+    difference = np.abs(rendered_8.astype(np.int32) - preview_8.astype(np.int32))
+    assert difference.max() <= 1
+    assert rendered_8[0, 0, 0] < 255
+    assert rendered_8[0, 0, 0] != rendered_8[0, -1, 0]
