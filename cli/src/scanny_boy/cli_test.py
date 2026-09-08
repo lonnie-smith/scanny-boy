@@ -933,6 +933,11 @@ def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
         pytest.param(
             ["edit", "flip", "--roll", "/tmp/roll"], id="edit-flip-no-negative"
         ),
+        pytest.param(
+            ["export", "--roll", "/tmp/roll", "--output", "/tmp/out",
+             "--downsample", "12000"],
+            id="export-bad-downsample",
+        ),
     ],
 )
 def test_usage_errors_exit_2_with_a_clean_stdout(argv, capsys):
@@ -3273,3 +3278,100 @@ def test_cast_removal_highlights_warns_without_a_highlight_reference(
     assert events[1]["code"] == "TONE_METERING_UNAVAILABLE"
     params = events[2]["edit"]["params"]
     assert params["cast_removal_highlights"] == pytest.approx(0.5)
+
+
+# --- export --downsample ------------------------------------------------------
+
+
+def test_export_downsample_flows_through_main(capsys, tmp_path):
+    """The app sends `--downsample 6048`; the event stream reports the
+    downsampled dimensions. A 6048 target on a 3x4 source is skipped
+    silently, so the same wiring covers both the applied and the
+    skip-silently branch."""
+    import tifffile
+
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.roll_manifest import append_run
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.zeros((3, 4), dtype=np.uint16))
+    capsys.readouterr()
+
+    output_dir = tmp_path / "export"
+    status = main(
+        [
+            "export",
+            "--roll",
+            str(roll_dir),
+            "--output",
+            str(output_dir),
+            "--downsample",
+            "6048",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    done = next(e for e in events if e["event"] == "export_done")
+    assert done["width"] == 4
+    assert done["height"] == 3
+    assert (output_dir / "_DSC0001.jxl").exists()
+
+
+def test_export_defaults_to_no_downsample(capsys, tmp_path):
+    """The flag is optional: an export without it keeps full resolution —
+    the same event stream the app has always parsed."""
+    import tifffile
+
+    from scanny_boy.roll_manifest import append_run
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.zeros((3, 4), dtype=np.uint16))
+    capsys.readouterr()
+
+    output_dir = tmp_path / "export"
+    status = main(["export", "--roll", str(roll_dir), "--output", str(output_dir)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    done = next(e for e in events if e["event"] == "export_done")
+    assert done["width"] == 4
+    assert done["height"] == 3

@@ -655,6 +655,14 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--roll", required=True, metavar="DIR")
     export.add_argument("--output", required=True, metavar="DIR")
     export.add_argument("--negatives", nargs="+", metavar="ID", default=[])
+    export.add_argument(
+        "--downsample",
+        # `exporter.DOWNSAMPLE_CHOICES` kept literal: the parser build must
+        # not pay for exporter's cv2 import (module-scope lazy-import rule).
+        choices=("none", "6048", "9072"),
+        default="none",
+        help="Reduce the export's long edge to the chosen size (no upscale).",
+    )
 
     return parser
 
@@ -1591,7 +1599,7 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
 
 
 def _run_export_command(args, writer: EventWriter) -> int:
-    from scanny_boy.exporter import ExportFailure, run_export
+    from scanny_boy.exporter import ExportFailure, parse_downsample, run_export
 
     writer.write(Started(command="export"))
     try:
@@ -1599,6 +1607,7 @@ def _run_export_command(args, writer: EventWriter) -> int:
             Path(args.roll),
             Path(args.output),
             args.negatives,
+            downsample=parse_downsample(args.downsample),
             emit=writer.write,
         )
     except ExportFailure as exc:

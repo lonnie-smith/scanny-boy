@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from scanny_boy import normalization, tone
+from scanny_boy import normalization, resample, tone
 from scanny_boy.icc_profile import TRC_G_EXPORT
 
 # One constant, three places (docs/EXPORT_PLAN.md §2.2): the profile's TRC
@@ -161,6 +161,7 @@ def render_export(
     image: np.ndarray,
     matrix: np.ndarray | None,
     tone_params: dict[str, float] | None,
+    long_edge: int | None = None,
 ) -> tuple[np.ndarray, tuple[float, ...]]:
     """Renders one published TIFF's codes to the export's display pixels.
 
@@ -173,14 +174,28 @@ def render_export(
     weighting nobody measured). `tone_params` is the net `tone` op's
     params, or `None`.
 
-    Returns `(rendered, clipped_fractions)`, rendered uint16 of the same
-    shape.
+    `long_edge` is the optional downsample: when set and the image is
+    larger than it, the linear values are Lanczos3-resampled to the
+    target long edge (`resample.target_size`, aspect preserved, never an
+    upscale). The resize sits deliberately between the gamut clip and
+    the display re-encode — it averages *linear light*, not the gamma-
+    encoded codes a resampler handed the finished display pixels would
+    average (resample's module docstring has the full argument). The
+    `clip_fractions` stay the full-resolution gamut clip's measurement;
+    a resize's ringing may kiss [0, 1] again and is clipped back before
+    the re-encode, silently — that is resampling, not gamut mapping, and
+    it does not belong in the provenance's clip record.
+
+    Returns `(rendered, clipped_fractions)`, rendered uint16, downsampled
+    when a resize was applied.
 
     Two paths, and the no-matrix one is a single table (§4.1): with no
     matrix between them the two gamma steps are a mathematical no-op, and
     writing them out only costs precision — so the mono path (and the
     anchor tests) is one precomputed 65536-entry LUT reproducing
-    `tone.build_display_lut` exactly, at 16 bits instead of 8.
+    `tone.build_display_lut` exactly, at 16 bits instead of 8. The LUT
+    stays the full-resolution path even when a `long_edge` was *asked
+    for* but fits (no resize to do): only an actual resize leaves it.
     """
     if image.dtype != np.uint16:
         raise ValueError(
@@ -196,11 +211,31 @@ def render_export(
                 "a mono (single-channel) image takes no colour matrix; "
                 "pass None"
             )
-        lut = np.rint(
-            tone_curve(_positive_values(np.arange(MAX_CODE + 1)), tone_params)
-            * MAX_CODE
-        ).astype(np.uint16)
-        return lut[image], (0.0,)
+        size = (
+            None
+            if image.ndim == 1
+            else resample.target_size(
+                image.shape[0], image.shape[1], long_edge
+            )
+        )
+        if size is None:
+            lut = np.rint(
+                tone_curve(_positive_values(np.arange(MAX_CODE + 1)), tone_params)
+                * MAX_CODE
+            ).astype(np.uint16)
+            return lut[image], (0.0,)
+        # The downsampled mono path walks the chain it collapses: linear
+        # light, the resize, back to display encoding, then the same
+        # tone LUT the fast path ends in.
+        linear = np.power(
+            _positive_values(image), GAMMA_ADOBE, dtype=np.float32
+        )
+        linear = np.clip(
+            resample.resize_lanczos3(linear, size[0], size[1]), 0.0, 1.0
+        )
+        display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
+        j = np.rint(display * MAX_CODE).astype(np.uint16)
+        return _display_codes_lut(tone_params)[j], (0.0,)
 
     if matrix is None:
         raise ValueError(
@@ -230,6 +265,17 @@ def render_export(
     preclip = linear
     linear = np.clip(preclip, 0.0, 1.0)
     fractions = _clipped_fractions(preclip, linear)
+
+    # Stage 2.5 — the optional downsample, in linear light: after the
+    # gamut clip (its fractions are a full-resolution measurement), before
+    # the display re-encode — the one place a resampler averages light
+    # rather than encoded codes. Lanczos3, aspect preserved, never an
+    # upscale (`resample.target_size`).
+    size = resample.target_size(image.shape[0], image.shape[1], long_edge)
+    if size is not None:
+        linear = np.clip(
+            resample.resize_lanczos3(linear, size[0], size[1]), 0.0, 1.0
+        )
 
     # Stage 3 — back to display, tone, quantize, via a second LUT. The
     # quantize-before-LUT is why the colour path is not bit-exact against

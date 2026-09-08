@@ -17,6 +17,16 @@ identity matrix would produce a file that claims Adobe RGB and is not,
 which is precisely the bug the export plan exists to remove (§3.4). A mono
 roll needs no matrix and is never failed for its absence.
 
+An optional downsampling reduces the export to a chosen long edge before
+the encode (`--downsample 6048|9072`). The resize itself lives inside the
+render (`render.render_export`'s `long_edge`), where it belongs: a
+Lanczos3 resample of the *linear-light* values, between the gamut clip
+and the display re-encode — not a resample of the finished gamma-encoded
+pixels, which would darken midtones along high-contrast edges. It never
+upscales: an image already at or below the target is skipped silently,
+and what was actually applied is recorded in the XMP's
+`scannyboy:provenance` like every other thing the render did.
+
 The database's metadata — capture time, camera, lens, city, state,
 caption — is built into the Exif and XMP boxes by `export_metadata` at
 encode time; the XMP also carries the `scannyboy:provenance` record (the
@@ -35,7 +45,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import jxl_writer, render, spots
+from scanny_boy import jxl_writer, render, resample, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -57,6 +67,21 @@ from scanny_boy.roll_manifest import NegativeRecord, RollManifest, load_roll_man
 EmitFn = Any
 
 EXPORT_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy export"
+
+DOWNSAMPLE_CHOICES = ("none", "6048", "9072")
+
+
+def parse_downsample(value: str) -> int | None:
+    """The `--downsample` choice as the long edge it asks for, `None` for
+    `none`. The choices themselves are pinned by `DOWNSAMPLE_CHOICES`."""
+    if value == "none":
+        return None
+    if value not in DOWNSAMPLE_CHOICES:
+        raise ValueError(
+            f"invalid --downsample {value!r}; expected one of "
+            + ", ".join(DOWNSAMPLE_CHOICES)
+        )
+    return int(value)
 
 
 class ExportFailure(Exception):
@@ -93,6 +118,17 @@ def apply_edits(
     return np.rot90(image, k=(-rotation_quarter_turns) % 4)
 
 
+def applied_downsample(
+    image: np.ndarray, long_edge: int | None
+) -> int | None:
+    """The long edge a downsample will actually apply to `image` — the
+    target when the image exceeds it, `None` otherwise (`resample.
+    target_size` is the decision; this is the provenance-facing shape of
+    the same fact, since the render answers it again independently)."""
+    size = resample.target_size(image.shape[0], image.shape[1], long_edge)
+    return None if size is None else long_edge
+
+
 def export_image_description(negative: NegativeRecord) -> str:
     """The export's `ImageDescription`: the short human string. The
     interpretability record — the negative's `normalization` block —
@@ -120,6 +156,7 @@ def provenance_record(
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    applied_downsample: int | None = None,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload (§5.2): what makes an exported
     file interpretable without the database. The published TIFF's
@@ -153,6 +190,11 @@ def provenance_record(
             "tone": None if tone_params is None else dict(tone_params),
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
+            "downsample": (
+                None
+                if applied_downsample is None
+                else {"long_edge": applied_downsample}
+            ),
         },
     }
 
@@ -180,14 +222,17 @@ def run_export(
     output_dir: Path,
     negative_ids: list[str],
     *,
+    downsample: int | None = None,
     emit: EmitFn,
 ) -> ExportOutcome:
     """Exports the roll's negatives (all of them, or the requested ids)
-    as rendered positives in JPEG XL. Raises `ExportFailure` when the
-    roll itself can't be read — including a colour roll predating the
-    `camera_color` block (§3.4, raised once before anything is written);
-    one negative's problem is a warning plus a `failed` entry, and never
-    stops the rest."""
+    as rendered positives in JPEG XL. `downsample` is the long edge to
+    reduce each export to (`None` keeps full resolution; an image already
+    smaller than the target is skipped silently). Raises
+    `ExportFailure` when the roll itself can't be read — including a
+    colour roll predating the `camera_color` block (§3.4, raised once
+    before anything is written); one negative's problem is a warning plus
+    a `failed` entry, and never stops the rest."""
     if not repo.roll_registered(roll_dir):
         raise ExportFailure(
             Code.ROLL_NOT_FOUND,
@@ -250,7 +295,9 @@ def run_export(
 
     for negative in negatives:
         assert isinstance(negative, NegativeRecord)
-        result = _export_negative(roll_dir, output_dir, roll, negative, emit)
+        result = _export_negative(
+            roll_dir, output_dir, roll, negative, downsample, emit
+        )
         if result is None:
             failed.append(negative.negative_id)
         else:
@@ -273,6 +320,7 @@ def _export_negative(
     output_dir: Path,
     roll: RollManifest,
     negative: NegativeRecord,
+    downsample: int | None,
     emit: EmitFn,
 ) -> tuple[str, int, int] | None:
     if negative.output is None or negative.status != "completed":
@@ -313,8 +361,13 @@ def _export_negative(
         # colour one. (When MONOCHROME_PLAN §2's film block lands, the
         # two agree by construction.)
         matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)
+        # The downsample decision is made on the rotated image's shape —
+        # the shape the render receives — but the resize itself happens
+        # inside `render_export`, on the linear values between the gamut
+        # clip and the display re-encode (resample's module docstring).
+        applied = applied_downsample(rotated, downsample)
         rendered, clipped_fractions = render.render_export(
-            rotated, matrix, tone_params
+            rotated, matrix, tone_params, long_edge=downsample
         )
         profile_kind = export_profile_kind(
             1 if rendered.ndim == 2 else rendered.shape[2]
@@ -332,6 +385,7 @@ def _export_negative(
             tone_params,
             clipped_fractions,
             spots_params,
+            applied,
         )
     except jxl_writer.JxlEncoderUnavailable as exc:
         # A packaging failure, not a user error (§1.2): stop the export
@@ -361,6 +415,7 @@ def _write_export(
     tone_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    applied_downsample: int | None = None,
 ) -> None:
     """The single write: rendered pixels, the export ICC profile embedded,
     and the metadata boxes built at encode time. The `.tmp`-and-replace
@@ -378,7 +433,13 @@ def _write_export(
         else None
     )
     provenance = provenance_record(
-        negative, matrix, tone_params, profile_kind, clipped_fractions, spots_params
+        negative,
+        matrix,
+        tone_params,
+        profile_kind,
+        clipped_fractions,
+        spots_params,
+        applied_downsample,
     )
     jxl_writer.write_jxl(
         destination,

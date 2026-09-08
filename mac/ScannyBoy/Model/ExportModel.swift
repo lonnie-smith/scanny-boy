@@ -28,10 +28,25 @@ final class ExportModel {
     }
 
     private let runner: CLIRunner
+    private let defaults: UserDefaults
 
     private(set) var phase: Phase = .idle
     /// Set by the view's folder picker; the export writes into it.
     var outputDirectory: URL?
+    /// The long edge each export is reduced to, or `nil` for no
+    /// downsampling (full resolution). Persisted as the user's last
+    /// choice, the same as the run's input folder and profile picks
+    /// (`ConfigurationModel`).
+    var downsampleLongEdge: Int? {
+        didSet {
+            guard downsampleLongEdge != oldValue else { return }
+            if let downsampleLongEdge {
+                defaults.set(downsampleLongEdge, forKey: Self.downsampleLongEdgeKey)
+            } else {
+                defaults.removeObject(forKey: Self.downsampleLongEdgeKey)
+            }
+        }
+    }
     /// Per `export_done`, in the order the CLI reported them.
     private(set) var exportedNegatives: [ExportedNegative] = []
     private(set) var warnings: [String] = []
@@ -47,8 +62,15 @@ final class ExportModel {
     /// costs nothing and matches the pattern `RunModel` already establishes.
     @ObservationIgnored private var exportGeneration = 0
 
-    init(runner: CLIRunner) {
+    /// The persisted downsampling choice.
+    @ObservationIgnored static let downsampleLongEdgeKey = "exportDownsampleLongEdge"
+
+    init(runner: CLIRunner, defaults: UserDefaults = .standard) {
         self.runner = runner
+        self.defaults = defaults
+        self.downsampleLongEdge = defaults.object(forKey: Self.downsampleLongEdgeKey) == nil
+            ? nil
+            : defaults.integer(forKey: Self.downsampleLongEdgeKey)
     }
 
     // MARK: - Derived state
@@ -96,7 +118,9 @@ final class ExportModel {
         exportGeneration += 1
         let generation = exportGeneration
         exportTask = Task { [weak self, runner] in
-            let session = runner.session(for: .export(roll: roll, output: output))
+            let session = runner.session(
+                for: .export(roll: roll, output: output, downsample: self?.downsampleLongEdge)
+            )
             do {
                 for await outputLine in try await session.start() {
                     self?.apply(outputLine)

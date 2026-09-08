@@ -28,6 +28,25 @@ struct ExportStageView: View {
                 }
             }
 
+            Section("Image Size") {
+                Picker("Downsampling", selection: $export.downsampleLongEdge) {
+                    Text("Full Resolution").tag(Int?.none)
+                    Text("6048 px").tag(Int?.some(6048))
+                    Text("9072 px").tag(Int?.some(9072))
+                }
+                if let longEdge = export.downsampleLongEdge {
+                    Text(
+                        "Each export is reduced to \(longEdge) px on its long edge; smaller files, same edits."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else {
+                    Text("Full resolution is the default; a reduced size exports faster and writes a smaller JPEG XL.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Export") {
                 HStack {
                     Text(

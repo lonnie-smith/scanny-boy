@@ -619,4 +619,40 @@ struct CLICommandTests {
                 ]
         )
     }
+
+    // MARK: - Export downsampling
+
+    @Test("export carries the required flags and omits --downsample by default")
+    func exportRequiredFlags() {
+        let command = CLICommand.export(roll: Self.roll, output: Self.out)
+        #expect(
+            command.arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                ]
+        )
+    }
+
+    @Test("export adds --downsample only when a size is chosen")
+    func exportDownsampleArguments() {
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, downsample: 6048)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--downsample", "6048",
+                ]
+        )
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, downsample: 9072)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--downsample", "9072",
+                ]
+        )
+    }
 }
