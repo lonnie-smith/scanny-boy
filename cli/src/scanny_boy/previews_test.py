@@ -1024,3 +1024,342 @@ def test_preview_cache_is_bounded_by_total_bytes(tmp_path, monkeypatch):
     assert len(previews._DISPLAY_PREVIEW_CACHE) == 1
     (_, kept,) = previews._DISPLAY_PREVIEW_CACHE.popitem()
     assert kept.nbytes == previews._DISPLAY_PREVIEW_CACHE_BYTES
+
+
+# --- the crop op (docs/CROP_PLAN.md) -----------------------------------------
+
+
+def _gradient_tiff(
+    tmp_path: Path, height: int = 200, width: int = 300
+) -> tuple[Path, np.ndarray]:
+    """A smooth coordinate gradient, uint16 RGB — gentle enough that a
+    one-pixel interpolation misalignment reads as a small code delta, and
+    asymmetric enough that a displaced crop is visible in the codes."""
+    rows = np.arange(height, dtype=np.float64)[:, None]
+    cols = np.arange(width, dtype=np.float64)[None, :]
+    values = (cols * 90.0 + rows * 45.0)[..., None]
+    image = np.repeat(values, 3, axis=-1).astype(np.uint16)
+    return _write_published_tiff(tmp_path, image), image
+
+
+def _window_params(
+    window: tuple[int, int, int, int, float], tiff_shape: tuple[int, int]
+) -> dict:
+    """A `crop` op's params for a mapped window, the way `run_edit_crop`
+    stores them."""
+    x, y, w, h, tilt = window
+    return {
+        "canvas": [tiff_shape[1], tiff_shape[0]],
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "tilt_deg": tilt,
+    }
+
+
+@pytest.mark.parametrize("quarter_turns", range(4))
+@pytest.mark.parametrize("flipped", [False, True])
+def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, flipped):
+    """With no tilt, a rect drawn over the transformed display records as a
+    TIFF-space window whose replay reproduces exactly the drawn rect's
+    pixels — the record mapping and the crop step agree with the canonical
+    replay, so the drawn tilt is the only thing that ever interpolates."""
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    tiff_size = (image.shape[0], image.shape[1])
+    rect = (10, 8, 50, 24)
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=0.0,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    _tx, _ty, tw, th, tilt = window
+    assert tilt == 0.0
+    # Odd net turns swap the sides: the TIFF-space window is the drawn
+    # rect mapped back through the rotation.
+    assert (tw, th) == (
+        (rect[3], rect[2]) if quarter_turns % 2 else (rect[2], rect[3])
+    )
+
+    cropped = _display_image(
+        tiff_path,
+        quarter_turns,
+        flipped,
+        0.0,
+        None,
+        _window_params(window, tiff_size),
+    )
+    assert cropped.shape[:2] == (rect[3], rect[2])
+    uncropped = _display_image(tiff_path, quarter_turns, flipped)
+    expected = uncropped[
+        rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]
+    ]
+    np.testing.assert_array_equal(cropped, expected)
+
+
+def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
+    """The crop semantics, end to end: a rect drawn tilted over the current
+    display records as the composed TIFF-space window, and the replayed
+    display equals the drawn rect's content upright — the uncropped
+    display image warped by the drawn tilt about the rect's centre and
+    cropped to the rect. The warp interpolates, so the comparison
+    tolerates the two paths' resampling differences."""
+    import cv2
+
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    tiff_size = (image.shape[0], image.shape[1])
+    rect = (40, 30, 120, 80)
+    tilt = 7.0
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=tilt,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    assert window[2] == rect[2] and window[3] == rect[3]
+    assert abs(window[4] - tilt) < 0.51
+
+    cropped = _display_image(
+        tiff_path, 0, False, 0.0, None, _window_params(window, tiff_size)
+    )
+    assert cropped.shape[:2] == (rect[3], rect[2])
+    uncropped = _display_image(tiff_path, 0, False)
+
+    centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, tilt, 1.0)
+    warped = cv2.warpAffine(
+        uncropped,
+        matrix,
+        (uncropped.shape[1], uncropped.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    expected = warped[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
+    # The two warps run in different spaces (TIFF vs display) about
+    # centres half a pixel apart, so the same content lands within a
+    # couple of pixels; the gradient's 90-codes-per-column slope bounds
+    # the delta.
+    assert np.max(np.abs(cropped.astype(int) - expected.astype(int))) < 600
+
+
+def test_the_crop_composes_with_the_display_transforms(tmp_path):
+    """A crop drawn under net quarter turns and a flip records as one
+    TIFF-space window, and the replayed display equals the drawn rect
+    cropped from the transformed display — the transforms land on the
+    cropped frame wholesale."""
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    tiff_size = (image.shape[0], image.shape[1])
+    quarter_turns, flipped = 1, True
+    rect = (10, 8, 50, 24)
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=0.0,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    cropped = _display_image(
+        tiff_path, quarter_turns, flipped, 0.0, None, _window_params(window, tiff_size)
+    )
+    uncropped = _display_image(tiff_path, quarter_turns, flipped)
+    expected = uncropped[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
+    np.testing.assert_array_equal(cropped, expected)
+
+
+def test_a_recrop_composes_into_one_window(tmp_path):
+    """A second crop drawn over an already-cropped display stores the
+    fully-composed window: recording crop B over crop A's output and
+    replaying must equal mapping B's rect back through A and applying it
+    to the original TIFF. The ops log's net crop is a single window."""
+    import cv2
+
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    tiff_size = (image.shape[0], image.shape[1])
+    first_rect = (20, 15, 180, 120)
+    first_window = previews.display_crop_window_to_tiff(
+        first_rect,
+        tiff_size,
+        tilt_deg=0.0,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    first = _window_params(first_window, tiff_size)
+
+    # The display now shows the first crop; the user draws a tilted rect
+    # over it.
+    second_rect = (30, 25, 100, 60)
+    second_tilt = 5.0
+    second_window = previews.display_crop_window_to_tiff(
+        second_rect,
+        tiff_size,
+        tilt_deg=second_tilt,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=first,
+    )
+    second = _window_params(second_window, tiff_size)
+
+    replayed = _display_image(tiff_path, 0, False, 0.0, None, second)
+    assert replayed.shape[:2] == (second_rect[3], second_rect[2])
+
+    # The expectation: the first crop's display, warped by the drawn tilt
+    # about the drawn rect's centre, sliced at the drawn rect.
+    first_display = _display_image(tiff_path, 0, False, 0.0, None, first)
+    centre = (
+        second_rect[0] + second_rect[2] / 2.0,
+        second_rect[1] + second_rect[3] / 2.0,
+    )
+    matrix = cv2.getRotationMatrix2D(centre, second_tilt, 1.0)
+    warped = cv2.warpAffine(
+        first_display,
+        matrix,
+        (first_display.shape[1], first_display.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    expected = warped[
+        second_rect[1] : second_rect[1] + second_rect[3],
+        second_rect[0] : second_rect[0] + second_rect[2],
+    ]
+    assert np.max(np.abs(replayed.astype(int) - expected.astype(int))) < 600
+
+
+def test_apply_crop_ignores_a_stale_crop(tmp_path):
+    """A crop recorded against a canvas a re-stitch has replaced applies as
+    nothing — the same canvas rule the spots op has, degrading to the full
+    frame rather than describing pixels the display no longer shows."""
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    stale = {
+        "canvas": [999, 888],
+        "x": 10,
+        "y": 20,
+        "w": 100,
+        "h": 60,
+        "tilt_deg": 0.0,
+    }
+    assert not previews.crop_is_live(stale, image.shape[:2])
+    np.testing.assert_array_equal(
+        previews.apply_crop(image, stale), image
+    )
+    np.testing.assert_array_equal(
+        _display_image(tiff_path, 0, False, 0.0, None, stale),
+        _display_image(tiff_path, 0, False),
+    )
+
+
+def test_display_shape_and_crop_report_follow_the_crop_window():
+    from scanny_boy import previews
+
+    tiff_size = (200, 300)  # (height, width)
+    crop = {"canvas": [300, 200], "x": 10, "y": 20, "w": 100, "h": 60, "tilt_deg": 3.0}
+    assert previews.display_shape(
+        tiff_size, quarter_turns=0, crop_params=crop
+    ) == (60, 100)
+    # Odd net turns swap the cropped display's dimensions.
+    assert previews.display_shape(
+        tiff_size, quarter_turns=1, crop_params=crop
+    ) == (100, 60)
+    assert previews.crop_report(
+        crop, tiff_size, quarter_turns=1
+    ) == {
+        "width": 60,
+        "height": 100,
+        "tilt_deg": 3.0,
+        "preset": None,
+    }
+    assert (
+        previews.crop_report(None, tiff_size, quarter_turns=0) is None
+    )
+
+
+def test_render_region_works_in_cropped_display_space(tmp_path):
+    """With a live crop, `render_region`'s coordinates are the cropped
+    display's — the same space `roll info`'s crop report names — and the
+    exact path (full decode, transform replayed, rect sliced) returns the
+    same pixels the cropped preview shows."""
+    import cv2
+
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image, render_region
+
+    tiff_path, image = _gradient_tiff(tmp_path)
+    tiff_size = (image.shape[0], image.shape[1])
+    window = previews.display_crop_window_to_tiff(
+        (40, 30, 120, 80),
+        tiff_size,
+        tilt_deg=0.0,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    crop = _window_params(window, tiff_size)
+    destination = tmp_path / "region.png"
+    rect = render_region(
+        tiff_path,
+        20,
+        10,
+        50,
+        30,
+        destination=destination,
+        crop_params=crop,
+    )
+    assert rect == (20, 10, 50, 30)
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    display = _display_image(tiff_path, 0, False, 0.0, None, crop)
+    expected = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[display[10:40, 20:70]],
+        cv2.COLOR_RGB2BGR,
+    )
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_tiff_rect_to_display_folds_the_crop_in():
+    """The spot-marker mapping lands in cropped display coordinates: with
+    an axis-aligned crop the mapping is the translation by the window's
+    origin."""
+    from scanny_boy import previews
+
+    tiff_size = (200, 300)
+    crop = {"canvas": [300, 200], "x": 40, "y": 30, "w": 120, "h": 80, "tilt_deg": 0.0}
+    rect = previews.tiff_rect_to_display(
+        (50, 40, 20, 10),
+        tiff_size,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=crop,
+    )
+    assert rect == (10, 10, 20, 10)

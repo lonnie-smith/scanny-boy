@@ -205,6 +205,7 @@ def _state(
     tone: dict | None = None,
     color: dict | None = None,
     spots: dict | None = None,
+    crop: dict | None = None,
 ) -> repo.EditState:
     return repo.EditState(
         quarter_turns=quarter_turns,
@@ -213,6 +214,7 @@ def _state(
         tone=tone,
         color=color,
         spots=spots,
+        crop=crop,
     )
 
 
@@ -274,6 +276,76 @@ def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": True})
 
     assert repo.net_edit_state(roll_dir, negative) == _state()
+
+
+# --- the crop op (docs/CROP_PLAN.md) -----------------------------------------
+
+
+def _crop_params(**overrides) -> dict:
+    params = {
+        "canvas": [300, 200],
+        "x": 10,
+        "y": 20,
+        "w": 100,
+        "h": 60,
+        "tilt_deg": 3.5,
+        "preset": "35mm",
+    }
+    params.update(overrides)
+    return params
+
+
+def test_net_edit_state_tracks_the_latest_crop(roll_dir):
+    """The crop is a state: the latest op wins, and `--reset` (an op whose
+    params are just `{"reset": true}`) clears it."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+    append = repo.append_edit
+    negative = "rid-1-negative-01"
+
+    append(roll_dir, negative, repo.CROP_OP, _crop_params())
+    state = repo.net_edit_state(roll_dir, negative)
+    assert state == _state(crop=_crop_params())
+    append(roll_dir, negative, repo.CROP_OP, _crop_params(x=30, tilt_deg=-2.0))
+    assert repo.net_edit_state(roll_dir, negative).crop == _crop_params(
+        x=30, tilt_deg=-2.0
+    )
+    append(roll_dir, negative, repo.CROP_OP, {"reset": True})
+    assert repo.net_edit_state(roll_dir, negative) == _state()
+
+
+def test_net_edit_state_ignores_a_malformed_crop(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    append = repo.append_edit
+    negative = "rid-1-negative-01"
+
+    append(roll_dir, negative, repo.CROP_OP, {})
+    append(roll_dir, negative, repo.CROP_OP, {"x": "left"})
+    append(roll_dir, negative, repo.CROP_OP, _crop_params(tilt_deg=99.0))
+    append(roll_dir, negative, repo.CROP_OP, _crop_params(w=3))
+    append(roll_dir, negative, repo.CROP_OP, "west")
+
+    assert repo.net_edit_state(roll_dir, negative) == _state()
+
+
+def test_validated_crop_params_rejects_out_of_range_and_malformed():
+    # A reset op's extra keys are ignored, not an error.
+    assert repo.validated_crop_params({"reset": True, "x": 1}) == {"reset": True}
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(canvas=[300]))
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(canvas=[300.5, 200]))
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(w=-4))
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(tilt_deg=46.0))
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(w=8, h=60))
+    with pytest.raises(ValueError):
+        repo.validated_crop_params(_crop_params(preset=42))
+    assert repo.validated_crop_params({"reset": True}) == {"reset": True}
+    no_preset = _crop_params()
+    del no_preset["preset"]
+    assert repo.validated_crop_params(no_preset) == no_preset
 
 
 def _tone_params(

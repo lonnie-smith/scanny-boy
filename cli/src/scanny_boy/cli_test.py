@@ -3281,6 +3281,104 @@ def test_cast_removal_highlights_warns_without_a_highlight_reference(
     params = events[2]["edit"]["params"]
     assert params["cast_removal_highlights"] == pytest.approx(0.5)
 
+def test_edit_crop_records_the_window_and_roll_info_reports_it(
+    work_dir, capsys, tmp_path
+):
+    """`edit crop` records the tilted window, emits `edit_recorded` with
+    the net crop report, and `roll info` carries the same report; `--reset`
+    clears it."""
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    tiff_w, tiff_h = negative.output["width"], negative.output["height"]
+    rect_w, rect_h = min(120, tiff_w // 2), min(80, tiff_h // 2)
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "crop",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", "10", "--y", "10",
+            "--width", str(rect_w), "--height", str(rect_h),
+            "--tilt", "2.5",
+            "--preset", "35mm",
+        ]
+    )
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    assert events[0]["command"] == "edit crop"
+    assert events[1]["edit"]["op"] == "crop"
+    assert events[1]["crop"]["width"] == rect_w
+    assert events[1]["crop"]["height"] == rect_h
+    assert abs(events[1]["crop"]["tilt_deg"] - 2.5) < 0.51
+    assert events[1]["crop"]["preset"] == "35mm"
+    assert Path(events[1]["preview_path"]).exists()
+    recorded_crop = events[1]["crop"]
+
+    capsys.readouterr()
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+    assert status == 0
+    events, _ = _stdout_events(capsys)
+    reported = events[1]["manifest"]["negatives"][0]["crop"]
+    assert reported == {
+        "width": rect_w,
+        "height": rect_h,
+        "tilt_deg": recorded_crop["tilt_deg"],
+        "preset": "35mm",
+    }
+
+    capsys.readouterr()
+    status = main(
+        [
+            "edit", "crop",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--reset",
+        ]
+    )
+    assert status == 0
+    events, _ = _stdout_events(capsys)
+    assert events[1]["crop"] is None
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _ = _stdout_events(capsys)
+    assert events[1]["manifest"]["negatives"][0]["crop"] is None
+    assert err == ""
+
+
+def test_edit_crop_rejects_an_out_of_bounds_rect(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    tiff_w = negative.output["width"]
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit", "crop",
+            "--roll", str(roll_dir),
+            "--negative", negative.negative_id,
+            "--x", str(tiff_w - 8), "--y", "10",
+            "--width", "60", "--height", "60",
+        ]
+    )
+
+    assert status == 1
+    events, err = _stdout_events(capsys)
+    assert events[1]["event"] == "error"
+    assert events[1]["code"] == "INVALID_EDIT"
+    assert events[-1]["status"] == "failed"
+    assert err == ""
+
 
 # --- export --downsample ------------------------------------------------------
 

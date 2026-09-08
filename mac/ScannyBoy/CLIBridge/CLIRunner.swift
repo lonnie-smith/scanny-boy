@@ -440,6 +440,45 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy edit crop --roll DIR --negative ID (--x PX --y PX --width PX --height PX [--tilt DEG] [--preset NAME] | --reset)`
+    ///
+    /// Protocol version 19 (docs/CROP_PLAN.md): records one negative's
+    /// tilted crop window — the rect in display space (the image as it
+    /// currently renders, live crop included), the tilt counter-clockwise
+    /// as displayed — as a state op in the library database, and
+    /// regenerates the CLI-rendered preview with the window folded in. The
+    /// published TIFF is never touched; the export bakes the window in.
+    /// The `preset` is a label only — the ratio constraint lives in the
+    /// app's overlay.
+    public static func editCrop(
+        roll: URL,
+        negative: String,
+        rect: CGRect?,
+        tiltDegrees: Double = 0,
+        preset: String? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "crop",
+            "--roll", roll.path,
+            "--negative", negative,
+        ]
+        if let rect {
+            arguments.append(contentsOf: [
+                "--x", String(Int(rect.minX)),
+                "--y", String(Int(rect.minY)),
+                "--width", String(Int(rect.width)),
+                "--height", String(Int(rect.height)),
+            ])
+            arguments.append(contentsOf: ["--tilt", String(tiltDegrees)])
+            if let preset {
+                arguments.append(contentsOf: ["--preset", preset])
+            }
+        } else {
+            arguments.append("--reset")
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`
     ///
     /// Protocol version 9's 1:1 region rendering, extended by protocol

@@ -129,7 +129,16 @@ from typing import IO, Any, ClassVar
 # than half the analysis region — the frame is unusual, and the user should
 # look at it). Both ride the warning event channel; severity is recorded in
 # CONTRACT.md's code table.
-PROTOCOL_VERSION = 18
+#
+# Protocol 19 (docs/CROP_PLAN.md) adds the `crop` op: the new `edit crop`
+# subcommand records a tilted crop window per negative — a state op in the
+# same family as `tone`/`color`/`spots`, stored in published-TIFF pixels
+# with the tilt the window carries as displayed. The `edit_recorded`
+# confirmation gains a `crop` field (a display-space report: dimensions,
+# tilt, preset label; None for no live crop) carried by every edit
+# confirmation, and `roll info`'s per-negative block gains the same `crop`
+# field. No new codes.
+PROTOCOL_VERSION = 19
 
 
 class EventType(enum.StrEnum):
@@ -572,8 +581,11 @@ class EditRecorded(Event):
     appended, the negative's net transform after it (quarter turns plus the
     horizontal-mirror flag plus the net fine angle — a flip and a rotation
     do not commute, so one number cannot carry them), and the regenerated
-    preview the app should now display. No pixel data of the published TIFF
-    changes."""
+    preview the app should now display. `crop` is the net crop state as a
+    full report — display-space dimensions plus the stored tilt and preset
+    label, or None — carried by *every* edit confirmation so the app can
+    overwrite without caring which op was recorded. No pixel data of the
+    published TIFF changes."""
 
     event_type: ClassVar[EventType] = EventType.EDIT_RECORDED
 
@@ -583,6 +595,7 @@ class EditRecorded(Event):
     flipped_horizontally: bool
     preview_path: str | None
     fine_rotation_deg: float = 0.0
+    crop: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

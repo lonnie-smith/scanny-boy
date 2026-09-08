@@ -811,6 +811,144 @@ def test_the_provenance_record_is_null_without_a_live_repair(stitched_roll, tmp_
     assert record["rendered"]["spots"] is None
 
 
+# --- the crop op reaches the export (docs/CROP_PLAN.md) ----------------------
+
+
+@pytest.fixture()
+def croppable_export_roll(tmp_path: Path) -> Path:
+    """One completed mono negative with a 40x64 published TIFF — big
+    enough for a crop above the 16px floor."""
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.manifest import SourceRecord
+    from scanny_boy.roll_manifest import append_run, merge_sources
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    merge_sources(
+        manifest,
+        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        "stitch-run",
+    )
+    manifest.negatives.append(
+        _negative(
+            negative_id=_NEGATIVE_ID,
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 64,
+                "height": 40,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    image = (np.arange(40 * 64, dtype=np.uint16).reshape(40, 64) * 700) % 60000
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", image)
+    return roll_dir
+
+
+def test_apply_edits_applies_the_crop_window():
+    """The crop is the replay's first geometric step — the exported frame
+    is the crop window's content, its dimensions the window's."""
+    from scanny_boy.previews import apply_crop
+
+    crop = {
+        "canvas": [_ORIGINAL.shape[1], _ORIGINAL.shape[0]],
+        "x": 1,
+        "y": 0,
+        "w": _ORIGINAL.shape[1] - 1,
+        "h": _ORIGINAL.shape[0],
+        "tilt_deg": 0.0,
+    }
+    np.testing.assert_array_equal(
+        apply_edits(_ORIGINAL, 0, False, 0.0, crop), apply_crop(_ORIGINAL, crop)
+    )
+
+
+def test_the_export_bakes_the_crop_and_leaves_the_tiff_alone(
+    croppable_export_roll, tmp_path
+):
+    """The exported JXL holds only the crop window's pixels; the published
+    TIFF beside it stays byte-identical."""
+    from scanny_boy.library import repo
+    from scanny_boy.previews import apply_crop
+    from scanny_boy.render import render_export
+
+    crop = {
+        "canvas": [64, 40],
+        "x": 8,
+        "y": 6,
+        "w": 32,
+        "h": 20,
+        "tilt_deg": 0.0,
+    }
+    repo.append_edit(croppable_export_roll, _NEGATIVE_ID, repo.CROP_OP, crop)
+
+    tiff_path = croppable_export_roll / "_DSC0001.tif"
+    tiff_before = tiff_path.read_bytes()
+    image = tifffile.imread(tiff_path)
+
+    destination = _export(croppable_export_roll, tmp_path)
+    assert tiff_path.read_bytes() == tiff_before
+    rendered = _decode(destination)
+    assert rendered.shape == (20, 32)
+    expected, _ = render_export(apply_crop(image, crop), None, None)
+    np.testing.assert_array_equal(rendered, expected)
+
+
+def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path):
+    """The XMP's `rendered.crop` names the window the exported frame was
+    taken from — the published TIFF beside the export still holds the full
+    frame, and the record says which part of it this file is."""
+    from scanny_boy.exporter import provenance_record
+    from scanny_boy.library import repo
+
+    roll_dir = croppable_export_roll
+    crop = {
+        "canvas": [64, 40],
+        "x": 8,
+        "y": 6,
+        "w": 32,
+        "h": 20,
+        "tilt_deg": 2.5,
+        "preset": "645",
+    }
+    repo.append_edit(roll_dir, _NEGATIVE_ID, repo.CROP_OP, crop)
+
+    _export(roll_dir, tmp_path)
+    record = provenance_record(
+        load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
+        None,
+        None,
+        None,
+        ProfileKind.EXPORT_GREY,
+        (0.0,),
+        None,
+        crop,
+    )
+    assert record["rendered"]["crop"] == {
+        "x": 8,
+        "y": 6,
+        "width": 32,
+        "height": 20,
+        "tilt_deg": 2.5,
+        "preset": "645",
+    }
+    assert provenance_record(
+        load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
+        None,
+        None,
+        None,
+        ProfileKind.EXPORT_GREY,
+        (0.0,),
+        None,
+        None,
+    )["rendered"]["crop"] is None
+
+
 # --- downsampling ------------------------------------------------------------
 
 

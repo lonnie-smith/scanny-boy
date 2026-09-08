@@ -250,7 +250,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 18
+      "const": 19
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -378,6 +378,7 @@
               "edit rotate",
               "edit flip",
               "edit delete",
+              "edit crop",
               "edit tone",
               "edit color",
               "edit render-region",
@@ -483,7 +484,7 @@
     {
       "if": { "properties": { "event": { "const": "edit_recorded" } } },
       "then": {
-        "required": ["negative_id", "edit", "rotation_quarter_turns", "flipped_horizontally", "preview_path"],
+        "required": ["negative_id", "edit", "rotation_quarter_turns", "flipped_horizontally", "fine_rotation_deg", "crop", "preview_path"],
         "properties": {
           "negative_id": { "type": "string" },
           "edit": {
@@ -501,6 +502,16 @@
           "rotation_quarter_turns": { "type": "integer", "minimum": 0, "maximum": 3 },
           "flipped_horizontally": { "type": "boolean" },
           "fine_rotation_deg": { "type": "number" },
+          "crop": {
+            "type": ["object", "null"],
+            "required": ["width", "height", "tilt_deg"],
+            "properties": {
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 },
+              "tilt_deg": { "type": "number" },
+              "preset": { "type": ["string", "null"] }
+            }
+          },
           "preview_path": { "type": ["string", "null"] }
         }
       }

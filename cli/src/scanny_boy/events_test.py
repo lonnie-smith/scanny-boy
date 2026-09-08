@@ -236,7 +236,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_eighteen():
+def test_protocol_version_is_nineteen():
     """Protocol 10→11: monochrome film support, extended preview tone
     adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
     toggle (`--mode` on `edit render-region`, `edit render-preview` with
@@ -258,8 +258,11 @@ def test_protocol_version_is_eighteen():
     film-extent pass (docs/BLACK_POINT_REFINEMENT.md): the per-negative
     `film_extent` normalization block and the
     `NORMALIZE_FILM_EXTENT_WITHHELD` / `NORMALIZE_FILM_EXTENT_EXCESSIVE`
-    codes, both riding the warning event channel."""
-    assert PROTOCOL_VERSION == 18
+    codes, both riding the warning event channel. Protocol 18→19
+    (docs/CROP_PLAN.md) adds the `crop` op: the `edit crop` subcommand,
+    the `crop` field on every `edit_recorded` (a display-space report, or
+    null), and the same field on `roll info`'s per-negative block."""
+    assert PROTOCOL_VERSION == 19
 
 
 def test_new_event_kinds_round_trip():

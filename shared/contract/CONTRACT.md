@@ -9,6 +9,23 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 19 keeps every event's shape and adds **the `crop` op**
+(docs/CROP_PLAN.md): a new `edit crop` subcommand records a tilted crop
+window per negative — a state op in the same family as `tone`/`color`/
+`spots`, stored in published-TIFF pixels with `{"canvas", "x", "y", "w",
+"h", "tilt_deg", "preset"}` params (`tilt_deg` counter-clockwise as
+displayed, ±45 at the widest; the app's slider is ±10; `--reset` clears).
+The op is nondestructive exactly like every other edit: the published TIFF
+is never touched, previews fold the window in (the replay applies it right
+after the spot repair, before the mirror and rotations), and the export
+bakes it — the exported JXL contains only the window's pixels, and its
+XMP provenance records the window. `edit_recorded` gains a `crop` field on
+*every* edit confirmation — a display-space report
+(`{width, height, tilt_deg, preset}` for a live crop, `null` otherwise) —
+and `roll info`'s per-negative block gains the same field. A crop recorded
+against a canvas a re-stitch has replaced degrades to `null` everywhere,
+the spots-canvas rule. No new codes.
+
 Protocol version 18 keeps every event's shape and adds **the resident
 helper** (docs/OPTIMIZATION.md §2): a new `serve` command that reads
 newline-delimited JSON *requests* on stdin — one object per line,
@@ -605,7 +622,10 @@ negative carrying
 0–3), `flipped_horizontally` (whether the ops log's net transform includes a
 horizontal mirror), `fine_rotation_deg` (the ops log's net clockwise fine
 rotation in degrees, from the auto-seeded `rotate_fine` op below composed
-with any user ops), and `preview_path`. It fails with `INVALID_EDIT` for an
+with any user ops), `crop` (the net crop as a display-space report —
+`{width, height, tilt_deg, preset}` — or `null`; carried by every
+`edit_recorded`, protocol 19), and `preview_path`. It fails with
+`INVALID_EDIT` for an
 unknown direction, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative — the whole
 selection is validated before any op is appended, so a batch either records
@@ -648,6 +668,30 @@ rotation do not commute, so consumers replay the log into a
 `(rotation_quarter_turns, flipped_horizontally, fine_rotation_deg)` triple.
 It fails with the
 same codes as `edit rotate`.
+
+`edit crop` records a tilted crop window for exactly one negative —
+`--x/--y/--width/--height` name the rect in display space (the image as it
+currently renders, live crop included), `--tilt` is the window's
+counter-clockwise tilt as displayed (−45…45, default 0), and `--preset` is
+an optional label for the ratio preset the app constrained the rect with;
+`--reset` clears the crop. The op is a state, not a transform — the latest
+`crop` op wins — and it stores the **fully-composed** window in
+published-TIFF pixels: the drawn rect is mapped backwards through the net
+state (`previews.display_crop_window_to_tiff`), so a re-crop over an
+already-cropped preview composes into one window. The published TIFF is
+never touched (the preview folds the window in; the export bakes it, and
+the exported file holds only the window's pixels); each preview is
+regenerated with the window applied first in the replay, before the mirror
+and rotations. `edit_recorded` is emitted for the negative with the net
+`crop` report. It fails with `INVALID_EDIT` for a rect smaller than
+16×16, one that does not fit the display image, or a tilt beyond ±45, and
+with the same roll/negative codes as `edit rotate`. `roll info` reports
+the net crop per negative as `crop` (`{width, height, tilt_deg, preset}`,
+null when none) — `width`/`height` are the cropped display image's
+dimensions, the coordinate space `edit render-region` then works in, and
+a crop whose canvas no longer matches the published TIFF (a re-stitch)
+reports as `null`. While a live crop exists, spot sets report no markers
+(the repair itself is replayed before the crop and still applies).
 
 `edit tone` records a preview tone adjustment for one or more negatives: an
 ISO-R paper grade (`--grade`, 50–180, or `--auto-grade` to solve from the
@@ -889,7 +933,7 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
 | `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
-| `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, and `preview_path`. |
+| `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` or `null`), and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
 | `preview_rendered` | A negative's whole display image was rendered by `edit render-preview` in the requested display mode, downscaled like the cached preview. Carries `negative_id`, `path`, `width`, and `height`. Carries no `run_id`. |

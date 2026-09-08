@@ -45,7 +45,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import color, jxl_writer, render, resample, spots
+from scanny_boy import color, jxl_writer, previews, render, resample, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -102,6 +102,7 @@ def apply_edits(
     rotation_quarter_turns: int,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
+    crop_params: dict | None = None,
 ) -> np.ndarray:
     """The single place an op log meets pixels: pure, ordered, and the same
     replay the preview generator performs at thumbnail scale. The canonical
@@ -110,7 +111,14 @@ def apply_edits(
     the rotation keeps the canvas dimensions and fills what it uncovers
     with the stitching fill sentinel), then rotates. Quarter turns count
     clockwise, the fine angle counts clockwise too; np.rot90 turns
-    counter-clockwise, so negate."""
+    counter-clockwise, so negate. The `crop` op's window sits before all
+    of it — its coordinates are published-TIFF pixels like the spots op's
+    (`previews.apply_crop`: warp about the rect's centre by the stored
+    tilt, then slice the rect) — so everything the crop uncovers from the
+    log's later transforms lands on the cropped frame wholesale, and the
+    exported file's dimensions are the cropped display's.
+    """
+    image = previews.apply_crop(image, crop_params)
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
@@ -157,6 +165,7 @@ def provenance_record(
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload (§5.2): what makes an exported
@@ -165,7 +174,10 @@ def provenance_record(
     carries — plus a `rendered` sibling recording what the export actually
     did to make the display pixels. The `spots` entry records the repair:
     "some pixels here are interpolated" is exactly the kind of thing the
-    XMP exists to say (SPOTTING_PLAN §6)."""
+    XMP exists to say (SPOTTING_PLAN §6). The `crop` entry records the
+    window the exported frame was taken from — the published TIFF beside
+    the export still holds the full frame, and the record says which part
+    of it this file is."""
     repaired = None
     if spots_params is not None and spots_params.get("repair"):
         repaired = {
@@ -174,6 +186,16 @@ def provenance_record(
             "repaired": sum(
                 1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
             ),
+        }
+    cropped = None
+    if crop_params is not None:
+        cropped = {
+            "x": crop_params.get("x"),
+            "y": crop_params.get("y"),
+            "width": crop_params.get("w"),
+            "height": crop_params.get("h"),
+            "tilt_deg": crop_params.get("tilt_deg"),
+            "preset": crop_params.get("preset"),
         }
     return {
         "kind": "scanny-boy export",
@@ -192,6 +214,7 @@ def provenance_record(
             "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
+            "crop": cropped,
             "downsample": (
                 None
                 if applied_downsample is None
@@ -356,10 +379,21 @@ def _export_negative(
             state.spots,
         )
         meter = color.read_metering(negative.normalization)
-        # The spot repair applies before any geometry: the op's coordinates
-        # are TIFF space (SPOTTING_PLAN §3.3).
+        # The crop and spot repair apply before any other geometry: both
+        # ops' coordinates are TIFF space (SPOTTING_PLAN §3.3). A stale
+        # crop — a re-stitch changed the canvas — applies as nothing, the
+        # same degrade `apply_crop` performs for the previews.
+        crop_params = (
+            state.crop
+            if previews.crop_is_live(
+                state.crop, (image.shape[0], image.shape[1])
+            )
+            else None
+        )
         image = spots.apply_repair(image, spots_params)
-        rotated = apply_edits(image, quarter_turns, flipped, fine_angle)
+        rotated = apply_edits(
+            image, quarter_turns, flipped, fine_angle, crop_params
+        )
         # §4.5: the matrix follows the channel count — `None` for a mono
         # roll's 2-D published TIFF, the recorded camera matrix for a
         # colour one. (When MONOCHROME_PLAN §2's film block lands, the
@@ -390,6 +424,7 @@ def _export_negative(
             color_params,
             clipped_fractions,
             spots_params,
+            crop_params,
             applied,
         )
     except jxl_writer.JxlEncoderUnavailable as exc:
@@ -421,6 +456,7 @@ def _write_export(
     color_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> None:
     """The single write: rendered pixels, the export ICC profile embedded,
@@ -446,6 +482,7 @@ def _write_export(
         profile_kind,
         clipped_fractions,
         spots_params,
+        crop_params,
         applied_downsample,
     )
     jxl_writer.write_jxl(

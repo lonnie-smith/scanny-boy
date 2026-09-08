@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":18,"event":"negative_deleted",\
+                {"protocol_version":19,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -198,10 +198,63 @@ struct CLIEventTests {
         #expect(event.runID == nil)
     }
 
+    // MARK: - edit_recorded (protocol 19's net crop report)
+
+    @Test("edit_recorded decodes the net crop report")
+    func editRecordedCropDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop",\
+                "params":{"x":10},"created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":0,"flipped_horizontally":false,\
+                "fine_rotation_deg":0.0,\
+                "crop":{"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm"},\
+                "preview_path":"/tmp/preview.png"}
+                """)
+        )
+        #expect(event.kind == .editRecorded)
+        #expect(event.negativeID == "n1")
+        let crop = try #require(event.crop.flatMap { $0 })
+        #expect(crop.width == 50)
+        #expect(crop.height == 24)
+        #expect(crop.tiltDegrees == 2.5)
+        #expect(crop.preset == "35mm")
+    }
+
+    @Test("edit_recorded with a null crop reports no live crop")
+    func editRecordedNullCropDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop",\
+                "params":{"reset":true},"created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":0,"flipped_horizontally":false,\
+                "crop":null,"preview_path":null}
+                """)
+        )
+        #expect(event.crop != nil, "the field is present; its report is the null")
+        #expect(event.crop.flatMap { $0 } == nil)
+    }
+
+    @Test("edit_recorded without a crop field leaves the state untouched")
+    func editRecordedAbsentCropDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"rotate",\
+                "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":1,"flipped_horizontally":false,\
+                "preview_path":null}
+                """)
+        )
+        #expect(event.crop == nil, "absent means 'no report', not 'no crop'")
+    }
+
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":18,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":19,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -423,7 +476,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":18,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":19,"command":"probe"}"#)
         }
     }
 

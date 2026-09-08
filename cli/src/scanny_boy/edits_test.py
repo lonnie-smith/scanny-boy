@@ -16,6 +16,7 @@ from scanny_boy import previews, spots
 from scanny_boy.edits import (
     EditFailure,
     run_edit_color,
+    run_edit_crop,
     run_edit_delete,
     run_edit_flip,
     run_edit_render_region,
@@ -1158,3 +1159,250 @@ def test_unstitched_negative_fails_for_all_three_spot_commands(tmp_path):
         with pytest.raises(EditFailure) as excinfo:
             runner(roll_dir, "nope", emit=lambda e: None, **kwargs)
         assert excinfo.value.code is Code.NEGATIVE_NOT_FOUND
+
+
+# --- `edit crop` (docs/CROP_PLAN.md) -----------------------------------------
+
+
+def _crop_gradient(roll_dir: Path, name: str = "_DSC0001.tif") -> None:
+    """Writes the fixture negative's published TIFF: a 90x60 coordinate
+    gradient, big enough to crop."""
+    rows = np.arange(60, dtype=np.uint16)[:, None] * 300
+    cols = np.arange(90, dtype=np.uint16)[None, :] * 150
+    tifffile.imwrite(roll_dir / name, rows + cols)
+
+
+@pytest.fixture()
+def croppable_roll(tmp_path: Path) -> Path:
+    """One completed negative whose published TIFF (90x60) has room for a
+    crop above the 16px floor."""
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.manifest import SourceRecord
+    from scanny_boy.roll_manifest import append_run, merge_sources
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    merge_sources(
+        manifest,
+        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        "stitch-run",
+    )
+    manifest.negatives.append(
+        _negative(
+            negative_id=_NEGATIVE_ID,
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 90,
+                "height": 60,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    _crop_gradient(roll_dir)
+    return roll_dir
+
+
+def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
+    import cv2
+
+    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT, _display_image
+
+    events: list = []
+    tiff_before = (croppable_roll / "_DSC0001.tif").read_bytes()
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        tilt_deg=0.0,
+        preset="35mm",
+        emit=events.append,
+    )
+
+    # The published TIFF is untouched — the crop is metadata until export.
+    assert (croppable_roll / "_DSC0001.tif").read_bytes() == tiff_before
+    assert fields["edit"]["op"] == repo.CROP_OP
+    assert fields["crop"] == {
+        "width": 50,
+        "height": 24,
+        "tilt_deg": 0.0,
+        "preset": "35mm",
+    }
+    assert fields["preview_path"]
+
+    # The preview now shows the cropped frame: the crop step applied first
+    # in the replay, the display LUT on top.
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    display = _display_image(
+        croppable_roll / "_DSC0001.tif",
+        state.quarter_turns,
+        state.flipped,
+        state.fine_angle_deg,
+        state.spots,
+        state.crop,
+    )
+    stored = cv2.imread(str(fields["preview_path"]), cv2.IMREAD_UNCHANGED)
+    expected = cv2.cvtColor(
+        NORMALIZED_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR
+    )
+    np.testing.assert_array_equal(stored, expected)
+
+
+def test_crop_records_the_tilt_in_tiff_space(croppable_roll):
+    """A drawn tilt lands in the stored window's `tilt_deg`, and the
+    composed window's rect sits where the drawn rect's centre mapped."""
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        tilt_deg=5.0,
+        emit=lambda event: None,
+    )
+
+    assert abs(fields["crop"]["tilt_deg"] - 5.0) < 0.51
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert state.crop["w"] == 50
+    assert state.crop["h"] == 24
+    assert 0 <= state.crop["x"] and state.crop["x"] + 50 <= 90
+    assert 0 <= state.crop["y"] and state.crop["y"] + 24 <= 60
+
+
+def test_crop_reset_clears_the_state(croppable_roll):
+    run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        emit=lambda event: None,
+    )
+    events: list = []
+
+    fields = run_edit_crop(
+        croppable_roll, _NEGATIVE_ID, reset=True, emit=events.append
+    )
+
+    assert fields["crop"] is None
+    assert repo.net_edit_state(croppable_roll, _NEGATIVE_ID).crop is None
+    manifest = load_roll_manifest(croppable_roll)
+    negative = manifest.negative(_NEGATIVE_ID)
+    # The preview regenerated back to the full frame.
+    import cv2
+
+    stored = cv2.imread(str(negative.preview_path), cv2.IMREAD_UNCHANGED)
+    assert stored.shape[:2] == (60, 90)
+
+
+def test_a_recrop_composes_over_the_live_crop(croppable_roll):
+    """The second crop is drawn over the first crop's display, and the ops
+    log still reduces to one fully-composed window: the final display's
+    dimensions are the second rect's."""
+    run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(5, 5, 80, 50),
+        emit=lambda event: None,
+    )
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 10, 40, 24),
+        tilt_deg=3.0,
+        emit=lambda event: None,
+    )
+
+    assert fields["crop"]["width"] == 40
+    assert fields["crop"]["height"] == 24
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert abs(state.crop["tilt_deg"] - 3.0) < 0.51
+    # One window in TIFF space, inside the canvas.
+    assert 0 <= state.crop["x"] and state.crop["x"] + state.crop["w"] <= 90
+    assert 0 <= state.crop["y"] and state.crop["y"] + state.crop["h"] <= 60
+
+
+def test_crop_validation_rejects_bad_rects(croppable_roll):
+    with pytest.raises(EditFailure) as exc:
+        run_edit_crop(
+            croppable_roll,
+            _NEGATIVE_ID,
+            rect=(10, 8, 8, 24),
+            emit=lambda event: None,
+        )
+    assert exc.value.code == Code.INVALID_EDIT
+
+    with pytest.raises(EditFailure) as exc:
+        run_edit_crop(
+            croppable_roll,
+            _NEGATIVE_ID,
+            rect=(80, 8, 50, 24),  # hangs off the 90-wide display
+            emit=lambda event: None,
+        )
+    assert exc.value.code == Code.INVALID_EDIT
+
+    with pytest.raises(EditFailure) as exc:
+        run_edit_crop(
+            croppable_roll,
+            _NEGATIVE_ID,
+            rect=(10, 8, 50, 24),
+            tilt_deg=50.0,
+            emit=lambda event: None,
+        )
+    assert exc.value.code == Code.INVALID_EDIT
+
+    with pytest.raises(EditFailure) as exc:
+        run_edit_crop(croppable_roll, _NEGATIVE_ID, emit=lambda event: None)
+    assert exc.value.code == Code.INVALID_EDIT
+
+
+def test_crop_composes_with_the_recorded_rotation(croppable_roll):
+    """A crop drawn after a quarter turn maps back through the rotation:
+    the stored window's sides are the drawn rect's swapped, and the final
+    display's dimensions are the drawn rect's own."""
+    run_edit_rotate(croppable_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 40, 24),
+        emit=lambda event: None,
+    )
+
+    assert fields["crop"]["width"] == 40
+    assert fields["crop"]["height"] == 24
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert state.quarter_turns == 1
+    assert (state.crop["w"], state.crop["h"]) == (24, 40)
+
+
+def test_spot_markers_hide_while_a_crop_is_live(croppable_roll):
+    """A live crop reports no markers — the axis-aligned rects have no
+    faithful drawing over a cropped-and-tilted display, and the repair
+    they stand for is replayed before the crop anyway."""
+    from scanny_boy.edits import _spots_for_report
+
+    crop_params = {
+        "canvas": [90, 60],
+        "x": 10,
+        "y": 8,
+        "w": 50,
+        "h": 24,
+        "tilt_deg": 0.0,
+    }
+    repo.append_edit(croppable_roll, _NEGATIVE_ID, repo.CROP_OP, crop_params)
+
+    reported = _spots_for_report(
+        croppable_roll,
+        load_roll_manifest(croppable_roll).negative(_NEGATIVE_ID),
+        {
+            "canvas": [90, 60],
+            "repair": False,
+            "spots": [
+                {"id": 1, "bbox": [20, 20, 4, 4], "rejected": False, "rle": "1x4"}
+            ],
+        },
+    )
+    assert reported == []
