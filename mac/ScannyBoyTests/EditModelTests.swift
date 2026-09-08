@@ -255,9 +255,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "delete" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":18,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":19,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -327,9 +327,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":18,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":18,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":19,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":19,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":19,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi
@@ -448,7 +448,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":18,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":19,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -467,11 +467,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -516,7 +516,7 @@ struct EditModelTests {
         let paramsJSON = toneParamsJSON(from: adjustment)
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":18,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":19,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"tone",\
             "params":{\(paramsJSON)},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}
@@ -535,11 +535,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "toned").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit tone"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(toned)'
@@ -595,7 +595,7 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
-        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none"))
+        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none"))
     }
 
     @Test("A rotate event leaves the tone state alone")
@@ -615,7 +615,7 @@ struct EditModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let event =
             """
-            {"protocol_version":18,"event":"edit_recorded","negative_id":"n1",\
+            {"protocol_version":19,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":2,"negative_id":"n1","position":2,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:01Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -629,9 +629,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "rotate" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit rotate"}'
               echo '\(event)'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -660,7 +660,7 @@ struct EditModelTests {
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
-        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none"))
+        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none"))
     }
 
     @Test("The render generation token carries the colour state")
@@ -724,7 +724,7 @@ struct EditModelTests {
         let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
         let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
 
-        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none")
+        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none")
         #expect(EditModel.negativeViewGeneration(of: flat) == EditModel.negativeViewGeneration(of: toned))
     }
 
@@ -748,9 +748,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":18,"event":"started","command":"edit render-preview"}'
-              echo '{"protocol_version":18,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"started","command":"edit render-preview"}'
+              echo '{"protocol_version":19,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
             else
@@ -793,9 +793,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":18,"event":"started","command":"edit render-region"}'
-              echo '{"protocol_version":18,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"started","command":"edit render-region"}'
+              echo '{"protocol_version":19,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
             else
@@ -904,14 +904,14 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":18,"event":"started","command":"edit tone"}'
-              echo '{"protocol_version":18,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":19,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":19,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -941,15 +941,15 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":18,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit tone"}'
               sleep 0.2
-              echo '{"protocol_version":18,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":19,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1041,14 +1041,14 @@ struct EditModelTests {
         let marker = directory.appending(path: "reviewed").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "list-spots" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit list-spots"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit list-spots"}'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: nil))'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             elif [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit spots"}'
               : > '\(marker)'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: "/tmp/preview.png"))'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(reviewed)'
@@ -1064,7 +1064,7 @@ struct EditModelTests {
     private static func spotsEvent(spots: String, repair: Bool, preview: String?) -> String {
         let previewJSON = preview.map { "\"\($0)\"" } ?? "null"
         return """
-            {"protocol_version":18,"event":"spots_reported","negative_id":"n1",\
+            {"protocol_version":19,"event":"spots_reported","negative_id":"n1",\
             "detector_version":1,"sensitivity":0.5,"repair":\(repair),\
             "spots":\(spots),"found":2,"preview_path":\(previewJSON)}
             """
@@ -1112,9 +1112,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: rejectedJSON, repair: false, preview: nil))'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1179,9 +1179,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":18,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":19,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: Self.twoSpotsJSON, repair: true, preview: nil))'
-              echo '{"protocol_version":18,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1208,6 +1208,116 @@ struct EditModelTests {
                 )
             )
         #expect(EditModel.negativeViewGeneration(of: fresh) != EditModel.negativeViewGeneration(of: stale))
+    }
+
+    // MARK: - Crop (protocol 19)
+
+    /// A helper whose `edit crop` invocations emit one `edit_recorded`
+    /// carrying the net crop report (echoing the flags back), and whose
+    /// `roll info` carries the matching report after the first edit.
+    private static func cropRunner(
+        _ directory: URL, cropReport: String
+    ) throws -> CLIRunner {
+        let initial = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let cropped = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+                .replacingOccurrences(
+                    of: "\"tone_shoulder_width\":null}",
+                    with: "\"tone_shoulder_width\":null,\"crop\":\(cropReport)}"
+                )
+        ])
+        let marker = directory.appending(path: "cropped").path
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "crop" ]; then
+              echo '{"protocol_version":19,"event":"started","command":"edit crop"}'
+              : > '\(marker)'
+              echo '{"protocol_version":19,"event":"edit_recorded","negative_id":"n1",\
+            "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop","params":{"x":10},\
+            "created_at":"2026-09-01T00:00:00Z"},\
+            "rotation_quarter_turns":0,"flipped_horizontally":false,\
+            "crop":\(cropReport),"preview_path":"/tmp/preview.png"}'
+              echo '{"protocol_version":19,"event":"finished","status":"success","exit_status":0}'
+            else
+              if [ -f '\(marker)' ]; then
+                echo '\(cropped)'
+              else
+                echo '\(initial)'
+              fi
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    private static let cropReportJSON = """
+        {"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm"}
+        """
+
+    @Test("Apply records the crop and updates the local state")
+    func testApplyCropUpdatesTheLocalState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.cropRunner(directory, cropReport: Self.cropReportJSON)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+        #expect(anchor.crop == nil)
+
+        await model.applyCrop(
+            anchor, rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            tiltDegrees: 2.5, preset: "35mm"
+        )
+        await model.waitForPendingFetch()
+
+        let crop = try #require(model.visibleNegatives[0].crop)
+        #expect(crop.width == 50)
+        #expect(crop.height == 24)
+        #expect(crop.tiltDegrees == 2.5)
+        #expect(crop.preset == "35mm")
+        #expect(model.isCropping == false)
+    }
+
+    @Test("Reset clears the crop")
+    func testResetCropClearsTheState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.cropRunner(directory, cropReport: "null")
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        await model.resetCrop(anchor)
+        await model.waitForPendingFetch()
+
+        #expect(model.visibleNegatives[0].crop == nil)
+    }
+
+    @Test("The render generation changes when the crop does")
+    func testRenderGenerationCarriesCrop() {
+        func negative(_ crop: CropState?) -> RollManifest.Negative {
+            var base = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+            base.crop = crop
+            return base
+        }
+        let none = negative(nil)
+        let cropped = negative(CropState(width: 50, height: 24, tiltDegrees: 0, preset: nil))
+        let tilted = negative(CropState(width: 50, height: 24, tiltDegrees: 3.5, preset: nil))
+
+        #expect(EditModel.renderGeneration(of: none) != EditModel.renderGeneration(of: cropped))
+        #expect(EditModel.renderGeneration(of: cropped) != EditModel.renderGeneration(of: tilted))
+        // The crop changes which pixels the display shows, so the
+        // negative view's generation moves with it too.
+        #expect(EditModel.negativeViewGeneration(of: cropped) != EditModel.negativeViewGeneration(of: none))
     }
 }
 

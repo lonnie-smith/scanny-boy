@@ -67,7 +67,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass (docs/BLACK_POINT_REFINEMENT.md):
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 18
+    public static let supportedProtocolVersion = 19
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -321,6 +321,17 @@ extension CLIEvent {
     public var rotationQuarterTurns: Int? { fields["rotation_quarter_turns"]?.intValue }
     public var flippedHorizontally: Bool? { fields["flipped_horizontally"]?.boolValue }
     public var previewPath: String? { fields["preview_path"]?.stringValue }
+
+    /// The net crop state, carried by *every* `edit_recorded` (protocol
+    /// version 19) as a full report — `null` for no live crop — so the
+    /// app can overwrite without caring which op was recorded. The outer
+    /// optional is "the field is absent" (a pre-19 CLI); the inner is the
+    /// report's own null.
+    public var crop: CropState?? {
+        guard case .some = fields["crop"] else { return nil }
+        guard let object = fields["crop"]?.objectValue else { return .some(nil) }
+        return .some(CropState(fields: object))
+    }
 
     /// The recorded op's tone params, when it is a `tone` op: its `params`
     /// always name both `grade_r` and `snap_gamma` (explicit nulls for the

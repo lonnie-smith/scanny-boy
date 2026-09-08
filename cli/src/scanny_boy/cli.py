@@ -372,6 +372,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="negative to delete; repeat for a selection",
     )
 
+    edit_crop = edit_subparsers.add_parser(
+        "crop",
+        help=(
+            "Record a tilted crop window for one negative — a state op "
+            "the export bakes in; the published TIFF is never touched."
+        ),
+    )
+    edit_crop.add_argument("--roll", required=True, metavar="DIR")
+    edit_crop.add_argument("--negative", required=True, metavar="ID")
+    edit_crop.add_argument(
+        "--x", type=int, metavar="PX", help="crop rect's left edge, display space"
+    )
+    edit_crop.add_argument(
+        "--y", type=int, metavar="PX", help="crop rect's top edge, display space"
+    )
+    edit_crop.add_argument(
+        "--width", type=int, metavar="PX", help="crop rect's width, display space"
+    )
+    edit_crop.add_argument(
+        "--height", type=int, metavar="PX", help="crop rect's height, display space"
+    )
+    edit_crop.add_argument(
+        "--tilt",
+        type=float,
+        metavar="DEG",
+        default=0.0,
+        help="the window's counter-clockwise tilt as displayed, -45..45",
+    )
+    edit_crop.add_argument(
+        "--preset",
+        metavar="NAME",
+        help="the ratio preset the app constrained the rect with (a label, stored verbatim)",
+    )
+    edit_crop.add_argument(
+        "--reset",
+        action="store_true",
+        help="clear the crop and return to the full frame",
+    )
+
     edit_render_region = edit_subparsers.add_parser(
         "render-region",
         help=(
@@ -836,6 +875,7 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     subcommands (section 3.5; `rename` added at section 5.5). Each mirrors
     the other commands' started/finished bracketing; none carries a
     `run_id`, since none is a pipeline run."""
+    from scanny_boy import previews
     from scanny_boy.library import repo
     from scanny_boy.roll_folder import (
         RollFolderError,
@@ -950,6 +990,22 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         negative["rotation_quarter_turns"] = state.quarter_turns
         negative["flipped_horizontally"] = state.flipped
         negative["fine_rotation_deg"] = state.fine_angle_deg
+        # The net crop, reported only when live against the published
+        # TIFF's own dimensions — a re-stitch invalidates the window, and
+        # the report degrades to none rather than describing pixels the
+        # display no longer shows.
+        output_width = negative.get("output", {}).get("width")
+        output_height = negative.get("output", {}).get("height")
+        live_crop = (
+            state.crop
+            if previews.crop_is_live(state.crop, (output_height, output_width))
+            else None
+        )
+        negative["crop"] = previews.crop_report(
+            live_crop,
+            (output_height, output_width),
+            quarter_turns=state.quarter_turns,
+        )
         tone_params = state.tone
         negative["tone_grade_r"] = (
             None if tone_params is None else tone_params["grade_r"]
@@ -1246,6 +1302,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     from scanny_boy.edits import (
         EditFailure,
         run_edit_color,
+        run_edit_crop,
         run_edit_delete,
         run_edit_detect_spots,
         run_edit_flip,
@@ -1316,6 +1373,45 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 auto_cast=args.auto_cast,
                 emit=writer.write,
             )
+            confirmation = EditRecorded
+        elif args.edit_command == "crop":
+            if args.reset:
+                results = [
+                    run_edit_crop(
+                        Path(args.roll),
+                        args.negative,
+                        reset=True,
+                        emit=writer.write,
+                    )
+                ]
+            else:
+                if (
+                    args.x is None
+                    or args.y is None
+                    or args.width is None
+                    or args.height is None
+                ):
+                    writer.write(
+                        ErrorEvent(
+                            code=Code.INVALID_EDIT,
+                            message=(
+                                "edit crop needs --x/--y/--width/--height "
+                                "together, or --reset"
+                            ),
+                        )
+                    )
+                    writer.write(Finished(status="failed", exit_status=1))
+                    return 1
+                results = [
+                    run_edit_crop(
+                        Path(args.roll),
+                        args.negative,
+                        rect=(args.x, args.y, args.width, args.height),
+                        tilt_deg=args.tilt,
+                        preset=args.preset,
+                        emit=writer.write,
+                    )
+                ]
             confirmation = EditRecorded
         elif args.edit_command == "delete":
             results = run_edit_delete(

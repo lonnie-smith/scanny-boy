@@ -60,6 +60,31 @@ FLIP_OP = "flip"
 ROTATE_FINE_OP = "rotate_fine"
 _DIRECTIONS = {"cw": 1, "ccw": -1}
 
+# `crop` params are a tilted crop window in **published-TIFF pixels** — the
+# same convention the `spots` op uses ("TIFF-space geometry does not move
+# when the display transform does"): `{"canvas": [w, h], "x", "y", "w",
+# "h", "tilt_deg", "preset"}`. `tilt_deg` is the window's
+# counter-clockwise tilt as displayed (±45 at the CLI's widest; the app's
+# slider is ±10), and the window itself is the axis-aligned rect `x, y,
+# w, h` — the crop removes the tilt: the output shows the rect's content
+# upright, which is the image rotated by `-tilt` about the rect's centre
+# then cropped to the rect. A sibling of `tone`/`color`/`spots`: a state,
+# not a transform — the latest op wins, a trailing op coalescing in place
+# is unnecessary because every op stores the fully-composed window (a
+# re-crop is mapped through the net state back to TIFF space at record
+# time), and `--reset` appends a `{"reset": true}` op that parses to no
+# crop. Like `spots`, the `canvas` guards a re-stitch: a crop recorded
+# against different TIFF dimensions is stale and ignored (see
+# `previews.crop_is_live`).
+CROP_OP = "crop"
+# The widest tilt a `crop` op may record, in degrees. The app's slider is
+# ±10; the CLI's floor is wider so a re-crop composed over an existing
+# tilt (which adds algebraically in TIFF space) stays valid.
+CROP_TILT_MAX_DEG = 45.0
+# The smallest crop window side the CLI accepts, in pixels — a window
+# smaller than this is almost certainly a mis-click.
+CROP_MIN_SIZE_PX = 16
+
 # `tone` params are the complete preview tone state — nine keys, all set or
 # all `None` for the reset (see `tone.py`). Unlike the geometric ops it is a
 # state, not a transform and never a mode: the latest one wins.
@@ -99,6 +124,9 @@ class EditState:
     # The net `spots` op's params, or None — a state like `tone`/`color`,
     # but one that reaches the export (SPOTTING_PLAN §3.3).
     spots: dict | None = None
+    # The net `crop` op's params, or None — same state family, TIFF-space
+    # like `spots`; the preview folds it in and the export bakes it.
+    crop: dict | None = None
 
 
 class RollNotRegisteredError(Exception):
@@ -944,6 +972,73 @@ def _parse_spots_op(params: dict) -> dict | None:
         return None
 
 
+def validated_crop_params(
+    params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The `crop` op's params, validated: a `{"reset": true}` op needs
+    nothing else; a real window needs the rect, the tilt, and the canvas
+    it was recorded against. Raises `ValueError` on anything else — the
+    caller (`run_edit_crop`) validates before anything is written."""
+    if not isinstance(params, dict):
+        raise ValueError("crop params must be an object")  # noqa: TRY004 — matches `_check_spots_params`
+    if params.get("reset"):
+        return {"reset": True}
+    for key in ("canvas", "x", "y", "w", "h", "tilt_deg"):
+        if key not in params:
+            raise ValueError(f"crop params missing {key!r}")
+    canvas = params["canvas"]
+    if (
+        not isinstance(canvas, (list, tuple))
+        or len(canvas) != 2
+        or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in canvas)
+    ):
+        raise ValueError(f"crop canvas must be [width, height] ints, got {canvas!r}")
+    for key in ("x", "y", "w", "h"):
+        value = params[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"crop {key} must be a non-negative int, got {value!r}")
+    tilt = params["tilt_deg"]
+    if isinstance(tilt, bool) or not isinstance(tilt, (int, float)):
+        raise ValueError(f"crop tilt_deg must be a number, got {tilt!r}")  # noqa: TRY004
+    if abs(float(tilt)) > CROP_TILT_MAX_DEG + 1e-9:
+        raise ValueError(
+            f"crop tilt_deg must be within ±{CROP_TILT_MAX_DEG}, got {tilt}"
+        )
+    if params["w"] < CROP_MIN_SIZE_PX or params["h"] < CROP_MIN_SIZE_PX:
+        raise ValueError(
+            f"crop window must be at least {CROP_MIN_SIZE_PX}x{CROP_MIN_SIZE_PX}, "
+            f"got {params['w']}x{params['h']}"
+        )
+    validated: dict[str, Any] = {
+        "canvas": [int(canvas[0]), int(canvas[1])],
+        "x": int(params["x"]),
+        "y": int(params["y"]),
+        "w": int(params["w"]),
+        "h": int(params["h"]),
+        "tilt_deg": round(float(tilt), 2),
+    }
+    preset = params.get("preset")
+    if preset is not None:
+        if not isinstance(preset, str):
+            raise ValueError(f"crop preset must be a string, got {preset!r}")
+        validated["preset"] = preset
+    return validated
+
+
+def _parse_crop_op(params: dict) -> dict | None:
+    """The `crop` op as replayed into `EditState`. Never raises: anything
+    malformed degrades to `None` — a missing or unreadable crop leaves the
+    full frame, the same degrade-toward-no-op direction as `tone`'s."""
+    if not isinstance(params, dict):
+        return None
+    if not params or params.get("reset"):
+        return None
+    try:
+        return validated_crop_params(params)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
     with _session() as session:
         negative = _negative_row(session, roll_dir, negative_id)
@@ -967,8 +1062,8 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
 
 def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     """Replays the negative's edit ops in order and reduces them to the
-    canonical net state. Geometric ops compose; `tone`, `color`, and
-    `spots` are states where only the latest op of each kind matters.
+    canonical net state. Geometric ops compose; `tone`, `color`, `spots`,
+    and `crop` are states where only the latest op of each kind matters.
     Unknown ops are skipped; malformed state ops degrade to no adjustment."""
     turns = 0
     flipped = False
@@ -976,6 +1071,7 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     tone: dict[str, float] | None = None
     color: dict[str, float] | None = None
     spots: dict | None = None
+    crop: dict | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
         if op == ROTATE_OP:
@@ -1002,6 +1098,11 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
             # The net spots state is TIFF-space geometry; it does not move
             # when the display transform does.
             spots = _parse_spots_op(edit["params"])
+        elif op == CROP_OP:
+            # Same family: TIFF-space geometry, a state where only the
+            # latest op matters (each op already stores the fully-composed
+            # window).
+            crop = _parse_crop_op(edit["params"])
     return EditState(
         quarter_turns=turns % 4,
         flipped=flipped,
@@ -1009,6 +1110,7 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
         tone=tone,
         color=color,
         spots=spots,
+        crop=crop,
     )
 
 

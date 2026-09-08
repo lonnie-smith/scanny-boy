@@ -2083,6 +2083,20 @@ def _composite_and_publish(
                 "rotation_quarter_turns": quarter_turns,
                 "flipped_horizontally": flipped,
                 "fine_rotation_deg": fine_angle,
+                # The net crop rides every edit_recorded as a full state
+                # report; a re-stitch whose canvas changed degrades it to
+                # none (`previews.crop_is_live`).
+                "crop": (
+                    previews.crop_report(
+                        state.crop
+                        if previews.crop_is_live(
+                            state.crop, (record.output["height"], record.output["width"])
+                        )
+                        else None,
+                        (record.output["height"], record.output["width"]),
+                        quarter_turns=quarter_turns,
+                    )
+                ),
             }
 
         emit(

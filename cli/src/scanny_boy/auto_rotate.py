@@ -81,13 +81,26 @@ SCENE_CLEAN_FRACTION = 0.01
 # The seeded angle is rounded to this many degrees.
 ANGLE_PRECISION_DEG = 0.01
 
+def fill_border_value(channel_count: int) -> int | tuple[int, ...]:
+    """The warp border value for pixels the transform uncovers: the
+    stitching fill sentinel's code, one per channel. Shared by
+    `rotate_with_fill` and the preview/export crop step — both warps must
+    uncover to the same thin rail the stitching fill already defines."""
+    fill_codes = encode_normalized(
+        np.full((1, 1, channel_count), NORMALIZED_FILL, dtype=np.float32)
+    )[0, 0]
+    if channel_count == 1:
+        return int(np.asarray(fill_codes).ravel()[0])
+    return tuple(int(code) for code in fill_codes)
+
+
 def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
     """Rotate `image` clockwise by `angle_deg` about its center, keeping
     its dimensions, and fill the pixels the rotation uncovers with the
     stitching fill sentinel (`NORMALIZED_FILL`'s code — the thin rail).
 
     The fill rides on `warpAffine`'s constant border: a destination pixel
-    whose source falls entirely outside the image is exactly the sentinel
+    whose source falls outside the image is exactly the sentinel
     code, and one that straddles the edge blends toward it, the same
     one-pixel courtesy the feathered blend gives a covered edge. Works on
     uint16 normalized-density images — the only domain the ops log's pixels
@@ -101,20 +114,13 @@ def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
         (width / 2.0, height / 2.0), -angle_deg, 1.0
     )
     channel_count = 1 if image.ndim == 2 else image.shape[-1]
-    fill_codes = encode_normalized(
-        np.full((1, 1, channel_count), NORMALIZED_FILL, dtype=np.float32)
-    )[0, 0]
-    if channel_count == 1:
-        border_value = int(np.asarray(fill_codes).ravel()[0])
-    else:
-        border_value = tuple(int(code) for code in fill_codes)
     return cv2.warpAffine(
         image,
         matrix,
         (width, height),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=border_value,
+        borderValue=fill_border_value(channel_count),
     )
 
 

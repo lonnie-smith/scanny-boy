@@ -299,6 +299,47 @@ struct CLICommandTests {
         )
     }
 
+    // MARK: - Edit crop (protocol 19)
+
+    @Test("edit crop carries the display-space rect, tilt, and preset")
+    func editCropArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out,
+            negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            tiltDegrees: 2.5,
+            preset: "35mm"
+        )
+        #expect(
+            command.arguments == [
+                "edit", "crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--x", "10",
+                "--y", "8",
+                "--width", "50",
+                "--height", "24",
+                "--tilt", "2.5",
+                "--preset", "35mm",
+            ]
+        )
+    }
+
+    @Test("edit crop without a rect is the reset")
+    func editCropResetArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out, negative: "neg-01", rect: nil
+        )
+        #expect(
+            command.arguments == [
+                "edit", "crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--reset",
+            ]
+        )
+    }
+
     // MARK: - Edit tone
 
     @Test("edit tone carries the full adjustment, or --reset")

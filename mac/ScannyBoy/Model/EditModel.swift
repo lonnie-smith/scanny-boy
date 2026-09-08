@@ -89,6 +89,11 @@ final class EditModel {
     /// Set while one `edit color` round trip is in flight.
     private(set) var isSettingColor = false
 
+    /// Set while one `edit crop` round trip is in flight — the crop's
+    /// Apply/Reset, with the same one-helper-at-a-time discipline as
+    /// `isRotating`.
+    private(set) var isCropping = false
+
     /// Set while one `edit detect-spots` round trip is in flight —
     /// detection decodes a full published TIFF, so it can take a moment.
     private(set) var isDetectingSpots = false
@@ -485,6 +490,62 @@ final class EditModel {
         }
     }
 
+    // MARK: - Cropping (protocol version 19, docs/CROP_PLAN.md)
+
+    /// Records the anchor negative's crop — the tilted window drawn over
+    /// the preview, in display space with the tilt counter-clockwise as
+    /// displayed — through `edit crop`, and refreshes the roll when the
+    /// op is confirmed. One negative (the frame the preview shows), never
+    /// the multi-selection. The published TIFF is never touched; the CLI
+    /// regenerates the preview with the window folded in, which is what
+    /// the app then displays.
+    func applyCrop(
+        _ negative: RollManifest.Negative,
+        rect: CGRect,
+        tiltDegrees: Double,
+        preset: String?
+    ) async {
+        await recordCrop(negative) { rollURL in
+            .editCrop(
+                roll: rollURL,
+                negative: negative.negativeID,
+                rect: rect,
+                tiltDegrees: tiltDegrees,
+                preset: preset
+            )
+        }
+    }
+
+    /// Clears the anchor negative's crop — `edit crop --reset` — and
+    /// refreshes the roll when confirmed.
+    func resetCrop(_ negative: RollManifest.Negative) async {
+        await recordCrop(negative) { rollURL in
+            .editCrop(roll: rollURL, negative: negative.negativeID, rect: nil)
+        }
+    }
+
+    private func recordCrop(
+        _ negative: RollManifest.Negative, command: (URL) -> CLICommand
+    ) async {
+        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
+        isCropping = true
+        defer { isCropping = false }
+        do {
+            for await output in try await runner.session(for: command(rollURL)).start() {
+                if case .event(let event) = output, event.kind == .editRecorded,
+                    let negativeID = event.negativeID
+                {
+                    applyEditRecorded(event, negativeID: negativeID)
+                }
+            }
+        } catch {
+            return
+        }
+        // The in-place update above is what the user sees; the refresh
+        // reconciles anything the event's fields did not carry.
+        refresh()
+    }
+
     // MARK: - Spotting (protocol version 13, SPOTTING_PLAN §8.2)
 
     /// Runs the detector over the whole selection — one `edit detect-spots`
@@ -840,7 +901,15 @@ final class EditModel {
                 usedClaheFallback: negative.usedClaheFallback,
                 gridPitchRatio: negative.gridPitchRatio,
                 gridAlignmentRatio: negative.gridAlignmentRatio,
-                spotsSummary: negative.spotsSummary
+                spotsSummary: negative.spotsSummary,
+                // The crop rides every `edit_recorded` as a full net
+                // report (protocol 19): overwrite it. A field absent from
+                // the event (a pre-19 CLI) leaves the state alone — a
+                // present null *is* the report (no live crop) and clears.
+                crop: {
+                    if case .some(let reported) = event.crop { return reported }
+                    return negative.crop
+                }()
             )
         )
     }
@@ -937,13 +1006,13 @@ final class EditModel {
     }
 
     /// Everything the CLI's display encode folds into a rendered frame —
-    /// the net transform, the tone state, and the spot repair — as one
-    /// cache-generation token. The preview PNG and the 1:1 region renders
-    /// are both keyed on it, so a new tone commit or a repair flip
-    /// invalidates the old crops. The spot term changes whenever the
-    /// rendered pixels change: repair flips, spots are rejected (a
-    /// rejected spot's mask leaves the repair), or the set is
-    /// re-detected.
+    /// the net transform, the crop, the tone state, and the spot repair —
+    /// as one cache-generation token. The preview PNG and the 1:1 region
+    /// renders are both keyed on it, so a new tone commit, a repair flip,
+    /// or a crop applies invalidates the old renders. The spot term
+    /// changes whenever the rendered pixels change: repair flips, spots
+    /// are rejected (a rejected spot's mask leaves the repair), or the
+    /// set is re-detected.
     ///
     /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`,
     /// docs/OPTIMIZATION.md §3.1/§3.3) keys on the same idea minus the
@@ -967,17 +1036,25 @@ final class EditModel {
         } else {
             colour = "neutral"
         }
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(spotsTerm(of: negative))"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
     /// negative view folds in. The tone state is deliberately absent: the
     /// negative view shows raw densities, and the tone adjustment never
-    /// reaches it. The spot repair is deliberately present: what the user
-    /// compares when they toggle repair on and off is the same in both
-    /// views (SPOTTING_PLAN §3.3).
+    /// reaches it. The crop is deliberately present: it changes which
+    /// pixels the display shows. The spot repair is deliberately present:
+    /// what the user compares when they toggle repair on and off is the
+    /// same in both views (SPOTTING_PLAN §3.3).
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(spotsTerm(of: negative))"
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))"
+    }
+
+    /// The crop half of a cache-generation token: dimensions, tilt, and
+    /// preset are enough to change whenever the cropped pixels change.
+    private static func cropTerm(of negative: RollManifest.Negative) -> String {
+        guard let crop = negative.crop else { return "none" }
+        return "\(crop.width)x\(crop.height)#\(crop.tiltDegrees)#\(crop.preset ?? "-")"
     }
 
     /// The spots half of a cache-generation token: `repair#count#rejected`

@@ -134,6 +134,46 @@ def _refresh_preview(
         write_roll_manifest(roll_dir, roll)
 
 
+def _crop_report_fields(
+    roll_dir: Path, negative: NegativeRecord
+) -> dict | None:
+    """The net crop as `edit_recorded` carries it — a full state report
+    (null when there is no live crop), exactly what `roll info` reports,
+    so Swift can overwrite without caring which op was recorded. A stale
+    crop (a re-stitch changed the canvas) reports as none."""
+    output = negative.output or {}
+    width, height = output.get("width"), output.get("height")
+    if width is None or height is None:
+        return None
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    crop = (
+        state.crop
+        if previews.crop_is_live(state.crop, (height, width))
+        else None
+    )
+    return previews.crop_report(
+        crop, (height, width), quarter_turns=state.quarter_turns
+    )
+
+
+def _result_fields(
+    roll_dir: Path, negative: NegativeRecord, edit: dict
+) -> dict:
+    """The `EditRecorded` field set shared by every op that appends one:
+    the ops log entry, the net transform after it, the net crop state,
+    and the regenerated preview path."""
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    return {
+        "negative_id": negative.negative_id,
+        "edit": edit,
+        "rotation_quarter_turns": state.quarter_turns,
+        "flipped_horizontally": state.flipped,
+        "fine_rotation_deg": state.fine_angle_deg,
+        "crop": _crop_report_fields(roll_dir, negative),
+        "preview_path": negative.preview_path,
+    }
+
+
 def _append_transform_op(
     roll_dir: Path,
     negative_ids: Sequence[str],
@@ -153,17 +193,7 @@ def _append_transform_op(
     for negative in negatives:
         edit = repo.append_edit(roll_dir, negative.negative_id, op, params)
         _refresh_preview(roll_dir, roll, negative, preview_op, what=what, emit=emit)
-        state = repo.net_edit_state(roll_dir, negative.negative_id)
-        results.append(
-            {
-                "negative_id": negative.negative_id,
-                "edit": edit,
-                "rotation_quarter_turns": state.quarter_turns,
-                "flipped_horizontally": state.flipped,
-                "fine_rotation_deg": state.fine_angle_deg,
-                "preview_path": negative.preview_path,
-            }
-        )
+        results.append(_result_fields(roll_dir, negative, edit))
     return results
 
 
@@ -279,18 +309,116 @@ def run_edit_tone(
 
         edit = repo.append_tone_edit(roll_dir, negative.negative_id, validated)
         _refresh_preview(roll_dir, roll, negative, repo.TONE_OP, what="tone", emit=emit)
-        state = repo.net_edit_state(roll_dir, negative.negative_id)
-        results.append(
-            {
-                "negative_id": negative.negative_id,
-                "edit": edit,
-                "rotation_quarter_turns": state.quarter_turns,
-                "flipped_horizontally": state.flipped,
-                "fine_rotation_deg": state.fine_angle_deg,
-                "preview_path": negative.preview_path,
-            }
-        )
+        results.append(_result_fields(roll_dir, negative, edit))
     return results
+
+
+def run_edit_crop(
+    roll_dir: Path,
+    negative_id: str,
+    *,
+    rect: tuple[int, int, int, int] | None = None,
+    tilt_deg: float = 0.0,
+    preset: str | None = None,
+    reset: bool = False,
+    emit: EmitFn,
+) -> dict:
+    """Records one negative's crop — a tilted window over the image as it
+    currently renders (live crop included), or `--reset` for the full
+    frame. The op is a state, not a transform: the latest one wins, and it
+    stores the **fully-composed** window in published-TIFF pixels — the
+    drawn rect and tilt are mapped backwards through the net state
+    (`previews.display_crop_window_to_tiff`), so a re-crop composes into
+    one window and the replay never has to. Like every edit, the published
+    TIFF is untouched: the crop is baked only at export.
+
+    The whole intent is validated before anything is written: the drawn
+    rect must fit the display image, the tilt within ±45, the composed
+    window must survive `repo.validated_crop_params` (size floor, tilt
+    ceiling, canvas), and the stored rect is clamped into the canvas so
+    the crop step's slice can never come back short. Returns the
+    `EditRecorded` field values. Raises `EditFailure` when the roll, the
+    negative, or the rect is no good."""
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    if not reset and rect is None:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "edit crop needs the rect (--x/--y/--width/--height) or --reset",
+        )
+    state = repo.net_edit_state(roll_dir, negative_id)
+    output = negative.output
+    tiff_h, tiff_w = int(output["height"]), int(output["width"])
+    existing = (
+        state.crop
+        if previews.crop_is_live(state.crop, (tiff_h, tiff_w))
+        else None
+    )
+
+    if reset:
+        params: dict[str, Any] = {"reset": True}
+    else:
+        assert rect is not None
+        if abs(tilt_deg) > repo.CROP_TILT_MAX_DEG + 1e-9:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"--tilt must be within ±{repo.CROP_TILT_MAX_DEG}, got {tilt_deg}",
+            )
+        x, y, w, h = rect
+        display_h, display_w = previews.display_shape(
+            (tiff_h, tiff_w),
+            quarter_turns=state.quarter_turns,
+            crop_params=existing,
+        )
+        if w < repo.CROP_MIN_SIZE_PX or h < repo.CROP_MIN_SIZE_PX:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"crop rect must be at least "
+                f"{repo.CROP_MIN_SIZE_PX}x{repo.CROP_MIN_SIZE_PX}, got {w}x{h}",
+            )
+        if x < 0 or y < 0 or x + w > display_w or y + h > display_h:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"crop rect {x}x{y}+{w}+{h} does not fit the "
+                f"{display_w}x{display_h} display image",
+            )
+        tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
+            (x, y, w, h),
+            (tiff_h, tiff_w),
+            tilt_deg=tilt_deg,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            crop_params=existing,
+        )
+        # The stored window must sit inside the canvas — the crop step
+        # slices the warped canvas at the rect, and a slice past the edge
+        # would come back short. Rounding the mapped corners can stray a
+        # pixel (and a fine rotation's fill wedge means the display can
+        # legitimately show sentinel pixels at its edges), so clamp rather
+        # than fail; `validated_crop_params` still rejects a window the
+        # clamp has shrunk below the size floor.
+        tx = min(max(tx, 0), tiff_w - 1)
+        ty = min(max(ty, 0), tiff_h - 1)
+        tw = min(tw, tiff_w - tx)
+        th = min(th, tiff_h - ty)
+        try:
+            params = repo.validated_crop_params(
+                {
+                    "canvas": [tiff_w, tiff_h],
+                    "x": tx,
+                    "y": ty,
+                    "w": tw,
+                    "h": th,
+                    "tilt_deg": tilt,
+                    "preset": preset,
+                }
+            )
+        except ValueError as exc:
+            raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+
+    edit = repo.append_edit(roll_dir, negative_id, repo.CROP_OP, params)
+    _refresh_preview(roll_dir, _roll, negative, repo.CROP_OP, what="crop", emit=emit)
+    return _result_fields(roll_dir, negative, edit)
 
 
 def _merge_color_params(
@@ -430,17 +558,7 @@ def run_edit_color(
 
         edit = repo.append_color_edit(roll_dir, negative.negative_id, validated)
         _refresh_preview(roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit)
-        state = repo.net_edit_state(roll_dir, negative.negative_id)
-        results.append(
-            {
-                "negative_id": negative.negative_id,
-                "edit": edit,
-                "rotation_quarter_turns": state.quarter_turns,
-                "flipped_horizontally": state.flipped,
-                "fine_rotation_deg": state.fine_angle_deg,
-                "preview_path": negative.preview_path,
-            }
-        )
+        results.append(_result_fields(roll_dir, negative, edit))
     return results
 
 
@@ -537,6 +655,7 @@ def run_edit_render_region(
             metering=meter,
             destination=output_path,
             mode=mode,
+            crop_params=state.crop,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
@@ -583,6 +702,7 @@ def run_edit_render_preview(
             fine_angle_deg=state.fine_angle_deg,
             mode=mode,
             tone_params=state.tone,
+            crop_params=state.crop,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
@@ -685,6 +805,15 @@ def _spots_for_report(
     if (canvas[0], canvas[1]) != (width, height):
         return []
     state = repo.net_edit_state(roll_dir, negative.negative_id)
+    # A live crop hides the markers: over a cropped-and-tilted display the
+    # axis-aligned marker rects have no faithful drawing, and the repair
+    # they stand for is replayed before the crop anyway, so nothing is
+    # lost but the overlay (the Heal panel's counts still read from the
+    # manifest summary). CROP_PLAN §4.
+    if previews.crop_is_live(
+        state.crop, (height, width)
+    ):
+        return []
     report: list[dict] = []
     for spot in params.get("spots") or []:
         x, y, w, h = spot["bbox"]

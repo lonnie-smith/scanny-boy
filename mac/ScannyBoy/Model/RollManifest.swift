@@ -261,6 +261,14 @@ struct RollManifest: Sendable, Hashable {
         /// the field. Defaults to `nil` so every construction site that
         /// predates the field keeps compiling.
         var spotsSummary: NegativeSpots.Summary? = nil
+        /// Protocol 19's net crop state — the cropped display image's
+        /// dimensions, the window's tilt, and the ratio-preset label. The
+        /// published TIFF is never cropped; the preview already shows the
+        /// cropped frame and the export bakes the window in. `nil` for a
+        /// negative with no live crop (or a manifest predating the field).
+        /// Defaults to `nil` so every construction site that predates the
+        /// field keeps compiling.
+        var crop: CropState? = nil
 
         /// The normalization meters the Edit tab needs from the stored record.
         struct NormalizationSummary: Sendable, Hashable {
@@ -524,7 +532,8 @@ struct RollManifest: Sendable, Hashable {
             gridPitchRatio: fields["grid_pitch_ratio"]?.doubleValue,
             gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue,
             spotsSummary: fields["spots"]?.objectValue
-                .flatMap(NegativeSpots.Summary.init(fields:))
+                .flatMap(NegativeSpots.Summary.init(fields:)),
+            crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:))
         )
     }
 

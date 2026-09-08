@@ -140,6 +140,9 @@ private struct PreviewPane: View {
     @State private var showsNegative = false
     /// Sticky across negative changes, like `showsNegative`.
     @State private var selectedTab: EditSidebarTab = .tone
+    /// The crop-mode editing session (docs/CROP_PLAN.md §5): the overlay's
+    /// rect/tilt/preset. Per-preview state; changing negatives ends it.
+    @State private var cropSession = CropSession()
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
@@ -151,7 +154,8 @@ private struct PreviewPane: View {
 
     private var zoomShortcutsEnabled: Bool {
         negative.output != nil
-            && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || runIsActive)
+            && !cropSession.isActive
+            && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || edit.isCropping || runIsActive)
     }
 
     private var isMonochromeRoll: Bool {
@@ -167,7 +171,11 @@ private struct PreviewPane: View {
                 spotsSensitivity: $spotsSensitivity,
                 targets: targets,
                 isMonochromeRoll: isMonochromeRoll,
-                runIsActive: runIsActive
+                runIsActive: runIsActive,
+                cropSession: cropSession,
+                displaySize: displaySize,
+                onApplyCrop: { applyCrop() },
+                onResetCrop: { resetCrop() }
             )
             .frame(width: 360)
 
@@ -186,7 +194,9 @@ private struct PreviewPane: View {
                     }
                     .disabled(
                         negative.output == nil
-                            || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                            || cropSession.isActive
+                            || edit.isRotating || edit.isDeleting || edit.isSettingTone
+                            || edit.isSettingColor || edit.isCropping || runIsActive
                     )
                     .help(zoomButtonHelp)
                     .accessibilityLabel(zoomButtonHelp)
@@ -200,7 +210,9 @@ private struct PreviewPane: View {
                     }
                     .disabled(
                         negative.output == nil
-                            || edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+                            || cropSession.isActive
+                            || edit.isRotating || edit.isDeleting || edit.isSettingTone
+                            || edit.isSettingColor || edit.isCropping || runIsActive
                     )
                     .help(displayModeButtonHelp)
                     .accessibilityLabel(displayModeButtonHelp)
@@ -223,7 +235,10 @@ private struct PreviewPane: View {
                     } label: {
                         Image(systemName: "trash")
                     }
-                    .disabled(edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive)
+                    .disabled(
+                        cropSession.isActive || edit.isRotating || edit.isDeleting
+                            || edit.isSettingTone || edit.isCropping || runIsActive
+                    )
                     .help(deleteButtonHelp)
                     .accessibilityLabel(deleteButtonHelp)
                 }
@@ -253,6 +268,10 @@ private struct PreviewPane: View {
         .onChange(of: previewIdentity) {
             zoom.reset()
             refreshZoomContext(paneSize: paneSize)
+        }
+        .onChange(of: negative.negativeID) {
+            // The crop session belongs to one negative's preview.
+            cropSession.end()
         }
         .onChange(of: showsNegative) {
             // The on-screen 1:1 crop is the other mode's pixels until the
@@ -294,7 +313,7 @@ private struct PreviewPane: View {
 
     /// Drives `AppKeyboardState` refresh when preview availability changes.
     private var previewKeyboardSyncToken: String {
-        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(runIsActive)|\(paneSize.width)|\(paneSize.height)"
+        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(edit.isCropping)|\(runIsActive)|\(cropSession.isActive)|\(paneSize.width)|\(paneSize.height)"
     }
 
     private func registerKeyboardShortcuts() {
@@ -313,7 +332,8 @@ private struct PreviewPane: View {
         keyboard.previewHasOutput = negative.output != nil
         keyboard.previewOperationsBlocked =
             edit.isRotating || edit.isDeleting || edit.isSettingTone
-            || edit.isSettingColor || runIsActive
+            || edit.isSettingColor || edit.isCropping || cropSession.isActive
+            || runIsActive
         keyboard.zoomToggleCenter = previewCenter
     }
 
@@ -415,6 +435,15 @@ private struct PreviewPane: View {
                 if showsSpotMarkers {
                     spotMarkers
                 }
+                if cropSession.isActive, negative.output != nil {
+                    CropOverlayView(
+                        session: cropSession,
+                        fitRect: PreviewZoomModel.fitRect(
+                            displaySize: displaySize, container: paneSize
+                        ),
+                        displaySize: displaySize
+                    )
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay {
@@ -435,12 +464,14 @@ private struct PreviewPane: View {
 
     /// Markers show while a set exists and repair is off; with repair on
     /// they hide unless the Heal tab is selected — the point of turning
-    /// repair on is to look at the result.
+    /// repair on is to look at the result. Crop mode hides them too: over
+    /// a cropped-and-tilted display the axis-aligned rects have no
+    /// faithful drawing (CROP_PLAN §4).
     private var showsSpotMarkers: Bool {
         guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
             return false
         }
-        return !spots.repair || edit.showsSpotsPopover
+        return (!spots.repair || edit.showsSpotsPopover) && !cropSession.isActive
     }
 
     /// Accepted spots draw as a thin stroked rect; rejected ones draw
@@ -559,12 +590,48 @@ private struct PreviewPane: View {
     }
 
     /// The current image's display-space size, when it has been stitched.
+    /// A live crop's window *is* the display: the CLI's preview already
+    /// shows the cropped frame, and `roll info`'s crop report names its
+    /// final dimensions — so zoom, the fit rect, and the crop overlay all
+    /// work in cropped space.
     private var displaySize: CGSize {
+        if let crop = negative.crop {
+            return CGSize(width: crop.width, height: crop.height)
+        }
         guard let output = negative.output else { return .zero }
         return PreviewZoomModel.displaySize(
             tiffSize: CGSize(width: output.width, height: output.height),
             quarterTurns: negative.rotationQuarterTurns
         )
+    }
+
+    // MARK: - Crop mode (docs/CROP_PLAN.md §5)
+
+    private func beginCrop() {
+        // Crop editing runs in the fit view — the 1:1 zoom's region space
+        // is cropped display space, and the overlay belongs to the whole
+        // frame.
+        zoom.reset()
+        cropSession.begin(displaySize: displaySize)
+    }
+
+    private func applyCrop() {
+        Task {
+            await edit.applyCrop(
+                negative,
+                rect: cropSession.rect,
+                tiltDegrees: cropSession.tiltDegrees,
+                preset: cropSession.preset == .free ? nil : cropSession.preset.rawValue
+            )
+            cropSession.end()
+        }
+    }
+
+    private func resetCrop() {
+        Task {
+            await edit.resetCrop(negative)
+            cropSession.end()
+        }
     }
 }
 
@@ -578,6 +645,10 @@ private struct EditSidebar: View {
     let targets: [RollManifest.Negative]
     let isMonochromeRoll: Bool
     let runIsActive: Bool
+    let cropSession: CropSession
+    let displaySize: CGSize
+    let onApplyCrop: () -> Void
+    let onResetCrop: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -599,6 +670,9 @@ private struct EditSidebar: View {
                     selectedTab = .tone
                     return
                 }
+                // A crop session belongs to the Geometry tab; switching
+                // away cancels it.
+                if tab != .geometry { cropSession.end() }
                 edit.showsSpotsPopover = (tab == .heal)
             }
             .onChange(of: isMonochromeRoll) { _, mono in
@@ -624,12 +698,18 @@ private struct EditSidebar: View {
             GeometryAdjustmentPanel(
                 targets: targets,
                 edit: edit,
-                runIsActive: runIsActive
+                runIsActive: runIsActive,
+                negative: negative,
+                cropSession: cropSession,
+                displaySize: displaySize,
+                onApplyCrop: onApplyCrop,
+                onResetCrop: onResetCrop
             )
         case .tone:
             ToneAdjustmentPanel(
                 adjustment: negative.toneAdjustment,
-                isBusy: edit.isSettingTone || edit.isSettingColor || edit.isRotating || edit.isDeleting,
+                isBusy: edit.isSettingTone || edit.isSettingColor || edit.isRotating
+                    || edit.isDeleting || edit.isCropping,
                 onScheduleCommit: { adjustment in
                     edit.scheduleTone(targets, adjustment: adjustment)
                 },
@@ -645,7 +725,8 @@ private struct EditSidebar: View {
         case .color:
             ColorAdjustmentPanel(
                 adjustment: negative.colorAdjustment,
-                isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting,
+                isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting
+                    || edit.isCropping,
                 onScheduleCommit: { adjustment in
                     edit.scheduleColor(targets, adjustment: adjustment)
                 },
@@ -673,14 +754,28 @@ private struct EditSidebar: View {
     }
 }
 
-/// Rotate and flip controls for the Geometry sidebar tab.
+/// Rotate, flip, and crop controls for the Geometry sidebar tab. The
+/// rotate/flip buttons act on the whole selection; crop mode is
+/// anchor-only (docs/CROP_PLAN.md §5) — the window belongs to the frame
+/// the preview shows.
 private struct GeometryAdjustmentPanel: View {
     let targets: [RollManifest.Negative]
     @Bindable var edit: EditModel
     let runIsActive: Bool
+    let negative: RollManifest.Negative
+    @Bindable var cropSession: CropSession
+    let displaySize: CGSize
+    let onApplyCrop: () -> Void
+    let onResetCrop: () -> Void
 
     private var isDisabled: Bool {
-        edit.isRotating || edit.isDeleting || edit.isSettingTone || runIsActive
+        edit.isRotating || edit.isDeleting || edit.isSettingTone
+            || edit.isSettingColor || edit.isCropping || runIsActive
+            || cropSession.isActive
+    }
+
+    private var isCropAvailable: Bool {
+        negative.output != nil && !isDisabled
     }
 
     var body: some View {
@@ -709,7 +804,90 @@ private struct GeometryAdjustmentPanel: View {
             ) {
                 Task { await edit.flip(targets) }
             }
+
+            Divider()
+
+            cropSection
         }
+    }
+
+    @ViewBuilder
+    private var cropSection: some View {
+        Text("Crop").font(.headline)
+        if cropSession.isActive {
+            Picker("Ratio", selection: presetBinding) {
+                ForEach(CropPreset.allCases) { preset in
+                    Text(preset.label).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityLabel("Crop ratio preset")
+            .help(
+                "Constrain the crop to a film format's gate — the actual "
+                    + "frame sizes, oriented to this image"
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Tilt")
+                    Spacer()
+                    Text(String(format: "%+.1f°", cropSession.tiltDegrees))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                ToneSlider(
+                    value: $cropSession.tiltDegrees,
+                    range: CropSession.tiltRange,
+                    step: CropSession.tiltStep,
+                    resetValue: 0,
+                    onScheduleCommit: {},
+                    onCommitNow: {}
+                )
+                .accessibilityLabel("Crop tilt")
+                Text("Counter-clockwise tilt of the crop window, ±10°")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Apply") { onApplyCrop() }
+                    .disabled(edit.isCropping)
+                    .help("Record the crop (the published TIFF is untouched; the export bakes it in)")
+                Button("Cancel") { cropSession.end() }
+                    .help("Discard this crop session")
+                Spacer()
+                if edit.isCropping {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if negative.crop != nil {
+                Button("Reset Saved Crop", role: .destructive) { onResetCrop() }
+                    .disabled(edit.isCropping)
+                    .help("Clear the recorded crop and return to the full frame")
+            }
+        } else {
+            Button {
+                cropSession.begin(displaySize: displaySize)
+            } label: {
+                Label("Crop…", systemImage: "crop")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .disabled(!isCropAvailable)
+            .help("Crop this negative (ratio presets and tilt in the overlay session)")
+            .accessibilityLabel("Crop")
+        }
+    }
+
+    private var presetBinding: Binding<CropPreset> {
+        Binding(
+            get: { cropSession.preset },
+            set: { preset in
+                cropSession.preset = preset
+                cropSession.applyPreset()
+            }
+        )
     }
 
     private func geometryButton(
