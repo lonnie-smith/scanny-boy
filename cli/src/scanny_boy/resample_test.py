@@ -9,7 +9,6 @@ import pytest
 
 from scanny_boy import resample
 
-
 # --- target_size ------------------------------------------------------------
 
 

@@ -70,16 +70,22 @@ already renamed and §5 rewords further.
 ```
 published TIFF (uint16 normalized log density, negative, 1 or 3 channels)
   -> decode_normalized                       val in [0, 1] + headroom
-  -> 1 - val, clipped                        positive, normalized log exposure
+  -> 1 - val, low-clamped only               positive on [0, DISPLAY_CEILING]
   -> ^ GAMMA_ADOBE                           linear light
   -> 3x3 matrix (colour only)                camera primaries -> Adobe RGB
-  -> clip to [0, 1]
-  -> ^ (1 / GAMMA_ADOBE)                     back to display encoding
-  -> tone curve (the negative's `tone` op)   grade + snap, as the preview shows
+  -> clip linear light to [0, DISPLAY_CEILING ** GAMMA_ADOBE]
+  -> ^ (1 / GAMMA_ADOBE)                     display encoding on [0, DISPLAY_CEILING]
+  -> tone + colour curve (the negative's `tone` and `color` ops)
+  -> dye separation when active
   -> uint16
   -> lossless JPEG XL, ICC = Adobe RGB (1998) compatible (or Grey)
      + Exif box + XMP box
 ```
+
+`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW` (1.15 today). The encode's
+headroom survives to the tone curve; the curve brings values back to
+`[0, 1]` for display. With no tone op the flat paths keep a `[0, 1]` clip
+(docs/HEADROOM.md §2.4).
 
 The two exponentiations bracket the matrix and invert each other, so **the
 chain reproduces `tone.build_display_lut`'s rendering at 16 bits instead of

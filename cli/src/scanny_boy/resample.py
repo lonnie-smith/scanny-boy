@@ -123,7 +123,7 @@ def resize_lanczos3(
     if image.ndim == 2:
         return resize_lanczos3(image[:, :, None], out_height, out_width)[:, :, 0]
     src = np.asarray(image, dtype=np.float32)
-    height, width, channels = src.shape
+    height, width, _ = src.shape
     if out_height > height or out_width > width:
         raise ValueError(
             "resize_lanczos3 is a downsample, never an upscaler: got "

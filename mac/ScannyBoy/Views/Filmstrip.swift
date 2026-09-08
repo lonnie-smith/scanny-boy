@@ -10,6 +10,7 @@ import SwiftUI
 /// toggles.
 struct FilmstripView: View {
     let negatives: [RollManifest.Negative]
+    let cameraColor: RollManifest.CameraColor?
     let isSelected: (String) -> Bool
     let onSelect: (String, _ additive: Bool, _ extendingRange: Bool) -> Void
 
@@ -19,6 +20,7 @@ struct FilmstripView: View {
                 ForEach(negatives, id: \.negativeID) { negative in
                     FilmstripCell(
                         negative: negative,
+                        cameraColor: cameraColor,
                         isSelected: isSelected(negative.negativeID)
                     ) { additive, extendingRange in
                         onSelect(negative.negativeID, additive, extendingRange)
@@ -37,6 +39,7 @@ struct FilmstripView: View {
 /// the model: shift extends a range, command toggles a frame.
 struct FilmstripCell: View {
     let negative: RollManifest.Negative
+    let cameraColor: RollManifest.CameraColor?
     let isSelected: Bool
     let onSelect: (_ additive: Bool, _ extendingRange: Bool) -> Void
 
@@ -69,14 +72,14 @@ struct FilmstripCell: View {
         }
         .buttonStyle(.plain)
         .help(negative.expectedOutput)
-        .task(id: "\(negative.previewPath ?? "none")#\(EditModel.renderGeneration(of: negative))") {
+        .task(id: "\(negative.previewPath ?? "none")#\(EditModel.renderGeneration(of: negative, cameraColor: cameraColor))") {
             thumbnail = nil
             guard let previewPath = negative.previewPath else {
                 return
             }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
                 forPreview: URL(filePath: previewPath),
-                generation: EditModel.renderGeneration(of: negative),
+                generation: EditModel.renderGeneration(of: negative, cameraColor: cameraColor),
                 pointSize: Self.cellSize,
                 scale: displayScale
             )
@@ -154,6 +157,7 @@ struct PreviewPlaceholder: View {
 /// own views; this is the shared middle.
 struct PreviewImageView: View {
     let negative: RollManifest.Negative
+    let cameraColor: RollManifest.CameraColor?
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: Thumbnail?
@@ -184,7 +188,7 @@ struct PreviewImageView: View {
     }
 
     private var previewGeneration: String {
-        EditModel.renderGeneration(of: negative)
+        EditModel.renderGeneration(of: negative, cameraColor: cameraColor)
     }
 
     private var previewURL: URL? {

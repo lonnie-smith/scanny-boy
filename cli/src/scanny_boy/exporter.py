@@ -4,7 +4,7 @@ The exporter replays each negative's ordered ops log over its published
 TIFF — the canonical `(quarter_turns, flipped)` net transform, applied as a
 horizontal mirror followed by `np.rot90` quarter turns — and renders the
 result as a **positive in Adobe RGB (1998)-compatible colour, with the
-negative's recorded tone op baked in** (`render.render_export`), written as
+negative's recorded tone and colour ops baked in** (`render.render_export`), written as
 a **16-bit lossless JPEG XL** with the export ICC profile embedded
 (docs/EXPORT_PLAN.md §5). A mono roll's export is single-channel, tagged
 with the grey export profile and rendered without a colour matrix. The
@@ -45,7 +45,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import jxl_writer, render, resample, spots
+from scanny_boy import color, jxl_writer, render, resample, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -153,6 +153,7 @@ def provenance_record(
     negative: NegativeRecord,
     matrix: np.ndarray | None,
     tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None,
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
@@ -188,6 +189,7 @@ def provenance_record(
                 None if matrix is None else np.asarray(matrix).tolist()
             ),
             "tone": None if tone_params is None else dict(tone_params),
+            "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
             "downsample": (
@@ -345,13 +347,15 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params, spots_params = (
+        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
             state.tone,
+            state.color,
             state.spots,
         )
+        meter = color.read_metering(negative.normalization)
         # The spot repair applies before any geometry: the op's coordinates
         # are TIFF space (SPOTTING_PLAN §3.3).
         image = spots.apply_repair(image, spots_params)
@@ -367,7 +371,7 @@ def _export_negative(
         # clip and the display re-encode (resample's module docstring).
         applied = applied_downsample(rotated, downsample)
         rendered, clipped_fractions = render.render_export(
-            rotated, matrix, tone_params, long_edge=downsample
+            rotated, matrix, tone_params, color_params, meter, long_edge=downsample
         )
         profile_kind = export_profile_kind(
             1 if rendered.ndim == 2 else rendered.shape[2]
@@ -383,6 +387,7 @@ def _export_negative(
             negative,
             matrix,
             tone_params,
+            color_params,
             clipped_fractions,
             spots_params,
             applied,
@@ -413,6 +418,7 @@ def _write_export(
     negative: NegativeRecord,
     matrix: np.ndarray | None,
     tone_params: dict[str, float] | None,
+    color_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
     applied_downsample: int | None = None,
@@ -436,6 +442,7 @@ def _write_export(
         negative,
         matrix,
         tone_params,
+        color_params,
         profile_kind,
         clipped_fractions,
         spots_params,

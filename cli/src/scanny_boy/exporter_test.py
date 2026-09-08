@@ -945,3 +945,22 @@ def test_the_provenance_has_no_downsample_by_default(colour_roll, tmp_path):
 
     record = _provenance(destination)
     assert record["rendered"]["downsample"] is None
+
+
+def test_the_color_op_changes_the_export_and_is_recorded_in_provenance(
+    colour_roll, tmp_path
+):
+    from scanny_boy.edits import run_edit_color
+    from scanny_boy.edits_test import _color_params
+    from scanny_boy.library import repo
+
+    flat = _decode(_export(colour_roll, tmp_path / "flat"))
+    params = _color_params(wb_magenta=0.15, dye_separation=1.3)
+    run_edit_color(colour_roll, _NEGATIVE_ID, params, emit=lambda event: None)
+    tinted_dest = _export(colour_roll, tmp_path / "tinted")
+
+    assert not np.array_equal(flat, _decode(tinted_dest))
+    record = _provenance(tinted_dest)
+    assert record["rendered"]["color"] == repo.net_edit_state(
+        colour_roll, _NEGATIVE_ID
+    ).color
