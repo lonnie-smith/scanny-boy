@@ -59,29 +59,45 @@ struct FilmBase: Sendable, Hashable {
     }
 }
 
-/// The parts of a roll's durable record the app needs, decoded from
-/// `roll info`'s `manifest` field — never read from disk (the record now
-/// lives in the library database; the shape came from the roll manifest
-/// file protocol version 4 retired). Phase 3 section 3.1: "Swift never
-/// parses `scanny-boy-roll.json` itself... `roll list` and `roll info` are
-/// the only two ways in."
-///
-/// `shared/contract/roll-manifest.schema.json` is the authoritative
-/// definition; this type deliberately decodes only the fields the app
-/// actually uses — the roll's own identity, each run's `run_id`/`status`
-/// (read by `RollManifestReport` for cleanup-incomplete detection), and each
-/// negative's identity, sequence, output, capture-time state, preview,
-/// rotation, stitch diagnostics (error codes, alignment numbers derived
-/// from `pairs`, normalization headroom, grid regularity) — and ignores
-/// the rest (`sources`, `processing_params`, `icc_profile`, `stitch_params`,
-/// and the bulk of per-negative registration detail: `frames`, full
-/// `pairs`, `canvas`, `valid_rect`, `fill_color`). A manifest that grows a field must not stop the
-/// app reading the ones it needs.
-///
-/// `processing_params` in particular is never read: the flat-field profile
-/// it names is not a roll invariant, so the app has no reason to know which
-/// profile a roll's past runs used — each run is free to choose its own.
 struct RollManifest: Sendable, Hashable {
+    /// The roll manifest's optional `camera_color` block (EXPORT_PLAN §3.2):
+    /// frozen after the first stitch; preview encode and export both read it.
+    struct CameraColor: Sendable, Hashable {
+        let rgbXYZMatrix: [[Double]]
+        let source: String
+        let cameraModel: String?
+        let matrixVersion: Int
+
+        /// A stable cache-generation token for preview invalidation.
+        var cacheTerm: String {
+            let flat = rgbXYZMatrix.flatMap { $0.map { String($0) } }.joined(separator: ",")
+            return "\(cameraModel ?? "unknown")#\(flat)"
+        }
+
+        init?(fields: [String: JSONValue]) {
+            guard
+                let matrixRows = fields["rgb_xyz_matrix"]?.arrayValue,
+                matrixRows.count == 3,
+                let source = fields["source"]?.stringValue
+            else { return nil }
+            var matrix: [[Double]] = []
+            for row in matrixRows {
+                guard
+                    let values = row.arrayValue,
+                    values.count == 3,
+                    let r = values[0].doubleValue,
+                    let g = values[1].doubleValue,
+                    let b = values[2].doubleValue
+                else { return nil }
+                matrix.append([r, g, b])
+            }
+            self.rgbXYZMatrix = matrix
+            self.source = source
+            self.cameraModel = fields["camera_model"]?.stringValue
+            self.matrixVersion = fields["matrix_version"]?.intValue ?? 1
+        }
+    }
+
     struct Run: Sendable, Hashable {
         let runID: String
         /// `running`, `partial`, `cancelled`, or `complete`. Read by
@@ -335,6 +351,8 @@ struct RollManifest: Sendable, Hashable {
     /// The roll's film-base reference (REBATE_ANCHORING §3.1). `nil` when
     /// the roll has none attached yet.
     let filmBase: FilmBase?
+    /// The roll's frozen camera colour matrix (EXPORT_PLAN §3.2).
+    let cameraColor: CameraColor?
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -357,7 +375,8 @@ struct RollManifest: Sendable, Hashable {
             negatives: negatives,
             metadata: metadata,
             filmKind: filmKind,
-            filmBase: filmBase
+            filmBase: filmBase,
+            cameraColor: cameraColor
         )
     }
 
@@ -372,7 +391,8 @@ struct RollManifest: Sendable, Hashable {
         negatives: [Negative],
         metadata: Metadata,
         filmKind: String? = nil,
-        filmBase: FilmBase? = nil
+        filmBase: FilmBase? = nil,
+        cameraColor: CameraColor? = nil
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -383,6 +403,7 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = filmKind
         self.filmBase = filmBase
+        self.cameraColor = cameraColor
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -420,6 +441,7 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = fields["film_kind"]?.stringValue
         self.filmBase = fields["film_base"]?.objectValue.flatMap(FilmBase.init(fields:))
+        self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {

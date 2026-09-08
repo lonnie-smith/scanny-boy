@@ -23,7 +23,9 @@ from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.exporter import (
     EXPORT_IMAGE_DESCRIPTION_SUFFIX,
     ExportFailure,
+    applied_downsample,
     apply_edits,
+    parse_downsample,
     run_export,
 )
 from scanny_boy.icc_profile import (
@@ -921,6 +923,7 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
         None,
         None,
+        None,
         ProfileKind.EXPORT_GREY,
         (0.0,),
         None,
@@ -938,8 +941,164 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
         None,
         None,
+        None,
         ProfileKind.EXPORT_GREY,
         (0.0,),
         None,
         None,
     )["rendered"]["crop"] is None
+
+
+# --- downsampling ------------------------------------------------------------
+
+
+def test_applied_downsample_reports_the_target_only_when_it_fits():
+    assert applied_downsample(_ORIGINAL, 2) == 2  # the 3x4 source exceeds it
+    assert applied_downsample(_ORIGINAL, 4) is None  # the long edge, exactly
+    assert applied_downsample(_ORIGINAL, 6048) is None  # larger: never upscale
+    assert applied_downsample(_ORIGINAL, None) is None
+
+
+def test_parse_downsample_maps_the_choices():
+    assert parse_downsample("none") is None
+    assert parse_downsample("6048") == 6048
+    assert parse_downsample("9072") == 9072
+
+
+def test_parse_downsample_rejects_an_unknown_value():
+    with pytest.raises(ValueError):
+        parse_downsample("12000")
+
+
+def test_the_export_downsamples_the_rendered_pixels(stitched_roll, tmp_path):
+    output_dir = tmp_path / "export"
+    events: list = []
+
+    outcome = run_export(
+        stitched_roll, output_dir, [], downsample=2, emit=events.append
+    )
+
+    assert outcome.failed == []
+    done = [e for e in events if isinstance(e, ExportDone)]
+    assert all(e.width == 2 and e.height == 2 for e in done)
+    expected, _ = render.render_export(_ORIGINAL, None, None, long_edge=2)
+    np.testing.assert_array_equal(_decode(output_dir / "_DSC0001.jxl"), expected)
+
+
+def test_the_export_downsamples_inside_the_render_with_a_tone_op(
+    stitched_roll, tmp_path
+):
+    """The resize is part of the render: the tone op is baked in and the
+    downsample runs on the same chain's linear stage, so the exported
+    pixels are the toned render's downsample, one computation."""
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None)
+
+    output_dir = tmp_path / "export"
+    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
+
+    expected, _ = render.render_export(
+        _ORIGINAL, None, {"grade_r": 70.0, "snap_gamma": 0.4}, long_edge=2
+    )
+    np.testing.assert_array_equal(_decode(output_dir / "_DSC0001.jxl"), expected)
+
+
+def test_the_colour_export_downsamples_all_three_channels(colour_roll, tmp_path):
+    output_dir = tmp_path / "export"
+
+    run_export(colour_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
+
+    rendered = _decode(output_dir / "_DSC0001.jxl")
+    assert rendered.shape == (2, 2, 3)
+    expected, _ = render.render_export(
+        _ORIGINAL_RGB,
+        render.export_matrix(_MATRIX.rgb_xyz_matrix),
+        None,
+        long_edge=2,
+    )
+    np.testing.assert_array_equal(rendered, expected)
+
+
+def test_the_downsample_averages_linear_light_not_display_codes(
+    stitched_roll, tmp_path
+):
+    """A black/white step resized to 3/4 scale: the boundary row mixes the
+    two halves in *linear light*, so its display code sits near 0.5 linear
+    re-encoded (47818 of 65535) — decisively above the 32767 a resampler
+    handed gamma-encoded display pixels would produce."""
+    import tifffile
+
+    codes = np.zeros((4, 2), dtype=np.uint16)  # white = code 0
+    codes[2:4, :] = 65535  # black
+    tifffile.imwrite(stitched_roll / "_DSC0001.tif", codes)
+
+    output_dir = tmp_path / "export"
+    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=3, emit=lambda event: None)
+
+    rendered = _decode(output_dir / "_DSC0001.jxl")
+    assert rendered.shape == (3, 2)
+    boundary = rendered[1, 0]
+    linear_midpoint = 0.5 ** (1.0 / render.GAMMA_ADOBE) * 65535
+    assert abs(boundary - linear_midpoint) < abs(boundary - 32767.5)
+
+
+def test_a_constant_field_survives_the_downsample_exactly(stitched_roll, tmp_path):
+    """Normalized kernel weights + edge clamping: a flat field downsamples
+    to the same flat value, band boundaries and all."""
+    import tifffile
+
+    codes = np.full((8, 6), 20000, dtype=np.uint16)
+    tifffile.imwrite(stitched_roll / "_DSC0001.tif", codes)
+
+    output_dir = tmp_path / "export"
+    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=4, emit=lambda event: None)
+
+    rendered = _decode(output_dir / "_DSC0001.jxl")
+    assert rendered.shape == (4, 3)
+    assert np.all(rendered == rendered[0, 0])
+
+
+def test_an_export_target_above_the_long_edge_is_skipped_silently(
+    stitched_roll, tmp_path
+):
+    """Never an upscale: a 6048 target on a 3x4 source writes the
+    full-resolution pixels, and the provenance records no downsample."""
+    destination = _export(stitched_roll, tmp_path, downsample=6048)
+
+    rendered = _decode(destination)
+    assert rendered.shape == (3, 4)
+    full, _ = render.render_export(_ORIGINAL, None, None)
+    np.testing.assert_array_equal(rendered, full)
+    assert _provenance(destination)["rendered"]["downsample"] is None
+
+
+def test_the_provenance_records_the_applied_downsample(stitched_roll, tmp_path):
+    destination = _export(stitched_roll, tmp_path, downsample=2)
+
+    record = _provenance(destination)
+    assert record["rendered"]["downsample"] == {"long_edge": 2}
+
+
+def test_the_provenance_has_no_downsample_by_default(colour_roll, tmp_path):
+    destination = _export_one(colour_roll, tmp_path)
+
+    record = _provenance(destination)
+    assert record["rendered"]["downsample"] is None
+
+
+def test_the_color_op_changes_the_export_and_is_recorded_in_provenance(
+    colour_roll, tmp_path
+):
+    from scanny_boy.edits import run_edit_color
+    from scanny_boy.edits_test import _color_params
+    from scanny_boy.library import repo
+
+    flat = _decode(_export(colour_roll, tmp_path / "flat"))
+    params = _color_params(wb_magenta=0.15, dye_separation=1.3)
+    run_edit_color(colour_roll, _NEGATIVE_ID, params, emit=lambda event: None)
+    tinted_dest = _export(colour_roll, tmp_path / "tinted")
+
+    assert not np.array_equal(flat, _decode(tinted_dest))
+    record = _provenance(tinted_dest)
+    assert record["rendered"]["color"] == repo.net_edit_state(
+        colour_roll, _NEGATIVE_ID
+    ).color

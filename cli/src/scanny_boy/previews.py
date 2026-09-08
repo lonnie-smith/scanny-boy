@@ -9,14 +9,13 @@ reported through `roll info`; Swift only displays the file it is told to.
 
 The published TIFF holds **normalized log density** (section 3.11), a
 negative in appearance — `val = 0` is the scene highlight, `val = 1` the
-scene shadow. Displayed raw it is a flat, un-inverted negative: honest,
-useless for judging a rotation. So the preview decodes through
-`normalization.decode_normalized`, takes `1 - val`, and encodes 8-bit —
-**no gamma**: log density is already roughly perceptually uniform, and
-pushing it through an sRGB OETF would double-encode. The result is a
-positive-looking, flat-contrast image. On top of that flat baseline the
-user's nondestructive tone adjustment (`tone.py`, recorded as a `tone` op)
-composes a paper-grade contrast curve into the same display LUT — a
+scene shadow. The positive preview runs the shared export render
+(`render.encode_positive_uint8`): global CMY, invert, Adobe RGB gamma
+sandwich, camera matrix when the roll records one, tone and colour ops,
+dye separation — at 8-bit and downscaled. The negative view still encodes
+raw densities with no tone, colour, or matrix. On top of that flat baseline
+the user's nondestructive tone adjustment (`tone.py`, recorded as a `tone` op)
+composes a paper-grade contrast curve into the same display encode — a
 preview-time judgement aid whose curve the export's render bakes into the
 exported pixels at full resolution (`render.py`; the published TIFF is
 still never touched). The downscale happens in normalized density
@@ -59,7 +58,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import auto_rotate, color, normalization, spots, tone
+from scanny_boy import auto_rotate, color, normalization, render, spots, tone
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -237,6 +236,17 @@ def _preview_path(roll_id: str, negative_id: str) -> Path:
     return previews_root() / roll_id / f"{negative_id}.png"
 
 
+def _camera_matrix_for_roll(roll_dir: Path, channels: int) -> np.ndarray | None:
+    """The roll's export matrix when previewing a colour negative, or `None`
+    for mono or when stitch has not yet written `camera_color`."""
+    if channels <= 1:
+        return None
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll = load_roll_manifest(roll_dir)
+    return render.camera_matrix_from_roll(roll)
+
+
 def _write_downscaled(
     image: np.ndarray,
     destination: Path,
@@ -244,6 +254,7 @@ def _write_downscaled(
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
     mode: str = "positive",
+    matrix: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """The downscale (in normalized density — code space, not linear light:
     averaging density is what averaging a photographic image means —
@@ -257,6 +268,7 @@ def _write_downscaled(
         color_params=color_params,
         metering=metering,
         mode=mode,
+        matrix=matrix,
     )
     return image.shape[1], image.shape[0]
 
@@ -267,7 +279,10 @@ def _display_tables(
     metering: color.Metering,
     channels: int,
 ) -> np.ndarray:
-    """Per-channel float display tables, shape `(channels, 65536)`."""
+    """Per-channel float display tables, shape `(channels, 65536)`.
+
+    Kept for tests and backward references; preview encode uses
+    `render.encode_positive_uint8` instead."""
     return tone.build_channel_tables(tone_params, color_params, metering, channels)
 
 
@@ -278,13 +293,14 @@ def _encode_display_png(
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
     mode: str = "positive",
+    matrix: np.ndarray | None = None,
 ) -> None:
     """16-bit normalized-density (or already-8-bit) RGB -> 8-bit lossless
-    PNG on disk, no downscale, no gamma. `mode` picks the display encode:
-    `"positive"` is the inverted look the filmstrip reads as one (tone and
-    colour ops compose into the display LUT), `"negative"` is the
-    un-inverted density view, which no tone or colour ever touches. The
-    published TIFF is never touched by any of it."""
+    PNG on disk, no downscale. `mode` picks the display encode:
+    `"positive"` runs the shared export render (`render.encode_positive_uint8`)
+    — camera matrix, tone, and colour ops included when given —
+    `"negative"` is the un-inverted density view, which no tone, colour, or
+    matrix ever touches. The published TIFF is never touched by any of it."""
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode {mode!r}")
     if image.dtype == np.uint16:
@@ -292,36 +308,24 @@ def _encode_display_png(
             image = NEGATIVE_DISPLAY_LUT[image]
         else:
             channels = image.shape[2] if image.ndim == 3 else 1
-            if tone_params is None and color_params is None:
+            if (
+                tone_params is None
+                and color_params is None
+                and matrix is None
+            ):
                 image = NORMALIZED_DISPLAY_LUT[image]
             else:
-                tone_obj = tone.ToneParams(**tone_params) if tone_params else tone.NEUTRAL
-                color_obj = (
-                    color.ColorParams(**color_params) if color_params else color.NEUTRAL_COLOR
+                encoded = render.encode_positive_uint8(
+                    image,
+                    matrix,
+                    tone_params,
+                    color_params=color_params,
+                    metering=metering,
                 )
-                meter = metering or color.Metering(
-                    ranges=(1.0,) * channels, shadow_refs_norm=None
-                )
-                tables = _display_tables(tone_obj, color_obj, meter, channels)
-                use_separation = (
-                    channels > 1
-                    and color_params is not None
-                    and color_obj.dye_separation != 1.0
-                )
-                if use_separation:
-                    gathered = np.empty(image.shape, dtype=np.float32)
-                    for ch in range(channels):
-                        gathered[..., ch] = tables[ch][image[..., ch]]
-                    separated = color.apply_separation(gathered, color_obj)
-                    encoded = np.clip(np.rint(separated * 255), 0, 255).astype(np.uint8)
+                if channels == 1 and encoded.ndim == 2:
                     image = encoded
-                elif channels == 1:
-                    image = np.rint(tables[0][image] * 255).astype(np.uint8)
                 else:
-                    out = np.empty(image.shape, dtype=np.uint8)
-                    for ch in range(channels):
-                        out[..., ch] = np.rint(tables[ch][image[..., ch]] * 255).astype(np.uint8)
-                    image = out
+                    image = encoded
     elif mode == "negative":
         raise ValueError(
             "the negative view must be encoded from the published TIFF's "
@@ -637,6 +641,8 @@ def generate_preview(
         spots_params,
         crop_params,
     )
+    channels = image.shape[2] if image.ndim == 3 else 1
+    matrix = _camera_matrix_for_roll(roll_dir, channels)
 
     destination = _preview_path(roll_id, negative.negative_id)
     _encode_display_png(
@@ -645,6 +651,7 @@ def generate_preview(
         tone_params,
         color_params=color_params,
         metering=metering,
+        matrix=matrix,
     )
     return destination
 
@@ -658,8 +665,11 @@ def render_preview(
     fine_angle_deg: float = 0.0,
     mode: str = "positive",
     tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
     spots_params: dict | None = None,
     crop_params: dict | None = None,
+    matrix: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """The whole display image in the requested display mode, downscaled to
     `PREVIEW_MAX_EDGE`, written to a caller-named path — the pure-query
@@ -681,7 +691,15 @@ def render_preview(
         spots_params,
         crop_params,
     )
-    _encode_display_png(image, destination, tone_params, mode=mode)
+    _encode_display_png(
+        image,
+        destination,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+        mode=mode,
+        matrix=matrix,
+    )
     return image.shape[1], image.shape[0]
 
 
@@ -925,6 +943,7 @@ def render_region(
     mode: str = "positive",
     spots_params: dict | None = None,
     crop_params: dict | None = None,
+    matrix: np.ndarray | None = None,
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
@@ -987,6 +1006,7 @@ def render_region(
                 color_params=color_params,
                 metering=metering,
                 mode=mode,
+                matrix=matrix,
             )
         return dx, dy, dw, dh
 
@@ -1021,6 +1041,7 @@ def render_region(
             color_params=color_params,
             metering=metering,
             mode=mode,
+            matrix=matrix,
         )
     return dx, dy, dw, dh
 

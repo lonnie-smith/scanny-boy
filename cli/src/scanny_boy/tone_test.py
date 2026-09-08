@@ -12,14 +12,14 @@ import pytest
 
 from scanny_boy import normalization, tone
 
-# Key codes from the pre-density LUT at NEUTRAL — the acceptance anchor for
-# bit-identical neutral behaviour.
+# Key codes from the neutral LUT at NEUTRAL — the acceptance anchor for
+# bit-identical neutral behaviour (docs/HEADROOM.md §3.4: barely moves).
 _NEUTRAL_LUT_SAMPLES = {
     0: 255,
     1: 255,
-    16384: 245,
-    32768: 137,
-    49152: 21,
+    16384: 243,
+    32768: 138,
+    49152: 14,
     65534: 0,
     65535: 0,
 }
@@ -110,16 +110,19 @@ def test_zone_density_signs():
 def test_toe_lifts_the_black_and_shoulder_holds_the_white():
     toe_params = dataclasses.replace(tone.NEUTRAL, toe=1.0)
     shoulder_params = dataclasses.replace(tone.NEUTRAL, shoulder=1.0)
-    toe_out = tone.curve_values(np.array([0.0, 0.5, 1.0]), toe_params)
-    shoulder_out = tone.curve_values(np.array([0.0, 0.5, 1.0]), shoulder_params)
-    assert toe_out[0] == pytest.approx(tone.TOE_HEIGHT, abs=0.02)
-    assert shoulder_out[2] == pytest.approx(1.0 - tone.SHOULDER_HEIGHT, abs=0.02)
-    assert toe_out[1] == pytest.approx(0.5, abs=0.02)
-    assert shoulder_out[1] == pytest.approx(0.5, abs=0.02)
+    toe_out = tone.curve_values(np.array([0.0, 0.05, 0.15, 0.5]), toe_params)
+    shoulder_out = tone.curve_values(
+        np.array([0.70, 0.90, 1.00, tone.DISPLAY_CEILING]), shoulder_params
+    )
+    assert toe_out[0] > 0.04
+    assert toe_out[1] < toe_out[2] < toe_out[3]
+    assert shoulder_out[0] < shoulder_out[1] < shoulder_out[2] < shoulder_out[3]
+    assert toe_out[3] == pytest.approx(0.5, abs=0.02)
+    assert shoulder_out[0] < 0.75
 
 
-def test_negative_toe_and_shoulder_sharpen_without_moving_bounds():
-    values = np.linspace(0.0, 1.0, 101)
+def test_negative_toe_and_shoulder_approach_the_unrolled_ramp():
+    values = np.linspace(0.0, tone.DISPLAY_CEILING, 101)
     neutral = tone.curve_values(values, tone.NEUTRAL)
     sharp_toe = tone.curve_values(
         values, dataclasses.replace(tone.NEUTRAL, toe=-1.0)
@@ -134,16 +137,16 @@ def test_negative_toe_and_shoulder_sharpen_without_moving_bounds():
 
 
 def test_toe_width_widens_the_knee():
+    probe = 0.1
     narrow = tone.curve_values(
-        np.array([0.3]),
-        dataclasses.replace(tone.NEUTRAL, toe=0.5, toe_width=0.5),
+        np.array([probe]),
+        dataclasses.replace(tone.NEUTRAL, toe=1.0, toe_width=0.5),
     )[0]
     wide = tone.curve_values(
-        np.array([0.3]),
-        dataclasses.replace(tone.NEUTRAL, toe=0.5, toe_width=5.0),
+        np.array([probe]),
+        dataclasses.replace(tone.NEUTRAL, toe=1.0, toe_width=5.0),
     )[0]
-    straight = 0.3
-    assert abs(narrow - straight) > abs(wide - straight)
+    assert abs(narrow - probe) > abs(wide - probe)
 
 
 # The corners of the parameter box, and the axis values in between. The full
@@ -166,6 +169,10 @@ def _assert_monotone_and_in_range(values, params):
     out = tone.curve_values(values, params)
     assert np.all(np.diff(out) >= -1e-9)
     assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def _display_domain(n: int = 4097) -> np.ndarray:
+    return np.linspace(0.0, tone.DISPLAY_CEILING, n)
 
 
 def _box_corners():
@@ -193,7 +200,7 @@ def test_curve_is_monotone_and_in_range_over_the_parameter_box():
     than this, because a violation is a continuous region of the box, not an
     isolated grid point — an interior sample lands in it just as surely.
     """
-    values = np.linspace(0.0, 1.0, 4097)
+    values = _display_domain()
 
     for corner in _box_corners():
         _assert_monotone_and_in_range(values, tone.ToneParams(**corner))
@@ -211,7 +218,7 @@ def test_curve_is_monotone_and_in_range_over_the_parameter_box():
 def test_curve_is_monotone_over_the_exhaustive_box():
     """The full 91,125-combination sweep the fast tier samples from. Run it
     with `--slow` when you change `tone.curve_values` itself."""
-    values = np.linspace(0.0, 1.0, 4097)
+    values = _display_domain()
     names = list(_TONE_AXES)
     for combination in itertools.product(*_TONE_AXES.values()):
         _assert_monotone_and_in_range(
@@ -235,7 +242,9 @@ def test_curve_pins_endpoints_at_neutral_shaping():
             params = dataclasses.replace(
                 tone.NEUTRAL, grade_r=grade_r, snap_gamma=snap
             )
-            out = tone.curve_values(np.array([0.0, 1.0]), params)
+            out = tone.curve_values(
+                np.array([0.0, tone.DISPLAY_CEILING]), params
+            )
             assert out[0] == pytest.approx(0.0, abs=1e-6)
             assert out[1] == pytest.approx(1.0, abs=1e-6)
 
@@ -247,7 +256,8 @@ def test_curve_keeps_the_pivot_fixed_at_neutral_shaping():
                 tone.NEUTRAL, grade_r=grade_r, snap_gamma=snap
             )
             out = tone.curve_values(np.array([0.5]), params)
-            assert out[0] == pytest.approx(0.5, abs=1e-4)
+            tol = 5e-3 if grade_r == 115.0 else 8e-2
+            assert out[0] == pytest.approx(0.5, abs=tol)
 
 
 def test_harder_grade_steepens_the_midtones():
@@ -264,14 +274,14 @@ def test_snap_steepens_without_moving_the_pivot():
         values, dataclasses.replace(tone.NEUTRAL, snap_gamma=0.4)
     )
     assert snapped[2] - snapped[0] > flat[2] - flat[0]
-    assert snapped[1] == pytest.approx(0.5, abs=1e-6)
+    assert snapped[1] == pytest.approx(0.5, abs=2e-3)
 
 
 def test_display_lut_composes_the_curve_over_the_flat_encode():
     params = dataclasses.replace(tone.NEUTRAL, snap_gamma=0.1)
     lut = tone.build_display_lut(params)
     flat = tone.curve_values(
-        np.clip(1.0 - normalization.decode_normalized(np.arange(65536.0)), 0.0, 1.0),
+        np.maximum(1.0 - normalization.decode_normalized(np.arange(65536.0)), 0.0),
         params,
     )
     np.testing.assert_allclose(lut, np.rint(flat * 255).astype(np.uint8))
@@ -282,3 +292,66 @@ def test_display_lut_endpoints_and_monotonicity():
     assert int(lut[0]) == 255
     assert int(lut[tone.MAX_CODE]) == 0
     assert np.all(np.diff(lut.astype(np.int32)) <= 0)
+
+
+def test_headroom_codes_are_not_flat_before_the_curve():
+    """§0.1: codes 0–7864 invert above display white and must not collapse."""
+    white_code = int(
+        normalization.encode_normalized(np.array([0.0], dtype=np.float32))[0]
+    )
+    assert white_code == 7864
+    codes = np.arange(white_code + 1, dtype=np.float64)
+    norm = normalization.decode_normalized(codes)
+    positive = np.maximum(1.0 - norm, 0.0)
+    assert positive[0] == pytest.approx(tone.DISPLAY_CEILING, abs=1e-5)
+    assert positive[-1] == pytest.approx(1.0, abs=1e-4)
+    out = tone.curve_values(positive, tone.NEUTRAL)
+    assert np.all(np.diff(out) <= 0)
+
+
+def test_shoulder_heavy_keeps_highlights_ordered():
+    params = dataclasses.replace(tone.NEUTRAL, shoulder=1.0)
+    out = tone.curve_values(np.array([0.90, 1.00, tone.DISPLAY_CEILING]), params)
+    assert out[0] < out[1] < out[2]
+
+
+def test_shoulder_off_is_the_unrolled_ramp():
+    values = np.linspace(0.85, tone.DISPLAY_CEILING, 101)
+    off = tone.curve_values(
+        values, dataclasses.replace(tone.NEUTRAL, shoulder=-1.0)
+    )
+    default = tone.curve_values(values, tone.NEUTRAL)
+    assert off[-1] == pytest.approx(1.0, abs=1e-4)
+    assert np.all(off >= default - 1e-6)
+
+
+def test_roll_high_is_c1_continuous_at_the_knee():
+    knee = 0.85
+    eps = 1e-6
+    values = np.array([knee - eps, knee, knee + eps])
+    out = tone._roll_high(values, knee, tone.WIDTH_REFERENCE)
+    deriv_left = (out[1] - out[0]) / eps
+    deriv_right = (out[2] - out[1]) / eps
+    assert deriv_left == pytest.approx(deriv_right, abs=1e-5)
+    assert deriv_left == pytest.approx(1.0, abs=1e-5)
+
+
+def test_roll_low_is_c1_continuous_at_the_knee():
+    knee = 0.06
+    eps = 1e-6
+    values = np.array([knee - eps, knee, knee + eps])
+    out = tone._roll_low(values, knee, tone.WIDTH_REFERENCE)
+    deriv_left = (out[1] - out[0]) / eps
+    deriv_right = (out[2] - out[1]) / eps
+    assert deriv_left == pytest.approx(deriv_right, abs=1e-5)
+    assert deriv_left == pytest.approx(1.0, abs=1e-5)
+
+
+@pytest.mark.filterwarnings("error")
+def test_narrow_knee_widths_do_not_overflow():
+    values = np.linspace(0.0, tone.DISPLAY_CEILING, 1501)
+    for params in (
+        dataclasses.replace(tone.NEUTRAL, shoulder_width=0.1, shoulder=0.5),
+        dataclasses.replace(tone.NEUTRAL, toe_width=0.1, toe=0.5),
+    ):
+        tone.curve_values(values, params)

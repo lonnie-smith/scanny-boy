@@ -8,7 +8,7 @@ so the app can show the results, and emit per-negative confirmations —
 they never touch the published TIFFs. The pixels are transformed only at
 export time, when the exporter replays each negative's ops log over the
 published TIFF (`tone` is baked in there through `render.render_export`;
-`color` is the one preview-only judgement aid the exporter ignores). The
+`color` is a judgement aid the export now bakes in, same as `tone`. The
 `spots` op is the exception that proves the log's replay rule: it is the
 only op whose replay *synthesizes* pixel values, at export and in the
 preview alike (SPOTTING_PLAN §1.1).
@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scanny_boy import color, previews, spots
+from scanny_boy import color, previews, render, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -640,6 +640,7 @@ def run_edit_render_region(
     tiff_path = roll_dir / negative.output["name"]
     state = repo.net_edit_state(roll_dir, negative_id)
     meter = color.read_metering(negative.normalization)
+    matrix = render.camera_matrix_from_roll(_roll)
     try:
         rendered = previews.render_region(
             tiff_path,
@@ -656,6 +657,7 @@ def run_edit_render_region(
             destination=output_path,
             mode=mode,
             crop_params=state.crop,
+            matrix=matrix,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
@@ -693,6 +695,8 @@ def run_edit_render_preview(
 
     tiff_path = roll_dir / negative.output["name"]
     state = repo.net_edit_state(roll_dir, negative_id)
+    meter = color.read_metering(negative.normalization)
+    matrix = render.camera_matrix_from_roll(_roll)
     try:
         width, height = previews.render_preview(
             tiff_path,
@@ -703,6 +707,9 @@ def run_edit_render_preview(
             mode=mode,
             tone_params=state.tone,
             crop_params=state.crop,
+            color_params=state.color,
+            metering=meter,
+            matrix=matrix,
         )
     except ValueError as exc:
         raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc

@@ -605,17 +605,28 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
-    /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]`
+    /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]
+    /// [--downsample N]`
     ///
     /// Renders each negative's published pixels as a positive in Adobe
     /// RGB — the recorded tone baked in — and writes it as a lossless JPEG
     /// XL into the chosen folder; the roll's own files are never modified.
-    /// No selection means every negative.
-    public static func export(roll: URL, output: URL, negatives: [String] = []) -> CLICommand {
+    /// No selection means every negative. `downsample`, when set, is the
+    /// long edge to reduce each export to (the CLI never upscales an
+    /// image already smaller than it).
+    public static func export(
+        roll: URL,
+        output: URL,
+        negatives: [String] = [],
+        downsample: Int? = nil
+    ) -> CLICommand {
         var arguments = ["export", "--roll", roll.path, "--output", output.path]
         if !negatives.isEmpty {
             arguments.append("--negatives")
             arguments.append(contentsOf: negatives)
+        }
+        if let downsample {
+            arguments.append(contentsOf: ["--downsample", String(downsample)])
         }
         return CLICommand(arguments: arguments)
     }

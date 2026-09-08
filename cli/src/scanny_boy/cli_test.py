@@ -933,6 +933,11 @@ def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
         pytest.param(
             ["edit", "flip", "--roll", "/tmp/roll"], id="edit-flip-no-negative"
         ),
+        pytest.param(
+            ["export", "--roll", "/tmp/roll", "--output", "/tmp/out",
+             "--downsample", "12000"],
+            id="export-bad-downsample",
+        ),
     ],
 )
 def test_usage_errors_exit_2_with_a_clean_stdout(argv, capsys):
@@ -1346,9 +1351,12 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     composed into the positive render's display LUT and never reaches the
     negative render."""
     import cv2
+    import numpy as np
     import tifffile
 
-    from scanny_boy import tone
+    from scanny_boy import render
+    from scanny_boy.previews import PREVIEW_MAX_EDGE
+    from scanny_boy.roll_manifest import load_roll_manifest
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -1397,14 +1405,13 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
 
     # The negative view is byte-for-byte unaffected...
     assert _render("negative", "negative-after.png").read_bytes() == negative_before
-    # ...while the positive render carries the tone curve: the graded LUT,
-    # not the flat one, encodes the published TIFF — after the same
-    # PREVIEW_MAX_EDGE density-space downscale the command applies.
+    # ...while the positive render carries the tone curve through the shared
+    # render — after the same PREVIEW_MAX_EDGE density-space downscale.
     _render("positive", "positive-after.png")
-    import numpy as np
 
-    from scanny_boy.previews import PREVIEW_MAX_EDGE
-
+    roll = load_roll_manifest(roll_dir)
+    matrix = render.camera_matrix_from_roll(roll)
+    tone_params = {"grade_r": 160.0, "snap_gamma": 0.3}
     tiff = tifffile.imread(roll_dir / negative.output["name"])
     edge = max(tiff.shape[0], tiff.shape[1])
     if edge > PREVIEW_MAX_EDGE:
@@ -1415,7 +1422,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
             interpolation=cv2.INTER_AREA,
         )
     graded = cv2.cvtColor(
-        tone.build_display_lut(tone.ToneParams(grade_r=160.0, snap_gamma=0.3))[tiff],
+        render.encode_positive_uint8(tiff, matrix, tone_params),
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)
@@ -3371,3 +3378,100 @@ def test_edit_crop_rejects_an_out_of_bounds_rect(work_dir, capsys, tmp_path):
     assert events[1]["code"] == "INVALID_EDIT"
     assert events[-1]["status"] == "failed"
     assert err == ""
+
+
+# --- export --downsample ------------------------------------------------------
+
+
+def test_export_downsample_flows_through_main(capsys, tmp_path):
+    """The app sends `--downsample 6048`; the event stream reports the
+    downsampled dimensions. A 6048 target on a 3x4 source is skipped
+    silently, so the same wiring covers both the applied and the
+    skip-silently branch."""
+    import tifffile
+
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    from scanny_boy.roll_manifest import append_run
+
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.zeros((3, 4), dtype=np.uint16))
+    capsys.readouterr()
+
+    output_dir = tmp_path / "export"
+    status = main(
+        [
+            "export",
+            "--roll",
+            str(roll_dir),
+            "--output",
+            str(output_dir),
+            "--downsample",
+            "6048",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    done = next(e for e in events if e["event"] == "export_done")
+    assert done["width"] == 4
+    assert done["height"] == 3
+    assert (output_dir / "_DSC0001.jxl").exists()
+
+
+def test_export_defaults_to_no_downsample(capsys, tmp_path):
+    """The flag is optional: an export without it keeps full resolution —
+    the same event stream the app has always parsed."""
+    import tifffile
+
+    from scanny_boy.roll_manifest import append_run
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.zeros((3, 4), dtype=np.uint16))
+    capsys.readouterr()
+
+    output_dir = tmp_path / "export"
+    status = main(["export", "--roll", str(roll_dir), "--output", str(output_dir)])
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    done = next(e for e in events if e["event"] == "export_done")
+    assert done["width"] == 4
+    assert done["height"] == 3

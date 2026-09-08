@@ -53,6 +53,7 @@ struct EditStageView: View {
             Divider()
             FilmstripView(
                 negatives: edit.visibleNegatives,
+                cameraColor: edit.roll?.cameraColor,
                 isSelected: edit.isSelected
             ) { negativeID, additive, extendingRange in
                 edit.select(
@@ -406,7 +407,7 @@ private struct PreviewPane: View {
     }
 
     private var previewGeneration: String {
-        EditModel.renderGeneration(of: negative)
+        EditModel.renderGeneration(of: negative, cameraColor: edit.roll?.cameraColor)
     }
 
     private var previewURL: URL? {
