@@ -395,6 +395,7 @@ scanny-boy edit spots          --roll DIR --negative ID [--reject N ...]
 scanny-boy edit list-spots     --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
+                       [--downsample {none,6048,9072}]
 
 scanny-boy flatfield create --reference FILE --name NAME
                             [--calibration FILE [FILE ...]]
@@ -447,6 +448,17 @@ a skip must remove a whole group's worth or the run fails
 `NON_CONTIGUOUS_SELECTION`.
 
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
+
+`--downsample` on `export` reduces each export to the chosen long edge
+(`none` is the default and keeps full resolution). The resize happens
+inside the render, on the *linear-light* values after the gamut clip and
+before the display re-encode — a true Lanczos3 resample
+(`scanny_boy.resample`), not a resample of the finished gamma-encoded
+pixels, which would darken midtones along high-contrast edges. It never
+upscales: an image already at or below the target is skipped silently,
+and what was applied is recorded in the XMP's `scannyboy:provenance`
+`rendered.downsample` block. An image smaller than the target exports
+at full resolution; no warning, no error.
 
 `--flatfield` on `convert`, `run`, `stitch`, and `probe` names a calibration
 profile built by `flatfield create` — a profile may carry a gain map only,

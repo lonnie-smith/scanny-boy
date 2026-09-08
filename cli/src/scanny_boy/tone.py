@@ -13,13 +13,15 @@ preview and export cannot drift apart. The published TIFF itself is never
 touched; the curve owns pixels only where a *rendering* is made.
 
 Colour shaping (global/regional CMY, cast removal) composes in the same
-per-channel tables; dye separation is the one control that is not a LUT
+per-channel tables after the camera matrix and Adobe RGB encode on the
+export path; dye separation is the one control that is not a LUT
 (see `color.py` and `previews.py`).
 
 The math is a simplified port of NegPy's print curve
 (`NegPy/negpy/features/exposure/logic.py`, `CharacteristicCurve` /
 `_apply_print_curve_kernel`), operating on the *positive display value*
-v ∈ [0, 1] after `1 - val`:
+v ∈ [0, DISPLAY_CEILING] after `1 - val` when a tone curve is active
+(`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW`; docs/HEADROOM.md §1):
 
 - **Grade** — an ISO-R paper "range" value (`grade_r`, 50–180; lower is
   harder) turned into a straight-line slope about the midtone pivot.
@@ -27,7 +29,8 @@ v ∈ [0, 1] after `1 - val`:
 - **Snap** — NegPy's anchor-preserving variable midtone gamma.
 - **Zone density** — mid-sparing sigmoid offsets on the quarter and
   three-quarter tones, read on the post-Snap value.
-- **Knees** — parameterised softplus toe and shoulder bounds.
+- **Knees** — toe and shoulder knee-point controls with exponential rolloff
+  toward 0.0 and 1.0 (docs/HEADROOM.md §3).
 
 Three uint16 → float tables (one per channel when colour is active)
 compose steps 1–7; the endpoint rescale is shared across channels so
@@ -40,7 +43,7 @@ import dataclasses
 
 import numpy as np
 
-from scanny_boy import color
+from scanny_boy import color, normalization
 
 # Grade (ISO-R paper range).
 GRADE_MIN = 50.0
@@ -81,10 +84,12 @@ SHOULDER_MAX = 1.0
 SHOULDER_WIDTH_MIN = 0.1
 SHOULDER_WIDTH_MAX = 5.0
 WIDTH_REFERENCE = 2.5
-TOE_HEIGHT = 0.18
-SHOULDER_HEIGHT = 0.25
-KNEE_SHARPNESS = 9.0
-KNEE_SHARPEN = 3.4
+# Same derivation as render.DISPLAY_CEILING (docs/HEADROOM.md §1).
+DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
+# shoulder: -1 = no rolloff, 0 = mild default, +1 = heavy highlight compression
+SHOULDER_KNEE = (DISPLAY_CEILING, 0.85, 0.50)
+# toe: -1 = no rolloff, 0 = mild default, +1 = heavy shadow compression
+TOE_KNEE = (0.0, 0.06, 0.35)
 
 MAX_CODE = 65535
 
@@ -133,16 +138,6 @@ def base_slope_and_pivot(tone_params: ToneParams) -> tuple[float, float]:
     return slope, pivot_in
 
 
-def _softplus(x: np.ndarray | float) -> np.ndarray | float:
-    """Numerically stable softplus: log(1 + exp(x))."""
-    if isinstance(x, np.ndarray):
-        out = np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
-        return out
-    if x > 0:
-        return x + float(np.log1p(np.exp(-x)))
-    return float(np.log1p(np.exp(x)))
-
-
 def _expit(x: np.ndarray | float) -> np.ndarray | float:
     return 0.5 * (1.0 + np.tanh(0.5 * np.asarray(x, dtype=np.float64)))
 
@@ -158,6 +153,42 @@ def _neutral_shaping(tone_params: ToneParams) -> ToneParams:
         toe_width=WIDTH_REFERENCE,
         shoulder_width=WIDTH_REFERENCE,
     )
+
+
+def _knee_from_slider(
+    value: float, at_neg1: float, at_zero: float, at_pos1: float
+) -> float:
+    """Three-point knee mapping on the existing [-1, 1] slider range."""
+    if value <= 0.0:
+        return at_zero + value * (at_zero - at_neg1)
+    return at_zero + value * (at_pos1 - at_zero)
+
+
+def _roll_high(
+    v: np.ndarray, knee: float, width: float
+) -> np.ndarray:
+    """Compress everything above `knee` toward 1.0. C1-continuous at the
+    knee, monotone, and asymptotic — never reaching 1.0."""
+    if knee >= 1.0:
+        return np.minimum(v, 1.0)
+    head = (1.0 - knee) * (width / WIDTH_REFERENCE)
+    if head <= 0.0:
+        return np.where(v <= knee, v, np.float32(1.0))
+    t = np.maximum((v - knee) / head, 0.0)
+    rolled = knee + head * (1.0 - np.exp(-np.minimum(t, 700.0)))
+    return np.where(v <= knee, v, rolled)
+
+
+def _roll_low(v: np.ndarray, knee: float, width: float) -> np.ndarray:
+    """Mirror of `_roll_high`: compress everything below `knee` toward 0.0."""
+    if knee <= 0.0:
+        return np.maximum(v, 0.0)
+    head = knee * (width / WIDTH_REFERENCE)
+    if head <= 0.0:
+        return np.where(v >= knee, v, np.float32(0.0))
+    t = np.maximum((knee - v) / head, 0.0)
+    rolled = knee - head * (1.0 - np.exp(-np.minimum(t, 700.0)))
+    return np.where(v >= knee, v, rolled)
 
 
 def _curve_raw(
@@ -197,22 +228,10 @@ def _curve_raw(
     v = v - ZONE_DENSITY_SCALE * (
         tone_params.shadow_density * w_sh + tone_params.highlight_density * w_hi
     )
-    a_base = KNEE_SHARPNESS * max(slope, 1.0)
-    a_toe = a_base * WIDTH_REFERENCE / tone_params.toe_width
-    a_shoulder = a_base * WIDTH_REFERENCE / tone_params.shoulder_width
-    toe_floor = tone_params.toe * TOE_HEIGHT if tone_params.toe >= 0 else 0.0
-    if tone_params.toe < 0:
-        a_toe = a_toe * (1.0 - tone_params.toe * KNEE_SHARPEN)
-    shoulder_ceil = (
-        1.0 - tone_params.shoulder * SHOULDER_HEIGHT
-        if tone_params.shoulder >= 0
-        else 1.0
-    )
-    if tone_params.shoulder < 0:
-        a_shoulder = a_shoulder * (1.0 - tone_params.shoulder * KNEE_SHARPEN)
-    shoulder_ceil = max(shoulder_ceil, toe_floor + 0.1)
-    v = toe_floor + _softplus(a_toe * (v - toe_floor)) / a_toe
-    v = shoulder_ceil - _softplus(a_shoulder * (shoulder_ceil - v)) / a_shoulder
+    toe_knee = _knee_from_slider(tone_params.toe, *TOE_KNEE)
+    shoulder_knee = _knee_from_slider(tone_params.shoulder, *SHOULDER_KNEE)
+    v = _roll_low(v, toe_knee, tone_params.toe_width)
+    v = _roll_high(v, shoulder_knee, tone_params.shoulder_width)
     return v
 
 
@@ -252,7 +271,7 @@ def curve_values(
     )
     high = float(
         _curve_raw(
-            np.array([1.0]),
+            np.array([DISPLAY_CEILING]),
             neutral_tone,
             color.NEUTRAL_COLOR,
             channel=None,
@@ -275,8 +294,6 @@ def build_channel_tables(
 
     On `channels == 1` every colour term is skipped and the single row is
     the achromatic curve."""
-    from scanny_boy import normalization
-
     if metering is None:
         metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     apply_color = channels > 1
@@ -287,9 +304,9 @@ def build_channel_tables(
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
         if apply_color:
-            display = np.clip(1.0 - (norm + offset), 0.0, 1.0)
+            display = np.maximum(1.0 - (norm + offset), 0.0)
         else:
-            display = np.clip(1.0 - norm, 0.0, 1.0)
+            display = np.maximum(1.0 - norm, 0.0)
         tables[ch] = curve_values(
             display,
             tone_params,

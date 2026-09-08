@@ -46,7 +46,7 @@ PROPHOTO_BYTES = _generator.prophoto_source_bytes()
 TRC_SIGNATURES = (b"rTRC", b"gTRC", b"bTRC")
 LINEAR_TRC_PARAMS = (TRC_G_LINEAR,)
 DENSITY_TRC_PARAMS = (TRC_G_DENSITY,)
-LINEAR_PROFILE_ID = bytes.fromhex("18cfa8234c46e4b8e766fab30d2a86d7")
+LINEAR_PROFILE_ID = bytes.fromhex("ded7f19b8a02c80ba34ac389584e9cd9")
 
 # The three profiles whose colorants are the vendored ProPhoto source's
 # wide container (docs/PROFILE_HONESTY_PLAN.md). The two export profiles
@@ -226,12 +226,13 @@ def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_ve
         assert new == src, tag_name
 
 
-def _profile_description(data: bytes) -> str:
-    """The en-US string of the profile's `desc` (`mluc`) tag."""
+def _profile_description(data: bytes, tag_signature: bytes = b"desc") -> str:
+    """The en-US string of an `mluc` tag — `desc` by default, `cprt` for
+    the export profiles' Adobe disclaimer (EXPORT_PLAN §2.3)."""
     sig, tag_offset, _size = next(
-        entry for entry in _tag_entries(data) if entry[0] == b"desc"
+        entry for entry in _tag_entries(data) if entry[0] == tag_signature
     )
-    assert sig == b"desc"
+    assert sig == tag_signature
     assert data[tag_offset : tag_offset + 4] == b"mluc"
     record_count = struct.unpack(">I", data[tag_offset + 8 : tag_offset + 12])[0]
     record_size = struct.unpack(">I", data[tag_offset + 12 : tag_offset + 16])[0]
@@ -310,7 +311,7 @@ def test_decoded_density_curve_is_monotonic_and_spans_zero_to_one():
 
 def test_load_icc_profile_still_verifies_and_returns_bytes():
     data = load_icc_profile(ProfileKind.LINEAR)
-    assert len(data) == 1140
+    assert len(data) == 1136
     assert hashlib.sha256(data).hexdigest() == LINEAR_PROFILE_SHA256
     density = load_icc_profile(ProfileKind.DENSITY)
     assert len(density) == 1776
@@ -361,32 +362,32 @@ def test_export_profile_kind_selects_by_channel_count():
 
 # --- the export profiles (docs/EXPORT_PLAN.md section 2) -------------------
 
-# The §2.2 pinned values: the published Adobe RGB (1998) ICC values, in
-# s15Fixed16 (cross-checked byte for byte against Apple's file for the
-# colorants; the wtpt/chad pair is the conformant D50 + chad convention,
-# which Apple's file does not use).
+# The §2.2 pinned values: the D50-adapted colorants lcms2 derives from the
+# published Adobe RGB (1998) chromaticities. All but one agree byte for
+# byte with Apple's AdobeRGB1998.icc; `bXYZ`'s Z is 48795 where Apple's
+# file rounds 0.744568 up to 48796, a difference of 1/65536 (§2.2).
 ADOBE_RGB_EXPORT_TAGS = {
     b"wtpt": (63190, 65536, 54061),
     b"rXYZ": (39960, 20389, 1276),
     b"gXYZ": (13453, 41004, 3989),
-    b"bXYZ": (9777, 4143, 48796),
+    b"bXYZ": (9777, 4143, 48795),
 }
 ADOBE_RGB_EXPORT_CHAD = (
     68674, 1502, -3291,
     1939, 64912, -1119,
     -606, 988, 49262,
 )
-# u8Fixed8 563 = 563/256 = 2.19921875 = TRC_G_EXPORT / 65536.
-ADOBE_RGB_TRC_U8FIXED8 = 563
 
 
-def _xyz_tag_payload(data: bytes, tag_signature: bytes) -> tuple[int, ...]:
+def _typed_s15fixed16_array(
+    data: bytes, tag_signature: bytes, expected_type: bytes
+) -> tuple[int, ...]:
     payload = next(
         data[off : off + size]
         for sig, off, size in _tag_entries(data)
         if sig == tag_signature
     )
-    assert payload[:4] == b"XYZ "
+    assert payload[:4] == expected_type, (tag_signature, payload[:4])
     assert payload[4:8] == b"\x00\x00\x00\x00"
     body = payload[8:]
     return tuple(
@@ -394,26 +395,24 @@ def _xyz_tag_payload(data: bytes, tag_signature: bytes) -> tuple[int, ...]:
     )
 
 
-def _curv_gamma(data: bytes, tag_signature: bytes) -> int:
-    payload = next(
-        data[off : off + size]
-        for sig, off, size in _tag_entries(data)
-        if sig == tag_signature
-    )
-    assert payload[:4] == b"curv"
-    assert payload[4:8] == b"\x00\x00\x00\x00"
-    (count,) = struct.unpack(">I", payload[8:12])
-    assert count == 1
-    (gamma,) = struct.unpack(">I", payload[12:16])
-    return gamma
+def _xyz_tag_payload(data: bytes, tag_signature: bytes) -> tuple[int, ...]:
+    return _typed_s15fixed16_array(data, tag_signature, b"XYZ ")
+
+
+def _chad_tag_payload(data: bytes) -> tuple[int, ...]:
+    """`chad` must be `s15Fixed16ArrayType`. The hand-assembled v1 export
+    profiles stamped `XYZ ` here instead, so a parser dispatching on the
+    type signature read one XYZNumber and dropped the other six values;
+    that is why this asserts the type and not only the numbers."""
+    return _typed_s15fixed16_array(data, b"chad", b"sf32")
 
 
 def test_export_rgb_profile_carries_the_pinned_adobe_rgb_values():
     data = load_icc_profile(ProfileKind.EXPORT_RGB)
     for signature, expected in ADOBE_RGB_EXPORT_TAGS.items():
         assert _xyz_tag_payload(data, signature) == expected, signature
-    assert _xyz_tag_payload(data, b"chad") == ADOBE_RGB_EXPORT_CHAD
-    assert _curv_gamma(data, b"rTRC") == ADOBE_RGB_TRC_U8FIXED8
+    assert _chad_tag_payload(data) == ADOBE_RGB_EXPORT_CHAD
+    assert _parametric_curve_params(data, b"rTRC") == [TRC_G_EXPORT]
 
 
 def test_export_rgb_profile_is_an_rgb_monitor_profile():
@@ -422,8 +421,11 @@ def test_export_rgb_profile_is_an_rgb_monitor_profile():
     assert data[16:20] == b"RGB "
     assert data[20:24] == b"XYZ "
     signatures = {sig for sig, _off, _size in _tag_entries(data)}
+    # `cprt` is required of every ICC profile and was missing from the
+    # hand-assembled v1; `chrm` is lcms2 recording the chromaticities it
+    # built the colorants from.
     assert signatures == {
-        b"desc", b"wtpt", b"chad", b"rXYZ", b"gXYZ", b"bXYZ",
+        b"desc", b"cprt", b"chrm", b"wtpt", b"chad", b"rXYZ", b"gXYZ", b"bXYZ",
         b"rTRC", b"gTRC", b"bTRC",
     }
 
@@ -437,9 +439,12 @@ def test_export_grey_profile_is_a_gray_class_profile():
     assert data[16:20] == b"GRAY"
     assert data[20:24] == b"XYZ "
     signatures = {sig for sig, _off, _size in _tag_entries(data)}
-    assert signatures == {b"desc", b"wtpt", b"chad", b"kTRC"}
+    assert signatures == {b"desc", b"cprt", b"wtpt", b"chad", b"kTRC"}
+    # lcms2's gray profile writes a D65 `wtpt` and no `chad` — the older
+    # non-conformant convention §2.2 rejects. The generator replaces the
+    # pair, so a mono and a colour export make the same white-point claim.
     assert _xyz_tag_payload(data, b"wtpt") == ADOBE_RGB_EXPORT_TAGS[b"wtpt"]
-    assert _xyz_tag_payload(data, b"chad") == ADOBE_RGB_EXPORT_CHAD
+    assert _chad_tag_payload(data) == ADOBE_RGB_EXPORT_CHAD
     with pytest.raises(StopIteration):
         _xyz_tag_payload(data, b"rXYZ")
 
@@ -448,24 +453,40 @@ def test_the_export_profiles_trc_gammas_are_equal_and_equal_trc_g_export():
     rgb = load_icc_profile(ProfileKind.EXPORT_RGB)
     grey = load_icc_profile(ProfileKind.EXPORT_GREY)
     gammas = {
-        _curv_gamma(rgb, b"rTRC"),
-        _curv_gamma(rgb, b"gTRC"),
-        _curv_gamma(rgb, b"bTRC"),
-        _curv_gamma(grey, b"kTRC"),
+        tuple(_parametric_curve_params(rgb, b"rTRC")),
+        tuple(_parametric_curve_params(rgb, b"gTRC")),
+        tuple(_parametric_curve_params(rgb, b"bTRC")),
+        tuple(_parametric_curve_params(grey, b"kTRC")),
     }
-    assert gammas == {ADOBE_RGB_TRC_U8FIXED8}
-    assert ADOBE_RGB_TRC_U8FIXED8 / 256 * 65536 == TRC_G_EXPORT
+    assert gammas == {(TRC_G_EXPORT,)}
+    # 563/256 = 2.19921875, the published Adobe RGB gamma, exactly
+    # representable in s15Fixed16 — which is why one integer serves the
+    # profiles and `render.GAMMA_ADOBE` alike.
+    assert TRC_G_EXPORT == 563 / 256 * 65536
 
 
-def test_the_export_profiles_describe_themselves_as_adobe_rgb_compatible():
-    rgb_description = _profile_description(load_icc_profile(ProfileKind.EXPORT_RGB))
-    grey_description = _profile_description(load_icc_profile(ProfileKind.EXPORT_GREY))
-    for description in (rgb_description, grey_description):
-        assert "Adobe RGB (1998)" in description
-        assert "not an Adobe product" in description
-        assert "not derived from Adobe's profile" in description
-    assert "ScannyBoy Export RGB" in rgb_description
-    assert "ScannyBoy Export Grey" in grey_description
+def test_the_export_profiles_name_themselves_in_a_description_macos_will_show():
+    """§2.3: the short name goes in `desc` and the Adobe disclaimer in
+    `cprt`. ColorSync returns an empty description for a `desc` of 100
+    characters or more, which is why the disclaimer cannot live there."""
+    for kind, name in (
+        (ProfileKind.EXPORT_RGB, "ScannyBoy Export RGB"),
+        (ProfileKind.EXPORT_GREY, "ScannyBoy Export Grey"),
+    ):
+        description = _profile_description(load_icc_profile(kind))
+        assert description.startswith(name)
+        assert "Adobe RGB 1998 compatible" in description
+        assert len(description) < 100
+
+
+def test_the_export_profiles_disclaim_adobe_in_their_copyright_tag():
+    for kind in (ProfileKind.EXPORT_RGB, ProfileKind.EXPORT_GREY):
+        copyright_text = _profile_description(
+            load_icc_profile(kind), tag_signature=b"cprt"
+        )
+        assert "Adobe RGB (1998)" in copyright_text
+        assert "not an Adobe product" in copyright_text
+        assert "not derived from Adobe's profile" in copyright_text
 
 
 def test_load_icc_profile_returns_the_export_profiles_with_pinned_hashes():

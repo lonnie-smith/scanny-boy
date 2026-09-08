@@ -70,16 +70,22 @@ already renamed and §5 rewords further.
 ```
 published TIFF (uint16 normalized log density, negative, 1 or 3 channels)
   -> decode_normalized                       val in [0, 1] + headroom
-  -> 1 - val, clipped                        positive, normalized log exposure
+  -> 1 - val, low-clamped only               positive on [0, DISPLAY_CEILING]
   -> ^ GAMMA_ADOBE                           linear light
   -> 3x3 matrix (colour only)                camera primaries -> Adobe RGB
-  -> clip to [0, 1]
-  -> ^ (1 / GAMMA_ADOBE)                     back to display encoding
-  -> tone curve (the negative's `tone` op)   grade + snap, as the preview shows
+  -> clip linear light to [0, DISPLAY_CEILING ** GAMMA_ADOBE]
+  -> ^ (1 / GAMMA_ADOBE)                     display encoding on [0, DISPLAY_CEILING]
+  -> tone + colour curve (the negative's `tone` and `color` ops)
+  -> dye separation when active
   -> uint16
   -> lossless JPEG XL, ICC = Adobe RGB (1998) compatible (or Grey)
      + Exif box + XMP box
 ```
+
+`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW` (1.15 today). The encode's
+headroom survives to the tone curve; the curve brings values back to
+`[0, 1]` for display. With no tone op the flat paths keep a `[0, 1]` clip
+(docs/HEADROOM.md §2.4).
 
 The two exponentiations bracket the matrix and invert each other, so **the
 chain reproduces `tone.build_display_lut`'s rendering at 16 bits instead of
@@ -393,8 +399,22 @@ from vendored ProPhoto-v4 bytes: primaries, white point and the chromatic
 adaptation tag are carried over byte-identical, and only the description and
 TRC are rewritten. Adobe RGB has different primaries **and** a different
 white point (D65, where ProPhoto is D50), so the carry-over trick does not
-extend to it. The generator gains a second construction path that builds a
-profile from explicit colorant, white point and `chad` values.
+extend to it. The generator gains a second construction path that builds
+the profile with **lcms2** (`imagecodecs.cms_profile`) from the published
+Adobe RGB chromaticities.
+
+> **Revised after v1 shipped.** This path originally assembled the ICC
+> bytes by hand, from explicit colorant, white point and `chad` values.
+> That construction shipped three defects: `chad` carried the `XYZ ` type
+> signature instead of `sf32` (so a parser dispatching on the type read one
+> XYZNumber and dropped six values), the required `cprt` tag was absent
+> altogether, and the `desc` string was long enough that macOS reported no
+> profile name at all. None are colour-science errors; all three are the
+> failure mode of hand-writing a binary format with per-tag type
+> signatures. lcms2 is already a runtime dependency — `imagecodecs` bundles
+> it, and `jxl_writer` already loads it into the process — so the writer
+> that lays out the bytes is now a mature one, and the generator supplies
+> only the chromaticities and the text.
 
 Two new files in `cli/src/scanny_boy/resources/`:
 
@@ -412,57 +432,101 @@ further, separately and independently.
 
 ### 2.2 The exact tag values
 
-Pin these. They are the published Adobe RGB (1998) ICC values, and they were
-cross-checked against `/System/Library/ColorSync/Profiles/AdobeRGB1998.icc`
-while this plan was written — the colorant s15Fixed16 integers below are
-that file's, byte for byte.
+The **input** to lcms2 is the published Adobe RGB (1998) specification: D65
+white and the CIE xy primaries. These are the source of truth — the profile
+is derived from them, rather than from s15Fixed16 integers transcribed out
+of another vendor's file.
+
+```
+whitepoint (xy)   D65: 0.3127, 0.3290
+primaries  (xy)   R 0.6400, 0.3300   G 0.2100, 0.7100   B 0.1500, 0.0600
+gamma             563/256 = 2.19921875  (s15Fixed16 144128, exact)
+```
+
+lcms2 Bradford-adapts the colorants to D50 and writes the tags below. Pin
+them; they are what the committed profiles must contain.
 
 ```
 PCS               XYZ, D50 (ICC's fixed PCS)
 wtpt              D50: 0.9642, 1.0000, 0.8249      ints 63190, 65536, 54061
 rXYZ              0.609741, 0.311111, 0.019470     ints 39960, 20389,  1276
 gXYZ              0.205276, 0.625671, 0.060867     ints 13453, 41004,  3989
-bXYZ              0.149185, 0.063217, 0.744568     ints  9777,  4143, 48796
-chad              Bradford D65 -> D50
+bXYZ              0.149185, 0.063217, 0.744565     ints  9777,  4143, 48795
+chad              Bradford D65 -> D50, type sf32
                   ints 68674, 1502, -3291,
                         1939, 64912, -1119,
                         -606,  988, 49262
-r/g/bTRC          curv, count 1, gamma = 563/256 = 2.19921875 (u8Fixed8 563)
+r/g/bTRC          para, function type 0, g = s15Fixed16 144128
+                  (one payload, registered against all three signatures)
+chrm              lcms2's record of the chromaticities above
+desc, cprt        §2.3
 ```
 
-The colorants are already Bradford-adapted to D50; that is why `wtpt` is D50
-and not D65, and why a `chad` tag is present. Apple's own file writes a D65
-`wtpt` with no `chad`, which is the older non-conformant convention — do not
-copy it. Write the conformant pair.
+Every value here matches Apple's `AdobeRGB1998.icc` byte for byte except
+`bXYZ`'s Z, where lcms2 rounds 0.744568 down to 48795 and Apple's file
+rounds up to 48796. The difference is 1/65536 — 0.000015 — and is
+colorimetrically nil.
+
+The TRC is `para` (parametric, function type 0), not the `curv` this plan
+originally specified. `para` carries the gamma in s15Fixed16, so
+`TRC_G_EXPORT` is now the *only* representation of it — the u8Fixed8 `563`
+that `curv` required is gone, and with it one of the three places the gamma
+used to appear. It also makes all five profiles use one curve type.
+
+The colorants are Bradford-adapted to D50; that is why `wtpt` is D50 and not
+D65, and why a `chad` tag is present. Apple's own file writes a D65 `wtpt`
+with no `chad`, which is the older non-conformant convention — do not copy
+it. Write the conformant pair. **lcms2's gray profile writes exactly that
+non-conformant pair** (D65 `wtpt`, no `chad`), so the generator replaces
+both on the grey profile; the RGB profile needs no such correction.
 
 The grey profile carries `wtpt` (D50), a single `kTRC` with the **same**
-gamma 563/256, and the same `chad`. Using the same TRC as the colour profile
-is deliberate: a mono roll and a colour roll of the same scene must have
+gamma, and the same `chad`. Using the same TRC as the colour profile is
+deliberate: a mono roll and a colour roll of the same scene must have
 identical tonality, and one TRC constant means one place to change it.
 
-The gamma appears in three places and must be one constant:
-`icc_profile.TRC_G_EXPORT` (s15Fixed16 `144128`, exact), the generator's
-`curv` u8Fixed8 `563`, and `render.GAMMA_ADOBE = 563 / 256` (§4). Derive the
-latter two from the first, or assert their agreement in a test. Do not type
-`2.2` anywhere in this plan's code.
+The gamma now appears in two places and must be one constant:
+`icc_profile.TRC_G_EXPORT` (s15Fixed16 `144128`, exact) and
+`render.GAMMA_ADOBE`, which derives from it (§4). The generator derives its
+float gamma from the same integer. Do not type `2.2` anywhere in this
+plan's code.
+
+lcms2 stamps the wall-clock time into the header's creation date. The
+generator pins it (`PINNED_CREATION_DATE`) so the output stays
+byte-reproducible and the SHA-256 pins hold.
 
 ### 2.3 Naming
 
 "Adobe RGB (1998)" is Adobe's trademark and Adobe's own ICC file carries its
 own licence; neither is being redistributed here. The generated profile is an
-independent profile with the same colorimetry, and its `desc` tag must say
-so:
+independent profile with the same colorimetry, and it must say so.
 
-> ScannyBoy Export RGB. Colour space compatible with Adobe RGB (1998):
-> same primaries, white point and transfer function. Generated by
-> cli/tools/generate_icc_profile.py; not an Adobe product and not derived
-> from Adobe's profile.
+The disclaimer goes in **`cprt`**, and a short name in **`desc`**:
+
+```
+desc   ScannyBoy Export RGB (Adobe RGB 1998 compatible)
+cprt   Colour space compatible with Adobe RGB (1998): same primaries,
+       white point and transfer function. Generated by
+       cli/tools/generate_icc_profile.py; not an Adobe product and not
+       derived from Adobe's profile.
+```
+
+This plan originally put the whole disclaimer in `desc`, on the reasoning
+that `desc` is what a colour-management tool shows. That reasoning was
+right about the goal and wrong about the mechanism: **macOS returns an
+empty profile description for any `desc` of 100 characters or more**
+(measured — 99 displays, 100 does not), so the long `desc` achieved the
+opposite of its purpose and the profile showed up unnamed everywhere in
+the OS. `cprt` is a required tag, it is the tag a copyright notice
+belongs in, it has no such limit, and it was missing entirely from v1 —
+so moving the disclaimer there fixes the naming and the missing-tag defect
+together. Keep `desc` under 100 characters.
 
 Keep the *file* name neutral (`ScannyBoy-Export-AdobeRGB-v1.icc` is fine —
-it is descriptive) and put the disclaimer in the profile description, which
-is what a colour-management tool actually shows. Add a line to
-`THIRD_PARTY_NOTICES.md` recording that the colorimetry is the published
-Adobe RGB (1998) specification and the bytes are this project's own.
+it is descriptive). Add a line to `THIRD_PARTY_NOTICES.md` recording that
+the colorimetry is the published Adobe RGB (1998) specification, that the
+bytes are written by lcms2, and that neither Adobe's file nor its
+trademark is redistributed.
 
 ### 2.4 Tests (`icc_profile_test.py`, extending the existing patterns)
 
@@ -471,6 +535,22 @@ Adobe RGB (1998) specification and the bytes are this project's own.
 - The colour profile's colour space is `RGB `, the grey profile's is `GRAY`,
   and the grey profile has a `kTRC` and no `rXYZ`.
 - The two profiles' TRC gammas are equal, and equal `TRC_G_EXPORT`.
+- **`chad` is asserted to carry the `sf32` type signature, not just the
+  right nine numbers.** v1's `chad` held correct values under an `XYZ `
+  type signature and every value-only test passed; only a type assertion
+  catches that class of defect. `_chad_tag_payload` exists for this.
+- **The full tag set is asserted, not just the presence of the tags the
+  plan names.** v1 omitted the required `cprt` and no test noticed,
+  because nothing checked what was *absent*. The RGB profile's set is
+  `desc cprt chrm wtpt chad rXYZ gXYZ bXYZ rTRC gTRC bTRC`; the grey
+  profile's is `desc cprt wtpt chad kTRC`.
+- **`desc` is under 100 characters** and starts with the profile's name,
+  and the Adobe disclaimer is asserted against `cprt` (§2.3). A test that
+  only looked for the disclaimer text would pass on a `desc` macOS cannot
+  display.
+- The generator is byte-reproducible across runs — `PINNED_CREATION_DATE`
+  is what makes this true of the lcms2 path, and the existing
+  `test_generator_is_deterministic` covers it.
 
 **Five existing tests are parametrized over `list(ProfileKind)` and will
 pick up the new kinds automatically. Three of them must not:**

@@ -1068,6 +1068,15 @@ observed pre-clip extrema and the clipped fraction are recorded per
 negative so the constants can be tuned from real scans, and
 `NORMALIZE_HEADROOM_CLIPPED` warns when they clip too much.
 
+**The headroom is now used, not merely reserved (docs/HEADROOM.md).** The
+display render carries inverted values on `[0, DISPLAY_CEILING]` — where
+`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW` — from the `1 - val` flip
+through the matrix encode and into the tone curve, which compresses the
+extra range back to display white. Flat renders without a tone op keep the
+old `[0, 1]` clip; `_clipped_fractions` on export now counts only
+genuinely out-of-gamut excursions past `DISPLAY_CEILING`, not recoverable
+highlight detail.
+
 ## The analysis cell is pinned to source pixels, not derived from the canvas (`normalize` format_version 4)
 
 **`ANALYSIS_BLOCK_PX = 6`.** `block_median_grid`'s block used to be
@@ -1704,15 +1713,17 @@ paper's physical Dmin; our ceiling is display white with no paper model,
 so the same sharpening branch used for negative toe is applied to the
 shoulder too.
 
-## The preview's colour adjustment: a preview-only `color` op (protocol version 12)
+## The preview's colour adjustment: the `color` op (protocol version 12)
 
 Six controls from NegPy's Colour panel — temperature (a Kelvin lever over
 magenta and yellow, derived never stored), global/shadow/highlight CMY,
 cast removal, dye separation, and separation damping — land as a second
-preview-only op (`repo.COLOR_OP`), sibling to `tone`. The same three
-boundaries apply: the published TIFF and export never see it; the op is a
-state coalesced in place; and the numbers are judgement aids, not calibrated
-colorimetry.
+op (`repo.COLOR_OP`), sibling to `tone`. The same boundaries apply as
+tone after the colour-managed export landed: the published TIFF never
+carries it; the op is a state coalesced in place; the numbers are
+judgement aids, not calibrated colorimetry; and **the export bakes it**
+through the same `render_positive_float` the preview uses (after the
+camera matrix and Adobe RGB encode on colour rolls).
 
 What is not obvious from the code:
 

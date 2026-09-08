@@ -158,6 +158,18 @@ struct PreviewZoomModelTests {
         #expect(zoom.crop?.rect.minX == 800)
     }
 
+    @Test("mouseUp commits the release point, not the last drag event alone")
+    func mouseUpUsesReleasePoint() async {
+        let zoom = await zoomedIn()
+        zoom.mouseDown(at: CGPoint(x: 250, y: 200), kind: .pan)
+        zoom.mouseDragged(to: CGPoint(x: 150, y: 200))
+        // Release 40pt further than the last drag — should not snap back.
+        zoom.mouseUp(at: CGPoint(x: 110, y: 200))
+
+        #expect(zoom.origin.x == 780)
+        #expect(zoom.panOffset.width == -140)
+    }
+
     @Test("a drag wider than the image clamps and does not wrap")
     func dragClampsAtTheEdges() async {
         let zoom = await zoomedIn()
