@@ -430,7 +430,7 @@ scanny-boy edit spots          --roll DIR --negative ID [--reject N ...]
 scanny-boy edit list-spots     --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
-                       [--downsample {none,6048,9072}]
+                       [--downsample {none,6048,9072,12096}]
 
 scanny-boy flatfield create --reference FILE --name NAME
                             [--calibration FILE [FILE ...]]

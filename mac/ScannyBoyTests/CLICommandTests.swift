@@ -695,5 +695,14 @@ struct CLICommandTests {
                     "--downsample", "9072",
                 ]
         )
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, downsample: 12096)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--downsample", "12096",
+                ]
+        )
     }
 }

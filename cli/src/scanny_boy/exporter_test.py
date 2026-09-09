@@ -963,6 +963,7 @@ def test_parse_downsample_maps_the_choices():
     assert parse_downsample("none") is None
     assert parse_downsample("6048") == 6048
     assert parse_downsample("9072") == 9072
+    assert parse_downsample("12096") == 12096
 
 
 def test_parse_downsample_rejects_an_unknown_value():

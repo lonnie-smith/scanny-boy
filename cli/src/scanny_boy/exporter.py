@@ -18,7 +18,7 @@ which is precisely the bug the export plan exists to remove (§3.4). A mono
 roll needs no matrix and is never failed for its absence.
 
 An optional downsampling reduces the export to a chosen long edge before
-the encode (`--downsample 6048|9072`). The resize itself lives inside the
+the encode (`--downsample 6048|9072|12096`). The resize itself lives inside the
 render (`render.render_export`'s `long_edge`), where it belongs: a
 Lanczos3 resample of the *linear-light* values, between the gamut clip
 and the display re-encode — not a resample of the finished gamma-encoded
@@ -68,7 +68,7 @@ EmitFn = Any
 
 EXPORT_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy export"
 
-DOWNSAMPLE_CHOICES = ("none", "6048", "9072")
+DOWNSAMPLE_CHOICES = ("none", "6048", "9072", "12096")
 
 
 def parse_downsample(value: str) -> int | None:

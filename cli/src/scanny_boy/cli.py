@@ -698,7 +698,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--downsample",
         # `exporter.DOWNSAMPLE_CHOICES` kept literal: the parser build must
         # not pay for exporter's cv2 import (module-scope lazy-import rule).
-        choices=("none", "6048", "9072"),
+        choices=("none", "6048", "9072", "12096"),
         default="none",
         help="Reduce the export's long edge to the chosen size (no upscale).",
     )
