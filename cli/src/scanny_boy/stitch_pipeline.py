@@ -280,6 +280,10 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
         "feather": composite_module.FEATHER,
+        # docs/NARROW_FEATHER.md: the exponent narrowing the feather's
+        # crossfade to a band around the overlap midline. Unmeasured
+        # starting value, pending the section 6 user gate.
+        "feather_exponent": composite_module.FEATHER_EXPONENT,
         # The rig-tilt rectification in force (docs/RECTIFICATION_PLAN.md):
         # the model name is fixed policy; whether a given negative actually
         # carried a correction is that negative's own `rectification` block.

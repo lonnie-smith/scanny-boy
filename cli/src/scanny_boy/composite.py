@@ -71,19 +71,31 @@ MAX_OVERLAP_MAD = 0.20
 INTERPOLATION = cv2.INTER_LANCZOS4
 
 FEATHER = "axis-separable"  # recorded in the roll manifest's stitch params
-# Numerical guard, not a measured threshold: every covered pixel keeps a
-# positive weight, the same invariant cv2.distanceTransform gave for free
-# (it never returns less than 1.0 inside a mask).
-_FEATHER_FLOOR = 1.0  # px
 # The two-axis (grid) feather's floor, as a *fraction* of full weight: the
-# separable product of the two axis ramps is dimensionless in [0, 1], so
-# the px-valued `_FEATHER_FLOOR` cannot govern it. **Unmeasured starting
-# value** (docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1): chosen as the
-# same order as the strip floor's relative magnitude (1.0 px against a
+# separable product of the two axis ramps is dimensionless in [0, 1], so a
+# px-valued floor cannot govern it. **Unmeasured starting value**
+# (docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1): chosen as the same order
+# as the pre-grid strip floor's relative magnitude (1.0 px against a
 # ~3000 px ramp is ~3e-4), recorded in `_stitch_params` as
 # `feather_floor_fraction`, and revisited at the same user gate as the
 # grid-pitch/alignment constants.
 _FEATHER_FLOOR_FRACTION = 1e-3
+
+# The exponent applied to the normalised ramp product, narrowing the
+# crossfade to a band around the overlap midline
+# (docs/NARROW_FEATHER.md section 1). **Unmeasured starting value**
+# (section 6): 1 reproduces the pre-existing full-extent ramp exactly.
+# Recorded in the roll manifest's stitch params as `feather_exponent`.
+#
+# Bounded to [1, 8]: the floor runs *before* the power (section 1.4), so the
+# floored region's weight becomes `_FEATHER_FLOOR_FRACTION ** FEATHER_EXPONENT`.
+# In float32, with `_FEATHER_FLOOR_FRACTION = 1e-3`, p=8 gives 1e-24 (a
+# normal float32, comfortable); p=12 gives 1e-36 (normal, marginal); p=13
+# gives 1e-39 (subnormal — the covered-implies-positive-weight invariant
+# starts to erode). A larger exponent needs the floor redesigned first, not
+# just a higher bound here.
+FEATHER_EXPONENT = 4
+assert isinstance(FEATHER_EXPONENT, int) and 1 <= FEATHER_EXPONENT <= 8
 
 # Rows of output corrected per cv2.remap call when a profile's geometry is
 # applied (docs/GEOMETRIC_PLAN.md section 5.3): the band map is generated
@@ -317,31 +329,6 @@ def frame_bbox(
     return x, y, right - x, bottom - y
 
 
-def _axis_ramp(
-    mask: np.ndarray,
-    bbox_x: int,
-    bbox_y: int,
-    axis: tuple[float, float],
-) -> np.ndarray:
-    """One axis's ramp for `_feather_weight`, in pixels: the distance from
-    the nearer end of this frame's own extent along `axis`, floored at
-    `_FEATHER_FLOOR` px so a covered pixel always contributes. The
-    `if not covered.any()` early-out guards the projection arithmetic,
-    which is undefined on an all-empty mask."""
-    ax, ay = axis
-    height, width = mask.shape
-    s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[np.newaxis, :]
-    s = s + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
-    covered = mask > 0
-    if not covered.any():
-        return np.zeros(mask.shape, dtype=np.float32)
-    s_min = float(s[covered].min())
-    s_max = float(s[covered].max())
-    weight = np.maximum(np.minimum(s - s_min, s_max - s), _FEATHER_FLOOR)
-    weight[~covered] = 0.0
-    return weight.astype(np.float32)
-
-
 def _feather_weight(
     mask: np.ndarray,
     bbox_x: int,
@@ -352,41 +339,54 @@ def _feather_weight(
 
     `axes` is a tuple of one or two unit vectors. Along each, the weight
     ramps from the frame's own extent on that axis — distance from the
-    nearer end — and the returned weight is the *product* of the per-axis
-    ramps, floored once at the end. One axis is the strip case
-    (docs/STITCH_QUALITY_PLAN.md section 1.3), unchanged. Two axes is a
-    grid: the ramp is separable, so a pixel's crossfade profile across a
-    vertical seam is the same at the top of the canvas as in the middle,
-    and likewise for horizontal seams — the same guarantee the strip ramp
-    makes, in both directions at once. Empty `axes` (a layout that is
-    neither) falls back to the distance transform.
+    nearer end — normalised by the axis's own `(s_max - s_min) / 2` so each
+    per-axis ramp is dimensionless in [0, 1]. The returned weight is the
+    *product* of the per-axis ramps, floored once at the end at
+    `_FEATHER_FLOOR_FRACTION` and then raised to `FEATHER_EXPONENT`
+    (docs/NARROW_FEATHER.md section 1.1), narrowing the crossfade to a band
+    around the overlap midline without moving it (section 1.2). One axis is
+    the strip case (docs/STITCH_QUALITY_PLAN.md section 1.3); two axes is a
+    grid, where the ramp is separable, so a pixel's crossfade profile
+    across a vertical seam is the same at the top of the canvas as in the
+    middle, and likewise for horizontal seams. Empty `axes` (a layout that
+    is neither) falls back to the distance transform, unpowered — it is
+    isotropic, not a product of independent ramps, and out of this plan's
+    scope.
 
-    In the two-axis case each ramp is divided by its own
-    `(s_max - s_min) / 2`, so the product is dimensionless in [0, 1] and
-    the floor is a fixed *fraction* of full weight
-    (`_FEATHER_FLOOR_FRACTION`); the accumulate pass normalises by the
-    summed weight, so the per-frame constant cancels. The one-axis case
-    stays pixel-valued with the `_FEATHER_FLOOR` constant — the strip
-    weights must remain byte-identical to the pre-grid build's. The floor
-    and the `weight[~covered] = 0.0` are applied to the *product*, not
+    The floor **must** run before the power: flooring first keeps the
+    floored region byte-identically the same set of pixels for every
+    `FEATHER_EXPONENT` — the predicate is `product < _FEATHER_FLOOR_FRACTION`,
+    which the power never sees. Powering first would floor wherever
+    `product < _FEATHER_FLOOR_FRACTION ** (1 / FEATHER_EXPONENT)` instead, a
+    much larger region (docs/NARROW_FEATHER.md section 1.4). The floor and
+    the `weight[~covered] = 0.0` are applied to the *product*, not
     per-axis: a covered pixel keeps a positive weight, and a four-way
-    corner does not land on `floor²`.
+    corner does not land on `floor**2`.
+
+    Before this plan, the one-axis path was kept pixel-valued and
+    byte-identical to the pre-grid build's, and was not powered — a
+    pixel-valued ramp cannot be powered safely (a 3000 px ramp at p=8 is
+    6.5e27). It is now folded into this same normalised-and-powered
+    formulation instead, changing strip output pixels: at `p = 1` the
+    normalisation cancels in the ratio between two frames of equal extent,
+    but the floor does not — the old floor was `max(ramp_px, 1.0)`, this
+    one is effectively `max(ramp_px, 1e-3 * half_span)`, about
+    `max(ramp_px, 3.0)` on a ~3000 px geometry. The difference is confined
+    to a few-pixel sliver at a frame's along-axis extreme.
     """
     if not axes:
         return cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    if len(axes) == 1:
-        return _axis_ramp(mask, bbox_x, bbox_y, axes[0])
 
     height, width = mask.shape
     covered = mask > 0
+    if not covered.any():
+        return np.zeros(mask.shape, dtype=np.float32)
     product = np.ones(mask.shape, dtype=np.float32)
     for axis in axes:
         ax, ay = axis
         s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[
             np.newaxis, :
         ] + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
-        if not covered.any():
-            return np.zeros(mask.shape, dtype=np.float32)
         s_min = float(s[covered].min())
         s_max = float(s[covered].max())
         half_span = (s_max - s_min) / 2.0
@@ -396,6 +396,7 @@ def _feather_weight(
         ramp[~covered] = 0.0
         product *= ramp.astype(np.float32)
     weight = np.maximum(product, _FEATHER_FLOOR_FRACTION)
+    np.power(weight, FEATHER_EXPONENT, out=weight)
     weight[~covered] = 0.0
     return weight.astype(np.float32)
 

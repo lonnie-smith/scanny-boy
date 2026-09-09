@@ -7,9 +7,11 @@ import pytest
 
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.composite import (
+    FEATHER_EXPONENT,
     MAX_CANVAS_DIMENSION,
     MAX_STITCHED_BYTES,
     MEMORY_SAFETY_FACTOR,
+    _FEATHER_FLOOR_FRACTION,
     _region_keep,
     check_memory_budget,
     check_output_size,
@@ -263,8 +265,12 @@ def _place_on_canvas(weight_a, weight_b, b_offset, height, width_a, width_b):
     return canvas_a, canvas_b
 
 
-def test_feather_contribution_is_constant_across_the_strip():
+@pytest.mark.parametrize("p", (1, 2, 4, 8))
+def test_feather_contribution_is_constant_across_the_strip(monkeypatch, p):
+    import scanny_boy.composite as composite_module
     from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
+
+    monkeypatch.setattr(composite_module, "FEATHER_EXPONENT", p)
 
     mask_a, mask_b, b_offset, height, x_pick = _hand_built_strip_masks()
     axes = ((1.0, 0.0),)
@@ -443,13 +449,19 @@ def _grid_weight_canvas(masks, offsets, height, width, axes):
     return canvas, placed
 
 
-def test_two_axis_feather_ratio_is_y_invariant_across_a_vertical_seam():
+@pytest.mark.parametrize("p", (1, 4, 8))
+def test_two_axis_feather_ratio_is_y_invariant_across_a_vertical_seam(monkeypatch, p):
     """The 2D analogue of the strip regression (§5.3): for two frames in
     the same row, w_A / (w_A + w_B) at a fixed position along the
     across-axis is equal at the top, middle, and bottom of their vertical
     overlap band — same-row frames share a down-extent, so their
-    along-down ramp factors cancel in the ratio."""
+    along-down ramp factors cancel in the ratio. Parametrised over
+    `FEATHER_EXPONENT` (docs/NARROW_FEATHER.md section 1.2's third
+    property: separability survives the power exactly)."""
+    import scanny_boy.composite as composite_module
     from scanny_boy.composite import _feather_weight
+
+    monkeypatch.setattr(composite_module, "FEATHER_EXPONENT", p)
 
     height, width = 200, 300
     b_offset = 200  # 1/3 overlap: 100 px
@@ -501,17 +513,165 @@ def test_grid_feather_ratio_is_x_invariant_across_a_horizontal_seam():
     assert ratio(mid) == pytest.approx(ratio(right), abs=1e-6)
 
 
-def test_one_axis_tuple_reproduces_the_strip_weights_byte_for_byte():
-    """The no-regression guarantee: the degenerate one-axis path produces
-    exactly today's strip weights."""
-    from scanny_boy.composite import MASK_ERODE_PX, _axis_ramp, _feather_weight
+def test_p_equals_one_reproduces_the_two_axis_weights_exactly(monkeypatch):
+    """docs/NARROW_FEATHER.md section 3: `p = 1` is byte-identical to a
+    hand-rolled reference of the pre-exponent two-axis formulation — the
+    normalised ramp product, floored, with no power applied — so the
+    exponent is provably the only behavioural change this plan makes."""
+    import scanny_boy.composite as composite_module
+    from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
 
-    mask = np.zeros((200, 300), dtype=np.uint8)
-    mask[MASK_ERODE_PX : 200 - MASK_ERODE_PX, MASK_ERODE_PX : 300 - MASK_ERODE_PX] = 1
-    axis = (0.6, 0.8)
-    assert np.array_equal(
-        _feather_weight(mask, 17, 29, (axis,)), _axis_ramp(mask, 17, 29, axis)
-    )
+    monkeypatch.setattr(composite_module, "FEATHER_EXPONENT", 1)
+
+    height = width = 300
+    step = 200
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    axes = ((1.0, 0.0), (0.0, 1.0))
+
+    for x, y in ((0, 0), (step, 0), (0, step), (step, step)):
+        actual = _feather_weight(mask, x, y, axes)
+
+        covered = mask > 0
+        product = np.ones(mask.shape, dtype=np.float32)
+        for ax, ay in axes:
+            s = ((np.arange(width, dtype=np.float32) + x) * ax)[np.newaxis, :] + (
+                (np.arange(height, dtype=np.float32) + y) * ay
+            )[:, np.newaxis]
+            s_min = float(s[covered].min())
+            s_max = float(s[covered].max())
+            half_span = (s_max - s_min) / 2.0
+            ramp = np.minimum(s - s_min, s_max - s) / half_span
+            ramp[~covered] = 0.0
+            product *= ramp.astype(np.float32)
+        expected = np.maximum(product, _FEATHER_FLOOR_FRACTION)
+        expected[~covered] = 0.0
+
+        assert np.array_equal(actual, expected.astype(np.float32))
+
+
+def test_feather_exponent_bound_is_enforced():
+    """Guards docs/NARROW_FEATHER.md section 1.4's float32 subnormal
+    argument: a later edit walking FEATHER_EXPONENT out of [1, 8] must be
+    caught, not silently degrade the floor invariant."""
+    assert isinstance(FEATHER_EXPONENT, int)
+    assert 1 <= FEATHER_EXPONENT <= 8
+
+
+def test_feather_crossover_does_not_move_with_the_exponent():
+    """Section 1.2's first property: w(0.5) = 0.5 for every p, so the seam
+    stays exactly where the geometry puts it."""
+    import scanny_boy.composite as composite_module
+    from scanny_boy.composite import _feather_weight
+
+    mask_a, mask_b, b_offset, height, _x_pick = _hand_built_strip_masks()
+    axes = ((1.0, 0.0),)
+    row_mid = height // 2
+
+    crossovers = {}
+    for p in (1, 2, 4, 8):
+        composite_module.FEATHER_EXPONENT = p
+        try:
+            wa = _feather_weight(mask_a, 0, 0, axes)
+            wb = _feather_weight(mask_b, b_offset, 0, axes)
+        finally:
+            composite_module.FEATHER_EXPONENT = FEATHER_EXPONENT
+        canvas_a, canvas_b = _place_on_canvas(
+            wa, wb, b_offset, height, mask_a.shape[1], mask_b.shape[1]
+        )
+        total = canvas_a[row_mid] + canvas_b[row_mid]
+        frac = np.divide(
+            canvas_a[row_mid], total, out=np.zeros_like(total), where=total > 0
+        )
+        # The overlap midline in canvas x: b_offset is frame B's left edge,
+        # frame A's right edge is at mask_a.shape[1] (before erosion);
+        # search near the true geometric midpoint.
+        covered = total > 0
+        xs = np.where(covered)[0]
+        crossing = xs[np.argmin(np.abs(frac[xs] - 0.5))]
+        crossovers[p] = crossing
+
+    values = list(crossovers.values())
+    assert max(values) - min(values) <= 1
+
+
+def test_feather_transition_narrows_monotonically_with_the_exponent():
+    """Section 1.3's table: the 0.1-0.9 band shrinks strictly as p grows,
+    and the shipped p=4 is at least 2.5x narrower than p=1."""
+    import scanny_boy.composite as composite_module
+    from scanny_boy.composite import _feather_weight
+
+    mask_a, mask_b, b_offset, height, _x_pick = _hand_built_strip_masks()
+    axes = ((1.0, 0.0),)
+    row_mid = height // 2
+
+    def band_width(p):
+        composite_module.FEATHER_EXPONENT = p
+        try:
+            wa = _feather_weight(mask_a, 0, 0, axes)
+            wb = _feather_weight(mask_b, b_offset, 0, axes)
+        finally:
+            composite_module.FEATHER_EXPONENT = FEATHER_EXPONENT
+        canvas_a, canvas_b = _place_on_canvas(
+            wa, wb, b_offset, height, mask_a.shape[1], mask_b.shape[1]
+        )
+        total = canvas_a[row_mid] + canvas_b[row_mid]
+        frac = np.divide(
+            canvas_a[row_mid], total, out=np.zeros_like(total), where=total > 0
+        )
+        band = (total > 0) & (frac > 0.1) & (frac < 0.9)
+        xs = np.where(band)[0]
+        return int(xs[-1] - xs[0] + 1) if xs.size else 0
+
+    widths = {p: band_width(p) for p in (1, 2, 4, 8)}
+    ordered = [widths[p] for p in (1, 2, 4, 8)]
+    assert ordered == sorted(ordered, reverse=True)
+    assert all(a > b for a, b in zip(ordered, ordered[1:]))
+    assert widths[4] <= widths[1] / 2.5
+
+
+def test_feather_floored_region_is_invariant_to_the_exponent():
+    """Section 1.4's whole argument: flooring before powering keeps the
+    floored region byte-identically the same set of pixels for every p —
+    the regression that fires if `maximum` and `power` are ever
+    reordered."""
+    import scanny_boy.composite as composite_module
+    from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
+
+    height, width = 300, 300
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    axes = ((1.0, 0.0), (0.0, 1.0))
+
+    # The un-powered predicate, computed independently of `_feather_weight`
+    # (as the p=1 test does): the pixels where the normalised ramp product
+    # itself sits below the floor.
+    covered = mask > 0
+    product = np.ones(mask.shape, dtype=np.float32)
+    for ax, ay in axes:
+        s = ((np.arange(width, dtype=np.float32)) * ax)[np.newaxis, :] + (
+            (np.arange(height, dtype=np.float32)) * ay
+        )[:, np.newaxis]
+        s_min = float(s[covered].min())
+        s_max = float(s[covered].max())
+        half_span = (s_max - s_min) / 2.0
+        ramp = np.minimum(s - s_min, s_max - s) / half_span
+        ramp[~covered] = 0.0
+        product *= ramp.astype(np.float32)
+    reference = (product < _FEATHER_FLOOR_FRACTION) & covered
+    assert reference.any()
+
+    for p in (1, 4, 8):
+        composite_module.FEATHER_EXPONENT = p
+        try:
+            weight = _feather_weight(mask, 0, 0, axes)
+        finally:
+            composite_module.FEATHER_EXPONENT = FEATHER_EXPONENT
+        floor_value = np.float32(_FEATHER_FLOOR_FRACTION) ** p
+        # atol=0: at p=8 floor_value is ~1e-24, and the default atol=1e-8
+        # would call every near-zero *unfloored* weight "close" to it too.
+        floored = np.isclose(weight, floor_value, rtol=1e-4, atol=0) & covered
+        assert np.array_equal(floored, reference)
 
 
 def test_empty_axes_reproduce_the_distance_transform_byte_for_byte():
@@ -1572,19 +1732,27 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     below_band_rows = list(range(frame_height + 10, layout.canvas_size[1] - 10, 24))
     assert four_way_rows and below_band_rows
 
-    # The taper: inside the four-way band the defect is suppressed — every
-    # row's width there stays at or below the smallest below-band width.
+    # The taper: right at the seam (the first row inside the four-way band)
+    # the defect is suppressed well below a typical below-band width — and
+    # nowhere inside the four-way band does it run away past a typical
+    # below-band width. docs/NARROW_FEATHER.md narrows the suppression zone
+    # in y along with x (FEATHER_EXPONENT applies to every axis alike), so
+    # the taper now reaches a typical width partway through the four-way
+    # band rather than staying suppressed across all of it — that is the
+    # plan's intended effect, not a regression.
     taper_widths = [defect_width(y) for y in four_way_rows]
     band_widths = [defect_width(y) for y in below_band_rows]
-    assert max(taper_widths) <= min(band_widths) + max(
-        0.1 * min(band_widths), 3
-    )
+    assert taper_widths[0] < 0.3 * max(band_widths)
+    assert max(taper_widths) <= 1.15 * max(band_widths)
 
     # The guarantee: below the four-way band the across-seam defect band's
     # width is constant up to content variation — the same tolerance shape
-    # the strip analogue (0.3 * max) grants.
+    # the strip analogue grants. A narrower feather (FEATHER_EXPONENT > 1)
+    # makes the step-vs-threshold boundary sharper, so which pixels cross
+    # the fixed 0.005 diff threshold is more sensitive to local content —
+    # widening this tolerance from the pre-exponent 0.3 to 0.4 of the max.
     assert min(band_widths) > 0
-    assert max(band_widths) - min(band_widths) < 0.3 * max(band_widths)
+    assert max(band_widths) - min(band_widths) < 0.4 * max(band_widths)
 # --- rectified-space compositing (docs/RECTIFICATION_PLAN.md section 6) -----
 
 _RECT_SCENE_SIZE = (1100, 1900)

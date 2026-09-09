@@ -211,38 +211,52 @@ thresholds measured from real scans before a negative is allowed to publish;
 see [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
 section 3.4.
 
-**Blending.** Overlapping regions are combined with a linear feather in
-linear light, ramped along the strip axis only: each frame's contribution is
-weighted by its distance from the nearer end of its own extent *along the
-direction the film strip runs*, floored so a covered pixel always
-contributes; across the strip the weight is constant. An earlier version
-weighted a pixel by its distance to the nearest edge of the frame's own mask
-in every direction, which is isotropic and therefore identical near the
-strip's long borders and down its middle — but near those borders the
-nearest edge is the border itself, not the seam, so both frames' weights
-collapsed toward 50/50 there regardless of where the seam actually was, and
-residual misregistration smeared into a curved band that grew toward the
-edges instead of showing up as a clean step at the seam. Ramping along the
-strip axis only removes that collapse: the crossfade profile at the top and
-bottom of a stitched strip is now identical to the crossfade down its
-middle, so misregistration shows up as a measurable, bounded step at the
-seam rather than a widening smear.
+**Blending.** Overlapping regions are combined with a feather in linear
+light: along each axis a frame participates on (the strip axis for a strip,
+both axes of the grid for a grid), a frame's contribution ramps from the
+nearer end of its own extent on that axis, normalised to `[0, 1]`; the
+per-axis ramps multiply into a single separable product, floored so a
+covered pixel always contributes. A pixel's crossfade profile across a
+vertical seam is identical at the top of the canvas, the middle, and the
+bottom — and likewise for a horizontal seam — because each axis's ramp
+depends only on position along that axis. An earlier version weighted a
+pixel by its distance to the nearest edge of the frame's own mask in every
+direction, which is isotropic and therefore identical near a strip's long
+borders and down its middle — but near those borders the nearest edge is
+the border itself, not the seam, so both frames' weights collapsed toward
+50/50 there regardless of where the seam actually was, and residual
+misregistration smeared into a curved band that grew toward the edges
+instead of showing up as a clean step at the seam. The separable ramp
+removes that collapse.
+
+The normalised ramp product is then raised to `FEATHER_EXPONENT` (an
+integer in `[1, 8]`, starting value 4) before the floor is applied — see
+[docs/NARROW_FEATHER.md](docs/NARROW_FEATHER.md). This narrows the
+crossfade to a band around the overlap midline instead of spanning the
+whole overlap, without moving the seam (the crossover stays at exactly
+`0.5` for every exponent) and without breaking separability (`(r_x *
+r_y)^p = r_x^p * r_y^p`). Wide feathers still average two frames' detail
+across nearly half the picture even when registration is good to a couple
+of pixels, which reads as scattered soft doubling rather than the bounded
+step the strip-axis ramp alone was meant to produce; narrowing the band
+keeps most of the canvas free of any blend at all, at the cost of making
+the residual step more locally visible in the band that remains.
 
 This is safe specifically *because* exposure and white balance are locked
 across a roll — there is no exposure mismatch a blend needs to hide, only
 misregistration, and a feather tolerates a little of that gracefully instead
-of showing it as a hard line. Two alternatives were considered and set aside
-for now:
+of showing it as a hard line. A band around the overlap midline was
+considered and set aside once already — it needs the pair's overlap
+geometry at blend time, which the compositing pass does not carry — and
+this exponent is that idea arriving by another route: the midline falls out
+of the ramp arithmetic itself, needing no overlap geometry at all. Two
+alternatives remain set aside:
 
 - **A hard seam at the overlap midline.** Preserves grain exactly, since no
   pixel is ever a blend of two frames — but any misregistration shows up as a
   visible line at the seam, with nothing to soften it. Named as the next step
   if a measured step at the seam turns out small enough to cut through rather
   than fade.
-- **A band around the overlap midline, narrower than the whole frame
-  extent.** Makes a step even easier to see, but needs the pair's overlap
-  geometry at blend time, which the compositing pass does not currently
-  carry.
 - **A multi-band Laplacian blend.** Hides misalignment better than a linear
   feather does, at the cost of softening fine grain in the blended region and
   a meaningfully heavier compositing stage.

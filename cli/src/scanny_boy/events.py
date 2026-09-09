@@ -138,7 +138,7 @@ from typing import IO, Any, ClassVar
 # tilt, preset label; None for no live crop) carried by every edit
 # confirmation, and `roll info`'s per-negative block gains the same `crop`
 # field. No new codes.
-PROTOCOL_VERSION = 19
+PROTOCOL_VERSION = 20
 
 
 class EventType(enum.StrEnum):

@@ -261,8 +261,13 @@ def test_protocol_version_is_nineteen():
     codes, both riding the warning event channel. Protocol 18→19
     (docs/CROP_PLAN.md) adds the `crop` op: the `edit crop` subcommand,
     the `crop` field on every `edit_recorded` (a display-space report, or
-    null), and the same field on `roll info`'s per-negative block."""
-    assert PROTOCOL_VERSION == 19
+    null), and the same field on `roll info`'s per-negative block.
+    Protocol 19→20 (docs/NARROW_FEATHER.md): the `feather_exponent` key in
+    a roll's `stitch_params`, and `manifest_format_version` 8→9 — output
+    pixels change, so a roll stitched before this lands and one stitched
+    after must not sit in the same roll (the same `ROLL_INVARIANT_MISMATCH`
+    handling already in place, no migration)."""
+    assert PROTOCOL_VERSION == 20
 
 
 def test_new_event_kinds_round_trip():

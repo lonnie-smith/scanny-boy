@@ -178,7 +178,7 @@ def test_v7_round_trips(tmp_path):
     loaded = load_roll_manifest(tmp_path)
 
     assert loaded.to_dict() == manifest.to_dict()
-    assert loaded.manifest_format_version == 8
+    assert loaded.manifest_format_version == 9
     assert loaded.manifest_kind == "roll"
     assert loaded.roll_id == _ROLL_ID
     assert loaded.run("run-1").short_id == manifest.run("run-1").short_id

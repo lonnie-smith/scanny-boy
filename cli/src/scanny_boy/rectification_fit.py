@@ -55,7 +55,7 @@ MIN_RELATIVE_IMPROVEMENT = 0.15
 # frame's corners. Keeps the rectification moderate — at this rig's
 # geometry it bounds the equivalent tilt near a few degrees — and guards
 # the division in `unrectify` when compositing. A sanity bound, not a
-# measured threshold, the same role `_FEATHER_FLOOR` plays.
+# measured threshold, the same role `_FEATHER_FLOOR_FRACTION` plays.
 MAX_WEIGHT_EXCURSION = 0.02
 
 # Below this pass-1 similarity RMS the correspondences are already

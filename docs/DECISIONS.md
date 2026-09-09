@@ -262,24 +262,26 @@ recorded in the manifest, not corrected.
   Each frame warps into its own bounding box, not the full canvas. The
   validity mask warps with `INTER_NEAREST` and is eroded by 5 pixels (Lanczos4's
   support radius, plus one pixel of insurance).
-- **Blending is a linear feather in linear light, ramped along the strip
-  axis only**: per-frame weight is the distance from the nearer end of the
-  frame's own extent along the strip's long axis (published on `Layout` as
-  `strip_axis`, a unit vector from the same SVD `strip_spread_ratio`
-  already computed), constant across the strip, floored so a covered pixel
-  always contributes; the output is the weighted average wherever any frame
-  contributes weight. A distance transform of the eroded mask (isotropic in
-  every direction) is kept only as the fallback when a layout has no
-  trustworthy strip axis. The isotropic version was replaced, not merely
-  revisited: it made a pixel's crossfade identical near the strip's long
-  borders and down its middle, but near those borders the nearest mask edge
-  is the border itself, not the seam, so both frames' weights collapsed
-  toward 50/50 there regardless of the true seam position, and residual
-  misregistration smeared into a curved band that widened toward the edges.
-  See the README's "How frames are registered and blended" for the
-  reasoning and the alternatives (a hard seam, an overlap-midline band, a
-  multi-band Laplacian blend) kept as named, deliberately deferred next
-  steps.
+- **Blending is a linear feather in linear light, ramped along every axis
+  the layout's feather participates on**: per-axis weight is the distance
+  from the nearer end of the frame's own extent along that axis
+  (`Layout.feather_axes()` — the strip's long axis for a strip, both grid
+  axes for a grid), normalised to `[0, 1]`; the per-axis ramps multiply
+  into one separable product, floored so a covered pixel always
+  contributes, then raised to `FEATHER_EXPONENT` (see "The feather's
+  exponent narrows the crossfade" below); the output is the weighted
+  average wherever any frame contributes weight. A distance transform of
+  the eroded mask (isotropic in every direction, unpowered) is kept only as
+  the fallback when a layout has no trustworthy feather axes. The isotropic
+  version was replaced, not merely revisited: it made a pixel's crossfade
+  identical near the strip's long borders and down its middle, but near
+  those borders the nearest mask edge is the border itself, not the seam,
+  so both frames' weights collapsed toward 50/50 there regardless of the
+  true seam position, and residual misregistration smeared into a curved
+  band that widened toward the edges. See the README's "How frames are
+  registered and blended" for the reasoning and the alternatives (a hard
+  seam, a multi-band Laplacian blend) kept as named, deliberately deferred
+  next steps.
 - Pixels covered by no frame are `FILL_COLOR`, one named constant, initially
   black — recorded in the roll manifest so a file can be interpreted without
   knowing which build wrote it. `punchlist.md` already contemplates a
@@ -1518,13 +1520,49 @@ alternatives: a single axis fitted by SVD (conditional, no cell counts),
 and per-pair midline blend bands (needs overlap geometry the accumulate
 pass does not carry).
 
+## The feather's exponent narrows the crossfade to a band around the midline
+
+`FEATHER_EXPONENT` (composite.py, docs/NARROW_FEATHER.md) raises the
+separable ramp product to a power before the floor is applied. A real
+negative's pairwise registration was measured at 1.3-1.9 px RMS — healthy —
+while the *global* solved layout carried 3.7 px RMS against those same
+correspondences, because no single rigid-plus-isotropic-scale layout
+satisfies every pair at once; that residual is model error, out of this
+plan's scope. The wide, full-overlap feather this project shipped with
+smears that 3.7 px of residual across whatever fraction of the canvas two
+frames overlap — 42.9% of the image more than 10% blended, 8.9% within
+0.05 of a straight 50/50 average, on the measured negative — which reads as
+soft doubling scattered across arbitrary parts of the picture rather than
+as a seam anyone could point at.
+
+A power was chosen over a true overlap-midline band (`docs/
+STITCH_QUALITY_PLAN.md` section 1.5's first deferred alternative, and
+this plan's whole reason to exist) or a smoothstep/logistic function for
+one reason: it is the only pointwise function under which the crossfade
+stays *exactly* separable. `w(u) = (1-u)^p / ((1-u)^p + u^p)` keeps
+`w(0.5) = 0.5` for every `p` — the seam never moves — and
+`(r_x * r_y)^p = r_x^p * r_y^p`, so a two-axis product raised to a power is
+still the product of two independently-powered per-axis ramps; a
+smoothstep or logistic does not distribute over a product this way, and
+recovering the true midline band would need the pair overlap geometry the
+accumulate pass declines to carry (the reason section 1.5 rejected it the
+first time). The exponent reaches the same place — a band around the
+midline — from data every frame already computes alone.
+
+`FEATHER_EXPONENT` is bounded to `[1, 8]`: the floor
+(`_FEATHER_FLOOR_FRACTION`) must be applied *before* the power, so the
+floored region stays exactly the same set of pixels for every exponent —
+and the floored region's weight is then `_FEATHER_FLOOR_FRACTION ** p`,
+which starts leaving the normal float32 range past `p = 8`. Raising the
+bound needs the floor redesigned first, not just a wider assert.
+
 ## Unmeasured constants awaiting a real-scan gate
 
-`GRID_PITCH_RATIO_MIN = 0.6`, `GRID_ALIGNMENT_RATIO_MAX = 0.25` (layout.py)
-and `_FEATHER_FLOOR_FRACTION = 1e-3` (composite.py) are unmeasured starting
-values, recorded in the roll manifest's `stitch_params`
-(`grid_pitch_ratio_min`, `grid_alignment_ratio_max`,
-`feather_floor_fraction`) and per negative
+`GRID_PITCH_RATIO_MIN = 0.6`, `GRID_ALIGNMENT_RATIO_MAX = 0.25` (layout.py),
+`_FEATHER_FLOOR_FRACTION = 1e-3` and `FEATHER_EXPONENT = 4` (composite.py)
+are unmeasured starting values, recorded in the roll manifest's
+`stitch_params` (`grid_pitch_ratio_min`, `grid_alignment_ratio_max`,
+`feather_floor_fraction`, `feather_exponent`) and per negative
 (`grid_pitch_ratio`/`grid_alignment_ratio`), to be revisited at a user gate
 once there are real scans to measure against — the same discipline the
 quality gates' constants follow. `GRID_ALIGNMENT_RATIO_MAX` is the looser

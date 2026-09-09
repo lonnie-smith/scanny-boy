@@ -9,6 +9,24 @@ This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
 `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
 and any plan ever disagree, the plan is authoritative.
 
+Protocol version 20 keeps every event's shape and adds **the narrow
+feather** (docs/NARROW_FEATHER.md): the compositor now raises the
+separable feather's normalised ramp product to `FEATHER_EXPONENT` (an
+integer in `[1, 8]`, starting value 4) before flooring — narrowing the
+crossfade between two frames to a band around the overlap midline instead
+of the full overlap, without moving the seam or breaking separability. The
+stitch-params record gains `feather_exponent`, and `manifest_format_version`
+bumps 8 → 9: `stitch_params` is a roll invariant and is untyped
+(`{"type": "object"}`) in the schema, so no schema key changes, but output
+pixels change — **every roll stitched by an earlier build refuses new runs
+with `ROLL_INVARIANT_MISMATCH`**; there is no migration, and the remedy is
+to delete the old roll folders (the same handling recorded for format
+version 7 above). The one-axis (strip) feather path is unified onto the
+same normalised-and-powered formulation as the two-axis (grid) path, which
+also changes strip output pixels by a few pixels at a frame's along-axis
+extreme (previously a `_FEATHER_FLOOR` of 1.0 px; now a fraction of the
+axis's own half-span). No new codes.
+
 Protocol version 19 keeps every event's shape and adds **the `crop` op**
 (docs/CROP_PLAN.md): a new `edit crop` subcommand records a tilted crop
 window per negative — a state op in the same family as `tone`/`color`/
@@ -1049,7 +1067,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 8` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 9` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |

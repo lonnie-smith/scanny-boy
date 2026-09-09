@@ -162,7 +162,11 @@ alternatives and will be amended (§1.7):
   even easier to see. Rejected as the default because it needs the pair's
   overlap geometry at blend time, which the accumulate pass does not
   currently carry, and the strip-axis ramp already removes the border
-  collapse for a fraction of the code.
+  collapse for a fraction of the code. **Delivered** by
+  `docs/NARROW_FEATHER.md`, by a different route that needs none of that
+  geometry: raising the normalised ramp product to an exponent narrows the
+  crossfade to a band around the midline without moving the seam, because
+  the midline falls out of the ramp arithmetic itself.
 - **A hard seam.** Preserves grain exactly. Kept in the README as the
   named next step if a measured step at the seam turns out to be small
   enough to cut through rather than fade.
