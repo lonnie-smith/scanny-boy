@@ -128,6 +128,8 @@ def residuals(p: np.ndarray, line_sets: list[np.ndarray], K_base: np.ndarray) ->
     D = np.array([k1, k2, 0.0, 0.0, 0.0])
     out = []
     for pts in line_sets:  # (N, 1, 2) float32
+        if len(pts) == 0:
+            continue
         # Undistort in float64: in float32 the pixel values quantise at
         # ~2e-4 px, which swallows the ~1e-5 px residual shift of the
         # optimiser's finite-difference step on k1 (which starts at 0) and

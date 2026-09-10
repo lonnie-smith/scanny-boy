@@ -175,6 +175,51 @@ def detect_corners(
     return points, charuco_ids.reshape(-1, 1).astype(np.int32)
 
 
+def refine_corners(
+    gray: np.ndarray,
+    corners: np.ndarray,
+    ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Refine pre-seeded ChArUco corner locations on one 8-bit channel
+    image. Returns `(corners, ids)` in the same shapes as `detect_corners`."""
+    if len(corners) == 0:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0, 1), dtype=np.int32)
+
+    points = corners.reshape(-1, 2).astype(np.float32)
+    window = min(round(median_corner_pitch(points) / 4), CORNER_SUBPIX_MAX_WINDOW)
+    if window >= 2:
+        window += 1 - (window % 2)
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.001,
+        )
+        refined = cv2.cornerSubPix(
+            gray, points.reshape(-1, 1, 2), (window, window), (-1, -1), criteria
+        )
+        points = refined.reshape(-1, 2)
+    return points, ids.reshape(-1, 1).astype(np.int32)
+
+
+def seed_and_refine_ca_corners(
+    channels: dict[str, np.ndarray],
+    spec: BoardSpec,
+    full_res_corners: np.ndarray | None = None,
+    full_res_ids: np.ndarray | None = None,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Half-size CA detection: find corners once on luminance, or seed from
+    full-resolution detections scaled by one half, then refine each channel
+    independently with `cornerSubPix`."""
+    seed_corners, seed_ids = detect_corners(channels["luminance"], spec)
+    if len(seed_ids) == 0 and full_res_corners is not None and len(full_res_corners) > 0:
+        seed_corners = (full_res_corners * 0.5).astype(np.float32)
+        seed_ids = full_res_ids
+    return {
+        name: refine_corners(gray, seed_corners, seed_ids)
+        for name, gray in channels.items()
+    }
+
+
 def detect_board(gray: np.ndarray) -> BoardSpec:
     """Confirm `BOARD` is in this frame, and return its spec.
 

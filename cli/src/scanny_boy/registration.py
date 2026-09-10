@@ -145,6 +145,8 @@ def undistorter_from_geometry(geometry: dict):
     D = np.array([geometry["k1"], geometry["k2"], 0.0, 0.0, 0.0])
 
     def undistort(points: np.ndarray) -> np.ndarray:
+        if len(points) == 0:
+            return np.zeros((0, 2), dtype=np.float64)
         undistorted = cv2.undistortPoints(
             points.reshape(-1, 1, 2).astype(np.float32), K, D, P=K
         )

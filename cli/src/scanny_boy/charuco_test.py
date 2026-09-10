@@ -24,6 +24,8 @@ from scanny_boy.charuco import (
     make_board,
     marker_count,
     median_corner_pitch,
+    percentile_stretch,
+    seed_and_refine_ca_corners,
 )
 
 
@@ -149,6 +151,48 @@ def test_detect_corners_returns_empty_for_a_blank_frame():
     corners, ids = detect_corners(blank, spec)
     assert len(ids) == 0
     assert corners.shape == (0, 2)
+
+
+def test_half_size_ca_detection_seeds_from_full_res_at_15_px_per_module():
+    """At the scanning-range floor (15 px/module), half-size luminance
+    ArUco can miss corners that full-res detection still finds; the CA
+    path must seed from the scaled full-res set and refine per channel."""
+    # 1.5 mm marker / 6 modules = 0.25 mm per module; 15 px/module => 60 px/mm.
+    pixels_per_mm = 60.0
+    full_gray = _render(BOARD, pixels_per_mm)
+    full_corners, full_ids = detect_corners(full_gray, BOARD)
+
+    half_gray = cv2.resize(
+        full_gray, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA
+    )
+    stretched = percentile_stretch(half_gray.astype(np.float64))
+    channels = {
+        "red": stretched,
+        "green": stretched,
+        "blue": stretched,
+        "luminance": stretched,
+    }
+
+    detected = seed_and_refine_ca_corners(
+        channels,
+        BOARD,
+        full_res_corners=full_corners,
+        full_res_ids=full_ids,
+    )
+    for name in ("red", "green", "blue", "luminance"):
+        _, ids = detected[name]
+        assert len(ids) >= MIN_CORNERS_PER_FRAME, name
+
+    blank_lum = np.full_like(channels["luminance"], 128, dtype=np.uint8)
+    fallback = seed_and_refine_ca_corners(
+        {**channels, "luminance": blank_lum},
+        BOARD,
+        full_res_corners=full_corners,
+        full_res_ids=full_ids,
+    )
+    for name in ("red", "green", "blue", "luminance"):
+        _, ids = fallback[name]
+        assert len(ids) >= MIN_CORNERS_PER_FRAME, name
 
 
 def test_generateimage_and_detector_agree_with_the_locked_api():

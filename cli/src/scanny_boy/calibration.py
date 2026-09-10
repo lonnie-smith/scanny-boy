@@ -123,13 +123,15 @@ def _detect_paths(
 def _detect_ca_paths(
     paths: list[Path],
     board: BoardSpec,
+    full_res_detections: dict[Path, tuple[np.ndarray, np.ndarray]],
     workers: int,
     emit: EmitFn,
 ) -> list[dict[str, Any]]:
-    """Decode every path at half size, per channel, and detect
-    ChArUco corners independently on R, G, B plus the Rec.709 luminance
-    image. Returns per frame: the four corner/id pairs and the half-size
-    dimensions."""
+    """Decode every path at half size and measure ChArUco corners per
+    channel. Corners are seeded once from half-size luminance (or from the
+    matching full-resolution detection scaled by one half), then refined
+    independently on R, G, B, and luminance with `cornerSubPix`. Returns
+    per frame: the four corner/id pairs and the half-size dimensions."""
     total = len(paths)
 
     def one(index_path: tuple[int, Path]) -> dict[str, Any]:
@@ -138,19 +140,24 @@ def _detect_ca_paths(
         height, width = frame.pixels.shape[:2]
         result: dict[str, Any] = {"width": width, "height": height}
         linear = decode_to_linear(frame.pixels).astype(np.float64)
-        for name, image in (
-            ("red", frame.pixels[:, :, 0]),
-            ("green", frame.pixels[:, :, 1]),
-            ("blue", frame.pixels[:, :, 2]),
-            # The detection-channel measurement: Rec.709 luminance, weighted
-            # exactly as `detection.build_detection_image` weights it.
-            ("luminance", linear @ detection_weights()),
-        ):
-            gray = charuco.percentile_stretch(image.astype(np.float64))
-            try:
-                result[name] = charuco.detect_corners(gray, board)
-            except BoardDetectionError as exc:  # defensive: same contract path
-                raise _map_board_error(exc) from exc
+        luminance = linear @ detection_weights()
+        channels = {
+            "red": charuco.percentile_stretch(frame.pixels[:, :, 0].astype(np.float64)),
+            "green": charuco.percentile_stretch(frame.pixels[:, :, 1].astype(np.float64)),
+            "blue": charuco.percentile_stretch(frame.pixels[:, :, 2].astype(np.float64)),
+            "luminance": charuco.percentile_stretch(luminance.astype(np.float64)),
+        }
+        full_corners, full_ids = full_res_detections[path]
+        try:
+            detected = charuco.seed_and_refine_ca_corners(
+                channels,
+                board,
+                full_res_corners=full_corners,
+                full_res_ids=full_ids,
+            )
+        except BoardDetectionError as exc:  # defensive: same contract path
+            raise _map_board_error(exc) from exc
+        result.update(detected)
         emit(FlatFieldProgress(phase="chromatic", completed=index + 1, total=total))
         return result
 
@@ -209,6 +216,8 @@ def _undistort_to_normalised(
         K[0, 2], K[1, 2] = cx / 2.0, cy / 2.0
     fx = K[0, 0]
     cx, cy = K[0, 2], K[1, 2]
+    if len(points_px) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
     if geometry is None:
         return (points_px - np.array([cx, cy])) / fx
     D = np.array([k1, k2, 0.0, 0.0, 0.0])
@@ -428,7 +437,10 @@ def _create_calibrated_profile(
         )
 
     # 4. Decode and detect all calibration frames at half size, per channel.
-    ca_frames = _detect_ca_paths(paths, board, workers, emit)
+    full_res_detections = dict(zip(paths, detections, strict=True))
+    ca_frames = _detect_ca_paths(
+        paths, board, full_res_detections, workers, emit
+    )
 
     half_width = ca_frames[0]["width"]
     half_height = ca_frames[0]["height"]
