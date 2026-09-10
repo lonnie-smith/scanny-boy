@@ -302,6 +302,46 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     assert difference.max() <= 1
 
 
+def test_colour_only_render_stays_on_identity_ramp():
+    """A colour op with no tone op must not turn on the paper grade."""
+    matrix = _TEST_MATRIX
+    metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
+    color_params = {"wb_magenta": 0.2}
+
+    for frac in (0.2, 0.5, 0.76):
+        code = int(frac * tone.MAX_CODE)
+        img = np.full((1, 1, 3), code, dtype=np.uint16)
+        out, _ = render.render_positive_float(
+            img, matrix, None, color_params, metering
+        )
+        if frac == 0.2:
+            assert out[0, 0, 1] > 0.08
+        if frac == 0.5:
+            assert 0.25 < out[0, 0, 1] < 0.55
+        if frac == 0.76:
+            assert out[0, 0, 1] < 0.85
+
+    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
+    rendered, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    for ch in range(3):
+        channel = rendered[0, :, ch]
+        assert np.all(np.diff(channel.astype(np.float64)) <= 1e-6)
+
+    mid_code = int(0.5 * tone.MAX_CODE)
+    mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
+    neutral, _ = render.render_positive_float(
+        mid_img, matrix, None, {"wb_magenta": 0.0}, metering
+    )
+    colored, _ = render.render_positive_float(
+        mid_img, matrix, None, color_params, metering
+    )
+    assert colored[0, 0, 1] < colored[0, 0, 0]
+    assert colored[0, 0, 1] < colored[0, 0, 2]
+
+
 def test_preview_and_export_agree_with_headroom_and_shoulder():
     """Source codes inside the encode headroom."""
     matrix = _TEST_MATRIX

@@ -495,7 +495,9 @@ pinned gamma.
   (`render.encode_positive_uint8`): decode through `decode_normalized`,
   global CMY, `1 − val`, the Adobe RGB gamma sandwich, the roll's recorded
   camera matrix when it has one, the user's tone and colour ops, and dye
-  separation — to 8-bit. A second, un-inverted **negative** display mode
+  separation — to 8-bit. A colour op alone stays on the identity ramp;
+  the tone op is what turns the paper grade on. A second, un-inverted
+  **negative** display mode
   serves the app's positive/negative toggle, scaling the normalized density
   with no tone or colour. Display encoding lives here and only here.
 - **Metering is recorded, then read by the auto solves.** The per-channel

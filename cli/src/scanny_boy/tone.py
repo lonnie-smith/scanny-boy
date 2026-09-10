@@ -191,64 +191,96 @@ def _roll_low(v: np.ndarray, knee: float, width: float) -> np.ndarray:
     return np.where(v >= knee, v, rolled)
 
 
+def _zone_weights(v: np.ndarray | float) -> tuple[np.ndarray | float, np.ndarray | float]:
+    """Independent shadow and highlight zone weights at 0.25 / 0.75."""
+    w_sh = _expit(ZONE_SHARPNESS * (ZONE_SHADOW_CENTRE - v))
+    w_hi = _expit(ZONE_SHARPNESS * (v - ZONE_HIGHLIGHT_CENTRE))
+    return w_sh, w_hi
+
+
 def _curve_raw(
     values: np.ndarray,
-    tone_params: ToneParams,
+    tone_params: ToneParams | None,
     color_params: color.ColorParams,
     *,
     channel: int | None,
     metering: color.Metering,
     apply_color: bool,
+    flat_tone: bool = False,
 ) -> np.ndarray:
     """Steps 2–6 on display values; global CMY is applied before the flip
-    in `build_channel_tables`. `channel=None` is the achromatic path."""
-    base_slope, pivot_in = base_slope_and_pivot(tone_params)
-    pivot_out = 0.5
-    if apply_color and channel is not None:
-        per_channel = color.cast_slopes(
-            color_params, metering, base_slope, pivot_in
-        )
-        slope, pivot_in = per_channel[channel]
-    else:
-        slope = base_slope
+    in `build_channel_tables`. `channel=None` is the achromatic path.
 
-    v = pivot_out + slope * (values - pivot_in)
-    if tone_params.snap_gamma != 0.0:
-        v = v + tone_params.snap_gamma * SNAP_WIDTH * np.tanh((v - pivot_out) / SNAP_WIDTH)
+    When `flat_tone` is true (no tone op recorded), the grade, snap, zone
+    density, toe and shoulder are skipped — identity plus colour shaping
+    only."""
+    pivot_out = 0.5
+    if flat_tone:
+        slope = 1.0
+        pivot_in = pivot_out
+        if apply_color and channel is not None:
+            per_channel = color.cast_slopes(
+                color_params, metering, slope, pivot_in
+            )
+            slope, pivot_in = per_channel[channel]
+        v = pivot_out + slope * (values - pivot_in)
+    else:
+        assert tone_params is not None
+        base_slope, pivot_in = base_slope_and_pivot(tone_params)
+        if apply_color and channel is not None:
+            per_channel = color.cast_slopes(
+                color_params, metering, base_slope, pivot_in
+            )
+            slope, pivot_in = per_channel[channel]
+        else:
+            slope = base_slope
+
+        v = pivot_out + slope * (values - pivot_in)
+        if tone_params.snap_gamma != 0.0:
+            v = v + tone_params.snap_gamma * SNAP_WIDTH * np.tanh(
+                (v - pivot_out) / SNAP_WIDTH
+            )
 
     if apply_color and channel is not None:
         shadow_cmy, highlight_cmy = color.region_cmy(color_params)
-        w_sh = _expit(color.REGION_SHARPNESS * (color.REGION_CENTRE - v))
-        w_hi = 1.0 - w_sh
+        w_sh, w_hi = _zone_weights(v)
         regional = shadow_cmy[channel] * w_sh + highlight_cmy[channel] * w_hi
         v = v - color.REGION_CMY_SCALE * regional
 
-    w_sh = _expit(ZONE_SHARPNESS * (ZONE_SHADOW_CENTRE - v))
-    w_hi = _expit(ZONE_SHARPNESS * (v - ZONE_HIGHLIGHT_CENTRE))
-    v = v - ZONE_DENSITY_SCALE * (
-        tone_params.shadow_density * w_sh + tone_params.highlight_density * w_hi
-    )
-    toe_knee = _knee_from_slider(tone_params.toe, *TOE_KNEE)
-    shoulder_knee = _knee_from_slider(tone_params.shoulder, *SHOULDER_KNEE)
-    v = _roll_low(v, toe_knee, tone_params.toe_width)
-    v = _roll_high(v, shoulder_knee, tone_params.shoulder_width)
+    if not flat_tone:
+        assert tone_params is not None
+        w_sh, w_hi = _zone_weights(v)
+        v = v - ZONE_DENSITY_SCALE * (
+            tone_params.shadow_density * w_sh
+            + tone_params.highlight_density * w_hi
+        )
+        toe_knee = _knee_from_slider(tone_params.toe, *TOE_KNEE)
+        shoulder_knee = _knee_from_slider(tone_params.shoulder, *SHOULDER_KNEE)
+        v = _roll_low(v, toe_knee, tone_params.toe_width)
+        v = _roll_high(v, shoulder_knee, tone_params.shoulder_width)
     return v
 
 
 def curve_values(
     values: np.ndarray,
-    tone_params: ToneParams,
+    tone_params: ToneParams | None,
     color_params: color.ColorParams = color.NEUTRAL_COLOR,
     *,
     channel: int | None = None,
     metering: color.Metering | None = None,
     apply_color: bool = True,
+    flat_tone: bool | None = None,
 ) -> np.ndarray:
     """Maps positive display values through the tone+colour curve. Monotone;
     endpoints pinned using grade/snap-only anchors read on the achromatic
-    curve with every colour control at rest."""
+    curve with every colour control at rest.
+
+    `tone_params is None` selects the flat identity ramp — colour shaping
+    only, no paper grade. The tone op is what turns the grade on."""
     if metering is None:
         metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
+    if flat_tone is None:
+        flat_tone = tone_params is None
     use_color = apply_color and channel is not None
     raw = _curve_raw(
         values,
@@ -257,35 +289,63 @@ def curve_values(
         channel=channel,
         metering=metering,
         apply_color=use_color,
+        flat_tone=flat_tone,
     )
-    neutral_tone = _neutral_shaping(tone_params)
-    low = float(
-        _curve_raw(
-            np.array([0.0]),
-            neutral_tone,
-            color.NEUTRAL_COLOR,
-            channel=None,
-            metering=metering,
-            apply_color=False,
-        )[0]
-    )
-    high = float(
-        _curve_raw(
-            np.array([DISPLAY_CEILING]),
-            neutral_tone,
-            color.NEUTRAL_COLOR,
-            channel=None,
-            metering=metering,
-            apply_color=False,
-        )[0]
-    )
+    if flat_tone:
+        low = float(
+            _curve_raw(
+                np.array([0.0]),
+                None,
+                color.NEUTRAL_COLOR,
+                channel=None,
+                metering=metering,
+                apply_color=False,
+                flat_tone=True,
+            )[0]
+        )
+        high = float(
+            _curve_raw(
+                np.array([DISPLAY_CEILING]),
+                None,
+                color.NEUTRAL_COLOR,
+                channel=None,
+                metering=metering,
+                apply_color=False,
+                flat_tone=True,
+            )[0]
+        )
+    else:
+        assert tone_params is not None
+        neutral_tone = _neutral_shaping(tone_params)
+        low = float(
+            _curve_raw(
+                np.array([0.0]),
+                neutral_tone,
+                color.NEUTRAL_COLOR,
+                channel=None,
+                metering=metering,
+                apply_color=False,
+                flat_tone=False,
+            )[0]
+        )
+        high = float(
+            _curve_raw(
+                np.array([DISPLAY_CEILING]),
+                neutral_tone,
+                color.NEUTRAL_COLOR,
+                channel=None,
+                metering=metering,
+                apply_color=False,
+                flat_tone=False,
+            )[0]
+        )
     if high > low:
         raw = (raw - low) / (high - low)
     return np.clip(raw, 0.0, 1.0)
 
 
 def build_channel_tables(
-    tone_params: ToneParams,
+    tone_params: ToneParams | None,
     color_params: color.ColorParams = color.NEUTRAL_COLOR,
     metering: color.Metering | None = None,
     channels: int = 3,
@@ -320,13 +380,14 @@ def build_channel_tables(
 
 def build_display_lut(
     tone_params: ToneParams,
-    color_params: color.ColorParams = color.NEUTRAL_COLOR,
     metering: color.Metering | None = None,
     channels: int = 3,
 ) -> np.ndarray:
     """The uint16 normalized-density code → uint8 positive display table.
 
-    When colour is neutral all channel tables are identical; any row suffices
-    for the fast single-table path."""
-    tables = build_channel_tables(tone_params, color_params, metering, channels)
+    Achromatic only — colour is not composed here. When colour is neutral
+    all channel tables are identical; any row suffices for the fast path."""
+    tables = build_channel_tables(
+        tone_params, color.NEUTRAL_COLOR, metering, channels
+    )
     return np.rint(tables[0] * 255).astype(np.uint8)

@@ -476,8 +476,9 @@ global, shadow, and highlight cyan/magenta/yellow enlarger filtration
 the negative's currently recorded value**, not the neutral default — a
 single-slider change need not resend all twelve keys. Validation runs on the
 merged twelve-key state. `--temperature` (3000–12000 K, 5500 K neutral) is
-a Kelvin lever over the named region's magenta and yellow, resolved before
-validation via `kelvin_to_wb`; it is mutually exclusive with that region's
+a Kelvin illuminant lever over the named region's magenta and yellow (higher
+K is warmer, Lightroom convention), resolved before validation via
+`kelvin_to_wb`; it is mutually exclusive with that region's
 `--magenta` (and `--shadow-magenta` / `--highlight-magenta` when
 `--region` is `shadows` / `highlights`). `--region` defaults to `global`
 and only applies with `--temperature`. Cyan is untouched by temperature.

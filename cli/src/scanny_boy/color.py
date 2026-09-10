@@ -24,10 +24,9 @@ CAST_REMOVAL_HIGHLIGHTS_MIN = 0.0
 CAST_REMOVAL_HIGHLIGHTS_MAX = 1.0
 CAST_MAX_OFFSET = 0.1
 
-# Regional CMY — calibrated for our 0..1 display axis.
-REGION_CENTRE = 0.5
-REGION_SHARPNESS = 7.0
-REGION_CMY_SCALE = 0.09
+# Regional CMY — calibrated for our 0..1 display axis. Zone weights match
+# the tone panel's shadow/highlight density centres (0.25 / 0.75).
+REGION_CMY_SCALE = 1.0
 
 # Dye separation and damping — NegPy's clamp; ref spread mapped to display.
 DYE_SEPARATION_MIN = 0.5
@@ -43,6 +42,10 @@ TEMP_MIN_KELVIN = 3000.0
 TEMP_MAX_KELVIN = 12000.0
 TEMP_K_MAGENTA = 0.0029
 TEMP_K_YELLOW = 0.0057
+
+# Rec.709 luma weights — used for lightness-neutral mean removal and dye
+# separation so a colour move does not change perceived brightness.
+LUMA_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
 COLOR_PARAM_KEYS = (
     "wb_cyan",
@@ -108,7 +111,7 @@ class Metering:
     normalized exactly as the shadow one; `None` when the negative's record
     predates it or when the dense-end neutral band
     held no trustworthy set — which is load-bearing information, not an
-    error (that plan's §0.4)."""
+    error."""
 
     ranges: tuple[float, ...]
     shadow_refs_norm: tuple[float, ...] | None
@@ -184,20 +187,17 @@ def read_metering(record: dict | None) -> Metering:
 
 def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
     """Global CMY as normalized log-density input offsets, made
-    **lightness-neutral**: the raw
-    range-divided offsets are mean-removed, so moving the sliders changes
-    hue and never the display's channel mean — Print Density and the zone
-    controls keep sole ownership of lightness.
+    **lightness-neutral**: the raw range-divided offsets are luma-mean-
+    removed, so moving the sliders changes hue without changing Rec.709
+    luma — Print Density and the zone controls keep sole ownership of
+    lightness.
 
     The mean is removed *after* the range division because the curve
     applies the same slope to every channel near the pivot, so the display
-    shift's mean is proportional to the mean of the post-division values;
-    zeroing that is what holds lightness. Two stated consequences, both
-    deliberate: an equal three-slider move is not a no-op when the ranges
-    differ — it is a pure hue move at constant lightness (a neutral-density
-    filter on separately stretched channels genuinely has a chromatic
-    effect); and the arithmetic mean (not luma-weighted) keeps the three
-    sliders symmetric with each other."""
+    shift's luma is proportional to the luma-weighted mean of the post-
+    division values; zeroing that is what holds lightness. An equal three-
+    slider move is not a no-op when the ranges differ — it is a pure hue
+    move at constant lightness."""
     sliders = (params.wb_cyan, params.wb_magenta, params.wb_yellow)
     if len(sliders) != len(metering.ranges):
         # Unreachable in production (mono never applies colour), but a
@@ -207,29 +207,32 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
         slider * CMY_MAX_DENSITY / max(metering.ranges[ch], 1e-6)
         for ch, slider in enumerate(sliders)
     ]
-    mean = sum(raw) / len(raw)
-    return tuple(value - mean for value in raw)
+    return _luma_removed(raw)
 
 
 def region_cmy(params: ColorParams) -> tuple[tuple[float, ...], ...]:
-    """Regional shadow/highlight CMY slider tuples, each
-    **mean-removed**: they are added to the
-    display value directly, and the blend's complementary weights sum to 1,
-    so a mean-zero triple contributes a mean-zero display shift at every
-    tone — the region controls are purely chromatic and stop competing with
-    the shadow/highlight density trims. An equal three-slider move is an
-    exact no-op here, because no per-channel range is in the path."""
+    """Regional shadow/highlight CMY slider tuples, each **luma-mean-
+    removed**: they are added to the display value directly, so a luma-zero
+    triple contributes a luma-neutral display shift — the region controls
+    are purely chromatic and stop competing with the shadow/highlight
+    density trims. An equal three-slider move is an exact no-op here,
+    because no per-channel range is in the path."""
     shadow = (params.shadow_cyan, params.shadow_magenta, params.shadow_yellow)
     highlight = (
         params.highlight_cyan,
         params.highlight_magenta,
         params.highlight_yellow,
     )
-    return _mean_removed(shadow), _mean_removed(highlight)
+    return _luma_removed(shadow), _luma_removed(highlight)
 
 
-def _mean_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
-    mean = sum(triple) / 3.0
+def _luma_weighted_sum(triple: tuple[float, ...]) -> float:
+    return sum(value * weight for value, weight in zip(triple, LUMA_WEIGHTS))
+
+
+def _luma_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
+    """Subtract the scalar that zeroes the Rec.709 luma-weighted sum."""
+    mean = _luma_weighted_sum(triple)
     return tuple(value - mean for value in triple)
 
 
@@ -394,32 +397,37 @@ def damping_gain(k: float, damping: float, chroma: float) -> float:
 
 
 def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
-    """Spread each pixel about its achromatic mean (§1.5). float32 in/out."""
+    """Spread each pixel about its Rec.709 luma. float32 in/out."""
     out = np.asarray(rgb, dtype=np.float32)
     if params.dye_separation == 1.0 and params.separation_damping == 0.0:
         return out
     k = params.dye_separation
     damping = params.separation_damping
-    mean = out.mean(axis=-1, keepdims=True)
-    diff = out - mean
+    luma = (
+        LUMA_WEIGHTS[0] * out[..., 0:1]
+        + LUMA_WEIGHTS[1] * out[..., 1:2]
+        + LUMA_WEIGHTS[2] * out[..., 2:3]
+    )
+    diff = out - luma
     chroma = np.sqrt(
         (diff[..., 0:1] ** 2 + diff[..., 1:2] ** 2 + diff[..., 2:3] ** 2) / 3.0
     )
     if damping == 0.0:
-        return mean + k * diff
+        return luma + k * diff
     h = (SEPARATION_REF_SPREAD - chroma) / (SEPARATION_REF_SPREAD + chroma)
     k_eff = np.minimum(
         k ** ((1.0 - damping) + damping * h),
         SEPARATION_K_MAX,
     )
-    return mean + k_eff * diff
+    return luma + k_eff * diff
 
 
 def wb_to_kelvin(magenta: float, yellow: float) -> float:
-    """Nominal print temperature: least-squares projection onto the
-    Planckian (mired) direction; 5500 K at neutral. Not colorimetric."""
+    """Nominal illuminant temperature: least-squares projection onto the
+    Planckian (mired) direction; 5500 K at neutral. Higher K is warmer
+    (Lightroom convention). Not colorimetric."""
     km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
-    dmu = (km * magenta + ky * yellow) / (km * km + ky * ky)
+    dmu = -(km * magenta + ky * yellow) / (km * km + ky * ky)
     mu = min(
         max(1e6 / TEMP_REF_KELVIN + dmu, 1e6 / TEMP_MAX_KELVIN),
         1e6 / TEMP_MIN_KELVIN,
@@ -431,11 +439,11 @@ def kelvin_to_wb(
     kelvin: float, magenta: float, yellow: float
 ) -> tuple[float, float]:
     """Move (M, Y) along the Planckian direction to `kelvin`, preserving
-    the off-locus tint component."""
+    the off-locus tint component. Higher K warms the image."""
     km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
     kelvin = min(max(kelvin, TEMP_MIN_KELVIN), TEMP_MAX_KELVIN)
-    dmu_cur = (km * magenta + ky * yellow) / (km * km + ky * ky)
-    delta = (1e6 / kelvin - 1e6 / TEMP_REF_KELVIN) - dmu_cur
+    dmu_cur = -(km * magenta + ky * yellow) / (km * km + ky * ky)
+    delta = -(1e6 / kelvin - 1e6 / TEMP_REF_KELVIN) - dmu_cur
     m2 = min(max(magenta + km * delta, CMY_MIN), CMY_MAX)
     y2 = min(max(yellow + ky * delta, CMY_MIN), CMY_MAX)
     return float(m2), float(y2)
