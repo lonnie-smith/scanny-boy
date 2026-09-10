@@ -169,9 +169,8 @@ def _completed_negative(**overrides) -> NegativeRecord:
 
 
 def test_v7_round_trips(tmp_path):
-    """v8 adds the top-level film-base reference block
-    (docs/REBATE_ANCHORING.md §3.1) beside v7's per-negative rig-tilt
-    rectification record (docs/RECTIFICATION_PLAN.md section 7)."""
+    """The top-level film-base reference block round-trips beside the
+    per-negative rig-tilt rectification record."""
     manifest = _manifest(negatives=[_completed_negative()])
     write_roll_manifest(tmp_path, manifest)
 
@@ -210,8 +209,8 @@ def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
     assert manifest.negatives == []
     assert manifest.processing_params == {}
     assert manifest.stitch_params == {}
-    # Section 5.4: the one thing an empty roll can honestly know is which
-    # profile it will embed, because there is exactly one.
+    # The one thing an empty roll can honestly know is which profile it
+    # will embed, because there is exactly one.
 
     assert manifest.icc_profile == profile_record(ProfileKind.LINEAR)
     assert manifest.film == {"kind": "colour"}
@@ -234,7 +233,7 @@ def test_persisted_manifest_matches_the_published_schema(tmp_path):
     )
 
 
-# --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
+# --- the camera_color block -------------------------------------------
 
 
 def test_camera_color_round_trips_through_the_database(tmp_path):
@@ -260,7 +259,7 @@ def test_camera_color_round_trips_through_the_database(tmp_path):
 def test_roll_manifest_without_camera_color_loads_and_validates(tmp_path):
     """An optional object: a roll whose runs predate the block (or a build
     whose sources report no matrix) has no `camera_color` — the export
-    decides what that means (EXPORT_PLAN §3.4), the loader does not."""
+    decides what that means, the loader does not."""
     write_roll_manifest(tmp_path, _manifest())
     loaded = load_roll_manifest(tmp_path)
 
@@ -268,7 +267,7 @@ def test_roll_manifest_without_camera_color_loads_and_validates(tmp_path):
     assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
 
 
-# --- the film_base block (docs/REBATE_ANCHORING.md section 3.1) -----------
+# --- the film_base block ---------------------------------------------
 
 
 def _film_base_block(locked_at: str | None = None) -> dict:
@@ -348,9 +347,8 @@ def test_schema_rejects_a_frame_record_missing_scale():
 
 
 def test_rectification_round_trips(tmp_path):
-    """The per-negative rig-tilt rectification block
-    (docs/RECTIFICATION_PLAN.md section 7) survives the library round trip
-    and matches the schema."""
+    """The per-negative rig-tilt rectification block survives the library
+    round trip and matches the schema."""
     rectification = {
         "l": [3.1e-07, -3.8e-07],
         "centre": [3032.0, 2020.0],
@@ -417,7 +415,7 @@ def test_load_rejects_an_unregistered_folder(tmp_path):
     assert exc_info.value.code == Code.ROLL_NOT_FOUND
 
 
-# --- section 3.4: invariants --------------------------------------------
+# --- invariants ------------------------------------------------------------
 
 
 def test_check_roll_invariants_ignores_changed_per_negative():
@@ -440,9 +438,9 @@ def test_check_roll_invariants_rejects_a_changed_invariant(overrides):
 
 
 def test_check_roll_invariants_ignores_changed_input_folder():
-    """Section 3.4: input folder, source list, order, and grouping are
-    *expected* to differ between runs and are never compared. This is
-    precisely what Phase 2's `check_roll_rerun_matches` refused."""
+    """Input folder, source list, order, and grouping are *expected* to
+    differ between runs and are never compared. This is precisely what
+    Phase 2's `check_roll_rerun_matches` refused."""
     manifest = _manifest()
     append_run(
         manifest,
@@ -466,16 +464,16 @@ def test_check_roll_invariants_ignores_changed_input_folder():
 
 
 def test_check_roll_invariants_seeds_on_an_unseeded_roll():
-    """Section 5.4: an empty roll has no `processing_params` or
-    `stitch_params` yet, so the first run establishes them rather than being
-    compared against `{}`."""
+    """An empty roll has no `processing_params` or `stitch_params` yet, so
+    the first run establishes them rather than being compared against
+    `{}`."""
     empty = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Fresh", film_kind="colour")
 
     check_roll_invariants(empty, _invariants())
     assert empty.processing_params == {}, "check must never mutate"
 
 
-# --- section 3.4: runs and negative ids ---------------------------------
+# --- runs and negative ids -------------------------------------------------
 
 
 def test_append_run_preserves_earlier_negatives():
@@ -489,8 +487,8 @@ def test_append_run_preserves_earlier_negatives():
 
 
 def test_append_run_lengthens_a_colliding_short_id():
-    """Section 3.4: `run_id` is a UUID, so six hex characters can collide.
-    Uniqueness is enforced, not assumed."""
+    """`run_id` is a UUID, so six hex characters can collide. Uniqueness is
+    enforced, not assumed."""
     manifest = _manifest(runs=[], negatives=[])
     a = _run(run_id="abcdef01-2345-4678-9abc-def012345678")
     b = _run(run_id="abcdef01-9999-4678-9abc-def012345678")
@@ -544,12 +542,12 @@ def test_negative_ids_unique_across_two_runs():
     assert len(set(ids)) == 4
 
 
-# --- section 3.3: sources -----------------------------------------------
+# --- sources -----------------------------------------------------------
 
 
 def test_merge_sources_deduplicates_by_hash():
-    """Section 3.3: `sources` is keyed by `sha256`, so a file already present
-    is never appended twice — not from a different folder, and not under a
+    """`sources` is keyed by `sha256`, so a file already present is never
+    appended twice — not from a different folder, and not under a
     different name."""
     manifest = _manifest(sources=[], runs=[], negatives=[])
     merge_sources(manifest, [_source("a.NEF", _SHA)], "run-1")
@@ -575,7 +573,7 @@ def test_merge_sources_deduplicates_by_hash():
     assert manifest.sources[1].run_id == "run-2"
 
 
-# --- section 3.4: output naming -----------------------------------------
+# --- output naming -----------------------------------------------------
 
 
 def test_allocate_output_name_suffixes_on_collision():
@@ -771,7 +769,7 @@ def test_check_roll_invariants_still_rejects_other_processing_param_changes():
         )
 
 
-# --- grid fields (docs/GRID_STITCH_PLAN.md sections 2.4 and 4) -------------
+# --- grid fields ---------------------------------------------------------
 
 
 def test_grid_fields_round_trip_through_the_library(tmp_path):

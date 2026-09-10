@@ -1,12 +1,12 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ScannyBoyRollManifest",
-  "description": "scanny-boy-roll.json: one roll's durable record. See docs/PHASE3_IMPLEMENTATION_PLAN.md section 3.3.",
+  "description": "scanny-boy-roll.json: one roll's durable record.",
   "type": "object",
   "definitions": {
     "filmBase": {
       "type": "object",
-      "description": "REBATE_ANCHORING section 3.1: the roll's film-base reference — the per-channel median log density inside the film rebate of one dedicated reference frame, the thin-end colour anchor for every negative on the roll. Attached by `roll set-base-frame`; replaceable while `locked_at` is null; frozen for the life of the roll once the first negative has been published against it. `density` is always a 3-array, even on a monochrome roll (section 5); `populations` is the full detector output, thinnest first, kept as evidence.",
+      "description": "The roll's film-base reference — the per-channel median log density inside the film rebate of one dedicated reference frame, the thin-end colour anchor for every negative on the roll. Attached by `roll set-base-frame`; replaceable while `locked_at` is null; frozen for the life of the roll once the first negative has been published against it. `density` is always a 3-array, even on a monochrome roll; `populations` is the full detector output, thinnest first, kept as evidence.",
       "required": [
         "density",
         "locked_at",
@@ -108,7 +108,7 @@
         "camera_model": { "type": ["string", "null"] },
         "matrix_version": { "type": "integer" }
       },
-      "description": "The capturing body's colour response (docs/EXPORT_PLAN.md section 3.2): written by the stitch stage's first run from the run's first source, frozen thereafter. Recorded data for the export path, not a roll invariant (section 3.3). A colour roll with no camera_color fails the export (CAMERA_MATRIX_MISSING)."
+      "description": "The capturing body's colour response: written by the stitch stage's first run from the run's first source, frozen thereafter. Recorded data for the export path, not a roll invariant. A colour roll with no camera_color fails the export (CAMERA_MATRIX_MISSING)."
     },
     "runStatus": {
       "type": "string",
@@ -127,7 +127,7 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "channelArray": {
-      "description": "Per-channel values: one entry per published channel - 3 on a colour roll, 1 on a mono roll's collapsed image (MONOCHROME_PLAN section 4). Existing colour rolls carry 3 and validate unchanged.",
+      "description": "Per-channel values: one entry per published channel - 3 on a colour roll, 1 on a mono roll's collapsed image. Existing colour rolls carry 3 and validate unchanged.",
       "oneOf": [
         {
           "type": "array",
@@ -253,7 +253,7 @@
     },
     "rectification": {
       "type": "object",
-      "description": "The negative's fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 7): one shared W = [[1,0,0],[0,1,0],[l1,l2,1]] acting on points centred at `centre`, with the fit's own before/after diagnostics. Absent when the fit was rejected or the build predates it.",
+      "description": "The negative's fitted rig-tilt rectification: one shared W = [[1,0,0],[0,1,0],[l1,l2,1]] acting on points centred at `centre`, with the fit's own before/after diagnostics. Absent when the fit was rejected or the build predates it.",
       "required": [
         "l",
         "centre",
@@ -326,7 +326,7 @@
             },
             "sampled": { "type": "boolean" }
           },
-          "description": "MONOCHROME_PLAN section 1: the film-kind detector's evidence for this negative, recorded beside the other section 3.7 meters and acted on by nothing. Present only on sampled negatives."
+          "description": "The film-kind detector's evidence for this negative, recorded beside the other meters and acted on by nothing. Present only on sampled negatives."
         },
         "rebate": {
           "type": "object",
@@ -354,7 +354,7 @@
         },
         "opaque": {
           "type": "object",
-          "description": "The opaque-holder gate's finding (docs/DECISIONS.md, \"Normalization decisions\"). `threshold` is the absolute log density it fired at, null with nothing withheld. Declared late (BLACK_POINT_REFINEMENT §4.1): the block was written by earlier builds but never declared here.",
+          "description": "The opaque-holder gate's finding. `threshold` is the absolute log density it fired at, null with nothing withheld.",
           "required": ["detected", "mask_fraction", "threshold"],
           "properties": {
             "detected": { "type": "boolean" },
@@ -364,7 +364,7 @@
         },
         "film_extent": {
           "type": "object",
-          "description": "The film-extent pass's finding (docs/BLACK_POINT_REFINEMENT.md): where the film's own extent was judged to sit and how far the meters' region was inset inside it. `insets` is (top, bottom, left, right) in GRID CELLS -- `analysis_block_px` in processing_params multiplies to canvas pixels, and `analysis_rect` beside it is in canvas pixels. `valley` is the absolute log density the film/non-film split was made at; `rebate_agrees` is the §5.3 cross-check, recorded and read by nothing.",
+          "description": "The film-extent pass's finding: where the film's own extent was judged to sit and how far the meters' region was inset inside it. `insets` is (top, bottom, left, right) in GRID CELLS -- `analysis_block_px` in processing_params multiplies to canvas pixels, and `analysis_rect` beside it is in canvas pixels. `valley` is the absolute log density the film/non-film split was made at; `rebate_agrees` is a cross-check against the rebate detector, recorded and read by nothing.",
           "required": [
             "detected",
             "valley",
@@ -394,7 +394,7 @@
         "unclamped_ceils": { "$ref": "#/definitions/channelArray" },
         "highlight_refs": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/channelArray" }],
-          "description": "CAST_REMOVAL_PLAN R-1 (section 3.2): the dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read by nothing in the stitch stage."
+          "description": "The dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read only by --auto-cast."
         },
         "neutral_residual": {
           "oneOf": [
@@ -406,7 +406,7 @@
               "maxItems": 2
             }
           ],
-          "description": "CAST_REMOVAL_PLAN R-1 (section 3.1): the frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read by nothing in the stitch stage."
+          "description": "The frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read only by --auto-cast."
         },
         "base_check": { "$ref": "#/definitions/baseCheck" },
         "source": { "type": "string" }
@@ -578,7 +578,7 @@
             "across": { "type": "integer", "minimum": 1 },
             "down": { "type": "integer", "minimum": 1 }
           },
-          "description": "The negative's grid as declared (docs/GRID_STITCH_PLAN.md section 2.4); null for a pre-grid build."
+          "description": "The negative's grid as declared; null for a pre-grid build."
         },
         "grid_cells": {
           "type": ["object", "null"],
@@ -698,7 +698,7 @@
         },
         "color_cast_removal_highlights": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op (docs/CAST_REMOVAL_PLAN.md §7.4)."
+          "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op."
         },
         "color_temperature": {
           "type": ["number", "null"],
@@ -765,7 +765,7 @@
     "icc_profile": { "$ref": "#/definitions/iccProfile" },
     "published_icc_profile": {
       "allOf": [{ "$ref": "#/definitions/iccProfile" }],
-      "description": "The density profile the published TIFFs carry (docs/DECISIONS.md, \"Normalization decisions\")."
+      "description": "The density profile the published TIFFs carry."
     },
     "stitch_params": { "type": "object" },
     "runs": {
@@ -783,11 +783,11 @@
     "metadata": { "$ref": "#/definitions/metadata" },
     "camera_color": { "$ref": "#/definitions/cameraColor" },
     "film": {
-      "description": "MONOCHROME_PLAN section 2.3. Optional (unlike every other top-level field) even though current builds always write it: a manifest predating section 2 has none, and section 5.2 treats a missing block as an implicit frozen colour rather than requiring a migration.",
+      "description": "Optional (unlike every other top-level field) even though current builds always write it: a manifest predating monochrome support has none, and a missing block is treated as an implicit frozen colour rather than requiring a migration.",
       "oneOf": [{ "$ref": "#/definitions/filmDecision" }, { "type": "null" }]
     },
     "film_base": {
-      "description": "REBATE_ANCHORING section 3.1. Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a roll with FILM_BASE_REQUIRED.",
+      "description": "Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a roll with FILM_BASE_REQUIRED.",
       "oneOf": [{ "$ref": "#/definitions/filmBase" }, { "type": "null" }]
     }
   }

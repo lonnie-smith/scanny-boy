@@ -1,7 +1,7 @@
 import Foundation
 
 /// One flat-field profile, as `flatfield list` and `flatfield_created`
-/// report it — section 3.1's rule again: the library's storage is the CLI's,
+/// report it — the library's storage is the CLI's,
 /// and Swift only reads back what an event handed it.
 ///
 /// The gain map's path and SHA-256 are deliberately absent: the path is

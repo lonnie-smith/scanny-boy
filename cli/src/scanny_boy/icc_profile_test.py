@@ -49,9 +49,9 @@ DENSITY_TRC_PARAMS = (TRC_G_DENSITY,)
 LINEAR_PROFILE_ID = bytes.fromhex("ded7f19b8a02c80ba34ac389584e9cd9")
 
 # The three profiles whose colorants are the vendored ProPhoto source's
-# wide container (docs/PROFILE_HONESTY_PLAN.md). The two export profiles
-# are built from Adobe RGB's published colorimetry instead
-# (docs/EXPORT_PLAN.md §2), so the byte-identity test does not extend to
+# wide container. The two export profiles
+# are built from Adobe RGB's published colorimetry instead,
+# so the byte-identity test does not extend to
 # them — and their descriptions *are* a measurement claim, so the "wide
 # container" description test does not either.
 WORKING_KINDS = (
@@ -61,7 +61,7 @@ WORKING_KINDS = (
 )
 GREY_KINDS = frozenset({ProfileKind.DENSITY_GREY, ProfileKind.EXPORT_GREY})
 
-# The guard test's exception set (docs/DECISIONS.md, "Normalization decisions"):
+# The guard test's exception set:
 # the profile must never become load-bearing for the render, so only the
 # modules that *write* a tagged file (or the profile module itself) may
 # import the loader. Everything else — previews, the edit stage, the
@@ -206,7 +206,7 @@ def test_trc_tags_share_one_offset(kind):
 def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source(kind):
     data = load_icc_profile(kind)
     # The grey profile is a gray-class profile: it carries no RGB matrix,
-    # by construction (MONOCHROME_PLAN section 4).
+    # by construction.
     matrix_tags = (
         ()
         if kind is ProfileKind.DENSITY_GREY
@@ -228,7 +228,7 @@ def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_ve
 
 def _profile_description(data: bytes, tag_signature: bytes = b"desc") -> str:
     """The en-US string of an `mluc` tag — `desc` by default, `cprt` for
-    the export profiles' Adobe disclaimer (EXPORT_PLAN §2.3)."""
+    the export profiles' Adobe disclaimer."""
     sig, tag_offset, _size = next(
         entry for entry in _tag_entries(data) if entry[0] == tag_signature
     )
@@ -265,7 +265,7 @@ def test_every_description_declares_a_wide_container_not_a_measurement(kind):
 
 
 def test_density_grey_is_a_gray_class_profile():
-    """MONOCHROME_PLAN section 4: a mono roll's published TIFF is a
+    """A mono roll's published TIFF is a
     1-channel (minisblack) file, which an RGB-colorspace profile cannot
     tag. The grey profile declares the GRAY data colour space, carries one
     kTRC with the density viewing gamma, and drops the RGB matrix."""
@@ -322,7 +322,7 @@ def test_load_icc_profile_still_verifies_and_returns_bytes():
 
 
 def test_the_two_profiles_are_never_silently_swappable():
-    """Section 3.12: a DENSITY byte string must fail a LINEAR verification,
+    """A DENSITY byte string must fail a LINEAR verification,
     and vice versa — a swapped tag can never pass unnoticed."""
     linear = load_icc_profile(ProfileKind.LINEAR)
     density = load_icc_profile(ProfileKind.DENSITY)
@@ -332,8 +332,8 @@ def test_the_two_profiles_are_never_silently_swappable():
         verify_icc_profile(linear, ProfileKind.DENSITY)
     verify_icc_profile(linear, ProfileKind.LINEAR)
     verify_icc_profile(density, ProfileKind.DENSITY)
-    # And the grey profile is a third, distinct byte string (MONOCHROME_PLAN
-    # section 4): it fails both RGB verifications, they fail its own.
+    # And the grey profile is a third, distinct byte string: it fails both
+    # RGB verifications, they fail its own.
     grey = load_icc_profile(ProfileKind.DENSITY_GREY)
     with pytest.raises(IccProfileError):
         verify_icc_profile(grey, ProfileKind.DENSITY)
@@ -343,29 +343,28 @@ def test_the_two_profiles_are_never_silently_swappable():
 
 
 def test_published_profile_kind_selects_by_film_kind():
-    """MONOCHROME_PLAN §2.3/§4: the invariant seed and the published-TIFF
+    """The invariant seed and the published-TIFF
     tag site both select through `published_profile_kind` — DENSITY_GREY on
-    a mono roll, DENSITY otherwise; unknown kinds fall to colour (the
-    pre-§2 default)."""
+    a mono roll, DENSITY otherwise; unknown kinds fall to colour."""
     assert published_profile_kind("colour") is ProfileKind.DENSITY
     assert published_profile_kind("monochrome") is ProfileKind.DENSITY_GREY
     assert published_profile_kind() is ProfileKind.DENSITY
 
 
 def test_export_profile_kind_selects_by_channel_count():
-    """EXPORT_PLAN §4.5: the export tag site selects on the channel count
+    """The export tag site selects on the channel count
     the writer actually sees — EXPORT_GREY for a 1-channel (mono roll)
     export, EXPORT_RGB otherwise."""
     assert export_profile_kind(1) is ProfileKind.EXPORT_GREY
     assert export_profile_kind(3) is ProfileKind.EXPORT_RGB
 
 
-# --- the export profiles (docs/EXPORT_PLAN.md section 2) -------------------
+# --- the export profiles --------------------------------------------------
 
-# The §2.2 pinned values: the D50-adapted colorants lcms2 derives from the
+# The pinned values: the D50-adapted colorants lcms2 derives from the
 # published Adobe RGB (1998) chromaticities. All but one agree byte for
 # byte with Apple's AdobeRGB1998.icc; `bXYZ`'s Z is 48795 where Apple's
-# file rounds 0.744568 up to 48796, a difference of 1/65536 (§2.2).
+# file rounds 0.744568 up to 48796, a difference of 1/65536.
 ADOBE_RGB_EXPORT_TAGS = {
     b"wtpt": (63190, 65536, 54061),
     b"rXYZ": (39960, 20389, 1276),
@@ -431,7 +430,7 @@ def test_export_rgb_profile_is_an_rgb_monitor_profile():
 
 
 def test_export_grey_profile_is_a_gray_class_profile():
-    """EXPORT_PLAN §2.2: the grey export profile carries a D50 `wtpt`, the
+    """The grey export profile carries a D50 `wtpt`, the
     same `chad`, a single `kTRC` with the *same* gamma as the RGB
     profile's TRCs, and no colorants at all."""
     data = load_icc_profile(ProfileKind.EXPORT_GREY)
@@ -440,8 +439,8 @@ def test_export_grey_profile_is_a_gray_class_profile():
     assert data[20:24] == b"XYZ "
     signatures = {sig for sig, _off, _size in _tag_entries(data)}
     assert signatures == {b"desc", b"cprt", b"wtpt", b"chad", b"kTRC"}
-    # lcms2's gray profile writes a D65 `wtpt` and no `chad` — the older
-    # non-conformant convention §2.2 rejects. The generator replaces the
+    # lcms2's gray profile writes a D65 `wtpt` and no `chad` — a
+    # non-conformant convention this profile rejects. The generator replaces the
     # pair, so a mono and a colour export make the same white-point claim.
     assert _xyz_tag_payload(data, b"wtpt") == ADOBE_RGB_EXPORT_TAGS[b"wtpt"]
     assert _chad_tag_payload(data) == ADOBE_RGB_EXPORT_CHAD
@@ -466,7 +465,7 @@ def test_the_export_profiles_trc_gammas_are_equal_and_equal_trc_g_export():
 
 
 def test_the_export_profiles_name_themselves_in_a_description_macos_will_show():
-    """§2.3: the short name goes in `desc` and the Adobe disclaimer in
+    """The short name goes in `desc` and the Adobe disclaimer in
     `cprt`. ColorSync returns an empty description for a `desc` of 100
     characters or more, which is why the disclaimer cannot live there."""
     for kind, name in (
@@ -509,7 +508,7 @@ def test_profiles_record_covers_every_kind():
 
 
 def test_guard_nothing_outside_the_write_path_imports_the_loader():
-    """The load-bearing rule of section 3.12: the profile must never creep
+    """The load-bearing rule: the profile must never creep
     into the render path, where a wrong TRC could corrupt pixels instead of
     merely looking odd. A grep-shaped test is the cheapest way to hold that
     line.

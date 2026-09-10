@@ -11,7 +11,7 @@ published TIFF (`tone` is baked in there through `render.render_export`;
 `color` is a judgement aid the export now bakes in, same as `tone`. The
 `spots` op is the exception that proves the log's replay rule: it is the
 only op whose replay *synthesizes* pixel values, at export and in the
-preview alike (SPOTTING_PLAN §1.1).
+preview alike.
 
 Every subcommand accepts a *selection* of negatives: the whole selection is
 validated before anything is written, so a batch either records or fails
@@ -52,7 +52,7 @@ _COLOR_REGION_KEYS = {
 
 
 def roll_is_monochrome(roll: RollManifest) -> bool:
-    """The roll's frozen film kind (MONOCHROME_PLAN §2). Colour has no
+    """The roll's frozen film kind. Colour has no
     meaning on a single-density roll: there are no layers to balance and
     no dyes to separate."""
     film = roll.film
@@ -431,10 +431,9 @@ def _merge_color_params(
     from scanny_boy.library.repo import _color_neutral_defaults
 
     # Build the base from the neutral defaults and overlay the recorded
-    # dict, instead of indexing the recorded dict directly
-    # (docs/CAST_REMOVAL_PLAN.md R-2 §6.2): a twelve-key recorded state —
-    # an op written before the thirteenth key existed — must not raise,
-    # and a missing newer key keeps its neutral default.
+    # dict, instead of indexing the recorded dict directly: a twelve-key
+    # recorded state — an op written before the thirteenth key existed —
+    # must not raise, and a missing newer key keeps its neutral default.
     base = _color_neutral_defaults()
     if recorded is not None:
         for key, value in recorded.items():
@@ -461,10 +460,10 @@ def run_edit_color(
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview colour adjustment — the full
-    thirteen-key colour state (docs/CAST_REMOVAL_PLAN.md R-2), or all
+    thirteen-key colour state, or all
     `None` for the reset.
 
-    `auto_cast` (docs/CAST_REMOVAL_PLAN.md §7.2) solves the global CMY
+    `auto_cast` solves the global CMY
     from the negative's recorded neutral estimate and writes the three
     values over whatever the merge produced — composing with explicit
     flags exactly as `--auto-density` does: the auto result wins over a
@@ -502,10 +501,9 @@ def run_edit_color(
                 updates[mag_key] = m
                 updates[yellow_key] = y
             solved = _merge_color_params(state.color, updates)
-            # The metering warning, widened (docs/CAST_REMOVAL_PLAN.md
-            # §7.2): fire when EITHER tie strength is non-zero and the
-            # metering it needs is missing — one warning per negative, not
-            # two.
+            # The metering warning: fire when EITHER tie strength is
+            # non-zero and the metering it needs is missing — one warning
+            # per negative, not two.
             cast_shadow = float(solved.get("cast_removal", 0.0) or 0.0) != 0.0
             cast_highlights = (
                 float(solved.get("cast_removal_highlights", 0.0) or 0.0) != 0.0
@@ -791,7 +789,7 @@ def run_edit_delete(
     return results
 
 
-# --- spotting (docs/SPOTTING_PLAN.md §7) --------------------------------------
+# --- spotting --------------------------------------
 
 
 def _spots_for_report(
@@ -816,7 +814,7 @@ def _spots_for_report(
     # axis-aligned marker rects have no faithful drawing, and the repair
     # they stand for is replayed before the crop anyway, so nothing is
     # lost but the overlay (the Heal panel's counts still read from the
-    # manifest summary). CROP_PLAN §4.
+    # manifest summary).
     if previews.crop_is_live(
         state.crop, (height, width)
     ):

@@ -141,7 +141,7 @@ private struct PreviewPane: View {
     @State private var showsNegative = false
     /// Sticky across negative changes, like `showsNegative`.
     @State private var selectedTab: EditSidebarTab = .tone
-    /// The crop-mode editing session (docs/CROP_PLAN.md §5): the overlay's
+    /// The crop-mode editing session: the overlay's
     /// rect/tilt/preset. Per-preview state; changing negatives ends it.
     @State private var cropSession = CropSession()
 
@@ -461,13 +461,13 @@ private struct PreviewPane: View {
         }
     }
 
-    // MARK: - Spot markers (SPOTTING_PLAN §8.3)
+    // MARK: - Spot markers
 
     /// Markers show while a set exists and repair is off; with repair on
     /// they hide unless the Heal tab is selected — the point of turning
     /// repair on is to look at the result. Crop mode hides them too: over
     /// a cropped-and-tilted display the axis-aligned rects have no
-    /// faithful drawing (CROP_PLAN §4).
+    /// faithful drawing.
     private var showsSpotMarkers: Bool {
         guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
             return false
@@ -606,7 +606,7 @@ private struct PreviewPane: View {
         )
     }
 
-    // MARK: - Crop mode (docs/CROP_PLAN.md §5)
+    // MARK: - Crop mode
 
     private func beginCrop() {
         // Crop editing runs in the fit view — the 1:1 zoom's region space
@@ -757,7 +757,7 @@ private struct EditSidebar: View {
 
 /// Rotate, flip, and crop controls for the Geometry sidebar tab. The
 /// rotate/flip buttons act on the whole selection; crop mode is
-/// anchor-only (docs/CROP_PLAN.md §5) — the window belongs to the frame
+/// anchor-only — the window belongs to the frame
 /// the preview shows.
 private struct GeometryAdjustmentPanel: View {
     let targets: [RollManifest.Negative]
@@ -1529,7 +1529,7 @@ private struct ColorAdjustmentPanel: View {
     }
 }
 
-/// The Heal sidebar panel (SPOTTING_PLAN §8.3): the sensitivity slider,
+/// The Heal sidebar panel: the sensitivity slider,
 /// the counts, the whole-negative repair toggle, and Clear. Detect is a
 /// selection-level command but the panel reviews the displayed negative —
 /// `edit.selectionTargets` is what a Detect click sends.

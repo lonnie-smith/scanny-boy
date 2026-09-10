@@ -73,7 +73,7 @@ def test_open_engine_refuses_a_revision_it_does_not_know(monkeypatch, tmp_path):
 def test_load_roll_defaults_a_missing_gain_or_scale_to_unity(roll_dir):
     """Rows written before gain normalization carry neither `gain` nor
     `overlap_mad_pregain`; rows written before the per-frame scale solve
-    (docs/STITCH_QUALITY_PLAN.md section 2) carry no `scale` either. Loading
+    carry no `scale` either. Loading
     either must not raise, and the values must read as "nothing was
     applied": gain 1, scale 1 (the layout was placed as a rigid transform)."""
     import json
@@ -278,7 +278,7 @@ def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     assert repo.net_edit_state(roll_dir, negative) == _state()
 
 
-# --- the crop op (docs/CROP_PLAN.md) -----------------------------------------
+# --- the crop op --------------------------------------------------------------
 
 
 def _crop_params(**overrides) -> dict:
@@ -571,7 +571,7 @@ def test_append_color_edit_validates_its_params(roll_dir):
     assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
 
 
-# --- the spots op (SPOTTING_PLAN §5) -----------------------------------------
+# --- the spots op ------------------------------------------------------------
 
 
 def _spots_params(**overrides) -> dict:
@@ -916,9 +916,9 @@ def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
 
 
 def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
-    """docs/GEOMETRIC_PLAN.md section 3.6: a roll that names the profile
-    only in `stitch_params.geometry` locks the profile exactly as hard as
-    one named in `processing_params.flat_field`."""
+    """A roll that names the profile only in `stitch_params.geometry`
+    locks the profile exactly as hard as one named in
+    `processing_params.flat_field`."""
     profile = _flatfield_profile()
     repo.save_flatfield_profile(profile)
 
@@ -966,7 +966,7 @@ def tmp_roll_dir(name: str) -> Path:
 def test_pre_0004_row_reads_back_with_four_nones():
     """A row written by migration 0003's shape (no calibration columns
     populated) reads back with four Nones and drives every existing code
-    path unchanged (docs/GEOMETRIC_PLAN.md section 3.5)."""
+    path unchanged."""
     import sqlalchemy as sa
 
     profile = _flatfield_profile("Old build")
@@ -994,7 +994,7 @@ def test_pre_0004_row_reads_back_with_four_nones():
     assert flatfield.flatfield_profile_summary(loaded).chromatic_aberration_mode is None
 
 
-# --- the thirteenth colour key (docs/CAST_REMOVAL_PLAN.md R-2) --------------
+# --- the thirteenth colour key -------------------------------------------------
 
 
 def _twelve_key_color_params(**overrides: float) -> dict[str, float]:
@@ -1012,7 +1012,7 @@ def _twelve_key_color_params(**overrides: float) -> dict[str, float]:
 
 
 def test_a_twelve_key_color_op_parses_with_the_new_default(roll_dir):
-    """R-2 §6.1: an op written before docs/CAST_REMOVAL_PLAN.md has no
+    """An op written before the thirteenth key was added has no
     thirteenth key and is still a complete colour state — it parses to the
     thirteen-key state with `cast_removal_highlights` at its neutral
     default and every other value preserved. A gate on all thirteen keys

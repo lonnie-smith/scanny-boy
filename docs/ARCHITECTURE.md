@@ -4,17 +4,11 @@ An orientation map for someone — human or agent — who needs to work on this
 code without reading all of it first.
 
 **Status of this file.** It describes what the code *does*, verified against
-the code at the time of writing, not what the plans say it should do. Where
-the two differ, this file says so explicitly and names the code. The
-authority chain for *decisions* is unchanged:
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) /
-[`PHASE2_IMPLEMENTATION_PLAN.md`](PHASE2_IMPLEMENTATION_PLAN.md) /
-[`PHASE3_IMPLEMENTATION_PLAN.md`](PHASE3_IMPLEMENTATION_PLAN.md) section 3 >
-[`DECISIONS.md`](DECISIONS.md) > this file. But for *"what does the program
-actually do today"*, the code is the source of truth and this file is a
-summary of it. `DECISIONS.md` is organised by phase and includes decisions
-that were later amended; this file is organised by subsystem and describes
-only the current state.
+the code, organised by subsystem rather than by history. For *why* a
+non-obvious design choice was made, look for a comment at the constant or
+function it explains — that's more reliable than a separate doc going
+stale. Where this file and the code could be read to disagree, the code
+wins; git log has the history of how things got this way.
 
 ---
 
@@ -49,7 +43,7 @@ cli/src/scanny_boy/     Python. ALL logic lives here.
 mac/ScannyBoy/          SwiftUI app. Interface only.
 shared/contract/        The interface between them (CONTRACT.md + 3 JSON Schemas).
 scripts/                bootstrap.sh, build-cli.sh, measure-*.py
-docs/                   Plans, DECISIONS.md, punchlist.md, this file.
+docs/                   This file.
 tests/fixtures/nef/     Real sample NEFs — gitignored, tests skip without them.
 ```
 
@@ -116,9 +110,9 @@ rolls, and the extended preview tone; 10 2D grid stitching (`--grid AxD` on
 `probe`/`prepare`/`run`, mutually exclusive with `--per-negative`; a strip is
 the down=1 case, and `min(across, down) <= 2` because every cell must show
 film rebate — the rule's home is CONTRACT.md) and the `INVALID_GRID` error
-code; 9 the extended metadata editing and 1:1 region rendering. Earlier
-versions are recorded in `DECISIONS.md`: 8 normalization and the per-frame
-scale; 7 geometric calibration and auto-rotation; 6 flat-field profiles (a
+code; 9 the extended metadata editing and 1:1 region rendering; 8
+normalization and the per-frame scale; 7 geometric calibration and
+auto-rotation; 6 flat-field profiles (a
 `flatfield` command family (`create`/`list`/`delete`), gain maps stored
 beside the library database, and `--flatfield` on
 `prepare`/`run`/`probe`/`stitch`, folded into `processing_params` as the
@@ -192,7 +186,7 @@ type into an `error` event and an exit status, emit `finished`. Exit codes:
 cancellation. It never spawns a subprocess of itself.
 
 `prepare` (stage 1, renamed from `convert` — "Convert" is reserved for the
-whole `run`; see DECISIONS.md's naming split) and `stitch` remain
+whole `run`) and `stitch` remain
 independently usable; `prepare` is the only command that still writes to a
 plain `--out` work directory rather than a roll. `stitch --overwrite` is accepted and **deliberately ignored** — a
 stitch replaces a published file only by adopting the covered negative in
@@ -305,7 +299,7 @@ to bottom.
 | `apply_metadata.py` | `apply-metadata`: rewrite EXIF dates in published TIFFs. |
 | `film_base.py` | The roll's film-base reference: its detector, gates, and the thin-end colour anchor the meters read. |
 | `grid_profile.py` | Named grid-shape presets (`grid create`/`list`/`delete`). |
-| `serve.py` | `serve`: the resident process answering newline-delimited requests on stdin (docs/OPTIMIZATION.md). |
+| `serve.py` | `serve`: the resident process answering newline-delimited requests on stdin, behind the app's Edit tab (§13). |
 
 ---
 
@@ -386,9 +380,8 @@ white balance** (`user_wb=[1, 1, 1, 1]`): linear sensor channels straight
 from the demosaic, with no colour-matrix conversion into a colourimetric
 space and no per-channel white-balance gain. This matches NegPy's decode
 exactly — its pipeline treats the scan as a radiometric measurement of the
-sensor's own channels and handles channel balance in film terms (see
-`docs/DECISIONS.md`, "Linear decode for NegPy compatibility"). This
-supersedes the earlier `gamma=(1.8, 16)` / ProPhoto decode, whose LibRaw
+sensor's own channels and handles channel balance in film terms. This
+supersedes an earlier `gamma=(1.8, 16)` / ProPhoto decode, whose LibRaw
 curve and colour conversion violated NegPy's assumption on three counts.
 
 Consequences, all live in the code today:
@@ -399,11 +392,15 @@ Consequences, all live in the code today:
   code — proved by a test, not assumed.
 - The prepare stage's intermediates carry `ScannyBoy-Linear-v1.icc`:
   a **linear** TRC (parametric type 0, g = 1.0) — the truth about
-  those pixels — over wide-container colorants (byte-identical to the
-  upstream ProPhoto-v4 source, but labelled as a deliberately wide
-  container, not a measurement of this camera's primaries;
-  docs/PROFILE_HONESTY_PLAN.md). All three profiles are generated
-  deterministically by `cli/tools/generate_icc_profile.py`.
+  those pixels — over wide-container colorants byte-identical to the
+  upstream ProPhoto-v4 source. The colorants are **not** a claim about this
+  camera's primaries (`RAW_PARAMS` decodes the camera's own filter
+  responses, never converted into any colorimetric space, so no primaries
+  could be true of them) — ICC has no "unknown primaries" encoding and an
+  untagged file reads as sRGB, a different false claim, so the profile is
+  labelled a deliberately wide container instead of asserting a
+  measurement. All three profiles are generated deterministically by
+  `cli/tools/generate_icc_profile.py`.
 - `icc_profile.py` verifies each profile's SHA-256 on every load, and
   `tiff_writer.write_base_tiff` refuses to write a TIFF with an empty
   profile. An untagged file is never produced.
@@ -418,8 +415,7 @@ Consequences, all live in the code today:
   already-bright pixel past full scale, `encode_from_linear`'s clip at 1.0
   loses the highlight — the pipeline emits `FLATFIELD_HIGHLIGHT_CLIPPED`
   when more than 0.1% of a frame's pixels clip rather than losing them
-  silently. The old punchlist item asking for linear intermediates is
-  resolved: the intermediates **are** linear.
+  silently. The intermediates **are** linear.
 
 `RAW_PARAMS` ([`raw_decode.py`](../cli/src/scanny_boy/raw_decode.py)) is
 locked and every value was independently verified to matter — in particular
@@ -431,11 +427,9 @@ roll's `processing_params` invariant.
 
 The stitch stage's `composite()` no longer encodes linear `uint16`. Its
 final encode fuses the whole normalization pass (NegPy §2, ported in
-[`normalization.py`](../cli/src/scanny_boy/normalization.py); the locked
-decisions and their arguments are in `DECISIONS.md`'s "Normalization
-decisions") on the float32
-accumulator that already exists — blending, warping and the gain solve stay
-in linear light, which is where they are physically correct:
+[`normalization.py`](../cli/src/scanny_boy/normalization.py)) on the
+float32 accumulator that already exists — blending, warping and the gain
+solve stay in linear light, which is where they are physically correct:
 
 1. `to_log_density`: `D = log10(clamp(I, 1e-6, 1))` — where a negative's
    picture information lives (a linear uint16 spends ~11.3 effective bits
@@ -468,15 +462,14 @@ in linear light, which is where they are physically correct:
 Three properties to hold onto:
 
 - **The published TIFF is a working intermediate** — the creative-edit
-  stage reads it, and the export renders the positive from it (docs/
-  EXPORT_PLAN.md). The bake is arithmetically reversible: the per-channel floors and
+  stage reads it, and the export renders the positive from it. The bake is
+  arithmetically reversible: the per-channel floors and
   ceils are recorded, and `10 ** (floor + val * (ceil - floor))` recovers
   the linear composite to within quantization.
 - **It stays a negative in appearance.** The published file's border is now
   **white** (`NORMALIZED_FILL` = 1.0 + `NORMALIZED_HEADROOM_HIGH` = code
   65535), and the file you open in Photoshop looks like a negative while
-  the preview beside it looks positive. Both are correct (§3.11/§3.14 of
-  the plan).
+  the preview beside it looks positive. Both are correct.
 - **The meters read an analysis region, not the canvas.** Uncovered canvas
   pixels sit at `log10(1e-6) = -6.0` — a colossal outlier at exactly the
   dense end the floor percentile reads — so `largest_valid_rect`, computed
@@ -493,8 +486,8 @@ previews and the edit stage — decodes through
 `normalization.decode_normalized`, never through an ICC transform; a
 grep-shaped guard test keeps the loader out of everything but the write
 path. The export is the deliberate exception: its pixels *are* colour
-managed (docs/EXPORT_PLAN.md), through `render.py`'s matrix conversion and
-the export profiles' pinned gamma.
+managed, through `render.py`'s matrix conversion and the export profiles'
+pinned gamma.
 
 - **Previews are display-rendered.** The published TIFF is normalized log
   density, so `previews.py` downscales in code space (averaging density,
@@ -509,10 +502,10 @@ the export profiles' pinned gamma.
   shadow refs (P98), the exposure anchor (P50) and the textural range
   (P10–P90) are measured on the same prefiltered grid and stored in the roll
   record's `normalization` block; the edit stage's Auto Grade / Auto Density
-  / Auto Cast buttons solve from that block. The Phase 4 print stage is
+  / Auto Cast buttons solve from that block. A future print stage is
   expected to read the rest.
 - **`normalize` params are a roll invariant.** Every constant of the
-  feature rides in `processing_params.normalize` (§3.8), so a roll can
+  feature rides in `processing_params.normalize`, so a roll can
   never mix normalized and un-normalized negatives — and retuning any
   constant invalidates existing rolls. Know that before you tune.
 
@@ -544,8 +537,7 @@ against the acceptance gates is always re-fitted with closed-form Umeyama
 with scale forced to 1 (`registration.rigid_from_correspondences`). Never
 an affine, never a homography. The same inliers also get a closed-form
 Umeyama fit *with* scale (`registration.similarity_from_correspondences`),
-which the global layout solve reads (docs/STITCH_QUALITY_PLAN.md section 2)
-— the pairwise gates are unaffected.
+which the global layout solve reads — the pairwise gates are unaffected.
 
 **The rig-tilt rectification is a re-parameterisation, not a placement.**
 Before the layout solves, each negative fits one shared homography
@@ -584,7 +576,7 @@ grid axes for a grid), normalised to `[0, 1]`; the per-axis ramps multiply
 into one separable product, a floor is applied so a covered pixel always
 contributes, and the result is raised to `FEATHER_EXPONENT` (starting value
 4, bounded to `[1, 8]`) to narrow the crossfade to a band around the overlap
-midline without moving the seam (`docs/NARROW_FEATHER.md`). An isotropic
+midline without moving the seam. An isotropic
 distance transform of the eroded validity mask is kept only as the fallback
 for a layout with no trustworthy axis. The isotropic version made a pixel's
 crossfade identical near the
@@ -658,9 +650,9 @@ same physical rebate edge across frames. Normalization's density-based
 **rebate detector** (`normalization.detect_rebate`, §7.1) now finds and
 excludes rebate for the meters' benefit; deriving the edge's deviation from
 the solved strip axis from that mask — retiring the always-`null` field —
-is on the punchlist, not implemented.
+is not implemented.
 
-### 8.2 The CLAHE fallback (not in `DECISIONS.md`)
+### 8.2 The CLAHE fallback
 
 `USE_CLAHE` is `False`, so the first registration pass runs on the plain
 detection image. If that pass fails a negative with
@@ -729,10 +721,9 @@ Consequences to know about:
 
 ### 8.4 Geometric calibration (protocol version 7)
 
-A flat-field profile can now carry the rig's full optical description:
+A flat-field profile can carry the rig's full optical description:
 radial lens distortion and lateral chromatic aberration, fitted from ChArUco
-board frames and applied inside the existing stitch warp
-([`docs/GEOMETRIC_PLAN.md`](GEOMETRIC_PLAN.md)).
+board frames and applied inside the existing stitch warp.
 
 **The modules**: `charuco.py` owns the board (transcribed from
 `calibration/lens_calibration_targets.pdf`, which stays the authoritative
@@ -804,12 +795,11 @@ keeping.
 
 ## 9. The roll: durable, additive, with replacement in place
 
-This is the Phase 3 break, and the thing most likely to surprise you if you
-carry Phase 2 intuitions. Since PR #58 there is a second break layered on
-it: **each roll's durable record lives in one SQLite library database, not
-in a file inside the roll folder.** And since PRs #52/#53, the original
-"never in place" rule became "adopt in place": a rerun replaces a covered
-negative by taking over its identity, not by publishing a rival.
+This is the design most likely to surprise you if you assume a rerun
+publishes a new file alongside the old one: **each roll's durable record
+lives in one SQLite library database, not in a file inside the roll
+folder**, and a rerun replaces a covered negative by taking over its
+identity in place, not by publishing a rival.
 
 - One library folder (`~/Pictures/Scanny Boy` by default, relocatable in
   Settings) holds every roll as a **direct child**. The folder holds only
@@ -946,10 +936,6 @@ cleans that up (`output_folder.plan_rerun` + `apply_recovery_cleanup`).
 and cancellation — because a rerun regenerates it. A directory the caller
 named with `--work` is *never* deleted by cleanup, because deleting a folder
 the user pointed at is not this program's decision.
-
-> Note: `DECISIONS.md` describes the default work directory as "a fresh
-> temporary directory". It is now `<roll>/.work/<run_id>/`
-> (`run_pipeline.run_full`).
 
 **Errors are typed exceptions carrying a stable `Code`**, translated at the
 `cli.py` boundary: `ConvertFailure` (convert), `StitchError` (stitch/
@@ -1131,8 +1117,9 @@ same treatment through `GridProfilesSheet` (`grid list`/`create`/`delete`).
 **absolute** `SCANNY_BOY_CLI` override; a Release build never falls back to
 the repo). `CLICommand` builds argument arrays. `CLISession` is an actor
 owning one invocation; `CLIDaemon` owns the long-lived `scanny-boy serve`
-child the Edit tab's many small commands ride (docs/OPTIMIZATION.md).
-`LineAssembler` + `CLIEvent` turn bytes into typed events.
+child the Edit tab's many small commands ride, avoiding a fresh process
+launch per small edit. `LineAssembler` + `CLIEvent` turn bytes into typed
+events.
 
 Two hard-won details in `CLISession` worth not undoing:
 
@@ -1165,12 +1152,10 @@ populates the accessibility tree. See the long comment in `project.yml`.
 
 ## 14. Known gaps — read this before you "fix" something
 
-These are all real, all verified in the current code, and several are places
-where the README or `DECISIONS.md` describes intent that is not implemented.
-(The metadata gap this list used to carry is **closed**: `metadata set` /
-`metadata values` write the roll capture date and per-negative date
-overrides, `roll_sequence.apply_intended_times` re-derives intent on every
-write, and the Metadata tab drives it.)
+These are all real and verified in the current code — places where the
+README describes intent that is not implemented, or where a limitation is
+deliberate but still worth knowing before you go looking for the code that
+handles it.
 
 1. **The overlap sheet does not exist.** `probe --roll` correctly computes and
    emits `roll_overlap`, but nothing in Swift decodes it — the only
@@ -1178,14 +1163,12 @@ write, and the Metadata tab drives it.)
    `CLIRunner.swift`.
    `ConfigurationModel.runCommand()` passes `skipSources: []`
    unconditionally, so **every run adopts whatever it overlaps in place**,
-   with no Skip/Replace choice offered. The README described the sheet as
-   shipped and `DECISIONS.md`'s Phase 3 app notes did too; it is not (the
-   latter now carries an update note). The CLI side
-   is ready for it.
+   with no Skip/Replace choice offered. The README describes the sheet as
+   shipped; it is not. The CLI side is ready for it.
 
 2. **`rebate_deviation_px` is always `null`.** See §8.1. The rebate
-   *detector* exists (§7.1) and excludes rebate from the meters; the
-   deviation field's retirement via that mask is punchlisted.
+   *detector* exists (§7.1) and excludes rebate from the meters; deriving
+   the deviation field from that mask is a known, not-yet-done follow-up.
 
 3. **The app can never keep a work directory.** `CLICommand.run` accepts a
    `work:` parameter, but `ConfigurationModel.runCommand()` never supplies one,
@@ -1197,14 +1180,10 @@ write, and the Metadata tab drives it.)
 4. **`stitch --overwrite` is accepted and ignored** — intentionally, but it is
    still dead surface area.
 
-5. **`export` is a rendered positive** (recorded so nobody re-opens the old
-   "pixels-plus-density-tag" question; the export once wrote the TIFF's codes
-   straight through with no EXIF, and that gap is closed, docs/EXPORT_PLAN.md).
-   The
-   export replays the ops log, renders a positive in Adobe RGB (the
-   recorded camera matrix converting the colour, the recorded tone op
-   baked in), and writes a 16-bit lossless JPEG XL with the export ICC
-   profile embedded and Exif/XMP boxes at encode time; the
+5. **`export` is a rendered positive.** It replays the ops log, renders a
+   positive in Adobe RGB (the recorded camera matrix converting the colour,
+   the recorded tone op baked in), and writes a 16-bit lossless JPEG XL with
+   the export ICC profile embedded and Exif/XMP boxes at encode time; the
    `scannyboy:provenance` XMP record makes the file interpretable without
    the database.
 
@@ -1217,14 +1196,13 @@ Intel build. Ad-hoc signing ("Sign to Run Locally") is enough for this local,
 single-user, single-machine release. macOS 14+, Apple silicon, Xcode 16.2,
 Swift 6, Python 3.13 pinned.
 
-Deferred with an attachment point recorded on
-[`punchlist.md`](punchlist.md), none scheduled: auto-crop from the recorded
-`valid_rect`, white balance / base neutralisation, a contrasting fill
-colour, manual negative reordering, and the rebate detector. The published
-TIFF is still a stitched **negative** — the positive is the
-**export's**, rendered at export time (docs/EXPORT_PLAN.md); a *print* stage
-(a print curve distinct from grade/snap, soft-proofing, paper simulation,
-and printing itself) remains Phase 4.
+Deferred, none scheduled: auto-crop from the recorded `valid_rect`, white
+balance / base neutralisation, a contrasting fill colour, manual negative
+reordering, and the rebate-deviation detector (§14.2). The published TIFF
+is still a stitched **negative** — the positive is the **export's**,
+rendered at export time; a *print* stage (a print curve distinct from
+grade/snap, soft-proofing, paper simulation, and printing itself) is not
+built.
 
 ---
 

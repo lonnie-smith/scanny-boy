@@ -612,7 +612,7 @@ def test_largest_all_covered_rectangle_finds_the_true_maximum():
 
 
 
-# --- 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 3 and 4) ---------
+# --- 2D grid stitching ------------------------------------------------
 
 from scanny_boy.layout import GRID_ALIGNMENT_RATIO_MAX, GRID_PITCH_RATIO_MIN
 from scanny_boy.selection import GridSpec
@@ -767,8 +767,7 @@ def test_grid_pitch_ratio_is_none_for_2x2_and_set_for_5x2():
 def test_grid_frames_at_45_degrees_to_the_declared_grid_fail_assignment():
     """The steps run 45 degrees away from the frames' own sensor axes: the
     rotation-derived axes and the centre cloud disagree, the SVD
-    cross-check catches it, and all four grid fields come back None
-    (docs/GRID_STITCH_PLAN.md sections 4.1 and 4.5)."""
+    cross-check catches it, and all four grid fields come back None."""
     across, down = 5, 2
     grid = GridSpec(across=across, down=down)
     # The solve's gauge pins theta_0 = 0, so the disagreement that matters
@@ -806,8 +805,7 @@ def test_grid_frames_at_45_degrees_to_the_declared_grid_fail_assignment():
 
 def test_a_full_cell_displacement_fails_the_bijection():
     """Half a cell or more snaps into a neighbouring cell, the bijection
-    fails outright, and all four grid fields are None (§4.1's magnitude
-    boundary)."""
+    fails outright, and all four grid fields are None."""
     across, down = 5, 2
     grid = GridSpec(across=across, down=down)
     ground_truth = _grid_placements(
@@ -832,7 +830,7 @@ def test_a_0_4_cell_displacement_keeps_its_cell_and_trips_alignment_only():
     the asymmetry the two checks exist for: the alignment check fires
     (0.4 > 0.25) while the pitch check does not (the displaced column's
     centroid moves by only half the displacement, leaving
-    grid_pitch_ratio ~ 0.67, above the 0.6 floor) (§4.5)."""
+    grid_pitch_ratio ~ 0.67, above the 0.6 floor)."""
     across, down = 5, 2
     grid = GridSpec(across=across, down=down)
     drift = 0.4 * _STEP_ACROSS
@@ -869,7 +867,7 @@ def test_solve_layout_grid_defaults_to_none():
     assert layout.grid_axes is None
     assert layout.grid_pitch_ratio is None
     assert layout.grid_alignment_ratio is None
-# --- rectified-space canvas (docs/RECTIFICATION_PLAN.md section 5) ---------
+# --- rectified-space canvas ---------------------------------------------
 
 
 _FOCAL_PX = 9000.0

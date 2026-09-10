@@ -8,7 +8,7 @@ import SwiftUI
 /// SwiftUI cannot filter a drag on a *held* key the way it filters on
 /// `.shift`, so the pan gesture lives on an NSView overlaid on the preview.
 /// Plain clicks pass straight through — nothing else on the tab needs them,
-/// except the spot markers (SPOTTING_PLAN §8.3): a plain click that hits a
+/// except the spot markers: a plain click that hits a
 /// marker toggles its rejection, and one that hits nothing keeps doing
 /// nothing (⌘Space+click zoom lives on the zoom-in gesture).
 struct PreviewEventHost: NSViewRepresentable {

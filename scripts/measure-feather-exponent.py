@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Measure `FEATHER_EXPONENT`'s effect on real scans (docs/NARROW_FEATHER.md
-section 6).
+"""Measure `FEATHER_EXPONENT`'s effect on real scans.
 
 Like `scripts/measure-stitch-quality.py`, this script **imports the
 production modules and calls them directly** — detection, registration,
@@ -14,13 +13,13 @@ For each negative and each `p` in `(1, 2, 3, 4, 6, 8)` it:
 
   - composites the negative at that exponent and writes the TIFF to
     `--out`;
-  - reports the balance histogram of docs/NARROW_FEATHER.md section 0
+  - reports the balance histogram
     (`balance = max_frame_weight / sum_of_weights` per covered pixel) —
     a function of the solved placements and feather weights alone, so it
     costs no pixel comparison and is reported for every `p` in one pass;
   - reports `overlap_mad` per pair, read straight off `CompositeResult`;
   - reports the high-to-mid frequency energy ratio in near-50/50 regions
-    against unblended regions, as section 0 measured it.
+    against unblended regions.
 
 Usage, from the repository root:
 
@@ -72,7 +71,7 @@ NEGATIVES: dict[str, list[str]] = {
 
 DEFAULT_EXPONENTS = (1, 2, 3, 4, 6, 8)
 
-# docs/NARROW_FEATHER.md section 0's near-50/50 window.
+# The near-50/50 window.
 _NEAR_HALF_LO, _NEAR_HALF_HI = 0.45, 0.55
 _UNBLENDED_MIN = 0.99
 
@@ -111,7 +110,7 @@ def per_frame_weights(
     called directly per placement, exactly as `composite.composite` calls
     it in its own accumulate pass, so the reported balance histogram is a
     function of the same weights the compositor actually uses. Frame
-    rotation/scale is not replayed here (docs/GRID_STITCH_PLAN.md's warp
+    rotation/scale is not replayed here (the warp
     only ever changes bounding-box shape, not the eroded mask's coverage
     footprint at the frame's own resolution), so each frame's mask is a
     filled rectangle at its placement's bounding box."""
@@ -139,8 +138,7 @@ def per_frame_weights(
 
 
 def balance_histogram(weights: np.ndarray) -> dict[str, float]:
-    """docs/NARROW_FEATHER.md section 0's table:
-    `balance = max_frame_weight / sum_of_weights`, bucketed, as a share of
+    """`balance = max_frame_weight / sum_of_weights`, bucketed, as a share of
     the covered canvas."""
     total = weights.sum(axis=0)
     covered = total > 0
@@ -163,7 +161,7 @@ def balance_histogram(weights: np.ndarray) -> dict[str, float]:
 def _hf_mf_ratio(patch: np.ndarray) -> float:
     """High-to-mid frequency spectral energy, via the DFT magnitude in an
     outer ring (high) against an inner ring (mid) of the patch's spectrum —
-    a ratio, so subject matter cancels, matching section 0's method."""
+    a ratio, so subject matter cancels."""
     f = np.fft.fftshift(np.fft.fft2(patch.astype(np.float64)))
     mag2 = np.abs(f) ** 2
     h, w = patch.shape
@@ -182,8 +180,8 @@ def _hf_mf_ratio(patch: np.ndarray) -> float:
 def spectral_energy_deficit(
     linear: np.ndarray, balance: np.ndarray, covered: np.ndarray, *, patch: int = 32
 ) -> tuple[float | None, float | None]:
-    """Median high/mid dB in near-50/50 patches vs. unblended patches
-    (docs/NARROW_FEATHER.md section 0). `linear` is the composite's green
+    """Median high/mid dB in near-50/50 patches vs. unblended patches.
+    `linear` is the composite's green
     channel; patches are non-overlapping `patch`x`patch` tiles, kept only
     when every pixel inside is covered and (for the "near" bucket) inside
     the balance window, or (for the "unblended" bucket) above
@@ -338,7 +336,7 @@ def main() -> int:
         )
         return 1
 
-    print("# Feather exponent measurements (docs/NARROW_FEATHER.md section 6)\n")
+    print("# Feather exponent measurements\n")
     stamp = datetime.datetime.now(datetime.UTC).astimezone().isoformat(timespec="seconds")
     print(
         f"Generated {stamp} by `scripts/measure-feather-exponent.py` from "

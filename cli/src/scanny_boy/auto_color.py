@@ -1,7 +1,7 @@
 """The Auto Cast Removal solve: closed-form global CMY from a negative's
 recorded neutral estimate.
 
-Mirrors `auto_tone.py`'s shape (docs/CAST_REMOVAL_PLAN.md §3.3): pure
+Mirrors `auto_tone.py`'s shape: pure
 functions over a negative's recorded `normalization` block, no image I/O,
 no metering pass — the meter (`normalization.measure_neutral_residual`)
 ran at stitch time and is read back here.
@@ -9,7 +9,7 @@ ran at stitch time and is read back here.
 The estimator is a port of darktable's grey-surfaces illuminant detector;
 the solve turns its `(R-G, B-G)` residual into the three CMY slider values
 a printer would dial. Auto writes `wb_cyan / wb_magenta / wb_yellow` and
-touches nothing else (§0.5): the two ties are anchored on this negative's
+touches nothing else: the two ties are anchored on this negative's
 own percentile references and are fully determined by them, while the
 grey-surfaces estimator measures a *global* neutral residual over the
 whole tonal range — a filtration correction.

@@ -1,8 +1,7 @@
 """Selection range-checking and grouping.
 
 Pure functions over an already-computed canonical order plus a user-picked
-list of filenames — see `docs/IMPLEMENTATION_PLAN.md` sections 1.1, 3.2, and
-3.3 — plus the batch's grid spec (docs/GRID_STITCH_PLAN.md section 2.1).
+list of filenames, plus the batch's grid spec.
 """
 
 from __future__ import annotations
@@ -68,8 +67,8 @@ def validate_grid(spec: GridSpec) -> None:
     `min(across, down) <= 2` is the feature's own constraint — every cell
     must show film rebate, which only holds when every cell touches the
     grid's outer boundary. `across * down <= MAX_PER_NEGATIVE` keeps the
-    memory gate reachable (docs/GRID_STITCH_PLAN.md section 7.1: 12 frames
-    of 24MP sits at the gate even after the memory-estimate fix).
+    memory gate reachable: 12 frames of 24MP sits at the gate even after
+    the memory-estimate fix.
     """
     if spec.across < 1 or spec.down < 1:
         raise InvalidGridError(

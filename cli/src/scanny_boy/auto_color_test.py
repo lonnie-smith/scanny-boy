@@ -1,5 +1,4 @@
-"""Tests for the Auto Cast Removal solve (`auto_color.py`,
-docs/CAST_REMOVAL_PLAN.md §3.3)."""
+"""Tests for the Auto Cast Removal solve (`auto_color.py`)."""
 
 from __future__ import annotations
 

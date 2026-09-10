@@ -815,9 +815,9 @@ def test_failed_delete_of_removed_covered_tiff_warns_but_does_not_fail_the_run(
 @requires_real_samples
 @pytest.mark.slow
 def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
-    """The rig-tilt rectification on the appendix A negatives
-    (docs/RECTIFICATION_PLAN.md section 9, slow tier): the staged six-file
-    selection is served as *tilted captures* — every frame warped through a
+    """The rig-tilt rectification on the appendix A negatives (slow tier):
+    the staged six-file selection is served as *tilted captures* — every
+    frame warped through a
     known W, so the true inter-frame map is W⁻¹·S·W — and each negative
     must record an accepted rectification whose solve beats a control run
     with the fit forced to reject."""

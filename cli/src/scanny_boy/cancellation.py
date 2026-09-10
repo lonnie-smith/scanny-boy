@@ -1,7 +1,7 @@
 """Cooperative cancellation: a shared flag, and the SIGTERM handler that
 sets it.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.8. Two rules shape this module:
+Two rules shape this module:
 
 - "The Python signal handler sets a cancellation flag. Cleanup happens
   through normal control flow; the handler does not perform complex file
@@ -94,7 +94,7 @@ def command_cancellation(
 ) -> Iterator[CancellationToken]:
     """The cancellation scope one pipeline command runs under.
 
-    docs/OPTIMIZATION.md §2.2: the served path supplies its request's own
+    The served path supplies its request's own
     token in band — a `cancel` request sets it — while the one-shot path
     installs the SIGTERM handler exactly as before. The pipeline call site
     is identical either way, so there is one implementation of every

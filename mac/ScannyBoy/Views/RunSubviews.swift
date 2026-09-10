@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 ///
 /// The bar is driven by `fractionComplete`, which comes from
 /// `negativesCompleted`/`totalNegatives` — never from a source index
-/// (section 4.2) and never from elapsed time, which section 4.2's
-/// per-negative durations vary too much to extrapolate reliably.
+/// and never from elapsed time, since per-negative durations vary too much
+/// to extrapolate reliably.
 struct RunProgressView: View {
     let run: RunModel
 
@@ -239,7 +239,7 @@ struct FilmKindField: View {
     }
 }
 
-/// The Add Scans sheet's film-base reference field (REBATE_ANCHORING §8.1).
+/// The Add Scans sheet's film-base reference field.
 /// Choosing a file calls `roll set-base-frame` immediately; Convert stays
 /// disabled until a frame is attached.
 struct BaseFrameField: View {

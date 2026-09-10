@@ -2,12 +2,11 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Section 3.10: `NavigationSplitView` shell — the library sidebar
+/// A `NavigationSplitView` shell — the library sidebar
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
-/// picker. Chunk P3-10 adds the shell and the sidebar. Chunk P3-11 reworks
-/// the workspace's Add Scans tab onto the selected roll: no output-folder
-/// picker, no film date, and the overwrite-confirmation dialog replaced by
-/// the overlap sheet (section 3.4/3.5). Chunk P3-12 adds the Edit tab:
+/// picker. The workspace's Add Scans tab is built on the selected roll: no
+/// output-folder picker, no film date, and the overwrite-confirmation
+/// dialog replaced by the overlap sheet. The Edit tab holds
 /// negatives, thumbnails, the dirty count, and Apply.
 ///
 /// Scans-per-negative is no longer a roll property at all: it is each
@@ -15,10 +14,10 @@ import UniformTypeIdentifiers
 /// before the Stitch button enables — so one roll can hold negatives
 /// stitched from different scan counts.
 ///
-/// Chunk 9: folder selection, one-range selection, grouping preview.
-/// Chunk 10 adds Run with live progress, cooperative Cancel, the
+/// Add Scans covers folder selection, one-range selection, and the grouping
+/// preview. Run adds live progress, cooperative Cancel, the
 /// completed/failed negatives, Reveal in Finder, and the manifest the run
-/// left behind. Chunk P2-10 adds re-stitch: the same `run` driving
+/// left behind. Re-stitch is the same `run` driving
 /// `scanny-boy stitch` over a work directory you point at instead of
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
@@ -31,7 +30,7 @@ struct ContentView: View {
     let export: ExportModel
     /// The union of every helper session in the app — Convert, rotate,
     /// delete, export, flat-field calibration — since "one helper at a
-    /// time" (section 3.10) is an app-wide rule, not `RunModel`'s alone.
+    /// time" is an app-wide rule, not `RunModel`'s alone.
     let activity: AppActivity
     @Bindable var keyboard: AppKeyboardState
 
@@ -322,7 +321,7 @@ struct ContentView: View {
     }
 
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
-    /// selection (section 3.10): neither model has a folder picker of its
+    /// selection: neither model has a folder picker of its
     /// own, so this is the only thing that ever sets them.
     ///
     /// When `selection` names no roll in `library.rolls`, the roll behind it

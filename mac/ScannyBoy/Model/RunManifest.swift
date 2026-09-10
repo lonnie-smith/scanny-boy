@@ -11,7 +11,7 @@ import Foundation
 /// `status` and the group statuses are kept as the raw contract strings rather
 /// than Swift enumerations. A newer CLI adding a status must not turn the
 /// whole manifest into an unreadable one, and the only distinction this app
-/// actually has to draw — `running` versus anything final (section 3.7) — is
+/// actually has to draw — `running` versus anything final — is
 /// exact either way.
 struct RunManifest: Decodable, Sendable, Hashable {
     static let filename = "scanny-boy-manifest.json"

@@ -336,7 +336,6 @@ struct CLIEventTests {
         "INSUFFICIENT_DISK", "INSUFFICIENT_MEMORY", "BAD_MANIFEST",
         "MANIFEST_MISMATCH", "ICC_PROFILE_INVALID", "TIFF_WRITE_FAILED",
         "CANCELLED",
-        // Phase 2 section 3.10.
         "WORK_SAME_AS_OUTPUT", "WORK_MANIFEST_UNUSABLE", "INTERMEDIATE_MISSING",
         "INTERMEDIATE_CHANGED", "STITCH_INSUFFICIENT_MATCHES",
         "STITCH_UNDERCONSTRAINED", "STITCH_RESIDUAL_TOO_HIGH",
@@ -359,7 +358,7 @@ struct CLIEventTests {
         "GEOMETRY_FRAME_SIZE_MISMATCH", "GEOMETRY_FIT_REJECTED",
         "GEOMETRY_MAGNITUDE_SUSPECT", "GEOMETRY_FEW_FRAMES",
         "CHROMATIC_FIT_REJECTED",
-        // Protocol version 8: normalization (docs/DECISIONS.md, "Normalization decisions").
+        // Protocol version 8: normalization.
         "SCAN_CLIPPED", "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
@@ -372,7 +371,7 @@ struct CLIEventTests {
 
     @Test("every pipeline step maps to a known case", arguments: [
         "decode", "write_tiff", "add_metadata",
-        // Phase 2 section 3.9's stitch-stage steps.
+        // The stitch-stage steps.
         "load", "detect", "match", "solve", "warp", "blend", "write_stitched",
         // Protocol version 8's normalization step.
         "normalize",

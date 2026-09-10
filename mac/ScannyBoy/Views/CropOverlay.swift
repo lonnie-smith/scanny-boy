@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The film-format ratio presets the crop mode constrains the rect with —
-/// the *actual* film gate sizes, not the nominal ones (docs/CROP_PLAN.md
-/// §5): 35mm is 24×36mm, and the 120 roll's gates are 56mm across the
+/// the *actual* film gate sizes, not the nominal ones:
+/// 35mm is 24×36mm, and the 120 roll's gates are 56mm across the
 /// film, with the long side set by the camera maker (6×7 is the Mamiya
 /// RB67/RZ67's 56×69.5mm; Pentax 67's is 55×70). The ratios are
 /// landscape; a portrait display image gets the sides swapped
@@ -149,7 +149,7 @@ enum CropGeometry {
     /// anchoring the opposite side. With a `ratio`, the dominant dragged
     /// axis drives and the other follows. A tilted rect's resize is
     /// refused by the caller — a rotated frame's handle math is not worth
-    /// its own edge cases (CROP_PLAN §5).
+    /// its own edge cases.
     static func resized(
         _ rect: CGRect,
         handle: Handle,
@@ -271,7 +271,7 @@ enum CropGeometry {
 
         /// The handle's position on the *untilted* frame; the overlay
         /// rotates the drawn handles with the rect, and resize is only
-        /// live at zero tilt (CROP_PLAN §5).
+        /// live at zero tilt.
         func point(on rect: CGRect) -> CGPoint {
             switch self {
             case .topLeft: CGPoint(x: rect.minX, y: rect.minY)
@@ -327,7 +327,7 @@ struct CropOverlayView: View {
         )
     }
 
-    /// A tilted rect's resize is refused (CROP_PLAN §5); move still works.
+    /// A tilted rect's resize is refused; move still works.
     private var allowsResize: Bool { abs(session.tiltDegrees) < 0.05 }
 
     var body: some View {

@@ -1,8 +1,8 @@
 """The committed synthetic base frame at
 `tests/fixtures/base-frame/base-frame.dng`.
 
-Chunk B-7 of docs/REBATE_ANCHORING.md: `cli/tools/generate_base_frame_dng.py`
-writes it so the fast tier has a realistic film-base reference — the §0.4
+`cli/tools/generate_base_frame_dng.py`
+writes it so the fast tier has a realistic film-base reference — the
 common case, two rebate bands with a picture strip between them — without
 needing a real NEF (which cannot be authored anyway). These checks pin what
 the fixture must decode to and that the detector measures and gates it, so

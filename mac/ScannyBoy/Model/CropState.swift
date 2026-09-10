@@ -1,7 +1,7 @@
 import Foundation
 
 /// The net `crop` op as `roll info` and every `edit_recorded` report it
-/// (protocol version 19, docs/CROP_PLAN.md): the cropped display image's
+/// (protocol version 19): the cropped display image's
 /// final dimensions plus the stored tilt and the ratio-preset label. The
 /// rect itself never crosses the wire — the preview the app shows is
 /// already cropped, and a fresh crop session draws a new rect over it.

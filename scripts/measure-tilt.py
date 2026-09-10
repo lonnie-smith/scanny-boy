@@ -2,8 +2,8 @@
 """Discriminate rigid camera tilt from film non-flatness, from the stitches'
 own correspondences.
 
-The hypothesis this measures (docs/STITCH_QUALITY_PLAN.md's similarity model
-vs reality): the camera sits slightly off fronto-parallel to the film plane,
+The hypothesis this measures — the similarity model vs reality — is that
+the camera sits slightly off fronto-parallel to the film plane,
 so the true frame-to-frame map is a homography, not the similarity
 `layout.py` solves. A similarity fitted to homography-shaped data leaves a
 small systematic residual per pair — invisible against MAX_PAIR_RMS_PX —

@@ -237,36 +237,8 @@ def test_event_writer_line_is_valid_json_per_write():
 
 
 def test_protocol_version_is_nineteen():
-    """Protocol 10→11: monochrome film support, extended preview tone
-    adjustment (docs/DENSITY_PLAN.md), and the positive/negative display
-    toggle (`--mode` on `edit render-region`, `edit render-preview` with
-    its `preview_rendered` event). Protocol 11→12: the preview colour
-    adjustment (`edit color`, `color_*` fields, docs/COLOR_PLAN.md).
-    Protocol 12→13, both halves: the film-base reference
-    (docs/REBATE_ANCHORING.md) and — merged from origin/main — spotting
-    (SPOTTING_PLAN): the three spotting commands, the `spots_reported`
-    event (display-space rects, no rle), the `SPOT_LIMIT_REACHED` and
-    `SPOTS_STALE` codes, and the per-negative `spots` summary block on
-    `roll info`. Protocol 13→14 (docs/CAST_REMOVAL_PLAN.md):
-    `--cast-removal-highlights` and `--auto-cast` on `edit color`, the
-    `color_cast_removal_highlights` derived field on `roll info`, and the
-    `highlight_refs` / `neutral_residual` meters in the `normalization`
-    block. Protocol 16→17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
-    Protocol 17→18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`:
-    the optional `request_id` field on every event, and the terminal
-    `finished` each served request ends with. The same bump adds the
-    film-extent pass (docs/BLACK_POINT_REFINEMENT.md): the per-negative
-    `film_extent` normalization block and the
-    `NORMALIZE_FILM_EXTENT_WITHHELD` / `NORMALIZE_FILM_EXTENT_EXCESSIVE`
-    codes, both riding the warning event channel. Protocol 18→19
-    (docs/CROP_PLAN.md) adds the `crop` op: the `edit crop` subcommand,
-    the `crop` field on every `edit_recorded` (a display-space report, or
-    null), and the same field on `roll info`'s per-negative block.
-    Protocol 19→20 (docs/NARROW_FEATHER.md): the `feather_exponent` key in
-    a roll's `stitch_params`, and `manifest_format_version` 8→9 — output
-    pixels change, so a roll stitched before this lands and one stitched
-    after must not sit in the same roll (the same `ROLL_INVARIANT_MISMATCH`
-    handling already in place, no migration)."""
+    """Pins the current wire protocol version; bump alongside
+    CONTRACT.md whenever the protocol changes."""
     assert PROTOCOL_VERSION == 20
 
 

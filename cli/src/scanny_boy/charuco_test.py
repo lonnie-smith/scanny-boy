@@ -1,4 +1,4 @@
-"""Tests for the ChArUco boards (docs/GEOMETRIC_PLAN.md section 2 and 8).
+"""Tests for the ChArUco boards.
 
 The board constants are transcribed from
 `calibration/lens_calibration_targets.pdf` (drawn by

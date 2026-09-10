@@ -748,7 +748,7 @@ def test_delete_renumbers_the_survivors(stitched_roll):
 
     manifest = load_roll_manifest(stitched_roll)
     # Ranking is by the first member's real capture time, so the survivor
-    # needs one to hold a position at all (section 3.7).
+    # needs one to hold a position at all.
     manifest.negatives.append(
         _negative(
             negative_id="stitch-negative-02",
@@ -849,7 +849,7 @@ def test_delete_survives_a_stuck_tiff(stitched_roll, monkeypatch):
 
 
 def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
-    """docs/CAST_REMOVAL_PLAN.md R-2 §6.2: the merge builds its base from
+    """The merge builds its base from
     the neutral defaults and overlays the recorded dict, so a twelve-key
     recorded state (an op predating the thirteenth key) merges instead of
     raising, and a one-key update leaves the other twelve untouched."""
@@ -873,7 +873,7 @@ def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
     assert merged["cast_removal"] == 0.4
 
 
-# --- spotting (docs/SPOTTING_PLAN.md §7) --------------------------------------
+# --- spotting -----------------------------------------------------------
 
 # A published canvas small enough to keep detection instant, with the
 # width-gate fraction patched up so the derived gates still bite: 300 * 0.02
@@ -1161,7 +1161,7 @@ def test_unstitched_negative_fails_for_all_three_spot_commands(tmp_path):
         assert excinfo.value.code is Code.NEGATIVE_NOT_FOUND
 
 
-# --- `edit crop` (docs/CROP_PLAN.md) -----------------------------------------
+# --- `edit crop` ---------------------------------------------------------
 
 
 def _crop_gradient(roll_dir: Path, name: str = "_DSC0001.tif") -> None:

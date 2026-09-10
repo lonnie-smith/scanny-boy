@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the distortion stability gate (docs/STABILITY_GATE.md section 6).
+"""Measure the distortion stability gate.
 
 Sweeps true corner displacement (including zero) against board pitch and
 corner noise, and reports the jackknife relative standard error for each
@@ -12,7 +12,7 @@ write any of `geometry_fit.py`'s or `charuco.py`'s constants, and it
 imports the production modules rather than reimplementing them, exactly
 as `scripts/measure-stitch-quality.py` does.
 
-The synthesis is the plan's section 0.3 instrument: ideal ChArUco
+The synthesis instrument: ideal ChArUco
 detections at the rig's magnification, pushed through a known radial
 field whose corner displacement is the swept truth, plus per-frame corner
 noise (a fresh draw per frame — printed-target error is random across
@@ -40,11 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
 # this script cannot silently drift from what production actually does.
 from scanny_boy import charuco, geometry_fit
 
-# The scanning rig's measured magnification (docs/STABILITY_GATE.md
-# section 0.1): ~168 px/mm, a 6048x4024 frame covering ~36x24 mm.
+# The scanning rig's measured magnification: ~168 px/mm, a 6048x4024
+# frame covering ~36x24 mm.
 DEFAULT_PX_PER_MM = 168.0
 DEFAULT_WIDTH, DEFAULT_HEIGHT = 6048, 4024
-# Sweep axes (plan section 6): true displacement including zero, the
+# Sweep axes: true displacement including zero, the
 # pitches that bound the rig's boards, and the noise levels that bracket
 # the rig's measured 2.5 px floor.
 SWEEP_TRUE_PX = (0, 2, 5, 15, 30)

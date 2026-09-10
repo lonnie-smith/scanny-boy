@@ -86,7 +86,7 @@ def test_read_rgb_xyz_matrix_maps_non_raw_tiff_to_unsupported_raw(tmp_path):
 @pytest.mark.slow
 def test_read_source_settings_carries_the_matrix_and_does_not_reopen_the_raw(tmp_path):
     """The sibling reader shares `read_camera_whitebalance`'s single
-    `rawpy.imread` context (docs/EXPORT_PLAN.md §3.2). `read_source_settings`
+    `rawpy.imread` context. `read_source_settings`
     is the one caller, so its record is where the matrix lands."""
     settings = read_source_settings(FIXTURES_DIR / REAL_SAMPLE_FILES[0])
 
@@ -106,8 +106,7 @@ def test_read_source_settings_maps_garbage_file_to_unreadable_raw(tmp_path):
 
 def test_read_camera_whitebalance_maps_garbage_file_to_unreadable_raw(tmp_path):
     # A file rawpy simply cannot parse at all, exercising the real error
-    # path rather than mocking rawpy's decoding — see
-    # IMPLEMENTATION_PLAN.md section 7.
+    # path rather than mocking rawpy's decoding.
     path = tmp_path / "garbage.NEF"
     path.write_bytes(b"not a raw file at all")
 
@@ -199,8 +198,7 @@ def test_choose_digitized_fields_falls_back_to_source_digitized(tmp_path):
 def test_choose_digitized_fields_never_invents_an_offset():
     # DateTimeOriginal is present, so that branch is chosen, but its own
     # offset is absent — must stay absent, never borrow the Digitized
-    # branch's offset (section 3.5: "Never invent an offset for the
-    # synthetic film time").
+    # branch's offset: never invent an offset for the synthetic film time.
     source = DigitizationSourceFields(
         date_time_original="2026:08:02 12:33:27",
         subsec_time_original="77",
@@ -261,7 +259,7 @@ def test_real_sample_files_camera_whitebalance_matches_appendix_a():
 @requires_real_samples
 @pytest.mark.slow
 def test_real_sample_files_rgb_xyz_matrix_direction_check():
-    """docs/EXPORT_PLAN.md §3.1's empirical check, against real NEFs:
+    """An empirical check, against real NEFs:
     `rawpy.rgb_xyz_matrix` is LibRaw's `cam_xyz` — the **XYZ -> camera RGB**
     matrix (the DNG `ColorMatrix` convention), the opposite of the name's
     reading. Confirming direction: `pinv(M) @ XYZ_of_D65` must be a

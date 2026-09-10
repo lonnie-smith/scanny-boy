@@ -1,8 +1,4 @@
-"""Catalogue discovery and canonical ordering.
-
-See `docs/IMPLEMENTATION_PLAN.md` section 1.1 (vocabulary) and section 3.3
-(sorting).
-"""
+"""Catalogue discovery and canonical ordering."""
 
 from __future__ import annotations
 
@@ -40,7 +36,7 @@ def is_catalogue_filename(name: str) -> bool:
 
 def discover_catalogue(input_dir: Path) -> list[str]:
     """List `.nef` files directly inside `input_dir`, case-insensitively and
-    without recursion, resolving paths per section 3.2."""
+    without recursion."""
     resolved_input = input_dir.resolve()
     names: list[str] = []
     seen_resolved: set[Path] = set()

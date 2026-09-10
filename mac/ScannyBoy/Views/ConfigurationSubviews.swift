@@ -36,8 +36,7 @@ struct GroupingPreview: View {
 ///
 /// The picture is the point — these are film negatives whose filenames are
 /// interchangeable, so `_DSC4638.NEF` alone says nothing about which frame it
-/// is (punchlist: "I need to be able to see image previews, not just
-/// filenames"). Loading is per row and driven by `.task`, so only the rows
+/// is. Loading is per row and driven by `.task`, so only the rows
 /// the `List` is actually showing ever ask for one, and `ThumbnailLoader`
 /// caches the answers.
 struct CatalogueRow: View {

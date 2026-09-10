@@ -5,20 +5,20 @@ import Observation
 /// input folder and catalogue, the user's contiguous selection, the batch's
 /// grid (`across` x `down`), and the roll it targets.
 ///
-/// Phase 3 section 3.10: "Add Scans is Phase 2's `ContentView` with the
+/// Add Scans is the older single-folder `ContentView` with the
 /// output-folder section and the film-date field deleted, the
 /// shots-per-negative stepper moved to the roll, and the
-/// overwrite-confirmation replaced by the overlap sheet." There is no
+/// overwrite-confirmation replaced by the overlap sheet. There is no
 /// output-folder picker any more — every run targets whichever roll is
 /// selected in the sidebar (`rollURL`). The roll no longer owns
 /// `shots_per_negative` at all: the grouping is each stitch batch's own
 /// choice (`across` x `down`), required before a run can start, so one roll
 /// can hold negatives stitched from different scan counts. A strip is the
-/// `down == 1` case (docs/GRID_STITCH_PLAN.md section 2.5).
+/// `down == 1` case.
 ///
 /// Swift never sorts files itself and never re-implements the CLI's
-/// selection, grouping, or roll-invariant rules (section 3.2's vocabulary,
-/// and `CONTRACT.md`'s `probe`). Every rule this type enforces beyond plain
+/// selection, grouping, or roll-invariant rules (`CONTRACT.md`'s `probe`).
+/// Every rule this type enforces beyond plain
 /// UI bookkeeping — contiguity, divisibility, setting consistency, roll
 /// overlap — is read back from a `probe --roll` call; this type only
 /// decides *when* to call `probe` and how to fold its result into the UI.
@@ -79,7 +79,7 @@ final class ConfigurationModel {
 
     // MARK: - The roll this configuration targets
 
-    /// Set by `ContentView` from the sidebar selection (section 3.10). Add
+    /// Set by `ContentView` from the sidebar selection. Add
     /// Scans has no folder picker of its own — every run targets whichever
     /// roll is already selected.
     var rollURL: URL? {
@@ -91,7 +91,7 @@ final class ConfigurationModel {
     }
 
     /// The roll's attached film-base reference, read from `roll info` when
-    /// `rollURL` changes (REBATE_ANCHORING §8). Required before Convert.
+    /// `rollURL` changes. Required before Convert.
     private(set) var filmBase: FilmBase?
     private(set) var baseFrameError: Issue?
     private(set) var isAttachingBaseFrame = false
@@ -180,7 +180,7 @@ final class ConfigurationModel {
 
     /// A `probe --roll` failure specific to the roll itself — missing,
     /// unreadable, unsupported, or invariant-mismatched — as opposed to one
-    /// the selection alone caused (section 3.4's roll-invariant checks).
+    /// the selection alone caused.
     private(set) var rollError: Issue?
 
     // MARK: - Status
@@ -234,14 +234,14 @@ final class ConfigurationModel {
     ///
     /// `name` must be a catalogue entry: the CLI found it, the CLI named it,
     /// and this only rejoins it to the folder the CLI was pointed at.
-    /// Nothing here discovers, filters, or orders files (section 3.2).
+    /// Nothing here discovers, filters, or orders files.
     func fileURL(for name: String) -> URL? {
         inputFolder?.appending(path: name, directoryHint: .notDirectory)
     }
 
     /// The selection in canonical order. Filters the catalogue rather than
     /// iterating `selectedFiles`, whose `Set` has no meaningful order at all
-    /// (section 3.3: Swift never sorts files itself).
+    /// (Swift never sorts files itself).
     var selectedFilesInCanonicalOrder: [String] {
         catalogue.filter { selectedFiles.contains($0) }
     }
@@ -326,9 +326,8 @@ final class ConfigurationModel {
         filmKindLocked = result.filmKindLocked
     }
 
-    /// Attaches or replaces the roll's film-base reference immediately
-    /// (REBATE_ANCHORING §8.1) — gate failures surface inline, not at
-    /// Convert.
+    /// Attaches or replaces the roll's film-base reference immediately —
+    /// gate failures surface inline, not at Convert.
     func attachBaseFrame(at frameURL: URL) async {
         guard let rollURL else { return }
         baseFrameError = nil

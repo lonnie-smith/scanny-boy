@@ -6,7 +6,7 @@ import Testing
 
 /// `ContentView.closestExistingAncestor(of:)`: the fallback that lets the
 /// folder-choosing panel open somewhere sensible when the last-used folder
-/// (persisted in `UserDefaults`, section 3.2) has since been renamed,
+/// (persisted in `UserDefaults`) has since been renamed,
 /// deleted, or lives on an unmounted volume.
 struct ContentViewTests {
     @Test

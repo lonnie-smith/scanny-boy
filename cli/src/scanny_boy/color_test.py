@@ -28,11 +28,9 @@ def test_neutral_tables_match_density_plan_lut():
 
 def test_global_cmy_offsets_red_only():
     """A cyan-only slider still bites hardest where red's range is narrow —
-    and, since docs/CAST_REMOVAL_PLAN.md §1.1, the offsets are
+    and the offsets are
     mean-removed: all three channels move while the offsets sum to zero, so
-    filtration changes hue and never the display's channel mean. (The
-    pre-plan expectation that green and blue stay put is exactly what mean
-    removal supersedes; §0.3 accepts the changed render of recorded ops.)"""
+    filtration changes hue and never the display's channel mean."""
     params = dataclasses.replace(color.NEUTRAL_COLOR, wb_cyan=1.0)
     narrow = _metering(ranges=(0.5, 1.0, 1.0))
     wide = _metering(ranges=(1.0, 1.0, 1.0))
@@ -115,7 +113,7 @@ def test_kelvin_round_trips():
     assert color.wb_to_kelvin(0.0, 0.0) == pytest.approx(5500.0)
 
 
-# --- docs/CAST_REMOVAL_PLAN.md chunk R-0 ------------------------------------
+# --- highlight metering ------------------------------------
 
 
 def _metering_full(

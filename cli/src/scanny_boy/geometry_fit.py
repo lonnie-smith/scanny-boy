@@ -1,4 +1,4 @@
-"""The staged plumb-line distortion fit (docs/GEOMETRIC_PLAN.md section 4.4).
+"""The staged plumb-line distortion fit.
 
 The objective is straightness: every ChArUco corner carries the row, column,
 or diagonal family its id names, and after undistortion each family's points
@@ -9,11 +9,10 @@ the fitted coefficients are already in the OpenCV forward convention every
 consumer (`initUndistortRectifyMap`, the closed-form band map of composite)
 wants, with no conversion.
 
-Gauge convention (section 1.1): `K_new = K` and the undistorted frame has
-exactly the source frame's pixel dimensions. `K` itself is fixed per
-section 1.2 — straightness is scale-invariant, so `K` only sets the
-normalisation of `r`, and holding it fixed keeps coefficients comparable
-across sessions.
+Gauge convention: `K_new = K` and the undistorted frame has exactly the
+source frame's pixel dimensions. `K` itself is fixed — straightness is
+scale-invariant, so `K` only sets the normalisation of `r`, and holding it
+fixed keeps coefficients comparable across sessions.
 
 Every constant in this module is defined here and nowhere else.
 """
@@ -29,29 +28,31 @@ from scipy.optimize import least_squares
 from scanny_boy.events import Code
 
 # Take an earlier stage unless the next stage beats its held-out RMS by at
-# least this relative fraction (section 4.4).
+# least this relative fraction.
 STAGE_IMPROVEMENT_FRACTION = 0.05
 # The improvement numbers' constants, kept as the reported diagnostic's
-# own thresholds (docs/STABILITY_GATE.md section 1.4). They are no longer
+# own thresholds. They are no longer
 # the acceptance criterion: on this rig the held-out straightness floor is
 # printed-target error, not lens error, so a fit can be recovering the
 # right coefficient while the improvement metric sits at zero.
 GEOMETRY_MIN_IMPROVEMENT_FRACTION = 0.30
 GEOMETRY_MIN_IMPROVEMENT_PX = 0.3
-# Magnitude sanity band (section 4.5), as a percentage of the half-diagonal.
+# Magnitude sanity band, as a percentage of the half-diagonal.
 MAGNITUDE_HARD_MIN_PERCENT = 0.01
 MAGNITUDE_HARD_MAX_PERCENT = 1.0
 MAGNITUDE_EXPECTED_MIN_PERCENT = 0.03
-# Raised from 0.2 (docs/STABILITY_GATE.md section 1.5): the rig's lens
-# measures 0.398% by ChArUco and 0.46% by stitch correspondences, so the
-# old band would have flagged the known truth suspect on every calibration.
+# Raised from 0.2: the rig's lens measures 0.398% by ChArUco and 0.46% by
+# stitch correspondences (two independent instruments, no shared data),
+# so the old band would have flagged the known truth suspect on every
+# calibration.
 MAGNITUDE_EXPECTED_MAX_PERCENT = 0.6
-# The stability gate (docs/STABILITY_GATE.md sections 1.1 and 1.4): the
+# The jackknife stability gate (see jackknife_relative_se below): the
 # leave-one-out corner-displacement spread, as a relative standard error,
-# must not exceed this. Starting value from the synthetic sweep of
-# scripts/measure-stability-gate.py (plan section 6.1); listed in
-# DECISIONS.md's unmeasured-constants section until confirmed on real
-# scans.
+# must not exceed this. From the synthetic sweep in
+# scripts/measure-stability-gate.py: at this rig's ~2.5 px corner noise
+# and 16 frames, the statistic reads ~17% at a true 15 px distortion and
+# ~174% at true zero, so 25% separates a real distortion from none.
+# Unmeasured against real (non-synthetic) scans.
 GEOMETRY_MAX_RELATIVE_SE = 0.25
 
 
@@ -69,7 +70,7 @@ class GeometryFitError(Exception):
 @dataclasses.dataclass(frozen=True)
 class GeometryFitResult:
     """The staged fit's outcome, gates included — a rejected fit is a
-    result, not an exception (section 4.5: the profile is still created)."""
+    result, not an exception — the profile is still created either way."""
 
     k1: float
     k2: float
@@ -84,9 +85,9 @@ class GeometryFitResult:
     accepted: bool
     rejection_reason: str | None
     suspect: bool  # outside the expected band but inside the hard one
-    # The stability gate's statistic (docs/STABILITY_GATE.md section 1.1):
-    # jackknife mean/SE of the corner displacement over leave-one-frame-out
-    # refits, and the frame count they came from.
+    # The stability gate's statistic: jackknife mean/SE of the corner
+    # displacement over leave-one-frame-out refits, and the frame count
+    # they came from.
     jackknife_corner_px_mean: float | None = None
     jackknife_corner_px_se: float | None = None
     jackknife_relative_se: float | None = None
@@ -94,7 +95,7 @@ class GeometryFitResult:
 
 
 def base_camera(frame_width: int, frame_height: int) -> np.ndarray:
-    """The fixed camera matrix of section 1.2: `fx = fy = max(w, h)`,
+    """The fixed camera matrix: `fx = fy = max(w, h)`,
     principal point at the frame centre. Held fixed so coefficients stay
     comparable across sessions; `cx, cy` are the fit's starting point, not
     necessarily its result."""
@@ -181,7 +182,7 @@ def _corner_displacement(
     k1: float, k2: float, cx: float, cy: float, K_base: np.ndarray, frame_width: int, frame_height: int
 ) -> tuple[float, float]:
     """Displacement of the image corner under the forward model, in pixels
-    and as a percentage of the half-diagonal (section 4.5)."""
+    and as a percentage of the half-diagonal."""
     corner = np.array([[0.0, 0.0]])
     distorted = forward_distort(corner, k1, k2, cx, cy, K_base)
     displacement = float(np.hypot(*(distorted[0] - corner[0])))
@@ -234,8 +235,7 @@ def _as_frame_groups(
 
 def jackknife_relative_se(estimates: list[float]) -> tuple[float, float, float]:
     """The jackknife standard error of leave-one-out estimates, its mean,
-    and the mean-relative form the gate uses (docs/STABILITY_GATE.md
-    section 1.1):
+    and the mean-relative form the gate uses:
 
         SE = sqrt( (n - 1) / n * sum_i (theta_i - theta_bar)^2 )
 
@@ -269,7 +269,7 @@ def fit_geometry(
     training sets) raise.
 
     `train_sets` and `heldout_sets` are grouped: one inner list per
-    calibration frame (docs/STABILITY_GATE.md section 1.3). They are
+    calibration frame. They are
     flattened for the staged fit, so the fitted coefficients and both
     held-out RMS numbers are bit-identical to a flat-list fit — the
     grouping is used only by the jackknife stability statistic. Passing
@@ -301,7 +301,7 @@ def fit_geometry(
         params[0], params[1], params[2], params[3], K_base, frame_width, frame_height
     )
 
-    # The stability statistic (docs/STABILITY_GATE.md section 1.1): leave
+    # The stability statistic: leave
     # one calibration frame's sets out, refit the staged fit, repeat over
     # every frame, and take the spread of the corner displacements. Target
     # error is random across frames and averages out; lens distortion is
@@ -359,7 +359,7 @@ def fit_geometry(
         MAGNITUDE_EXPECTED_MIN_PERCENT <= percent <= MAGNITUDE_EXPECTED_MAX_PERCENT
     ):
         # Inside the hard band (which acceptance required) but outside the
-        # expected one: applied with a warning, not dropped (section 4.5).
+        # expected one: applied with a warning, not dropped.
         suspect = True
 
     return GeometryFitResult(

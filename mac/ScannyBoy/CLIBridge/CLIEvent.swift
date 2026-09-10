@@ -39,32 +39,30 @@ public struct CLIEvent: Sendable, Hashable {
     /// curated block's `rgb_xyz_matrix`/`camera_model`.
     /// Protocol 12 adds the preview colour adjustment (`edit color`, the
     /// `color_*` fields in the roll manifest, and the `color` op in the
-    /// ops log). Protocol 13 (SPOTTING_PLAN) adds spotting: the three
+    /// ops log). Protocol 13 adds spotting: the three
     /// `edit detect-spots` / `edit spots` / `edit list-spots` commands,
     /// the `spots_reported` event — whose spot rects are **display
     /// space**, already transformed, so Swift converts no coordinates and
     /// rejects by `id` only — the `SPOT_LIMIT_REACHED` and `SPOTS_STALE`
     /// warning codes, and the per-negative `spots` summary block on
     /// `roll info`. The same protocol 13 also carries the film-base
-    /// reference (docs/REBATE_ANCHORING.md, merged from
-    /// `feat/rebate-anchoring-and-cast-removal`): the
-    /// `roll set-base-frame` command with its `base_frame_set` event, the
-    /// `film_base` block on the roll manifest (reported verbatim by
-    /// `roll info` and by `probe --roll`), the ten `FILM_BASE_*` /
-    /// `ROLL_PREDATES_FILM_BASE` codes, and the per-negative
-    /// `base_check` meters. Protocol 14 (docs/CAST_REMOVAL_PLAN.md)
-    /// extends `edit color` with `--cast-removal-highlights` and
+    /// reference: the `roll set-base-frame` command with its
+    /// `base_frame_set` event, the `film_base` block on the roll manifest
+    /// (reported verbatim by `roll info` and by `probe --roll`), the ten
+    /// `FILM_BASE_*` / `ROLL_PREDATES_FILM_BASE` codes, and the per-negative
+    /// `base_check` meters. Protocol 14 extends `edit color` with
+    /// `--cast-removal-highlights` and
     /// `--auto-cast`, adds the derived `color_cast_removal_highlights`
     /// field to `roll info`, and records the `highlight_refs` /
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
     /// event kinds the app must decode — the new work is CLI-side.
-    /// Protocol 18 (docs/OPTIMIZATION.md §2.1) adds the resident helper:
+    /// Protocol 18 adds the resident helper:
     /// events answered by `scanny-boy serve` carry an optional
     /// `request_id`, and each served request ends with a `finished`
     /// carrying it and the one-shot exit status. Optional, because a
     /// one-shot invocation has no daemon to scope an event to. The same
-    /// bump adds the film-extent pass (docs/BLACK_POINT_REFINEMENT.md):
+    /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
     public static let supportedProtocolVersion = 20
@@ -242,7 +240,7 @@ extension CLIEvent {
     public var catalogue: [String]? { fields["catalogue"]?.stringArrayValue }
     public var warnings: [String]? { fields["warnings"]?.stringArrayValue }
     public var groups: [[String]]? { fields["groups"]?.nestedStringArrayValue }
-    /// Present when `--roll` was given (REBATE_ANCHORING §7.1).
+    /// Present when `--roll` was given.
     public var filmBase: [String: JSONValue]? { fields["film_base"]?.objectValue }
     // `probe_result`, present only when `--out` was given alongside `--files`
     // (CONTRACT.md: output-folder validation, disk estimate, and
@@ -435,8 +433,7 @@ extension CLIEvent {
     // `preview_path` rides the shared `previewPath` accessor above.
 }
 
-/// One pipeline step, from the plan's Vocabulary section. The last seven
-/// cases are the stitch stage's steps, added by Phase 2 section 3.9.
+/// One pipeline step. The last seven cases are the stitch stage's steps.
 public enum CLIPipelineStep: Sendable, Hashable {
     case decode
     case writeTIFF
@@ -514,7 +511,6 @@ public enum CLICode: Sendable, Hashable {
     case iccProfileInvalid
     case tiffWriteFailed
     case cancelled
-    // Phase 2 section 3.10.
     case workSameAsOutput
     case workManifestUnusable
     case intermediateMissing
@@ -562,8 +558,7 @@ public enum CLICode: Sendable, Hashable {
     case scanClipped
     case normalizeDegenerateBounds
     case normalizeHeadroomClipped
-    // Protocol version 18: the film-extent pass
-    // (docs/BLACK_POINT_REFINEMENT.md).
+    // Protocol version 18: the film-extent pass.
     case normalizeFilmExtentWithheld
     case normalizeFilmExtentExcessive
     case spotLimitReached

@@ -49,7 +49,7 @@ _FRAME_SIZE = (500, 700)  # (height, width)
 
 
 def _unnormalize(image: np.ndarray, bounds: Bounds) -> np.ndarray:
-    """The arithmetic inverse of the published encoding (section 3.11):
+    """The arithmetic inverse of the published encoding:
     `10 ** (floor + val * (ceil - floor))` recovers the linear composite to
     within quantization."""
     normalized = decode_normalized(image)
@@ -406,7 +406,7 @@ def test_strip_axis_none_reproduces_the_distance_transform_exactly():
     assert np.array_equal(actual, expected.astype(np.float32))
 
 
-# --- the separable (grid) feather (docs/GRID_STITCH_PLAN.md section 5) -----
+# --- the separable (grid) feather -----
 
 
 def _hand_built_grid_masks(overlap_px=100):
@@ -457,8 +457,7 @@ def test_two_axis_feather_ratio_is_y_invariant_across_a_vertical_seam(monkeypatc
     across-axis is equal at the top, middle, and bottom of their vertical
     overlap band — same-row frames share a down-extent, so their
     along-down ramp factors cancel in the ratio. Parametrised over
-    `FEATHER_EXPONENT` (docs/NARROW_FEATHER.md section 1.2's third
-    property: separability survives the power exactly)."""
+    `FEATHER_EXPONENT`: separability survives the power exactly."""
     import scanny_boy.composite as composite_module
     from scanny_boy.composite import _feather_weight
 
@@ -515,10 +514,10 @@ def test_grid_feather_ratio_is_x_invariant_across_a_horizontal_seam():
 
 
 def test_p_equals_one_reproduces_the_two_axis_weights_exactly(monkeypatch):
-    """docs/NARROW_FEATHER.md section 3: `p = 1` is byte-identical to a
+    """`p = 1` is byte-identical to a
     hand-rolled reference of the pre-exponent two-axis formulation — the
     normalised ramp product, floored, with no power applied — so the
-    exponent is provably the only behavioural change this plan makes."""
+    exponent is provably the only behavioural change."""
     import scanny_boy.composite as composite_module
     from scanny_boy.composite import MASK_ERODE_PX, _feather_weight
 
@@ -552,7 +551,7 @@ def test_p_equals_one_reproduces_the_two_axis_weights_exactly(monkeypatch):
 
 
 def test_feather_exponent_bound_is_enforced():
-    """Guards docs/NARROW_FEATHER.md section 1.4's float32 subnormal
+    """Guards against a float32 subnormal
     argument: a later edit walking FEATHER_EXPONENT out of [1, 8] must be
     caught, not silently degrade the floor invariant."""
     assert isinstance(FEATHER_EXPONENT, int)
@@ -794,7 +793,7 @@ def test_no_output_value_is_negative_or_clipped_high():
     # A near-uniform frame close to each end of the linear range, with a
     # hair of gradient (a strictly constant frame is degenerate for the
     # bounds meters). Lanczos4 undershoots below 0 and can overshoot above
-    # 1 near a warped frame's own border (section 2.3); without
+    # 1 near a warped frame's own border; without
     # composite.py's clamp, an undershoot could drag the weighted average
     # below the true value, or an unclamped negative could otherwise
     # corrupt the blend.
@@ -820,8 +819,8 @@ def test_no_output_value_is_negative_or_clipped_high():
 
     # Normalized values: dense film (scene highlight, i.e. the *bright*
     # frames) maps toward 0 and thin film (scene shadow, the *dark* frames)
-    # toward 1 — the published image stays a negative in appearance
-    # (section 3.2), so the two fixtures land at opposite ends of the
+    # toward 1 — the published image stays a negative in appearance,
+    # so the two fixtures land at opposite ends of the
     # stretch. The meters' own bounds make both spans full-range by
     # construction, so the assertions that still mean something are: the
     # un-normalized reconstruction stays near each frame's known constant
@@ -834,7 +833,7 @@ def test_no_output_value_is_negative_or_clipped_high():
     # The observed extrema are picture statistics: the scene's densest and
     # thinnest single pixels sit beyond the *grid's* floor/ceil percentiles
     # (the block median never sees them), which is exactly why the encode
-    # reserves asymmetric headroom (section 3.6) and why excursions past it
+    # reserves asymmetric headroom and why excursions past it
     # warn rather than fail. They must be finite scene values, not the
     # fill: no excursion may reach the log10(1e-6) regime.
     for result in (bright_result, dark_result):
@@ -864,11 +863,11 @@ def test_uncovered_pixels_take_the_normalized_fill():
         )
 
 
-# --- MONOCHROME_PLAN section 3: the collapse, wired into composite() -----------
+# --- monochrome collapse, wired into composite() -------------------------------
 
 
 def test_film_kind_colour_default_matches_omitting_it():
-    """MONOCHROME_PLAN §3.4's regression at the composite level: passing
+    """Regression at the composite level: passing
     the default `film_kind` explicitly is indistinguishable from omitting
     it — the collapse must not run on a colour composite, so every other
     test in this file (which all omit `film_kind`) stays a colour-path
@@ -943,8 +942,7 @@ def test_monochrome_film_kind_publishes_a_single_channel_composite():
 def test_monochrome_uncovered_pixels_take_the_normalized_fill():
     """The one-channel counterpart of
     `test_uncovered_pixels_take_the_normalized_fill`: `fill_code`'s shape
-    already generalises to the collapsed channel count (MONOCHROME_PLAN
-    §4's composite.py:747 row)."""
+    already generalises to the collapsed channel count."""
     _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
     result = composite(
         layout,
@@ -1032,7 +1030,7 @@ def test_memory_estimate_rejects_an_impossible_canvas():
     assert exc_info.value.code is Code.INSUFFICIENT_MEMORY
 
 
-# --- frame_bbox (docs/GRID_STITCH_PLAN.md section 1a) ----------------------
+# --- frame_bbox ----------------------
 
 
 def test_frame_bbox_is_frame_sized_for_an_unrotated_placement():
@@ -1079,9 +1077,9 @@ def test_peak_estimate_counts_the_source_frame_and_the_safety_factor():
 
     small_frame = estimate_peak_bytes(canvas_size, (2000, 3000), bbox_size, 1)
     large_frame = estimate_peak_bytes(canvas_size, (4000, 6000), bbox_size, 2)
-    # The original (superseded) formula omitted the source frame entirely,
+    # The original formula omitted the source frame entirely,
     # so it would not move at all when frame_size grows at a fixed canvas
-    # and bounding box (section 3.8.1); the current formula also charges
+    # and bounding box; the current formula also charges
     # every warped frame, which must be resident simultaneously for the
     # pairwise stats and gain solve.
     assert large_frame > small_frame
@@ -1144,7 +1142,7 @@ def test_oversized_file_fails():
     assert warnings == []
 
 
-# --- the film-extent pass (docs/BLACK_POINT_REFINEMENT.md) -------------------
+# --- the film-extent pass -------------------
 
 
 def test_film_extent_is_recorded_and_pixels_are_unchanged_on_a_clean_scene():
@@ -1282,7 +1280,7 @@ def test_film_extent_leaves_a_clean_canvas_byte_identical():
     assert not applied.film_extent.detected
 
 
-# --- geometric calibration (docs/GEOMETRIC_PLAN.md sections 5.3 and 8) -----
+# --- geometric calibration -----
 
 from scanny_boy.composite import (
     GEOMETRY_BAND_ROWS,
@@ -1292,7 +1290,7 @@ from scanny_boy.composite import (
 
 
 def _geometry_dict(k1: float, frame_width: int, frame_height: int) -> dict:
-    """A section 3.2 geometry object with the identity gauge."""
+    """A geometry object with the identity gauge."""
     return {
         "format_version": 1,
         "frame_width": frame_width,
@@ -1310,7 +1308,7 @@ def _geometry_dict(k1: float, frame_width: int, frame_height: int) -> dict:
 
 
 def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
-    """The section 5.1 regression guard: a profile without geometry must
+    """The regression guard: a profile without geometry must
     keep `composite`'s `cv2.warpAffine` implementation byte-for-byte.
 
     The reference reimplements the pre-geometry warp pass and blend. The
@@ -1638,7 +1636,7 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     err the 3 px content-shift error. f2 and f3 share their down-extent,
     so their down-ramp factors cancel in frac3 and the across-seam profile
     is y-invariant below the four-way band — that y-invariance is the
-    section 5.1 guarantee, measured row by row. Inside the four-way band
+    guarantee, measured row by row. Inside the four-way band
     (the vertical overlap between the rows) frac3 is suppressed by f3's
     down-ramp, so the defect fades out toward the corner; the test asserts
     that taper rather than being confused by it."""
@@ -1736,11 +1734,11 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     # The taper: right at the seam (the first row inside the four-way band)
     # the defect is suppressed well below a typical below-band width — and
     # nowhere inside the four-way band does it run away past a typical
-    # below-band width. docs/NARROW_FEATHER.md narrows the suppression zone
+    # below-band width. The suppression zone is narrowed
     # in y along with x (FEATHER_EXPONENT applies to every axis alike), so
-    # the taper now reaches a typical width partway through the four-way
+    # the taper reaches a typical width partway through the four-way
     # band rather than staying suppressed across all of it — that is the
-    # plan's intended effect, not a regression.
+    # intended effect, not a regression.
     taper_widths = [defect_width(y) for y in four_way_rows]
     band_widths = [defect_width(y) for y in below_band_rows]
     assert taper_widths[0] < 0.3 * max(band_widths)
@@ -1754,7 +1752,7 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     # widening this tolerance from the pre-exponent 0.3 to 0.4 of the max.
     assert min(band_widths) > 0
     assert max(band_widths) - min(band_widths) < 0.4 * max(band_widths)
-# --- rectified-space compositing (docs/RECTIFICATION_PLAN.md section 6) -----
+# --- rectified-space compositing -----
 
 _RECT_SCENE_SIZE = (1100, 1900)
 _RECT_FRAME_SIZE = (800, 1200)

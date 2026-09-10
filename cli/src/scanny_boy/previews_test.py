@@ -66,7 +66,7 @@ def test_display_lut_is_monotonic_and_spans_the_range():
 def test_display_lut_decodes_through_decode_normalized_with_no_gamma():
     """The LUT is exactly decode_normalized -> 1 - val -> 8-bit, bare
     scaling: log density is already roughly perceptually uniform, so no
-    sRGB OETF is applied (docs/DECISIONS.md, "Normalization decisions")."""
+    sRGB OETF is applied."""
     for code in (0, 1, 50, 2000, 8192, 32768, 65535):
         val = float(normalization.decode_normalized(np.array([code]))[0])
         expected = np.clip(1.0 - val, 0.0, 1.0)
@@ -630,7 +630,6 @@ def test_render_region_does_not_fall_back_to_full_decode(tmp_path, monkeypatch):
 
 
 # --- spots: the coordinate map and the repair in the render -------------------
-# (docs/SPOTTING_PLAN.md §1.2, §3.3, §3.4)
 
 
 def test_tiff_rect_to_display_round_trips_through_the_point_map():
@@ -800,7 +799,7 @@ def test_render_region_takes_the_exact_path_when_a_repair_is_live(tmp_path, monk
     """Inpainting a crop uses different surroundings than inpainting the
     whole image, so a live repair must leave the strip-level fast path for
     the exact one — and the pixels must match a full decode + replay +
-    slice (SPOTTING_PLAN §3.4)."""
+    slice."""
     from scanny_boy import previews
 
     image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
@@ -866,7 +865,7 @@ def test_ensure_preview_regenerates_on_a_spots_op(tmp_path):
     )
 
 
-# --- the daemon's decoded-pixel cache (docs/OPTIMIZATION.md §3.1) ---------
+# --- the daemon's decoded-pixel cache ----------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -1026,7 +1025,7 @@ def test_preview_cache_is_bounded_by_total_bytes(tmp_path, monkeypatch):
     assert kept.nbytes == previews._DISPLAY_PREVIEW_CACHE_BYTES
 
 
-# --- the crop op (docs/CROP_PLAN.md) -----------------------------------------
+# --- the crop op -------------------------------------------------------------
 
 
 def _gradient_tiff(

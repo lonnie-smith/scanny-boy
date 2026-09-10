@@ -1,10 +1,10 @@
-"""Tests for the staged plumb-line fit (docs/GEOMETRIC_PLAN.md section 8).
+"""Tests for the staged plumb-line fit.
 
 The load-bearing test is the round trip: distort a synthetic collinear set
 with known parameters, fit, and recover them. Everything else — staging,
 gates, held-out evaluation — is plumbing around that objective. The
-acceptance gates are the stability gate of docs/STABILITY_GATE.md: the
-jackknife spread of leave-one-frame-out refits, not held-out improvement.
+acceptance gate is the stability gate: the jackknife spread of
+leave-one-frame-out refits, not held-out improvement.
 """
 
 import numpy as np
@@ -113,8 +113,8 @@ def test_round_trip_recovers_known_parameters():
 
 
 def test_grouped_signature_does_not_move_the_fit():
-    """The regression that protects the grouped signature (docs/
-    STABILITY_GATE.md section 1.3): the same frames fed as per-frame
+    """The regression that protects the grouped signature: the same
+    frames fed as per-frame
     groups and flattened into one group produce bit-identical k1, k2, cx,
     cy, and both held-out RMS numbers — the grouping feeds only the
     jackknife statistic."""
@@ -156,7 +156,7 @@ def test_jackknife_is_deterministic_and_frame_order_insensitive():
 
 
 def test_real_distortion_at_rig_noise_is_accepted():
-    """The section 0.3 conditions the old improvement gate rejected: a
+    """A condition the old improvement gate used to reject: a
     true ~15 px corner displacement at 2.5 px corner noise. The stability
     gate accepts the fit and the recovered displacement is near truth."""
     true_k1 = -0.0138  # ~15 px of corner displacement at this frame size
@@ -266,7 +266,7 @@ def test_wildly_out_of_band_magnitude_is_rejected():
 
 def test_moderately_out_of_band_magnitude_is_suspect_not_rejected():
     """Between the expected 0.03-0.6% band and the hard 0.01-1.0% band the
-    fit is accepted with a warning, not dropped (section 4.5)."""
+    fit is accepted with a warning, not dropped."""
     train, heldout = _distorted_sets(k1=-0.022, k2=0.0, cx=3024.0, cy=2012.0)
     result = fit_geometry(train, heldout, FRAME_WIDTH, FRAME_HEIGHT)
     assert result.accepted

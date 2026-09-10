@@ -2,7 +2,7 @@
 coordinate system via three linear least-squares problems.
 
 Frame *i* maps its own pixel `p` into canvas space as
-`x = s_i * R(theta_i)*p + t_i` (docs/STITCH_QUALITY_PLAN.md section 2: film
+`x = s_i * R(theta_i)*p + t_i` (film
 does not sit at a constant height above the stage, so a strip is not one
 magnification). A `PairResult` for (a, b) contributes a **similarity**:
 `p_a = sigma_ab * R(phi_ab)*p_b + u_ab`. Requiring both routes into canvas
@@ -12,11 +12,11 @@ space to agree gives three relations, each linear in the right variable:
 the same idiom as `solve_gains`'s geometric-mean-1 anchor), then rotations
 (one linear least-squares problem in the scalar `theta`s), then translations
 (linear in `t` once `s` and `theta` are known). This three-step formulation
-is why section 4.1 forbids SciPy — do not replace it with a nonlinear
+is why SciPy is forbidden here — do not replace it with a nonlinear
 bundle adjustment. The model is a similarity — rigid plus one isotropic
 scale — never an affine, never a homography. When the stitch stage has
-fitted a rig-tilt rectification (`registration.Rectification`,
-docs/RECTIFICATION_PLAN.md), the pairs and points these solves consume are
+fitted a rig-tilt rectification (`registration.Rectification`),
+the pairs and points these solves consume are
 already rectified and the canvas is rectified space: the placement model
 itself is unchanged, and only the frame's canvas footprint is the
 rectified keystone quad rather than the affine image of the raw rectangle
@@ -34,12 +34,12 @@ push linear values into `encode_from_linear`'s [0, 1] clamp — is
 minimized. Names are sorted internally so the solved system does not depend
 on placement order.
 
-`MAX_GLOBAL_RMS_PX` and `STRIP_SPREAD_RATIO` are Chunk P2-1's measured
-constants, approved at user gate C (section 3.12). Production code reads
+`MAX_GLOBAL_RMS_PX` and `STRIP_SPREAD_RATIO` are measured, user-approved
+constants. Production code reads
 them from here and from nowhere else. `REBATE_DEVIATION_WARN` is
-deliberately not defined: section 3.12.2 found that a generic straight-edge
+deliberately not defined: a generic straight-edge
 detector cannot reliably find the same physical rebate edge across frames,
-so this chunk implements no rebate detection.
+so this module implements no rebate detection.
 """
 
 from __future__ import annotations
@@ -68,11 +68,11 @@ STRIP_SPREAD_RATIO = 0.15
 # out of alignment relative to the cell pitch, is not the grid that was
 # declared — most likely a frame solved into the wrong cell. Warnings, not
 # failures: the negative still publishes and the user can judge the canvas.
-# (Displacement of half a cell or more is caught earlier, by the bijection
-# check in §4.1; these govern sub-cell drift only.)
+# (Displacement of half a cell or more is caught earlier, by the
+# bijection check below; these govern sub-cell drift only.)
 #
-# **Unmeasured starting values** (docs/GRID_STITCH_PLAN.md section 4.2):
-# recorded in the roll manifest's `stitch_params` as
+# **Unmeasured starting values**: recorded in the roll manifest's
+# `stitch_params` as
 # `grid_pitch_ratio_min`/`grid_alignment_ratio_max` and per-negative as
 # `grid_pitch_ratio`/`grid_alignment_ratio`, to be revisited at a user gate
 # once there are real scans to measure against. `GRID_ALIGNMENT_RATIO_MAX`
@@ -135,7 +135,7 @@ class Layout:
     # arbitrary direction. The weight formula it feeds is symmetric under a
     # sign flip of the axis, so no sign canonicalisation is needed here.
     strip_axis: tuple[float, float] | None
-    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 3.1 and 4). All
+    # 2D grid stitching. All
     # four are None unless a non-strip grid was passed to `solve_layout`
     # and cell assignment succeeded; on assignment failure every field is
     # None and the blend falls back to the distance transform.
@@ -224,11 +224,11 @@ def solve_layout(
 
     `rectification`, when given, is the stitch stage's fitted rig-tilt
     rectification: `pairs` are already rectified (the caller re-registered
-    them — docs/RECTIFICATION_PLAN.md section 4), and it is used only for
+    them), and it is used only for
     the canvas-bounds corner mapping here.
 
-    `grid`, when given and not a strip, runs the §4 cell-assignment and
-    regularity checks (docs/GRID_STITCH_PLAN.md) and populates the Layout's
+    `grid`, when given and not a strip, runs the cell-assignment and
+    regularity checks below and populates the Layout's
     grid fields; `strip_spread_ratio`/`strip_axis` are computed exactly as
     before and remain meaningful for strips and for grid=None."""
     check_connectivity(names, pairs)
@@ -585,7 +585,7 @@ def strip_spread_ratio(
 # Beyond this the SVD's right-singular vectors stop agreeing with the
 # frames' own axes and the SVD cross-check is not applied: near-equal
 # singular values make the SVD basis arbitrary in direction, not merely in
-# ordering (docs/GRID_STITCH_PLAN.md section 4.1 step 1).
+# ordering.
 _SVD_CROSSCHECK_MAX_SPREAD = 0.5
 # How many degrees the rotation-derived and SVD bases may disagree by on a
 # regular grid before the assignment is treated as failed.
@@ -597,7 +597,7 @@ def _snap_to_positions(
 ) -> list[int] | None:
     """Snap each projection to the nearest of `n_positions` positions one
     pitch apart, the pitch estimated as the extent over `n_positions - 1`.
-    Snap-to-nearest, not gap-cutting, is deliberate (§4.1 step 2): a frame
+    Snap-to-nearest, not gap-cutting, is deliberate: a frame
     displaced less than half a cell snaps to its true cell (sub-cell drift
     stays measurable by the alignment check), and half a cell or more
     snaps into a neighbour, which fails the bijection outright."""
@@ -617,7 +617,7 @@ def _axes_from_rotations(placements: list[FramePlacement]) -> tuple[
     """The grid's (across, down) axes from the solved frame rotations: the
     frames were stepped along the camera's own sensor axes, so the grid's
     column and row directions *are* the frames' axes. Unconditional at any
-    grid shape, pitch, or cell count (§4.1 step 1)."""
+    grid shape, pitch, or cell count."""
     angles = np.radians([placement.rotation_deg for placement in placements])
     mean_angle = math.atan2(
         float(np.sin(angles).sum()), float(np.cos(angles).sum())
@@ -634,7 +634,7 @@ def _grid_regularity(
     down_axis: tuple[float, float],
     grid: GridSpec,
 ) -> tuple[float | None, float | None]:
-    """§4.2's two regularity measures over a successful assignment:
+    """Two regularity measures over a successful assignment:
     `grid_pitch_ratio` (min/max adjacent-cell-pitch ratio, worst axis with
     three or more positions — None otherwise) and `grid_alignment_ratio`
     (the worst cross-axis row/column spread over the median pitch, 0 for a
@@ -700,7 +700,7 @@ def _assign_grid_cells(
     float | None,
     float | None,
 ] | None:
-    """§4.1: assign each frame to its declared grid cell from the solved
+    """Assign each frame to its declared grid cell from the solved
     geometry alone. Returns `(grid_axes, cells, grid_pitch_ratio,
     grid_alignment_ratio)`, or None when the assignment fails — a failed
     assignment costs blend quality, not just a diagnostic: with
@@ -713,7 +713,7 @@ def _assign_grid_cells(
     centers = _placed_centers(placements, frame_size)
     across_axis_w, down_axis_h = _axes_from_rotations(placements)
 
-    # SVD cross-check (§4.1 step 1): for a regular grid the centre cloud's
+    # SVD cross-check: for a regular grid the centre cloud's
     # right-singular vectors span the same pair as the frames' own axes.
     # Applied only while the singular values are well separated — near
     # equality the SVD basis is arbitrary in direction, and disagreement
@@ -738,7 +738,7 @@ def _assign_grid_cells(
     # groups are identical, and both the weight formula and the bijection
     # are sign-symmetric. With R == C — only 2×2 under the rebate rule —
     # both orderings succeed, and the tie-break is the frames' own width
-    # direction, tried first (§4.1 step 2).
+    # direction, tried first.
     for across_axis, down_axis in (
         (across_axis_w, down_axis_h),
         (down_axis_h, across_axis_w),
@@ -820,7 +820,7 @@ def largest_valid_rect(
     larger than it.
 
     `rectification` reaches the corner mapping exactly as it does
-    `solve_layout` (docs/RECTIFICATION_PLAN.md section 5)."""
+    `solve_layout`."""
     canvas_width, canvas_height = layout.canvas_size
     probe_scale = min(1.0, probe_long_edge / max(canvas_width, canvas_height))
 

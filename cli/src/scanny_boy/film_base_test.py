@@ -1,5 +1,4 @@
-"""The film-base detector's fast-tier tests, on synthetic arrays
-(docs/REBATE_ANCHORING.md chunk B-1).
+"""The film-base detector's fast-tier tests, on synthetic arrays.
 
 `measure()` is fed float32 linear light in [0, 1] directly — what
 `film_base.load` produces after decode and flat-fielding — so no RAW
@@ -75,7 +74,7 @@ def test_uniform_field_returns_known_offset_and_passes():
 
 
 def test_exposure_invariance_of_the_deviations():
-    """§0.2's executable form, at the measurement site: scaling the whole
+    """Exposure invariance at the measurement site: scaling the whole
     field (a shutter/aperture/ISO change) shifts every channel's log
     density by the same common-mode amount, so the per-channel deviations
     from their own median must not move."""
@@ -91,7 +90,7 @@ def test_exposure_invariance_of_the_deviations():
 
 
 def test_two_rebate_bands_merge_into_one_population():
-    """§2.2 step 5 — the common case (§0.4): two rebate bands with picture
+    """The common case: two rebate bands with picture
     between them are ONE measurement of the summed area, not two of half."""
     band = _SIZE // 4
     linear = _painted(
@@ -108,7 +107,7 @@ def test_two_rebate_bands_merge_into_one_population():
 
 
 def test_all_rebate_frame_yields_one_whole_grid_population():
-    """§0.3: a frame that is entirely base — the case detect_rebate cannot
+    """A frame that is entirely base — the case detect_rebate cannot
     handle — is the easy case here."""
     measurement = film_base.measure(_linear_from_density(_BASE_DENSITY))
     assert len(measurement.populations) == 1
@@ -136,7 +135,7 @@ def test_small_bare_light_sliver_loses_to_larger_rebate():
 
 
 def test_two_similar_sized_flat_regions_are_ambiguous():
-    """§2.3 gate 6, the refuse-rather-than-guess rule: a second large flat
+    """The refuse-rather-than-guess rule: a second large flat
     population at a different density (a dense uniform scene object, here)
     refuses the frame even though the rebate is the largest region."""
     linear = _painted(base_rects=[(0, 540, 0, _SIZE)])
@@ -171,7 +170,7 @@ def test_clipped_rebate_is_refused():
 
 
 def test_blue_channel_below_floor_fails_while_luma_stays_comfortable():
-    """§1.2's proof that gate 5 is per-channel and not a luma test: blue
+    """Proof that the channel-floor gate is per-channel and not a luma test: blue
     through the orange mask runs out first, and the luma is still well
     above FILM_BASE_MIN_CHANNEL."""
     density = (-0.30, -0.30, -2.50)
@@ -196,7 +195,7 @@ def test_single_hot_pixel_does_not_change_density():
 
 
 def test_frame_with_no_flat_thin_region_is_not_found():
-    """§2.3 gate 1: no population at all (nothing survives the flatness
+    """No population at all (nothing survives the flatness
     gate in any peel pass) is refused, not guessed. A whole-frame smooth
     density gradient — real scene content, no rebate anywhere — has no flat
     population: every candidate band's own spread exceeds the gate."""

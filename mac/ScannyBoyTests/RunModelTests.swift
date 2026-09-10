@@ -27,7 +27,7 @@ struct RunModelTests {
     }
 
     /// `rollInfoLines` answers a follow-up `roll info` invocation
-    /// (`finish()`'s roll-reading path, section 3.1) separately from the
+    /// (`finish()`'s roll-reading path) separately from the
     /// main pipeline invocation — distinguished by `$1`, the same
     /// discriminator the real CLI's own subcommands use. Left empty, `roll
     /// info` just replays `lines` again, which is harmless for tests that
@@ -166,7 +166,7 @@ struct RunModelTests {
         let run = await Self.runToCompletion(executable: executable, outputFolder: directory)
 
         // 4/18, not 3/3 — the largest source index seen says nothing about how
-        // much work is done (section 4.2).
+        // much work is done.
         #expect(run.completedSteps == 4)
         #expect(run.totalSteps == 18)
         #expect(run.currentStep == .addMetadata)
@@ -758,7 +758,7 @@ struct RunModelTests {
     // MARK: - Chunk P2-9's additions: negative_done, negative_failed, stage,
     // INTERMEDIATES_KEPT, and negative-counting summaries
 
-    @Test("negative_done events populate stitchedNegatives with the section 3.4 numbers")
+    @Test("negative_done events populate stitchedNegatives with the reported numbers")
     func negativeDoneIsCollected() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1072,7 +1072,7 @@ struct RunModelTests {
 
     /// A `roll_info` event carrying just enough of `roll-manifest.schema.json`
     /// to be read back by `RollManifest` — what `finish()`'s follow-up `roll
-    /// info` call (section 3.1) now answers with, in place of a file on
+    /// info` call now answers with, in place of a file on
     /// disk. The `writeManifest` counterpart, above, for the roll manifest.
     private static func rollInfoEvent(runStatus: String, negativeStatus: String) -> String {
         let output = negativeStatus == "completed"

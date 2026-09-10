@@ -1,5 +1,4 @@
-"""The film-base reference: one measured per-roll anchor for the thin end
-(docs/REBATE_ANCHORING.md).
+"""The film-base reference: one measured per-roll anchor for the thin end.
 
 A roll's `film_base` block records the per-channel median log density
 inside the film rebate of one dedicated reference frame — the **base
@@ -11,24 +10,23 @@ percentiles, which is what fixes the high-key failure of
 estimates the orange mask from scene content, and the scene's colour is
 not the mask.
 
-The measurement is **exposure-invariant** (§0.2): a shutter, aperture or
+The measurement is **exposure-invariant**: a shutter, aperture or
 ISO change scales linear light by one factor, which in log density is a
 pure common-mode shift — only deviations from the median are consumed,
-so the base frame's exposure never has to match the roll's. §11's
-measurement gate exists to verify that claim on real film.
+so the base frame's exposure never has to match the roll's. The
+measurement gate below exists to verify that claim on real film.
 
 The module owns the decode of one reference frame, the detector, the
 gates, and the params record. It knows nothing about manifests or rolls.
 Every constant of the feature is defined here and nowhere else.
 
-All of §2.1's thresholds were pinned from the v1 slim §11 measurement on
-2026-09-06 (docs/REBATE_ANCHORING.md §11). One colour stock on a Nikon Z f,
-leader-style base frames without flat-field (`gain_map=None`): easy leader
-`normal.NEF` (64.9% rebate area) plus a 1–4 stop exposure series
-(`down-1.NEF` … `down-4.NEF`). Deliberate failure frames and a second stock
-were skipped by user decision; merge/ambiguity on two-band real film remains
-§11b. Chunk B-5 (the only consumer) must not land before the user approves
-these numbers.
+The thresholds below were pinned from a single measurement session on
+2026-09-06: one colour stock on a Nikon Z f, leader-style base frames
+without flat-field (`gain_map=None`) — easy leader `normal.NEF` (64.9%
+rebate area) plus a 1-4 stop exposure series (`down-1.NEF` ... `down-4.NEF`).
+Deliberate failure frames, a second stock, and merge/ambiguity behaviour on
+two-band real film were not exercised; treat those thresholds as
+provisional until confirmed on more film.
 """
 
 from __future__ import annotations
@@ -48,64 +46,65 @@ from scanny_boy.events import Code
 # define its own. Since that block is pinned rather than derived from the
 # image's size, a base frame's cell is the same piece of film as a
 # stitched negative's, whatever grid the negative was shot in — which is
-# what makes §6's comparison between the two mean anything.
+# what makes the comparison with normalization.Rebate.base_density mean
+# anything.
 
 # --- finding the populations ---
 
 # Log10 D. Width of the candidate band taken below each pass's thin anchor.
 # Wider than normalization.REBATE_DENSITY_TOLERANCE because a base frame's
 # rebate is a large region that may carry a gentle residual gradient.
-# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
+# 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_BAND_WIDTH = 0.15
 # Thin-end anchor percentile within each pass's remaining cells.
-# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
+# 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_ANCHOR_PERCENTILE = 99.5
 # Log10 D, P90 - P10 within one component: base is featureless.
-# §11 2026-09-06 (exposure series, one stock): chosen-population spread
-# ran 0.038–0.047; per-channel deviation drift across 1–4 stops was 0.0014
+# 2026-09-06 (exposure series, one stock): chosen-population spread
+# ran 0.038-0.047; per-channel deviation drift across 1-4 stops was 0.0014
 # (max 0.0014 vs this ceiling). Left at 0.05 for margin.
 FILM_BASE_MAX_COMPONENT_SPREAD = 0.05
 # Log10 D. Two populations closer than this are the same population — this
 # is what merges two rebate bands on opposite sides of the frame into one
-# measurement instead of throwing half the data away (§2.2 step 5).
-# §11 2026-09-06: not exercised on real film (no two-band frames); left
-# provisional pending §11b.
+# measurement instead of throwing half the data away.
+# 2026-09-06: not exercised on real film (no two-band frames); left
+# provisional.
 FILM_BASE_MERGE_SEPARATION = 0.06
 # How many peel passes enumerate populations from the thin end down.
-# §11 2026-09-06: unchanged from provisional; leader pass confirmed.
+# 2026-09-06: unchanged from provisional; leader pass confirmed.
 FILM_BASE_MAX_PASSES = 4
 
 # --- gating the result ---
 
 # Of the whole grid. "A lot of rebate": the chosen population must be at
 # least this much of the frame.
-# §11 2026-09-06 (easy leader): 64.9% on the measured leader frame. Left
+# 2026-09-06 (easy leader): 64.9% on the measured leader frame. Left
 # at 0.20 — well below the observed cluster.
 FILM_BASE_MIN_AREA_FRACTION = 0.20
 # Ambiguity gate. If some OTHER separated flat population is at least this
 # fraction of the chosen one's area, the frame is refused rather than
-# guessed at (§2.3 gate 6).
-# §11 2026-09-06: largest rival on the 4-stop frame was 23.9% of the frame
+# guessed at.
+# 2026-09-06: largest rival on the 4-stop frame was 23.9% of the frame
 # (ratio 0.37 vs chosen 64.9%). No deliberate bare-light failure frame;
-# left at 0.60 pending §11b / failure-set confirmation.
+# left at 0.60 pending further confirmation.
 FILM_BASE_AMBIGUOUS_RATIO = 0.60
 # Per-channel fraction of the chosen population's cells at or above
 # normalization.SCAN_CLIP_LEVEL past which the frame is refused. Clipped
 # base is worthless base — the same line detect_rebate already takes.
-# §11 2026-09-06: 0 on all five measured frames; no clipped-at-scan-exposure
+# 2026-09-06: 0 on all five measured frames; no clipped-at-scan-exposure
 # failure frame shot. Left at 0.001.
 FILM_BASE_MAX_CLIPPED = 0.001
 # Log10 D. Per-channel median floor inside the chosen population. Blue
-# through an orange mask is the channel that runs out first (§1.2), so this
+# through an orange mask is the channel that runs out first, so this
 # is deliberately per-channel and not a luma test.
-# §11 2026-09-06 (exposure series): blue at 1–4 stops ran −1.10, −1.40,
-# −1.70, −1.998; the 4-stop frame clears this floor by 0.002. §1's
-# "not more than three stops" guidance sits comfortably above it (−1.70 at
-# 3 stops). Left at −2.0.
+# 2026-09-06 (exposure series): blue at 1-4 stops ran -1.10, -1.40,
+# -1.70, -1.998; the 4-stop frame clears this floor by 0.002. Standard
+# shooting guidance of not more than three stops under sits comfortably
+# above it (-1.70 at 3 stops). Left at -2.0.
 FILM_BASE_MIN_CHANNEL = -2.0
 # Grid cells in the chosen population. Fewer is too few samples for a
 # stable per-channel median.
-# §11 2026-09-06 (easy leader): 442_181 cells. Left at 1024.
+# 2026-09-06 (easy leader): 442_181 cells. Left at 1024.
 FILM_BASE_MIN_CELLS = 1024
 
 # Bumped whenever the measurement's arithmetic changes in a way that makes
@@ -133,13 +132,13 @@ class BaseMeasurement:
     """One base frame's finding. `density` is the per-channel median log10
     density of the chosen population — the same quantity, measured the same
     way, as normalization.Rebate.base_density, so the two are directly
-    comparable (§6). Always three channels: the base frame is decoded as RGB
-    whatever the roll's film kind turns out to be (§5).
+    comparable. Always three channels: the base frame is decoded as RGB
+    whatever the roll's film kind turns out to be.
 
     `populations` is every population the detector found, thinnest first,
-    recorded whether or not the frame passed. §11 reads these off real
-    frames to pin the thresholds, and a rejected frame's list is what tells
-    the user what went wrong."""
+    recorded whether or not the frame passed — measurements off real
+    frames are what pin the thresholds above, and a rejected frame's list
+    is what tells the user what went wrong."""
 
     density: tuple[float, float, float]
     chosen_index: int
@@ -199,19 +198,19 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
     test.
 
     Measures and chooses; does not gate. `gate()` gates, so a caller can
-    record a failing frame's populations before raising (§11).
+    record a failing frame's populations before raising.
     """
     grid = normalization.block_median_grid(normalization.to_log_density(linear))
     lum = normalization.luma_of_log(grid)
     total_cells = int(lum.size)
 
-    # The multi-pass peel (§2.2 steps 2-3), mirroring
+    # The multi-pass peel, mirroring
     # normalization.withhold_dense_border's structure: enumerate the thin
     # flat populations from the thin end down. Deliberately NO
     # border-connectivity gate and NO separation-from-outside gate — both
     # exist in detect_rebate because there the rebate is a minority
     # intruding on a picture; here it is the subject, and including them is
-    # what makes detect_rebate return nothing on an all-rebate frame (§0.3).
+    # what makes detect_rebate return nothing on an all-rebate frame.
     remaining = np.ones(lum.shape, dtype=bool)
     found: list[np.ndarray] = []
     for _pass in range(FILM_BASE_MAX_PASSES):
@@ -248,7 +247,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
             grid_cells=total_cells,
         )
 
-    # Merge by density, not by space (§2.2 step 5): two components whose
+    # Merge by density, not by space: two components whose
     # luma medians differ by less than FILM_BASE_MERGE_SEPARATION are one
     # population — two rebate bands on opposite sides of a frame become one
     # measurement of ~40% of the frame rather than two of ~20% each. The
@@ -286,7 +285,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
     populations = tuple(population for population, _mask in by_luma)
     masks = [mask for _population, mask in by_luma]
 
-    # The choice rule (§2.2 step 7): the largest area wins — rebate is the
+    # The choice rule: the largest area wins — rebate is the
     # largest flat thing in the frame, and the capture instruction is
     # written to satisfy exactly that. Bare light and sprocket holes are
     # thinner but small; image content is not flat.
@@ -296,7 +295,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
     )
     chosen = populations[chosen_index]
 
-    # Clipping is measured inside the chosen population only (§2.2 step 8),
+    # Clipping is measured inside the chosen population only,
     # on the grid's linear estimate, against normalization.SCAN_CLIP_LEVEL —
     # the number that matters, so load() ignores apply_in_place's own count.
     grid_linear = np.power(10.0, grid.astype(np.float64))
@@ -321,7 +320,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
 
 def gate(measurement: BaseMeasurement) -> None:
     """Raise FilmBaseError unless `measurement` came from a usable base
-    frame. Checked in the order below (§2.3); the first failure is the one
+    frame. Checked in the order below; the first failure is the one
     the user sees, so the order is chosen for diagnostic value."""
     if not measurement.populations:
         raise FilmBaseError(
@@ -385,7 +384,7 @@ def gate(measurement: BaseMeasurement) -> None:
 def load(reference: Path, gain_map: np.ndarray | None) -> BaseMeasurement:
     """Decode `reference` with the locked RAW_PARAMS, apply `gain_map` if
     given, and measure. Does NOT gate — the caller gates, so it can record a
-    failing frame's populations before raising (§11).
+    failing frame's populations before raising.
 
     Geometric correction (distortion, CA) is deliberately not applied: the
     measurement is a per-channel median over a flat region, which no
@@ -404,10 +403,10 @@ def load(reference: Path, gain_map: np.ndarray | None) -> BaseMeasurement:
 
 
 def build_params() -> dict:
-    """The feature's constants, recorded under stitch_params["film_base"]
-    (§2.5). These shape published pixels once B-5 lands — a frame that
-    fails a gate produces no roll at all, and the chosen population decides
-    the anchor — so they are roll invariants."""
+    """The feature's constants, recorded under stitch_params["film_base"].
+    These shape published pixels — a frame that fails a gate produces no
+    roll at all, and the chosen population decides the anchor — so they
+    are roll invariants."""
     return {
         "band_width": FILM_BASE_BAND_WIDTH,
         "anchor_percentile": FILM_BASE_ANCHOR_PERCENTILE,

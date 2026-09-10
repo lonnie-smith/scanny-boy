@@ -1,5 +1,4 @@
-"""Free-space estimate and check from `docs/IMPLEMENTATION_PLAN.md` section
-3.9.
+"""Free-space estimate and check.
 
 ```text
 P = height x width x 3 channels x 2 bytes
@@ -30,7 +29,7 @@ _SAFETY_MARGIN = 1.20
 
 class DiskCheckError(Exception):
     """Maps to `INSUFFICIENT_DISK`: free space on the output volume is
-    below the section 3.9 estimate."""
+    below the estimate."""
 
     def __init__(self, required_bytes: int, available_bytes: int) -> None:
         message = (

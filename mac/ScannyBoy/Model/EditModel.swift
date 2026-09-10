@@ -13,17 +13,16 @@ enum PreviewDisplayMode: String {
     case negative
 }
 
-/// State for the Edit tab (section 3.10): the selected roll's negatives in
+/// State for the Edit tab: the selected roll's negatives in
 /// sequence order and the dirty count Apply acts on. Apply itself is not
 /// driven from here — it goes through the app's
-/// one shared `RunModel`/`CLISession`, exactly like Run and re-stitch
-/// (section 3.10: "There is one `RunModel` and one `CLISession`, as now").
+/// one shared `RunModel`/`CLISession`, exactly like Run and re-stitch.
 /// This model only reads the roll back and reports what it sees.
 ///
 /// The roll capture date and each negative's date override are read-only
 /// here: no CLI command exists yet to write `metadata.roll_capture_date` or
-/// a negative's `capture_time.date_override` (section 3.7/3.8), so Chunk
-/// P3-12 stops short of letting the Edit tab set them. `shots_per_negative`
+/// a negative's `capture_time.date_override`, so the Edit tab
+/// stops short of letting the user set them here. `shots_per_negative`
 /// is read-only for the same reason — nothing updates an existing roll's
 /// value, only `roll init` sets it once.
 @MainActor
@@ -47,7 +46,7 @@ final class EditModel {
         }
     }
 
-    /// `roll info` for `rollURL` (section 3.1: Swift never parses
+    /// `roll info` for `rollURL` (Swift never parses
     /// `scanny-boy-roll.json` itself).
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
@@ -59,7 +58,7 @@ final class EditModel {
         didSet {
             guard selectedNegativeID != oldValue else { return }
             // The spot markers belong to the negative on screen; a new
-            // selection fetches its set (SPOTTING_PLAN §8.2).
+            // selection fetches its set.
             fetchSpotsForSelection()
         }
     }
@@ -134,10 +133,10 @@ final class EditModel {
 
     // MARK: - Derived state
 
-    /// Negatives to show, ordered by `sequence` (section 3.7) — unranked
+    /// Negatives to show, ordered by `sequence` — unranked
     /// ones (`sequence == nil`, i.e. `pending`/`failed`) sort after every
     /// ranked one, in `negatives`' own append order among themselves, since
-    /// section 3.7 gives them no rank to compare by.
+    /// they have no rank to compare by.
     var visibleNegatives: [RollManifest.Negative] {
         (roll?.negatives ?? []).sorted { lhs, rhs in
             switch (lhs.sequence, rhs.sequence) {
@@ -490,7 +489,7 @@ final class EditModel {
         }
     }
 
-    // MARK: - Cropping (protocol version 19, docs/CROP_PLAN.md)
+    // MARK: - Cropping (protocol version 19)
 
     /// Records the anchor negative's crop — the tilted window drawn over
     /// the preview, in display space with the tilt counter-clockwise as
@@ -546,7 +545,7 @@ final class EditModel {
         refresh()
     }
 
-    // MARK: - Spotting (protocol version 13, SPOTTING_PLAN §8.2)
+    // MARK: - Spotting (protocol version 13)
 
     /// Runs the detector over the whole selection — one `edit detect-spots`
     /// round trip — and refreshes the roll: the summary in `roll info` has
@@ -690,8 +689,8 @@ final class EditModel {
     /// Applies a `spots_reported` payload to the local state: the full set
     /// to `spots`, and the matching summary into the in-memory manifest —
     /// the way `applyEditRecorded` does, so the UI moves without a `roll
-    /// info` round trip. A stale set arrives as an empty list (SPOTTING_PLAN
-    /// §1.5); the next `refresh()` reconciles the summary's `stale` flag.
+    /// info` round trip. A stale set arrives as an empty list;
+    /// the next `refresh()` reconciles the summary's `stale` flag.
     private func applySpotsReported(_ event: CLIEvent) {
         guard let loaded = NegativeSpots(event: event),
             let negativeID = event.spotsNegativeID
@@ -1014,8 +1013,8 @@ final class EditModel {
     /// are rejected (a rejected spot's mask leaves the repair), or the
     /// set is re-detected.
     ///
-    /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`,
-    /// docs/OPTIMIZATION.md §3.1/§3.3) keys on the same idea minus the
+    /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`)
+    /// keys on the same idea minus the
     /// tone and colour terms — its array is pre-LUT, so tone and colour
     /// are encode steps there, not decode steps — and folds the whole
     /// spot set in hashed rather than summarized. The two sites cannot
@@ -1049,7 +1048,7 @@ final class EditModel {
     /// reaches it. The crop is deliberately present: it changes which
     /// pixels the display shows. The spot repair is deliberately present:
     /// what the user compares when they toggle repair on and off is the
-    /// same in both views (SPOTTING_PLAN §3.3).
+    /// same in both views.
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
         "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))"
     }
@@ -1232,8 +1231,8 @@ final class EditModel {
             guard let self, !Task.isCancelled else { return }
             self.roll = manifest
             // The refreshed manifest carries fresh summaries; the displayed
-            // negative's full spot list rides `list-spots` (SPOTTING_PLAN
-            // §8.2: run on selection change and after a roll refresh).
+            // negative's full spot list rides `list-spots` (run on
+            // selection change and after a roll refresh).
             if let negative = self.selectedNegative {
                 await self.loadSpots(negative)
             }

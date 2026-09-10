@@ -67,7 +67,7 @@ PREVIEW_MAX_EDGE = 1024
 
 MAX_CODE = 65535
 
-# docs/OPTIMIZATION.md §3.1: the daemon's decoded-pixel cache is bound by
+# The daemon's decoded-pixel cache is bound by
 # total bytes, not entry count, and this is that bound, in one place. One
 # entry is a negative's preview-resolution display array — 887x1024 at
 # 16-bit RGB, about 5.4 MB — so the bound holds roughly seventeen
@@ -81,7 +81,7 @@ _DISPLAY_PREVIEW_CACHE_LOCK = threading.Lock()
 
 
 def _spots_cache_key(spots_params: dict | None) -> tuple:
-    """The spot half of the pixel-cache key (docs/OPTIMIZATION.md §3.3).
+    """The spot half of the pixel-cache key.
 
     A live spot set changes decoded pixels — its repair is the first step
     of the display replay — so the whole set is folded into the key,
@@ -110,7 +110,7 @@ def cached_preview_codes(
     transformed, downscaled array `generate_preview` and `render_preview`
     encode from — through the daemon's pixel cache.
 
-    docs/OPTIMIZATION.md §3.1: a full decode of a published TIFF is ~600
+    A full decode of a published TIFF is ~600
     ms and a one-shot process throws the array away, so the resident
     helper holds the preview-resolution cut instead — the fit view is
     where sliders live, and it only ever needs preview resolution. The key
@@ -175,8 +175,7 @@ def cached_preview_codes(
 def _downscale_codes(image: np.ndarray) -> np.ndarray:
     """The preview-resolution cut of a display image — the downscale of
     `_write_downscaled`, in normalized density (code space, not linear
-    light: averaging density is what averaging a photographic image means
-    — docs/DECISIONS.md, "Normalization decisions")."""
+    light: averaging density is what averaging a photographic image means)."""
     edge = max(image.shape[0], image.shape[1])
     if edge > PREVIEW_MAX_EDGE:
         scale = PREVIEW_MAX_EDGE / edge
@@ -258,7 +257,7 @@ def _write_downscaled(
 ) -> tuple[int, int]:
     """The downscale (in normalized density — code space, not linear light:
     averaging density is what averaging a photographic image means —
-    docs/DECISIONS.md, "Normalization decisions") plus the display encode.
+    plus the display encode.
     Returns the written PNG's `(width, height)`."""
     image = _downscale_codes(image)
     _encode_display_png(
@@ -345,7 +344,7 @@ def crop_is_live(crop_params: dict | None, tiff_shape: tuple[int, int]) -> bool:
     """Whether `crop_params` is a live crop against a TIFF of `shape`
     (`(height, width)`). A crop recorded against different canvas
     dimensions — a re-stitch replaced the published TIFF — is stale and
-    ignored, the same canvas rule the `spots` op has (SPOTTING_PLAN §1.5);
+    ignored, the same canvas rule the `spots` op has;
     unlike spots it degrades silently, because a vanished crop changes no
     pixels and `roll info` simply reports no crop."""
     if not crop_params:
@@ -580,8 +579,8 @@ def _display_image(
     The spot repair (when `spots_params` carries a live one) is the first
     step, before any geometry: the op's coordinates are TIFF space, and the
     repair applies in both display modes — what the user compares when they
-    toggle repair on and off is the same in both views (SPOTTING_PLAN
-    §3.3). The crop is the second step, for the same reason: its window is
+    toggle repair on and off is the same in both views. The crop is the
+    second step, for the same reason: its window is
     TIFF space too (`crop_is_live` drops a stale one), and every later
     transform — the mirror the user may record after the crop — applies to
     the cropped frame wholesale, exactly as the export does."""
@@ -780,7 +779,7 @@ def tiff_rect_to_display(
     ceil the maximum), clamped to the display bounds — which are the live
     crop window's dimensions when a crop is present. A box under a fine
     rotation grows slightly — correct behaviour for a review marker, not a
-    bug to fix (SPOTTING_PLAN §1.2).
+    bug to fix.
 
     The CLI converts; Swift never does. Every command and query reports
     spots in display space, already transformed."""
@@ -1049,7 +1048,7 @@ def render_region(
 # tone and color ops never route through the lossless incremental path —
 # an 8-bit PNG cannot be re-curved or re-coloured losslessly. The spots op
 # joins them: a repair changes pixels, and the incremental path is
-# lossless-geometry only (SPOTTING_PLAN §6). The crop op joins too — its
+# lossless-geometry only. The crop op joins too — its
 # window changes which pixels exist, and a tilted window is a warp.
 PREVIEW_OPS = {"cw", "ccw", "flip"}
 _STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP, repo.CROP_OP}

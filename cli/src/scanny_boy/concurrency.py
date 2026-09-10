@@ -1,23 +1,21 @@
-"""Worker-count policy and the per-worker memory budget of
-`docs/IMPLEMENTATION_PLAN.md` section 3.8.
+"""Worker-count policy and the per-worker memory budget.
 
-The rules, verbatim from the plan:
+The rules:
 
 - Default workers: `min(shots_per_negative, os.process_cpu_count() or 1, 4)`.
-- "Budget **640 MiB of memory per worker**." One output frame is about
-  140 MiB, with LibRaw working space on top. The plan set this at 512 MiB
-  and instructed Chunk 6 to raise it from measurement; see the comment on
-  `WORKER_MEMORY_BUDGET_BYTES` below.
-- "If the computed **default** worker count exceeds the budget for this
-  machine, silently reduce it. Never fail a run because of the default."
-- "If an **explicit** `--jobs` value exceeds the budget, reject it with
-  `INSUFFICIENT_MEMORY` and report both numbers."
-- "The budget is workers x 640 MiB, and it must not exceed half of
-  physical RAM."
+- Budget **640 MiB of memory per worker**. One output frame is about
+  140 MiB, with LibRaw working space on top; see the comment on
+  `WORKER_MEMORY_BUDGET_BYTES` below for how this figure was measured.
+- If the computed **default** worker count exceeds the budget for this
+  machine, silently reduce it. Never fail a run because of the default.
+- If an **explicit** `--jobs` value exceeds the budget, reject it with
+  `INSUFFICIENT_MEMORY` and report both numbers.
+- The budget is workers x 640 MiB, and it must not exceed half of
+  physical RAM.
 
 Physical RAM comes from `os.sysconf`, which reports it identically on
 macOS and on the Linux CI runner, and needs no third-party dependency.
-Section 2.5 warns that neither `os.process_cpu_count()` nor
+Neither `os.process_cpu_count()` nor
 `os.cpu_count()` distinguishes performance cores from efficiency cores on
 Apple silicon, which is why the default is capped at four regardless.
 """
@@ -30,9 +28,8 @@ from scanny_boy.events import Code
 
 MIB = 1024 * 1024
 
-# Section 3.8 now states 640 MiB and carries this table itself; keep the two
-# in step when re-measuring. The plan originally set 512 MiB and told Chunk 6
-# to raise the budget if the measured peak plus 25% came out larger. It did.
+# This budget was originally set at 512 MiB and later raised to 640 MiB
+# once measurement showed the peak plus 25% margin came out larger.
 # Measured on the six real sample NEFs (`scripts/measure-concurrency.py`,
 # macOS 14.6.1, Apple silicon), peak resident set size and the budget each
 # row demands:
@@ -51,13 +48,13 @@ MIB = 1024 * 1024
 WORKER_MEMORY_BUDGET_BYTES = 640 * MIB
 MAX_DEFAULT_WORKERS = 4
 
-# Section 3.8: the budget "must not exceed half of physical RAM".
+# The budget must not exceed half of physical RAM.
 _USABLE_MEMORY_FRACTION = 0.5
 
 
 class MemoryBudgetError(Exception):
     """Maps to `INSUFFICIENT_MEMORY`: an *explicit* `--jobs` value needs
-    more memory than the section 3.8 budget allows on this machine. Never
+    more memory than the budget allows on this machine. Never
     raised for the computed default, which is silently reduced instead."""
 
     def __init__(self, requested_workers: int, permitted_workers: int, total_memory: int) -> None:

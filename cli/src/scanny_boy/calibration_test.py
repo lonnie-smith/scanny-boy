@@ -1,4 +1,4 @@
-"""Tests for the calibration orchestrator (docs/GEOMETRIC_PLAN.md section 8).
+"""Tests for the calibration orchestrator.
 
 `decode_raw` is replaced — not rawpy itself, but the calibration module's
 decode seam — with a renderer that produces synthetic ChArUco frames with
@@ -59,7 +59,7 @@ def _distortion_maps(size: tuple[int, int], scale: float) -> tuple[np.ndarray, n
     """The inverse map the synthetic observation is sampled through:
     `observed(q) = ideal(map(q))`. The green channel samples
     `map = d^-1`; a CA channel's scale lives in *undistorted* space — the
-    model's own construction (docs/GEOMETRIC_PLAN.md section 4.6) — so its
+    model's own construction — so its
     map is `c + (d^-1(q) - c) / scale` about the principal point.
     float32 throughout: at this frame size float64 intermediates would
     needlessly double the test's transient memory."""
@@ -219,7 +219,7 @@ def test_no_calibration_frames_produces_todays_profile(tmp_path, monkeypatch):
 
 
 def test_scale_mode_decodes_the_reference_with_the_ca_scales(calibrated_profile):
-    """The load-bearing ordering constraint (section 4.7): in "scale" mode
+    """The load-bearing ordering constraint: in "scale" mode
     the flat-field reference is decoded with the same CA scales production
     will use — asserted on the recorded provenance, not on pixels."""
     decoder, profile, _ = calibrated_profile
@@ -266,7 +266,7 @@ def test_geometry_and_report_are_recorded(calibrated_profile):
     distortion = report["distortion"]
     assert distortion["accepted"] is True
     # The stability gate's statistic and the threshold it was judged
-    # against are in the report (docs/STABILITY_GATE.md section 2).
+    # against are in the report.
     assert distortion["jackknife_frames"] == report["frames_fit"]
     assert distortion["max_relative_se"] == geometry_fit.GEOMETRY_MAX_RELATIVE_SE
     assert 0.0 <= distortion["jackknife_relative_se"] <= distortion["max_relative_se"]

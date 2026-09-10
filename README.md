@@ -10,13 +10,9 @@ conversion, registration, compositing, and manifest work.
 This is a local, single-user project. It targets this Apple-silicon Mac only.
 There is no App Store distribution, no Developer ID distribution, no
 sandboxing, no notarisation, and no Intel support. See
-[docs/DECISIONS.md](docs/DECISIONS.md) for the reasoning behind this and
-every other locked decision, and
-[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) (Phase 1: RAW
-conversion), [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
-(Phase 2: registration and stitching), and
-[docs/PHASE3_IMPLEMENTATION_PLAN.md](docs/PHASE3_IMPLEMENTATION_PLAN.md)
-(Phase 3: rolls, staged workflow, and metadata editing) for the full plans.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the program is built and
+why; the design reasoning for anything non-obvious lives as a comment next to
+the code it explains.
 
 ## Licence
 
@@ -117,8 +113,8 @@ There is no notarisation or Developer ID step.
 
 Everything in the app happens inside a **roll** — a durable, named folder
 you return to and add to over time, not a one-shot conversion. The window
-has a sidebar of rolls and, once one is selected, a workspace with two
-tabs: **Add Scans** and **Edit**.
+has a sidebar of rolls and, once one is selected, a workspace with four
+tabs: **Add Scans**, **Edit**, **Metadata**, and **Export**.
 
 **The library.** The sidebar lists every roll under the library base
 (`~/Pictures/Scanny Boy` by default, relocatable from **Settings**), each
@@ -149,11 +145,10 @@ one. Renaming moves the roll's folder; deleting moves it to the Trash.
    frames against each other, solves a shared layout, and composites one
    stitched TIFF per negative into the roll — reporting live progress, and
    each negative's result (published, or why it failed) when it ends. A
-   selection that overlaps sources already in the roll shows a sheet first,
-   one row per overlapping prospective negative, defaulting to **Skip**;
-   choosing **Replace** adopts the existing negative in place — same
-   negative and same filename, its stitched TIFF replaced with the new
-   result.
+   selection that overlaps sources already in the roll is adopted in
+   place automatically — same negative and same filename, its stitched
+   TIFF replaced with the new result — with no per-overlap Skip/Replace
+   choice offered yet.
 5. **Re-stitch, if a negative needs tuning.** A run never keeps the work
    directory it creates — it is removed on every outcome — so to re-stitch
    you point the app at one you kept yourself (a run started with `--work`,
@@ -165,18 +160,17 @@ and a large preview of the selected negative above it; **rotate left /
 rotate right** buttons (and Option←/Option→ to move the selection) record a
 nondestructive rotation per negative — the ops log lives in the library
 database, the CLI re-renders the preview, and the published TIFF is never
-touched. **Metadata** carries the roll's info and the dirty count with its
-**Apply** button, which writes intended capture times into the published
-TIFFs' EXIF tags (no pixel data is touched). The Edit tab's tone and colour
-controls likewise record nondestructive ops, and the spot tool
-("Find spots") proposes dust/hair/scratch candidates as markers over the
-preview — reject the bad ones by clicking them, then switch repair on and
-only what survived review is inpainted (the published TIFF stays
-untouched; the repair lives in the ops log and reaches the export).
-**Export** writes TIFFs with
-the edits applied into a folder of your choosing. The roll capture date and
-each negative's date override are shown but are not yet editable from the
-app — see `docs/punchlist.md`.
+touched. Its tone and colour controls likewise record nondestructive ops,
+and the spot tool ("Find spots") proposes dust/hair/scratch candidates as
+markers over the preview — reject the bad ones by clicking them, then
+switch repair on and only what survived review is inpainted (the published
+TIFF stays untouched; the repair lives in the ops log and reaches the
+export). **Metadata** edits the roll's and each negative's film/camera/lens/
+location/caption fields and capture-date override, and carries the dirty
+count with its **Apply** button, which writes intended capture times into
+the published TIFFs' EXIF tags (no pixel data is touched). **Export**
+renders each negative as a positive with every edit applied and writes it
+as a 16-bit lossless JPEG XL into a folder of your choosing.
 
 Every roll is recorded in one library SQLite database
 (`~/Library/Application Support/ScannyBoy/library.db`) — sources, every run,
@@ -191,75 +185,18 @@ Two frames are far enough apart that neither can be assumed to be the "next"
 one in capture order — the sequence may run right-to-left, or be shuffled —
 so every pair of a negative's frames is matched, and a global layout is
 solved from whichever pairs actually overlap. Each frame's pairwise fit is
-still rigid — rotation plus translation, scale forced to exactly 1, and
-still what the acceptance gates measure — but the *global* layout solves one
-isotropic scale per frame on top of that, because film does not sit at a
-constant height above the stage from frame to frame. It is a similarity,
-never an affine and never a homography. Before that layout solves, the
-stitch stage also fits one *rectifying homography* per negative — two
-parameters, shared by every pair, estimated from the pairs' own inliers and
-accepted only when it measurably helps — that undoes the slight tilt
-between the camera and the film plane. The pairwise fit and the layout are
-still exactly what they were; the rectification is a measured reparameterisation
-of image coordinates, applied in the same slot as the lens-distortion
-correction, under which the inter-frame maps really are similarities. See
-[docs/RECTIFICATION_PLAN.md](docs/RECTIFICATION_PLAN.md) for the
-measurement behind it. Several metrics per pair and per
-negative (inlier count and ratio, reprojection residual, and — the one that
-actually measures whether pixels line up — overlap MAD) are checked against
-thresholds measured from real scans before a negative is allowed to publish;
-see [docs/PHASE2_IMPLEMENTATION_PLAN.md](docs/PHASE2_IMPLEMENTATION_PLAN.md)
-section 3.4.
-
-**Blending.** Overlapping regions are combined with a feather in linear
-light: along each axis a frame participates on (the strip axis for a strip,
-both axes of the grid for a grid), a frame's contribution ramps from the
-nearer end of its own extent on that axis, normalised to `[0, 1]`; the
-per-axis ramps multiply into a single separable product, floored so a
-covered pixel always contributes. A pixel's crossfade profile across a
-vertical seam is identical at the top of the canvas, the middle, and the
-bottom — and likewise for a horizontal seam — because each axis's ramp
-depends only on position along that axis. An earlier version weighted a
-pixel by its distance to the nearest edge of the frame's own mask in every
-direction, which is isotropic and therefore identical near a strip's long
-borders and down its middle — but near those borders the nearest edge is
-the border itself, not the seam, so both frames' weights collapsed toward
-50/50 there regardless of where the seam actually was, and residual
-misregistration smeared into a curved band that grew toward the edges
-instead of showing up as a clean step at the seam. The separable ramp
-removes that collapse.
-
-The normalised ramp product is then raised to `FEATHER_EXPONENT` (an
-integer in `[1, 8]`, starting value 4) before the floor is applied — see
-[docs/NARROW_FEATHER.md](docs/NARROW_FEATHER.md). This narrows the
-crossfade to a band around the overlap midline instead of spanning the
-whole overlap, without moving the seam (the crossover stays at exactly
-`0.5` for every exponent) and without breaking separability (`(r_x *
-r_y)^p = r_x^p * r_y^p`). Wide feathers still average two frames' detail
-across nearly half the picture even when registration is good to a couple
-of pixels, which reads as scattered soft doubling rather than the bounded
-step the strip-axis ramp alone was meant to produce; narrowing the band
-keeps most of the canvas free of any blend at all, at the cost of making
-the residual step more locally visible in the band that remains.
-
-This is safe specifically *because* exposure and white balance are locked
-across a roll — there is no exposure mismatch a blend needs to hide, only
-misregistration, and a feather tolerates a little of that gracefully instead
-of showing it as a hard line. A band around the overlap midline was
-considered and set aside once already — it needs the pair's overlap
-geometry at blend time, which the compositing pass does not carry — and
-this exponent is that idea arriving by another route: the midline falls out
-of the ramp arithmetic itself, needing no overlap geometry at all. Two
-alternatives remain set aside:
-
-- **A hard seam at the overlap midline.** Preserves grain exactly, since no
-  pixel is ever a blend of two frames — but any misregistration shows up as a
-  visible line at the seam, with nothing to soften it. Named as the next step
-  if a measured step at the seam turns out small enough to cut through rather
-  than fade.
-- **A multi-band Laplacian blend.** Hides misalignment better than a linear
-  feather does, at the cost of softening fine grain in the blended region and
-  a meaningfully heavier compositing stage.
+rigid — rotation plus translation, scale forced to exactly 1 — but the
+*global* layout solves one isotropic scale per frame on top of that,
+because film does not sit at a constant height above the stage from frame
+to frame; it is a similarity, never an affine and never a homography.
+Several metrics per pair and per negative (inlier count and ratio,
+reprojection residual, and — the one that actually measures whether pixels
+line up — overlap MAD) are checked against thresholds measured from real
+scans before a negative is allowed to publish. Overlapping regions are then
+combined with a feather in linear light, narrowed to a band around the
+overlap midline rather than spanning the whole overlap. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §8 for the full detail and the
+reasoning behind each of these choices.
 
 ## Sample RAW files
 

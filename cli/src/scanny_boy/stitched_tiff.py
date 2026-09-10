@@ -1,8 +1,7 @@
 """Writes a stitched negative's TIFF: a thin wrapper around Phase 1's
 two-pass writer (`tiff_writer`, `tiff_exif`), which established the
-extratags rules, the ICC handling, and the two-pass write itself
-(`docs/IMPLEMENTATION_PLAN.md` section 3.4) and must not be reimplemented
-here.
+extratags rules, the ICC handling, and the two-pass write itself, and
+must not be reimplemented here.
 """
 
 from __future__ import annotations
@@ -32,8 +31,8 @@ def write_stitched_tiff(
 ) -> None:
     """Thin wrapper. Calls tiff_writer.write_base_tiff and
     tiff_exif.finalize_tiff. Do NOT reimplement the two-pass write, the
-    extratags rules, or the ICC handling — Phase 1 section 3.4 established
-    all four of those and each was independently verified to matter.
+    extratags rules, or the ICC handling — Phase 1 established all four
+    of those and each was independently verified to matter.
     """
     full_tags = dataclasses.replace(tags, icc_profile=icc_bytes)
     base_path = path.with_name(f"{path.stem}.base.tif")

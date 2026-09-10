@@ -52,8 +52,7 @@ Embedded in every JPEG XL Scanny Boy exports, at
   derived from Adobe's profile. Their `cprt` tags say so, and describe
   the colour space as *compatible with* Adobe RGB (1998) for the same
   reason: "Adobe RGB" is Adobe's trademark, and the colour space here is
-  an independent profile with the same colorimetry
-  (docs/EXPORT_PLAN.md section 2.3).
+  an independent profile with the same colorimetry.
 - Licence: Scanny Boy's own, all rights reserved (see
   [`LICENSE`](LICENSE)). The colorimetry is a published specification.
 - SHA-256: `1e399e18f9f6dbba2ecaa053251a51509ca03bd8e0f5168e6675eb4ad0ea250c`

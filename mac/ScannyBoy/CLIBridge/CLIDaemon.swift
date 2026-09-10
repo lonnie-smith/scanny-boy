@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// The resident `scanny-boy serve` process, and the per-request registry
-/// in front of it (docs/OPTIMIZATION.md §2.4).
+/// in front of it.
 ///
 /// One long-lived child answers every request the app routes here; this
 /// actor owns the child (a `CLISession` whose stdin is a pipe), pumps its
@@ -11,7 +11,7 @@ import Foundation
 /// stream ends exactly once, with a `completed` synthesized from its
 /// `finished` event's `exit_status` — so `CLIOutcome` maps over unchanged.
 ///
-/// Concurrency is the daemon's own serialized queue (§2.3): the helper
+/// Concurrency is the daemon's own serialized queue: the helper
 /// answers one request at a time, and a `cancel` envelope is written
 /// upstream without waiting for anything. If the child dies mid-request,
 /// every pending request is failed with an ordinary `completed` outcome and
@@ -82,7 +82,7 @@ public actor CLIDaemon {
         return stream
     }
 
-    /// Cancels one request in band (§2.2). The helper sets that request's
+    /// Cancels one request in band. The helper sets that request's
     /// token; a request the helper has already finished is ignored there.
     public func cancelRequest(_ requestID: String) async {
         guard let child = child, await child.isRunning,

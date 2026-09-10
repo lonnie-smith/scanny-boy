@@ -17,14 +17,14 @@ CMY_MIN = -1.0
 CMY_MAX = 1.0
 
 # Cast removal — NegPy's cast_removal_max_offset, same normalized units.
-# CAST_MAX_OFFSET bounds BOTH ends' ties (docs/CAST_REMOVAL_PLAN.md §2.2).
+# CAST_MAX_OFFSET bounds BOTH ends' ties.
 CAST_REMOVAL_MIN = 0.0
 CAST_REMOVAL_MAX = 1.0
 CAST_REMOVAL_HIGHLIGHTS_MIN = 0.0
 CAST_REMOVAL_HIGHLIGHTS_MAX = 1.0
 CAST_MAX_OFFSET = 0.1
 
-# Regional CMY — calibrated for our 0..1 display axis (see COLOR_PLAN §1.3).
+# Regional CMY — calibrated for our 0..1 display axis.
 REGION_CENTRE = 0.5
 REGION_SHARPNESS = 7.0
 REGION_CMY_SCALE = 0.09
@@ -61,8 +61,7 @@ COLOR_PARAM_KEYS = (
 )
 
 # The original twelve, frozen, in their original order. This exists only so
-# `repo._parse_color_op` can recognise an op written before
-# docs/CAST_REMOVAL_PLAN.md (that plan's R-2 §6.1): a twelve-key op is a
+# `repo._parse_color_op` can recognise an older op: a twelve-key op is a
 # complete colour state, and a missing newer key keeps its neutral default.
 # Nothing else may read it.
 COLOR_PARAM_KEYS_V1 = (
@@ -107,7 +106,7 @@ class Metering:
 
     `highlight_refs_norm` is the dense end's same-pixel neutral reference,
     normalized exactly as the shadow one; `None` when the negative's record
-    predates it (CAST_REMOVAL_PLAN R-1) or when the dense-end neutral band
+    predates it or when the dense-end neutral band
     held no trustworthy set — which is load-bearing information, not an
     error (that plan's §0.4)."""
 
@@ -159,8 +158,7 @@ def read_metering(record: dict | None) -> Metering:
     highlight_refs_norm: tuple[float, ...] | None = None
     highlight_refs = record.get("highlight_refs")
     # Normalized exactly as the shadow refs: same guards, same
-    # (ref - floor)/span, same anything-wrong -> None rule
-    # (docs/CAST_REMOVAL_PLAN.md R-0).
+    # (ref - floor)/span, same anything-wrong -> None rule.
     if isinstance(highlight_refs, list) and len(highlight_refs) == channels:
         normed = []
         for ch in range(channels):
@@ -185,8 +183,8 @@ def read_metering(record: dict | None) -> Metering:
 
 
 def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
-    """Global CMY as normalized log-density input offsets (§1.2), made
-    **lightness-neutral** (docs/CAST_REMOVAL_PLAN.md §1.1): the raw
+    """Global CMY as normalized log-density input offsets, made
+    **lightness-neutral**: the raw
     range-divided offsets are mean-removed, so moving the sliders changes
     hue and never the display's channel mean — Print Density and the zone
     controls keep sole ownership of lightness.
@@ -214,8 +212,8 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
 
 
 def region_cmy(params: ColorParams) -> tuple[tuple[float, ...], ...]:
-    """Regional shadow/highlight CMY slider tuples (§1.3), each
-    **mean-removed** (docs/CAST_REMOVAL_PLAN.md §1.2): they are added to the
+    """Regional shadow/highlight CMY slider tuples, each
+    **mean-removed**: they are added to the
     display value directly, and the blend's complementary weights sum to 1,
     so a mean-zero triple contributes a mean-zero display shift at every
     tone — the region controls are purely chromatic and stop competing with
@@ -241,8 +239,8 @@ def _one_point_cast_slopes(
     slope: float,
     pivot_in: float,
 ) -> tuple[tuple[float, float], ...]:
-    """Today's one-point tie, kept verbatim as the fallback branch
-    (docs/CAST_REMOVAL_PLAN.md §2.3 guard 3) — do not rewrite it, and do
+    """Today's one-point tie, kept verbatim as the fallback branch —
+    do not rewrite it, and do
     not let the two-point formula degenerate into it, because it does not."""
     achromatic = ((slope, pivot_in),) * 3
     if params.cast_removal <= 0.0 or metering.shadow_refs_norm is None:
@@ -295,7 +293,7 @@ def cast_slopes(
     """Per-channel (slope, pivot_in) for cast removal.
 
     With a highlight reference and a non-zero `cast_removal_highlights`,
-    the tie has **two points** (docs/CAST_REMOVAL_PLAN.md §2.2): each
+    the tie has **two points**: each
     channel's line is required to print at the shadow target what green
     prints at green's shadow reference, and at the highlight target what
     green prints at green's highlight reference. Two constraints determine
@@ -316,7 +314,7 @@ def cast_slopes(
     formula would give a *different* number, so the branches are separate
     by design, not by limit (§2.3 guard 3).
 
-    COLOR_PLAN §1.6 must keep holding: the endpoint rescale anchors are
+    The endpoint rescale anchors are
     read once on the achromatic curve — grade and snap only, every density,
     colour and shaping control at rest — and the same `(low, high)` pair
     rescales all three channels. A per-channel rescale would undo exactly

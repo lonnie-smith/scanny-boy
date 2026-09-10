@@ -2,12 +2,11 @@
 """Measure wall time and peak resident memory of a real `convert` run at
 several `--jobs` values.
 
-`docs/IMPLEMENTATION_PLAN.md` section 3.8 requires Chunk 6 to "measure peak
-resident memory for jobs 1 and 4" and to "raise the per-worker budget if
-the measured peak plus 25% is larger", recording the result in the pull
-request. It also says to "record benchmark results, but do not require a
-fixed speedup" — hence a script rather than a timing assertion in the test
-suite, which would be flaky on shared CI hardware.
+The rule this follows: measure peak resident memory for jobs 1 and 4, and
+raise the per-worker budget if the measured peak plus 25% is larger,
+recording the result in the pull request. Benchmark results are recorded,
+but no fixed speedup is required — hence a script rather than a timing
+assertion in the test suite, which would be flaky on shared CI hardware.
 
 Peak RSS comes from `os.wait4`, which reports rusage for one specific
 child, so each `--jobs` value is measured independently rather than as a

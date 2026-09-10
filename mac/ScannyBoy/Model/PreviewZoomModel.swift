@@ -145,7 +145,7 @@ final class PreviewZoomModel {
 
     /// The screen rect (pane points, top-left origin) a display-space spot
     /// marker occupies in the fit view: the same mapping the image itself
-    /// goes through (SPOTTING_PLAN §8.3).
+    /// goes through.
     static func spotScreenRect(
         _ spotRect: CGRect, fitRect: CGRect, displaySize: CGSize
     ) -> CGRect {

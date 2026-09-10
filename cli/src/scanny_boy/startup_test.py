@@ -1,4 +1,4 @@
-"""docs/OPTIMIZATION.md §1.2: the import-graph assertion.
+"""The import-graph assertion.
 
 A timing assertion would be flaky on CI and worthless; this asserts the
 graph instead. The two module names are the two large leaves — `scipy`

@@ -76,7 +76,7 @@ class PairResult:
     overlap_fraction: float | None
     overlap_mad: float | None
     overlap_mad_pregain: float | None
-    # docs/STITCH_QUALITY_PLAN.md section 2: the similarity fit (rotation,
+    # The similarity fit (rotation,
     # translation, and one isotropic scale) on the same inliers, from
     # similarity_from_correspondences. layout.py's per-frame scale solve
     # uses these; `transform` and `rms_residual_px` above are unaffected and
@@ -212,7 +212,7 @@ def register_pair(
        final inlier set, rather than mixing in cv2's own internal estimate.
     6. Apply the section 3.4 gates and set accepted/reject_code.
 
-    `undistorter`, when given (docs/GEOMETRIC_PLAN.md section 5.3), pushes
+    `undistorter`, when given, pushes
     both point sets through `cv2.undistortPoints` with the profile's fitted
     coefficients after step 3 — everything downstream (RANSAC, the rigid
     fit, rms_residual_px, scale_drift) then works in undistorted
@@ -435,7 +435,7 @@ def register_pair(
     )
 
 
-# --- tilt rectification (docs/RECTIFICATION_PLAN.md sections 2 and 4) -------
+# --- tilt rectification -----------------------------------------------------
 #
 # The closed-form core of the rig-tilt rectification: the coordinate maps,
 # the record the fit produces, and the per-pair re-fit onto rectified
@@ -494,7 +494,7 @@ def unrectify(points: np.ndarray, rectification: Rectification) -> np.ndarray:
 def rectified_frame_corners(rectification: Rectification) -> np.ndarray:
     """The frame's four corners in rectified space: the footprint a
     placement maps to canvas is this keystone quad, not the affine image
-    of the raw rectangle (docs/RECTIFICATION_PLAN.md section 5)."""
+    of the raw rectangle."""
     height, width = rectification.frame_size
     corners = np.array(
         [[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64

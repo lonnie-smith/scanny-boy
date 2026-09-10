@@ -1,10 +1,10 @@
 """The calibration orchestrator: `flatfield create` with
-`--calibration FILE [FILE ...]` (docs/GEOMETRIC_PLAN.md section 4).
+`--calibration FILE [FILE ...]`.
 
 One profile record carries the whole optical description of one rig
 configuration — gain map, radial distortion, lateral chromatic
 aberration, and the human-readable calibration report. The ordering here
-is load-bearing (section 4.7): in `"scale"` mode the flat-field reference
+is load-bearing: in `"scale"` mode the flat-field reference
 must be decoded with the *same* CA scales production will use, or the gain
 map and the frames disagree about geometry.
 
@@ -39,7 +39,7 @@ from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.linear import decode_to_linear
 from scanny_boy.raw_decode import decode_raw
 
-# Section 4.1's frame-count floors: fewer than the minimum fails, fewer
+# Frame-count floors: fewer than the minimum fails, fewer
 # than the recommended warns and proceeds.
 MIN_CALIBRATION_FRAMES = 12
 RECOMMENDED_CALIBRATION_FRAMES = 16
@@ -76,7 +76,7 @@ def _map_ca_error(exc: ca_fit_module.CAFitError) -> FlatFieldError:
 
 
 def _split_heldout(paths: list[Path]) -> tuple[list[Path], list[Path]]:
-    """The section 4.1 split: sorted by filename, every 4th path held out.
+    """Sorted by filename, every 4th path held out.
     A rerun on the same files must produce the same profile."""
     ordered = sorted(paths, key=lambda path: path.name)
     train = [path for i, path in enumerate(ordered) if i % HELDOUT_EVERY != 3]
@@ -87,7 +87,7 @@ def _split_heldout(paths: list[Path]) -> tuple[list[Path], list[Path]]:
 def _decode_workers() -> int:
     """Decoding is the bottleneck and is embarrassingly parallel; reuse
     `concurrency.resolve_worker_count`'s budget rather than inventing a
-    second worker-count policy (section 4.8)."""
+    second worker-count policy."""
     return concurrency.resolve_worker_count(concurrency.MAX_DEFAULT_WORKERS, None)
 
 
@@ -98,7 +98,7 @@ def _detect_paths(
     cancel_check: Callable[[], None] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Decode every path with the locked `RAW_PARAMS` and detect ChArUco
-    corners on the full-resolution greyscale, in parallel (section 4.2)."""
+    corners on the full-resolution greyscale, in parallel."""
 
     def one(path: Path) -> tuple[np.ndarray, np.ndarray]:
         if cancel_check is not None:
@@ -126,7 +126,7 @@ def _detect_ca_paths(
     workers: int,
     emit: EmitFn,
 ) -> list[dict[str, Any]]:
-    """Decode every path at half size, per channel (section 4.6), and detect
+    """Decode every path at half size, per channel, and detect
     ChArUco corners independently on R, G, B plus the Rec.709 luminance
     image. Returns per frame: the four corner/id pairs and the half-size
     dimensions."""
@@ -198,7 +198,7 @@ def _undistort_to_normalised(
 ) -> np.ndarray:
     """Undistort half-size pixel corners with the accepted green
     coefficients (or zero ones when geometry was rejected — CA is still
-    measurable, section 4.6 step 3) and convert to normalised coordinates
+    measurable) and convert to normalised coordinates
     relative to the principal point. Because `K_half = K_full / 2`,
     normalised coordinates are identical at both resolutions."""
     K = geometry_fit.base_camera(frame_width, frame_height)
@@ -220,7 +220,7 @@ def _undistort_to_normalised(
 
 def _geometry_dict(result: geometry_fit.GeometryFitResult, board_key: str,
                    frame_width: int, frame_height: int) -> dict:
-    """The section 3.2 profile object. `k1`/`k2` are in the OpenCV forward
+    """The profile object. `k1`/`k2` are in the OpenCV forward
     convention, so they drop straight into every consumer with no
     conversion."""
     return {
@@ -263,10 +263,10 @@ def create_profile(
 
     `calibration_paths` is empty or None for today's flat-field-only
     profile: byte-identical to the pre-calibration code path. With frames,
-    the full section 4 order of operations runs: board detect, full-res
+    the full order of operations runs: board detect, full-res
     detect, distortion fit, half-size per-channel CA fit, mode decision,
     and only then the reference decode — with the CA scales applied to it
-    when the mode is `"scale"` (section 4.7)."""
+    when the mode is `"scale"`."""
     from scanny_boy.library import repo
 
     existing = repo.list_flatfield_profiles()
@@ -332,7 +332,7 @@ def _create_calibrated_profile(
 
     workers = _decode_workers()
 
-    # 1. Board presence check on the first calibration frame (section 2).
+    # 1. Board presence check on the first calibration frame.
     #    There is one board, so this confirms rather than chooses, and the
     #    spec is reused for every remaining frame — never re-detected.
     first = decode_raw(paths[0])
@@ -348,8 +348,7 @@ def _create_calibrated_profile(
     del first
     emit(FlatFieldProgress(phase="detect", completed=1, total=len(paths)))
 
-    # 2. Decode and detect all calibration frames at full resolution
-    #    (section 4.7 step 2).
+    # 2. Decode and detect all calibration frames at full resolution.
     detections = _detect_paths(paths, board, workers)
     emit(FlatFieldProgress(phase="detect", completed=len(paths), total=len(paths)))
 
@@ -379,16 +378,15 @@ def _create_calibrated_profile(
             f"{MIN_CALIBRATION_FRAMES}",
         )
 
-    # One inner list per frame (docs/STABILITY_GATE.md section 1.3): the
-    # jackknife needs frame identity back, so this is an append, not the
-    # extend it replaced. `fit_geometry` flattens for the staged fit.
+    # One inner list per frame: the jackknife needs frame identity back.
+    # `fit_geometry` flattens for the staged fit.
     train_sets: list[list[np.ndarray]] = []
     heldout_sets: list[list[np.ndarray]] = []
     for path, (corners, ids) in surviving:
         sets = charuco.collinear_sets(corners, ids, board)
         (heldout_sets if path.name in heldout_names else train_sets).append(sets)
 
-    # 3. Fit and gate the distortion (section 4.4).
+    # 3. Fit and gate the distortion.
     emit(FlatFieldProgress(phase="fit", completed=1, total=3))
     try:
         fit = geometry_fit.fit_geometry(
@@ -429,8 +427,7 @@ def _create_calibrated_profile(
             )
         )
 
-    # 4. Decode and detect all calibration frames at half size, per channel
-    #    (section 4.6).
+    # 4. Decode and detect all calibration frames at half size, per channel.
     ca_frames = _detect_ca_paths(paths, board, workers, emit)
 
     half_width = ca_frames[0]["width"]
@@ -440,8 +437,8 @@ def _create_calibrated_profile(
         detection: dict,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
         """Per frame: intersect the three channels by id, undistort with the
-        green coefficients, convert to normalised coordinates (section 4.6
-        steps 2-4). Returns `(red, green_for_red, blue, green_for_blue)`
+        green coefficients, convert to normalised coordinates.
+        Returns `(red, green_for_red, blue, green_for_blue)`
         normalised, row-aligned on the common ids — or None when no corner
         survived in all three."""
         def normalised(channel: str) -> tuple[np.ndarray, np.ndarray]:
@@ -477,7 +474,7 @@ def _create_calibrated_profile(
             f"three channels; the minimum is {MIN_CALIBRATION_FRAMES}",
         )
 
-    # 5. Fit and gate CA; decide the mode (section 4.6). `fit_ca` takes
+    # 5. Fit and gate CA; decide the mode. `fit_ca` takes
     #    `(red, green_for_red, blue, green_for_blue)` per frame — each
     #    channel pair carries its own id-aligned green corners.
     train_ca = [
@@ -516,7 +513,7 @@ def _create_calibrated_profile(
             )
         )
 
-    # The detection-channel measurement (section 4.6): the Rec.709
+    # The detection-channel measurement: the Rec.709
     # luminance image's corner displacement from green, pooled over the
     # half-size frames and reported in full-resolution pixels. Gates
     # nothing; settles the detect-on-green question later with a number.
@@ -540,7 +537,7 @@ def _create_calibrated_profile(
     )
 
     # 6. Decode the flat-field reference with `RAW_PARAMS` plus the CA
-    #    scales when the mode is "scale" (section 4.7 step 6) — the gain
+    #    scales when the mode is "scale" — the gain
     #    map and the frames must agree about geometry.
     emit(FlatFieldProgress(phase="reference", completed=0, total=1))
     reference_frame = decode_raw(reference, chromatic_aberration=ca_scales)
@@ -573,7 +570,7 @@ def _create_calibrated_profile(
             "stage_heldout_rms_px": fit.stage_heldout_rms,
             # The stability gate's own statistic and the threshold it was
             # judged against, so a stored profile reads without knowing
-            # which build wrote it (docs/STABILITY_GATE.md section 2).
+            # which build wrote it.
             "jackknife_corner_px_mean": fit.jackknife_corner_px_mean,
             "jackknife_corner_px_se": fit.jackknife_corner_px_se,
             "jackknife_relative_se": fit.jackknife_relative_se,

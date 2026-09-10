@@ -3,7 +3,7 @@ import Testing
 
 @testable import ScannyBoy
 
-/// `scanny-boy serve`'s Swift side (docs/OPTIMIZATION.md §2.5): the
+/// `scanny-boy serve`'s Swift side: the
 /// resident-helper session, its per-request partitioning, its in-band
 /// cancellation, its fallback to one-shot, and the routing table that
 /// decides what it answers.

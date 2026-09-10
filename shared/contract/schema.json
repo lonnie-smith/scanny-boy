@@ -347,7 +347,7 @@
             "items": { "$ref": "#/definitions/rollOverlapEntry" }
           },
           "film_base": {
-            "description": "The roll's film-base reference block, verbatim from the roll manifest; null when absent (docs/REBATE_ANCHORING.md §7.1). Present only when `--roll` was given.",
+            "description": "The roll's film-base reference block, verbatim from the roll manifest; null when absent. Present only when `--roll` was given.",
             "oneOf": [{ "type": "object" }, { "type": "null" }]
           }
         }

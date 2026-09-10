@@ -1,4 +1,4 @@
-"""The roll's film-base reference (docs/REBATE_ANCHORING.md §3.1).
+"""The roll's film-base reference.
 
 One nullable JSON column on `rolls`: existing rows read back with NULL and
 no block — there is no data migration, matching the module's stance for

@@ -11,11 +11,11 @@ where the ops log meets pixels — the preview generator and the exporter.
 
 **Which edges.** The rotation squares the rebate's *frame boundary* — the
 line between the film rebate and the picture. The discriminator is
-density, not geometry (section 3.13's insight, reused here): on a negative
+density, not geometry: on a negative
 the rebate/unexposed base is strictly the thinnest thing on the film, so
 the thin-end population of the normalized image is the rebate, and the
 scene — everything else the blend actually covered — is the picture. The
-empty-canvas fill (`NORMALIZED_FILL`, section 3.14) sits even thinner than
+empty-canvas fill (`NORMALIZED_FILL`) sits even thinner than
 the rebate and is excluded first, so the fill wedges a tilted stitch
 leaves at the canvas edges never contaminate the estimate.
 

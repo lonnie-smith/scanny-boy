@@ -1,6 +1,7 @@
 """The rig-tilt rectification fit: two shared parameters per negative.
 
-`fit_rectification` implements docs/RECTIFICATION_PLAN.md sections 2 and 3.
+`fit_rectification` fits the shared rectifying homography and per-pair
+similarities.
 The film plane is not fronto-parallel to the camera, so the true
 frame-to-frame map is a homography, `H = W⁻¹ · S · W`, with one globally
 shared rectifying homography `W(l) = [[1,0,0],[0,1,0],[l1,l2,1]]` and a
@@ -19,8 +20,8 @@ replicated; the zero-tilt validation ran unweighted), over the accepted
 pairs' inlier correspondences in canonical pair order, so the result is
 deterministic and independent of placement order.
 
-The acceptance gates follow `docs/GEOMETRIC_PLAN.md` section 4.5's
-discipline — the fit that does not measurably help is dropped, not an
+The acceptance gates follow the same discipline as other geometric fits —
+the fit that does not measurably help is dropped, not an
 error: a rejected fit returns `None` and the negative stitches exactly as
 it would have before this module existed.
 """

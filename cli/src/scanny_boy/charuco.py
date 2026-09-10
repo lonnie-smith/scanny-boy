@@ -1,5 +1,4 @@
-"""The ChArUco calibration board and everything corner-shaped around it
-(docs/GEOMETRIC_PLAN.md section 2).
+"""The ChArUco calibration board and everything corner-shaped around it.
 
 `calibration/lens_calibration_targets.pdf` is the authoritative artefact:
 `BOARD` here is transcribed from it and must match it exactly, and
@@ -12,8 +11,7 @@ per module across that whole range — so there is no format to choose
 between, and the calibration path only has to confirm the board is present.
 An earlier pair of coarser boards (3.0 mm and 4.0 mm, one per film format)
 put as few as 40 corners in a frame at scanning magnification, which was
-never enough to pin the distortion coefficient (docs/STABILITY_GATE.md
-section 0).
+never enough to pin the distortion coefficient.
 
 The board uses `DICT_4X4_1000` for two reasons that both come from being
 fine: a 4x4 marker is 6 modules across its 1.5 mm, so a module is 250 um
@@ -42,10 +40,10 @@ from scanny_boy.events import Code
 from scanny_boy.linear import decode_to_linear
 
 # A frame with fewer corners than this is dropped from the fit with a
-# warning, not a failure (section 4.2).
+# warning, not a failure.
 MIN_CORNERS_PER_FRAME = 20
 # A collinear set with fewer members than this is not worth a row of the
-# residual vector (section 4.3).
+# residual vector.
 MIN_LINE_SET_MEMBERS = 4
 # cornerSubPix's search window is a quarter of the measured square pitch,
 # capped: a window spanning several squares stops refining the junction
@@ -123,7 +121,7 @@ def build_full_resolution_gray(frame: np.ndarray) -> np.ndarray:
     the 0.5/99.5 percentile stretch that `detection.build_detection_image`
     applies, but never downscaled — the sub-pixel corner positions the fit
     measures are exactly what a `DETECTION_LONG_EDGE` resize would throw
-    away (section 4.2)."""
+    away."""
     linear = decode_to_linear(frame).astype(np.float64)
     luminance = linear @ LUMINANCE_WEIGHTS
     return percentile_stretch(luminance)
@@ -151,8 +149,7 @@ def detect_corners(
     Returns `(corners, ids)`: `(N, 2)` float32 pixel coordinates and the
     matching `(N,)` charuco ids. With `subpix`, `cv2.cornerSubPix` runs with
     a search window of roughly a quarter of the median detected square
-    pitch — measured from this frame's own detections, not assumed
-    (section 4.2)."""
+    pitch — measured from this frame's own detections, not assumed."""
     detector = _make_detector(spec)
     charuco_corners, charuco_ids, _, _ = detector.detectBoard(gray)
     if charuco_corners is None or charuco_ids is None or len(charuco_ids) == 0:
@@ -198,8 +195,8 @@ def detect_board(gray: np.ndarray) -> BoardSpec:
 
 
 def collinear_sets(corners: np.ndarray, ids: np.ndarray, spec: BoardSpec) -> list[np.ndarray]:
-    """Group detected corners into the straight families their ids name
-    (section 4.3): one set per row and per column of the corner grid, plus
+    """Group detected corners into the straight families their ids name:
+    one set per row and per column of the corner grid, plus
     the two diagonal families (`row - col` and `row + col` constant) that
     are what constrain the principal point. Any set with at least
     `MIN_LINE_SET_MEMBERS` members is kept. Each set is returned as an

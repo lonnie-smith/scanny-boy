@@ -8,8 +8,8 @@ but hard to judge, so the Edit screen offers a nondestructive tone
 adjustment — recorded in the ops log as a `tone` op (`repo.TONE_OP`). The
 display LUT composes it into the preview's 8-bit encode, and the export's
 render (`render.py`) bakes the same curve into the exported pixels at
-full resolution (docs/EXPORT_PLAN.md §4.6) — the same `curve_values`, so
-preview and export cannot drift apart. The published TIFF itself is never
+full resolution — the same `curve_values`, so preview and export cannot
+drift apart. The published TIFF itself is never
 touched; the curve owns pixels only where a *rendering* is made.
 
 Colour shaping (global/regional CMY, cast removal) composes in the same
@@ -21,7 +21,7 @@ The math is a simplified port of NegPy's print curve
 (`NegPy/negpy/features/exposure/logic.py`, `CharacteristicCurve` /
 `_apply_print_curve_kernel`), operating on the *positive display value*
 v ∈ [0, DISPLAY_CEILING] after `1 - val` when a tone curve is active
-(`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW`; docs/HEADROOM.md §1):
+(`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW`):
 
 - **Grade** — an ISO-R paper "range" value (`grade_r`, 50–180; lower is
   harder) turned into a straight-line slope about the midtone pivot.
@@ -30,11 +30,11 @@ v ∈ [0, DISPLAY_CEILING] after `1 - val` when a tone curve is active
 - **Zone density** — mid-sparing sigmoid offsets on the quarter and
   three-quarter tones, read on the post-Snap value.
 - **Knees** — toe and shoulder knee-point controls with exponential rolloff
-  toward 0.0 and 1.0 (docs/HEADROOM.md §3).
+  toward 0.0 and 1.0.
 
 Three uint16 → float tables (one per channel when colour is active)
 compose steps 1–7; the endpoint rescale is shared across channels so
-cast removal and CMY are not self-cancelling (COLOR_PLAN §1.6).
+cast removal and CMY are not self-cancelling.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ SHOULDER_MAX = 1.0
 SHOULDER_WIDTH_MIN = 0.1
 SHOULDER_WIDTH_MAX = 5.0
 WIDTH_REFERENCE = 2.5
-# Same derivation as render.DISPLAY_CEILING (docs/HEADROOM.md §1).
+# Same derivation as render.DISPLAY_CEILING.
 DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
 # shoulder: -1 = no rolloff, 0 = mild default, +1 = heavy highlight compression
 SHOULDER_KNEE = (DISPLAY_CEILING, 0.85, 0.50)
@@ -129,8 +129,8 @@ def grade_slope(grade_r: float) -> float:
 
 def base_slope_and_pivot(tone_params: ToneParams) -> tuple[float, float]:
     """The achromatic straight-line slope and input pivot — the two
-    quantities every per-channel colour solve is defined against
-    (docs/CAST_REMOVAL_PLAN.md §3.4). Extracted from `_curve_raw` so the
+    quantities every per-channel colour solve is defined against.
+    Extracted from `_curve_raw` so the
     colour stage's auto solve reads the same two numbers the curve applies;
     one definition, no drift."""
     slope = grade_slope(tone_params.grade_r)

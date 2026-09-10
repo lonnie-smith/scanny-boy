@@ -3,9 +3,8 @@
 A profile becomes the complete optical description of one rig
 configuration: the four nullable columns here carry the ChArUco board the
 calibration was fitted with, the radial distortion fit, the chromatic
-aberration fit, and the human-readable calibration report
-(docs/GEOMETRIC_PLAN.md sections 3.1-3.5). Existing rows read back with
-four NULLs and stay valid — there is no data migration.
+aberration fit, and the human-readable calibration report. Existing rows
+read back with four NULLs and stay valid — there is no data migration.
 
 Revision ID: 0004
 Revises: 0003

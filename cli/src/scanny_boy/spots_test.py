@@ -1,6 +1,5 @@
 """Tests for the spot detector and repair (`spots.py`): synthetic
-normalized-density arrays only — no RAW, no TIFF, fast-tier throughout
-(docs/SPOTTING_PLAN.md §4)."""
+normalized-density arrays only — no RAW, no TIFF, fast-tier throughout."""
 
 from __future__ import annotations
 

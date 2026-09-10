@@ -210,7 +210,7 @@ def test_plan_rerun_treats_non_completed_groups_outputs_as_stale_not_conflicting
     assert plan.stale_staging_dirs == [staging]
 
 
-# --- rolls (Phase 3 section 3.4: additive semantics) ----------------------
+# --- rolls (additive semantics) ---------------------------------------------
 
 
 def _candidate_from(manifest) -> RollInvariants:
@@ -225,10 +225,10 @@ def _candidate_from(manifest) -> RollInvariants:
 
 
 def test_roll_folder_with_prior_outputs_is_valid(work_dir, tmp_path):
-    """Section 3.4: a nonempty roll folder holding published outputs from
+    """A nonempty roll folder holding published outputs from
     earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and under `ROLL_RULES`
     those outputs are neither conflicts nor stale. The roll is built by a
-    genuine `stitch` through P3-2's writer (section 4) — a hand-authored
+    genuine `stitch` through the real writer — a hand-authored
     manifest proves nothing about what the folder really holds. The dot-dir
     skip covers `.work`, which `run --roll` will use for scratch."""
     out_dir = make_roll_dir(tmp_path)
@@ -309,7 +309,7 @@ def test_plan_rerun_preview_mismatch_on_source_order_propagates(tmp_path):
 
 def test_plan_rerun_preview_accepts_a_different_film_date(tmp_path):
     """The reason this function exists separately from `plan_rerun`: at
-    probe time the film date is not known yet (section 4.1's preview runs
+    probe time the film date is not known yet (the preview runs
     before `convert`), so a difference there must not be treated as a
     mismatch — only `convert`'s full `plan_rerun` call does that, once the
     film date is entered."""
