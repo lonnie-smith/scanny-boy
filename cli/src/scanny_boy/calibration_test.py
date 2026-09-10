@@ -22,7 +22,7 @@ import pytest
 from scanny_boy import calibration, charuco, flatfield, geometry_fit
 from scanny_boy.raw_decode import DecodedFrame
 
-BOARD = charuco.BOARDS["35mm"]
+BOARD = charuco.BOARD
 
 pytestmark = pytest.mark.slow
 # Mid-format dimensions: the plumb-line sag scales with fx while the
@@ -256,7 +256,7 @@ def test_geometry_and_report_are_recorded(calibrated_profile):
     assert geometry["frame_height"] == FULL_H
     assert geometry["fx"] == float(max(FULL_W, FULL_H))
     assert geometry["stage"] in ("k1", "k1k2", "k1k2c")
-    assert geometry["board_key"] == "35mm"
+    assert geometry["board_key"] == "2mm"
 
     report = profile.calibration_report
     assert report["frames_total"] == calibration.MIN_CALIBRATION_FRAMES

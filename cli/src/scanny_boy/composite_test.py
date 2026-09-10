@@ -1304,7 +1304,7 @@ def _geometry_dict(k1: float, frame_width: int, frame_height: int) -> dict:
         "cy": (frame_height - 1) / 2,
         "stage": "k1",
         "gauge": "identity",
-        "board_key": "35mm",
+        "board_key": "2mm",
     }
 
 

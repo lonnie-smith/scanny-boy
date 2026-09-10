@@ -1091,7 +1091,7 @@ staging directories, and reruns the incomplete negative.
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
 | `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
 | `GEOMETRY_INSUFFICIENT_FRAMES` | Too few usable calibration frames |
-| `GEOMETRY_BOARD_NOT_DETECTED` | Neither calibration board detected, or the read is ambiguous |
+| `GEOMETRY_BOARD_NOT_DETECTED` | The calibration board was not detected in the first frame |
 | `GEOMETRY_FRAME_SIZE_MISMATCH` | The profile was fitted at other frame dimensions |
 | `GEOMETRY_FIT_REJECTED` | Warning: the distortion fit did not clear its acceptance gates; it is not applied |
 | `GEOMETRY_MAGNITUDE_SUSPECT` | Warning: the fitted distortion is outside the expected 0.03–0.2% band; it is applied |

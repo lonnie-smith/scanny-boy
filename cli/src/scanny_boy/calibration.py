@@ -332,12 +332,12 @@ def _create_calibrated_profile(
 
     workers = _decode_workers()
 
-    # 1. Board format detection from the first calibration frame (section
-    #    2): both dictionaries race on one frame and the winner is reused
-    #    for every remaining frame — never re-detected per frame.
+    # 1. Board presence check on the first calibration frame (section 2).
+    #    There is one board, so this confirms rather than chooses, and the
+    #    spec is reused for every remaining frame — never re-detected.
     first = decode_raw(paths[0])
     try:
-        board = charuco.detect_board_format(
+        board = charuco.detect_board(
             charuco.build_full_resolution_gray(first.pixels)
         )
     except BoardDetectionError as exc:

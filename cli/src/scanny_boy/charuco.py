@@ -1,12 +1,25 @@
-"""The two ChArUco calibration boards and everything corner-shaped around
-them (docs/GEOMETRIC_PLAN.md section 2).
+"""The ChArUco calibration board and everything corner-shaped around it
+(docs/GEOMETRIC_PLAN.md section 2).
 
 `calibration/lens_calibration_targets.pdf` is the authoritative artefact:
-the `BOARDS` constants here are transcribed from its embedded OpenCV
-recreation lines and must match it exactly. The two boards deliberately use
-different ArUco dictionaries, which makes board-format detection free — run
-both detectors on the first calibration frame and take the one with more
-detected corners.
+`BOARD` here is transcribed from it and must match it exactly, and
+`cli/tools/generate_charuco_board.py` is what draws it.
+
+**One board covers every magnification the rig works at.** At 2.0 mm pitch
+a frame holds 187 corners at the 4x2 grid's ~36x24 mm field and 1107 at a
+whole 6x9 negative in one frame, and the 1.5 mm markers stay above 15 px
+per module across that whole range — so there is no format to choose
+between, and the calibration path only has to confirm the board is present.
+An earlier pair of coarser boards (3.0 mm and 4.0 mm, one per film format)
+put as few as 40 corners in a frame at scanning magnification, which was
+never enough to pin the distortion coefficient (docs/STABILITY_GATE.md
+section 0).
+
+The board uses `DICT_4X4_1000` for two reasons that both come from being
+fine: a 4x4 marker is 6 modules across its 1.5 mm, so a module is 250 um
+rather than the 5x5 family's 214 um, and the 1000-marker ceiling is what
+caps the board's physical size — one marker per white square means a
+larger board can only be had at a coarser pitch.
 
 The whole reason ChArUco was chosen is that every detected corner carries an
 exact, known collinear-set membership through its `charucoId`: the interior
@@ -34,10 +47,6 @@ MIN_CORNERS_PER_FRAME = 20
 # A collinear set with fewer members than this is not worth a row of the
 # residual vector (section 4.3).
 MIN_LINE_SET_MEMBERS = 4
-# Format auto-detection: the loser must have essentially no corners. A
-# winner whose runner-up exceeds this fraction of its own count is an
-# ambiguous read of the frame, not a detection.
-AMBIGUOUS_LOSER_FRACTION = 0.1
 # cornerSubPix's search window is a quarter of the measured square pitch,
 # capped: a window spanning several squares stops refining the junction
 # and starts biasing it toward the local gradient centroid, which grows
@@ -58,7 +67,7 @@ class BoardDetectionError(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class BoardSpec:
-    key: str  # "35mm" | "6x9"
+    key: str  # recorded on a profile as `board_key`
     squares_x: int  # columns, along the strip's long axis
     squares_y: int  # rows, across the strip's width
     square_length_mm: float
@@ -66,10 +75,7 @@ class BoardSpec:
     dictionary: str  # cv2.aruco predefined dictionary name
 
 
-BOARDS: dict[str, BoardSpec] = {
-    "35mm": BoardSpec("35mm", 13, 9, 3.0, 2.2, "DICT_5X5_100"),
-    "6x9": BoardSpec("6x9", 21, 14, 4.0, 3.0, "DICT_5X5_250"),
-}
+BOARD = BoardSpec("2mm", 50, 38, 2.0, 1.5, "DICT_4X4_1000")
 
 
 def corner_grid(spec: BoardSpec) -> tuple[int, int]:
@@ -172,34 +178,23 @@ def detect_corners(
     return points, charuco_ids.reshape(-1, 1).astype(np.int32)
 
 
-def detect_board_format(gray: np.ndarray) -> BoardSpec:
-    """Which board is in the frame — the free format detection the two
-    dictionaries buy (section 2). Runs both boards' detectors on this one
-    frame and takes the one with more detected corners; the winner must
-    reach `MIN_CORNERS_PER_FRAME` and the loser must be essentially
-    absent, or the read is ambiguous and fails
-    `GEOMETRY_BOARD_NOT_DETECTED`."""
-    counts: list[tuple[BoardSpec, int]] = []
-    for spec in BOARDS.values():
-        corners, _ = detect_corners(gray, spec, subpix=False)
-        counts.append((spec, len(corners)))
+def detect_board(gray: np.ndarray) -> BoardSpec:
+    """Confirm `BOARD` is in this frame, and return its spec.
 
-    counts.sort(key=lambda pair: pair[1], reverse=True)
-    winner, winner_count = counts[0]
-    loser, loser_count = counts[1]
-    if winner_count < MIN_CORNERS_PER_FRAME:
+    With one board there is no format to choose, so this is a presence
+    check rather than the two-board bake-off it replaces: the frame must
+    yield at least `MIN_CORNERS_PER_FRAME` corners or it fails
+    `GEOMETRY_BOARD_NOT_DETECTED`. The old check also caught a frame that
+    read ambiguously as both boards; nothing replaces that, because with a
+    single dictionary there is no second reading to be ambiguous with."""
+    corners, _ = detect_corners(gray, BOARD, subpix=False)
+    if len(corners) < MIN_CORNERS_PER_FRAME:
         raise BoardDetectionError(
             Code.GEOMETRY_BOARD_NOT_DETECTED,
-            "neither calibration board was detected "
-            f"({winner.key}: {winner_count} corners, {loser.key}: {loser_count})",
+            f"the calibration board was not detected ({len(corners)} corners, "
+            f"need at least {MIN_CORNERS_PER_FRAME})",
         )
-    if loser_count > winner_count * AMBIGUOUS_LOSER_FRACTION:
-        raise BoardDetectionError(
-            Code.GEOMETRY_BOARD_NOT_DETECTED,
-            "the board format is ambiguous: both dictionaries detected "
-            f"corners ({winner.key}: {winner_count}, {loser.key}: {loser_count})",
-        )
-    return winner
+    return BOARD
 
 
 def collinear_sets(corners: np.ndarray, ids: np.ndarray, spec: BoardSpec) -> list[np.ndarray]:

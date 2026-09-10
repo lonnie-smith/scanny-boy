@@ -362,12 +362,13 @@ should, for each `p` in `(1, 2, 3, 4, 6, 8)`:
 - Report the balance histogram of section 0 (the prediction is cheap and
   needs no pixels — it is a function of the solved placements alone, so it
   can be reported for every `p` in one pass).
-- Report `overlap_mad` per pair. This is the number that should get
-  *better*: it is measured post-gain over the overlap, and if the wide
-  feather has been averaging misregistered detail, narrowing it should
-  reduce the residual it measures. If `overlap_mad` does not move, the
-  ghosting was not coming from the blend and this plan is treating a
-  symptom.
+- **Do not expect `overlap_mad` to move, and do not use it as the gate.**
+  `composite._pair_overlap` compares the two *warped frames* directly, over
+  the intersection of their bounding boxes, before any weight is applied —
+  it is blind to the feather by construction. Confirmed empirically: the
+  `Six7-after-feather-adjustment` roll reproduces the pre-change roll's
+  `overlap_mad` to four decimal places. It stays a useful per-pair
+  alignment measurement, but it measures registration, not blending.
 - Report the high-to-mid frequency energy ratio in near-50/50 regions
   against unblended regions, as section 0 measured it. The ~1.3 dB deficit
   should shrink toward the ~0 dB that perfect registration plus grain
@@ -459,12 +460,15 @@ noticed.
   unblended grain gets *sharper* even as it gets rarer. Watch for it in
   smooth areas — sky is where it will show, and sky is most of these
   frames.
-- **`overlap_mad` moves and the gate constants were measured against the
-  old blend.** `MAX_OVERLAP_MAD = 0.20` was measured against uncorrected
-  overlaps and its semantics have already shifted once (the module
-  docstring records this). Narrowing the feather changes what the number
-  means again. Chunk 1 does not touch the constant; section 6 reports the
-  movement so the user can decide whether it needs one.
+- **No recorded metric measures this change.** `overlap_mad` is blind to
+  the feather (section 6), `global_rms_px` and the per-pair residuals are
+  fixed before compositing runs, and nothing else in the manifest looks at
+  blend weights. The balance histogram of section 0 is a prediction from
+  the solved placements, not a measurement of output. **The gate is
+  therefore the user's eyes on 100% crops**, and that is a real weakness:
+  a regression here would not be caught by the test suite or by any number
+  the pipeline records. Adding a recorded blend-balance summary per
+  negative would fix that and is worth considering alongside chunk 2.
 - **Golden fixtures.** Both the strip and grid paths change output.
   Anything comparing stitched pixels byte-for-byte must be regenerated,
   and the commit message must say so — otherwise the next bisect blames

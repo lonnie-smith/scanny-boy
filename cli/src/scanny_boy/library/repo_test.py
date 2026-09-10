@@ -941,7 +941,7 @@ def test_calibration_columns_round_trip():
     profile = FlatFieldProfile(
         **{
             **profile.__dict__,
-            "board_key": "35mm",
+            "board_key": "2mm",
             "geometry": {"format_version": 1, "k1": -0.001},
             "chromatic_aberration": {"mode": "scale", "red_scale": 1.0004},
             "calibration_report": {"frames_total": 20},
@@ -951,7 +951,7 @@ def test_calibration_columns_round_trip():
     repo.save_flatfield_profile(profile)
 
     loaded = repo.load_flatfield_profile(profile.profile_id)
-    assert loaded.board_key == "35mm"
+    assert loaded.board_key == "2mm"
     assert loaded.geometry == {"format_version": 1, "k1": -0.001}
     assert loaded.chromatic_aberration == {"mode": "scale", "red_scale": 1.0004}
     assert loaded.calibration_report == {"frames_total": 20}

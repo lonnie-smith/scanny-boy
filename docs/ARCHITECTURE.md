@@ -650,9 +650,10 @@ radial lens distortion and lateral chromatic aberration, fitted from ChArUco
 board frames and applied inside the existing stitch warp
 ([`docs/GEOMETRIC_PLAN.md`](GEOMETRIC_PLAN.md)).
 
-**The modules**: `charuco.py` owns the two boards (transcribed from
+**The modules**: `charuco.py` owns the board (transcribed from
 `calibration/lens_calibration_targets.pdf`, which stays the authoritative
-artefact), full-resolution corner detection, and the collinear-set grouping
+artefact and is drawn by `cli/tools/generate_charuco_board.py`), its
+full-resolution corner detection, and the collinear-set grouping
 that turns `charucoId`s into straight-line families — rows, columns, and
 both diagonals, the diagonals being what constrains the principal point.
 `geometry_fit.py` is the staged plumb-line fit (`scipy.optimize.least_squares`,

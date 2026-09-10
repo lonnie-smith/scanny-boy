@@ -17,7 +17,7 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
     /// Provenance only — the CLI never reads the reference again.
     let sourcePath: String?
     let createdAt: String?
-    /// The ChArUco board the calibration was fitted with ("35mm" | "6x9"),
+    /// The ChArUco board the calibration was fitted with ("2mm"),
     /// or nil for a flat-field-only profile (protocol version 7).
     let boardKey: String?
     /// Whether the profile carries a distortion fit.
