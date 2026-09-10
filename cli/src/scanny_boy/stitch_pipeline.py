@@ -1117,7 +1117,7 @@ def run_stitch(
         except flatfield.FlatFieldError as exc:
             raise StitchError(exc.code, exc.message) from exc
         if profile.geometry is not None:
-            width, height = _read_intermediate_size(
+            height, width = _read_intermediate_size(
                 _intermediate_paths(work_dir, groups[0])[0]
             )
             try:

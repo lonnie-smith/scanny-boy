@@ -336,14 +336,15 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 
     # Zero distortion: the warp is a no-op, so the synthetic scene still
     # stitches normally — only the plumbing, not the correction, is tested.
+    frame_height, frame_width = FRAME_SIZE
     geometry = {
         "format_version": 1,
-        "frame_width": FRAME_SIZE[0],
-        "frame_height": FRAME_SIZE[1],
-        "fx": float(FRAME_SIZE[0]),
-        "fy": float(FRAME_SIZE[0]),
-        "cx": FRAME_SIZE[0] / 2.0,
-        "cy": FRAME_SIZE[1] / 2.0,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "cx": frame_width / 2.0,
+        "cy": frame_height / 2.0,
         "k1": 0.0,
         "k2": 0.0,
     }
@@ -357,8 +358,8 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
             gain_map_path=str(path),
             gain_map_sha256=sha256,
             source_path=None,
-            reference_width=FRAME_SIZE[0],
-            reference_height=FRAME_SIZE[1],
+            reference_width=frame_width,
+            reference_height=frame_height,
             params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
@@ -383,6 +384,52 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
     assert captured
     assert captured[0]["geometry"] == geometry
     assert captured[0]["ca"] is None
+
+
+def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
+    """A profile fitted at different decode dimensions must fail before
+    stitch starts — width and height are not interchangeable."""
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    frame_height, frame_width = FRAME_SIZE
+    geometry = {
+        "format_version": 1,
+        "frame_width": frame_height,
+        "frame_height": frame_width,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "cx": frame_height / 2.0,
+        "cy": frame_width / 2.0,
+        "k1": 0.0,
+        "k2": 0.0,
+    }
+    path, sha256 = flatfield.save_gain_map(
+        "pid-mismatch", np.full((8, 8, 3), 1.0, dtype=np.float32)
+    )
+    repo.save_flatfield_profile(
+        flatfield.FlatFieldProfile(
+            profile_id="pid-mismatch",
+            name="Swapped",
+            gain_map_path=str(path),
+            gain_map_sha256=sha256,
+            source_path=None,
+            reference_width=frame_height,
+            reference_height=frame_width,
+            params=flatfield.build_params(),
+            scanny_boy_version="0.3.0",
+            created_at="2026-09-01T00:00:00Z",
+            geometry=geometry,
+        )
+    )
+
+    out_dir = make_roll_dir(tmp_path)
+
+    with pytest.raises(StitchError) as exc_info:
+        run_stitch_with_defaults(
+            work_dir, out_dir, flatfield_profile_id="pid-mismatch"
+        )
+    assert exc_info.value.code is Code.GEOMETRY_FRAME_SIZE_MISMATCH
 
 
 def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkeypatch):
