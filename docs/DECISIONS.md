@@ -68,7 +68,11 @@ makes those decisions easier to find without reading the whole plan.
   write TIFF `Orientation` as `1` always — never the source value.
 - Encode in ROMM RGB (ProPhoto RGB), standard transfer curve. Every TIFF
   embeds a vetted, checksum-verified ICC profile; an untagged ROMM file is
-  never written.
+  never written.  (Update: superseded — the decode is now linear sensor
+  channels (`gamma=(1, 1)`, `output_color=raw`), the intermediates carry the
+  linear `ScannyBoy-Linear-v1.icc`, and the published TIFF is normalized log
+  density under `ScannyBoy-Density-v1.icc`. See "Linear decode for NegPy
+  compatibility" and "Normalization decisions" below.)
 - Lossless Deflate compression with horizontal prediction, one compression
   worker per outer RAW worker.
 - Fixed exposure is preserved by disabling both auto-brightness and
@@ -125,7 +129,11 @@ makes those decisions easier to find without reading the whole plan.
   the GIL). Default workers:
   `min(shots_per_negative, os.process_cpu_count() or 1, 4)`, where
   `shots_per_negative` is the batch's own value. `--jobs 1` uses a fully
-  serial path.
+  serial path. (Update: the **convert** stage's default now keys off the
+  run's total frame count — `min(len(files), cpus, 4)` — since `run_convert`
+  opens one pool for the whole run, not one per group; the stitch stage's
+  detection pool still keys off the recorded `shots_per_negative`. See
+  `ARCHITECTURE.md` §11.)
 - A 640 MiB per-worker memory budget (measured in Chunk 6, see plan section
   3.8's table) silently reduces the *default* worker count but rejects an
   *explicit* `--jobs` with `INSUFFICIENT_MEMORY`.
@@ -482,7 +490,11 @@ pixel value does (`punchlist.md`).
   through Settings) holds every roll as a direct child. The filesystem is
   the only source of truth — no index, no registry — and `roll list`
   scans it one level deep for `scanny-boy-roll.json`, server-side; the app
-  never enumerates the library or parses a roll manifest itself.
+  never enumerates the library or parses a roll manifest itself. (Update:
+  superseded — the durable record now lives in the library SQLite database
+  and `roll list` reports registered rolls from it, not from the presence of
+  `scanny-boy-roll.json`; a registered roll whose folder vanishes reports
+  `unreadable`. See `ARCHITECTURE.md` §9.)
 - `roll_id` is a UUID, generated once, never in a path. `roll_name` is free
   text; the folder name is a slug of it (NFC-normalised,
   `[A-Za-z0-9._-]` plus single-dash whitespace runs, 60 characters,
@@ -583,7 +595,10 @@ pixel value does (`punchlist.md`).
   `metadata.roll_capture_date` or a negative's `capture_time.date_override`
   — not even a library-level function exists to wrap, unlike the rename
   gap above. Chunk P3-12 shows both read-only in the Edit tab rather than
-  inventing a write path; see `punchlist.md`.
+  inventing a write path; see `punchlist.md`. (Update: closed — the
+  `metadata set` / `metadata values` command family (protocol 9) writes both,
+  `roll_sequence.apply_intended_times` re-derives intent on every write, and
+  the Metadata tab drives it. See `ARCHITECTURE.md` §4/§14.)
 
 ## The app (Swift)
 
@@ -591,28 +606,43 @@ pixel value does (`punchlist.md`).
   count, unreadable rolls shown disabled with their reason — all from one
   `roll list` call) and a workspace with **Add Scans** and **Edit** tabs
   for whichever roll is selected. One active run app-wide disables the
-  sidebar, the tab picker, and both stages' controls.
+  sidebar, the tab picker, and both stages' controls. (Update: the workspace
+  now has four tabs — Add Scans, Edit, Metadata, Export.)
 - **Add Scans** lost the output-folder and film-date fields Phase 2 had;
   shots per negative is the roll's own, shown read-only. The
   overwrite-confirmation dialog is replaced by the overlap sheet — one row
-  per `roll_overlap` entry, Skip (default) or Replace.
+  per `roll_overlap` entry, Skip (default) or Replace. (Update: the overlap
+  sheet is **not implemented** — nothing in Swift decodes `roll_overlap`, so
+  every run adopts whatever it overlaps in place; see `ARCHITECTURE.md`
+  §14.1.)
 - **Edit** is new: negatives in sequence order with thumbnails (read via a
   QuickLook-skipping `ThumbnailLoader` path tuned for large published
   TIFFs, not RAW previews), source frames, quality metrics, the dirty
   count, and Apply — driven through the same shared `RunModel`/
-  `CLISession` as Run and re-stitch, not a parallel mechanism.
+  `CLISession` as Run and re-stitch, not a parallel mechanism. (Update: the
+  tab now also exposes the Geometry (rotate/flip/crop), Tone, Color and Heal
+  (spotting) panels, and small edits ride the resident `serve` daemon.)
 - Swift reads a roll only through `roll list` and `roll info`, never by
   parsing `scanny-boy-roll.json` or walking the library itself.
 
 ## Scope Phase 3 does not cover
 
 - **Setting the roll capture date or a per-negative date override from the
-  app** — see "Sequence and metadata" above and `punchlist.md`.
+  app** — see "Sequence and metadata" above and `punchlist.md`. (Update:
+  closed; `metadata set` writes both and the Metadata tab drives it.)
 - Crop from manifest data, white balance/base neutralisation, extended
   metadata (location, camera, lens, film stock), the cyan fill colour,
   manual negative reordering, and deleting a negative outright are all
   deferred with an attachment point recorded on `punchlist.md`; none is
-  scheduled.
+  scheduled. (Update: several have since landed or changed —
+  **extended metadata** is implemented (`metadata set`/`metadata values`,
+  protocol 9); **deleting a negative outright** is the `edit delete` op;
+  **user crop editing** is `edit crop` (protocol 19), so what remains
+  deferred from that line is only the automatic crop from the recorded
+  `valid_rect`; and the fill is no longer black — `NORMALIZED_FILL` makes
+  the published margin white (§3.14), so the punchlist item is a
+  *contrasting* fill, not the cyan one. Manual negative reordering and
+  white balance / base neutralisation remain deferred.)
 - Negative inversion is Phase 4. (Update: the export's render took it, with the tone at full resolution — docs/EXPORT_PLAN.md §4; a print curve distinct from grade/snap, soft-proofing, paper simulation, and printing itself remain Phase 4's.)
 - The rebate-deviation detector (Phase 2's punchlist item) is untouched by
   Phase 3.
@@ -715,6 +745,9 @@ invalidate a roll.
 `--flatfield` is an optional flag on `convert`, `run`, and `probe`. The
 app always passes one and disables Stitch until a profile is chosen; the
 CLI stays a general tool and its existing tests keep working unchanged.
+(Update: `convert` was renamed `prepare`; the flag now rides `prepare`,
+`run`, `probe` and `stitch` — see "Naming: Convert in the UI, prepare
+inside the CLI" above.)
 
 ## Cost and memory
 
@@ -774,6 +807,9 @@ The decode now matches NegPy's exactly. `RAW_PARAMS` is `gamma=(1, 1)`,
 `output_color=raw`, `user_wb=[1, 1, 1, 1]` (LibRaw's `user_mul`),
 `use_camera_wb=False`, `adjust_maximum_thr=0.0`; everything else is
 unchanged. Every TIFF this program writes is linear sensor-channel data.
+(Update: the **intermediates** are still linear; the **published** TIFF is
+since normalized log density — protocol 8, "Normalization decisions" below —
+so read that sentence as the prepare stage's output.)
 
 Consequences, all intended:
 
@@ -797,7 +833,12 @@ Consequences, all intended:
 - **Previews are display-encoded.** The published TIFF is linear, so
   `previews.py` now 16→8-bit encodes through an sRGB LUT (after downscaling
   in linear light) — an untagged 8-bit PNG is assumed sRGB, and SwiftUI
-  displays it as-is. The TIFF is never touched.
+  displays it as-is. The TIFF is never touched. (Update: this was true only
+  while the published TIFF was linear. Previews now run the shared positive
+  render, `render.encode_positive_uint8` — decode through
+  `decode_normalized`, invert, Adobe RGB gamma, the recorded camera matrix,
+  and the user's tone/colour ops — and a second un-inverted negative mode
+  serves the app's toggle; see `ARCHITECTURE.md` §7.1.)
 - **This resolves the punchlist item** that asked for linear ("gamma 1, 1")
   TIFFs, and removes flat-field's curve round trip.
 - **Compatibility break**: every existing roll's manifest pins the old
@@ -1272,7 +1313,10 @@ one frame. `upgrade_normalize_params` gained a strip list alongside its
 absorbed by `setdefault` — `analysis_grid`,
 `dense_border_max_area_fraction` and `dense_border_max_bbox_fraction` are
 removed by name, or every pre-v4 roll fails the exact-dict invariant
-comparison.
+comparison. (Update: the current value is **5**; the film-extent pass
+(docs/BLACK_POINT_REFINEMENT.md) folded the `REBATE_*`, `OPAQUE_*` and
+`FILM_EXTENT_*` families into `build_params()`, so a v4 roll's recorded
+bounds are not comparable with a v5 one.)
 
 ## Naming: "Convert" in the UI, `prepare` inside the CLI (§3.9)
 
@@ -1451,7 +1495,10 @@ negates the fine angle along with the turn count, because `flip ∘ rot =
 rot^-1 ∘ flip` holds for rotations of any angle; quarter turns commute
 with the fine warp. The seeded angle is recorded nowhere else — the ops
 log is the single source of truth, and `roll info` derives the net angle
-the same way it derives the turns.
+the same way it derives the turns. (Update: the geometric triple is now
+`repo.EditState`'s `quarter_turns`/`flipped`/`fine_angle_deg`, carried
+alongside the coalesced state ops `tone`, `color`, `spots` and `crop`; the
+log remains the single source of truth.)
 
 ## The dense-end defenses, learned from roll R1 (protocol version 8, revised)
 
