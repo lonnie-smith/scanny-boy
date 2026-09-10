@@ -190,8 +190,14 @@ def _needs_separation(color_obj: color.ColorParams, channels: int) -> bool:
     )
 
 
+def _has_render_op(
+    tone_obj: tone.ToneParams | None,
+    color_obj: color.ColorParams,
+) -> bool:
+    return tone_obj is not None or color_obj != color.NEUTRAL_COLOR
+
+
 def _linear_lut_from_codes(
-    tone_obj: tone.ToneParams,
     color_obj: color.ColorParams,
     meter: color.Metering,
     *,
@@ -222,6 +228,7 @@ def _curve_lut_from_display_codes(
     meter: color.Metering,
     *,
     channels: int,
+    display_ceiling: float,
 ) -> np.ndarray:
     """Post-matrix display code j -> curved float, shape `(channels, 65536)`."""
     if tone_obj is None and color_obj == color.NEUTRAL_COLOR:
@@ -229,15 +236,14 @@ def _curve_lut_from_display_codes(
         return np.broadcast_to(display_codes, (channels, MAX_CODE + 1)).copy()
 
     display_codes = (
-        np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * DISPLAY_CEILING
+        np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * display_ceiling
     )
     apply_color = channels > 1
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
-    tone_params = tone_obj if tone_obj is not None else tone.NEUTRAL
     for ch in range(channels):
         tables[ch] = tone.curve_values(
             display_codes,
-            tone_params,
+            tone_obj,
             color_obj,
             channel=ch if apply_color else None,
             metering=meter,
@@ -330,7 +336,7 @@ def render_positive_float(
                 tone_params, color_params, metering, channels=1
             )
             tables = tone.build_channel_tables(
-                tone_obj or tone.NEUTRAL, color.NEUTRAL_COLOR, meter, channels=1
+                tone_obj, color.NEUTRAL_COLOR, meter, channels=1
             )
             result = tables[0][image]
             return np.clip(result, 0.0, 1.0), (0.0,)
@@ -374,26 +380,26 @@ def render_positive_float(
         tone_params, color_params, metering, channels=3
     )
 
+    has_op = _has_render_op(tone_obj, color_obj)
+    display_ceiling = DISPLAY_CEILING if has_op else 1.0
+    linear_ceiling = _LINEAR_CEILING if has_op else 1.0
+
     if matrix is None:
-        tables = tone.build_channel_tables(
-            tone_obj or tone.NEUTRAL, color_obj, meter, channels=3
-        )
+        tables = tone.build_channel_tables(tone_obj, color_obj, meter, channels=3)
         result = _gather_channel_lut(image, tables.astype(np.float32))
         if _needs_separation(color_obj, channels=3):
             result = color.apply_separation(result, color_obj)
         return np.clip(result, 0.0, 1.0), (0.0, 0.0, 0.0)
 
     linear_luts = _linear_lut_from_codes(
-        tone_obj or tone.NEUTRAL,
         color_obj,
         meter,
         channels=3,
-        allow_headroom=tone_obj is not None,
+        allow_headroom=has_op,
     )
     linear = _gather_channel_lut(image, linear_luts)
     linear = linear @ np.asarray(matrix, dtype=np.float32).T
     preclip = linear
-    linear_ceiling = _LINEAR_CEILING if tone_obj is not None else 1.0
     linear = np.clip(preclip, 0.0, linear_ceiling)
     fractions = _clipped_fractions(preclip, linear)
 
@@ -412,10 +418,9 @@ def render_positive_float(
         )
 
     display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
-    display_ceiling = DISPLAY_CEILING if tone_obj is not None else 1.0
     j = np.rint(display / display_ceiling * MAX_CODE).astype(np.uint16)
     curve_luts = _curve_lut_from_display_codes(
-        tone_obj, color_obj, meter, channels=3
+        tone_obj, color_obj, meter, channels=3, display_ceiling=display_ceiling
     )
     result = _gather_channel_lut(j, curve_luts)
     if _needs_separation(color_obj, channels=3):

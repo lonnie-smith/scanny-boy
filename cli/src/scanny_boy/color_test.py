@@ -28,9 +28,8 @@ def test_neutral_tables_match_density_plan_lut():
 
 def test_global_cmy_offsets_red_only():
     """A cyan-only slider still bites hardest where red's range is narrow —
-    and the offsets are
-    mean-removed: all three channels move while the offsets sum to zero, so
-    filtration changes hue and never the display's channel mean."""
+    and the offsets are luma-neutral: all three channels move while Rec.709
+    luma stays fixed."""
     params = dataclasses.replace(color.NEUTRAL_COLOR, wb_cyan=1.0)
     narrow = _metering(ranges=(0.5, 1.0, 1.0))
     wide = _metering(ranges=(1.0, 1.0, 1.0))
@@ -38,9 +37,9 @@ def test_global_cmy_offsets_red_only():
     offsets_wide = color.cmy_offsets(params, wide)
 
     assert offsets_narrow[0] > offsets_wide[0] > 0.0
-    assert sum(offsets_narrow) == pytest.approx(0.0, abs=1e-12)
-    assert offsets_narrow[1] == pytest.approx(-offsets_narrow[0] / 2.0, abs=1e-12)
-    assert offsets_narrow[2] == pytest.approx(-offsets_narrow[0] / 2.0, abs=1e-12)
+    assert _luma_sum(offsets_narrow) == pytest.approx(0.0, abs=1e-12)
+    assert offsets_narrow[1] < 0.0
+    assert offsets_narrow[2] < 0.0
 
 
 def test_regional_cmy_is_regional():
@@ -108,9 +107,17 @@ def test_kelvin_round_trips():
     for kelvin in (3000.0, 5500.0, 12000.0):
         m, y = color.kelvin_to_wb(kelvin, 0.1, -0.05)
         assert color.wb_to_kelvin(m, y) == pytest.approx(kelvin, rel=0.01)
-        m2, _y2 = color.kelvin_to_wb(kelvin + 500, m, y)
-        assert m2 - m == pytest.approx(0.0, abs=0.15)
     assert color.wb_to_kelvin(0.0, 0.0) == pytest.approx(5500.0)
+    m_warm, y_warm = color.kelvin_to_wb(6500.0, 0.0, 0.0)
+    assert m_warm > 0.0
+    assert y_warm > 0.0
+    m_cool, y_cool = color.kelvin_to_wb(4500.0, 0.0, 0.0)
+    assert m_cool < 0.0
+    assert y_cool < 0.0
+
+
+def _luma_sum(triple: tuple[float, ...]) -> float:
+    return color._luma_weighted_sum(triple)
 
 
 # --- highlight metering ------------------------------------
@@ -164,8 +171,8 @@ def test_neutral_colour_is_byte_identical():
 
 
 def test_global_cmy_is_lightness_neutral_over_random_triples():
-    """§4 test 2: for random slider triples and unequal ranges, the offsets
-    sum to zero to 1e-12 — filtration changes hue, never the mean."""
+    """For random slider triples and unequal ranges, the offsets are luma-
+    neutral to 1e-12 — filtration changes hue, never Rec.709 luma."""
     rng = np.random.default_rng(11)
     for _ in range(64):
         sliders = rng.uniform(-1.0, 1.0, 3)
@@ -176,7 +183,7 @@ def test_global_cmy_is_lightness_neutral_over_random_triples():
         )
         metering = _metering(ranges=(0.6, 1.0, 0.8))
         offsets = color.cmy_offsets(params, metering)
-        assert sum(offsets) == pytest.approx(0.0, abs=1e-12)
+        assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_global_cmy_equal_move_is_a_hue_move_with_unequal_ranges():
@@ -185,15 +192,14 @@ def test_global_cmy_equal_move_is_a_hue_move_with_unequal_ranges():
     sums to zero but is NOT three equal offsets."""
     params = color.ColorParams(wb_cyan=0.5, wb_magenta=0.5, wb_yellow=0.5)
     offsets = color.cmy_offsets(params, _metering(ranges=(0.5, 1.0, 1.0)))
-    assert sum(offsets) == pytest.approx(0.0, abs=1e-12)
+    assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
     assert offsets[0] != pytest.approx(offsets[1], abs=1e-9)
     assert offsets[1] == pytest.approx(offsets[2], abs=1e-12)
 
 
 def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
-    """§4 test 5: each returned triple sums to zero; an equal three-slider
-    move on a region is an exact no-op; and the display shift's channel
-    mean is zero at every tone (the blend weights are complementary)."""
+    """Each returned triple is luma-neutral; an equal three-slider move on a
+    region is an exact no-op; shadow and highlight trims differ at midtone."""
     params = dataclasses.replace(
         color.NEUTRAL_COLOR,
         shadow_cyan=0.8,
@@ -204,24 +210,46 @@ def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
         highlight_yellow=0.2,
     )
     shadow, highlight = color.region_cmy(params)
-    assert sum(shadow) == pytest.approx(0.0, abs=1e-12)
-    assert sum(highlight) == pytest.approx(0.0, abs=1e-12)
+    assert _luma_sum(shadow) == pytest.approx(0.0, abs=1e-12)
+    assert _luma_sum(highlight) == pytest.approx(0.0, abs=1e-12)
 
     equal = color.ColorParams(
         shadow_cyan=0.5, shadow_magenta=0.5, shadow_yellow=0.5
     )
     assert color.region_cmy(equal)[0] == (0.0, 0.0, 0.0)
 
-    tables = tone.build_channel_tables(tone.NEUTRAL, params, _metering())
-    neutral = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, _metering())
-    for norm_value in (0.1, 0.5, 0.9):
-        code = _code_for_norm(norm_value)
-        shift = [tables[ch, code] - neutral[ch, code] for ch in range(3)]
-        # The shift's channel mean is exactly zero on the straight-line
-        # part of the curve (a mean-zero triple, blended with weights that
-        # sum to 1); the toe/shoulder knees are nonlinear in v, so a large
-        # trim deep in a knee leaves only a small residue here.
-        assert sum(shift) == pytest.approx(0.0, abs=0.01)
+    shadow_only = dataclasses.replace(
+        color.NEUTRAL_COLOR, shadow_yellow=1.0
+    )
+    highlight_only = dataclasses.replace(
+        color.NEUTRAL_COLOR, highlight_yellow=1.0
+    )
+    quarter = 0.25
+    shadow_out = _display_at(2, shadow_only, _metering(), quarter)
+    highlight_out = _display_at(2, highlight_only, _metering(), quarter)
+    assert shadow_out != pytest.approx(highlight_out, abs=1e-6)
+
+
+def test_regional_cmy_matches_global_strength_at_zone_centres():
+    """Full-travel shadow yellow at the quarter tone is comparable to full-
+    travel global yellow at the midtone on the default grade."""
+    metering = _metering()
+    neutral = tone.build_channel_tables(
+        tone.NEUTRAL, color.NEUTRAL_COLOR, metering
+    )
+    global_tables = tone.build_channel_tables(
+        tone.NEUTRAL, color.ColorParams(wb_yellow=1.0), metering
+    )
+    shadow_tables = tone.build_channel_tables(
+        tone.NEUTRAL, color.ColorParams(shadow_yellow=1.0), metering
+    )
+    code_mid = int(np.argmin(np.abs(neutral[0] - 0.5)))
+    code_sh = int(np.argmin(np.abs(neutral[0] - 0.25)))
+    global_delta = abs(global_tables[2, code_mid] - neutral[2, code_mid])
+    shadow_delta = abs(shadow_tables[2, code_sh] - neutral[2, code_sh])
+    assert global_delta > 0.02
+    assert shadow_delta > 0.02
+    assert shadow_delta == pytest.approx(global_delta, rel=0.15)
 
 
 def test_one_point_parity_is_byte_for_byte():

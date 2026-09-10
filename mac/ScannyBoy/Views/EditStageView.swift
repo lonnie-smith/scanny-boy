@@ -1225,8 +1225,8 @@ private enum CMYSliderTrackColors {
         Color(red: 1.0, green: 0.90, blue: 0.20),
     ]
     static let temperature: [Color] = [
-        Color(red: 1.0, green: 0.82, blue: 0.25),
         Color(red: 0.35, green: 0.55, blue: 0.95),
+        Color(red: 1.0, green: 0.82, blue: 0.25),
     ]
 }
 

@@ -32,13 +32,13 @@ def test_solve_nulls_the_recorded_residual():
     offsets = color.cmy_offsets(solved, metering)
     assert offsets[0] - offsets[1] == pytest.approx(-0.06, abs=1e-9)
     assert offsets[2] - offsets[1] == pytest.approx(0.03, abs=1e-9)
-    assert sum(offsets) == pytest.approx(0.0, abs=1e-12)
+    assert color._luma_weighted_sum(offsets) == pytest.approx(0.0, abs=1e-12)
 
 
-def test_the_neutral_target_sums_to_zero_by_construction():
+def test_the_neutral_target_is_luma_neutral_by_construction():
     for a, b in ([0.06, -0.03], [0.0, 0.0], [-0.5, 0.25]):
         o = auto_color._neutral_defaults_target(a, b)
-        assert sum(o) == pytest.approx(0.0, abs=1e-12)
+        assert color._luma_weighted_sum(o) == pytest.approx(0.0, abs=1e-12)
         assert o[0] - o[1] == pytest.approx(-a, abs=1e-12)
         assert o[2] - o[1] == pytest.approx(-b, abs=1e-12)
 
