@@ -1,4 +1,5 @@
 import dataclasses
+import itertools
 import math
 
 import cv2
@@ -7,11 +8,11 @@ import pytest
 
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.composite import (
+    _FEATHER_FLOOR_FRACTION,
     FEATHER_EXPONENT,
     MAX_CANVAS_DIMENSION,
     MAX_STITCHED_BYTES,
     MEMORY_SAFETY_FACTOR,
-    _FEATHER_FLOOR_FRACTION,
     _region_keep,
     check_memory_budget,
     check_output_size,
@@ -626,7 +627,7 @@ def test_feather_transition_narrows_monotonically_with_the_exponent():
     widths = {p: band_width(p) for p in (1, 2, 4, 8)}
     ordered = [widths[p] for p in (1, 2, 4, 8)]
     assert ordered == sorted(ordered, reverse=True)
-    assert all(a > b for a, b in zip(ordered, ordered[1:]))
+    assert all(a > b for a, b in itertools.pairwise(ordered))
     assert widths[4] <= widths[1] / 2.5
 
 

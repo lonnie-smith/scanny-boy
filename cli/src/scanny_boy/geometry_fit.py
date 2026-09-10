@@ -31,14 +31,28 @@ from scanny_boy.events import Code
 # Take an earlier stage unless the next stage beats its held-out RMS by at
 # least this relative fraction (section 4.4).
 STAGE_IMPROVEMENT_FRACTION = 0.05
-# Acceptance gates (section 4.5): both must hold.
+# The improvement numbers' constants, kept as the reported diagnostic's
+# own thresholds (docs/STABILITY_GATE.md section 1.4). They are no longer
+# the acceptance criterion: on this rig the held-out straightness floor is
+# printed-target error, not lens error, so a fit can be recovering the
+# right coefficient while the improvement metric sits at zero.
 GEOMETRY_MIN_IMPROVEMENT_FRACTION = 0.30
 GEOMETRY_MIN_IMPROVEMENT_PX = 0.3
 # Magnitude sanity band (section 4.5), as a percentage of the half-diagonal.
 MAGNITUDE_HARD_MIN_PERCENT = 0.01
 MAGNITUDE_HARD_MAX_PERCENT = 1.0
 MAGNITUDE_EXPECTED_MIN_PERCENT = 0.03
-MAGNITUDE_EXPECTED_MAX_PERCENT = 0.2
+# Raised from 0.2 (docs/STABILITY_GATE.md section 1.5): the rig's lens
+# measures 0.398% by ChArUco and 0.46% by stitch correspondences, so the
+# old band would have flagged the known truth suspect on every calibration.
+MAGNITUDE_EXPECTED_MAX_PERCENT = 0.6
+# The stability gate (docs/STABILITY_GATE.md sections 1.1 and 1.4): the
+# leave-one-out corner-displacement spread, as a relative standard error,
+# must not exceed this. Starting value from the synthetic sweep of
+# scripts/measure-stability-gate.py (plan section 6.1); listed in
+# DECISIONS.md's unmeasured-constants section until confirmed on real
+# scans.
+GEOMETRY_MAX_RELATIVE_SE = 0.25
 
 
 class GeometryFitError(Exception):
@@ -70,6 +84,13 @@ class GeometryFitResult:
     accepted: bool
     rejection_reason: str | None
     suspect: bool  # outside the expected band but inside the hard one
+    # The stability gate's statistic (docs/STABILITY_GATE.md section 1.1):
+    # jackknife mean/SE of the corner displacement over leave-one-frame-out
+    # refits, and the frame count they came from.
+    jackknife_corner_px_mean: float | None = None
+    jackknife_corner_px_se: float | None = None
+    jackknife_relative_se: float | None = None
+    jackknife_frames: int | None = None
 
 
 def base_camera(frame_width: int, frame_height: int) -> np.ndarray:
@@ -168,30 +189,21 @@ def _corner_displacement(
     return displacement, displacement / half_diagonal * 100.0
 
 
-def fit_geometry(
-    train_sets: list[np.ndarray],
-    heldout_sets: list[np.ndarray],
-    frame_width: int,
-    frame_height: int,
-) -> GeometryFitResult:
-    """The staged fit, held-out evaluation, and acceptance gates of sections
-    4.4 and 4.5, in one call. Never raises for a rejected fit — the result
-    carries `accepted=False` and the reason; only degenerate inputs (no
-    training sets) raise."""
-    if not train_sets:
-        raise GeometryFitError(
-            Code.GEOMETRY_INSUFFICIENT_FRAMES, "no collinear sets survived detection"
-        )
-
-    K_base = base_camera(frame_width, frame_height)
-    x0 = np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]])
-
+def _staged_fit(
+    train_sets_flat: list[np.ndarray],
+    heldout_sets_flat: list[np.ndarray],
+    K_base: np.ndarray,
+    x0: np.ndarray,
+) -> tuple[str, np.ndarray, dict[str, float]]:
+    """The three stage solves and the held-out stage selection of section
+    4.4. Shared by the main fit and by every jackknife refit, so a
+    leave-one-out estimate is exactly the fit the gate is judging."""
     stage_rms: dict[str, float] = {}
     stage_params: dict[str, np.ndarray] = {}
     for stage in ("k1", "k1k2", "k1k2c"):
-        params = _fit_stage(stage, train_sets, K_base, x0)
+        params = _fit_stage(stage, train_sets_flat, K_base, x0)
         stage_params[stage] = params
-        stage_rms[stage] = _rms(residuals(params, heldout_sets, K_base))
+        stage_rms[stage] = _rms(residuals(params, heldout_sets_flat, K_base))
 
     # The earliest stage the next does not beat by
     # STAGE_IMPROVEMENT_FRACTION relative. On a lens this clean, expect
@@ -203,8 +215,83 @@ def fit_geometry(
         else:
             break
 
-    params = stage_params[chosen]
-    rms_before = _rms(residuals(np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]]), heldout_sets, K_base))
+    return chosen, stage_params[chosen], stage_rms
+
+
+def _as_frame_groups(
+    sets: list[list[np.ndarray]] | list[np.ndarray],
+) -> list[list[np.ndarray]]:
+    """The grouped per-frame form is the signature's contract; a flat list
+    of sets — the historical call shape — counts as one frame's worth.
+    Distinguishable by element type, since a set is an array and a group
+    is a list."""
+    if not sets:
+        return []
+    if isinstance(sets[0], np.ndarray):
+        return [list(sets)]
+    return [list(group) for group in sets]
+
+
+def jackknife_relative_se(estimates: list[float]) -> tuple[float, float, float]:
+    """The jackknife standard error of leave-one-out estimates, its mean,
+    and the mean-relative form the gate uses (docs/STABILITY_GATE.md
+    section 1.1):
+
+        SE = sqrt( (n - 1) / n * sum_i (theta_i - theta_bar)^2 )
+
+    The `(n - 1)/n` factor is not decoration: leave-one-out estimates are
+    strongly correlated, so the raw standard deviation of the `theta_i`
+    understates the true spread by roughly `sqrt(n - 1)`; without the
+    factor the threshold would silently depend on how many frames were
+    shot. Deterministic — no seed, no resampling draw. With fewer than
+    two estimates (or a zero mean) the spread is meaningless and the
+    relative form is infinite."""
+    thetas = np.asarray(estimates, dtype=np.float64)
+    n = len(thetas)
+    if n == 0:
+        return float("nan"), float("inf"), float("inf")
+    mean = float(thetas.mean())
+    if n < 2 or mean <= 0.0:
+        return mean, float("inf"), float("inf")
+    se = float(np.sqrt((n - 1) / n * np.sum((thetas - mean) ** 2)))
+    return mean, se, se / mean
+
+
+def fit_geometry(
+    train_sets: list[list[np.ndarray]],
+    heldout_sets: list[list[np.ndarray]],
+    frame_width: int,
+    frame_height: int,
+) -> GeometryFitResult:
+    """The staged fit, held-out evaluation, and acceptance gates of sections
+    4.4 and 4.5, in one call. Never raises for a rejected fit — the result
+    carries `accepted=False` and the reason; only degenerate inputs (no
+    training sets) raise.
+
+    `train_sets` and `heldout_sets` are grouped: one inner list per
+    calibration frame (docs/STABILITY_GATE.md section 1.3). They are
+    flattened for the staged fit, so the fitted coefficients and both
+    held-out RMS numbers are bit-identical to a flat-list fit — the
+    grouping is used only by the jackknife stability statistic. Passing
+    everything as one inner list is legitimate and equivalent to the
+    historical flat signature, but it makes the jackknife meaningless
+    (one group, nothing to leave out)."""
+    train_groups = _as_frame_groups(train_sets)
+    heldout_groups = _as_frame_groups(heldout_sets)
+    flat_train = [s for group in train_groups for s in group]
+    if not flat_train:
+        raise GeometryFitError(
+            Code.GEOMETRY_INSUFFICIENT_FRAMES, "no collinear sets survived detection"
+        )
+    flat_heldout = [s for group in heldout_groups for s in group]
+
+    K_base = base_camera(frame_width, frame_height)
+    x0 = np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]])
+
+    chosen, params, stage_rms = _staged_fit(flat_train, flat_heldout, K_base, x0)
+    rms_before = _rms(
+        residuals(np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]]), flat_heldout, K_base)
+    )
     rms_after = stage_rms[chosen]
 
     relative = 1.0 - rms_after / rms_before if rms_before > 0 else 0.0
@@ -214,32 +301,66 @@ def fit_geometry(
         params[0], params[1], params[2], params[3], K_base, frame_width, frame_height
     )
 
+    # The stability statistic (docs/STABILITY_GATE.md section 1.1): leave
+    # one calibration frame's sets out, refit the staged fit, repeat over
+    # every frame, and take the spread of the corner displacements. Target
+    # error is random across frames and averages out; lens distortion is
+    # fixed across frames and stays — agreement between subsets separates
+    # the two without the lens signal having to dominate one measurement.
+    # Fewer than two frames leaves nothing to agree or disagree, so the
+    # refits are skipped and the statistic reads infinite.
+    thetas: list[float] = []
+    if len(train_groups) >= 2:
+        for index in range(len(train_groups)):
+            remaining = [group for i, group in enumerate(train_groups) if i != index]
+            remaining_sets = [s for group in remaining for s in group]
+            _, leave_out_params, _ = _staged_fit(
+                remaining_sets, flat_heldout, K_base, x0
+            )
+            thetas.append(
+                _corner_displacement(
+                    leave_out_params[0],
+                    leave_out_params[1],
+                    leave_out_params[2],
+                    leave_out_params[3],
+                    K_base,
+                    frame_width,
+                    frame_height,
+                )[0]
+            )
+    jk_mean, jk_se, relative_se = jackknife_relative_se(thetas)
+
     accepted = (
-        relative >= GEOMETRY_MIN_IMPROVEMENT_FRACTION
-        and absolute >= GEOMETRY_MIN_IMPROVEMENT_PX
+        MAGNITUDE_HARD_MIN_PERCENT <= percent <= MAGNITUDE_HARD_MAX_PERCENT
+        and relative_se <= GEOMETRY_MAX_RELATIVE_SE
     )
     rejection_reason: str | None = None
     if not accepted:
-        rejection_reason = (
-            f"held-out RMS improved {rms_before:.3f}px -> {rms_after:.3f}px "
-            f"({relative * 100:.1f}% relative, {absolute:.3f}px absolute); "
-            f"the gates need >= {GEOMETRY_MIN_IMPROVEMENT_FRACTION * 100:.0f}% "
-            f"relative and >= {GEOMETRY_MIN_IMPROVEMENT_PX}px absolute"
-        )
-
-    suspect = False
-    if accepted and not (
-        MAGNITUDE_EXPECTED_MIN_PERCENT <= percent <= MAGNITUDE_EXPECTED_MAX_PERCENT
-    ):
-        if MAGNITUDE_HARD_MIN_PERCENT <= percent <= MAGNITUDE_HARD_MAX_PERCENT:
-            suspect = True
+        if relative_se > GEOMETRY_MAX_RELATIVE_SE:
+            rejection_reason = (
+                f"leave-one-out corner-displacement spread is "
+                f"{relative_se * 100:.1f}% relative standard error "
+                f"({jk_se:.3f} px about a {jk_mean:.3f} px mean over "
+                f"{len(train_groups)} frames); the stability gate allows "
+                f"<= {GEOMETRY_MAX_RELATIVE_SE * 100:.0f}%. The improvement "
+                f"diagnostic read {rms_before:.3f} px -> {rms_after:.3f} px "
+                f"held-out ({relative * 100:.1f}% relative, "
+                f"{absolute:.3f} px absolute)"
+            )
         else:
-            accepted = False
             rejection_reason = (
                 f"corner displacement {percent:.3f}% of the half-diagonal is "
                 f"outside the plausible {MAGNITUDE_HARD_MIN_PERCENT}-"
                 f"{MAGNITUDE_HARD_MAX_PERCENT}% band"
             )
+
+    suspect = False
+    if accepted and not (
+        MAGNITUDE_EXPECTED_MIN_PERCENT <= percent <= MAGNITUDE_EXPECTED_MAX_PERCENT
+    ):
+        # Inside the hard band (which acceptance required) but outside the
+        # expected one: applied with a warning, not dropped (section 4.5).
+        suspect = True
 
     return GeometryFitResult(
         k1=float(params[0]),
@@ -255,4 +376,8 @@ def fit_geometry(
         accepted=accepted,
         rejection_reason=rejection_reason,
         suspect=suspect,
+        jackknife_corner_px_mean=jk_mean,
+        jackknife_corner_px_se=jk_se,
+        jackknife_relative_se=relative_se,
+        jackknife_frames=len(train_groups),
     )

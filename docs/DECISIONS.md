@@ -867,6 +867,105 @@ produced:
   project's first nonlinear solver), added for the staged plumb-line fit;
   the bundle carries `scipy/optimize` and excludes its test suites.
 
+# The distortion gate accepts a fit that repeats, not one that flatters (docs/STABILITY_GATE.md)
+
+The staged plumb-line fit is untouched; what changed is the question its
+acceptance gate asks.
+
+**Why the question changed.** The old gate accepted a fit only when
+undistorting visibly straightened the held-out lines (≥30% relative and
+≥0.3 px absolute improvement). On this rig that question cannot be
+answered: the held-out straightness floor is **2.54 px of printed-target
+error** — 15 µm on the board at the rig's ~168 px/mm — not lens error,
+and not something undistortion can remove. Radial distortion's own
+contribution to a line residual is mostly absorbed by that line's best
+fit; only the curvature survives, a small fraction of a pixel for a 0.4%
+distortion. So the fit's own point estimate — **14.5 px of corner
+displacement (0.398% of the half-diagonal)** — was rejected by a metric
+that measured the target, not the lens. An entirely independent
+instrument agrees with the fit: one frame-centred radial field shared
+across all ten negatives of the `Six7-after-feather-adjustment` roll,
+fitted against 153,520 stitch correspondences with no calibration target
+involved, gives **16.8 px (0.46%)** and removes 35.9% of the roll's
+global registration residual. Two instruments with no shared data,
+objective, or failure mode, landing 15% apart. A synthetic sweep at the
+rig's magnification confirmed the mechanism: every board density
+recovers a known 15 px distortion correctly at the rig's measured 2.5 px
+corner noise, and every one is rejected by the improvement metric — a
+five-fold increase in corner count moves that metric from 2.4% to 3.1%,
+a five-fold reduction in corner noise moves it to 37.4%. **The binding
+constraint is target accuracy, not board density.**
+
+**The new gate is a jackknife.** Leave one calibration frame's
+collinear sets out, refit the staged fit, repeat over every frame, and
+gate on the relative standard error of the resulting corner
+displacements, `SE / mean` with `SE = sqrt((n-1)/n · Σ(θᵢ − θ̄)²)`.
+Target error is random across frames and averages out across subsets;
+lens distortion is fixed across frames and stays — agreement between
+subsets separates the two without the lens signal ever having to
+dominate a single measurement, which is why the statistic is nearly
+independent of the noise floor that defeats the improvement metric.
+Jackknife rather than bootstrap because it is deterministic: no seed,
+no resampling draw, and the `(n-1)/n` factor makes the statistic
+comparable across frame counts. The improvement numbers are still
+computed and still recorded — a genuine diagnostic — but they are no
+longer the acceptance criterion. `GEOMETRY_MIN_IMPROVEMENT_FRACTION`
+and `GEOMETRY_MIN_IMPROVEMENT_PX` remain in `geometry_fit.py` as that
+diagnostic's constants, deliberately unreferenced by the acceptance
+branch.
+
+- **`GEOMETRY_MAX_RELATIVE_SE = 0.25`**, from the synthetic sweep of
+  `scripts/measure-stability-gate.py` (plan section 6.1): at the rig's
+  2.5 px corner noise, 16 frames, the relative SE reads 174% at true
+  zero and 17.0% at a true 15 px on the 4.0 mm board (95% → 4.0% on the
+  2.0 mm board), so 25% separates a real distortion from none on both.
+  On the 4.0 mm board the margin is thin — the finer 2.0 mm board is
+  what gives the gate room to work, which is an independent reason to
+  print `calibration/lens_calibration_targets.pdf`, but **it was not
+  what unblocked the gate**; the gate was wrong, not the board.
+- **`MAGNITUDE_EXPECTED_MAX_PERCENT` raised 0.2 → 0.6.** The lens
+  measures 0.398% and 0.46% by the two independent methods, so the old
+  band would have flagged the known truth suspect on every future
+  calibration — a warning that fires on the known truth is a warning
+  that gets ignored. The hard bounds (0.01–1.0%) do not move.
+- **No manifest or contract version change.** `calibration_report` is a
+  profile-level diagnostic blob; the jackknife keys and the judged
+  threshold (`max_relative_se`) are recorded beside the existing
+  distortion keys so a stored profile reads without knowing which build
+  wrote it. Existing profiles are unaffected and stay rejected —
+  nothing retroactively accepts a stored fit; geometry stays null until
+  the user recalibrates, and the CLI's rejection warning says so.
+- **Measured cost:** the jackknife is one extra staged fit per training
+  frame, and a staged fit is the three `least_squares` solves the
+  pre-gate call already did once. On synthetic 4.0 mm-board data (12
+  training frames, 40 corners each) one staged fit measures 0.36 s and
+  the gated fit 5.13 s — a **14.1× multiplier against the ideal n+1 =
+  13×**, the remainder being the leave-one-out displacement
+  evaluations. Calibration is a deliberate, occasional operation; the
+  fallback (a fixed-count jackknife over frame *groups*) was not
+  needed.
+
+**What this gate does not prove, recorded so nobody later believes it
+does.** A stability gate is blind to *systematic* target error: a board
+uniformly stretched toward its edges would make every subset agree on a
+distortion that is the printer's, not the lens's — and the old
+straightness gate was equally blind to that. The only real defence is
+an independent measurement, which here is the stitch correspondences
+agreeing at 16.8 px, and that defence is *not* part of the gate. The
+frames also share one sitting (focus, placement, thermal state), so the
+SE is optimistic to an unknown degree — another reason the threshold
+carries margin (25% against a 17% reading at the rig's worst-case
+board). And the estimator is biased upward by noise (fitted ≈ truth +
+noise inflation: ~1.6 px on the 4.0 mm board, per the sweep), so the
+recorded 14.5 px may be nearer 13 px of real distortion; recorded in
+the report's terms, **not debiased** — the bias is smaller than the
+disagreement between the two independent measurements. The final
+confirmation is outstanding: recalibrate against the printed 2 mm
+target and check the accepted coefficient still lands near 15–17 px.
+`GEOMETRY_MAX_RELATIVE_SE` is listed in the 2D-grid section's
+"Unmeasured constants awaiting a real-scan gate" below, alongside
+`GRID_PITCH_RATIO_MIN` and friends, exactly as the plan requires.
+
 # Normalization decisions (protocol version 8)
 
 Scan normalization ("Convert") is implemented per docs/NORMALIZATION_PLAN.md
@@ -1567,6 +1666,14 @@ are unmeasured starting values, recorded in the roll manifest's
 once there are real scans to measure against — the same discipline the
 quality gates' constants follow. `GRID_ALIGNMENT_RATIO_MAX` is the looser
 guess of the pair and the more likely to need moving.
+
+Joining them: `GEOMETRY_MAX_RELATIVE_SE = 0.25` (geometry_fit.py, the
+distortion stability gate of docs/STABILITY_GATE.md, recorded in the
+profile's `calibration_report.distortion` as `max_relative_se`). It is
+chosen from the synthetic sweep of `scripts/measure-stability-gate.py`
+(174% at true zero against 17.0% at a true 15 px on the 4.0 mm board at
+the rig's 2.5 px corner noise), but its real-scan gate — the
+recalibration against the printed 2 mm target — is still outstanding.
 
 ## The memory estimate's frame_bbox_size is a per-frame box
 

@@ -379,11 +379,14 @@ def _create_calibrated_profile(
             f"{MIN_CALIBRATION_FRAMES}",
         )
 
-    train_sets: list[np.ndarray] = []
-    heldout_sets: list[np.ndarray] = []
+    # One inner list per frame (docs/STABILITY_GATE.md section 1.3): the
+    # jackknife needs frame identity back, so this is an append, not the
+    # extend it replaced. `fit_geometry` flattens for the staged fit.
+    train_sets: list[list[np.ndarray]] = []
+    heldout_sets: list[list[np.ndarray]] = []
     for path, (corners, ids) in surviving:
         sets = charuco.collinear_sets(corners, ids, board)
-        (heldout_sets if path.name in heldout_names else train_sets).extend(sets)
+        (heldout_sets if path.name in heldout_names else train_sets).append(sets)
 
     # 3. Fit and gate the distortion (section 4.4).
     emit(FlatFieldProgress(phase="fit", completed=1, total=3))
@@ -406,7 +409,9 @@ def _create_calibrated_profile(
                     code=Code.GEOMETRY_MAGNITUDE_SUSPECT,
                     message=(
                         f"corner displacement {fit.corner_displacement_percent:.3f}% "
-                        "of the half-diagonal is outside the expected 0.03-0.2% "
+                        "of the half-diagonal is outside the expected "
+                        f"{geometry_fit.MAGNITUDE_EXPECTED_MIN_PERCENT}-"
+                        f"{geometry_fit.MAGNITUDE_EXPECTED_MAX_PERCENT}% "
                         "band; the fit is applied, but check the board"
                     ),
                 )
@@ -415,7 +420,12 @@ def _create_calibrated_profile(
         emit(
             WarningEvent(
                 code=Code.GEOMETRY_FIT_REJECTED,
-                message=f"distortion fit rejected: {fit.rejection_reason}",
+                message=(
+                    f"distortion fit rejected: {fit.rejection_reason}. "
+                    "Existing profiles are unaffected: nothing "
+                    "retroactively accepts a stored fit, and geometry "
+                    "stays null until recalibration."
+                ),
             )
         )
 
@@ -561,6 +571,14 @@ def _create_calibrated_profile(
             "accepted": fit.accepted,
             "rejection_reason": fit.rejection_reason,
             "stage_heldout_rms_px": fit.stage_heldout_rms,
+            # The stability gate's own statistic and the threshold it was
+            # judged against, so a stored profile reads without knowing
+            # which build wrote it (docs/STABILITY_GATE.md section 2).
+            "jackknife_corner_px_mean": fit.jackknife_corner_px_mean,
+            "jackknife_corner_px_se": fit.jackknife_corner_px_se,
+            "jackknife_relative_se": fit.jackknife_relative_se,
+            "jackknife_frames": fit.jackknife_frames,
+            "max_relative_se": geometry_fit.GEOMETRY_MAX_RELATIVE_SE,
         },
         "chromatic_aberration": {
             "heldout_misregistration_px_before": ca.misregistration_before_px,

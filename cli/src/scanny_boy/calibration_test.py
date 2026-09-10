@@ -263,7 +263,16 @@ def test_geometry_and_report_are_recorded(calibrated_profile):
     assert report["frames_fit"] + report["frames_heldout"] == report["frames_total"]
     assert report["corners_detected_median"] >= charuco.MIN_CORNERS_PER_FRAME
     assert len(report["heldout_frame_names"]) == report["frames_heldout"]
-    assert report["distortion"]["accepted"] is True
+    distortion = report["distortion"]
+    assert distortion["accepted"] is True
+    # The stability gate's statistic and the threshold it was judged
+    # against are in the report (docs/STABILITY_GATE.md section 2).
+    assert distortion["jackknife_frames"] == report["frames_fit"]
+    assert distortion["max_relative_se"] == geometry_fit.GEOMETRY_MAX_RELATIVE_SE
+    assert 0.0 <= distortion["jackknife_relative_se"] <= distortion["max_relative_se"]
+    assert distortion["jackknife_corner_px_mean"] == pytest.approx(
+        distortion["corner_displacement_px"], abs=1.0
+    )
     assert report["chromatic_aberration"]["accepted"] is True
     assert "detection_channel_ca_px" in report
 
