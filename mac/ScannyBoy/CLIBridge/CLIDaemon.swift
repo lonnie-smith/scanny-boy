@@ -25,6 +25,17 @@ public actor CLIDaemon {
     /// restart is owed on the next submit.
     private var child: CLISession?
     private var pumpTask: Task<Void, Never>?
+    /// Set while a child is being launched, cleared when it either lands in
+    /// `child` or fails. `ensureRunningChild`'s own check-then-launch is not
+    /// atomic across the `await session.start()` inside it: two concurrent
+    /// `submit`s that both find `child` nil (the ordinary case at launch,
+    /// when several models each fire their first request around the same
+    /// moment) would otherwise each pass the check before either had written
+    /// `child`, and each spawn its own `scanny-boy serve` — one answering
+    /// requests, the other an unstoppable orphan. Routing concurrent callers
+    /// through the same in-flight `Task` instead means only the first one
+    /// launches anything; the rest await its result.
+    private var startingChild: Task<CLISession, Error>?
     /// The pending requests, keyed by the id every one of their events
     /// carries.
     private var requests: [String: AsyncStream<CLISessionOutput>.Continuation] =
@@ -96,6 +107,16 @@ public actor CLIDaemon {
         if let child, await child.isRunning {
             return child
         }
+        if let startingChild {
+            return try await startingChild.value
+        }
+        let task = Task { try await self.startChild() }
+        startingChild = task
+        defer { startingChild = nil }
+        return try await task.value
+    }
+
+    private func startChild() async throws -> CLISession {
         var environment: [String: String]?
         if !environmentOverrides.isEmpty {
             environment = ProcessInfo.processInfo.environment

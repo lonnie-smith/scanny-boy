@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The app's own render caches: the 1:1 region crops behind the Edit tab's
@@ -107,10 +108,20 @@ struct PreviewCache: Sendable {
         kind.appending(path: rollID, directoryHint: .isDirectory)
     }
 
-    /// `#` separates the generation's terms, and a path component is a poor
-    /// place for it; the CLI writes the file, so the name stays plain.
+    /// A short, filename-safe stand-in for `generation`, which folds in
+    /// unbounded CLI-reported text — `EditModel.renderGeneration`'s camera
+    /// colour term carries the full RGB→XYZ matrix and camera model name
+    /// verbatim, so a long model name (e.g. "NIKON CORPORATION NIKON Z f")
+    /// pushed a region filename past macOS's 255-byte component limit and
+    /// `edit render-region` failed every request with `INTERNAL_ERROR`
+    /// (`OSError: File name too long`) — silently, from the zoom UI's
+    /// perspective, since nothing there distinguishes a failed fetch from
+    /// one still in flight: the 100% zoom just spun forever. Hashing keeps
+    /// the name short regardless of how large `generation` grows, and still
+    /// changes whenever `generation` does, which is all a cache key needs.
     private static func generationComponent(_ generation: String) -> String {
-        generation.replacingOccurrences(of: "#", with: "-")
+        let digest = SHA256.hash(data: Data(generation.utf8))
+        return digest.map { String(format: "%02x", $0) }.prefix(16).joined()
     }
 
     /// A roll id is a UUID (`roll_folder.create_roll`), but it reaches the

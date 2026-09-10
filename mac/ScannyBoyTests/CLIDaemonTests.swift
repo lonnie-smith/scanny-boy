@@ -78,6 +78,16 @@ struct CLIDaemonTests {
         CLIRunner(executable: executable, daemonRouting: true)
     }
 
+    /// `fakeServeSource`, prefixed with one line appending this process's
+    /// pid to `$LAUNCH_LOG` — so a test can tell how many times the fake
+    /// helper actually launched, independent of how many requests it
+    /// answered.
+    private static let pidLoggingServeSource = #"""
+    import os
+    with open(os.environ["LAUNCH_LOG"], "a") as f:
+        f.write(f"{os.getpid()}\n")
+    """# + "\n" + fakeServeSource
+
     private static func waitUntil(
         timeout: Duration = .seconds(10),
         _ condition: () async -> Bool
@@ -163,6 +173,49 @@ struct CLIDaemonTests {
                 let completion = try #require(collected.terminalCompletion)
                 #expect(completion.outcome == .success)
             }
+        }
+    }
+
+    @Test("concurrent submits before the helper starts share one launch, not one each")
+    func concurrentSubmitsLaunchOneHelper() async throws {
+        try await TestSupport.withTemporaryDirectory { directory in
+            let executable = try TestSupport.writePythonExecutable(
+                Self.pidLoggingServeSource,
+                named: "fake-serve",
+                in: directory
+            )
+            let launchLog = directory.appending(path: "launches.log", directoryHint: .notDirectory)
+            FileManager.default.createFile(atPath: launchLog.path, contents: nil)
+            let runner = CLIRunner(
+                executable: executable,
+                environmentOverrides: ["LAUNCH_LOG": launchLog.path],
+                daemonRouting: true
+            )
+
+            // Every one of these calls sees no daemon running yet — the
+            // ordinary shape at app launch, when several models each fire
+            // their first request around the same moment — so without a
+            // guard against re-entrant launches, each could start its own
+            // `scanny-boy serve` before any of the others had registered
+            // theirs.
+            try await withThrowingTaskGroup(of: [CLISessionOutput].self) { group in
+                for index in 0..<8 {
+                    group.addTask {
+                        let session = runner.session(
+                            for: CLICommand(arguments: ["edit", "list-spots", "req-\(index)"])
+                        )
+                        return await TestSupport.drain(try await session.start())
+                    }
+                }
+                for try await collected in group {
+                    #expect(collected.failures.isEmpty)
+                    #expect(collected.terminalCompletion?.outcome == .success)
+                }
+            }
+
+            let launches = try String(contentsOf: launchLog, encoding: .utf8)
+                .split(separator: "\n")
+            #expect(launches.count == 1)
         }
     }
 
