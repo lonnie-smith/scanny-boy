@@ -583,10 +583,10 @@ class SpotsReported(Event):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ScratchesReported(Event):
-    """The scratch detection command's event: the negative's scratch set
-    as the app draws it.  ``count`` is the number of accepted scratches.
-    ``preview_path`` is null for ``detect-scratches``, which is a pure
-    detection (no pixel changes until the user enables the op)."""
+    """The scratch command family's event: summary fields for one negative.
+    ``count`` is the number of accepted scratches. ``enabled`` defaults on
+    when a fresh detection finds scratches. ``preview_path`` is set when
+    the command regenerated the preview (toggle); null for ``list-scratches``."""
 
     event_type: ClassVar[EventType] = EventType.SCRATCHES_REPORTED
 

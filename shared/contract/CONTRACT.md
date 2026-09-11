@@ -89,28 +89,26 @@ records it in the XMP provenance's `rendered.spots`:
 `{detector_version, sensitivity, repaired}`, `null` when none.
 
 **The scratch-removal feature**: long, thin film-length scratches on
-colour negatives are detected, reviewed, and corrected — the published TIFF
-is never touched, and no pixel changes until the user enables the op. Three
-new commands join the `edit` family: `edit detect-scratches` takes a
+colour negatives are detected at stitch time (or on demand) and corrected
+by replaying a stored fit table — the published TIFF is never touched.
+Three commands join the `edit` family: `edit detect-scratches` takes a
 `--negative` selection (repeatable), runs the detector over each negative's
 published TIFF, and records one `scratches` op per negative — a state op,
 coalesced in place like `tone` and `color`, carrying the scratch set's
 exact parameters. The detector runs only on colour rolls; monochrome rolls
-never get an op. The op carries an `enabled` flag (default off); the user
-toggles correction with `edit scratches --on` or `edit scratches --off`
+never get an op. The op carries an `enabled` flag (**on by default** when
+anything is found; a re-stitch preserves the previous enabled state). The
+user toggles correction with `edit scratches --on` or `edit scratches --off`
 (repeatable selection). `edit list-scratches` is a pure query: nothing
-recorded, no pixels touched. All three emit `scratches_reported` — and the
-rule the app must not break: **every reported scratch rect is display
-space, already transformed by the net rotation/flip/fine angle; the app
-never converts coordinates.** A scratch set recorded against a canvas a
-re-stitch has replaced is *stale*: it corrects nothing, draws no lines,
-reports an empty list with a `SCRATCHES_STALE` warning, and needs
-re-detecting. `roll info` gains a per-negative `scratches` **summary**
+recorded, no pixels touched. All three emit `scratches_reported`. A scratch
+set recorded against a canvas a re-stitch has replaced is *stale*: it
+corrects nothing, reports zero count with a `SCRATCHES_STALE` warning, and
+needs re-detecting. `roll info` gains a per-negative `scratches` **summary**
 (not the list): `{detector_version, enabled, stale, count}`, `null` for a
 negative with no scratch set, counts zeroed when stale. The export applies
 a live correction (before any geometry) and records it in the XMP
 provenance's `rendered.scratches`:
-`{detector_version, corrected}`, `null` when none.
+`{detector_version, corrected}`, `null` when none. v1 has no scratch overlay.
 
 **Monochrome film support**: `roll init` requires `--film-kind
 {colour,monochrome}` — the user chooses once at roll creation. `"colour"` is

@@ -2032,7 +2032,8 @@ def _composite_and_publish(
                     - record.normalization["floors"][ch]
                     for ch in range(3)
                 )
-                candidates = scratches.detect(result.image, spans)
+                film_extent = record.normalization.get("film_extent")
+                candidates = scratches.detect(result.image, spans, film_extent)
                 fits = [scratches.fit(result.image, c) for c in candidates]
                 # Carry forward the previous enabled state when it exists,
                 # defaulting to True for a fresh detection.

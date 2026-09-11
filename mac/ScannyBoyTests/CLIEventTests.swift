@@ -554,6 +554,29 @@ struct CLIEventTests {
         #expect(event.previewPath == nil)
     }
 
+    @Test("scratches_reported and the roll-info summary decode")
+    func scratchesReportedDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"scratches_reported","negative_id":"n1","detector_version":1,"enabled":true,"count":2,"stale":false,"preview_path":null}"#
+            )
+        )
+        #expect(event.kind == .scratchesReported)
+        let summary = try #require(event.scratchesSummary)
+        #expect(summary.detectorVersion == 1)
+        #expect(summary.enabled)
+        #expect(summary.count == 2)
+        #expect(!summary.stale)
+        let block = NegativeScratches.Summary(fields: [
+            "detector_version": .int(1),
+            "enabled": .bool(false),
+            "stale": .bool(true),
+            "count": .int(0),
+        ])
+        #expect(block?.enabled == false)
+        #expect(block?.stale == true)
+    }
+
     @Test("the spots summary decodes and a malformed block is no block")
     func spotsSummaryDecodes() throws {
         let good = NegativeSpots.Summary(fields: [

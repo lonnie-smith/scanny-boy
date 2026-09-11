@@ -595,7 +595,7 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
-        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none#none"))
+        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none#none#none"))
     }
 
     @Test("A rotate event leaves the tone state alone")
@@ -660,7 +660,7 @@ struct EditModelTests {
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
-        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none#none"))
+        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none#none#none"))
     }
 
     @Test("The render generation token carries the colour state")
@@ -724,7 +724,7 @@ struct EditModelTests {
         let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
         let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
 
-        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none")
+        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none#none")
         #expect(EditModel.negativeViewGeneration(of: flat) == EditModel.negativeViewGeneration(of: toned))
     }
 
@@ -1437,6 +1437,35 @@ struct EditModelTests {
         // negative view's generation moves with it too.
         #expect(EditModel.negativeViewGeneration(of: cropped) != EditModel.negativeViewGeneration(of: none))
     }
+
+    @Test("the scratches summary changes the cache-generation token")
+    func scratchesSummaryChangesCacheToken() {
+        func negative(_ summary: NegativeScratches.Summary?) -> RollManifest.Negative {
+            Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+                .with(scratchesSummary: summary)
+        }
+        let base = negative(nil)
+        let withScratches = negative(
+            NegativeScratches.Summary(
+                detectorVersion: 1, enabled: true, stale: false, count: 2
+            )
+        )
+        let toggled = negative(
+            NegativeScratches.Summary(
+                detectorVersion: 1, enabled: false, stale: false, count: 2
+            )
+        )
+        #expect(
+            EditModel.renderGeneration(of: base) != EditModel.renderGeneration(of: withScratches)
+        )
+        #expect(
+            EditModel.renderGeneration(of: withScratches) != EditModel.renderGeneration(of: toggled)
+        )
+        #expect(
+            EditModel.negativeViewGeneration(of: withScratches)
+                != EditModel.negativeViewGeneration(of: toggled)
+        )
+    }
 }
 
 extension RollManifest.Negative {
@@ -1445,6 +1474,12 @@ extension RollManifest.Negative {
     func with(spotsSummary: NegativeSpots.Summary?) -> RollManifest.Negative {
         var copy = self
         copy.spotsSummary = spotsSummary
+        return copy
+    }
+
+    func with(scratchesSummary: NegativeScratches.Summary?) -> RollManifest.Negative {
+        var copy = self
+        copy.scratchesSummary = scratchesSummary
         return copy
     }
 }

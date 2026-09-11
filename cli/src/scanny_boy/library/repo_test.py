@@ -703,6 +703,25 @@ def test_future_detector_version_degrades_to_none(roll_dir):
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots is None
 
 
+def test_future_scratches_detector_version_degrades_to_none(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.SCRATCHES_OP,
+        {
+            "detector_version": 99,
+            "source": "auto",
+            "enabled": True,
+            "canvas": [100, 100],
+            "scratches": [],
+        },
+    )
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").scratches is None
+
+
 def test_edits_survive_re_saving_the_manifest(roll_dir):
     """Re-stitching keeps a negative's `negative_id`, so its edit history
     must survive the diff-and-merge save."""

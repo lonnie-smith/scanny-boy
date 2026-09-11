@@ -193,6 +193,10 @@ def estimate_peak_bytes(
     accumulate pass, since the weight is computed lazily there rather than
     retained per frame: one additive
     term, not `frame_count` of them.
+
+    Scratch detection at stitch time adds negligible transient memory next
+    to the composite budget: band responses are ``(H/64) × W float32`` and
+    fit strips are roughly ``65 × H × 3 float32`` per accepted scratch.
     """
     canvas_width, canvas_height = canvas_size
     frame_height, frame_width = frame_size

@@ -627,6 +627,25 @@ struct CLICommandTests {
         )
     }
 
+    @Test("detect-scratches and scratches on/off round-trip the CLI flags")
+    func scratchesCommandArguments() {
+        #expect(
+            CLICommand.editDetectScratches(roll: Self.roll, negatives: ["n1", "n2"]).arguments
+                == ["edit", "detect-scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--negative", "n2"]
+        )
+        #expect(
+            CLICommand.editScratches(roll: Self.roll, negatives: ["n1"], enabled: true).arguments
+                == ["edit", "scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--on"]
+        )
+        #expect(
+            CLICommand.editScratches(roll: Self.roll, negatives: ["n1"], enabled: false).arguments
+                == ["edit", "scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--off"]
+        )
+    }
+
     @Test("roll init passes library and name, with optional film kind")
     func rollInitArguments() {
         let library = URL(filePath: "/Volumes/Scans/library")

@@ -898,12 +898,21 @@ private struct EditSidebar: View {
             )
             .disabled(isMonochromeRoll)
         case .heal:
-            SpotsReviewPanel(
-                negative: negative,
-                edit: edit,
-                isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
-                sensitivity: $spotsSensitivity
-            )
+            VStack(alignment: .leading, spacing: 16) {
+                ScratchesReviewPanel(
+                    negative: negative,
+                    edit: edit,
+                    isBusy: edit.isDetectingScratches || edit.isTogglingScratches,
+                    isMonochromeRoll: isMonochromeRoll
+                )
+                Divider()
+                SpotsReviewPanel(
+                    negative: negative,
+                    edit: edit,
+                    isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
+                    sensitivity: $spotsSensitivity
+                )
+            }
             .onAppear {
                 spotsSensitivity = negative.spotsSummary?.sensitivity ?? 0.5
             }
@@ -1690,6 +1699,83 @@ private struct ColorAdjustmentPanel: View {
             values.highlightMagenta = balanced.magenta
             values.highlightYellow = balanced.yellow
         }
+    }
+}
+
+private struct ScratchesReviewPanel: View {
+    let negative: RollManifest.Negative
+    @Bindable var edit: EditModel
+    let isBusy: Bool
+    let isMonochromeRoll: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Scratches")
+                .font(.headline)
+            Toggle("Remove scratches", isOn: removalBinding)
+                .disabled(isBusy || isMonochromeRoll || !canToggle)
+            captionRow
+        }
+    }
+
+    private var summary: NegativeScratches.Summary? { negative.scratchesSummary }
+
+    private var canToggle: Bool {
+        summary != nil && summary?.stale == false
+    }
+
+    private var removalBinding: Binding<Bool> {
+        Binding(
+            get: { summary?.enabled ?? false },
+            set: { newValue in
+                guard newValue != (summary?.enabled ?? false) else { return }
+                Task {
+                    await edit.setScratchRemoval(edit.selectionTargets, on: newValue)
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var captionRow: some View {
+        if isMonochromeRoll {
+            Text("Colour film only")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if let summary {
+            if summary.stale {
+                HStack {
+                    Text("Stale — analyse again")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    analyseButton
+                }
+            } else if summary.count > 0 {
+                Text("\(summary.count) found")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("None found")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            HStack {
+                Text("Not analysed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                analyseButton
+            }
+        }
+    }
+
+    private var analyseButton: some View {
+        Button("Analyse") {
+            Task { await edit.detectScratches(edit.selectionTargets) }
+        }
+        .disabled(isBusy || edit.selectionTargets.isEmpty || isMonochromeRoll)
     }
 }
 

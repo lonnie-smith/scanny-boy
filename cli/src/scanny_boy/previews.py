@@ -1195,14 +1195,12 @@ def render_region(
         abs(fine_angle_deg) >= 1e-9
         or crop_is_live(crop_params, (tiff_h, tiff_w))
         or spots.is_repairing(spots_params, (tiff_h, tiff_w))
-        or scratches.is_live(scratches_params, (tiff_h, tiff_w))
     ):
         # The fine warp interpolates across its source's boundaries, the
-        # crop warp does the same, inpainting a crop uses different
-        # surroundings than inpainting the whole image, and scratch
-        # correction is local — either way crop-then-transform is no
-        # longer exact: replay the transform on the full decode, the way
-        # `generate_preview` does, then slice.
+        # crop warp does the same, and inpainting a crop uses different
+        # surroundings than inpainting the whole image — crop-then-transform
+        # is no longer exact: replay the transform on the full decode, the
+        # way `generate_preview` does, then slice.
         image = cached_display_image(
             tiff_path,
             quarter_turns,
@@ -1248,7 +1246,24 @@ def render_region(
     if flipped_horizontally:
         tx0, tx1 = tiff_w - tx1, tiff_w - tx0
 
-    crop = _read_tiff_region(tiff_path, (tx0, ty0, tx1 - tx0, ty1 - ty0))
+    live_scratches = scratches.is_live(scratches_params, (tiff_h, tiff_w))
+    if live_scratches:
+        tx0_exp = max(0, tx0 - scratches.REGION_COL_MARGIN)
+        ty0_exp = max(0, ty0 - scratches.REGION_ROW_MARGIN)
+        tx1_exp = min(tiff_w, tx1 + scratches.REGION_COL_MARGIN)
+        ty1_exp = min(tiff_h, ty1 + scratches.REGION_ROW_MARGIN)
+        inner_x = tx0 - tx0_exp
+        inner_y = ty0 - ty0_exp
+        crop = _read_tiff_region(
+            tiff_path, (tx0_exp, ty0_exp, tx1_exp - tx0_exp, ty1_exp - ty0_exp)
+        )
+        crop = scratches.apply(
+            crop,
+            scratches_params,
+            region=(inner_x, inner_y, tx1 - tx0, ty1 - ty0),
+        )
+    else:
+        crop = _read_tiff_region(tiff_path, (tx0, ty0, tx1 - tx0, ty1 - ty0))
     if flipped_horizontally:
         crop = np.ascontiguousarray(crop[:, ::-1])
     if r:

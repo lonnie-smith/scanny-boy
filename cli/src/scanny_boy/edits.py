@@ -1117,6 +1117,13 @@ def _scratches_stale(
     return canvas != (negative.output["width"], negative.output["height"])
 
 
+def _scratch_spans(negative: NegativeRecord) -> tuple[float, float, float]:
+    norm = negative.normalization
+    return tuple(
+        norm["ceils"][ch] - norm["floors"][ch] for ch in range(3)
+    )
+
+
 def run_edit_detect_scratches(
     roll_dir: Path,
     negative_ids: str | Sequence[str],
@@ -1130,6 +1137,11 @@ def run_edit_detect_scratches(
     from scanny_boy.events import ScratchesReported
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — scratch removal applies to colour film only",
+        )
 
     import tifffile
 
@@ -1138,9 +1150,16 @@ def run_edit_detect_scratches(
         tiff_path = roll_dir / negative.output["name"]
         image = tifffile.imread(tiff_path)
         previous = repo.net_edit_state(roll_dir, negative.negative_id).scratches
-        enabled = bool(previous["enabled"]) if previous else False
-        params = scratches.detect(image)
-        params["enabled"] = enabled
+        enabled = bool(previous["enabled"]) if previous else True
+        spans = _scratch_spans(negative)
+        film_extent = (negative.normalization or {}).get("film_extent")
+        candidates = scratches.detect(image, spans, film_extent)
+        fits = [scratches.fit(image, c) for c in candidates]
+        params = scratches.scratches_params(
+            canvas=(image.shape[1], image.shape[0]),
+            fits=fits,
+            enabled=enabled,
+        )
         repo.append_scratches_edit(roll_dir, negative.negative_id, params)
         _refresh_preview(
             roll_dir,
@@ -1176,6 +1195,11 @@ def run_edit_scratches(
     from scanny_boy.events import ScratchesReported
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — scratch removal applies to colour film only",
+        )
 
     results: list[dict] = []
     for negative in negatives:

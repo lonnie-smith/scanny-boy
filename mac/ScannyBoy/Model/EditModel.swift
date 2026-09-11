@@ -103,6 +103,9 @@ final class EditModel {
     /// there is no debounce here.
     private(set) var isReviewingSpots = false
 
+    private(set) var isDetectingScratches = false
+    private(set) var isTogglingScratches = false
+
     /// The spot set of the negative the preview pane shows (protocol
     /// version 13): display-space rects straight from the CLI, refreshed
     /// by `list-spots` whenever the selection changes and after a roll
@@ -662,6 +665,63 @@ final class EditModel {
         refresh()
     }
 
+    func detectScratches(_ targets: [RollManifest.Negative]) async {
+        guard let rollURL, !isDetectingScratches, !isTogglingScratches, !targets.isEmpty else {
+            return
+        }
+        isDetectingScratches = true
+        defer { isDetectingScratches = false }
+        let command = CLICommand.editDetectScratches(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID)
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .scratchesReported {
+                    applyScratchesReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    func setScratchRemoval(_ targets: [RollManifest.Negative], on: Bool) async {
+        guard let rollURL, !isDetectingScratches, !isTogglingScratches, !targets.isEmpty else {
+            return
+        }
+        isTogglingScratches = true
+        defer { isTogglingScratches = false }
+        let command = CLICommand.editScratches(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID),
+            enabled: on
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .scratchesReported {
+                    applyScratchesReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    private func applyScratchesReported(_ event: CLIEvent) {
+        guard
+            let negativeID = event.scratchesNegativeID,
+            let summary = event.scratchesSummary,
+            let manifest = roll,
+            let index = manifest.negatives.firstIndex(where: { $0.negativeID == negativeID })
+        else { return }
+        var updated = manifest.negatives[index]
+        updated.scratchesSummary = summary
+        roll = manifest.replacingNegative(updated)
+    }
+
     /// The `list-spots` query for the negative the preview pane shows: a
     /// pure query — nothing recorded, no pixels touched — so it never
     /// calls `refresh()` (that would loop: the refresh fetches the roll,
@@ -1070,7 +1130,7 @@ final class EditModel {
             colour = "neutral"
         }
         let matrix = cameraColor?.cacheTerm ?? "none"
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(matrix)"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(matrix)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
@@ -1081,7 +1141,7 @@ final class EditModel {
     /// what the user compares when they toggle repair on and off is the
     /// same in both views.
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))"
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))"
     }
 
     /// The crop half of a cache-generation token: dimensions, tilt, and
@@ -1097,6 +1157,11 @@ final class EditModel {
     private static func spotsTerm(of negative: RollManifest.Negative) -> String {
         guard let summary = negative.spotsSummary else { return "none" }
         return "\(summary.repair)#\(summary.count)#\(summary.rejected)"
+    }
+
+    private static func scratchesTerm(of negative: RollManifest.Negative) -> String {
+        guard let summary = negative.scratchesSummary else { return "none" }
+        return "\(summary.enabled)#\(summary.count)#\(summary.stale)"
     }
 
     /// Loads one cached 1:1 region — raw RGBA first, then legacy PNG.

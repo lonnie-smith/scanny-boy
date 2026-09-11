@@ -610,6 +610,33 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    public static func editDetectScratches(
+        roll: URL, negatives: [String]
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "detect-scratches",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    public static func editScratches(
+        roll: URL, negatives: [String], enabled: Bool
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "scratches",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        arguments.append(enabled ? "--on" : "--off")
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]
     /// [--downsample N]`
     ///

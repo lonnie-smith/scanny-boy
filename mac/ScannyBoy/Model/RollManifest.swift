@@ -276,6 +276,8 @@ struct RollManifest: Sendable, Hashable {
         /// the field. Defaults to `nil` so every construction site that
         /// predates the field keeps compiling.
         var spotsSummary: NegativeSpots.Summary? = nil
+        /// Protocol 21's per-negative scratches summary from `roll info`.
+        var scratchesSummary: NegativeScratches.Summary? = nil
         /// Protocol 19's net crop state — the cropped display image's
         /// dimensions, the window's tilt, and the ratio-preset label. The
         /// published TIFF is never cropped; the preview already shows the
@@ -554,6 +556,8 @@ struct RollManifest: Sendable, Hashable {
             gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue,
             spotsSummary: fields["spots"]?.objectValue
                 .flatMap(NegativeSpots.Summary.init(fields:)),
+            scratchesSummary: fields["scratches"]?.objectValue
+                .flatMap(NegativeScratches.Summary.init(fields:)),
             crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:))
         )
     }
