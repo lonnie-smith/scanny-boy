@@ -773,6 +773,117 @@ struct EditModelTests {
         #expect(args.contains("negative"))
     }
 
+    @Test("renderRegion reads a cached PNG without calling the CLI")
+    func testRenderRegionReadsCache() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let argsFile = directory.appending(path: "args")
+        let rollInfo = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "render-region" ]; then
+              printf '%s\\n' "$@" >> '\(argsFile.path)'
+            fi
+            echo '\(rollInfo)'
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let cache = PreviewCache(cachesDirectory: directory)
+        let model = EditModel(runner: CLIRunner(executable: executable), previewCache: cache)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        guard let negative = model.visibleNegatives.first else {
+            Issue.record("no negatives in the fake roll")
+            return
+        }
+
+        let rect = CGRect(x: 0, y: 0, width: 4, height: 4)
+        let cachedURL = cache.regionURL(
+            rollID: "roll-1",
+            negativeID: negative.negativeID,
+            generation: EditModel.renderGeneration(
+                of: negative, cameraColor: model.roll?.cameraColor
+            ),
+            mode: .positive,
+            rect: rect
+        )
+        try FileManager.default.createDirectory(
+            at: cachedURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let png = Data(
+            base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg=="
+        )!
+        try png.write(to: PreviewCache.legacyRegionPNGURL(from: cachedURL))
+
+        let thumbnail = await model.renderRegion(negative, rect: rect, mode: .positive)
+
+        #expect(thumbnail != nil)
+        #expect(!FileManager.default.fileExists(atPath: argsFile.path))
+    }
+
+    @Test("renderRegion hits the in-memory cache on a second request")
+    func testRenderRegionMemoryCache() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let argsFile = directory.appending(path: "args")
+        let rollInfo = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "render-region" ]; then
+              printf '%s\\n' "$@" >> '\(argsFile.path)'
+            fi
+            echo '\(rollInfo)'
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let cache = PreviewCache(cachesDirectory: directory)
+        let memory = RegionMemoryCache(maxEntries: 4)
+        let model = EditModel(
+            runner: CLIRunner(executable: executable),
+            previewCache: cache,
+            regionMemoryCache: memory
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        guard let negative = model.visibleNegatives.first else {
+            Issue.record("no negatives in the fake roll")
+            return
+        }
+
+        let rect = CGRect(x: 0, y: 0, width: 4, height: 4)
+        let cachedURL = cache.regionURL(
+            rollID: "roll-1",
+            negativeID: negative.negativeID,
+            generation: EditModel.renderGeneration(
+                of: negative, cameraColor: model.roll?.cameraColor
+            ),
+            mode: .positive,
+            rect: rect
+        )
+        try FileManager.default.createDirectory(
+            at: cachedURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let png = Data(
+            base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg=="
+        )!
+        try png.write(to: PreviewCache.legacyRegionPNGURL(from: cachedURL))
+
+        let first = await model.renderRegion(negative, rect: rect, mode: .positive)
+        let second = await model.renderRegion(negative, rect: rect, mode: .positive)
+
+        #expect(first != nil)
+        #expect(second != nil)
+        #expect(!FileManager.default.fileExists(atPath: argsFile.path))
+    }
+
     @Test("renderRegion passes the display mode through to the CLI")
     func testRenderRegionCarriesMode() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -797,7 +908,8 @@ struct EditModelTests {
               echo '{"protocol_version":21,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
               echo '{"protocol_version":21,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
-              printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
+              legacy="${out%.rgba}.png"
+              printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$legacy"
             else
               echo '\(rollInfo)'
             fi

@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Foundation
 
@@ -50,7 +51,7 @@ struct PreviewCache: Sendable {
     ) -> URL {
         let name = """
             \(negativeID)-g\(Self.generationComponent(generation))-\(mode.rawValue)\
-            -\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png
+            -\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).rgba
             """
         return directory(regionsRoot, forRoll: rollID)
             .appending(path: name, directoryHint: .notDirectory)
@@ -130,5 +131,46 @@ struct PreviewCache: Sendable {
     /// could escape the cache directory is refused rather than sanitised.
     private static func isSafePathComponent(_ value: String) -> Bool {
         !value.isEmpty && value != "." && value != ".." && !value.contains("/")
+    }
+
+    /// The pre-raw-cache PNG path for the same region key — read-only
+    /// fallback when an older cache entry is still on disk.
+    static func legacyRegionPNGURL(from rgbaURL: URL) -> URL {
+        rgbaURL.deletingPathExtension().appendingPathExtension("png")
+    }
+}
+
+/// A small in-memory LRU of decoded 1:1 region bitmaps. Keys match
+/// `PreviewCache.regionURL` paths so revisiting a recent rect skips disk
+/// and ImageIO even when the file is already cached.
+@MainActor
+final class RegionMemoryCache {
+    private var images: [URL: NSImage] = [:]
+    private var order: [URL] = []
+    private let maxEntries: Int
+
+    init(maxEntries: Int = 5) {
+        self.maxEntries = maxEntries
+    }
+
+    func image(for url: URL) -> NSImage? {
+        guard let image = images[url] else { return nil }
+        if let index = order.firstIndex(of: url) {
+            order.remove(at: index)
+            order.append(url)
+        }
+        return image
+    }
+
+    func store(_ image: NSImage, for url: URL) {
+        if images[url] != nil {
+            order.removeAll { $0 == url }
+        }
+        images[url] = image
+        order.append(url)
+        while order.count > maxEntries {
+            let evicted = order.removeFirst()
+            images.removeValue(forKey: evicted)
+        }
     }
 }

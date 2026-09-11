@@ -33,6 +33,7 @@ final class EditModel {
     /// Where the 1:1 region crops and whole-image renders below are written.
     /// Injected so tests never touch the real user's caches.
     @ObservationIgnored private let previewCache: PreviewCache
+    @ObservationIgnored private let regionMemoryCache: RegionMemoryCache
 
     /// Set by `ContentView` from the sidebar selection, exactly like
     /// `ConfigurationModel.rollURL`.
@@ -126,9 +127,14 @@ final class EditModel {
     @ObservationIgnored private var colorCommitTask: Task<Void, Never>?
     @ObservationIgnored private var activeColorSession: CLISession?
 
-    init(runner: CLIRunner, previewCache: PreviewCache = .shared) {
+    init(
+        runner: CLIRunner,
+        previewCache: PreviewCache = .shared,
+        regionMemoryCache: RegionMemoryCache = RegionMemoryCache()
+    ) {
         self.runner = runner
         self.previewCache = previewCache
+        self.regionMemoryCache = regionMemoryCache
     }
 
     // MARK: - Derived state
@@ -502,7 +508,8 @@ final class EditModel {
         _ negative: RollManifest.Negative,
         rect: CGRect,
         tiltDegrees: Double,
-        preset: String?
+        preset: String?,
+        fullFrame: Bool = false
     ) async {
         await recordCrop(negative) { rollURL in
             .editCrop(
@@ -510,7 +517,8 @@ final class EditModel {
                 negative: negative.negativeID,
                 rect: rect,
                 tiltDegrees: tiltDegrees,
-                preset: preset
+                preset: preset,
+                fullFrame: fullFrame
             )
         }
     }
@@ -935,6 +943,16 @@ final class EditModel {
             mode: mode,
             rect: rect
         )
+        if let cached = regionMemoryCache.image(for: output) {
+            return Thumbnail(image: cached)
+        }
+        if let image = Self.loadRegionImage(at: output) {
+            regionMemoryCache.store(image, for: output)
+            return Thumbnail(image: image)
+        }
+        #if DEBUG
+        let fetchStarted = CFAbsoluteTimeGetCurrent()
+        #endif
         let command = CLICommand.editRenderRegion(
             roll: rollURL,
             negative: negative.negativeID,
@@ -955,9 +973,19 @@ final class EditModel {
         } catch {
             return nil
         }
-        guard rendered, let image = Self.fullResolutionImage(at: output) else {
+        guard rendered, let image = Self.loadRegionImage(at: output) else {
             return nil
         }
+        #if DEBUG
+        let elapsed = CFAbsoluteTimeGetCurrent() - fetchStarted
+        print(
+            String(
+                format: "renderRegion %.0fx%.0f took %.3f s",
+                rect.width, rect.height, elapsed
+            )
+        )
+        #endif
+        regionMemoryCache.store(image, for: output)
         return Thumbnail(image: image)
     }
 
@@ -970,12 +998,14 @@ final class EditModel {
     /// it (`negativeViewGeneration`).
     func renderPreview(
         _ negative: RollManifest.Negative,
-        mode: PreviewDisplayMode
+        mode: PreviewDisplayMode,
+        fullFrame: Bool = false
     ) async -> Thumbnail? {
         guard let rollURL, let rollID = roll?.rollID else { return nil }
-        let generation = mode == .negative
+        var generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
             : Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor)
+        if fullFrame { generation += "#fullFrame" }
         let output = previewCache.previewURL(
             rollID: rollID,
             negativeID: negative.negativeID,
@@ -986,7 +1016,8 @@ final class EditModel {
             roll: rollURL,
             negative: negative.negativeID,
             mode: mode.rawValue,
-            output: output
+            output: output,
+            fullFrame: fullFrame
         )
         var rendered = false
         do {
@@ -1066,6 +1097,45 @@ final class EditModel {
     private static func spotsTerm(of negative: RollManifest.Negative) -> String {
         guard let summary = negative.spotsSummary else { return "none" }
         return "\(summary.repair)#\(summary.count)#\(summary.rejected)"
+    }
+
+    /// Loads one cached 1:1 region — raw RGBA first, then legacy PNG.
+    static func loadRegionImage(at url: URL) -> NSImage? {
+        if let image = rawRegionImage(at: url) { return image }
+        return fullResolutionImage(at: PreviewCache.legacyRegionPNGURL(from: url))
+    }
+
+    /// The fast path for region caches written as `SB01` + width + height
+    /// + contiguous RGBA8888 pixels.
+    static func rawRegionImage(at url: URL) -> NSImage? {
+        guard let data = try? Data(contentsOf: url), data.count >= 12 else { return nil }
+        guard data.prefix(4) == Data([0x53, 0x42, 0x30, 0x31]) else { return nil }
+        let width = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) })
+        let height = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self) })
+        guard width > 0, height > 0 else { return nil }
+        let payloadBytes = width * height * 4
+        guard data.count == 12 + payloadBytes else { return nil }
+        let pixels = data.subdata(in: 12 ..< data.count) as CFData
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: pixels),
+            let cgImage = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+            )
+        else { return nil }
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: width, height: height)
+        )
     }
 
     /// The PNG the CLI rendered, decoded at its native size — a pane-sized

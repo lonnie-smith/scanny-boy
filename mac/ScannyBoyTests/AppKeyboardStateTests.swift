@@ -93,6 +93,30 @@ struct AppKeyboardStateTests {
         #expect(!keyboard.canRotate)
     }
 
+    @Test("crop requires Edit tab output, a mounted preview, and idle or active crop")
+    func canCrop() {
+        let keyboard = AppKeyboardState()
+        keyboard.workspaceTab = .edit
+        keyboard.previewHasOutput = true
+        keyboard.previewPaneMounted = true
+
+        #expect(keyboard.canCrop)
+
+        keyboard.previewHasOutput = false
+        #expect(!keyboard.canCrop)
+
+        keyboard.previewHasOutput = true
+        keyboard.previewPaneMounted = false
+        #expect(!keyboard.canCrop)
+
+        keyboard.previewPaneMounted = true
+        keyboard.previewOperationsBlocked = true
+        #expect(!keyboard.canCrop)
+
+        keyboard.cropSessionActive = true
+        #expect(keyboard.canCrop)
+    }
+
     @Test("forceNavigate reads the notification flag")
     func forceNavigateFlag() {
         AppKeyboard.post(.scannyBoySelectPrevious)

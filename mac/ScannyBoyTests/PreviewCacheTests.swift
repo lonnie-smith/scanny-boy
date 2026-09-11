@@ -37,7 +37,7 @@ struct PreviewCacheTests {
         )
 
         #expect(region.path.hasPrefix("/caches/ScannyBoy/preview-regions/roll-1/abc-negative-01-g"))
-        #expect(region.path.hasSuffix("-positive-10-20-30-40.png"))
+        #expect(region.path.hasSuffix("-positive-10-20-30-40.rgba"))
         #expect(preview.path.hasPrefix("/caches/ScannyBoy/rendered-previews/roll-1/abc-negative-01-g"))
         #expect(preview.path.hasSuffix("-negative.png"))
     }

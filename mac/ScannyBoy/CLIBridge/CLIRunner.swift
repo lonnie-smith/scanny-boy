@@ -455,7 +455,8 @@ public struct CLICommand: Sendable, Hashable {
         negative: String,
         rect: CGRect?,
         tiltDegrees: Double = 0,
-        preset: String? = nil
+        preset: String? = nil,
+        fullFrame: Bool = false
     ) -> CLICommand {
         var arguments = [
             "edit", "crop",
@@ -473,6 +474,7 @@ public struct CLICommand: Sendable, Hashable {
             if let preset {
                 arguments.append(contentsOf: ["--preset", preset])
             }
+            if fullFrame { arguments.append("--full-frame") }
         } else {
             arguments.append("--reset")
         }
@@ -524,15 +526,18 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         negative: String,
         mode: String,
-        output: URL
+        output: URL,
+        fullFrame: Bool = false
     ) -> CLICommand {
-        CLICommand(arguments: [
+        var arguments = [
             "edit", "render-preview",
             "--roll", roll.path,
             "--negative", negative,
             "--mode", mode,
             "--output", output.path,
-        ])
+        ]
+        if fullFrame { arguments.append("--full-frame") }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy edit detect-spots --roll DIR --negative ID [--negative ID ...] [--sensitivity S]`

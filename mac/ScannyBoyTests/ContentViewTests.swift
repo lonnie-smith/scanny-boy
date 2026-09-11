@@ -114,6 +114,49 @@ struct ContentViewTests {
         #expect(ContentView.shouldConfirmConvert(into: roll) == true)
     }
 
+    // MARK: - CatalogueDragSupport.filenamesForDrag
+
+    @Test
+    func filenamesForDragReturnsSelectionWhenRowIsSelected() {
+        let selected: Set = ["a.NEF", "b.NEF", "c.NEF"]
+        let names = CatalogueDragSupport.filenamesForDrag(name: "b.NEF", selectedFiles: selected)
+        #expect(Set(names) == selected)
+    }
+
+    @Test
+    func filenamesForDragReturnsOnlyRowWhenNotSelected() {
+        let selected: Set = ["a.NEF", "b.NEF"]
+        let names = CatalogueDragSupport.filenamesForDrag(name: "c.NEF", selectedFiles: selected)
+        #expect(names == ["c.NEF"])
+    }
+
+    // MARK: - CatalogueDragSupport encode/decode
+
+    @Test
+    func dragPayloadRoundTripsFilenames() {
+        let names = ["a.NEF", "b.NEF", "c.NEF"]
+        let encoded = CatalogueDragSupport.encodeDragPayload(names)
+        #expect(encoded != nil)
+        #expect(CatalogueDragSupport.decodeDragPayload(encoded!) == names)
+    }
+
+    @Test
+    func decodeDragPayloadReturnsNilForInvalidJSON() {
+        #expect(CatalogueDragSupport.decodeDragPayload("not json") == nil)
+    }
+
+    // MARK: - convertReadyLabel
+
+    @Test
+    func convertReadyLabelUsesSingularForOneScan() {
+        #expect(ContentView.convertReadyLabel(scanCount: 1) == "1 scan ready to convert")
+    }
+
+    @Test
+    func convertReadyLabelUsesPluralForMultipleScans() {
+        #expect(ContentView.convertReadyLabel(scanCount: 8) == "8 scans ready to convert")
+    }
+
     // MARK: - resolveFileName
 
     @Test

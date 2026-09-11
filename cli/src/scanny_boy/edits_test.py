@@ -1227,12 +1227,14 @@ def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
     # The published TIFF is untouched — the crop is metadata until export.
     assert (croppable_roll / "_DSC0001.tif").read_bytes() == tiff_before
     assert fields["edit"]["op"] == repo.CROP_OP
-    assert fields["crop"] == {
-        "width": 50,
-        "height": 24,
-        "tilt_deg": 0.0,
-        "preset": "35mm",
-    }
+    assert fields["crop"]["width"] == 50
+    assert fields["crop"]["height"] == 24
+    assert fields["crop"]["tilt_deg"] == 0.0
+    assert fields["crop"]["preset"] == "35mm"
+    assert fields["crop"]["x"] == 10
+    assert fields["crop"]["y"] == 8
+    assert fields["crop"]["canvas_width"] == 90
+    assert fields["crop"]["canvas_height"] == 60
     assert fields["preview_path"]
 
     # The preview now shows the cropped frame: the crop step applied first
@@ -1320,6 +1322,37 @@ def test_a_recrop_composes_over_the_live_crop(croppable_roll):
     state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
     assert abs(state.crop["tilt_deg"] - 3.0) < 0.51
     # One window in TIFF space, inside the canvas.
+    assert 0 <= state.crop["x"] and state.crop["x"] + state.crop["w"] <= 90
+    assert 0 <= state.crop["y"] and state.crop["y"] + state.crop["h"] <= 60
+
+
+def test_a_full_frame_recrop_composes_over_the_live_crop(croppable_roll):
+    """The app re-enters crop mode on the full uncropped canvas; the second
+    rect is in that space and still reduces to one composed window."""
+    run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(5, 5, 80, 50),
+        emit=lambda event: None,
+    )
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        tilt_deg=3.0,
+        full_frame=True,
+        emit=lambda event: None,
+    )
+
+    assert fields["crop"]["width"] == 50
+    assert fields["crop"]["height"] == 24
+    assert abs(fields["crop"]["x"] - 10) <= 1
+    assert abs(fields["crop"]["y"] - 8) <= 1
+    assert fields["crop"]["canvas_width"] == 90
+    assert fields["crop"]["canvas_height"] == 60
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert abs(state.crop["tilt_deg"] - 3.0) < 0.51
     assert 0 <= state.crop["x"] and state.crop["x"] + state.crop["w"] <= 90
     assert 0 <= state.crop["y"] and state.crop["y"] + state.crop["h"] <= 60
 

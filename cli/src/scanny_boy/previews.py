@@ -51,7 +51,10 @@ import hashlib
 import json
 import math
 import os
+import struct
+import sys
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -78,6 +81,17 @@ PREVIEW_CACHE_MAX_BYTES = 96 * 1024 * 1024
 _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _DISPLAY_PREVIEW_CACHE_BYTES = 0
 _DISPLAY_PREVIEW_CACHE_LOCK = threading.Lock()
+
+# Full-resolution display decode for `render_region`'s slow path. One
+# 6000×4000 uint16 RGB array is ~144 MB; the bound holds a handful of
+# negatives' full decodes without unbounded growth.
+DISPLAY_IMAGE_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+_DISPLAY_IMAGE_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_DISPLAY_IMAGE_CACHE_BYTES = 0
+_DISPLAY_IMAGE_CACHE_LOCK = threading.Lock()
+
+REGION_RAW_MAGIC = b"SB01"
 
 
 def _spots_cache_key(spots_params: dict | None) -> tuple:
@@ -113,6 +127,38 @@ def _scratches_cache_key(scratches_params: dict | None) -> tuple:
     return ("scratches", digest)
 
 
+def _display_pixel_cache_key(
+    tiff_path: Path,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    spots_params: dict | None = None,
+    scratches_params: dict | None = None,
+    crop_params: dict | None = None,
+) -> tuple:
+    stat = os.stat(tiff_path)
+    crop_key: tuple | None = None
+    if crop_params:
+        crop_key = (
+            int(crop_params["x"]),
+            int(crop_params["y"]),
+            int(crop_params["w"]),
+            int(crop_params["h"]),
+            round(float(crop_params["tilt_deg"]), 4),
+        )
+    return (
+        str(tiff_path),
+        stat.st_mtime_ns,
+        stat.st_size,
+        int(quarter_turns) % 4,
+        bool(flipped_horizontally),
+        round(float(fine_angle_deg), 6),
+        _spots_cache_key(spots_params),
+        _scratches_cache_key(scratches_params),
+        crop_key,
+    )
+
+
 def cached_preview_codes(
     tiff_path: Path,
     quarter_turns: int = 0,
@@ -141,26 +187,14 @@ def cached_preview_codes(
     path indexes it and never writes it."""
     global _DISPLAY_PREVIEW_CACHE_BYTES
 
-    stat = os.stat(tiff_path)
-    crop_key: tuple | None = None
-    if crop_params:
-        crop_key = (
-            int(crop_params["x"]),
-            int(crop_params["y"]),
-            int(crop_params["w"]),
-            int(crop_params["h"]),
-            round(float(crop_params["tilt_deg"]), 4),
-        )
-    key = (
-        str(tiff_path),
-        stat.st_mtime_ns,
-        stat.st_size,
-        int(quarter_turns) % 4,
-        bool(flipped_horizontally),
-        round(float(fine_angle_deg), 6),
-        _spots_cache_key(spots_params),
-        _scratches_cache_key(scratches_params),
-        crop_key,
+    key = _display_pixel_cache_key(
+        tiff_path,
+        quarter_turns,
+        flipped_horizontally,
+        fine_angle_deg,
+        spots_params,
+        scratches_params,
+        crop_params,
     )
     with _DISPLAY_PREVIEW_CACHE_LOCK:
         cached = _DISPLAY_PREVIEW_CACHE.get(key)
@@ -187,6 +221,56 @@ def cached_preview_codes(
         ):
             _key, evicted = _DISPLAY_PREVIEW_CACHE.popitem(last=False)
             _DISPLAY_PREVIEW_CACHE_BYTES -= evicted.nbytes
+    return image
+
+
+def cached_display_image(
+    tiff_path: Path,
+    quarter_turns: int = 0,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    spots_params: dict | None = None,
+    scratches_params: dict | None = None,
+    crop_params: dict | None = None,
+) -> np.ndarray:
+    """The full display-resolution density codes for `render_region`'s slow
+    path — decoded and transformed, pre-LUT — through the daemon's full-
+    resolution cache. Tone, colour, and display mode stay in the encode
+    step, exactly like `cached_preview_codes`."""
+    global _DISPLAY_IMAGE_CACHE_BYTES
+
+    key = _display_pixel_cache_key(
+        tiff_path,
+        quarter_turns,
+        flipped_horizontally,
+        fine_angle_deg,
+        spots_params,
+        scratches_params,
+        crop_params,
+    )
+    with _DISPLAY_IMAGE_CACHE_LOCK:
+        cached = _DISPLAY_IMAGE_CACHE.get(key)
+        if cached is not None:
+            _DISPLAY_IMAGE_CACHE.move_to_end(key)
+            return cached
+    image = _display_image(
+        tiff_path,
+        quarter_turns,
+        flipped_horizontally,
+        fine_angle_deg,
+        spots_params,
+        crop_params,
+        scratches_params,
+    )
+    with _DISPLAY_IMAGE_CACHE_LOCK:
+        _DISPLAY_IMAGE_CACHE[key] = image
+        _DISPLAY_IMAGE_CACHE_BYTES += image.nbytes
+        while (
+            _DISPLAY_IMAGE_CACHE_BYTES > DISPLAY_IMAGE_CACHE_MAX_BYTES
+            and len(_DISPLAY_IMAGE_CACHE) > 1
+        ):
+            _key, evicted = _DISPLAY_IMAGE_CACHE.popitem(last=False)
+            _DISPLAY_IMAGE_CACHE_BYTES -= evicted.nbytes
     return image
 
 
@@ -303,21 +387,15 @@ def _display_tables(
     return tone.build_channel_tables(tone_params, color_params, metering, channels)
 
 
-def _encode_display_png(
+def _encode_display_uint8(
     image: np.ndarray,
-    destination: Path,
     tone_params: dict[str, float] | None = None,
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
     mode: str = "positive",
     matrix: np.ndarray | None = None,
-) -> None:
-    """16-bit normalized-density (or already-8-bit) RGB -> 8-bit lossless
-    PNG on disk, no downscale. `mode` picks the display encode:
-    `"positive"` runs the shared export render (`render.encode_positive_uint8`)
-    — camera matrix, tone, and colour ops included when given —
-    `"negative"` is the un-inverted density view, which no tone, colour, or
-    matrix ever touches. The published TIFF is never touched by any of it."""
+) -> np.ndarray:
+    """16-bit normalized-density (or already-8-bit) RGB -> 8-bit RGB."""
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode {mode!r}")
     if image.dtype == np.uint16:
@@ -325,11 +403,7 @@ def _encode_display_png(
             image = NEGATIVE_DISPLAY_LUT[image]
         else:
             channels = image.shape[2] if image.ndim == 3 else 1
-            if (
-                tone_params is None
-                and color_params is None
-                and matrix is None
-            ):
+            if tone_params is None and color_params is None and matrix is None:
                 image = NORMALIZED_DISPLAY_LUT[image]
             else:
                 encoded = render.encode_positive_uint8(
@@ -348,11 +422,96 @@ def _encode_display_png(
             "the negative view must be encoded from the published TIFF's "
             "density codes, not from an already-display-encoded image"
         )
+    if image.ndim == 2:
+        return np.stack([image] * 3, axis=-1)
+    return image
+
+
+def _encode_display_png(
+    image: np.ndarray,
+    destination: Path,
+    tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
+    mode: str = "positive",
+    matrix: np.ndarray | None = None,
+) -> None:
+    """16-bit normalized-density (or already-8-bit) RGB -> 8-bit lossless
+    PNG on disk, no downscale. `mode` picks the display encode:
+    `"positive"` runs the shared export render (`render.encode_positive_uint8`)
+    — camera matrix, tone, and colour ops included when given —
+    `"negative"` is the un-inverted density view, which no tone, colour, or
+    matrix ever touches. The published TIFF is never touched by any of it."""
+    encoded = _encode_display_uint8(
+        image,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+        mode=mode,
+        matrix=matrix,
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    ok, png = cv2.imencode(".png", cv2.cvtColor(encoded, cv2.COLOR_RGB2BGR))
     if not ok:
         raise ValueError(f"could not encode preview {destination}")
-    destination.write_bytes(encoded.tobytes())
+    destination.write_bytes(png.tobytes())
+
+
+def _encode_display_raw(
+    image: np.ndarray,
+    destination: Path,
+    tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
+    mode: str = "positive",
+    matrix: np.ndarray | None = None,
+) -> None:
+    """8-bit display RGB -> raw RGBA region cache (`SB01` header + pixels)."""
+    encoded = _encode_display_uint8(
+        image,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+        mode=mode,
+        matrix=matrix,
+    )
+    height, width = encoded.shape[:2]
+    rgba = np.dstack([encoded, np.full((height, width, 1), 255, dtype=np.uint8)])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    header = REGION_RAW_MAGIC + struct.pack("<II", width, height)
+    destination.write_bytes(header + rgba.astype(np.uint8).tobytes())
+
+
+def _encode_display_region(
+    image: np.ndarray,
+    destination: Path,
+    tone_params: dict[str, float] | None = None,
+    color_params: dict[str, float] | None = None,
+    metering: color.Metering | None = None,
+    mode: str = "positive",
+    matrix: np.ndarray | None = None,
+) -> None:
+    """Region caches use raw RGBA; everything else stays PNG."""
+    if destination.suffix.lower() == ".rgba":
+        _encode_display_raw(
+            image,
+            destination,
+            tone_params,
+            color_params=color_params,
+            metering=metering,
+            mode=mode,
+            matrix=matrix,
+        )
+        return
+    _encode_display_png(
+        image,
+        destination,
+        tone_params,
+        color_params=color_params,
+        metering=metering,
+        mode=mode,
+        matrix=matrix,
+    )
 
 
 # --- the `crop` op ------------------------------------------------------------
@@ -373,18 +532,15 @@ def crop_is_live(crop_params: dict | None, tiff_shape: tuple[int, int]) -> bool:
 
 def _crop_matrix(crop_params: dict) -> np.ndarray:
     """The crop warp's matrix: `cv2.getRotationMatrix2D` about the rect's
-    centre by the stored tilt. cv2's positive angles turn
-    counter-clockwise, and the stored `tilt_deg` counts counter-clockwise
-    as displayed, so the angle passes through un-negated — the window the
-    warp samples is the axis-aligned rect rotated counter-clockwise by
-    `tilt_deg` about its own centre, and its content lands upright in the
-    crop's output."""
+    centre. Stored `tilt_deg` is the window's counter-clockwise tilt as
+    displayed; the image rotates by the negation to straighten the content
+    inside the axis-aligned slice — same pattern as `rotate_with_fill`."""
     return cv2.getRotationMatrix2D(
         (
             crop_params["x"] + crop_params["w"] / 2.0,
             crop_params["y"] + crop_params["h"] / 2.0,
         ),
-        float(crop_params["tilt_deg"]),
+        -float(crop_params["tilt_deg"]),
         1.0,
     )
 
@@ -439,23 +595,46 @@ def crop_report(
     tiff_size: tuple[int, int],  # (height, width)
     *,
     quarter_turns: int,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
 ) -> dict | None:
     """The net crop as `roll info` and `edit_recorded` report it, in
     display space — the cropped image's final dimensions (quarter turns
     folded in, the only transform that changes them) plus the stored tilt
-    and preset label for the sidebar. Swift converts nothing and needs no
-    rect: the preview it shows is already cropped, and a fresh crop
-    session draws a new rect over it."""
+    and preset label for the sidebar. When a live crop exists, the report
+    also carries the crop window's origin and the full uncropped display
+    canvas so the app can re-enter crop mode on the whole frame with the
+    saved rect superimposed."""
     if not crop_params:
         return None
     height, width = display_shape(
         tiff_size, quarter_turns=quarter_turns, crop_params=crop_params
+    )
+    canvas_h, canvas_w = display_shape(
+        tiff_size, quarter_turns=quarter_turns, crop_params=None
+    )
+    x, y, _w, _h = tiff_rect_to_display(
+        (
+            int(crop_params["x"]),
+            int(crop_params["y"]),
+            int(crop_params["w"]),
+            int(crop_params["h"]),
+        ),
+        tiff_size,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+        crop_params=None,
     )
     return {
         "width": width,
         "height": height,
         "tilt_deg": crop_params["tilt_deg"],
         "preset": crop_params.get("preset"),
+        "x": x,
+        "y": y,
+        "canvas_width": canvas_w,
+        "canvas_height": canvas_h,
     }
 
 
@@ -468,6 +647,7 @@ def display_crop_window_to_tiff(
     flipped_horizontally: bool,
     fine_angle_deg: float,
     crop_params: dict | None,
+    full_frame: bool = False,
 ) -> tuple[int, int, int, int, float]:
     """A display-space crop — the axis-aligned rect `rect` the user drew
     over the image as it currently renders (live crop included), tilted
@@ -483,12 +663,17 @@ def display_crop_window_to_tiff(
     direction become the stored rect and `tilt_deg` — so a re-crop
     composes into one window and the replay never has to. The returned
     tilt is counter-clockwise as displayed, normalized to (-45, 45].
+
+    When `full_frame` is true, `rect` is on the full uncropped display
+    canvas (the same space `crop_report`'s `x`/`y`/`canvas_*` name) and
+    the live crop's inverse warp is skipped — the app re-enters crop mode
+    on the whole frame with the saved window superimposed.
     """
     import cv2
 
     tiff_h, tiff_w = tiff_size
     x, y, w, h = rect
-    live = crop_is_live(crop_params, (tiff_h, tiff_w))
+    live = crop_is_live(crop_params, (tiff_h, tiff_w)) and not full_frame
     stage_h, stage_w = (
         (int(crop_params["h"]), int(crop_params["w"]))
         if live
@@ -835,7 +1020,7 @@ def tiff_rect_to_display(
                 crop_params["x"] + crop_params["w"] / 2.0,
                 crop_params["y"] + crop_params["h"] / 2.0,
             ),
-            -float(crop_params["tilt_deg"]),
+            float(crop_params["tilt_deg"]),
             1.0,
         )
         ox, oy = float(crop_params["x"]), float(crop_params["y"])
@@ -997,6 +1182,9 @@ def render_region(
     """
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode {mode!r}")
+    debug_timing = os.environ.get("SCANNY_BOY_DEBUG_TIMING") == "1"
+    if debug_timing:
+        _timing_start = time.perf_counter()
     tiff_h, tiff_w = _read_tiff_dimensions(tiff_path)
     display_h, display_w = display_shape(
         (tiff_h, tiff_w), quarter_turns=quarter_turns, crop_params=crop_params
@@ -1015,17 +1203,17 @@ def render_region(
         # correction is local — either way crop-then-transform is no
         # longer exact: replay the transform on the full decode, the way
         # `generate_preview` does, then slice.
-        image = _display_image(
+        image = cached_display_image(
             tiff_path,
             quarter_turns,
             flipped_horizontally,
             fine_angle_deg,
             spots_params,
-            crop_params,
             scratches_params,
+            crop_params,
         )
         if destination is not None:
-            _encode_display_png(
+            _encode_display_region(
                 image[dy : dy + dh, dx : dx + dw],
                 destination,
                 tone_params,
@@ -1033,6 +1221,12 @@ def render_region(
                 metering=metering,
                 mode=mode,
                 matrix=matrix,
+            )
+        if debug_timing:
+            print(
+                f"render_region slow {dw}x{dh} took "
+                f"{time.perf_counter() - _timing_start:.3f}s",
+                file=sys.stderr,
             )
         return dx, dy, dw, dh
 
@@ -1060,7 +1254,7 @@ def render_region(
     if r:
         crop = np.ascontiguousarray(np.rot90(crop, k=r))
     if destination is not None:
-        _encode_display_png(
+        _encode_display_region(
             _promote_to_rgb(crop),
             destination,
             tone_params,
@@ -1068,6 +1262,12 @@ def render_region(
             metering=metering,
             mode=mode,
             matrix=matrix,
+        )
+    if debug_timing:
+        print(
+            f"render_region fast {dw}x{dh} took "
+            f"{time.perf_counter() - _timing_start:.3f}s",
+            file=sys.stderr,
         )
     return dx, dy, dw, dh
 

@@ -3328,12 +3328,9 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
     assert status == 0
     events, _ = _stdout_events(capsys)
     reported = events[1]["manifest"]["negatives"][0]["crop"]
-    assert reported == {
-        "width": rect_w,
-        "height": rect_h,
-        "tilt_deg": recorded_crop["tilt_deg"],
-        "preset": "35mm",
-    }
+    assert reported == recorded_crop
+    assert reported["canvas_width"] == tiff_w
+    assert reported["canvas_height"] == tiff_h
 
     capsys.readouterr()
     status = main(

@@ -28,6 +28,9 @@ final class AppKeyboardState {
     /// zoom; never route zoom through a stored closure, which captures a
     /// stale `PreviewPane` value and crashes when invoked from the menu.
     var previewPaneMounted = false
+    /// Mirrored from the Edit tab's crop session so ⌘R stays enabled while
+    /// cropping (to jump back to the Geometry tab).
+    var cropSessionActive = false
     var zoomToggleCenter = CGPoint.zero
     /// Incremented by `performToggleZoom()`; `PreviewPane` observes this and
     /// toggles its own `@State` zoom model in a live SwiftUI context.
@@ -47,6 +50,14 @@ final class AppKeyboardState {
             && !isBusy
             && previewHasOutput
             && !previewOperationsBlocked
+    }
+
+    var canCrop: Bool {
+        workspaceTab == .edit
+            && !isBusy
+            && previewHasOutput
+            && previewPaneMounted
+            && (cropSessionActive || !previewOperationsBlocked)
     }
 
     var canZoom: Bool {
@@ -107,6 +118,9 @@ extension Notification.Name {
     static let scannyBoyRotateClockwise = Notification.Name(
         "com.lonniesmith.scanny-boy.rotateClockwise"
     )
+    static let scannyBoyBeginCrop = Notification.Name(
+        "com.lonniesmith.scanny-boy.beginCrop"
+    )
     static let scannyBoyToggleZoom = Notification.Name(
         "com.lonniesmith.scanny-boy.toggleZoom"
     )
@@ -150,14 +164,24 @@ struct AppKeyboardCommands: Commands {
             }
             .keyboardShortcut("]", modifiers: .command)
             .disabled(!keyboard.canRotate)
+
+            Button("Crop") {
+                AppKeyboard.post(.scannyBoyBeginCrop)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(!keyboard.canCrop)
         }
 
         CommandMenu("View") {
             Button("Toggle Zoom") {
                 AppKeyboard.post(.scannyBoyToggleZoom)
             }
-            .keyboardShortcut("z")
-            .disabled(!keyboard.canZoom)
+            .keyboardShortcut("z", modifiers: .command)
+            // Do not `.disabled(!keyboard.canZoom)` here: a disabled key
+            // equivalent beeps on macOS, and SwiftUI's Commands menu can
+            // stay stale until the user clicks — `ContentView` guards the
+            // action instead. The preview's local key monitor handles ⌘Z
+            // reliably while the Edit tab is visible.
         }
 
         CommandMenu("Navigate") {

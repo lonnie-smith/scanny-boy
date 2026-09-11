@@ -411,6 +411,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="clear the crop and return to the full frame",
     )
+    edit_crop.add_argument(
+        "--full-frame",
+        action="store_true",
+        help=(
+            "the rect is on the full uncropped display canvas — for "
+            "re-entering crop mode on the whole frame with the saved "
+            "window superimposed"
+        ),
+    )
 
     edit_render_region = edit_subparsers.add_parser(
         "render-region",
@@ -458,6 +467,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     edit_render_preview.add_argument("--output", required=True, metavar="PATH")
+    edit_render_preview.add_argument(
+        "--full-frame",
+        action="store_true",
+        help=(
+            "ignore the live crop and render the whole uncropped display "
+            "image — for re-entering crop mode on the full frame"
+        ),
+    )
 
     edit_tone = edit_subparsers.add_parser(
         "tone",
@@ -1063,6 +1080,8 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             live_crop,
             (output_height, output_width),
             quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
         )
         tone_params = state.tone
         negative["tone_grade_r"] = (
@@ -1486,6 +1505,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                         rect=(args.x, args.y, args.width, args.height),
                         tilt_deg=args.tilt,
                         preset=args.preset,
+                        full_frame=args.full_frame,
                         emit=writer.write,
                     )
                 ]
@@ -1519,6 +1539,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                     args.negative,
                     Path(args.output),
                     mode=args.mode,
+                    full_frame=args.full_frame,
                     emit=writer.write,
                 )
             ]

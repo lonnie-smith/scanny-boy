@@ -209,7 +209,8 @@ struct CLIEventTests {
                 "params":{"x":10},"created_at":"2026-09-01T00:00:00Z"},\
                 "rotation_quarter_turns":0,"flipped_horizontally":false,\
                 "fine_rotation_deg":0.0,\
-                "crop":{"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm"},\
+                "crop":{"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm",\
+                "x":10,"y":8,"canvas_width":300,"canvas_height":200},\
                 "preview_path":"/tmp/preview.png"}
                 """)
         )
@@ -220,6 +221,10 @@ struct CLIEventTests {
         #expect(crop.height == 24)
         #expect(crop.tiltDegrees == 2.5)
         #expect(crop.preset == "35mm")
+        #expect(crop.x == 10)
+        #expect(crop.y == 8)
+        #expect(crop.canvasWidth == 300)
+        #expect(crop.canvasHeight == 200)
     }
 
     @Test("edit_recorded with a null crop reports no live crop")

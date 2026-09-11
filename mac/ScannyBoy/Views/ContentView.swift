@@ -367,7 +367,11 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.catalogue, id: \.self, selection: $model.selectedFiles) { name in
-                    CatalogueRow(name: name, url: model.fileURL(for: name))
+                    CatalogueRow(
+                        name: name,
+                        url: model.fileURL(for: name),
+                        selectedFiles: model.selectedFiles
+                    )
                 }
                 .listStyle(.inset)
             }
@@ -442,7 +446,8 @@ struct ContentView: View {
                 onReplace: { chooseBaseFrame(replace: true) },
                 onDropFrame: { url in
                     Task { await model.attachBaseFrame(at: url) }
-                }
+                },
+                fileURL: model.fileURL(for:)
             )
             Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)
@@ -519,6 +524,10 @@ struct ContentView: View {
                 } else {
                     RunResultView(run: run)
                 }
+            } else if !model.selectedFiles.isEmpty {
+                Text(Self.convertReadyLabel(scanCount: model.selectedFiles.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(10)
@@ -537,9 +546,23 @@ struct ContentView: View {
                     )
                 )
         }
-        .onDrop(of: [.fileURL], isTargeted: $isConvertDropTarget) { providers in
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onDrop(of: [.plainText], isTargeted: $isConvertDropTarget) { providers in
             handleConvertDrop(providers)
         }
+    }
+
+    private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !activity.isBusy, let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: String.self) { string, _ in
+            guard let string,
+                let names = CatalogueDragSupport.decodeDragPayload(string)
+            else { return }
+            Task { @MainActor in
+                applyConvertDrop(filenames: names)
+            }
+        }
+        return true
     }
 
     private func handleConvertTap() {
@@ -553,24 +576,20 @@ struct ContentView: View {
         }
     }
 
-    private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !activity.isBusy, !providers.isEmpty else { return false }
-        guard let inputFolder = model.inputFolder else { return false }
-        Task { @MainActor in
-            var names: [String] = []
-            for provider in providers {
-                let url: URL? = await withCheckedContinuation { continuation in
-                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                        continuation.resume(returning: url)
-                    }
-                }
-                if let url, let name = Self.resolveFileName(url, relativeTo: inputFolder) {
-                    names.append(name)
-                }
-            }
-            model.selectedFiles = Set(names)
-        }
+    @discardableResult
+    private func applyConvertDrop(filenames: [String]) -> Bool {
+        guard !activity.isBusy else { return false }
+        let valid = Set(filenames.filter { model.catalogue.contains($0) })
+        guard !valid.isEmpty else { return false }
+        model.selectedFiles = valid
         return true
+    }
+
+    @discardableResult
+    private func applyConvertDrop(urls: [URL]) -> Bool {
+        guard !activity.isBusy, let inputFolder = model.inputFolder else { return false }
+        let names = urls.compactMap { Self.resolveFileName($0, relativeTo: inputFolder) }
+        return applyConvertDrop(filenames: names)
     }
 
     /// Rejects sidebar selection changes while any helper is active (section
@@ -675,6 +694,11 @@ struct ContentView: View {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return exists && isDir.boolValue
+    }
+
+    /// Caption for the Convert zone while idle and scans are selected.
+    nonisolated static func convertReadyLabel(scanCount: Int) -> String {
+        "\(scanCount) scan\(scanCount == 1 ? "" : "s") ready to convert"
     }
 
     /// Given a dropped file URL and the input folder, returns the file's

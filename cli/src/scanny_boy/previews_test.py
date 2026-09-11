@@ -4,6 +4,7 @@ no gamma, a positive-looking display of the normalized-density negative."""
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import cv2
@@ -876,9 +877,13 @@ def _empty_preview_cache():
 
     previews._DISPLAY_PREVIEW_CACHE.clear()
     previews._DISPLAY_PREVIEW_CACHE_BYTES = 0
+    previews._DISPLAY_IMAGE_CACHE.clear()
+    previews._DISPLAY_IMAGE_CACHE_BYTES = 0
     yield
     previews._DISPLAY_PREVIEW_CACHE.clear()
     previews._DISPLAY_PREVIEW_CACHE_BYTES = 0
+    previews._DISPLAY_IMAGE_CACHE.clear()
+    previews._DISPLAY_IMAGE_CACHE_BYTES = 0
 
 
 def test_preview_cache_hits_across_tone_changes(tmp_path):
@@ -1025,6 +1030,59 @@ def test_preview_cache_is_bounded_by_total_bytes(tmp_path, monkeypatch):
     assert kept.nbytes == previews._DISPLAY_PREVIEW_CACHE_BYTES
 
 
+def test_display_image_cache_hits_on_second_render_region(tmp_path, monkeypatch):
+    """The slow path decodes once; a second region on the same negative
+    reuses the full-resolution display array."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+
+    decode_calls = []
+    real_decode = previews._display_image
+
+    def counting(*args, **kwargs):
+        decode_calls.append(args)
+        return real_decode(*args, **kwargs)
+
+    previews._display_image = counting
+    try:
+        previews.render_region(
+            tiff_path, 0, 0, 10, 10, fine_angle_deg=1.0, destination=tmp_path / "a.rgba"
+        )
+        previews.render_region(
+            tiff_path, 12, 0, 10, 10, fine_angle_deg=1.0, destination=tmp_path / "b.rgba"
+        )
+    finally:
+        previews._display_image = real_decode
+
+    assert len(decode_calls) == 1
+
+
+def test_render_region_raw_cache_matches_png(tmp_path):
+    """Raw region caches carry the same pixels as the PNG encode."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+    png_path = tmp_path / "region.png"
+    raw_path = tmp_path / "region.rgba"
+    rect = previews.render_region(
+        tiff_path, 10, 5, 20, 12, destination=png_path
+    )
+    assert rect == (10, 5, 20, 12)
+    previews.render_region(tiff_path, 10, 5, 20, 12, destination=raw_path)
+
+    png = cv2.imread(str(png_path), cv2.IMREAD_UNCHANGED)
+    raw_bytes = raw_path.read_bytes()
+    assert raw_bytes[:4] == previews.REGION_RAW_MAGIC
+    width, height = struct.unpack("<II", raw_bytes[4:12])
+    assert (width, height) == (20, 12)
+    rgba = np.frombuffer(raw_bytes[12:], dtype=np.uint8).reshape(height, width, 4)
+    raw = cv2.cvtColor(rgba, cv2.COLOR_RGBA2RGB)
+    np.testing.assert_array_equal(raw, cv2.cvtColor(png, cv2.COLOR_BGR2RGB))
+
+
 # --- the crop op -------------------------------------------------------------
 
 
@@ -1104,6 +1162,39 @@ def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, f
     np.testing.assert_array_equal(cropped, expected)
 
 
+def test_full_frame_crop_round_trips_through_rotation():
+    """With `--full-frame`, a rect on the uncropped display round-trips
+    through the stored TIFF window and back — even when quarter_turns is
+    odd (portrait display)."""
+    from scanny_boy import previews
+
+    tiff_h, tiff_w = 800, 1000
+    tiff_size = (tiff_h, tiff_w)
+    rect = (100, 50, 400, 300)
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=0.0,
+        quarter_turns=1,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+        full_frame=True,
+    )
+    x, y, w, h, tilt = window
+    assert tilt == 0.0
+
+    assert previews.tiff_rect_to_display(
+        (x, y, w, h),
+        tiff_size,
+        quarter_turns=1,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    ) == rect
+
+
 def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
     """The crop semantics, end to end: a rect drawn tilted over the current
     display records as the composed TIFF-space window, and the replayed
@@ -1140,7 +1231,7 @@ def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
     uncropped = _display_image(tiff_path, 0, False)
 
     centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
-    matrix = cv2.getRotationMatrix2D(centre, tilt, 1.0)
+    matrix = cv2.getRotationMatrix2D(centre, -tilt, 1.0)
     warped = cv2.warpAffine(
         uncropped,
         matrix,
@@ -1155,6 +1246,45 @@ def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
     # couple of pixels; the gradient's 90-codes-per-column slope bounds
     # the delta.
     assert np.max(np.abs(cropped.astype(int) - expected.astype(int))) < 600
+
+
+def test_positive_tilt_samples_the_ccw_diagonal(tmp_path):
+    """A +tilt crop must sample the overlay's CCW window — more of the
+    image's top-right than its top-left — not the opposite diagonal."""
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path, height=200, width=300)
+    tiff_size = (image.shape[0], image.shape[1])
+    # A centred window large enough that tilt skew is visible in the slice.
+    rect = (60, 40, 180, 120)
+    tilt = 10.0
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=tilt,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
+    )
+    cropped = _display_image(
+        tiff_path, 0, False, 0.0, None, _window_params(window, tiff_size)
+    )
+    width = cropped.shape[1]
+    left_mean = float(cropped[:, : width // 3].mean())
+    right_mean = float(cropped[:, -width // 3 :].mean())
+    assert right_mean > left_mean
+
+    # The wrong warp sign inverts the diagonal.
+    wrong_window = (*window[:4], -tilt)
+    wrong = _display_image(
+        tiff_path, 0, False, 0.0, None, _window_params(wrong_window, tiff_size)
+    )
+    wrong_left = float(wrong[:, : width // 3].mean())
+    wrong_right = float(wrong[:, -width // 3 :].mean())
+    assert wrong_left > wrong_right
 
 
 def test_the_crop_composes_with_the_display_transforms(tmp_path):
@@ -1236,7 +1366,7 @@ def test_a_recrop_composes_into_one_window(tmp_path):
         second_rect[0] + second_rect[2] / 2.0,
         second_rect[1] + second_rect[3] / 2.0,
     )
-    matrix = cv2.getRotationMatrix2D(centre, second_tilt, 1.0)
+    matrix = cv2.getRotationMatrix2D(centre, -second_tilt, 1.0)
     warped = cv2.warpAffine(
         first_display,
         matrix,
@@ -1297,6 +1427,10 @@ def test_display_shape_and_crop_report_follow_the_crop_window():
         "height": 100,
         "tilt_deg": 3.0,
         "preset": None,
+        "x": 120,
+        "y": 10,
+        "canvas_width": 200,
+        "canvas_height": 300,
     }
     assert (
         previews.crop_report(None, tiff_size, quarter_turns=0) is None

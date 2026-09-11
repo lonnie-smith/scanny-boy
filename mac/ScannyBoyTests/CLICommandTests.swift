@@ -325,6 +325,31 @@ struct CLICommandTests {
         )
     }
 
+    @Test("edit crop can name the full uncropped display canvas")
+    func editCropFullFrameArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out,
+            negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            tiltDegrees: 2.5,
+            preset: "35mm",
+            fullFrame: true
+        )
+        #expect(command.arguments.contains("--full-frame"))
+    }
+
+    @Test("edit render-preview can ignore the live crop")
+    func editRenderPreviewFullFrameArguments() {
+        let command = CLICommand.editRenderPreview(
+            roll: Self.out,
+            negative: "neg-01",
+            mode: "positive",
+            output: URL(filePath: "/tmp/preview.png"),
+            fullFrame: true
+        )
+        #expect(command.arguments.contains("--full-frame"))
+    }
+
     @Test("edit crop without a rect is the reset")
     func editCropResetArguments() {
         let command = CLICommand.editCrop(

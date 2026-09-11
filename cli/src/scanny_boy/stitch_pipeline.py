@@ -2125,6 +2125,8 @@ def _composite_and_publish(
                         else None,
                         (record.output["height"], record.output["width"]),
                         quarter_turns=quarter_turns,
+                        flipped_horizontally=flipped,
+                        fine_angle_deg=fine_angle,
                     )
                 ),
             }

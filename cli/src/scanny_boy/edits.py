@@ -152,7 +152,11 @@ def _crop_report_fields(
         else None
     )
     return previews.crop_report(
-        crop, (height, width), quarter_turns=state.quarter_turns
+        crop,
+        (height, width),
+        quarter_turns=state.quarter_turns,
+        flipped_horizontally=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
     )
 
 
@@ -321,16 +325,20 @@ def run_edit_crop(
     tilt_deg: float = 0.0,
     preset: str | None = None,
     reset: bool = False,
+    full_frame: bool = False,
     emit: EmitFn,
 ) -> dict:
     """Records one negative's crop — a tilted window over the image as it
     currently renders (live crop included), or `--reset` for the full
-    frame. The op is a state, not a transform: the latest one wins, and it
-    stores the **fully-composed** window in published-TIFF pixels — the
-    drawn rect and tilt are mapped backwards through the net state
-    (`previews.display_crop_window_to_tiff`), so a re-crop composes into
-    one window and the replay never has to. Like every edit, the published
-    TIFF is untouched: the crop is baked only at export.
+    frame. With `--full-frame`, the rect is on the full uncropped display
+    canvas — the space the app uses when re-entering crop mode — rather
+    than on the live cropped display. The op is a state, not a transform:
+    the latest one wins, and it stores the **fully-composed** window in
+    published-TIFF pixels — the drawn rect and tilt are mapped backwards
+    through the net state (`previews.display_crop_window_to_tiff`), so a
+    re-crop composes into one window and the replay never has to. Like
+    every edit, the published TIFF is untouched: the crop is baked only at
+    export.
 
     The whole intent is validated before anything is written: the drawn
     rect must fit the display image, the tilt within ±45, the composed
@@ -367,7 +375,7 @@ def run_edit_crop(
         display_h, display_w = previews.display_shape(
             (tiff_h, tiff_w),
             quarter_turns=state.quarter_turns,
-            crop_params=existing,
+            crop_params=None if full_frame else existing,
         )
         if w < repo.CROP_MIN_SIZE_PX or h < repo.CROP_MIN_SIZE_PX:
             raise EditFailure(
@@ -389,6 +397,7 @@ def run_edit_crop(
             flipped_horizontally=state.flipped,
             fine_angle_deg=state.fine_angle_deg,
             crop_params=existing,
+            full_frame=full_frame,
         )
         # The stored window must sit inside the canvas — the crop step
         # slices the warped canvas at the rect, and a slice past the edge
@@ -675,6 +684,7 @@ def run_edit_render_preview(
     output_path: Path,
     *,
     mode: str = "positive",
+    full_frame: bool = False,
     emit: EmitFn,
 ) -> dict:
     """Render the whole display image — the ops log's net transform folded
@@ -696,6 +706,18 @@ def run_edit_render_preview(
     meter = color.read_metering(negative.normalization)
     matrix = render.camera_matrix_from_roll(_roll)
     try:
+        live_crop = (
+            None
+            if full_frame
+            else (
+                state.crop
+                if previews.crop_is_live(
+                    state.crop,
+                    (negative.output["height"], negative.output["width"]),
+                )
+                else None
+            )
+        )
         width, height = previews.render_preview(
             tiff_path,
             output_path,
@@ -704,7 +726,7 @@ def run_edit_render_preview(
             fine_angle_deg=state.fine_angle_deg,
             mode=mode,
             tone_params=state.tone,
-            crop_params=state.crop,
+            crop_params=live_crop,
             color_params=state.color,
             metering=meter,
             matrix=matrix,

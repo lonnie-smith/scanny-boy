@@ -512,7 +512,11 @@
               "width": { "type": "integer", "minimum": 1 },
               "height": { "type": "integer", "minimum": 1 },
               "tilt_deg": { "type": "number" },
-              "preset": { "type": ["string", "null"] }
+              "preset": { "type": ["string", "null"] },
+              "x": { "type": "integer", "minimum": 0 },
+              "y": { "type": "integer", "minimum": 0 },
+              "canvas_width": { "type": "integer", "minimum": 1 },
+              "canvas_height": { "type": "integer", "minimum": 1 }
             }
           },
           "preview_path": { "type": ["string", "null"] }
