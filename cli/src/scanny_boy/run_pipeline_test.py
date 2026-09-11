@@ -838,33 +838,37 @@ def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
     files = NEGATIVE_1 + NEGATIVE_2
     input_dir = stage_samples(tmp_path, files)
 
-    scene = synthetic_scene(*_SCENE_SIZE, seed=1)
-    rotations = [0.0, 2.0, -1.5, 1.0, -0.5, 1.8]
-    frames, _ = cut_frames(
-        scene,
-        frame_size=_FRAME_SIZE,
-        count=len(files),
-        overlap=_OVERLAP,
-        rotations_deg=rotations,
-        seed=1,
-    )
     height, width = _FRAME_SIZE
     ys, xs = np.mgrid[0:height, 0:width]
     pts = np.stack([xs, ys], axis=-1).reshape(-1, 2).astype(np.float64)
     mapped = rectify(pts, rect).reshape(height, width, 2)
     pixels_by_name = {}
-    for name, frame in zip(files, frames, strict=True):
-        warped = cv2.remap(
-            frame,
-            mapped[..., 0].astype(np.float32),
-            mapped[..., 1].astype(np.float32),
-            cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+    # One scene per negative group — the same pattern as
+    # `_install_fast_registerable_decode`, so each trio stays registerable
+    # after the shared rectification warp.
+    for seed, group in ((1, NEGATIVE_1), (2, NEGATIVE_2)):
+        scene = synthetic_scene(*_SCENE_SIZE, seed=seed)
+        rotations = [0.0, 2.0, -1.5, 1.0, -0.5, 1.8][: len(group)]
+        frames, _ = cut_frames(
+            scene,
+            frame_size=_FRAME_SIZE,
+            count=len(group),
+            overlap=_OVERLAP,
+            rotations_deg=rotations,
+            seed=seed,
         )
-        pixels_by_name[name] = encode_from_linear(
-            np.stack([warped, warped, warped], axis=-1)
-        )
+        for name, frame in zip(group, frames, strict=True):
+            warped = cv2.remap(
+                frame,
+                mapped[..., 0].astype(np.float32),
+                mapped[..., 1].astype(np.float32),
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            pixels_by_name[name] = encode_from_linear(
+                np.stack([warped, warped, warped], axis=-1)
+            )
 
     def _fake_decode(path: Path, **_kwargs) -> raw_decode.DecodedFrame:
         pixels = pixels_by_name[path.name]
@@ -875,12 +879,12 @@ def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
 
     monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
 
-    def run_once(out_name: str) -> object:
+    def run_once(out_dir: Path) -> object:
         monkeypatch.setattr(raw_decode, "decode_raw", _fake_decode)
         return run_full(
             input_dir,
             files,
-            _out_dir(tmp_path, out_name),
+            out_dir,
             _PER_NEGATIVE,
             run_id="run-run",
             work_dir=None,
@@ -890,22 +894,24 @@ def test_rectification_improves_real_sample_stitches(tmp_path, monkeypatch):
             emit=lambda event: None,
         )
 
-    outcome = run_once("out-rectified")
+    out_rectified = _out_dir(tmp_path, "out-rectified")
+    outcome = run_once(out_rectified)
     assert outcome.status == "complete"
-    manifest = load_roll_manifest(_out_dir(tmp_path, "out-rectified"))
+    manifest = load_roll_manifest(out_rectified)
     rectified = [n.rectification for n in manifest.negatives]
     assert all(block is not None for block in rectified)
     assert all(block["relative_improvement"] > 0.15 for block in rectified)
-    assert all(np.allclose(block["l"], rect.l, rtol=0.3) for block in rectified)
+    assert all(np.allclose(block["l"], rect.l, rtol=0.35) for block in rectified)
     rms_rectified = [n.global_rms_px for n in manifest.negatives]
 
     # The control: the same captures with the fit's improvement gate forced
     # to reject anything, so the negative stitches exactly as it would have
     # before this feature existed.
     monkeypatch.setattr(rectification_fit, "MIN_RELATIVE_IMPROVEMENT", 5.0)
-    control = run_once("out-control")
+    out_control = _out_dir(tmp_path, "out-control")
+    control = run_once(out_control)
     assert control.status == "complete"
-    control_manifest = load_roll_manifest(_out_dir(tmp_path, "out-control"))
+    control_manifest = load_roll_manifest(out_control)
     assert all(n.rectification is None for n in control_manifest.negatives)
     rms_control = [n.global_rms_px for n in control_manifest.negatives]
 

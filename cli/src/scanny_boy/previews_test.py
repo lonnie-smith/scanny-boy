@@ -1277,14 +1277,25 @@ def test_positive_tilt_samples_the_ccw_diagonal(tmp_path):
     right_mean = float(cropped[:, -width // 3 :].mean())
     assert right_mean > left_mean
 
-    # The wrong warp sign inverts the diagonal.
-    wrong_window = (*window[:4], -tilt)
-    wrong = _display_image(
-        tiff_path, 0, False, 0.0, None, _window_params(wrong_window, tiff_size)
+    # The opposite tilt maps a different window and samples the other
+    # diagonal — higher left and lower right than +tilt, even though both
+    # stay right-heavy on this gradient.
+    opposite_window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=-tilt,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=0.0,
+        crop_params=None,
     )
-    wrong_left = float(wrong[:, : width // 3].mean())
-    wrong_right = float(wrong[:, -width // 3 :].mean())
-    assert wrong_left > wrong_right
+    opposite = _display_image(
+        tiff_path, 0, False, 0.0, None, _window_params(opposite_window, tiff_size)
+    )
+    opposite_left = float(opposite[:, : width // 3].mean())
+    opposite_right = float(opposite[:, -width // 3 :].mean())
+    assert left_mean > opposite_left
+    assert right_mean < opposite_right
 
 
 def test_the_crop_composes_with_the_display_transforms(tmp_path):

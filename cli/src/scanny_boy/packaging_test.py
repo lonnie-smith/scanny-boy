@@ -59,6 +59,10 @@ from scanny_boy.sample_nef_support import (
 )
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
+BASE_FRAME = (
+    Path(__file__).resolve().parents[3] / "tests/fixtures/base-frame/base-frame.dng"
+)
+
 pytestmark = [
     pytest.mark.slow,
     requires_packaged_app,
@@ -354,10 +358,23 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         str(tmp_path),
         "--name",
         "packaged",
+        "--film-kind",
+        "colour",
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
     out_dir = tmp_path / "packaged"
+
+    result = run_packaged(
+        "roll",
+        "set-base-frame",
+        "--roll",
+        str(out_dir),
+        "--frame",
+        str(BASE_FRAME),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
 
     result = run_packaged(
         "run",

@@ -1230,7 +1230,9 @@ def test_anchor_consumption_changes_only_ceils_deviations(
     """REBATE_ANCHORING B-5: stitching with the roll anchor differs from
     the same roll with consumption disabled, and only in the per-channel
     `ceils` deviations — floors and the ceils level stay put."""
-    out_with = make_roll_dir(tmp_path / "with")
+    (tmp_path / "with").mkdir()
+    (tmp_path / "without").mkdir()
+    out_with = make_roll_dir(tmp_path / "with", "with")
     roll = load_roll_manifest(out_with)
     attach_base_frame(roll, density=[-0.50, -0.20, -0.90])
     write_roll_manifest(out_with, roll)
@@ -1238,8 +1240,11 @@ def test_anchor_consumption_changes_only_ceils_deviations(
     assert run_stitch_with_defaults(work_dir, out_with).status == "complete"
     norm_with = load_roll_manifest(out_with).negatives[0].normalization
 
-    out_without = make_roll_dir(tmp_path / "without")
+    out_without = make_roll_dir(tmp_path / "without", "without")
     roll2 = load_roll_manifest(out_with)
+    without_shell = load_roll_manifest(out_without)
+    roll2.roll_id = without_shell.roll_id
+    roll2.roll_name = without_shell.roll_name
     attach_base_frame(roll2, density=[-0.50, -0.20, -0.90])
     write_roll_manifest(out_without, roll2)
     monkeypatch.setattr(stitch_pipeline, "_locked_base_refs", lambda _roll: None)

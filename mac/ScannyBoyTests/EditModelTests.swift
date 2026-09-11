@@ -915,7 +915,13 @@ struct EditModelTests {
             fi
             """
         let executable = try TestSupport.writeTestExecutable(script, in: directory)
-        let model = try await Self.multiSelectModel(CLIRunner(executable: executable))
+        let cache = PreviewCache(cachesDirectory: directory)
+        let model = EditModel(
+            runner: CLIRunner(executable: executable),
+            previewCache: cache
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
         guard let negative = model.visibleNegatives.first else {
             Issue.record("no negatives in the fake roll")
             return
