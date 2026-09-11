@@ -363,7 +363,7 @@ final class EditModel {
     }
 
     /// Records the selected negatives' preview tone adjustment through the
-    /// CLI, or `nil` for the reset to the flat look.
+    /// CLI, or `nil` for the reset to the default print curve.
     func setTone(
         _ targets: [RollManifest.Negative],
         adjustment: ToneAdjustment?,
@@ -1126,7 +1126,9 @@ final class EditModel {
         if let adjustment = negative.toneAdjustment {
             tone = String(adjustment.hashValue)
         } else {
-            tone = "flat"
+            // No tone op: the positive preview uses the default print curve
+            // (ToneAdjustment.neutral), not the flat identity ramp.
+            tone = String(ToneAdjustment.neutral.hashValue)
         }
         let colour: String
         if let adjustment = negative.colorAdjustment {

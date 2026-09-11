@@ -1643,9 +1643,13 @@ an unused flag is a maintenance cost plus a second set of tests.
 
 ## The preview's tone adjustment: the `tone` op (protocol version 10)
 
-The Edit tab's flat preview — decode, `1 - val`, bare 8-bit scaling — is
-honest but hard to judge a print by, so the tab offers a nondestructive
-tone adjustment: an ISO-R paper grade (50–180; lower is harder, matching
+The Edit tab's positive preview applies the default print curve
+(`tone.NEUTRAL`, grade R115) even when no `tone` op is recorded — the
+sliders already sit on that curve, and the image must match. The flat
+identity ramp (`curve_values(None)`) is reserved for the negative-view
+toggle and tests, not for the positive display. On top of that baseline
+the tab offers a nondestructive tone adjustment: an ISO-R paper grade
+(50–180; lower is harder, matching
 NegPy's print-module vocabulary) plus a midtone snap trim (−0.5…0.5,
 NegPy's variable midtone gamma). It is recorded as a `tone` op in the
 negative's ops log (`repo.TONE_OP`) and composed into the preview's

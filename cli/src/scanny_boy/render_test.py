@@ -58,17 +58,13 @@ def test_the_no_matrix_path_is_exact_against_the_tone_curve(tone_params):
     positive = np.maximum(
         1.0 - normalization.decode_normalized(codes.astype(np.float64)), 0.0
     )
-    if tone_params is None:
-        positive = np.clip(positive, 0.0, 1.0)
     expected = np.rint(tone_curve_reference(positive, tone_params) * tone.MAX_CODE)
     assert np.array_equal(rendered, expected.astype(np.uint16))
     assert fractions == (0.0,)
 
 
 def tone_curve_reference(positive: np.ndarray, tone_params) -> np.ndarray:
-    if tone_params is None:
-        return positive
-    return tone.curve_values(positive, tone.ToneParams(**tone_params))
+    return tone.curve_values(positive, tone.resolved_positive_tone(tone_params))
 
 
 # --- the anchor, bounded (colour path) -------------------------------------
@@ -273,11 +269,10 @@ def test_the_gamma_constant_is_derived_from_the_pinned_trc():
 
 def test_preview_reference_matches_the_preview_module_s_luts():
     """The preview reference in this module is the same construction as
-    `previews.py`'s LUT builders — pin it, so a change in either shows up
-    here. `previews.NORMALIZED_DISPLAY_LUT` is the flat (tone-less) LUT."""
-    assert np.array_equal(
-        preview_lut(None), _previews.NORMALIZED_DISPLAY_LUT
-    )
+    `previews.py`'s encode path — pin it, so a change in either shows up
+    here. A missing tone op applies the default print curve."""
+    neutral_lut = tone.build_display_lut(tone.NEUTRAL)
+    assert np.array_equal(preview_lut(None), neutral_lut)
 
 
 def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
@@ -302,37 +297,15 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     assert difference.max() <= 1
 
 
-def test_colour_only_render_stays_on_identity_ramp():
-    """A colour op with no tone op must not turn on the paper grade."""
+def test_colour_only_render_uses_the_default_print_curve():
+    """A colour op with no recorded tone op still renders on `tone.NEUTRAL`."""
     matrix = _TEST_MATRIX
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     color_params = {"wb_magenta": 0.2}
 
-    for frac in (0.2, 0.5, 0.76):
-        code = int(frac * tone.MAX_CODE)
-        img = np.full((1, 1, 3), code, dtype=np.uint16)
-        out, _ = render.render_positive_float(
-            img, matrix, None, color_params, metering
-        )
-        if frac == 0.2:
-            assert out[0, 0, 1] > 0.08
-        if frac == 0.5:
-            assert 0.25 < out[0, 0, 1] < 0.55
-        if frac == 0.76:
-            assert out[0, 0, 1] < 0.85
-
-    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
-    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
-    rendered, _ = render.render_positive_float(
-        rgb, matrix, None, color_params, metering
-    )
-    for ch in range(3):
-        channel = rendered[0, :, ch]
-        assert np.all(np.diff(channel.astype(np.float64)) <= 1e-6)
-
     mid_code = int(0.5 * tone.MAX_CODE)
     mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
-    _neutral, _ = render.render_positive_float(
+    neutral_only, _ = render.render_positive_float(
         mid_img, matrix, None, {"wb_magenta": 0.0}, metering
     )
     colored, _ = render.render_positive_float(
@@ -340,6 +313,17 @@ def test_colour_only_render_stays_on_identity_ramp():
     )
     assert colored[0, 0, 1] < colored[0, 0, 0]
     assert colored[0, 0, 1] < colored[0, 0, 2]
+    assert not np.allclose(colored, neutral_only)
+
+    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
+    rendered, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    reference, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    np.testing.assert_allclose(rendered, reference, atol=1e-6)
 
 
 def test_preview_and_export_agree_with_headroom_and_shoulder():

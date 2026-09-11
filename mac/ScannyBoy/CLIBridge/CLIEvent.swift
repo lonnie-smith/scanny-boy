@@ -336,7 +336,7 @@ extension CLIEvent {
 
     /// The recorded op's tone params, when it is a `tone` op: its `params`
     /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
-    /// reset to the flat look). The geometric ops carry no tone keys, so
+    /// reset to the default print curve). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
     public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,

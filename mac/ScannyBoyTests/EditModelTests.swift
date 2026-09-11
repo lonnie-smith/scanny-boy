@@ -580,7 +580,7 @@ struct EditModelTests {
         #expect(model.visibleNegatives.map(\.toneSnapGamma) == [0.2, 0.2])
     }
 
-    @Test("setTone with nils resets to the flat look")
+    @Test("setTone with nils resets to the default print curve")
     func testSetToneReset() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
@@ -595,7 +595,11 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
-        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none#none#none#none"))
+        let defaultTone = String(ToneAdjustment.neutral.hashValue)
+        #expect(
+            EditModel.renderGeneration(of: model.visibleNegatives[0])
+                .contains("#\(defaultTone)#neutral#")
+        )
     }
 
     @Test("A rotate event leaves the tone state alone")
@@ -660,7 +664,10 @@ struct EditModelTests {
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
-        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none#none#none#none"))
+        let defaultTone = String(ToneAdjustment.neutral.hashValue)
+        #expect(
+            EditModel.renderGeneration(of: flat).contains("#\(defaultTone)#neutral#")
+        )
     }
 
     @Test("The render generation token carries the colour state")

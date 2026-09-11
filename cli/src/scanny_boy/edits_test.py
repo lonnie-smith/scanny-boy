@@ -388,7 +388,7 @@ def test_tone_coalesces_repeated_commits(stitched_roll):
     assert edits[0]["params"] == _tone_params(80.0, 0.3)
 
 
-def test_tone_reset_returns_to_the_flat_look(stitched_roll):
+def test_tone_reset_returns_to_the_default_print_curve(stitched_roll):
     from scanny_boy import previews
 
     run_edit_tone(
@@ -403,14 +403,123 @@ def test_tone_reset_returns_to_the_flat_look(stitched_roll):
     manifest = load_roll_manifest(stitched_roll)
     negative = manifest.negative(_NEGATIVE_ID)
     reset_preview = Path(negative.preview_path).read_bytes()
-    flat = previews.generate_preview(
+    default = previews.generate_preview(
         stitched_roll,
         manifest.roll_id,
         negative,
         tone_params=None,
     )
-    assert reset_preview == flat.read_bytes()
+    assert reset_preview == default.read_bytes()
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).tone is None
+
+
+def test_tone_reset_under_colour_matches_neutral_plus_colour(stitched_roll):
+    from scanny_boy import previews
+
+    run_edit_color(
+        stitched_roll,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(90.0, 0.2), emit=lambda event: None
+    )
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _reset_tone_params(), emit=lambda event: None
+    )
+
+    manifest = load_roll_manifest(stitched_roll)
+    negative = manifest.negative(_NEGATIVE_ID)
+    state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID)
+    assert state.tone is None
+    assert state.color is not None
+
+    reset_preview = Path(negative.preview_path).read_bytes()
+    expected = previews.generate_preview(
+        stitched_roll,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+        color_params=state.color,
+    )
+    assert reset_preview == expected.read_bytes()
+
+
+def test_snap_only_tone_commit_is_incremental_on_neutral(tmp_path):
+    """The first tone nudge records a trim on the default print curve."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    negative = _negative(
+        negative_id=_NEGATIVE_ID,
+        run_id="stitch-run",
+        status="completed",
+        sequence=1,
+        output={
+            "name": "_DSC0001.tif",
+            "size": 0,
+            "sha256": "0" * 64,
+            "width": 64,
+            "height": 40,
+        },
+    )
+    manifest.negatives.append(negative)
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", image)
+
+    run_edit_color(
+        roll_dir,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.1, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    manifest = load_roll_manifest(roll_dir)
+    negative = manifest.negative(_NEGATIVE_ID)
+    state = repo.net_edit_state(roll_dir, _NEGATIVE_ID)
+    before = previews.generate_preview(
+        roll_dir,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+        color_params=state.color,
+    ).read_bytes()
+
+    snap_only = _tone_params(115.0, 0.05)
+    assert before != previews.generate_preview(
+        roll_dir,
+        manifest.roll_id,
+        negative,
+        tone_params=snap_only,
+        color_params=state.color,
+    ).read_bytes()
+
+    run_edit_tone(roll_dir, _NEGATIVE_ID, snap_only, emit=lambda event: None)
+    manifest = load_roll_manifest(roll_dir)
+    negative = manifest.negative(_NEGATIVE_ID)
+    after = Path(negative.preview_path).read_bytes()
+    expected = previews.generate_preview(
+        roll_dir,
+        manifest.roll_id,
+        negative,
+        tone_params=snap_only,
+        color_params=state.color,
+    ).read_bytes()
+    assert after == expected
+
+
+def test_colour_commit_does_not_create_a_tone_op(stitched_roll):
+    run_edit_color(
+        stitched_roll,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).tone is None
+    edits = repo.edits_for(stitched_roll, _NEGATIVE_ID)
+    assert all(edit["op"] != repo.TONE_OP for edit in edits)
 
 
 def test_tone_never_touches_the_published_tiff(stitched_roll):
@@ -1210,7 +1319,8 @@ def croppable_roll(tmp_path: Path) -> Path:
 def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
     import cv2
 
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT, _display_image
+    from scanny_boy import render
+    from scanny_boy.previews import _display_image
 
     events: list = []
     tiff_before = (croppable_roll / "_DSC0001.tif").read_bytes()
@@ -1250,7 +1360,7 @@ def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
     )
     stored = cv2.imread(str(fields["preview_path"]), cv2.IMREAD_UNCHANGED)
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR
+        render.encode_positive_uint8(display, None, None), cv2.COLOR_RGB2BGR
     )
     np.testing.assert_array_equal(stored, expected)
 

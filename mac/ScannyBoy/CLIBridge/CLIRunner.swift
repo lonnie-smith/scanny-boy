@@ -290,8 +290,8 @@ public struct CLICommand: Sendable, Hashable {
     /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--grade R --snap G | --reset)`
     ///
     /// Records the preview tone adjustment — an ISO-R paper grade plus a
-    /// midtone snap — per selected negative, or resets it to the flat
-    /// linear look with `reset`. The op is a state, not a transform: the
+    /// midtone snap — per selected negative, or resets it to the default
+    /// print curve with `reset`. The op is a state, not a transform: the
     /// latest one wins and a trailing `tone` op is coalesced in place.
     /// Never touches the published TIFFs; the preview is regenerated with
     /// the tone curve composed into the display encode.

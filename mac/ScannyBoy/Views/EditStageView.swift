@@ -340,6 +340,11 @@ private struct PreviewPane: View {
                 )
             } else if showsNegative {
                 next = await edit.renderPreview(negative, mode: .negative)
+            } else if negative.toneAdjustment == nil {
+                // Untoned negatives may still have on-disk preview PNGs from
+                // the old flat encode — render live through the default print
+                // curve until the cached file is regenerated.
+                next = await edit.renderPreview(negative, mode: displayMode)
             } else if let url = previewURL {
                 next = await ThumbnailLoader.shared.thumbnail(
                     forPreview: url,
@@ -912,8 +917,8 @@ private struct EditSidebar: View {
         case .color:
             ColorAdjustmentPanel(
                 adjustment: negative.colorAdjustment,
-                isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting
-                    || edit.isCropping,
+                isBusy: edit.isSettingColor || edit.isSettingTone || edit.isRotating
+                    || edit.isDeleting || edit.isCropping,
                 onScheduleCommit: { adjustment in
                     edit.scheduleColor(targets, adjustment: adjustment)
                 },
@@ -1125,6 +1130,7 @@ private struct ToneAdjustmentPanel: View {
     private static let widthRange: ClosedRange<Double> = 0.1...5
 
     @State private var values = ToneAdjustment.neutral
+    @State private var isDragging = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1241,7 +1247,7 @@ private struct ToneAdjustmentPanel: View {
                         onReset()
                     }
                     .disabled(isBusy)
-                    .help("Remove the adjustment and return to the flat linear preview")
+                    .help("Return every control to the default print curve")
                     Spacer()
                     if isBusy {
                         ProgressView()
@@ -1250,7 +1256,10 @@ private struct ToneAdjustmentPanel: View {
                 }
         }
         .onAppear { syncFromModel() }
-        .onChange(of: adjustment) { syncFromModel() }
+        .onChange(of: adjustment) {
+            guard !isDragging else { return }
+            syncFromModel()
+        }
     }
 
     @ViewBuilder
@@ -1280,7 +1289,7 @@ private struct ToneAdjustmentPanel: View {
                 Spacer()
                 if let autoHelp {
                     Button {
-                        onCommitNow(snappedValues, autoFlag)
+                        commitNow(auto: autoFlag)
                     } label: {
                         Image(systemName: "wand.and.stars")
                     }
@@ -1298,8 +1307,9 @@ private struct ToneAdjustmentPanel: View {
                 step: step,
                 resetValue: resetValue,
                 reversed: reversed,
+                onEditingChanged: { isDragging = $0 },
                 onScheduleCommit: scheduleCommit,
-                onCommitNow: { onCommitNow(snappedValues, []) }
+                onCommitNow: { commitNow(auto: []) }
             )
             .accessibilityLabel(accessibilityLabel)
             Text(help)
@@ -1310,6 +1320,14 @@ private struct ToneAdjustmentPanel: View {
 
     private func scheduleCommit() {
         onScheduleCommit(snappedValues)
+    }
+
+    private func commitNow(auto: ToneAutoFlags) {
+        if snappedValues == ToneAdjustment.neutral && auto.isEmpty {
+            onReset()
+        } else {
+            onCommitNow(snappedValues, auto)
+        }
     }
 
     private var snappedValues: ToneAdjustment {
@@ -1344,6 +1362,7 @@ private struct ToneSlider: View {
     let resetValue: Double
     var reversed: Bool = false
     var trackColors: [Color]? = nil
+    var onEditingChanged: ((Bool) -> Void)? = nil
     let onScheduleCommit: () -> Void
     let onCommitNow: () -> Void
 
@@ -1374,6 +1393,7 @@ private struct ToneSlider: View {
 
     var body: some View {
         Slider(value: sliderValue, in: range, step: step) { editing in
+            onEditingChanged?(editing)
             guard !editing else { return }
             onCommitNow()
         }

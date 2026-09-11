@@ -307,6 +307,10 @@ def _build_display_lut() -> np.ndarray:
 
 NORMALIZED_DISPLAY_LUT: np.ndarray = _build_display_lut()
 
+# Bumped when the positive display encode changes incompatibly — old on-disk
+# preview PNGs encoded before this version must be regenerated.
+POSITIVE_DISPLAY_ENCODE_VERSION = 2
+
 
 def _build_negative_display_lut() -> np.ndarray:
     """uint16 normalized-density code -> uint8 negative display code.
@@ -404,20 +408,17 @@ def _encode_display_uint8(
             image = NEGATIVE_DISPLAY_LUT[image]
         else:
             channels = image.shape[2] if image.ndim == 3 else 1
-            if tone_params is None and color_params is None and matrix is None:
-                image = NORMALIZED_DISPLAY_LUT[image]
+            encoded = render.encode_positive_uint8(
+                image,
+                matrix,
+                tone_params,
+                color_params=color_params,
+                metering=metering,
+            )
+            if channels == 1 and encoded.ndim == 2:
+                image = encoded
             else:
-                encoded = render.encode_positive_uint8(
-                    image,
-                    matrix,
-                    tone_params,
-                    color_params=color_params,
-                    metering=metering,
-                )
-                if channels == 1 and encoded.ndim == 2:
-                    image = encoded
-                else:
-                    image = encoded
+                image = encoded
     elif mode == "negative":
         raise ValueError(
             "the negative view must be encoded from the published TIFF's "
@@ -931,7 +932,7 @@ def generate_preview(
     fine angle is negated by a flip exactly as `repo.net_edit_state`'s
     replay says, so the caller passes the canonical angle through
     untouched. `tone_params` is the net `tone` op's full param dict (None =
-    the flat look), composed into the display LUT. The net `crop` op's
+    the default print curve), composed into the display LUT. The net `crop` op's
     window (`crop_params`, TIFF space in the ops log) is replayed last on
     the uncropped display canvas — which is why a live crop's window is
     what `display_shape` sizes.
@@ -1448,9 +1449,9 @@ def ensure_preview(
             scratches_params=state.scratches,
             crop_params=state.crop,
         )
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
     if op is not None:
         if op in _STATE_PREVIEW_OPS:
-            state = repo.net_edit_state(roll_dir, negative.negative_id)
             meter = color.read_metering(negative.normalization, highlight_lock=lock)
             return generate_preview(
                 roll_dir,
@@ -1467,6 +1468,24 @@ def ensure_preview(
                 crop_params=state.crop,
             )
         return transform_preview(Path(negative.preview_path), op)
+    # Untoned negatives may still carry preview PNGs from the old flat
+    # encode — regenerate so the default print curve shows on disk too.
+    if state.tone is None:
+        meter = color.read_metering(negative.normalization, highlight_lock=lock)
+        return generate_preview(
+            roll_dir,
+            roll_id,
+            negative,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            tone_params=state.tone,
+            color_params=state.color,
+            metering=meter,
+            spots_params=state.spots,
+            scratches_params=state.scratches,
+            crop_params=state.crop,
+        )
     return Path(negative.preview_path)
 
 
@@ -1497,9 +1516,15 @@ def sync_previews(
         if negative.status != "completed" or negative.output is None:
             continue
         has_preview = negative.preview_path and Path(negative.preview_path).exists()
-        if not force and has_preview and negative.output["name"] not in published:
-            continue
         state = repo.net_edit_state(roll_dir, negative.negative_id)
+        needs_default_encode_refresh = has_preview and state.tone is None
+        if (
+            not force
+            and has_preview
+            and negative.output["name"] not in published
+            and not needs_default_encode_refresh
+        ):
+            continue
         meter = color.read_metering(
             negative.normalization,
             highlight_lock=highlight_lock_module.HighlightLock.from_dict(
