@@ -320,10 +320,12 @@ final class PreviewZoomModel {
     /// 100% → fit for the Z shortcut and toolbar button.
     func zoomOut() {
         guard mode == .pixels100 else { return }
+        discardPendingCrop()
         mode = .fit
         crop = nil
         panOffset = .zero
         origin = .zero
+        drag = nil
     }
 
     /// Fit ↔ 100% for tests and callers that still use a single toggle.
@@ -339,13 +341,12 @@ final class PreviewZoomModel {
     /// Forgets everything: the negative or its rendering changed, so the
     /// view restarts from the fit view.
     func reset() {
+        discardPendingCrop()
         mode = .fit
         crop = nil
         panOffset = .zero
         origin = .zero
         drag = nil
-        requestGeneration += 1
-        inFlightKey = nil
     }
 
     // MARK: - Fetching
@@ -354,7 +355,9 @@ final class PreviewZoomModel {
     /// already on screen or in flight. The previous crop stays on screen,
     /// translated, until the new pixels arrive.
     func fetchCrop() {
-        guard mode == .pixels100, displaySize.width > 0, let loader else { return }
+        guard mode == .pixels100, displaySize.width > 0, displayScale > 0, let loader else {
+            return
+        }
         let size = Self.cropSize(
             paneSize: paneSize, displayScale: displayScale, displaySize: displaySize
         )
@@ -372,12 +375,15 @@ final class PreviewZoomModel {
         if inFlightKey == key {
             return
         }
+        cropTask?.cancel()
         requestGeneration += 1
         let generation = requestGeneration
         inFlightKey = key
         cropTask = Task { [weak self] in
             let thumbnail = await loader(rect)
-            guard let self, self.requestGeneration == generation else { return }
+            guard let self, !Task.isCancelled, self.requestGeneration == generation,
+                self.mode == .pixels100
+            else { return }
             self.inFlightKey = nil
             guard let thumbnail else { return }
             self.crop = Crop(
@@ -400,10 +406,18 @@ final class PreviewZoomModel {
     /// Forgets a stale crop without dropping out of 100% view — the crop
     /// rendering changed (rotation, re-stitch) but the pane did not.
     func invalidate() {
+        discardPendingCrop()
         crop = nil
         panOffset = .zero
-        requestGeneration += 1
+    }
+
+    /// Drops any crop fetch still in flight so its completion cannot republish
+    /// pixels after the view has left 100% mode.
+    private func discardPendingCrop() {
+        cropTask?.cancel()
+        cropTask = nil
         inFlightKey = nil
+        requestGeneration += 1
     }
 
     // MARK: - Drawing
@@ -412,7 +426,7 @@ final class PreviewZoomModel {
     /// points: the centering offset when the image is smaller than the
     /// pane, plus the live pan translation.
     var cropScreenOffset: CGSize {
-        guard let crop else { return .zero }
+        guard let crop, crop.displayScale > 0 else { return .zero }
         let contentWidth = CGFloat(crop.rect.width) / crop.displayScale
         let contentHeight = CGFloat(crop.rect.height) / crop.displayScale
         return CGSize(

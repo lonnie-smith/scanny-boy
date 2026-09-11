@@ -205,7 +205,7 @@ private struct PreviewPane: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        zoom.toggle(at: previewCenter)
+                        scheduleZoomToggle(at: previewCenter)
                     } label: {
                         Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
                     }
@@ -267,6 +267,9 @@ private struct PreviewPane: View {
         .onDisappear(perform: unregisterKeyboardShortcuts)
         .onChange(of: previewKeyboardSyncToken) {
             syncKeyboardShortcuts()
+        }
+        .onChange(of: paneSize) {
+            keyboard.zoomToggleCenter = previewCenter
         }
         .confirmationDialog(
             deleteDialogTitle,
@@ -330,14 +333,22 @@ private struct PreviewPane: View {
 
     /// Drives `AppKeyboardState` refresh when preview availability changes.
     private var previewKeyboardSyncToken: String {
-        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(edit.isCropping)|\(runIsActive)|\(cropSession.isActive)|\(paneSize.width)|\(paneSize.height)"
+        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(edit.isCropping)|\(runIsActive)|\(cropSession.isActive)"
     }
 
     private func registerKeyboardShortcuts() {
         keyboard.toggleZoom = { point in
-            zoom.toggle(at: point)
+            scheduleZoomToggle(at: point)
         }
         syncKeyboardShortcuts()
+    }
+
+    /// Defers zoom toggles to the next run-loop turn so they never land in
+    /// the same SwiftUI frame as a layout pass from the fit ↔ 100% swap.
+    private func scheduleZoomToggle(at point: CGPoint) {
+        Task { @MainActor in
+            zoom.toggle(at: point)
+        }
     }
 
     private func unregisterKeyboardShortcuts() {
@@ -435,20 +446,23 @@ private struct PreviewPane: View {
     private var preview: some View {
         GeometryReader { geo in
             ZStack {
-                if zoom.mode == .pixels100, negative.output != nil {
-                    zoomedCrop
-                } else if let thumbnail {
-                    Image(nsImage: thumbnail.image)
-                        .resizable()
-                        .interpolation(.medium)
-                        .aspectRatio(contentMode: .fit)
-                } else if isLoadingPreview && negative.isCompleted {
-                    PreviewPlaceholder(kind: .loading)
-                } else if negative.isCompleted {
-                    PreviewPlaceholder(kind: .empty)
-                } else {
-                    PreviewPlaceholder(kind: .status(negative.status))
+                Group {
+                    if zoom.mode == .pixels100, negative.output != nil {
+                        zoomedCrop
+                    } else if let thumbnail {
+                        Image(nsImage: thumbnail.image)
+                            .resizable()
+                            .interpolation(.medium)
+                            .aspectRatio(contentMode: .fit)
+                    } else if isLoadingPreview && negative.isCompleted {
+                        PreviewPlaceholder(kind: .loading)
+                    } else if negative.isCompleted {
+                        PreviewPlaceholder(kind: .empty)
+                    } else {
+                        PreviewPlaceholder(kind: .status(negative.status))
+                    }
                 }
+                .id(zoom.mode)
                 if showsSpotMarkers {
                     spotMarkers
                 }
@@ -470,9 +484,11 @@ private struct PreviewPane: View {
                     onSpotToggled: { spotID in toggleSpot(spotID) }
                 )
             }
-            .onChange(of: geo.size, initial: true) {
-                paneSize = geo.size
-                refreshZoomContext(paneSize: geo.size)
+            .onChange(of: geo.size, initial: true) { _, size in
+                paneSize = size
+                Task { @MainActor in
+                    refreshZoomContext(paneSize: size)
+                }
             }
         }
     }

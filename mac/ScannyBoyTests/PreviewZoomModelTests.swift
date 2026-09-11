@@ -140,6 +140,32 @@ struct PreviewZoomModelTests {
         #expect(zoom.crop == nil)
     }
 
+    @Test("zooming out ignores a crop fetch that finishes afterward")
+    func zoomOutIgnoresLateCrop() async {
+        let zoom = PreviewZoomModel()
+        var releaseFetch: CheckedContinuation<Void, Never>?
+        zoom.update(
+            paneSize: Self.paneSize,
+            displayScale: Self.scale,
+            displaySize: Self.tiffSize,
+            loader: { _ in
+                await withCheckedContinuation { releaseFetch = $0 }
+                return Self.thumbnail()
+            }
+        )
+        zoom.toggle(at: CGPoint(x: 250, y: 125))
+        zoom.toggle(at: CGPoint(x: 10, y: 10))
+        #expect(zoom.mode == .fit)
+        #expect(zoom.crop == nil)
+
+        releaseFetch?.resume()
+        await Task.yield()
+        await Task.yield()
+
+        #expect(zoom.mode == .fit)
+        #expect(zoom.crop == nil)
+    }
+
     @Test("a drag pans and refetches, clamped to the image bounds")
     func dragPans() async {
         let zoom = await zoomedIn()

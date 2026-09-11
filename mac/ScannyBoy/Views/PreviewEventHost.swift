@@ -35,7 +35,12 @@ struct PreviewEventHost: NSViewRepresentable {
         view.model = zoom
         view.spotHitTester = spotHitTester
         view.onSpotToggled = onSpotToggled
-        view.window?.invalidateCursorRects(for: view)
+        // Defer cursor invalidation out of SwiftUI's layout pass — calling
+        // it synchronously from `updateNSView` while the preview is swapping
+        // between fit and 100% has been observed to destabilize AppKit.
+        DispatchQueue.main.async {
+            view.window?.invalidateCursorRects(for: view)
+        }
     }
 }
 

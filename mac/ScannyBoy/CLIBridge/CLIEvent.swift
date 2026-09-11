@@ -65,7 +65,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 20
+    public static let supportedProtocolVersion = 21
 
     public let protocolVersion: Int
     public let kind: Kind
