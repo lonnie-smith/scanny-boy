@@ -44,6 +44,7 @@ struct ContentView: View {
     @State private var isPresentingGridProfiles = false
     @State private var isConfirmingConvert = false
     @State private var pendingConvertAfterNewRoll = false
+    @State private var isConvertDropTarget = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -491,6 +492,12 @@ struct ContentView: View {
 
     private var convertSection: some View {
         Section("Convert") {
+            convertDropZone
+        }
+    }
+
+    private var convertDropZone: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Spacer()
                 if run.isActive {
@@ -514,6 +521,25 @@ struct ContentView: View {
                 }
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isConvertDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isConvertDropTarget ? Color.accentColor : Color.secondary.opacity(0.35),
+                    style: StrokeStyle(
+                        lineWidth: isConvertDropTarget ? 2 : 1,
+                        dash: isConvertDropTarget ? [] : [5, 3]
+                    )
+                )
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isConvertDropTarget) { providers in
+            handleConvertDrop(providers)
+        }
     }
 
     private func handleConvertTap() {
@@ -525,6 +551,20 @@ struct ContentView: View {
                 startRun()
             }
         }
+    }
+
+    private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !activity.isBusy, let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            Task { @MainActor in
+                guard let inputFolder = model.inputFolder else { return }
+                let resolved = Self.resolveFileName(url, relativeTo: inputFolder)
+                guard let name = resolved else { return }
+                model.selectedFiles = [name]
+            }
+        }
+        return true
     }
 
     /// Rejects sidebar selection changes while any helper is active (section
@@ -629,6 +669,15 @@ struct ContentView: View {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return exists && isDir.boolValue
+    }
+
+    /// Given a dropped file URL and the input folder, returns the file's
+    /// name if it resides inside the folder, or `nil` otherwise.
+    nonisolated static func resolveFileName(_ url: URL, relativeTo inputFolder: URL) -> String? {
+        let inputPath = inputFolder.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        guard filePath.hasPrefix(inputPath) else { return nil }
+        return url.lastPathComponent
     }
 
     /// `canCreateDirectories` is off by default and on only where a new
