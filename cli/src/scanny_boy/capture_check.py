@@ -44,8 +44,8 @@ def run_capture_check(
     """Run detection, matching, and the layout solve for one work folder."""
     from scanny_boy import concurrency
     from scanny_boy.stitch_pipeline import (
-        _SolvedNegative,
         _solve_negative,
+        _SolvedNegative,
         _StitchProgress,
         _verify_intermediates,
     )

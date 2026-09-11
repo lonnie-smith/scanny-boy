@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
-from pathlib import Path
 
 import pytest
 
@@ -31,9 +29,8 @@ def test_second_exclusive_writer_fails_immediately(tmp_path, monkeypatch):
     thread.start()
     assert acquired.wait(timeout=5)
 
-    with pytest.raises(RollBusyError) as exc_info:
-        with exclusive_roll_lock(roll_dir):
-            pass
+    with pytest.raises(RollBusyError) as exc_info, exclusive_roll_lock(roll_dir):
+        pass
     assert exc_info.value.code == Code.ROLL_BUSY
 
     release.set()
@@ -44,6 +41,5 @@ def test_unregistered_roll_raises_roll_not_found(tmp_path, monkeypatch):
     monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "library.db"))
     missing = tmp_path / "nope"
     missing.mkdir()
-    with pytest.raises(repo.RollNotRegisteredError):
-        with exclusive_roll_lock(missing):
-            pass
+    with pytest.raises(repo.RollNotRegisteredError), exclusive_roll_lock(missing):
+        pass

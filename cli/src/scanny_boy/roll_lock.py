@@ -16,7 +16,7 @@ from pathlib import Path
 
 from scanny_boy.events import Code
 from scanny_boy.library.db import library_db_path
-from scanny_boy.library.repo import RollNotRegisteredError, roll_id_for_folder
+from scanny_boy.library.repo import roll_id_for_folder
 
 
 class RollBusyError(Exception):

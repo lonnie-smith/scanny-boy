@@ -14,7 +14,11 @@ from typing import Any
 import numpy as np
 
 from scanny_boy.events import Code
-from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError, read_source_settings
+from scanny_boy.metadata import (
+    UnreadableRawError,
+    UnsupportedRawError,
+    read_source_settings,
+)
 from scanny_boy.normalization import SCAN_CLIP_WARN, measure_clip_fractions
 from scanny_boy.raw_decode import RAW_PARAMS, decode_raw
 

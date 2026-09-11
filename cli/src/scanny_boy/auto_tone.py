@@ -49,7 +49,11 @@ def _luma_bounds(
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
     if channel_count == 3 and highlight_lock is not None:
-        from scanny_boy.highlight_lock import HighlightLock, base_offset_for, corrected_floors
+        from scanny_boy.highlight_lock import (
+            HighlightLock,
+            base_offset_for,
+            corrected_floors,
+        )
 
         lock = (
             highlight_lock

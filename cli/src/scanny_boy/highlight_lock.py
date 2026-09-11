@@ -371,9 +371,12 @@ def base_offset_for(record: dict | None) -> float | None:
     base_check = record.get("base_check")
     if isinstance(base_check, dict):
         level_offset = base_check.get("level_offset")
-        if isinstance(level_offset, (int, float)) and not isinstance(level_offset, bool):
-            if np.isfinite(level_offset):
-                return float(level_offset)
+        if (
+            isinstance(level_offset, (int, float))
+            and not isinstance(level_offset, bool)
+            and np.isfinite(level_offset)
+        ):
+            return float(level_offset)
     if record.get("exposure_matched") is True:
         return 0.0
     return None
@@ -491,7 +494,6 @@ def corrected_floors(
     if not _qualifying_amplitude(amplitude):
         return tuple(floors)
 
-    own_dev = floors_arr - floors_arr[_GREEN]
     base_dev = ceils_arr - ceils_arr[_GREEN]
     k_dev = np.asarray(lock.k, dtype=np.float64) - 1.0
     dev_new = base_dev + amplitude * k_dev

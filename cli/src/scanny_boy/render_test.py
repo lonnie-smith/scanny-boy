@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from scanny_boy import color, normalization, render, tone
-from scanny_boy import previews as _previews
 from scanny_boy.normalization import encode_normalized
 
 _GAMMA = render.GAMMA_ADOBE

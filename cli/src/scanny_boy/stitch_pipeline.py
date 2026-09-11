@@ -36,12 +36,12 @@ from scanny_boy import (
     film_base,
     flatfield,
     hashing,
+    highlight_lock,
     previews,
     registration,
     scratches,
     tiff_exif,
 )
-from scanny_boy import highlight_lock
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation

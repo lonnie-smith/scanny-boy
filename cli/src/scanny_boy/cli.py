@@ -20,6 +20,8 @@ from pathlib import Path
 from scanny_boy.cancellation import CancellationToken, command_cancellation
 from scanny_boy.events import (
     BaseFrameSet,
+    CaptureChecked,
+    CaptureSummary,
     Code,
     EditRecorded,
     ErrorEvent,
@@ -29,6 +31,7 @@ from scanny_boy.events import (
     FlatFieldCreated,
     FlatFieldDeleted,
     FlatFieldList,
+    FrameAnalyzed,
     GridCreated,
     GridDeleted,
     GridList,
@@ -44,11 +47,8 @@ from scanny_boy.events import (
     RollList,
     RollListingEntry,
     RollListingReason,
-    RollRenamed,
     RollRefreshed,
-    CaptureChecked,
-    CaptureSummary,
-    FrameAnalyzed,
+    RollRenamed,
     ScratchesReported,
     SpotsReported,
     Started,
@@ -934,9 +934,8 @@ def _run_stitch_command(
     writer.write(Started(command="stitch", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope:
-            with exclusive_roll_lock(Path(args.roll)):
-                outcome = run_stitch(
+        with command_cancellation(cancel) as scope, exclusive_roll_lock(Path(args.roll)):
+            outcome = run_stitch(
                     Path(args.work),
                     Path(args.roll),
                     run_id=run_id,
@@ -1334,14 +1333,13 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     from scanny_boy.hashing import sha256_file
     from scanny_boy.library import repo
     from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.roll_manifest import (
         ROLL_MANIFEST_FORMAT_VERSION,
         _now_iso,
         load_roll_manifest,
         write_roll_manifest,
     )
-
-    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
 
     writer.write(Started(command="roll set-base-frame"))
     roll_dir = Path(args.roll)
@@ -2074,9 +2072,8 @@ def _run_run_command(
     writer.write(Started(command="run", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope:
-            with exclusive_roll_lock(Path(args.roll)):
-                outcome = run_full(
+        with command_cancellation(cancel) as scope, exclusive_roll_lock(Path(args.roll)):
+            outcome = run_full(
                     Path(args.input),
                     files,
                     Path(args.roll),
@@ -2313,9 +2310,8 @@ def _dispatch_command(
 
     if args.command == "apply-metadata":
         from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
-        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
-
         from scanny_boy.library import repo
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
 
         writer.write(Started(command="apply-metadata"))
         roll_dir = Path(args.roll)
