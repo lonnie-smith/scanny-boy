@@ -104,16 +104,31 @@ public actor CLIDaemon {
     // MARK: - Child plumbing
 
     private func ensureRunningChild() async throws -> CLISession {
-        if let child, await child.isRunning {
-            return child
+        while true {
+            if let child, await child.isRunning {
+                return child
+            }
+            if let launch = startingChild {
+                let session = try await launch.value
+                if await session.isRunning {
+                    return session
+                }
+                // The in-flight launch finished, but the child died before
+                // this caller got it — drop the stale task and retry.
+                startingChild = nil
+                continue
+            }
+            let launch = Task { try await self.startChild() }
+            startingChild = launch
+            do {
+                let session = try await launch.value
+                startingChild = nil
+                return session
+            } catch {
+                startingChild = nil
+                throw error
+            }
         }
-        if let startingChild {
-            return try await startingChild.value
-        }
-        let task = Task { try await self.startChild() }
-        startingChild = task
-        defer { startingChild = nil }
-        return try await task.value
     }
 
     private func startChild() async throws -> CLISession {
@@ -197,6 +212,7 @@ public actor CLIDaemon {
         guard child === session else { return }
         child = nil
         pumpTask = nil
+        startingChild = nil
         let pending = requests
         requests.removeAll()
         for requestID in pending.keys {

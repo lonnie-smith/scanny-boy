@@ -12,7 +12,7 @@ import Testing
 /// process, real pipes, real request envelopes — so these run in the fast
 /// tier; the real helper gets its own served variants in
 /// `CLIIntegrationTests`.
-@Suite("Resident helper daemon")
+@Suite("Resident helper daemon", .serialized)
 struct CLIDaemonTests {
     /// A fake `scanny-boy serve`: answers every request with the ordinary
     /// started/…/finished bracket, honours in-band cancellation for a
@@ -198,24 +198,42 @@ struct CLIDaemonTests {
             // guard against re-entrant launches, each could start its own
             // `scanny-boy serve` before any of the others had registered
             // theirs.
-            try await withThrowingTaskGroup(of: [CLISessionOutput].self) { group in
+            try await withThrowingTaskGroup(of: (Int, [CLISessionOutput]).self) { group in
                 for index in 0..<8 {
                     group.addTask {
                         let session = runner.session(
                             for: CLICommand(arguments: ["edit", "list-spots", "req-\(index)"])
                         )
-                        return await TestSupport.drain(try await session.start())
+                        let collected = await TestSupport.drain(try await session.start())
+                        return (index, collected)
                     }
                 }
-                for try await collected in group {
-                    #expect(collected.failures.isEmpty)
-                    #expect(collected.terminalCompletion?.outcome == .success)
+                for try await (index, collected) in group {
+                    #expect(
+                        collected.failures.isEmpty,
+                        "req-\(index) saw \(collected.failures.count) stream failures"
+                    )
+                    #expect(
+                        collected.terminalCompletion?.outcome == .success,
+                        "req-\(index) ended with \(String(describing: collected.terminalCompletion?.outcome))"
+                    )
                 }
             }
 
+            let sawOneLaunch = await Self.waitUntil {
+                guard let text = try? String(contentsOf: launchLog, encoding: .utf8) else {
+                    return false
+                }
+                return !text.split(separator: "\n", omittingEmptySubsequences: true).isEmpty
+            }
+            #expect(sawOneLaunch, "the helper never logged a launch pid")
+
             let launches = try String(contentsOf: launchLog, encoding: .utf8)
-                .split(separator: "\n")
-            #expect(launches.count == 1)
+                .split(separator: "\n", omittingEmptySubsequences: true)
+            #expect(
+                launches.count == 1,
+                "expected one helper launch, saw \(launches.count): \(launches.joined(separator: ", "))"
+            )
         }
     }
 
