@@ -249,6 +249,10 @@ enum CropGeometry {
         ratio: Double,
         in bounds: CGSize
     ) -> CGRect {
+        if rect.minX <= 0, rect.maxX >= bounds.width {
+            return clamped(rect, in: bounds)
+        }
+
         let originY: CGFloat
         let height: CGFloat
         if handle == .top {
@@ -292,6 +296,10 @@ enum CropGeometry {
         ratio: Double,
         in bounds: CGSize
     ) -> CGRect {
+        if rect.minY <= 0, rect.maxY >= bounds.height {
+            return clamped(rect, in: bounds)
+        }
+
         let originX: CGFloat
         let width: CGFloat
         if handle == .left {
