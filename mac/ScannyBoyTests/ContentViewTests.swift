@@ -114,6 +114,29 @@ struct ContentViewTests {
         #expect(ContentView.shouldConfirmConvert(into: roll) == true)
     }
 
+    // MARK: - resolveFileName
+
+    @Test
+    func resolveFileNameReturnsNameWhenFileIsInsideInputFolder() {
+        let input = URL(filePath: "/photos/scans")
+        let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
+    }
+
+    @Test
+    func resolveFileNameReturnsNilWhenFileIsOutsideInputFolder() {
+        let input = URL(filePath: "/photos/scans")
+        let file = URL(filePath: "/other-folder/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == nil)
+    }
+
+    @Test
+    func resolveFileNameHandlesTrailingSlash() {
+        let input = URL(filePath: "/photos/scans/")
+        let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
+    }
+
     // MARK: - NewRollSheet.defaultName
 
     @Test
