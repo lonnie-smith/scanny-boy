@@ -45,6 +45,17 @@ struct ScannyBoyApp: App {
         Task.detached(priority: .utility) {
             cache.purgeUnscopedCaches()
         }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            DispatchQueue.main.async {
+                if NSApplication.shared.windows.filter({ $0.isVisible }).count <= 1 {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+        }
     }
 
     var body: some Scene {
