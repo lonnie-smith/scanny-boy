@@ -554,15 +554,21 @@ struct ContentView: View {
     }
 
     private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !activity.isBusy, let provider = providers.first else { return false }
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url else { return }
-            Task { @MainActor in
-                guard let inputFolder = model.inputFolder else { return }
-                let resolved = Self.resolveFileName(url, relativeTo: inputFolder)
-                guard let name = resolved else { return }
-                model.selectedFiles = [name]
+        guard !activity.isBusy, !providers.isEmpty else { return false }
+        guard let inputFolder = model.inputFolder else { return false }
+        Task { @MainActor in
+            var names: [String] = []
+            for provider in providers {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        continuation.resume(returning: url)
+                    }
+                }
+                if let url, let name = Self.resolveFileName(url, relativeTo: inputFolder) {
+                    names.append(name)
+                }
             }
+            model.selectedFiles = Set(names)
         }
         return true
     }
