@@ -17,7 +17,21 @@ NOMINAL_RANGE = AUTO_GRADE_TARGET * NOMINAL_RATIO
 DEGENERATE_GRADE_RANGE = 3.5
 
 
-def _luma_bounds(normalization: dict) -> tuple[float, float, float] | None:
+def _luma_bounds(
+    normalization: dict, highlight_lock=None
+) -> tuple[float, float, float] | None:
+    """The luma floor/ceil/span the two solves below measure against.
+
+    `highlight_lock` (docs/ROLL_HIGHLIGHT_LOCK.md), when it resolves and
+    this is a 3-channel colour record, retargets `floors` to the roll's
+    corrected dense-end colour before the luma weighting — the same
+    correction `color.read_metering` applies, so Auto Density/Auto Grade
+    solve against the density level the negative actually *displays*, not
+    the one its own (possibly scene-biased) per-negative meter found. The
+    shift is normally tiny: the correction is median-zero across channels
+    by construction, and Rec.709 luma weights are close to (but not
+    exactly) a plain mean, so a real per-channel retarget moves the
+    weighted sum only to the extent the weights are non-uniform."""
     floors = normalization.get("floors")
     ceils = normalization.get("ceils")
     if not isinstance(floors, list) or not isinstance(ceils, list):
@@ -34,6 +48,30 @@ def _luma_bounds(normalization: dict) -> tuple[float, float, float] | None:
     for value in (*floors, *ceils):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
+    if channel_count == 3 and highlight_lock is not None:
+        from scanny_boy.highlight_lock import HighlightLock, base_offset_for, corrected_floors
+
+        lock = (
+            highlight_lock
+            if isinstance(highlight_lock, HighlightLock)
+            else HighlightLock.from_dict(highlight_lock)
+        )
+        if lock is not None:
+            refs = normalization.get("highlight_refs")
+            refs_f = (
+                tuple(float(v) for v in refs)
+                if isinstance(refs, list) and len(refs) == 3
+                else None
+            )
+            floors = list(
+                corrected_floors(
+                    tuple(float(v) for v in floors),
+                    tuple(float(v) for v in ceils),
+                    lock,
+                    refs_f,
+                    base_offset_for(normalization),
+                )
+            )
     luma_floor = sum(w * float(f) for w, f in zip(weights, floors, strict=True))
     luma_ceil = sum(w * float(c) for w, c in zip(weights, ceils, strict=True))
     span = luma_ceil - luma_floor
@@ -42,14 +80,14 @@ def _luma_bounds(normalization: dict) -> tuple[float, float, float] | None:
     return luma_floor, luma_ceil, span
 
 
-def solve_density(normalization: dict | None) -> float | None:
+def solve_density(normalization: dict | None, highlight_lock=None) -> float | None:
     """Solve print density from the recorded anchor meter."""
     if not normalization:
         return None
     anchor = normalization.get("anchor")
     if anchor is None or isinstance(anchor, bool) or not isinstance(anchor, (int, float)):
         return None
-    bounds = _luma_bounds(normalization)
+    bounds = _luma_bounds(normalization, highlight_lock)
     if bounds is None:
         return None
     luma_floor, _, span = bounds
@@ -63,7 +101,7 @@ def solve_density(normalization: dict | None) -> float | None:
     return max(tone.DENSITY_MIN, min(tone.DENSITY_MAX, density))
 
 
-def solve_grade(normalization: dict | None) -> float | None:
+def solve_grade(normalization: dict | None, highlight_lock=None) -> float | None:
     """Solve paper grade from the recorded textural range."""
     if not normalization:
         return None
@@ -72,7 +110,7 @@ def solve_grade(normalization: dict | None) -> float | None:
         textural, (int, float)
     ):
         return None
-    bounds = _luma_bounds(normalization)
+    bounds = _luma_bounds(normalization, highlight_lock)
     if bounds is None:
         return None
     _, _, span = bounds

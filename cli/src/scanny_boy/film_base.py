@@ -11,11 +11,14 @@ percentiles, which is what fixes the high-key failure of
 estimates the orange mask from scene content, and the scene's colour is
 not the mask.
 
-The measurement is **exposure-invariant** (§0.2): a shutter, aperture or
-ISO change scales linear light by one factor, which in log density is a
-pure common-mode shift — only deviations from the median are consumed,
-so the base frame's exposure never has to match the roll's. §11's
-measurement gate exists to verify that claim on real film.
+The *colour* measurement (each channel's deviation from the median) is
+exposure-invariant (§0.2): a shutter, aperture or ISO change scales linear
+light by one factor, a pure common-mode shift in log density. But
+docs/ROLL_HIGHLIGHT_LOCK.md's highlight-colour lock also needs the base
+frame's *absolute* density level, which is only meaningful at the roll's
+own exposure — so the base frame is now shot at the same exposure as the
+scans (REBATE_ANCHORING.md §1), and a per-negative EXIF check
+(`FILM_BASE_EXPOSURE_MISMATCH`) flags when that did not happen.
 
 The module owns the decode of one reference frame, the detector, the
 gates, and the params record. It knows nothing about manifests or rolls.
@@ -353,8 +356,8 @@ def gate(measurement: BaseMeasurement) -> None:
         raise FilmBaseError(
             Code.FILM_BASE_CLIPPED,
             f"the base frame's rebate is sensor-clipped in the "
-            f"{_CHANNEL_NAMES[worst_clipped]} channel; re-shoot it about two "
-            "stops darker — the exposure does not need to match the roll",
+            f"{_CHANNEL_NAMES[worst_clipped]} channel; re-shoot it at the "
+            "same exposure as your scans but clear of clipping",
         )
     thinnest_channel = min(
         range(len(chosen.density)), key=lambda ch: chosen.density[ch]
@@ -364,9 +367,8 @@ def gate(measurement: BaseMeasurement) -> None:
             Code.FILM_BASE_TOO_DARK,
             f"the base frame's {_CHANNEL_NAMES[thinnest_channel]} channel "
             f"through the rebate is too dark to measure "
-            f"({chosen.density[thinnest_channel]:.1f}); re-shoot it brighter "
-            "— about two stops below your scanning exposure, not more than "
-            "three",
+            f"({chosen.density[thinnest_channel]:.1f}); re-shoot it at the "
+            "same exposure as your scans",
         )
     for population in measurement.populations:
         if population is chosen:

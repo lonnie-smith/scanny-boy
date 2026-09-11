@@ -190,6 +190,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         )
         roll.film_kind = manifest.film
         roll.film_base = manifest.film_base
+        roll.highlight_lock = manifest.highlight_lock
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -411,6 +412,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             stitch_params=roll.stitch_params,
             film=roll.film_kind,
             film_base=roll.film_base,
+            highlight_lock=roll.highlight_lock,
             runs=[
                 RunRecord(
                     run_id=r.run_id,

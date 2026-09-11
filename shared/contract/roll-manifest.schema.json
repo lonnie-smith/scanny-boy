@@ -19,7 +19,8 @@
         "populations",
         "clipped_fractions",
         "grid_cells",
-        "measure_version"
+        "measure_version",
+        "exposure"
       ],
       "properties": {
         "density": {
@@ -73,7 +74,18 @@
           "description": "Per-channel clipped fraction inside the chosen population only."
         },
         "grid_cells": { "type": "integer", "minimum": 1 },
-        "measure_version": { "type": "integer", "minimum": 1 }
+        "measure_version": { "type": "integer", "minimum": 1 },
+        "exposure": {
+          "type": "object",
+          "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 3: the base frame's own EXIF shutter/aperture/ISO, compared against each scan's. Any field null when EXIF was unreadable.",
+          "required": ["exposure_time", "f_number", "iso"],
+          "properties": {
+            "exposure_time": { "type": ["string", "null"] },
+            "f_number": { "type": ["string", "null"] },
+            "iso": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
@@ -91,6 +103,34 @@
           "minimum": 0,
           "description": "The largest per-channel disagreement AFTER removing that common mode: the direct measure of whether the roll anchor is right."
         }
+      },
+      "additionalProperties": false
+    },
+    "highlightLock": {
+      "type": "object",
+      "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 1: the roll's highlight-colour estimate, recomputed wholesale at the end of every stitch run and every negative removal. Not a roll invariant and shapes no published pixel — only the render path (preview and export) retargets each negative's recorded dense-end floor toward it.",
+      "required": ["k", "base", "qualifying_count", "measure_version"],
+      "properties": {
+        "k": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Per-channel ratio to green (R, G, B) of density-above-film-base, median over the qualifying negatives. k[green] is always exactly 1.0."
+        },
+        "base": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "The roll's locked film-base density this k was measured against (film_base.density verbatim) — the absolute reference point the render-time correction needs."
+        },
+        "qualifying_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many negatives' own highlight_refs contributed to k."
+        },
+        "measure_version": { "type": "integer" }
       },
       "additionalProperties": false
     },
@@ -409,6 +449,10 @@
           "description": "CAST_REMOVAL_PLAN R-1 (section 3.1): the frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read by nothing in the stitch stage."
         },
         "base_check": { "$ref": "#/definitions/baseCheck" },
+        "exposure_matched": {
+          "type": "boolean",
+          "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 3: whether every member frame's EXIF shutter/aperture/ISO matched the base frame's."
+        },
         "source": { "type": "string" }
       }
     },
@@ -789,6 +833,10 @@
     "film_base": {
       "description": "REBATE_ANCHORING section 3.1. Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a roll with FILM_BASE_REQUIRED.",
       "oneOf": [{ "$ref": "#/definitions/filmBase" }, { "type": "null" }]
+    },
+    "highlight_lock": {
+      "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 1. Optional: null on a mono roll, a roll with no locked film base, a roll with no qualifying negative yet, or one predating this feature.",
+      "oneOf": [{ "$ref": "#/definitions/highlightLock" }, { "type": "null" }]
     }
   }
 }

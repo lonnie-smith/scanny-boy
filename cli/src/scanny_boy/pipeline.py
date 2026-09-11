@@ -384,11 +384,19 @@ def _read_settings_and_check_consistency(
     return settings_list
 
 
-def hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
+def hash_sources(
+    input_dir: Path, selected: list[str], settings_list: list[SourceSettings] | None = None
+) -> list[SourceRecord]:
+    """`settings_list`, when given (same order as `selected` —
+    `_read_settings_and_check_consistency`'s already-read EXIF), threads
+    each source's own exposure into its `SourceRecord`
+    (docs/ROLL_HIGHLIGHT_LOCK.md §3's base-frame exposure-match check) —
+    no second EXIF read."""
     records = []
-    for name in selected:
+    for i, name in enumerate(selected):
         path = input_dir / name
         stat = path.stat()
+        settings = settings_list[i] if settings_list is not None else None
         records.append(
             SourceRecord(
                 filename=name,
@@ -396,6 +404,9 @@ def hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
                 size=stat.st_size,
                 mtime=stat.st_mtime,
                 sha256=hashing.sha256_file(path),
+                exposure_time=None if settings is None else str(settings.exposure_time),
+                f_number=None if settings is None else str(settings.f_number),
+                iso=None if settings is None else settings.iso,
             )
         )
     return records
@@ -766,7 +777,7 @@ def run_convert(
     settings_list = _read_settings_and_check_consistency(
         input_dir, selected, emit=emit, run_id=run_id
     )
-    source_records = hash_sources(input_dir, selected)
+    source_records = hash_sources(input_dir, selected, settings_list)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
     if profile is not None:
         # Section 1.2: a profile's geometry is only valid for the frame

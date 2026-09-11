@@ -63,6 +63,13 @@ class SourceRecord:
     # decode, before flat-field (docs/DECISIONS.md, "Normalization decisions").
     # Null when this build predates the measurement.
     scan_clip_fractions: tuple[float, float, float] | None = None
+    # This source's own EXIF exposure (docs/ROLL_HIGHLIGHT_LOCK.md §3): read
+    # once, at prepare time, for the base-frame exposure-match check —
+    # `str(Fraction)`/int, matching `CuratedMetadata`'s convention. `None`
+    # when EXIF was unreadable.
+    exposure_time: str | None = None
+    f_number: str | None = None
+    iso: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
@@ -502,6 +509,9 @@ def _manifest_from_dict(data: dict[str, Any]) -> Manifest:
                     if s.get("scan_clip_fractions") is None
                     else tuple(s["scan_clip_fractions"])
                 ),
+                exposure_time=s.get("exposure_time"),
+                f_number=s.get("f_number"),
+                iso=s.get("iso"),
             )
             for s in data["sources"]
         ],

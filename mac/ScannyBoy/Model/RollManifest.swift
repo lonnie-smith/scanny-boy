@@ -60,6 +60,36 @@ struct FilmBase: Sendable, Hashable {
 }
 
 struct RollManifest: Sendable, Hashable {
+    /// The roll manifest's optional `highlight_lock` block
+    /// (docs/ROLL_HIGHLIGHT_LOCK.md §1): recomputed by the CLI at the end
+    /// of every stitch run and every negative removal, `nil` on a mono
+    /// roll, a roll with no locked film base, or a roll with no
+    /// qualifying negative yet. The app never computes or applies this
+    /// itself — it only needs the value as a cache-generation term, so a
+    /// changed lock invalidates the full-resolution region/preview
+    /// renders `edit render-region` and `edit render-preview` produce
+    /// (`EditModel.renderGeneration`), exactly as a changed `cameraColor`
+    /// does.
+    struct HighlightLock: Sendable, Hashable {
+        let k: [Double]
+        let qualifyingCount: Int
+
+        /// A stable cache-generation token for preview invalidation.
+        var cacheTerm: String {
+            "\(k.map { String($0) }.joined(separator: ","))#\(qualifyingCount)"
+        }
+
+        init?(fields: [String: JSONValue]) {
+            guard
+                let k = fields["k"]?.arrayValue?.compactMap(\.doubleValue),
+                k.count == 3,
+                let qualifyingCount = fields["qualifying_count"]?.intValue
+            else { return nil }
+            self.k = k
+            self.qualifyingCount = qualifyingCount
+        }
+    }
+
     /// The roll manifest's optional `camera_color` block (EXPORT_PLAN §3.2):
     /// frozen after the first stitch; preview encode and export both read it.
     struct CameraColor: Sendable, Hashable {
@@ -353,6 +383,8 @@ struct RollManifest: Sendable, Hashable {
     let filmBase: FilmBase?
     /// The roll's frozen camera colour matrix (EXPORT_PLAN §3.2).
     let cameraColor: CameraColor?
+    /// The roll's highlight-colour lock (docs/ROLL_HIGHLIGHT_LOCK.md §1).
+    let highlightLock: HighlightLock?
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -376,7 +408,8 @@ struct RollManifest: Sendable, Hashable {
             metadata: metadata,
             filmKind: filmKind,
             filmBase: filmBase,
-            cameraColor: cameraColor
+            cameraColor: cameraColor,
+            highlightLock: highlightLock
         )
     }
 
@@ -392,7 +425,8 @@ struct RollManifest: Sendable, Hashable {
         metadata: Metadata,
         filmKind: String? = nil,
         filmBase: FilmBase? = nil,
-        cameraColor: CameraColor? = nil
+        cameraColor: CameraColor? = nil,
+        highlightLock: HighlightLock? = nil
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -404,6 +438,7 @@ struct RollManifest: Sendable, Hashable {
         self.filmKind = filmKind
         self.filmBase = filmBase
         self.cameraColor = cameraColor
+        self.highlightLock = highlightLock
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -442,6 +477,7 @@ struct RollManifest: Sendable, Hashable {
         self.filmKind = fields["film_kind"]?.stringValue
         self.filmBase = fields["film_base"]?.objectValue.flatMap(FilmBase.init(fields:))
         self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
+        self.highlightLock = fields["highlight_lock"]?.objectValue.flatMap(HighlightLock.init(fields:))
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {

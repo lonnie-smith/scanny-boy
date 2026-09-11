@@ -1105,6 +1105,29 @@ def _camera_model_from_source(frame: Path) -> str | None:
     return " ".join(part for part in (settings.make, settings.model) if part) or None
 
 
+def _exposure_from_source(frame: Path) -> dict:
+    """The base frame's own EXIF shutter/aperture/ISO
+    (docs/ROLL_HIGHLIGHT_LOCK.md §3), `str`/`int`-encoded like
+    `CuratedMetadata`. An unreadable EXIF (or file) leaves every field
+    `None` — the exposure-match check then treats every scan as
+    unmatched, not as a crash."""
+    from scanny_boy.metadata import (
+        UnreadableRawError,
+        UnsupportedRawError,
+        read_source_settings,
+    )
+
+    try:
+        settings = read_source_settings(frame)
+    except (UnsupportedRawError, UnreadableRawError):
+        return {"exposure_time": None, "f_number": None, "iso": None}
+    return {
+        "exposure_time": None if settings.exposure_time is None else str(settings.exposure_time),
+        "f_number": None if settings.f_number is None else str(settings.f_number),
+        "iso": settings.iso,
+    }
+
+
 def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     """The `roll set-base-frame` subcommand (docs/REBATE_ANCHORING.md
     §7.1, §3.2 rules 1-3): decode, measure, gate, and attach (or replace)
@@ -1216,6 +1239,11 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
+    # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame's own EXIF exposure —
+    # recorded so `run_stitch` can compare each scan's exposure against it
+    # without re-reading this file.
+    base_exposure = _exposure_from_source(frame)
+
     # §3.3: the camera comparison lives here when the roll already has a
     # `camera_color` block (a fresh roll has none until its first run seeds
     # one — `run_stitch` compares then, §3.3).
@@ -1253,6 +1281,10 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         "clipped_fractions": list(measurement.clipped_fractions),
         "grid_cells": measurement.grid_cells,
         "measure_version": measurement.measure_version,
+        # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame's own EXIF
+        # exposure, or None per field when unreadable — compared against
+        # each scan's at stitch time.
+        "exposure": base_exposure,
     }
     write_roll_manifest(roll_dir, manifest)
 

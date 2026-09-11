@@ -300,6 +300,12 @@ class Code(enum.StrEnum):
     ROLL_PREDATES_FILM_BASE = "ROLL_PREDATES_FILM_BASE"
     FILM_BASE_CAMERA_CONFLICT = "FILM_BASE_CAMERA_CONFLICT"
     FILM_BASE_FLATFIELD_CONFLICT = "FILM_BASE_FLATFIELD_CONFLICT"
+    # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame is now shot at the
+    # roll's own exposure so its absolute density level can be used; a
+    # scan whose EXIF shutter/aperture/ISO differs from the base frame's
+    # gets no highlight-lock correction and does not count toward the
+    # roll's K.
+    FILM_BASE_EXPOSURE_MISMATCH = "FILM_BASE_EXPOSURE_MISMATCH"
     # SPOTTING_PLAN §1.4: the detector found more spots than it may
     # propose; the highest-scoring ones were kept. The remedy is a lower
     # --sensitivity.

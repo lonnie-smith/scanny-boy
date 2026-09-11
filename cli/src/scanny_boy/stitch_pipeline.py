@@ -42,6 +42,7 @@ from scanny_boy import (
     registration,
     tiff_exif,
 )
+from scanny_boy import highlight_lock
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
@@ -825,6 +826,36 @@ def _base_check(roll: RollManifest, rebate: Rebate) -> dict[str, float] | None:
     }
 
 
+def _exposure_matched(
+    roll: RollManifest, members: list[str], sources_by_filename: dict | None
+) -> bool | None:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §3: whether every one of this negative's
+    frames shares the base frame's EXIF shutter/aperture/ISO. `None` when
+    it cannot be determined (no base exposure recorded, or a member's own
+    EXIF was unreadable) — treated the same as `False` by callers (no
+    correction), but kept distinct so a caller wanting to skip the warning
+    on a plain "unreadable" case can."""
+    if sources_by_filename is None or roll.film_base is None:
+        return None
+    base_exposure = roll.film_base.get("exposure")
+    if not base_exposure:
+        return None
+    base_tuple = (
+        base_exposure.get("exposure_time"),
+        base_exposure.get("f_number"),
+        base_exposure.get("iso"),
+    )
+    if base_tuple == (None, None, None):
+        return None
+    for member in members:
+        source = sources_by_filename.get(member)
+        if source is None:
+            return None
+        if (source.exposure_time, source.f_number, source.iso) != base_tuple:
+            return False
+    return True
+
+
 def _normalization_record(
     result: composite_module.CompositeResult,
     analysis_rect: tuple[int, int, int, int],
@@ -1330,6 +1361,7 @@ def run_stitch(
     # negative this run publishes.
     reference_bounds = _reference_bounds(roll)
     base_refs = _locked_base_refs(roll)
+    sources_by_filename = {s.filename: s for s in work_manifest.sources}
 
     # 8. Composite and publish, negative by negative, in canonical order.
     # Auto-rotation seeds only the negatives this run created fresh: an
@@ -1361,6 +1393,7 @@ def run_stitch(
                 profile=profile,
                 reference_bounds=reference_bounds,
                 base_refs=base_refs,
+                sources_by_filename=sources_by_filename,
                 film_kind=film_kind,
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
@@ -1411,14 +1444,33 @@ def run_stitch(
     run_record.normalization_aggregate = _normalization_aggregate(
         list(records_by_group.values())
     )
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1/§4: recompute the roll's highlight-lock
+    # estimate wholesale — never merged — because this run may have
+    # published negatives whose `highlight_refs` newly qualify (or, on a
+    # partial run, failed to). Every trigger that changes the roll's
+    # negative set must recompute this; the removal path in
+    # `_remove_covered_negatives` and `edits.run_edit_delete` are the
+    # other two. A change here is exactly when older negatives' previews
+    # go stale, hence the forced `sync_previews` below.
+    previous_lock = roll.highlight_lock
+    new_lock = highlight_lock.compute_roll_highlight_lock(roll)
+    roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
+    lock_changed = roll.highlight_lock != previous_lock
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision). The
     # previews regenerate from the net ops-log transform, which — for the
     # negatives just seeded — already carries the auto-rotation.
+    #
+    # docs/ROLL_HIGHLIGHT_LOCK.md §5: when this run changed the roll's
+    # highlight-colour lock, every already-published colour negative's
+    # displayed appearance may have moved, not just the ones this run
+    # touched — `force=True` regenerates every completed negative's cached
+    # preview PNG rather than only the newly published set, so a stale
+    # colour never lingers in the filmstrip.
     try:
-        previews.sync_previews(out_dir, roll, published)
+        previews.sync_previews(out_dir, roll, published, force=lock_changed)
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(
@@ -1778,6 +1830,7 @@ def _composite_and_publish(
     profile=None,
     reference_bounds: list[Bounds] | None = None,
     base_refs: tuple[float, ...] | None = None,
+    sources_by_filename: dict | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
 ) -> dict | None:
@@ -1979,10 +2032,27 @@ def _composite_and_publish(
                 f"{MAX_OVERLAP_MAD}",
             )
 
+        exposure_matched = _exposure_matched(roll, entry.group.members, sources_by_filename)
+        if exposure_matched is False:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.FILM_BASE_EXPOSURE_MISMATCH,
+                    message=(
+                        f"{record.negative_id}: EXIF exposure differs from the "
+                        "base frame's; no highlight-lock correction will apply "
+                        "to it"
+                    ),
+                )
+            )
+
         record.valid_rect = valid_rect
         record.normalization = _normalization_record(
             result, valid_rect, _base_check(roll, result.rebate)
         )
+        # docs/ROLL_HIGHLIGHT_LOCK.md §3: recorded so the render path (and a
+        # later `compute_roll_highlight_lock`) never has to re-read EXIF.
+        record.normalization["exposure_matched"] = bool(exposure_matched)
         record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])

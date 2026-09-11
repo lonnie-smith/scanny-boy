@@ -1096,6 +1096,7 @@ staging directories, and reruns the incomplete negative.
 | `ROLL_PREDATES_FILM_BASE` | This roll was stitched before film-base anchoring and cannot take new negatives or a base frame |
 | `FILM_BASE_CAMERA_CONFLICT` | Warning: the base frame's EXIF camera model differs from the roll's; the measurement may still be fine |
 | `FILM_BASE_FLATFIELD_CONFLICT` | Warning: the run's flat-field profile differs from the one the base frame was measured with |
+| `FILM_BASE_EXPOSURE_MISMATCH` | Warning: a negative's EXIF shutter/aperture/ISO differs from the base frame's; it gets no highlight-lock correction |
 | `SPOT_LIMIT_REACHED` | Warning: the spot detector found more than 500 proposals on a negative and kept the highest-scoring 500; the remedy is a lower `--sensitivity` |
 | `SPOTS_STALE` | Warning: the negative's spot set was detected against a canvas a re-stitch has replaced; it repairs nothing and needs re-detecting |
 | `LIBRARY_DB_UNSUPPORTED` | The library database sits at a migration revision this helper does not know — written by a newer Scanny Boy |

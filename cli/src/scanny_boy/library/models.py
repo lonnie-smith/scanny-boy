@@ -106,6 +106,12 @@ class RollRow(Base):
     # `roll set-base-frame` attaches one. Nullable throughout — pre-0012
     # rows read back with NULL and no block.
     film_base: Mapped[dict | None] = mapped_column(JSONText)
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
+    # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` — or
+    # NULL on a mono roll, a roll with no locked film base, or before this
+    # build. Recomputed wholesale at the end of every stitch run and every
+    # negative removal; nullable throughout, same posture as `film_base`.
+    highlight_lock: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class RunRow(Base):

@@ -1113,6 +1113,113 @@ def test_normalization_record_carries_the_highlight_refs_and_residual(work_dir, 
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
 
 
+# --- docs/ROLL_HIGHLIGHT_LOCK.md ---------------------------------------------
+
+
+def test_roll_highlight_lock_is_recomputed_from_the_roll_at_the_end_of_every_run(
+    work_dir, tmp_path, monkeypatch
+):
+    """`run_stitch` must recompute `roll.highlight_lock` from the roll's
+    current negative set on every run — never merge an old value forward —
+    and the value it writes must be exactly what
+    `highlight_lock.compute_roll_highlight_lock` would say about the same
+    roll. Stubbed rather than driven off the synthetic scene's actual
+    chroma content: whether that content happens to qualify for a
+    trustworthy `highlight_refs` measurement is `_same_pixel_color_floor_
+    refs`'s business, not this test's, and a flaky pass/fail on real pixel
+    content would test the wrong thing."""
+    from scanny_boy import highlight_lock
+
+    base = (-0.42, -0.12, -0.99)  # work_dir_support.base_frame_block's density
+    calls: list[int] = []
+    first_lock = highlight_lock.HighlightLock(k=(1.5, 1.0, 0.5), base=base, qualifying_count=1)
+    second_lock = highlight_lock.HighlightLock(k=(2.5, 1.0, -0.5), base=base, qualifying_count=2)
+    stubbed = iter([first_lock, second_lock])
+
+    def _stub(roll):
+        calls.append(len(roll.negatives))
+        return next(stubbed)
+
+    monkeypatch.setattr(stitch_pipeline.highlight_lock, "compute_roll_highlight_lock", _stub)
+
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    assert manifest.highlight_lock == first_lock.to_dict()
+    assert calls == [1]  # the one negative `work_dir` seeds
+
+    # A second run over the same single-negative work dir re-adopts the
+    # existing negative (no new one), but the estimate is still
+    # recomputed wholesale — never left stale, and never merged with the
+    # previous value.
+    assert run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    assert manifest.highlight_lock == second_lock.to_dict()
+    assert calls == [1, 1]
+
+
+def test_roll_highlight_lock_matches_recomputing_it_fresh(work_dir, tmp_path):
+    """Whatever the synthetic scene's own chroma gate decided this run
+    (`highlight_refs` null or not), the stored `roll.highlight_lock` must
+    agree with calling `compute_roll_highlight_lock` (real, unstubbed)
+    fresh on the same loaded roll — `run_stitch` never writes anything
+    `compute_roll_highlight_lock` itself would not produce."""
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    from scanny_boy.highlight_lock import compute_roll_highlight_lock
+
+    recomputed = compute_roll_highlight_lock(manifest)
+    expected = None if recomputed is None else recomputed.to_dict()
+    assert manifest.highlight_lock == expected
+
+
+def test_real_stitch_with_a_qualifying_highlight_produces_a_non_none_lock(
+    work_dir, tmp_path, monkeypatch
+):
+    """The unstubbed end-to-end case: a real `run_stitch`, over a roll with
+    a real locked film base, whose negative's `highlight_refs` comes back
+    non-null, must produce a non-`None` `roll.highlight_lock` — with
+    `highlight_lock.compute_roll_highlight_lock` running for real (nothing
+    in this module is stubbed).
+
+    The synthetic scene's own content does not reliably drive this: its
+    gray fill is neutral pixel-by-pixel before `frame_gains`, but the
+    stitched result's own dense-end colour still does not pass
+    `_same_pixel_color_floor_refs`'s gate as built by the ordinary test
+    fixtures (confirmed empirically — a work dir with no hook, and one
+    whose frames were overwritten with a large uniform bright neutral
+    block, both still recorded `highlight_refs: null`). Rather than fight
+    the synthetic-scene generator to manufacture qualifying chroma
+    content — a `_same_pixel_color_floor_refs` calibration problem, not
+    this feature's — the one lower-level measurement
+    (`composite.measure_highlight_refs`) is monkeypatched to return a
+    fixed, realistic reading for the one negative `work_dir` seeds; the
+    stitch run, the manifest write, and `compute_roll_highlight_lock`
+    itself all run unstubbed and for real."""
+    import scanny_boy.composite as composite_module
+
+    fixed_refs = (-2.12, -2.00, -2.88)  # base (-0.42, -0.12, -0.99) + (-1.7, -1.88, -1.89)
+    monkeypatch.setattr(
+        composite_module, "measure_highlight_refs", lambda grid, keep, base_refs: fixed_refs
+    )
+
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["highlight_refs"] == list(fixed_refs)
+    assert manifest.highlight_lock is not None
+    assert manifest.highlight_lock["qualifying_count"] == 1
+
+    from scanny_boy.highlight_lock import compute_roll_highlight_lock
+
+    recomputed = compute_roll_highlight_lock(manifest)
+    assert recomputed is not None
+    assert manifest.highlight_lock == recomputed.to_dict()
+
+
 @pytest.mark.slow
 def test_changed_shots_per_negative_is_accepted(work_dir, tmp_path):
     """`shots_per_negative` is each batch's own choice, never the roll's: a

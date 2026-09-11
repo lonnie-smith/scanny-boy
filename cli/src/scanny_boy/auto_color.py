@@ -41,6 +41,7 @@ def solve_cmy(
     params: color.ColorParams,
     slope: float,
     pivot_in: float,
+    highlight_lock=None,
 ) -> tuple[float, float, float] | None:
     """Global CMY slider values that null the recorded neutral residual.
 
@@ -58,7 +59,23 @@ def solve_cmy(
     Step 4 converts to sliders through `cmy_offsets`' inverse. Because the
     target is already mean-zero, `cmy_offsets` reproduces it exactly (its
     own mean removal is then a no-op); clamping can break that, and a
-    clamped solve is a saturated one."""
+    clamped solve is a saturated one.
+
+    `highlight_lock` (docs/ROLL_HIGHLIGHT_LOCK.md) threads through to
+    `color.read_metering` so the two-point cast-removal tie this solve's
+    Step 3 compensates against is the one the render actually uses — the
+    single "effective bounds" plumbing that plan calls for. One number
+    this solve does *not* correct: `neutral_residual` itself was measured
+    at stitch time against the *published* (uncorrected) bounds and cannot
+    be re-measured without the pixels. It is used here unmodified — a
+    first-order approximation the plan doc's §3.3 states explicitly, on
+    the same reasoning Step 3 already leans on: the compensation this
+    function performs is evaluated at one anchor point while the residual
+    is a whole-image average, so it was already inexact before a highlight
+    lock existed. A future measurement pass could re-derive it against the
+    corrected bounds; nothing here blocks that, but it is out of this
+    plan's scope (published pixels are never touched, and re-deriving
+    `neutral_residual` would need them)."""
     import math
 
     if not record:
@@ -77,7 +94,7 @@ def solve_cmy(
     if not (math.isfinite(a) and math.isfinite(b)):
         return None
 
-    metering = color.read_metering(record)
+    metering = color.read_metering(record, highlight_lock=highlight_lock)
     offsets = list(_neutral_defaults_target(a, b))
 
     # Step 3: subtract what the ties already do at the anchor. For each

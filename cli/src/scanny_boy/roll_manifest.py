@@ -458,6 +458,17 @@ class RollManifest:
     # None; frozen for the life of the roll once the first negative has been
     # published against it (§3.2). A roll cannot be stitched without one.
     film_base: dict[str, Any] | None = None
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
+    # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or
+    # `None` on a mono roll, a roll with no locked film base, or a colour
+    # roll with no qualifying negative yet. Recomputed wholesale (never
+    # merged) at the end of every stitch run and every negative removal —
+    # `highlight_lock.compute_roll_highlight_lock` is the only writer.
+    # Additive and NOT a roll invariant (§3.3, same posture as
+    # `camera_color`): it shapes no published pixel, only the render path,
+    # so an old roll benefits immediately without re-stitching and without
+    # tripping the `ROLL_PREDATES_FILM_BASE` gate.
+    highlight_lock: dict[str, Any] | None = None
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -506,6 +517,7 @@ class RollManifest:
             ),
             "film": self.film,
             "film_base": self.film_base,
+            "highlight_lock": self.highlight_lock,
         }
 
 

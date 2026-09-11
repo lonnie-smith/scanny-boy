@@ -932,7 +932,9 @@ final class EditModel {
         let output = previewCache.regionURL(
             rollID: rollID,
             negativeID: negative.negativeID,
-            generation: Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor),
+            generation: Self.renderGeneration(
+                of: negative, cameraColor: roll?.cameraColor, highlightLock: roll?.highlightLock
+            ),
             mode: mode,
             rect: rect
         )
@@ -976,7 +978,9 @@ final class EditModel {
         guard let rollURL, let rollID = roll?.rollID else { return nil }
         let generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
-            : Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor)
+            : Self.renderGeneration(
+                of: negative, cameraColor: roll?.cameraColor, highlightLock: roll?.highlightLock
+            )
         let output = previewCache.previewURL(
             rollID: rollID,
             negativeID: negative.negativeID,
@@ -1025,7 +1029,8 @@ final class EditModel {
     /// nothing that comes after.
     static func renderGeneration(
         of negative: RollManifest.Negative,
-        cameraColor: RollManifest.CameraColor? = nil
+        cameraColor: RollManifest.CameraColor? = nil,
+        highlightLock: RollManifest.HighlightLock? = nil
     ) -> String {
         let tone: String
         if let adjustment = negative.toneAdjustment {
@@ -1040,7 +1045,13 @@ final class EditModel {
             colour = "neutral"
         }
         let matrix = cameraColor?.cacheTerm ?? "none"
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(matrix)"
+        // docs/ROLL_HIGHLIGHT_LOCK.md §5: the roll's highlight-colour lock
+        // changes a negative's rendered colour even when nothing about the
+        // negative itself changed, so it must be its own term — folding it
+        // into `matrix` would conflate "the camera body changed" with "the
+        // roll's estimate was recomputed".
+        let lock = highlightLock?.cacheTerm ?? "none"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(matrix)#\(lock)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the

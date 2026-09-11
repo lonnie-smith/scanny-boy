@@ -119,7 +119,9 @@ def _refresh_preview(
     edit, so it downgrades to a warning (the next full regeneration from
     the net transform will catch up)."""
     try:
-        preview = previews.ensure_preview(roll_dir, roll.roll_id, negative, op)
+        preview = previews.ensure_preview(
+            roll_dir, roll.roll_id, negative, op, highlight_lock=roll.highlight_lock
+        )
     except Exception as exc:  # noqa: BLE001 — a preview failure must not lose the edit
         emit(
             WarningEvent(
@@ -275,7 +277,7 @@ def run_edit_tone(
         if auto_density or auto_grade:
             record = negative.normalization
             if auto_density:
-                value = auto_tone.solve_density(record)
+                value = auto_tone.solve_density(record, roll.highlight_lock)
                 if value is None:
                     emit(
                         WarningEvent(
@@ -289,7 +291,7 @@ def run_edit_tone(
                 else:
                     solved["density"] = value
             if auto_grade:
-                value = auto_tone.solve_grade(record)
+                value = auto_tone.solve_grade(record, roll.highlight_lock)
                 if value is None:
                     emit(
                         WarningEvent(
@@ -511,7 +513,9 @@ def run_edit_color(
                 float(solved.get("cast_removal_highlights", 0.0) or 0.0) != 0.0
             )
             if cast_shadow or cast_highlights:
-                meter = color.read_metering(negative.normalization)
+                meter = color.read_metering(
+                    negative.normalization, highlight_lock=roll.highlight_lock
+                )
                 missing = (cast_shadow and meter.shadow_refs_norm is None) or (
                     cast_highlights and meter.highlight_refs_norm is None
                 )
@@ -536,6 +540,7 @@ def run_edit_color(
                     color.ColorParams(**solved),
                     slope,
                     pivot_in,
+                    highlight_lock=roll.highlight_lock,
                 )
                 if solved_cmy is None:
                     emit(
@@ -639,7 +644,9 @@ def run_edit_render_region(
 
     tiff_path = roll_dir / negative.output["name"]
     state = repo.net_edit_state(roll_dir, negative_id)
-    meter = color.read_metering(negative.normalization)
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=_roll.highlight_lock
+    )
     matrix = render.camera_matrix_from_roll(_roll)
     try:
         rendered = previews.render_region(
@@ -695,7 +702,9 @@ def run_edit_render_preview(
 
     tiff_path = roll_dir / negative.output["name"]
     state = repo.net_edit_state(roll_dir, negative_id)
-    meter = color.read_metering(negative.normalization)
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=_roll.highlight_lock
+    )
     matrix = render.camera_matrix_from_roll(_roll)
     try:
         width, height = previews.render_preview(
@@ -763,10 +772,35 @@ def run_edit_delete(
 
     for negative, _ in removals:
         roll.negatives.remove(negative)
+    # docs/ROLL_HIGHLIGHT_LOCK.md §4: a deletion changes the roll's
+    # qualifying-negative set exactly as a stitch run does, so the estimate
+    # is recomputed here too — the stitch stage is not the only place the
+    # roll's negative set changes.
+    from scanny_boy import highlight_lock as highlight_lock_module
+
+    previous_lock = roll.highlight_lock
+    new_lock = highlight_lock_module.compute_roll_highlight_lock(roll)
+    roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
+    lock_changed = roll.highlight_lock != previous_lock
     # One write for the whole batch: `write_roll_manifest` renumbers the
     # survivors' sequences and saves; the removed negatives' rows (and their
     # edits) are deleted by the save's diff.
     write_roll_manifest(roll_dir, roll)
+
+    if lock_changed:
+        # §5: the surviving negatives' displayed colour may have moved even
+        # though none of them were touched by this deletion — force every
+        # completed negative's cached preview to regenerate, same as a
+        # stitch run whose highlight lock changed.
+        try:
+            previews.sync_previews(roll_dir, roll, force=True)
+        except Exception as exc:  # noqa: BLE001 — a preview failure must not lose the delete
+            emit(
+                WarningEvent(
+                    code=Code.PREVIEW_FAILED,
+                    message=f"deleted the selection but could not refresh previews: {exc}",
+                )
+            )
 
     results: list[dict] = []
     for negative, output_name in removals:

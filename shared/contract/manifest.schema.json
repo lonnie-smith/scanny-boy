@@ -31,7 +31,10 @@
           "minItems": 3,
           "maxItems": 3,
           "description": "Per-channel fraction of pixels at or above sensor white, measured at decode; null when this build predates the measurement."
-        }
+        },
+        "exposure_time": { "type": ["string", "null"] },
+        "f_number": { "type": ["string", "null"] },
+        "iso": { "type": ["integer", "null"] }
       }
     },
     "output": {

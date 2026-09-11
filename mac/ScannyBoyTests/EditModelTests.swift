@@ -595,7 +595,7 @@ struct EditModelTests {
 
         #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
-        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none#none"))
+        #expect(EditModel.renderGeneration(of: model.visibleNegatives[0]).hasSuffix("#flat#neutral#none#none#none#none"))
     }
 
     @Test("A rotate event leaves the tone state alone")
@@ -660,7 +660,7 @@ struct EditModelTests {
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
-        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none#none"))
+        #expect(EditModel.renderGeneration(of: flat).hasSuffix("#flat#neutral#none#none#none#none"))
     }
 
     @Test("The render generation token carries the colour state")

@@ -261,50 +261,38 @@ This is what the user does, and what the Add Scans sheet must say.
 > (the attached summary shows the measured percentage). Keep bare light,
 > sprocket holes, and film edges out of the frame.
 >
-> **Expose about two stops darker than your scanning exposure**, so that the
-> rebate sits roughly in the middle of the camera's histogram. Do not go
-> more than about three stops down.
+> **Expose at the same shutter, aperture and ISO as your scans**, clear of
+> clipping.
 >
 > Same camera, same lens, same light panel, same flat-field profile as the
-> roll's scans. The exposure does *not* need to match — only the film, the
-> light and the rig do.
+> roll's scans, and now the same exposure too (docs/ROLL_HIGHLIGHT_LOCK.md
+> §1 needs the base frame's *absolute* density level, not just its colour
+> shape, so the exposure has to match).
 
 Two-band framing (rebate on both sides of a strip of picture) remains
 supported by the detector if a user uploads it anyway, but v1 copy does not
 steer there — see §0.8 and §11b.
 
-### 1.1 Why two stops, and why "the middle of the histogram" is the right cue
+### 1.1 Round 3 update: same exposure, not two stops darker
 
-At the roll's normal scanning exposure the clear base sits near the top of
-the raw histogram — call it 0.8 of full scale — because the exposure is set
-to keep the *dense* end off the floor. Stopping down and converting to what a
-camera's (roughly sRGB-encoded) histogram displays:
+Originally this section asked for the base frame about two stops darker
+than the scans, on the reasoning that the measurement is exposure-invariant
+(§0.2) so darker only bought headroom against clipping. That is still true
+for the *colour* measurement (`film_base.py`'s gates are unchanged), but
+docs/ROLL_HIGHLIGHT_LOCK.md's highlight-colour lock also needs the base
+frame's *absolute* density level to compute each negative's highlight
+amplitude — and an absolute level is only meaningful if it was captured at
+the same exposure the scans were. So the rule flips: same exposure as the
+scans, clear of clipping. `FILM_BASE_CLIPPED` (gate 4) is now the gate that
+matters most in practice, since a same-exposure rebate is closer to the
+sensor's white point than a deliberately-darkened one ever was.
+`FILM_BASE_MIN_CHANNEL` (gate 5, blue-through-mask too dark) still exists as
+a floor but should rarely fire at matched exposure.
 
-| stops down | linear | camera histogram |
-|---|---|---|
-| 1 | 0.40 | ~66% |
-| **2** | **0.20** | **~48%** |
-| 3 | 0.10 | ~35% |
-
-So the user's instinct is right: **roughly centring the rebate in the
-histogram is about two stops down**, and that is the number to put in the
-UI. Treat 1.5–3 stops as the acceptable band; the gates in §2.3 are the real
-safety net and will say so if the frame is unusable.
-
-### 1.2 Why not stop down further
-
-Because of the mask. On colour negative film the orange mask is *dense in
-blue*: through clear base, blue typically runs 0.8–1.2 log10 D below red —
-two to four stops. So if the rebate's luma sits at 0.20 of full scale, its
-blue channel is already down around 0.05, and at three stops down it is
-around 0.03. The block-median reduction over ~10⁵–10⁶ grid cells crushes the
-noise, but there is no reason to spend the headroom: the measurement is
-exposure-invariant (§0.2), so darker buys nothing and eventually costs blue
-precision.
-
-`FILM_BASE_MIN_CHANNEL` (§2.1) is the gate that enforces this. It is a
-**per-channel** floor, not a luma floor, precisely because blue is the
-channel that runs out first and a luma-only test would not see it.
+An EXIF exposure mismatch (shutter/aperture/ISO) between the base frame and
+a scan is now checked per negative (`FILM_BASE_EXPOSURE_MISMATCH`, a
+warning): a mismatched negative gets no highlight-lock correction and does
+not contribute to the roll's `K` (docs/ROLL_HIGHLIGHT_LOCK.md §3.2).
 
 ### 1.3 What is checked, and what cannot be
 
@@ -316,6 +304,7 @@ channel that runs out first and a luma-only test would not see it.
 | no second large flat region of different density | ambiguity gate | error |
 | same camera body as the roll's scans | EXIF camera model | warning |
 | same flat-field profile as the run | recorded profile id | warning |
+| same exposure as each scan | EXIF shutter/aperture/ISO, per negative | warning (`FILM_BASE_EXPOSURE_MISMATCH`) |
 | readable NEF | `raw_decode.decode_raw` | its own existing codes |
 
 Cannot be checked, and must therefore be said in the UI text: **same film

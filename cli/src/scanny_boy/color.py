@@ -109,16 +109,94 @@ class Metering:
     normalized exactly as the shadow one; `None` when the negative's record
     predates it (CAST_REMOVAL_PLAN R-1) or when the dense-end neutral band
     held no trustworthy set — which is load-bearing information, not an
-    error (that plan's §0.4)."""
+    error (that plan's §0.4).
+
+    `highlight_floor_delta` is docs/ROLL_HIGHLIGHT_LOCK.md's render-time
+    correction, `floor_old[ch] - floor_new[ch]` in log10 D — `None` when no
+    roll highlight lock applies (a mono negative, or a roll with no
+    qualifying negative). `ranges` and `highlight_refs_norm` above are
+    already computed against the *corrected* floor when one applies —
+    `read_metering`'s `highlight_lock` argument threads through to every
+    consumer of this object, cast removal and the global CMY sliders
+    included, so what those controls tie against is the same colour the
+    render actually shows (§2.3 of that plan: "one effective-bounds
+    function, not ad hoc patches"). `highlight_floor_delta` itself is what
+    `render.py`/`tone.py` apply to the *decoded pixels*, immediately after
+    `normalization.decode_normalized` and before anything else — see
+    `remap_dense_end`."""
 
     ranges: tuple[float, ...]
     shadow_refs_norm: tuple[float, ...] | None
     highlight_refs_norm: tuple[float, ...] | None = None
+    highlight_floor_delta: tuple[float, ...] | None = None
 
 
-def read_metering(record: dict | None) -> Metering:
+def _corrected_floors_and_delta(
+    floors: list, ceils: list, highlight_lock, record: dict
+) -> tuple[list, tuple[float, ...] | None]:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §2: the corrected dense-end floor this
+    record's `ranges`/`*_refs_norm` should be measured against, plus the
+    `(floor_old - floor_new)` delta `render.py`/`tone.py` apply to decoded
+    pixels. `floors` unchanged and delta `None` whenever there is nothing
+    to correct — no lock passed in, or a non-3-channel record (mono, or a
+    malformed block `read_metering`'s caller already gave up on).
+
+    `highlight_lock` accepts either a `highlight_lock.HighlightLock`
+    instance or the roll manifest's raw `highlight_lock` dict — every
+    caller of `read_metering` already has one or the other lying around
+    (the manifest dict when it just loaded the roll, the dataclass when it
+    is threading one through from somewhere that already converted), and
+    making this boundary accept both means neither call site has to import
+    `highlight_lock` just to convert a `None`.
+
+    `highlight_refs` is this record's own (possibly `None`) recorded
+    measurement, passed straight through to `corrected_floors` — see that
+    function for why a qualifying negative's real amplitude and a
+    non-qualifying negative's green-only approximation are not
+    interchangeable."""
+    if highlight_lock is None or len(floors) != 3 or len(ceils) != 3:
+        return floors, None
+    from scanny_boy.highlight_lock import HighlightLock, base_offset_for, corrected_floors
+
+    lock = (
+        highlight_lock
+        if isinstance(highlight_lock, HighlightLock)
+        else HighlightLock.from_dict(highlight_lock)
+    )
+    if lock is None:
+        return floors, None
+
+    try:
+        floors_f = tuple(float(v) for v in floors)
+        ceils_f = tuple(float(v) for v in ceils)
+    except (TypeError, ValueError):
+        return floors, None
+    highlight_refs = record.get("highlight_refs")
+    refs_f = None
+    if isinstance(highlight_refs, list) and len(highlight_refs) == 3:
+        try:
+            refs_f = tuple(float(v) for v in highlight_refs)
+        except (TypeError, ValueError):
+            refs_f = None
+    offset = base_offset_for(record)
+    new_floors = corrected_floors(floors_f, ceils_f, lock, refs_f, offset)
+    delta = tuple(old - new for old, new in zip(floors_f, new_floors, strict=True))
+    if all(abs(d) < 1e-12 for d in delta):
+        return list(new_floors), None
+    return list(new_floors), delta
+
+
+def read_metering(record: dict | None, highlight_lock=None) -> Metering:
     """Never raises. Missing or incomplete records yield uncalibrated CMY
-    and inert cast removal."""
+    and inert cast removal.
+
+    `highlight_lock` is the roll's highlight-colour lock — a
+    `highlight_lock.HighlightLock`, the roll manifest's raw dict, or `None`
+    (docs/ROLL_HIGHLIGHT_LOCK.md): when one resolves and this record is a
+    3-channel colour negative, the dense-end `floors` this function reads
+    everything else against are first retargeted to the roll's highlight
+    colour, and `Metering.highlight_floor_delta` records what changed so
+    the render path can apply the same correction to decoded pixels."""
     default_ranges = (1.0, 1.0, 1.0)
     if not record:
         return Metering(ranges=default_ranges, shadow_refs_norm=None)
@@ -129,15 +207,17 @@ def read_metering(record: dict | None) -> Metering:
     if len(floors) != len(ceils) or not floors:
         return Metering(ranges=default_ranges, shadow_refs_norm=None)
     channels = len(floors)
-    ranges: list[float] = []
-    for ch in range(channels):
-        floor = floors[ch]
-        ceil = ceils[ch]
-        if isinstance(floor, bool) or not isinstance(floor, (int, float)):
+    for value in (*floors, *ceils):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return Metering(ranges=default_ranges, shadow_refs_norm=None)
-        if isinstance(ceil, bool) or not isinstance(ceil, (int, float)):
-            return Metering(ranges=default_ranges, shadow_refs_norm=None)
-        ranges.append(max(abs(float(ceil) - float(floor)), 1e-6))
+
+    floors, highlight_floor_delta = _corrected_floors_and_delta(
+        floors, ceils, highlight_lock, record
+    )
+
+    ranges: list[float] = [
+        max(abs(float(ceils[ch]) - float(floors[ch])), 1e-6) for ch in range(channels)
+    ]
     shadow_refs_norm: tuple[float, ...] | None = None
     shadow_refs = record.get("shadow_refs")
     if isinstance(shadow_refs, list) and len(shadow_refs) == channels:
@@ -160,7 +240,12 @@ def read_metering(record: dict | None) -> Metering:
     highlight_refs = record.get("highlight_refs")
     # Normalized exactly as the shadow refs: same guards, same
     # (ref - floor)/span, same anything-wrong -> None rule
-    # (docs/CAST_REMOVAL_PLAN.md R-0).
+    # (docs/CAST_REMOVAL_PLAN.md R-0). `floor` here is already the
+    # corrected one when a highlight lock applies, so the highlight
+    # reference's normalized position moves with the same correction the
+    # render shows — it is still *this negative's own* raw measurement
+    # (`highlight_refs` itself is never rewritten), just read against the
+    # corrected floor.
     if isinstance(highlight_refs, list) and len(highlight_refs) == channels:
         normed = []
         for ch in range(channels):
@@ -181,7 +266,43 @@ def read_metering(record: dict | None) -> Metering:
         ranges=tuple(ranges),
         shadow_refs_norm=shadow_refs_norm,
         highlight_refs_norm=highlight_refs_norm,
+        highlight_floor_delta=highlight_floor_delta,
     )
+
+
+def remap_dense_end(norm: np.ndarray, channel: int, metering: Metering) -> np.ndarray:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §2.3: remap `normalization.decode_normalized`'s
+    per-channel output from the published stretch to the roll-corrected one,
+    fixing the thin end (`val = 1`) exactly — applied immediately after the
+    decode and before global CMY / `1 - val` in every render path
+    (`render.py`, `tone.py`), so everything downstream composes unchanged.
+
+    `val` is already `(D - floor_old) / (ceil - floor_old)` by construction
+    (that is what the published encode is), so `floor_old` and `ceil` are
+    implicitly `0` and `1` in `val`'s own units — the only two free
+    quantities are `delta = floor_old - floor_new` (log10 D) and `range =
+    ceil - floor_new` (`Metering.ranges[channel]`, already measured against
+    the corrected floor by `read_metering`):
+
+        D          = floor_old + val * (ceil - floor_old)
+        val_new    = (D - floor_new) / (ceil - floor_new)
+                   = (delta + val * (range - delta)) / range
+
+    Identity (`norm` returned unchanged, not merely equal) when this
+    channel has no correction — `metering.highlight_floor_delta is None`,
+    or the channel is out of range (mono, or a malformed record) — so
+    calling this unconditionally on every channel of every render is safe
+    and costs nothing extra on a roll with no lock."""
+    delta_tuple = metering.highlight_floor_delta
+    if delta_tuple is None or channel >= len(delta_tuple):
+        return norm
+    delta = delta_tuple[channel]
+    if delta == 0.0:
+        return norm
+    span = metering.ranges[channel]
+    if span <= 0.0 or not np.isfinite(span):
+        return norm
+    return (delta + norm * (span - delta)) / span
 
 
 def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:

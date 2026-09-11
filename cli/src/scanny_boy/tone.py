@@ -303,10 +303,15 @@ def build_channel_tables(
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float64)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
+        # docs/ROLL_HIGHLIGHT_LOCK.md §2.3: the roll highlight-lock
+        # correction, identity when none applies — same call `render.py`'s
+        # matrix path makes, so the matrix-free preview path and the
+        # matrix path agree on what "corrected" means.
+        channel_norm = color.remap_dense_end(norm, ch, metering) if apply_color else norm
         if apply_color:
-            display = np.maximum(1.0 - (norm + offset), 0.0)
+            display = np.maximum(1.0 - (channel_norm + offset), 0.0)
         else:
-            display = np.maximum(1.0 - norm, 0.0)
+            display = np.maximum(1.0 - channel_norm, 0.0)
         tables[ch] = curve_values(
             display,
             tone_params,

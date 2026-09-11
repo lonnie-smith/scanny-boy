@@ -300,6 +300,7 @@ def _film_base_block(locked_at: str | None = None) -> dict:
         "clipped_fractions": [0.0, 0.0, 0.0],
         "grid_cells": 786432,
         "measure_version": 1,
+        "exposure": {"exposure_time": "1/30", "f_number": "8", "iso": 100},
     }
 
 

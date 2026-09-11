@@ -172,9 +172,19 @@ def _flat_positive(image: np.ndarray) -> np.ndarray:
 def _is_flat_render(
     tone_params: dict[str, float] | None,
     color_params: dict[str, float] | None,
+    metering: color.Metering | None = None,
     *,
     channels: int,
 ) -> bool:
+    """The identity fast path (`_flat_positive_lut`/`_flat_positive`): true
+    only when nothing — no tone op, no colour op, and (docs/ROLL_HIGHLIGHT_LOCK.md
+    §2.3) no roll highlight-lock correction either — would make the
+    rendered pixels differ from a bare `1 - decode_normalized`. The fast
+    LUT is shared across all three channels; a highlight-lock correction is
+    per-channel, so its presence must route through the per-channel path
+    exactly as a `color` op does."""
+    if metering is not None and metering.highlight_floor_delta is not None:
+        return False
     return tone_params is None and (
         color_params is None or channels == 1
     )
@@ -206,10 +216,14 @@ def _linear_lut_from_codes(
     luts = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
+        # docs/ROLL_HIGHLIGHT_LOCK.md §2.3: the roll highlight-lock
+        # correction, applied immediately after the decode and before the
+        # CMY offset / `1 - val` inversion — identity when no lock applies.
+        channel_norm = color.remap_dense_end(norm, ch, meter) if apply_color else norm
         if apply_color:
-            positive = np.maximum(1.0 - (norm + offset), 0.0)
+            positive = np.maximum(1.0 - (channel_norm + offset), 0.0)
         else:
-            positive = np.maximum(1.0 - norm, 0.0)
+            positive = np.maximum(1.0 - channel_norm, 0.0)
         if not allow_headroom:
             positive = np.clip(positive, 0.0, 1.0)
         luts[ch] = np.power(positive, GAMMA_ADOBE).astype(np.float32)
@@ -367,7 +381,10 @@ def render_positive_float(
             f"got shape {image.shape}"
         )
 
-    if _is_flat_render(tone_params, color_params, channels=3) and matrix is None:
+    if (
+        _is_flat_render(tone_params, color_params, metering, channels=3)
+        and matrix is None
+    ):
         return np.clip(_flat_positive(image), 0.0, 1.0), (0.0, 0.0, 0.0)
 
     tone_obj, color_obj, meter = _resolve_render_params(

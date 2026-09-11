@@ -1925,3 +1925,58 @@ measuring that sitting on one negative at 100% with repair on is the real
 inspection workflow. The preview cache is keyed on geometry plus the TIFF's
 mtime — tone and colour are <1 ms LUTs applied after it, so a slider drag
 must hit it, and does: 38–54 ms per render, served.
+
+# Roll highlight lock (docs/ROLL_HIGHLIGHT_LOCK.md)
+
+**A roll-level dense-end colour estimate, applied at render time, never
+baked into published pixels.** The dense end (`floors`) was the last place
+a per-negative measurement stood in for a roll property: the thin end has
+been anchored to one locked film-base measurement since
+docs/REBATE_ANCHORING.md, but the highlight colour still came from each
+negative's own brightest near-neutral content, so a legitimately coloured
+highlight (a sunset, a tungsten interior) got forced toward grey, and two
+negatives on the same roll could disagree on highlight colour balance for
+reasons that had nothing to do with the film. `highlight_lock.py` derives
+one `K` (a per-channel ratio to green) from every negative's already-
+recorded `highlight_refs`, stored as an additive, non-invariant
+`RollManifest.highlight_lock` block (same posture as `camera_color`: shapes
+no published pixel, no format-version bump, an existing roll benefits with
+no re-stitch), and `color.read_metering` / `render.py` / `tone.py` apply a
+per-channel affine correction to decoded pixels at preview and export time,
+fixing the thin end exactly. Deviates from `analyze_bounds`' own
+median-based recentring on purpose: deviations here are taken relative to
+green (the same reference channel `cast_slopes` already never touches),
+because `median` of three numbers does not distribute over addition and
+this feature needs to add and subtract deviation vectors and have the
+identity property ("a negative already matching the roll is untouched to
+the bit") hold exactly rather than approximately.
+
+**`neutral_residual` stays stale, on purpose.** It was measured at stitch
+time against the *uncorrected* bounds and cannot be re-measured without
+published pixels, which this plan — like every plan before it — does not
+touch. `auto_color.solve_cmy` threads the roll's lock into the cast-removal
+tie compensation it already performs, but the residual itself is read back
+unmodified; it was already a first-order approximation before this feature
+existed.
+
+**The amplitude is measured or approximated, never fitted from a
+negative's own colour.** An internal (never released) first draft
+estimated each negative's highlight amplitude by least-squares projection
+of its own colour deviation onto the roll's `K - 1` axis — a mistake
+caught in review, not merely imprecise: for real colour film `K - 1` is
+approximately the red-blue axis, exactly where a warm/cool scene cast
+(sunset, tungsten, shade) lives, so the projection preserved a real cast
+along that axis and only corrected the perpendicular component — backwards
+for a feature whose whole point is retargeting highlight hue. The fix
+reads the amplitude directly off a qualifying negative's own measured `H`
+(exact — the amplitude is a real number, not a fit) and, for a
+non-qualifying negative, approximates it from the green channel alone
+(`floors[green] - base[green]`, never R/B) rather than fitting it from the
+colour the correction exists to override. The same draft also shipped
+`_MIN_AMPLITUDE`'s gate backwards — checking for a *positive* amplitude
+when every real highlight-above-base amplitude is negative (log10 density:
+base is the least-negative value on the roll, a highlight is denser and
+therefore more negative) — which silently returned `None` on every real
+roll. Both are documented at length in
+docs/ROLL_HIGHLIGHT_LOCK.md §3.0/§3.3/§3.4, including the numerical checks
+that caught them.

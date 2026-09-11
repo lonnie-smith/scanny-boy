@@ -361,8 +361,8 @@ struct BaseFrameField: View {
     private static let captureInstructions = """
         Frame a piece of leader (or any stretch where clear rebate dominates \
         the frame). Keep bare light and sprocket holes out of the frame. \
-        Expose about two stops darker than your scans, so the rebate sits \
-        near the middle of the camera's histogram. Don't go past three stops.
+        Expose at the same shutter, aperture and ISO as your scans, clear \
+        of clipping.
         """
 
     private static func formatLockDate(_ iso: String) -> String {

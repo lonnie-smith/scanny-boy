@@ -59,6 +59,7 @@ import cv2
 import numpy as np
 
 from scanny_boy import auto_rotate, color, normalization, render, spots, tone
+from scanny_boy import highlight_lock as highlight_lock_module
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -1056,7 +1057,12 @@ _STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP, repo.CROP_OP}
 
 
 def ensure_preview(
-    roll_dir: Path, roll_id: str, negative, op: str | None = None
+    roll_dir: Path,
+    roll_id: str,
+    negative,
+    op: str | None = None,
+    *,
+    highlight_lock: dict | None = None,
 ) -> Path | None:
     """The preview path `negative` should display after `op`
     (None meaning: make sure one exists).
@@ -1073,12 +1079,17 @@ def ensure_preview(
       repair changes pixels, and the incremental transform path is
       lossless-geometry only.
     - Preview exists, no op: leave it alone.
+
+    `highlight_lock` is the roll's manifest `highlight_lock` block (a plain
+    dict, as stored — `None` on a mono roll or a roll with no lock), passed
+    through to `color.read_metering` for the ROLL_HIGHLIGHT_LOCK correction.
     """
     if op is not None and op not in PREVIEW_OPS and op not in _STATE_PREVIEW_OPS:
         raise ValueError(f"unknown preview op {op!r}")
+    lock = highlight_lock_module.HighlightLock.from_dict(highlight_lock)
     if negative.preview_path is None or not Path(negative.preview_path).exists():
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        meter = color.read_metering(negative.normalization)
+        meter = color.read_metering(negative.normalization, highlight_lock=lock)
         return generate_preview(
             roll_dir,
             roll_id,
@@ -1095,7 +1106,7 @@ def ensure_preview(
     if op is not None:
         if op in _STATE_PREVIEW_OPS:
             state = repo.net_edit_state(roll_dir, negative.negative_id)
-            meter = color.read_metering(negative.normalization)
+            meter = color.read_metering(negative.normalization, highlight_lock=lock)
             return generate_preview(
                 roll_dir,
                 roll_id,
@@ -1114,7 +1125,11 @@ def ensure_preview(
 
 
 def sync_previews(
-    roll_dir: Path, manifest, published_outputs: list[str] | None = None
+    roll_dir: Path,
+    manifest,
+    published_outputs: list[str] | None = None,
+    *,
+    force: bool = False,
 ) -> None:
     """Generate previews for completed negatives that lack one, regenerate
     the ones whose pixels this run replaced, and record the paths.
@@ -1123,17 +1138,28 @@ def sync_previews(
     A re-stitch adopts an existing negative — same id, same preview path,
     brand-new TIFF — so a cached preview must not survive that: it would
     show the old pixels. Regenerated previews carry the ops log's net
-    rotation, since the published TIFF never does."""
+    rotation, since the published TIFF never does.
+
+    `force` regenerates every completed negative's preview regardless of
+    `published_outputs` — docs/ROLL_HIGHLIGHT_LOCK.md §5: when the roll's
+    highlight-colour lock changes, a negative this run never touched can
+    still render differently, and its cached preview PNG (unlike the LUT
+    step that builds it) does not pick that up on its own."""
     published = set(published_outputs or [])
     changed = False
     for negative in manifest.negatives:
         if negative.status != "completed" or negative.output is None:
             continue
         has_preview = negative.preview_path and Path(negative.preview_path).exists()
-        if has_preview and negative.output["name"] not in published:
+        if not force and has_preview and negative.output["name"] not in published:
             continue
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        meter = color.read_metering(negative.normalization)
+        meter = color.read_metering(
+            negative.normalization,
+            highlight_lock=highlight_lock_module.HighlightLock.from_dict(
+                manifest.highlight_lock
+            ),
+        )
         preview = generate_preview(
             roll_dir,
             manifest.roll_id,
