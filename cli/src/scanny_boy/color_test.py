@@ -26,6 +26,31 @@ def test_neutral_tables_match_density_plan_lut():
     np.testing.assert_array_equal(tables[1], tables[2])
 
 
+def test_magenta_slider_is_attenuated():
+    """Magenta travel is weaker than before the gain; cyan and yellow are
+    unchanged because their gains are 1.0."""
+    metering = _metering(ranges=(1.0, 1.0, 1.0))
+    cyan = color.cmy_offsets(
+        dataclasses.replace(color.NEUTRAL_COLOR, wb_cyan=1.0), metering
+    )
+    yellow = color.cmy_offsets(
+        dataclasses.replace(color.NEUTRAL_COLOR, wb_yellow=1.0), metering
+    )
+    magenta = color.cmy_offsets(
+        dataclasses.replace(color.NEUTRAL_COLOR, wb_magenta=1.0), metering
+    )
+
+    assert cyan == color._luma_removed((color.CMY_MAX_DENSITY, 0.0, 0.0))
+    assert yellow == color._luma_removed((0.0, 0.0, color.CMY_MAX_DENSITY))
+
+    unscaled_magenta = color._luma_removed(
+        (0.0, color.CMY_MAX_DENSITY, 0.0)
+    )
+    assert np.linalg.norm(magenta) < np.linalg.norm(unscaled_magenta)
+    assert abs(magenta[0]) < abs(unscaled_magenta[0])
+    assert abs(magenta[2]) < abs(unscaled_magenta[2])
+
+
 def test_global_cmy_offsets_red_only():
     """A cyan-only slider still bites hardest where red's range is narrow —
     and the offsets are luma-neutral: all three channels move while Rec.709
@@ -194,12 +219,12 @@ def test_global_cmy_equal_move_is_a_hue_move_with_unequal_ranges():
     offsets = color.cmy_offsets(params, _metering(ranges=(0.5, 1.0, 1.0)))
     assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
     assert offsets[0] != pytest.approx(offsets[1], abs=1e-9)
-    assert offsets[1] == pytest.approx(offsets[2], abs=1e-12)
+    assert offsets[0] != pytest.approx(offsets[2], abs=1e-9)
 
 
 def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
-    """Each returned triple is luma-neutral; an equal three-slider move on a
-    region is an exact no-op; shadow and highlight trims differ at midtone."""
+    """Each returned triple is luma-neutral; equal gained sliders cancel;
+    shadow and highlight trims differ at midtone."""
     params = dataclasses.replace(
         color.NEUTRAL_COLOR,
         shadow_cyan=0.8,
@@ -213,10 +238,10 @@ def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
     assert _luma_sum(shadow) == pytest.approx(0.0, abs=1e-12)
     assert _luma_sum(highlight) == pytest.approx(0.0, abs=1e-12)
 
-    equal = color.ColorParams(
-        shadow_cyan=0.5, shadow_magenta=0.5, shadow_yellow=0.5
+    equal_gained = color.ColorParams(
+        shadow_cyan=0.5, shadow_magenta=1.0, shadow_yellow=0.5
     )
-    assert color.region_cmy(equal)[0] == (0.0, 0.0, 0.0)
+    assert color.region_cmy(equal_gained)[0] == (0.0, 0.0, 0.0)
 
     shadow_only = dataclasses.replace(
         color.NEUTRAL_COLOR, shadow_yellow=1.0
