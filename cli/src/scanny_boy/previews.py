@@ -580,15 +580,146 @@ def display_shape(
     crop_params: dict | None,
 ) -> tuple[int, int]:
     """The display image's `(height, width)`: the published TIFF's own
-    dimensions — or a live crop window's, which the replay puts before
-    every other transform — swapped when the net quarter turns are odd.
-    The flip and the fine rotation never change dimensions."""
+    dimensions — or a live crop window's output size when cropped — swapped
+    when the net quarter turns are odd. The flip and the fine rotation
+    never change dimensions."""
     if crop_is_live(crop_params, tiff_size):
         inner_h, inner_w = int(crop_params["h"]), int(crop_params["w"])
     else:
         inner_h, inner_w = tiff_size
     r = (-int(quarter_turns)) % 4
     return (inner_w, inner_h) if r % 2 else (inner_h, inner_w)
+
+
+def _window_from_tilted_corners(
+    corners: list[tuple[float, float]],
+) -> tuple[int, int, int, int, float]:
+    """Axis-aligned window `(x, y, w, h, tilt_deg)` from four tilted
+    pixel-index corners — the centre, edge lengths, and CCW tilt that
+    `display_crop_window_to_tiff` and `tiff_crop_window_to_display` share."""
+    (x0, y0), (x1, y1), x2y2, (x3, y3) = corners
+    centre_x = (x0 + x1 + x2y2[0] + x3) / 4.0
+    centre_y = (y0 + y1 + x2y2[1] + y3) / 4.0
+    edge_x, edge_y = x1 - x0, y1 - y0
+    width = math.hypot(edge_x, edge_y) + 1.0
+    height = math.hypot(x3 - x0, y3 - y0) + 1.0
+    tilt = -auto_rotate.edge_degrees(edge_y, edge_x)
+    while tilt > 45.0:
+        tilt -= 90.0
+        width, height = height, width
+    while tilt <= -45.0:
+        tilt += 90.0
+        width, height = height, width
+    return (
+        math.floor(centre_x - width / 2.0 + 0.5),
+        math.floor(centre_y - height / 2.0 + 0.5),
+        max(round(width), 1),
+        max(round(height), 1),
+        round(tilt, 2),
+    )
+
+
+def tiff_crop_window_to_display(
+    crop_params: dict,
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> tuple[int, int, int, int, float]:
+    """The stored TIFF-space crop window as the display-space rect and
+    slider tilt the app re-enters crop mode with — the forward map that
+    inverts `display_crop_window_to_tiff` on the full uncropped canvas."""
+    import cv2
+
+    tiff_h, tiff_w = tiff_size
+    stage_h, stage_w = tiff_h, tiff_w
+    x, y, w, h = (
+        int(crop_params["x"]),
+        int(crop_params["y"]),
+        int(crop_params["w"]),
+        int(crop_params["h"]),
+    )
+    tilt_deg = float(crop_params["tilt_deg"])
+    centre_x, centre_y = x + (w - 1) / 2.0, y + (h - 1) / 2.0
+    corners = [
+        (float(px), float(py))
+        for px, py in (
+            (x, y),
+            (x + w - 1, y),
+            (x + w - 1, y + h - 1),
+            (x, y + h - 1),
+        )
+    ]
+    if abs(tilt_deg) >= 1e-9:
+        tilt_matrix = cv2.getRotationMatrix2D(
+            (centre_x, centre_y), float(tilt_deg), 1.0
+        )
+        corners = [
+            (
+                tilt_matrix[0, 0] * px + tilt_matrix[0, 1] * py + tilt_matrix[0, 2],
+                tilt_matrix[1, 0] * px + tilt_matrix[1, 1] * py + tilt_matrix[1, 2],
+            )
+            for px, py in corners
+        ]
+    if flipped_horizontally:
+        corners = [(stage_w - 1 - px, py) for px, py in corners]
+    if abs(fine_angle_deg) >= 1e-9:
+        matrix = cv2.getRotationMatrix2D(
+            (stage_w / 2.0, stage_h / 2.0), -float(fine_angle_deg), 1.0
+        )
+        corners = [
+            (
+                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
+                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
+            )
+            for px, py in corners
+        ]
+    r = (-int(quarter_turns)) % 4
+    if r == 1:
+        corners = [(py, stage_w - 1 - px) for px, py in corners]
+    elif r == 2:
+        corners = [(stage_w - 1 - px, stage_h - 1 - py) for px, py in corners]
+    elif r == 3:
+        corners = [(stage_h - 1 - py, px) for px, py in corners]
+    return _window_from_tilted_corners(corners)
+
+
+def display_crop_params(
+    crop_params: dict | None,
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> dict | None:
+    """The stored TIFF-space crop as params for `apply_crop` on the full
+    uncropped display image — the last replay step, matching crop mode's
+    uncropped display plus slider tilt."""
+    if not crop_params or not crop_is_live(crop_params, tiff_size):
+        return None
+    x, y, w, h, display_tilt = tiff_crop_window_to_display(
+        crop_params,
+        tiff_size,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+    )
+    canvas_h, canvas_w = display_shape(
+        tiff_size, quarter_turns=quarter_turns, crop_params=None
+    )
+    result: dict = {
+        "canvas": [canvas_w, canvas_h],
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "tilt_deg": display_tilt,
+    }
+    preset = crop_params.get("preset")
+    if preset is not None:
+        result["preset"] = preset
+    return result
 
 
 def crop_report(
@@ -601,11 +732,11 @@ def crop_report(
 ) -> dict | None:
     """The net crop as `roll info` and `edit_recorded` report it, in
     display space — the cropped image's final dimensions (quarter turns
-    folded in, the only transform that changes them) plus the stored tilt
-    and preset label for the sidebar. When a live crop exists, the report
-    also carries the crop window's origin and the full uncropped display
-    canvas so the app can re-enter crop mode on the whole frame with the
-    saved rect superimposed."""
+    folded in, the only transform that changes them) plus the display
+    slider tilt and preset label for the sidebar. When a live crop exists,
+    the report also carries the crop window's origin and the full
+    uncropped display canvas so the app can re-enter crop mode on the
+    whole frame with the saved rect superimposed."""
     if not crop_params:
         return None
     height, width = display_shape(
@@ -614,23 +745,17 @@ def crop_report(
     canvas_h, canvas_w = display_shape(
         tiff_size, quarter_turns=quarter_turns, crop_params=None
     )
-    x, y, _w, _h = tiff_rect_to_display(
-        (
-            int(crop_params["x"]),
-            int(crop_params["y"]),
-            int(crop_params["w"]),
-            int(crop_params["h"]),
-        ),
+    x, y, _w, _h, display_tilt = tiff_crop_window_to_display(
+        crop_params,
         tiff_size,
         quarter_turns=quarter_turns,
         flipped_horizontally=flipped_horizontally,
         fine_angle_deg=fine_angle_deg,
-        crop_params=None,
     )
     return {
         "width": width,
         "height": height,
-        "tilt_deg": crop_params["tilt_deg"],
+        "tilt_deg": display_tilt,
         "preset": crop_params.get("preset"),
         "x": x,
         "y": y,
@@ -734,35 +859,7 @@ def display_crop_window_to_tiff(
             )
         mapped.append((j, i))
 
-    (x0, y0), (x1, y1), x2y2, (x3, y3) = mapped
-    # The corners are pixel indices, so the centre they average to is the
-    # window's continuous centre, and its pixel extents are the index
-    # distances plus one — the same floor/ceil+1 convention
-    # `tiff_rect_to_display`'s bounding box uses.
-    centre_x = (x0 + x1 + x2y2[0] + x3) / 4.0
-    centre_y = (y0 + y1 + x2y2[1] + y3) / 4.0
-    # The display-width edge's direction and length, in TIFF space.
-    edge_x, edge_y = x1 - x0, y1 - y0
-    width = math.hypot(edge_x, edge_y) + 1.0
-    height = math.hypot(x3 - x0, y3 - y0) + 1.0
-    # The window's counter-clockwise tilt as displayed is the width edge's
-    # direction; `auto_rotate.edge_degrees` counts clockwise in viewing
-    # space, so negate. Fold into (-45, 45], swapping the sides whenever
-    # the "width" edge turns out to be the more vertical one.
-    tilt = -auto_rotate.edge_degrees(edge_y, edge_x)
-    while tilt > 45.0:
-        tilt -= 90.0
-        width, height = height, width
-    while tilt <= -45.0:
-        tilt += 90.0
-        width, height = height, width
-    return (
-        math.floor(centre_x - width / 2.0 + 0.5),
-        math.floor(centre_y - height / 2.0 + 0.5),
-        max(round(width), 1),
-        max(round(height), 1),
-        round(tilt, 2),
-    )
+    return _window_from_tilted_corners(mapped)
 
 
 def _display_image(
@@ -775,25 +872,22 @@ def _display_image(
     scratches_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (scratch correction, then spot repair, then the crop,
-    then the mirror, then the fine rotation's warp with the fill sentinel,
-    then the quarter turns) — the pixels `generate_preview`,
-    `render_preview`, and `render_region`'s exact path all work from.
-    uint16 RGB in density codes, like the TIFF.
+    in canonical order (scratch correction, then spot repair, then the
+    mirror, then the fine rotation's warp with the fill sentinel, then the
+    quarter turns, then the crop on the uncropped display canvas) — the
+    pixels `generate_preview`, `render_preview`, and `render_region`'s
+    exact path all work from. uint16 RGB in density codes, like the TIFF.
 
-    The scratch correction (when `scratches_params` carries a live one) is
-    the first step, before any geometry: the op's coordinates are TIFF
-    space.  The spot repair (when `spots_params` carries a live one) is the
-    second step, for the same reason.  The crop is the third step, for the
-    same reason: its window is TIFF space too (`crop_is_live` drops a stale
-    one), and every later transform applies to the cropped frame wholesale,
-    exactly as the export does."""
+    Scratch and spot ops run in TIFF space before any geometry. The stored
+    crop window is TIFF space in the ops log; replay converts it to
+    display space via `display_crop_params` and applies it last, matching
+    crop mode's uncropped display plus slider tilt."""
     import tifffile
 
     image = _promote_to_rgb(tifffile.imread(tiff_path))
+    tiff_size = (image.shape[0], image.shape[1])
     image = scratches.apply(image, scratches_params)
     image = spots.apply_repair(image, spots_params)
-    image = apply_crop(image, crop_params)
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
@@ -802,7 +896,16 @@ def _display_image(
         # np.rot90 turns counter-clockwise; the count is net clockwise
         # quarter turns.
         image = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
-    return image
+    return apply_crop(
+        image,
+        display_crop_params(
+            crop_params,
+            tiff_size,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped_horizontally,
+            fine_angle_deg=fine_angle_deg,
+        ),
+    )
 
 
 def generate_preview(
@@ -829,9 +932,9 @@ def generate_preview(
     replay says, so the caller passes the canonical angle through
     untouched. `tone_params` is the net `tone` op's full param dict (None =
     the flat look), composed into the display LUT. The net `crop` op's
-    window (`crop_params`, TIFF space like the spots op) is the first
-    geometric step, before the mirror and rotations — which is why a live
-    crop's window is what `display_shape` sizes.
+    window (`crop_params`, TIFF space in the ops log) is replayed last on
+    the uncropped display canvas — which is why a live crop's window is
+    what `display_shape` sizes.
     Returns the preview path, or None when the negative has no published
     output to preview."""
     if negative.output is None:
@@ -1156,11 +1259,11 @@ def render_region(
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
-    transform folded in, exactly as `generate_preview` shows it: the live
-    crop's window first (a tilted warp, `apply_crop`), then mirrored
+    transform folded in, exactly as `generate_preview` shows it: mirrored
     horizontally (when flipped), then fine-rotated (the auto-seeded
     `rotate_fine` angle, a warp about the canvas center with the fill
-    sentinel in the uncovered pixels), then rotated — and the encode is the
+    sentinel in the uncovered pixels), then rotated, then the live crop's
+    window (a tilted warp, `apply_crop`) — and the encode is the
     8-bit display LUT named by `mode` (the inverted positive, with the net
     `tone` op composed in when `tone_params` is given — or the un-inverted
     negative, which no tone reaches) with no downscale. A live crop's
