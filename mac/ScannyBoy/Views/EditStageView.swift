@@ -40,8 +40,21 @@ struct EditStageView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            Divider()
+            FilmstripView(
+                negatives: edit.visibleNegatives,
+                cameraColor: edit.roll?.cameraColor,
+                isSelected: edit.isSelected,
+                warningIDs: warningIDs
+            ) { negativeID, additive, extendingRange in
+                edit.select(
+                    negativeID,
+                    additive: additive,
+                    extendingRange: extendingRange
+                )
+            }
             if showsRunLevelWarnings {
-                Text(rollLevelWarningCaption)
+                Text("Roll warnings: \(rollLevelWarningCaption)")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .lineLimit(2)
@@ -49,18 +62,6 @@ struct EditStageView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-            }
-            Divider()
-            FilmstripView(
-                negatives: edit.visibleNegatives,
-                cameraColor: edit.roll?.cameraColor,
-                isSelected: edit.isSelected
-            ) { negativeID, additive, extendingRange in
-                edit.select(
-                    negativeID,
-                    additive: additive,
-                    extendingRange: extendingRange
-                )
             }
         }
         .onChange(of: edit.selectedNegative?.negativeID) { _, negativeID in
@@ -94,6 +95,21 @@ struct EditStageView: View {
 
     private var rollLevelWarningCaption: String {
         NegativeDiagnostics.rollLevelWarningCaption(run.runLevelWarnings)
+    }
+
+    private var warningIDs: Set<String> {
+        var ids = Set<String>()
+        for negative in edit.visibleNegatives {
+            if NegativeDiagnostics.hasWarnings(for: negative) {
+                ids.insert(negative.negativeID)
+            }
+            if let result = run.negativeResult(for: negative.negativeID),
+               !result.warnings.isEmpty
+            {
+                ids.insert(negative.negativeID)
+            }
+        }
+        return ids
     }
 }
 
