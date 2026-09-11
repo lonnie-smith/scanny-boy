@@ -742,7 +742,13 @@ def test_roll_set_base_frame_warns_on_camera_conflict(capsys, tmp_path, monkeypa
     )
     monkeypatch.setattr(
         "scanny_boy.metadata.read_source_settings",
-        lambda _frame: SimpleNamespace(make="NIKON CORPORATION", model="NIKON Z f"),
+        lambda _frame: SimpleNamespace(
+            make="NIKON CORPORATION",
+            model="NIKON Z f",
+            exposure_time=None,
+            f_number=None,
+            iso=None,
+        ),
     )
     manifest = load_roll_manifest(roll_dir)
     manifest.camera_color = CameraColor(

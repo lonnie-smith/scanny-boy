@@ -32,6 +32,7 @@ struct MetadataStageView: View {
             FilmstripView(
                 negatives: edit.visibleNegatives,
                 cameraColor: edit.roll?.cameraColor,
+                highlightLock: edit.roll?.highlightLock,
                 isSelected: edit.isSelected,
                 warningIDs: []
             ) { negativeID, additive, extendingRange in
@@ -180,7 +181,11 @@ struct MetadataStageView: View {
     private var browserSection: some View {
         if let negative = edit.selectedNegative {
             HStack(spacing: 0) {
-                PreviewImageView(negative: negative, cameraColor: edit.roll?.cameraColor)
+                PreviewImageView(
+                    negative: negative,
+                    cameraColor: edit.roll?.cameraColor,
+                    highlightLock: edit.roll?.highlightLock
+                )
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()

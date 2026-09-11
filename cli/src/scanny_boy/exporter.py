@@ -167,6 +167,7 @@ def provenance_record(
     scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
+    highlight_lock: dict | None = None,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload: what makes an exported
     file interpretable without the database. The published TIFF's
@@ -229,6 +230,11 @@ def provenance_record(
                 if applied_downsample is None
                 else {"long_edge": applied_downsample}
             ),
+            # docs/ROLL_HIGHLIGHT_LOCK.md §6: the roll's highlight-colour
+            # lock in effect for this export, or `None` when none applied —
+            # what makes an exported file's dense-end colour interpretable
+            # without the database, exactly like `tone`/`color` above.
+            "highlight_lock": highlight_lock,
         },
     }
 
@@ -388,7 +394,9 @@ def _export_negative(
             state.spots,
             state.scratches,
         )
-        meter = color.read_metering(negative.normalization)
+        meter = color.read_metering(
+            negative.normalization, highlight_lock=roll.highlight_lock
+        )
         # The crop and spot repair apply before any other geometry: both
         # ops' coordinates are TIFF space. A stale
         # crop — a re-stitch changed the canvas — applies as nothing, the
@@ -496,6 +504,7 @@ def _write_export(
         scratches_params,
         crop_params,
         applied_downsample,
+        roll.highlight_lock,
     )
     jxl_writer.write_jxl(
         destination,
