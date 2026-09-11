@@ -48,6 +48,14 @@ def test_neutral_lut_is_unchanged():
         assert int(lut[code]) == expected
 
 
+def test_resolved_positive_tone_applies_neutral_when_missing():
+    assert tone.resolved_positive_tone(None) == tone.NEUTRAL
+    custom = {"grade_r": 90.0, "snap_gamma": 0.2, "density": 1.0,
+              "shadow_density": 0.0, "highlight_density": 0.0,
+              "toe": 0.0, "toe_width": 2.5, "shoulder": 0.0, "shoulder_width": 2.5}
+    assert tone.resolved_positive_tone(custom) == tone.ToneParams(**custom)
+
+
 def test_density_darkens_the_midtones():
     values = np.array([0.5])
     neutral = tone.curve_values(values, tone.NEUTRAL)[0]

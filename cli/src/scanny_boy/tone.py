@@ -122,6 +122,19 @@ class ToneParams:
 NEUTRAL = ToneParams()
 
 
+def resolved_positive_tone(
+    tone_params: dict[str, float] | None,
+) -> ToneParams:
+    """The tone curve the positive display applies.
+
+    A missing tone op (``None``, or ``--reset``) means the default print
+    curve — ``NEUTRAL`` — not the flat identity ramp. ``curve_values(None)``
+    remains the explicit identity primitive for the negative view and tests."""
+    if tone_params is None:
+        return NEUTRAL
+    return ToneParams(**tone_params)
+
+
 def grade_slope(grade_r: float) -> float:
     """The straight-line midtone slope for one ISO-R grade value."""
     return min(SLOPE_MAX, max(SLOPE_MIN, GRADE_SLOPE_REF * GRADE_REFERENCE / grade_r))
@@ -276,7 +289,8 @@ def curve_values(
     curve with every colour control at rest.
 
     `tone_params is None` selects the flat identity ramp — colour shaping
-    only, no paper grade. The tone op is what turns the grade on."""
+    only, no paper grade. Positive display uses `resolved_positive_tone`
+    instead; ``None`` here is for the negative view and explicit tests."""
     if metering is None:
         metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     if flat_tone is None:

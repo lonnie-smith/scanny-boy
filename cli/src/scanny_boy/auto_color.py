@@ -110,11 +110,16 @@ def solve_cmy(
     luma_mean = color._luma_weighted_sum(tuple(offsets))
     offsets = [value - luma_mean for value in offsets]
 
-    # Step 4: the inverse of `cmy_offsets` (slider -> offset * range /
+    # Step 4: the inverse of `cmy_offsets` (slider -> offset * gain * range /
     # CMY_MAX_DENSITY), clamped into the sliders' range.
     sliders = tuple(
         min(
-            max(offsets[ch] * metering.ranges[ch] / color.CMY_MAX_DENSITY, color.CMY_MIN),
+            max(
+                offsets[ch]
+                * metering.ranges[ch]
+                / (color.CMY_MAX_DENSITY * color.CMY_SLIDER_GAIN[ch]),
+                color.CMY_MIN,
+            ),
             color.CMY_MAX,
         )
         for ch in range(3)

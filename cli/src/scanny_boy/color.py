@@ -16,6 +16,10 @@ CMY_MAX_DENSITY = 0.2
 CMY_MIN = -1.0
 CMY_MAX = 1.0
 
+# Per-slider scale applied before luma removal. Magenta starts at 0.5 so
+# equal travel matches cyan/yellow feel; cyan and yellow stay 1.0.
+CMY_SLIDER_GAIN = (1.0, 0.5, 1.0)
+
 # Cast removal — NegPy's cast_removal_max_offset, same normalized units.
 # CAST_MAX_OFFSET bounds BOTH ends' ties.
 CAST_REMOVAL_MIN = 0.0
@@ -325,7 +329,10 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
         # malformed record must not index out of range.
         return (0.0,) * len(sliders)
     raw = [
-        slider * CMY_MAX_DENSITY / max(metering.ranges[ch], 1e-6)
+        slider
+        * CMY_MAX_DENSITY
+        * CMY_SLIDER_GAIN[ch]
+        / max(metering.ranges[ch], 1e-6)
         for ch, slider in enumerate(sliders)
     ]
     return _luma_removed(raw)
@@ -336,13 +343,16 @@ def region_cmy(params: ColorParams) -> tuple[tuple[float, ...], ...]:
     removed**: they are added to the display value directly, so a luma-zero
     triple contributes a luma-neutral display shift — the region controls
     are purely chromatic and stop competing with the shadow/highlight
-    density trims. An equal three-slider move is an exact no-op here,
-    because no per-channel range is in the path."""
-    shadow = (params.shadow_cyan, params.shadow_magenta, params.shadow_yellow)
+    density trims."""
+    shadow = (
+        params.shadow_cyan * CMY_SLIDER_GAIN[0],
+        params.shadow_magenta * CMY_SLIDER_GAIN[1],
+        params.shadow_yellow * CMY_SLIDER_GAIN[2],
+    )
     highlight = (
-        params.highlight_cyan,
-        params.highlight_magenta,
-        params.highlight_yellow,
+        params.highlight_cyan * CMY_SLIDER_GAIN[0],
+        params.highlight_magenta * CMY_SLIDER_GAIN[1],
+        params.highlight_yellow * CMY_SLIDER_GAIN[2],
     )
     return _luma_removed(shadow), _luma_removed(highlight)
 

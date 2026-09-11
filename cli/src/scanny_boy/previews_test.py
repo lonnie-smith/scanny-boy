@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from scanny_boy import normalization
+from scanny_boy import render
 from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, transform_preview
 
 
@@ -174,20 +175,37 @@ def test_render_preview_matches_the_display_encode_and_folds_the_transform(tmp_p
     image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
     tiff_path = _write_published_tiff(tmp_path, image)
 
-    for mode, lut in (("positive", NORMALIZED_DISPLAY_LUT), ("negative", NEGATIVE_DISPLAY_LUT)):
-        for quarter_turns in range(4):
-            destination = tmp_path / f"preview-{mode}-{quarter_turns}.png"
-            width, height = render_preview(
-                tiff_path,
-                destination,
-                quarter_turns=quarter_turns,
-                mode=mode,
-            )
-            display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
-            assert (width, height) == (display.shape[1], display.shape[0])
-            stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-            expected = cv2.cvtColor(lut[display], cv2.COLOR_RGB2BGR)
-            np.testing.assert_array_equal(stored, expected)
+    for quarter_turns in range(4):
+        destination = tmp_path / f"preview-positive-{quarter_turns}.png"
+        width, height = render_preview(
+            tiff_path,
+            destination,
+            quarter_turns=quarter_turns,
+            mode="positive",
+        )
+        display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+        assert (width, height) == (display.shape[1], display.shape[0])
+        stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+        expected = cv2.cvtColor(
+            _default_positive_display(display), cv2.COLOR_RGB2BGR
+        )
+        np.testing.assert_array_equal(stored, expected)
+
+    for quarter_turns in range(4):
+        destination = tmp_path / f"preview-negative-{quarter_turns}.png"
+        width, height = render_preview(
+            tiff_path,
+            destination,
+            quarter_turns=quarter_turns,
+            mode="negative",
+        )
+        display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
+        assert (width, height) == (display.shape[1], display.shape[0])
+        stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+        expected = cv2.cvtColor(
+            NEGATIVE_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR
+        )
+        np.testing.assert_array_equal(stored, expected)
 
 
 def test_render_preview_downscales_to_the_max_edge(tmp_path):
@@ -268,12 +286,17 @@ def _roll_with_published_negative(tmp_path: Path, image: np.ndarray):
     return roll_dir, manifest, negative
 
 
+def _default_positive_display(codes: np.ndarray) -> np.ndarray:
+    """The positive display encode with no recorded tone or colour ops."""
+    return render.encode_positive_uint8(codes, None, None)
+
+
 def _expected_preview(
     image: np.ndarray, quarter_turns: int, flipped: bool = False
 ) -> np.ndarray:
     """What `generate_preview` writes: the 16→8-bit display encode, the net
     transform (mirror first, then rotation), then RGB→BGR for storage."""
-    display = NORMALIZED_DISPLAY_LUT[image]
+    display = _default_positive_display(image)
     if flipped:
         display = np.ascontiguousarray(display[:, ::-1])
     display = np.ascontiguousarray(np.rot90(display, k=(-quarter_turns) % 4))
@@ -356,7 +379,7 @@ def test_ensure_preview_regenerates_with_the_fine_rotation(tmp_path):
     )
     preview = previews.ensure_preview(roll_dir, "rid-1", negative)
 
-    display = NORMALIZED_DISPLAY_LUT[rotate_with_fill(image, 30.0)]
+    display = _default_positive_display(rotate_with_fill(image, 30.0))
     expected = cv2.cvtColor(np.ascontiguousarray(display), cv2.COLOR_RGB2BGR)
     stored = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
     assert stored.shape == expected.shape
@@ -521,7 +544,7 @@ def test_render_region_matches_full_decode_for_every_quarter_turn(tmp_path):
             assert (rx, ry, rw, rh) == (x, y, w, h)
             stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
             expected = cv2.cvtColor(
-                NORMALIZED_DISPLAY_LUT[display[y : y + h, x : x + w]],
+                _default_positive_display(display[y : y + h, x : x + w]),
                 cv2.COLOR_RGB2BGR,
             )
             np.testing.assert_array_equal(stored, expected)
@@ -554,7 +577,7 @@ def test_render_region_folds_in_the_fine_rotation(tmp_path):
         assert rect == (x, y, w, h)
         stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
         expected = cv2.cvtColor(
-            NORMALIZED_DISPLAY_LUT[display[y : y + h, x : x + w]],
+            _default_positive_display(display[y : y + h, x : x + w]),
             cv2.COLOR_RGB2BGR,
         )
         np.testing.assert_array_equal(stored, expected)
@@ -624,7 +647,7 @@ def test_render_region_does_not_fall_back_to_full_decode(tmp_path, monkeypatch):
     assert rect == (10, 5, 20, 12)
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[image[5:17, 10:30]],
+        _default_positive_display(image[5:17, 10:30]),
         cv2.COLOR_RGB2BGR,
     )
     np.testing.assert_array_equal(stored, expected)
@@ -821,7 +844,7 @@ def test_render_region_takes_the_exact_path_when_a_repair_is_live(tmp_path, monk
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
     display = previews._display_image(tiff_path, spots_params=params)
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[display[8:20, 5:25]], cv2.COLOR_RGB2BGR
+        _default_positive_display(display[8:20, 5:25]), cv2.COLOR_RGB2BGR
     )
     np.testing.assert_array_equal(stored, expected)
 
@@ -1622,7 +1645,7 @@ def test_render_region_works_in_cropped_display_space(tmp_path):
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
     display = _display_image(tiff_path, 0, False, 0.0, None, crop)
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[display[10:40, 20:70]],
+        _default_positive_display(display[10:40, 20:70]),
         cv2.COLOR_RGB2BGR,
     )
     np.testing.assert_array_equal(stored, expected)

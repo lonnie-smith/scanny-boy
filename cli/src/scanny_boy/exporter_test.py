@@ -393,15 +393,19 @@ def test_the_tone_op_changes_the_exported_pixels_and_matches_the_curve(
     np.testing.assert_array_equal(rendered, toned)
 
 
-def test_a_negative_without_a_tone_op_exports_the_flat_look(colour_roll, tmp_path):
-    """`tone_params is None` means the identity ramp — the flat look the
-    preview shows today, the correct default and not a placeholder."""
+def test_a_negative_without_a_tone_op_exports_the_default_print_curve(
+    colour_roll, tmp_path
+):
+    """A missing tone op applies the default print curve, not the flat
+    identity ramp."""
     destination = _export(colour_roll, tmp_path)
     rendered = _decode(destination)
-    flat, _ = render.render_export(_ORIGINAL_RGB, render.export_matrix(
-        _MATRIX.rgb_xyz_matrix
-    ), None)
-    np.testing.assert_array_equal(rendered, flat)
+    default, _ = render.render_export(
+        _ORIGINAL_RGB,
+        render.export_matrix(_MATRIX.rgb_xyz_matrix),
+        None,
+    )
+    np.testing.assert_array_equal(rendered, default)
 
 
 # --- the geometric replay, end to end ---------------------------------------
