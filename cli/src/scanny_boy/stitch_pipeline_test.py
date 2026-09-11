@@ -1812,11 +1812,15 @@ def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(work_dir, tmp_path, m
     outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
-    (edit,) = repo.edits_for(out_dir, "stitch-negative-01")
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    (edit,) = rotate_edits
     assert edit["op"] == repo.ROTATE_FINE_OP
     assert edit["params"] == {"angle_deg": 1.5, "source": "auto"}
     assert repo.net_edit_state(out_dir, "stitch-negative-01") == repo.EditState(
-        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None
+        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None,
+        scratches={"detector_version": 1, "source": "auto", "enabled": True,
+                   "canvas": [2080, 730], "scratches": []},
     )
     (recorded,) = [e for e in events if isinstance(e, EditRecorded)]
     assert recorded.negative_id == "stitch-negative-01"
@@ -1839,7 +1843,9 @@ def test_auto_rotation_seeds_nothing_when_the_estimator_declines(
     outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
-    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert rotate_edits == []
 
 
 def test_auto_rotation_off_seeds_nothing(work_dir, tmp_path, monkeypatch):
@@ -1852,7 +1858,9 @@ def test_auto_rotation_off_seeds_nothing(work_dir, tmp_path, monkeypatch):
     outcome = run_stitch_with_defaults(work_dir, out_dir, auto_rotate=False)
 
     assert outcome.status == "complete"
-    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert rotate_edits == []
 
 
 def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkeypatch):
@@ -1870,7 +1878,9 @@ def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkey
     second = run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
 
     assert second.status == "complete"
-    assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert len(rotate_edits) == 1
 
 
 # --- explicit film kind at roll init -------------------------------------

@@ -1575,11 +1575,13 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
     edit_recorded = events[1]
     assert edit_recorded["edit"]["params"] == _reset_tone_params()
     # The trailing tone op was updated in place: the log holds the single
-    # coalesced op, not one per commit.
+    # coalesced op, not one per commit.  The scratch detection run during
+    # stitching adds a scratches op, so we see two total.
     edits = repo.edits_for(roll_dir, negative_id)
-    assert len(edits) == 1
-    assert edits[0]["op"] == "tone"
-    assert edits[0]["params"] == _reset_tone_params()
+    assert len(edits) == 2
+    assert edits[0]["op"] == "scratches"
+    assert edits[1]["op"] == "tone"
+    assert edits[1]["params"] == _reset_tone_params()
 
 
 def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):

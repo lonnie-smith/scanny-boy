@@ -1006,7 +1006,7 @@ def _check_scratches_params(params: dict) -> dict:
 
     version = params.get("detector_version")
     if isinstance(version, bool) or not isinstance(version, int):
-        raise ValueError("scratches detector_version must be an int")
+        raise ValueError("scratches detector_version must be an int")  # noqa: TRY004
     if version > scratches.DETECTOR_VERSION:
         raise ValueError(
             f"scratches detector_version {version} is newer than this "
@@ -1017,7 +1017,7 @@ def _check_scratches_params(params: dict) -> dict:
         raise ValueError("scratches source must be a string or null")
     enabled = params.get("enabled")
     if not isinstance(enabled, bool):
-        raise ValueError("scratches enabled must be a bool")
+        raise ValueError("scratches enabled must be a bool")  # noqa: TRY004
     canvas = params.get("canvas")
     if (
         not isinstance(canvas, list)
@@ -1030,11 +1030,11 @@ def _check_scratches_params(params: dict) -> dict:
         raise ValueError("scratches canvas must be [width, height], two positive ints")
     scratch_list = params.get("scratches")
     if not isinstance(scratch_list, list):
-        raise ValueError("scratches must be a list")
+        raise ValueError("scratches must be a list")  # noqa: TRY004
     checked: list[dict] = []
     for scratch in scratch_list:
         if not isinstance(scratch, dict):
-            raise ValueError("each scratch must be an object")
+            raise ValueError("each scratch must be an object")  # noqa: TRY004
         missing = [key for key in _SCRATCH_CORE_KEYS if key not in scratch]
         if missing:
             raise ValueError(f"scratch missing keys: {', '.join(missing)}")
@@ -1063,7 +1063,7 @@ def validated_scratches_params(params: dict) -> dict:
     specific message for each malformed shape; `edits.py` turns those into
     `INVALID_EDIT`."""
     if not isinstance(params, dict):
-        raise ValueError("scratches params must be an object")
+        raise ValueError("scratches params must be an object")  # noqa: TRY004
     return _check_scratches_params(params)
 
 

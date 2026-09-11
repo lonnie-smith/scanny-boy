@@ -317,7 +317,7 @@ def test_load_icc_profile_still_verifies_and_returns_bytes():
     assert len(density) == 1776
     assert hashlib.sha256(density).hexdigest() == DENSITY_PROFILE_SHA256
     grey = load_icc_profile(ProfileKind.DENSITY_GREY)
-    assert len(grey) == 1508
+    assert len(grey) == 1452
     assert hashlib.sha256(grey).hexdigest() == DENSITY_GREY_PROFILE_SHA256
 
 

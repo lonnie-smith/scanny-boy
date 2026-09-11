@@ -332,7 +332,7 @@ def test_colour_only_render_stays_on_identity_ramp():
 
     mid_code = int(0.5 * tone.MAX_CODE)
     mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
-    neutral, _ = render.render_positive_float(
+    _neutral, _ = render.render_positive_float(
         mid_img, matrix, None, {"wb_magenta": 0.0}, metering
     )
     colored, _ = render.render_positive_float(

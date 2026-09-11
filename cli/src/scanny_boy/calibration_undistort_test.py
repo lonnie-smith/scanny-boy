@@ -41,10 +41,10 @@ def test_prepare_skips_frame_when_all_channels_empty():
     green_n, green_ids = normalised("green")
     blue_n, blue_ids = normalised("blue")
 
-    red, green_for_red, _ = calibration._intersect_ids(
+    red, _green_for_red, _ = calibration._intersect_ids(
         (red_n, red_ids), (green_n, green_ids)
     )
-    blue, green_for_blue, _ = calibration._intersect_ids(
+    blue, _green_for_blue, _ = calibration._intersect_ids(
         (blue_n, blue_ids), (green_n, green_ids)
     )
     assert len(red) == 0 or len(blue) == 0

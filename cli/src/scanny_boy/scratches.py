@@ -253,7 +253,7 @@ def _backtrack(
         results.append((path_z, centres))
         # Suppress around this path.
         for i in range(n_bands):
-            cx = int(round(centres[i]))
+            cx = round(centres[i])
             lo = max(0, cx - PATH_SUPPRESS_PX)
             hi = min(width, cx + PATH_SUPPRESS_PX + 1)
             taken_mask[lo:hi] = True
@@ -277,7 +277,7 @@ def _is_step_edge(
     for b in range(n_bands):
         row_start = b * band_h
         row_end = min(row_start + band_h, height)
-        cx = int(round(centres[b]))
+        cx = round(centres[b])
         if cx < BG_END or cx >= width - BG_END:
             continue
         left_bg = val[row_start:row_end, cx - BG_END : cx - BG_START].mean()
@@ -304,7 +304,7 @@ def _refine_centres(
     for b in range(n_bands):
         row_start = b * band_h
         row_end = min(row_start + band_h, height)
-        cx = int(round(centres[b]))
+        cx = round(centres[b])
         if cx < 3 or cx >= width - 3:
             continue
         # Sample the chroma profile at cx-1, cx, cx+1 (averaged over the band).
@@ -395,7 +395,7 @@ def detect(
             for b in range(n_bands):
                 row_start = b * BAND_PX
                 row_end = min(row_start + BAND_PX, height)
-                cx = int(round(raw_centres[b]))
+                cx = round(raw_centres[b])
                 if cx < BG_END or cx >= width - BG_END:
                     continue
                 for ch in range(3):
@@ -454,7 +454,7 @@ def detect(
 def _background_line(strip: np.ndarray) -> np.ndarray:
     """Per-row background line: mean of u <= -BG_MARGIN and u >= BG_MARGIN,
     joined linearly across u.  Shape (H, W_strip, 3)."""
-    h, w, ch = strip.shape
+    _h, w, _ch = strip.shape
     left = strip[:, : STRIP_HALF_WIDTH - BG_MARGIN + 1].mean(axis=1)  # (H, 3)
     right = strip[:, STRIP_HALF_WIDTH + BG_MARGIN - 1 :].mean(axis=1)  # (H, 3)
     # Linear interpolation across u.
@@ -480,7 +480,7 @@ def _fit_scratch(
     for b in range(n_bands):
         row_start = b * BAND_PX
         row_end = min(row_start + BAND_PX, height)
-        cx = int(round(centres[b]))
+        cx = round(centres[b])
         # Background at u=0: the mean of the background line at the centre.
         left_bg = val[row_start:row_end, max(0, cx - BG_END) : max(0, cx - BG_START)].mean(axis=0)
         right_bg = val[row_start:row_end, min(width, cx + BG_START) : min(width, cx + BG_END)].mean(axis=0)
@@ -500,7 +500,7 @@ def _fit_scratch(
         row_start = b * BAND_PX
         row_end = min(row_start + BAND_PX, height)
         cx = centres[b]
-        x0 = int(round(cx)) - STRIP_HALF_WIDTH
+        x0 = round(cx) - STRIP_HALF_WIDTH
         x1 = x0 + strip_w
         # Clamp to image bounds.
         pad_left = max(0, -x0)
@@ -516,11 +516,10 @@ def _fit_scratch(
                 constant_values=0,
             )
         all_strips.append(strip)
-        u = np.arange(strip_w, dtype=np.float32) - STRIP_HALF_WIDTH + (cx - int(round(cx)))
+        u = np.arange(strip_w, dtype=np.float32) - STRIP_HALF_WIDTH + (cx - round(cx))
         all_u.append(u)
 
     strips = np.concatenate(all_strips, axis=0)  # (total_rows, strip_w, 3)
-    u_all = np.concatenate(all_u)  # (total_rows*strip_w,)
 
     # Background line per row.
     bgline = _background_line(strips)  # (total_rows, strip_w, 3)
@@ -680,9 +679,7 @@ def is_live(params: dict | None, shape: tuple[int, int]) -> bool:
     ):
         return False
     scratches = params.get("scratches")
-    if not isinstance(scratches, list) or len(scratches) == 0:
-        return False
-    return True
+    return isinstance(scratches, list) and len(scratches) > 0
 
 
 # --- apply ------------------------------------------------------------------
@@ -715,7 +712,7 @@ def _interp_table(
 
     # Interpolate along u.
     u_idx = u + half_w
-    u0 = int(math.floor(u_idx))
+    u0 = math.floor(u_idx)
     u1 = u0 + 1
     t_u = u_idx - u0
     u0 = max(0, min(strip_w - 1, u0))
@@ -771,7 +768,7 @@ def _apply_one_scratch(
         cx = centres_arr[b0]
         level = _interp_level(centres, levels, y, n_bands)
 
-        x_center = int(round(cx))
+        x_center = round(cx)
         for dx in range(-half_w, half_w + 1):
             x = x_center + dx
             if x < 0 or x >= width:

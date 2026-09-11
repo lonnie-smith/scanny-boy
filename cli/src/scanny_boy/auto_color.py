@@ -29,7 +29,7 @@ def _neutral_defaults_target(
     residual means `o_R - o_G = -a` and `o_B - o_G = -b`; combined with
     the luma removal constraint from `color.cmy_offsets` that solves in
     closed form."""
-    w_r, w_g, w_b = color.LUMA_WEIGHTS
+    w_r, _w_g, w_b = color.LUMA_WEIGHTS
     o_g = w_r * residual_a + w_b * residual_b
     return (o_g - residual_a, o_g, o_g - residual_b)
 

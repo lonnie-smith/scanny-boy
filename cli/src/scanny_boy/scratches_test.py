@@ -4,7 +4,6 @@ normalized-density arrays only — no RAW, no TIFF, fast-tier throughout."""
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from scanny_boy import scratches
 

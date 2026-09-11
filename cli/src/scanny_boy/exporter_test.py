@@ -926,6 +926,7 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         ProfileKind.EXPORT_GREY,
         (0.0,),
         None,
+        None,
         crop,
     )
     assert record["rendered"]["crop"] == {
