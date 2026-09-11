@@ -191,6 +191,7 @@ private struct PreviewPane: View {
                 runIsActive: runIsActive,
                 cropSession: cropSession,
                 displaySize: displaySize,
+                onBeginCrop: { beginCrop() },
                 onApplyCrop: { applyCrop() },
                 onResetCrop: { resetCrop() }
             )
@@ -205,7 +206,7 @@ private struct PreviewPane: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        zoom.toggle(at: previewCenter)
+                        scheduleZoomToggle(at: previewCenter)
                     } label: {
                         Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
                     }
@@ -272,7 +273,8 @@ private struct PreviewPane: View {
             keyboard.zoomToggleCenter = previewCenter
         }
         .onChange(of: keyboard.zoomToggleRequest) {
-            zoom.toggle(at: previewCenter)
+            guard !cropSession.isActive else { return }
+            scheduleZoomToggle(at: previewCenter)
         }
         .confirmationDialog(
             deleteDialogTitle,
@@ -342,6 +344,14 @@ private struct PreviewPane: View {
     private func registerKeyboardShortcuts() {
         keyboard.previewPaneMounted = true
         syncKeyboardShortcuts()
+    }
+
+    /// Defers zoom toggles to the next run-loop turn so they never land in
+    /// the same SwiftUI frame as a layout pass from the fit ↔ 100% swap.
+    private func scheduleZoomToggle(at point: CGPoint) {
+        Task { @MainActor in
+            zoom.toggle(at: point)
+        }
     }
 
     private func unregisterKeyboardShortcuts() {
@@ -673,6 +683,7 @@ private struct EditSidebar: View {
     let runIsActive: Bool
     let cropSession: CropSession
     let displaySize: CGSize
+    let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
     let onResetCrop: () -> Void
 
@@ -728,6 +739,7 @@ private struct EditSidebar: View {
                 negative: negative,
                 cropSession: cropSession,
                 displaySize: displaySize,
+                onBeginCrop: onBeginCrop,
                 onApplyCrop: onApplyCrop,
                 onResetCrop: onResetCrop
             )
@@ -791,6 +803,7 @@ private struct GeometryAdjustmentPanel: View {
     let negative: RollManifest.Negative
     @Bindable var cropSession: CropSession
     let displaySize: CGSize
+    let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
     let onResetCrop: () -> Void
 
@@ -841,7 +854,7 @@ private struct GeometryAdjustmentPanel: View {
     private var cropSection: some View {
         Text("Crop").font(.headline)
         if cropSession.isActive {
-            Picker("Ratio", selection: presetBinding) {
+            Picker("Ratio", selection: $cropSession.preset) {
                 ForEach(CropPreset.allCases) { preset in
                     Text(preset.label).tag(preset)
                 }
@@ -852,6 +865,9 @@ private struct GeometryAdjustmentPanel: View {
                 "Constrain the crop to a film format's gate — the actual "
                     + "frame sizes, oriented to this image"
             )
+            .onChange(of: cropSession.preset) { _, _ in
+                scheduleCropPresetApply()
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -895,7 +911,7 @@ private struct GeometryAdjustmentPanel: View {
             }
         } else {
             Button {
-                cropSession.begin(displaySize: displaySize)
+                onBeginCrop()
             } label: {
                 Label("Crop…", systemImage: "crop")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -906,14 +922,14 @@ private struct GeometryAdjustmentPanel: View {
         }
     }
 
-    private var presetBinding: Binding<CropPreset> {
-        Binding(
-            get: { cropSession.preset },
-            set: { preset in
-                cropSession.preset = preset
-                cropSession.applyPreset()
-            }
-        )
+    /// Defers preset reshaping out of the picker's update pass — mutating
+    /// the overlay rect synchronously from the binding has been observed to
+    /// crash SwiftUI's observation pass.
+    private func scheduleCropPresetApply() {
+        let bounds = displaySize
+        Task { @MainActor in
+            cropSession.applyPreset(in: bounds)
+        }
     }
 
     private func geometryButton(

@@ -86,9 +86,12 @@ final class CropSession {
     }
 
     /// Re-shapes the current rect to the newly-chosen preset's ratio,
-    /// keeping its centre — the picker's immediate feedback.
-    func applyPreset() {
+    /// keeping its centre — the picker's immediate feedback. The result is
+    /// clamped into `bounds`, the same space `begin(displaySize:)` uses.
+    func applyPreset(in bounds: CGSize) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
         guard let ratio = orientedRatio else { return }
+        guard rect.width > 0, rect.height > 0 else { return }
         var width = rect.width
         var height = rect.height
         if width / height > ratio {
@@ -96,11 +99,14 @@ final class CropSession {
         } else {
             height = width / ratio
         }
-        rect = CGRect(
-            x: rect.midX - width / 2,
-            y: rect.midY - height / 2,
-            width: width,
-            height: height
+        rect = CropGeometry.clampFrame(
+            CGRect(
+                x: rect.midX - width / 2,
+                y: rect.midY - height / 2,
+                width: width,
+                height: height
+            ),
+            in: bounds
         )
     }
 }
@@ -228,8 +234,12 @@ enum CropGeometry {
         return clamped(CGRect(x: x, y: y, width: width, height: height), in: bounds)
     }
 
-    /// Keeps `frame` inside the bounds without changing its size — the
-    /// resize math above can push an edge past them.
+    /// Keeps `frame` inside the bounds, capping its size when needed — the
+    /// resize and preset math above can push an edge past them.
+    static func clampFrame(_ frame: CGRect, in bounds: CGSize) -> CGRect {
+        clamped(frame, in: bounds)
+    }
+
     private static func clamped(_ frame: CGRect, in bounds: CGSize) -> CGRect {
         let width = min(frame.width, bounds.width)
         let height = min(frame.height, bounds.height)

@@ -49,11 +49,16 @@ struct ScannyBoyApp: App {
             forName: NSWindow.willCloseNotification,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { notification in
+            guard let closingWindow = notification.object as? NSWindow else { return }
             DispatchQueue.main.async {
-                if NSApplication.shared.windows.filter({ $0.isVisible }).count <= 1 {
-                    NSApplication.shared.terminate(nil)
-                }
+                // Only the primary window should end the process. SwiftUI
+                // pickers (.menu), sheets, and other transient windows also
+                // post willClose; counting visible windows catches those —
+                // dismissing a crop-ratio menu leaves one visible window and
+                // looked like "close the last window".
+                guard closingWindow.isMainWindow else { return }
+                NSApplication.shared.terminate(nil)
             }
         }
     }
