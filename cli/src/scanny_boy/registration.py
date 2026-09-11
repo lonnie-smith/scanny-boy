@@ -443,7 +443,7 @@ def register_pair(
 # the record the fit produces, and the per-pair re-fit onto rectified
 # points. Everything here is NumPy; the nonlinear fit over the two shared
 # parameters lives in `rectification_fit.py`, because SciPy may not enter
-# this module or `layout.py`. The rectification is a re-parameterisation of
+# this module. The rectification is a re-parameterisation of
 # image coordinates in the same slot as `undistorter_from_geometry` — no
 # pair and no frame is ever placed by a homography.
 

@@ -1,5 +1,6 @@
 """Global layout solve: places every accepted-pair frame in one canvas
-coordinate system via three linear least-squares problems.
+coordinate system via three linear least-squares problems, then one joint
+nonlinear refinement of the same model.
 
 Frame *i* maps its own pixel `p` into canvas space as
 `x = s_i * R(theta_i)*p + t_i` (film
@@ -11,9 +12,26 @@ space to agree gives three relations, each linear in the right variable:
 `t_b = t_a + s_a * R(theta_a) . u_ab`. Scales are solved first (log-space,
 the same idiom as `solve_gains`'s geometric-mean-1 anchor), then rotations
 (one linear least-squares problem in the scalar `theta`s), then translations
-(linear in `t` once `s` and `theta` are known). This three-step formulation
-is why SciPy is forbidden here — do not replace it with a nonlinear
-bundle adjustment. The model is a similarity — rigid plus one isotropic
+(linear in `t` once `s` and `theta` are known).
+
+Those three stages each minimise their own linearised relation between
+pairwise similarity *summaries*, one variable at a time; none minimises
+the number `global_rms` reports — the canvas-space distance between an
+inlier's two placed predictions, over every accepted pair's inliers. The
+gap is real: on a measured 4x2 grid roll the linear solve left global_rms
+at 2.1-4.5 px against pairwise fits of 1.0-1.4 px median. So a fourth
+stage (`_refine_placements`) refines every frame's `(s, theta, t)` jointly
+against exactly that residual with `scipy.optimize.least_squares` (analytic
+sparse Jacobian, plain L2), starting from the linear solution; on that roll
+it brought global_rms to 1.3-2.1 px (1.2-1.7x the pair median) in well
+under a second per negative. It adds no degree of freedom: same
+per-frame similarity, same gauge (frame names[0] pinned at theta = 0,
+t = 0 while it runs, then the scales' geometric-mean-1 anchor restored by
+one exact uniform canvas scaling). It is a refinement, not a replacement —
+the linear stages stay as the initial guess and as the fallback: unless
+the refined placements strictly lower global_rms over every inlier, the
+linear placements are kept (`Layout.refinement_applied`). The model is
+still a similarity — rigid plus one isotropic
 scale — never an affine, never a homography. When the stitch stage has
 fitted a rig-tilt rectification (`registration.Rectification`),
 the pairs and points these solves consume are
@@ -50,6 +68,8 @@ import math
 
 import cv2
 import numpy as np
+from scipy.optimize import least_squares
+from scipy.sparse import csr_matrix
 
 from scanny_boy.events import Code
 from scanny_boy.registration import (
@@ -90,6 +110,25 @@ GRID_ALIGNMENT_RATIO_MAX = 0.25
 # fixture can fit to essentially zero residual, which without it would give
 # one pair unbounded authority over the solve.
 RMS_WEIGHT_FLOOR_PX = 0.1
+
+# Stage 3, the joint refinement (`_refine_placements`). `LAYOUT_REFINEMENT`
+# names the method in the roll manifest's `stitch_params`.
+LAYOUT_REFINEMENT = "joint-similarity-l2"
+# Plain least squares, deliberately not a robust loss: the cost is then
+# exactly global_rms^2, the number the gate and the manifest report, and the
+# inliers it runs over already passed RANSAC at RANSAC_REPROJ_PX against
+# their own pair. What remains between pairs is systematic model error
+# (residual distortion, film bow) concentrated toward frame edges, which a
+# robust loss would down-weight exactly where seams sit.
+REFINEMENT_LOSS = "linear"
+# No inlier subsampling: measured on a real 4x2 grid roll (10 negatives,
+# 15-16 accepted pairs, 3.8k-42.7k inliers, up to 7.1k in one pair), the
+# refinement over every inlier took 11-105 ms per negative, and capping
+# pairs at 1000 (or 250) inliers moved the result by under 0.001 px (0.01
+# px) for a saving nobody would notice.
+# Numerical settings, not measured thresholds.
+REFINEMENT_TOL = 1e-10
+REFINEMENT_MAX_NFEV = 50
 
 _MAX_PAIR_ROTATION_DEG = 45.0
 
@@ -143,6 +182,12 @@ class Layout:
     cells: dict[str, tuple[int, int]] | None = None  # name -> (row, col)
     grid_pitch_ratio: float | None = None  # None when no axis has 3+ positions
     grid_alignment_ratio: float | None = None
+    # Stage 3 diagnostics: the linear solve's own global_rms over the same
+    # inliers, and whether the joint refinement's placements were kept (False
+    # when it had nothing to refine or did not strictly improve global_rms,
+    # in which case `placements` are the linear solution).
+    linear_global_rms_px: float | None = None
+    refinement_applied: bool = False
 
     def feather_axes(self) -> tuple[tuple[float, float], ...]:
         """The axes the composite feather ramps along, normalised in one
@@ -212,28 +257,13 @@ def frame_corners(
     return corners_local @ rotation.T + translation
 
 
-def solve_layout(
-    names: list[str],
-    frame_size: tuple[int, int],
-    pairs: list[PairResult],
-    rectification: Rectification | None = None,
-    *,
-    grid: GridSpec | None = None,
-) -> Layout:
-    """frame_size is (height, width), identical for every frame.
-
-    `rectification`, when given, is the stitch stage's fitted rig-tilt
-    rectification: `pairs` are already rectified (the caller re-registered
-    them), and it is used only for
-    the canvas-bounds corner mapping here.
-
-    `grid`, when given and not a strip, runs the cell-assignment and
-    regularity checks below and populates the Layout's
-    grid fields; `strip_spread_ratio`/`strip_axis` are computed exactly as
-    before and remain meaningful for strips and for grid=None."""
-    check_connectivity(names, pairs)
-
-    accepted_pairs = [pair for pair in pairs if pair.accepted]
+def _solve_linear(
+    names: list[str], accepted_pairs: list[PairResult]
+) -> tuple[list[FramePlacement], list[str]]:
+    """Stages 0-2: the three sequential linear least-squares solves, from
+    each accepted pair's similarity fit alone. Returns the (unshifted)
+    placements — frame names[0] at theta = 0, t = 0 — and the names the
+    scale anchor covered, whose solved scales have geometric mean 1."""
     index = {name: i for i, name in enumerate(names)}
     n = len(names)
 
@@ -365,6 +395,55 @@ def solve_layout(
         )
         for i in range(n)
     ]
+    return placements, sorted(scale_covered)
+
+
+def solve_layout(
+    names: list[str],
+    frame_size: tuple[int, int],
+    pairs: list[PairResult],
+    rectification: Rectification | None = None,
+    *,
+    grid: GridSpec | None = None,
+) -> Layout:
+    """frame_size is (height, width), identical for every frame.
+
+    `rectification`, when given, is the stitch stage's fitted rig-tilt
+    rectification: `pairs` are already rectified (the caller re-registered
+    them), and it is used only for
+    the canvas-bounds corner mapping here.
+
+    `grid`, when given and not a strip, runs the cell-assignment and
+    regularity checks below and populates the Layout's
+    grid fields; `strip_spread_ratio`/`strip_axis` are computed exactly as
+    before and remain meaningful for strips and for grid=None.
+
+    Every placement-derived field — canvas bounds, the origin shift, strip
+    and grid geometry, cell assignment, `global_rms_px` — is computed from
+    the placements the refinement stage chose (refined, or linear on
+    fallback), never from a mix."""
+    check_connectivity(names, pairs)
+
+    accepted_pairs = [pair for pair in pairs if pair.accepted]
+
+    linear_placements, scale_covered = _solve_linear(names, accepted_pairs)
+    linear_rms = global_rms(linear_placements, accepted_pairs)
+
+    placements = linear_placements
+    refinement_applied = False
+    refined = _refine_placements(
+        names, accepted_pairs, linear_placements, scale_covered, frame_size
+    )
+    if refined is not None:
+        refined_rms = global_rms(refined, accepted_pairs)
+        # The fallback, on the reported objective itself (after the gauge
+        # rescale, and independent of whatever the optimiser reports about
+        # its own convergence): a refinement that did not strictly improve
+        # global_rms is discarded, so this stage can never make a layout
+        # worse than the linear one.
+        if math.isfinite(refined_rms) and refined_rms < linear_rms:
+            placements = refined
+            refinement_applied = True
 
     # Canvas bounds: transform each frame's four corners, union bounding box.
     all_corners = np.vstack(
@@ -421,7 +500,195 @@ def solve_layout(
         cells=cells,
         grid_pitch_ratio=pitch_ratio,
         grid_alignment_ratio=alignment_ratio,
+        linear_global_rms_px=linear_rms,
+        refinement_applied=refinement_applied,
     )
+
+
+def _refinement_observations(
+    accepted_pairs: list[PairResult],
+) -> list[tuple[str, str, np.ndarray, np.ndarray]]:
+    """Each accepted pair's inliers as `(a, b, points_a, points_b)`, in a
+    canonical order and orientation (names sorted within and across pairs)
+    so the refinement problem does not depend on placement order or on
+    which of a pair's frames came first. Every inlier, unweighted: the cost
+    is then exactly the sum `global_rms` takes the root mean of."""
+    observations = []
+    for pair in sorted(accepted_pairs, key=lambda p: tuple(sorted((p.a, p.b)))):
+        a, b = pair.a, pair.b
+        points_a, points_b = pair.inlier_points_a, pair.inlier_points_b
+        if a > b:
+            a, b, points_a, points_b = b, a, points_b, points_a
+        if len(points_a) == 0:
+            continue
+        observations.append((a, b, points_a, points_b))
+    return observations
+
+
+def _refine_placements(
+    names: list[str],
+    accepted_pairs: list[PairResult],
+    initial: list[FramePlacement],
+    scale_covered: list[str],
+    frame_size: tuple[int, int],
+) -> list[FramePlacement] | None:
+    """Stage 3: every frame's (scale, rotation, translation) refined jointly
+    against the objective `global_rms` reports — canvas-space distance
+    between each inlier's two placed predictions — starting from the linear
+    solution. Same model, same degrees of freedom. Returns the refined
+    (unshifted) placements, or None when there is nothing to refine.
+
+    Gauge: frame names[0]'s full similarity is held at its linear value
+    (theta_0 = 0, t_0 = 0, and step 0's s_0) while the optimiser runs, which
+    removes the four-dimensional similarity gauge — and the scale direction
+    matters, since the cost scales with the canvas and an unpinned solve
+    would shrink toward zero. Afterwards one uniform scaling of the whole
+    canvas about the origin (frame 0's, so t_0 and theta_0 are untouched)
+    restores step 0's anchor exactly: the covered frames' scales have
+    geometric mean 1, as they do out of the linear solve.
+
+    Parameters are per non-anchor frame `(log s * L, theta * L, tx, ty)`
+    with `L` the frame diagonal, so every parameter moves a frame's far
+    corner by about one pixel per unit and the trust region sees a
+    well-conditioned problem. The Jacobian is analytic and sparse: each
+    residual row touches the parameters of exactly the two frames of its
+    pair (or one, when the other is the anchor)."""
+    anchor = names[0]
+    free = sorted(name for name in names if name != anchor)
+    observations = _refinement_observations(accepted_pairs)
+    if not free or not observations:
+        return None
+
+    column = {name: 4 * k for k, name in enumerate(free)}
+    height, width = frame_size
+    lever = math.hypot(width, height)
+    by_name = {placement.name: placement for placement in initial}
+
+    x0 = np.empty(4 * len(free))
+    for name in free:
+        placement = by_name[name]
+        c = column[name]
+        x0[c] = math.log(placement.scale) * lever
+        x0[c + 1] = math.radians(placement.rotation_deg) * lever
+        x0[c + 2 : c + 4] = placement.translation
+
+    anchor_matrix = by_name[anchor].matrix()
+
+    def frame_matrices(x: np.ndarray) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        matrices = {anchor: (anchor_matrix[:, :2], anchor_matrix[:, 2])}
+        for name in free:
+            c = column[name]
+            scale = math.exp(x[c] / lever)
+            angle = x[c + 1] / lever
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            linear = scale * np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+            matrices[name] = (linear, x[c + 2 : c + 4])
+        return matrices
+
+    # Row layout: observation j's residuals occupy rows
+    # [offsets[j], offsets[j] + 2 * n_j), interleaved (x0, y0, x1, y1, ...).
+    offsets = np.cumsum([0] + [2 * len(obs[2]) for obs in observations])
+    n_rows = int(offsets[-1])
+
+    # The sparsity pattern is fixed; only the values change per evaluation.
+    # Per free frame in a pair, each x row carries d/d(log s), d/d(theta),
+    # d/d(tx) and each y row d/d(log s), d/d(theta), d/d(ty).
+    jac_rows, jac_cols = [], []
+    for j, (a, b, points_a, _points_b) in enumerate(observations):
+        count = len(points_a)
+        x_rows = offsets[j] + 2 * np.arange(count)
+        for name in (a, b):
+            if name == anchor:
+                continue
+            c = column[name]
+            jac_rows += [x_rows, x_rows, x_rows, x_rows + 1, x_rows + 1, x_rows + 1]
+            jac_cols += [np.full(count, col) for col in (c, c + 1, c + 2, c, c + 1, c + 3)]
+    jac_rows = np.concatenate(jac_rows) if jac_rows else np.zeros(0, dtype=np.intp)
+    jac_cols = np.concatenate(jac_cols) if jac_cols else np.zeros(0, dtype=np.intp)
+    shape = (n_rows, len(x0))
+
+    def residuals(x: np.ndarray) -> np.ndarray:
+        matrices = frame_matrices(x)
+        out = np.empty(n_rows)
+        for j, (a, b, points_a, points_b) in enumerate(observations):
+            linear_a, t_a = matrices[a]
+            linear_b, t_b = matrices[b]
+            diff = (points_a @ linear_a.T + t_a) - (points_b @ linear_b.T + t_b)
+            out[offsets[j] : offsets[j + 1]] = diff.ravel()
+        return out
+
+    def jacobian(x: np.ndarray) -> csr_matrix:
+        matrices = frame_matrices(x)
+        data = []
+        for a, b, points_a, points_b in observations:
+            for name, points, sign in ((a, points_a, 1.0), (b, points_b, -1.0)):
+                if name == anchor:
+                    continue
+                # q = s R p: d(canvas)/d(log s) = q, d(canvas)/d(theta) = J q
+                # with J the 90-degree rotation; both divided by the lever
+                # the parameters were scaled by.
+                q = points @ matrices[name][0].T
+                qx, qy = sign * q[:, 0] / lever, sign * q[:, 1] / lever
+                ones = np.full(len(points), sign)
+                data += [qx, -qy, ones, qy, qx, ones]
+        values = np.concatenate(data) if data else np.zeros(0)
+        return csr_matrix((values, (jac_rows, jac_cols)), shape=shape)
+
+    result = least_squares(
+        residuals,
+        x0,
+        jac=jacobian,
+        method="trf",
+        loss=REFINEMENT_LOSS,
+        tr_solver="lsmr",
+        ftol=REFINEMENT_TOL,
+        xtol=REFINEMENT_TOL,
+        gtol=REFINEMENT_TOL,
+        max_nfev=REFINEMENT_MAX_NFEV,
+    )
+    if not np.all(np.isfinite(result.x)):
+        return None
+
+    matrices = frame_matrices(result.x)
+    refined = []
+    for name in names:
+        if name == anchor:
+            refined.append(by_name[anchor])
+            continue
+        c = column[name]
+        refined.append(
+            FramePlacement(
+                name=name,
+                rotation_deg=math.degrees(result.x[c + 1] / lever),
+                translation=(float(matrices[name][1][0]), float(matrices[name][1][1])),
+                scale=math.exp(result.x[c] / lever),
+            )
+        )
+
+    # Restore step 0's scale anchor: one uniform scaling k of the canvas
+    # about frame 0's origin is an exact similarity gauge move (every
+    # relative placement is unchanged), and it only rescales the cost by k^2
+    # — measured on a real 4x2 grid roll, k - 1 was +2e-5 to +1.6e-3, raising
+    # global_rms by at most 0.16% over the pinned-gauge optimum. The
+    # fallback in `solve_layout` compares after it, on global_rms.
+    anchored = scale_covered or names
+    log_mean = sum(math.log(p.scale) for p in refined if p.name in anchored) / len(
+        anchored
+    )
+    k = math.exp(-log_mean)
+    refined = [
+        FramePlacement(
+            name=p.name,
+            rotation_deg=p.rotation_deg,
+            translation=(p.translation[0] * k, p.translation[1] * k),
+            scale=p.scale * k,
+        )
+        for p in refined
+    ]
+    assert abs(
+        sum(math.log(p.scale) for p in refined if p.name in anchored)
+    ) < 1e-9 * len(anchored), "refinement broke the geometric-mean-1 scale anchor"
+    return refined
 
 
 @dataclasses.dataclass(frozen=True)

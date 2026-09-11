@@ -265,9 +265,15 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         # similarity (implicitly rigid, scale forced to 1) from one written
         # after, without consulting the build.
         "layout_model": "similarity",
-        # How the layout's three solves weight each pairwise row.
+        # How the layout's three linear solves weight each pairwise row.
         "layout_row_weight": "sqrt(inliers)/rms",
         "rms_weight_floor_px": RMS_WEIGHT_FLOOR_PX,
+        # The joint nonlinear refinement run after the linear solves
+        # (layout.py stage 3): same similarity model, minimising global_rms
+        # itself, falling back to the linear placements unless it strictly
+        # improves it. It moves every placement, so it is a roll invariant.
+        "layout_refinement": layout_module.LAYOUT_REFINEMENT,
+        "layout_refinement_loss": layout_module.REFINEMENT_LOSS,
         "interpolation": "INTER_LANCZOS4",
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,

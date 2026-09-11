@@ -11,13 +11,20 @@ from scanny_boy.layout import (
     GainStat,
     StitchError,
     _largest_all_covered_rectangle,
+    _refine_placements,
+    _solve_linear,
     frame_corners,
     global_rms,
     largest_valid_rect,
     solve_gains,
     solve_layout,
 )
-from scanny_boy.registration import PairResult, rectify
+from scanny_boy.registration import (
+    PairResult,
+    rectify,
+    rigid_from_correspondences,
+    similarity_from_correspondences,
+)
 
 _FRAME_SIZE = (400, 600)  # (height, width)
 
@@ -541,6 +548,10 @@ def test_a_single_frame_has_no_strip_axis():
 
 
 def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
+    """A property of the linear stages (the refinement's initial guess),
+    asserted on them directly: the joint refinement minimises the unweighted
+    point residual, so it takes both starting points to the same optimum and
+    a solve_layout-level comparison would no longer measure the weights."""
     ground_truth = [
         FramePlacement("f0", 0.0, (0.0, 0.0)),
         FramePlacement("f1", 3.0, (500.0, 50.0)),
@@ -565,13 +576,13 @@ def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
         n_points=41, noise_px=5.0, seed=3,
     )
 
-    weighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+    weighted, _ = _solve_linear(names, [strong_01, strong_12, weak_02])
 
     monkeypatch.setattr("scanny_boy.layout._row_weight", lambda pair: 1.0)
-    unweighted = solve_layout(names, _FRAME_SIZE, [strong_01, strong_12, weak_02])
+    unweighted, _ = _solve_linear(names, [strong_01, strong_12, weak_02])
 
-    def rms_over_strong_pairs(layout):
-        return global_rms(layout.placements, [strong_01, strong_12])
+    def rms_over_strong_pairs(placements):
+        return global_rms(placements, [strong_01, strong_12])
 
     assert rms_over_strong_pairs(weighted) < rms_over_strong_pairs(unweighted)
 
@@ -991,3 +1002,233 @@ def test_largest_valid_rect_accepts_a_rectification():
     assert x >= 0 and y >= 0
     assert x + width <= layout.canvas_size[0]
     assert y + height <= layout.canvas_size[1]
+
+
+# --- stage 3: joint refinement ------------------------------------------
+
+
+# Real frame size: the linear stages' weakness scales with the lever arm
+# from a frame's origin to where its inliers actually are.
+_REAL_FRAME_SIZE = (4000, 6000)  # (height, width)
+
+
+def _placed(placement, points):
+    matrix = placement.matrix()
+    return points @ matrix[:, :2].T + matrix[:, 2]
+
+
+def _unplaced(placement, points):
+    matrix = placement.matrix()
+    return (points - matrix[:, 2]) @ np.linalg.inv(matrix[:, :2]).T
+
+
+def _patch_pair(placement_a, placement_b, rng, *, patch_px=400, noise_px=1.0, n_points=200):
+    """A pair as register_pair would report it when its inliers cluster in
+    one small patch of the overlap (as they do on real scans: a few hundred
+    px of texture, thousands of px from the frame origin), with measurement
+    noise on both sides. The similarity summary is the closed-form fit on
+    exactly those inliers — accurate at the patch, but its scale and
+    rotation are poorly determined, which the linear stages then apply at
+    the frame origin. None when the two frames do not overlap."""
+    height, width = _REAL_FRAME_SIZE
+    candidates = rng.uniform([0, 0], [width, height], size=(50_000, 2))
+    in_a = _unplaced(placement_a, _placed(placement_b, candidates))
+    overlap = (
+        (in_a[:, 0] > 0) & (in_a[:, 0] < width) & (in_a[:, 1] > 0) & (in_a[:, 1] < height)
+    )
+    if overlap.sum() < 200:
+        return None
+    centre = candidates[overlap][rng.integers(overlap.sum())]
+    points_b = centre + rng.uniform(-patch_px / 2, patch_px / 2, size=(n_points, 2))
+    points_a = _unplaced(placement_a, _placed(placement_b, points_b))
+    points_a = points_a + rng.normal(0, noise_px, points_a.shape)
+    points_b = points_b + rng.normal(0, noise_px, points_b.shape)
+
+    rigid = rigid_from_correspondences(points_b, points_a)
+    similarity, scale = similarity_from_correspondences(points_b, points_a)
+    residual = points_b @ rigid[:, :2].T + rigid[:, 2] - points_a
+    return PairResult(
+        a=placement_a.name,
+        b=placement_b.name,
+        transform=rigid,
+        good_matches=n_points,
+        inliers=n_points,
+        inlier_ratio=1.0,
+        rms_residual_px=float(np.sqrt(np.mean(np.sum(residual**2, axis=1)))),
+        scale_drift=abs(scale - 1.0),
+        accepted=True,
+        reject_code=None,
+        reject_message=None,
+        inlier_points_a=points_a,
+        inlier_points_b=points_b,
+        overlap_fraction=None,
+        overlap_mad=None,
+        overlap_mad_pregain=None,
+        similarity_transform=similarity,
+        similarity_scale=scale,
+    )
+
+
+def _patch_grid_scenario(seed=2):
+    """A 4x2 grid at real frame size with small per-frame rotation, scale
+    and position jitter, and every overlapping pair registered from one
+    patch of inliers."""
+    rng = np.random.default_rng(seed)
+    ground_truth = [FramePlacement("f0", 0.0, (0.0, 0.0))]
+    for i in range(1, 8):
+        row, col = divmod(i, 4)
+        ground_truth.append(
+            FramePlacement(
+                f"f{i}",
+                float(rng.normal(0, 0.3)),
+                (col * 4000 + rng.normal(0, 50), row * 2667 + rng.normal(0, 50)),
+                scale=float(np.exp(rng.normal(0, 0.002))),
+            )
+        )
+    pair_rng = np.random.default_rng(seed + 100)
+    pairs = [
+        pair
+        for i in range(8)
+        for j in range(i + 1, 8)
+        if (pair := _patch_pair(ground_truth[i], ground_truth[j], pair_rng)) is not None
+    ]
+    return ground_truth, pairs
+
+
+def test_refinement_reaches_the_noise_floor_the_linear_stages_miss():
+    """The linear stages consume each pair's similarity *summary*; with
+    patch-confined inliers those summaries' scale and rotation errors,
+    applied at the frame origin, leave global_rms well above what the true
+    placements achieve on the same noisy correspondences. The joint
+    refinement minimises that residual directly and lands on the noise
+    floor — the ground truth's own global_rms."""
+    ground_truth, pairs = _patch_grid_scenario()
+    names = [p.name for p in ground_truth]
+    assert len(pairs) >= 12
+
+    layout = solve_layout(names, _REAL_FRAME_SIZE, pairs)
+    truth_rms = global_rms(ground_truth, pairs)
+
+    assert layout.refinement_applied
+    assert layout.linear_global_rms_px > 1.15 * truth_rms
+    assert layout.global_rms_px < 0.85 * layout.linear_global_rms_px
+    assert layout.global_rms_px == pytest.approx(truth_rms, rel=0.005)
+
+    # Everything downstream reads the refined placements: the reported
+    # metric is theirs, and the canvas is their bounds with origin (0, 0).
+    assert layout.global_rms_px == pytest.approx(global_rms(layout.placements, pairs))
+    corners = np.vstack([frame_corners(p, _REAL_FRAME_SIZE) for p in layout.placements])
+    assert corners.min(axis=0) == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert layout.canvas_size == (
+        math.ceil(corners[:, 0].max()),
+        math.ceil(corners[:, 1].max()),
+    )
+
+
+def test_refinement_keeps_the_linear_solves_gauge():
+    """Frame 0's rotation and translation stay exactly where the linear
+    solve pinned them, and the scales keep step 0's geometric mean of 1 —
+    the objective is not scale-invariant, so a loose scale would drift."""
+    ground_truth, pairs = _patch_grid_scenario()
+    names = [p.name for p in ground_truth]
+
+    linear, scale_covered = _solve_linear(names, pairs)
+    refined = _refine_placements(names, pairs, linear, scale_covered, _REAL_FRAME_SIZE)
+
+    assert refined is not None
+    assert refined[0].name == "f0"
+    assert refined[0].rotation_deg == linear[0].rotation_deg
+    assert refined[0].rotation_deg == pytest.approx(0.0, abs=1e-9)
+    assert refined[0].translation == pytest.approx((0.0, 0.0), abs=1e-6)
+    assert sum(math.log(p.scale) for p in refined) == pytest.approx(0.0, abs=1e-9)
+    # The refinement genuinely moved the scales (so the anchor is being
+    # held, not trivially inherited).
+    assert max(
+        abs(r.scale / l.scale - 1.0) for r, l in zip(refined, linear, strict=True)
+    ) > 1e-5
+
+    layout = solve_layout(names, _REAL_FRAME_SIZE, pairs)
+    assert layout.refinement_applied
+    assert sum(math.log(p.scale) for p in layout.placements) == pytest.approx(
+        0.0, abs=1e-9
+    )
+
+
+def _layout_relative_to_f0(layout):
+    """Placements with f0's canvas-origin shift removed, for comparing a
+    layout against the unshifted linear solution."""
+    by_name = {p.name: p for p in layout.placements}
+    shift = np.array(by_name["f0"].translation)
+    return {
+        name: (p.rotation_deg, np.array(p.translation) - shift, p.scale)
+        for name, p in by_name.items()
+    }
+
+
+@pytest.mark.parametrize("failure", ["worse", "non-finite"])
+def test_refinement_falls_back_to_the_linear_solution(monkeypatch, failure):
+    """A refinement that does not strictly lower global_rms — here an
+    optimiser result forced worse, or one that is not finite — is
+    discarded: the layout is exactly the linear one."""
+    from scipy.optimize import least_squares as real_least_squares
+
+    ground_truth, pairs = _patch_grid_scenario()
+    names = [p.name for p in ground_truth]
+    linear, _ = _solve_linear(names, pairs)
+
+    def sabotaged(*args, **kwargs):
+        result = real_least_squares(*args, **kwargs)
+        result.x = result.x + 50.0 if failure == "worse" else np.full_like(result.x, np.nan)
+        return result
+
+    monkeypatch.setattr("scanny_boy.layout.least_squares", sabotaged)
+    layout = solve_layout(names, _REAL_FRAME_SIZE, pairs)
+
+    assert not layout.refinement_applied
+    assert layout.global_rms_px == pytest.approx(layout.linear_global_rms_px, rel=1e-9)
+    assert layout.global_rms_px == pytest.approx(global_rms(linear, pairs), rel=1e-9)
+    relative = _layout_relative_to_f0(layout)
+    for placement in linear:
+        rotation, translation, scale = relative[placement.name]
+        assert rotation == pytest.approx(placement.rotation_deg, abs=1e-12)
+        assert translation == pytest.approx(placement.translation, abs=1e-6)
+        assert scale == pytest.approx(placement.scale, abs=1e-12)
+
+
+def test_refinement_is_never_worse_than_the_linear_solve():
+    for seed in (1, 2, 3, 4):
+        ground_truth, pairs = _patch_grid_scenario(seed)
+        layout = solve_layout([p.name for p in ground_truth], _REAL_FRAME_SIZE, pairs)
+        assert layout.global_rms_px <= layout.linear_global_rms_px
+
+
+def test_refined_layout_is_placement_order_invariant():
+    """The refined layout does not depend on name order (beyond the anchor,
+    names[0]) or on pair order and orientation."""
+    ground_truth, pairs = _patch_grid_scenario()
+    names = [p.name for p in ground_truth]
+    baseline = solve_layout(names, _REAL_FRAME_SIZE, pairs)
+
+    scrambled_names = ["f0", *reversed(names[1:])]
+    scrambled_pairs = [
+        _reversed_pair(pair) if i % 2 else pair for i, pair in enumerate(reversed(pairs))
+    ]
+    scrambled = solve_layout(scrambled_names, _REAL_FRAME_SIZE, scrambled_pairs)
+
+    assert baseline.refinement_applied and scrambled.refinement_applied
+    assert scrambled.canvas_size == baseline.canvas_size
+    # The two problems are identical once canonicalised, but their linear
+    # starting points differ at float-noise level, so the optimiser stops
+    # at slightly different points within its tolerance. Measured over
+    # seeds 1-4 of this scenario: global_rms 6.5e-9 relative, rotation
+    # 5.7e-7 deg, translation 6.0e-5 px, scale 6.5e-9 at worst. The bounds
+    # below sit well above that and far below any real order dependence,
+    # which would move a frame by pixels.
+    assert scrambled.global_rms_px == pytest.approx(baseline.global_rms_px, rel=1e-6)
+    scrambled_by_name = {p.name: p for p in scrambled.placements}
+    for base in baseline.placements:
+        scr = scrambled_by_name[base.name]
+        assert scr.rotation_deg == pytest.approx(base.rotation_deg, abs=1e-5)
+        assert scr.translation[0] == pytest.approx(base.translation[0], abs=1e-3)
+        assert scr.translation[1] == pytest.approx(base.translation[1], abs=1e-3)
+        assert scr.scale == pytest.approx(base.scale, abs=1e-7)

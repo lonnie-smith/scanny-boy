@@ -27,7 +27,7 @@ struct CLIDaemonTests {
     cancelled = {}
 
     def emit(event, request_id, **fields):
-        obj = {"protocol_version": 20, "event": event, "request_id": request_id}
+        obj = {"protocol_version": 21, "event": event, "request_id": request_id}
         obj.update(fields)
         sys.stdout.write(json.dumps(obj, sort_keys=True) + "\n")
         sys.stdout.flush()
