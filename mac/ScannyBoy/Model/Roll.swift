@@ -1,11 +1,11 @@
 import Foundation
 
-/// One row of `roll list`'s report — section 3.1: the library's whole
+/// One row of `roll list`'s report — the library's whole
 /// content, scanned by the CLI, never enumerated by Swift itself.
 ///
-/// An unreadable roll is still one distinct row in the sidebar (section
-/// 3.10: "unreadable rolls shown disabled with their reason"), so every
-/// field but `path` and `status` is optional.
+/// An unreadable roll is still one distinct row in the sidebar, shown
+/// disabled with its reason, so every field but `path` and `status` is
+/// optional.
 struct Roll: Identifiable, Sendable, Hashable {
     enum Status: String, Sendable, Hashable {
         case ok

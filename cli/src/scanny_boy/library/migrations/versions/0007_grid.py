@@ -4,8 +4,7 @@ All four are nullable: rows written by pre-grid builds read back with
 NULLs and stay valid — there is no data migration. `grid` is the declared
 `{"across": A, "down": D}`; `grid_cells` is the solved assignment (member
 name -> [row, col]); `grid_pitch_ratio`/`grid_alignment_ratio` are the
-regularity measures of docs/GRID_STITCH_PLAN.md section 4.2, null when
-unmeasurable.
+regularity measures, null when unmeasurable.
 
 Revision ID: 0007
 Revises: 0006

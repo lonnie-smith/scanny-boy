@@ -165,7 +165,7 @@ struct RollLibraryTests {
         // Two *real* roll folders on disk, each with a real manifest file --
         // and neither named in the canned `roll_list` response. If
         // `RollLibrary` ever enumerated the filesystem itself, these would
-        // show up; the whole point of section 3.1 is that they must not.
+        // show up; the whole point of this test is that they must not.
         for name in ["Real-Roll-One", "Real-Roll-Two"] {
             let rollDir = libraryBase.appending(path: name, directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)

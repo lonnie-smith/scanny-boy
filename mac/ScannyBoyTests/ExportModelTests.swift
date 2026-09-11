@@ -47,7 +47,8 @@ struct ExportModelTests {
     @Test("The downsampling choice defaults to none")
     func defaultsToNoDownsample() {
         let model = ExportModel(
-            runner: CLIRunner(executable: URL(filePath: "/bin/true"))
+            runner: CLIRunner(executable: URL(filePath: "/bin/true")),
+            defaults: Self.isolatedDefaults()
         )
         #expect(model.downsampleLongEdge == nil)
     }

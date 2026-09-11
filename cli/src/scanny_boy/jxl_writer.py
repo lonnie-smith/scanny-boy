@@ -2,15 +2,15 @@
 
 `imagecodecs.jpegxl_encode` cannot embed an ICC profile — its colour
 options are CICP enum codes, and Adobe RGB is not expressible as one —
-so this module drives the bundled libjxl directly through ctypes
-(docs/EXPORT_PLAN.md §1). The library is *not* located by path: importing
+so this module drives the bundled libjxl directly through ctypes.
+The library is *not* located by path: importing
 `imagecodecs._jpegxl` makes the dynamic linker load libjxl (and its
 thread runner and CMS) into the process, after which the symbols resolve
 through the global namespace — true in a checkout and in the PyInstaller
 bundle alike, and independent of the libjxl version.
 
-The encode sequence below is the one proven against the bundled libjxl
-while the export plan was written. Four footguns are called out at their
+The encode sequence below is the one proven against the bundled libjxl.
+Four footguns are called out at their
 sites; they cost real hours when rediscovered.
 """
 

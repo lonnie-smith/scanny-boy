@@ -3,7 +3,7 @@ transfer-curve round trip the application depends on.
 
 The maths tests run on synthetic linear arrays — no RAW decoding needed. The
 one test that must prove the `decode_to_linear -> multiply ->
-encode_from_linear` round trip on a *real* decoded frame (section 2.8) is
+encode_from_linear` round trip on a *real* decoded frame is
 gated on the shared sample NEFs like every other decode test.
 """
 

@@ -141,8 +141,8 @@ struct ConfigurationModelTests {
     }
 
     // Deliberately not alphabetical: proves the model displays `probe`'s
-    // order verbatim instead of re-sorting (section 3.3: "Swift always uses
-    // the order it is given and never sorts files itself").
+    // order verbatim instead of re-sorting — Swift always uses
+    // the order it is given and never sorts files itself.
     private static let catalogueUnsorted =
         TestEvents.line(#"{"event":"probe_result","catalogue":["c.NEF","a.NEF","b.NEF"],"warnings":[],"groups":[]}"#)
 
@@ -772,7 +772,7 @@ struct ConfigurationModelTests {
         #expect(second.catalogue == ["a.NEF", "b.NEF", "c.NEF"])
     }
 
-    // MARK: - Grid dimensions (protocol 10, docs/GRID_STITCH_PLAN.md 2.5)
+    // MARK: - Grid dimensions (protocol 10)
 
     @Test("down defaults to 1 and perNegative is computed from across x down")
     func downDefaultsToOne() {

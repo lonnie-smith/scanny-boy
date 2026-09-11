@@ -1,17 +1,15 @@
 """The `stitch` command: read a work directory's Phase 1 intermediates and
 publish one stitched TIFF per negative into the output folder.
 
-See `docs/PHASE2_IMPLEMENTATION_PLAN.md` section 5's Chunk P2-6 entry for the
-order of operations, which is not negotiable because each step protects the
-next, and section 3.5 for the failure, cancellation, and cleanup rules a
-negative inherits from Phase 1's group-failure rule.
+The order of operations below is not negotiable: each step protects the
+next, and a negative's failure, cancellation, and cleanup rules follow
+Phase 1's group-failure rule.
 
-One deviation from that entry's numbering, decided with the user: every
-negative's layout is solved *before* the disk check, because section 3.8's
-free-space formula needs `canvas_width x canvas_height` and a canvas does not
-exist until its layout is solved. Solving is cheap next to compositing and
-allocates nothing canvas-sized, so the guard still runs before anything large
-is written or allocated.
+Every negative's layout is solved *before* the disk check, because the
+free-space formula needs `canvas_width x canvas_height` and a canvas does
+not exist until its layout is solved. Solving is cheap next to compositing
+and allocates nothing canvas-sized, so the guard still runs before
+anything large is written or allocated.
 """
 
 from __future__ import annotations
@@ -40,6 +38,7 @@ from scanny_boy import (
     hashing,
     previews,
     registration,
+    scratches,
     tiff_exif,
 )
 from scanny_boy import layout as layout_module
@@ -158,16 +157,15 @@ from scanny_boy.tiff_writer import BaseTiffTags, software_tag_value
 
 EmitFn = Any
 
-# Section 3.8's stitch-stage free-space formula.
+# The stitch-stage free-space formula.
 _DISK_HEADROOM = 1.05
 _DISK_SAFETY_MARGIN = 1.20
 
-# Progress steps this stage emits, per section 3.9's `PipelineStep`
-# additions. Per frame: load, detect (solving) and warp (compositing).
-# Per negative: match, solve (solving), blend, normalize (the analysis pass
-# fused into the encode, docs/DECISIONS.md, "Normalization decisions") and
-# write_stitched (compositing). `run`'s combined span is Chunk P2-7's
-# business; these are the concrete step boundaries that actually occur here.
+# Progress steps this stage emits, as `PipelineStep` values. Per frame:
+# load, detect (solving) and warp (compositing). Per negative: match, solve
+# (solving), blend, normalize (the analysis pass fused into the encode) and
+# write_stitched (compositing). `run`'s combined span is a separate
+# concern; these are the concrete step boundaries that actually occur here.
 _STEPS_PER_FRAME = 3
 _STEPS_PER_NEGATIVE = 5
 
@@ -188,9 +186,8 @@ class _SolvedNegative:
     group: GroupRecord
     record: NegativeRecord
     pairs: list[PairResult]
-    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
-    # section 4), or None when the fit was rejected. When present, the
-    # layout and the composite work in rectified space.
+    # The fitted rig-tilt rectification, or None when the fit was rejected.
+    # When present, the layout and the composite work in rectified space.
     rectification: Rectification | None = None
     # Covered negatives this run removes when this group publishes: records
     # dropped from the manifest, TIFFs unlinked best-effort.
@@ -215,23 +212,22 @@ def _intermediate_name(member: str) -> str:
     """Phase 1 names each intermediate after its source frame, so this maps a
     group member back to the file `convert` wrote for it.
 
-    Not the published name: section 3.4 moved that to
-    `roll_manifest.allocate_output_name`, which is now the only place a
-    published name is chosen."""
+    Not the published name: that comes from
+    `roll_manifest.allocate_output_name`, the only place a published name
+    is chosen."""
     return f"{Path(member).stem}.tif"
 
 
 def _stitch_params(profile=None) -> dict[str, Any]:
-    """Section 3.7: the roll manifest records "the stitch parameters and
-    every threshold in force", so a file can be interpreted, and the
-    section 3.12.2 thresholds revisited, without knowing which build wrote
-    it.
+    """The roll manifest records the stitch parameters and every threshold
+    in force, so a file can be interpreted, and its thresholds revisited,
+    without knowing which build wrote it.
 
-    With a calibrated profile (docs/GEOMETRIC_PLAN.md section 3.6), the
-    `geometry` bucket carries the profile id, the geometry object, and —
-    only in "maps" mode — the chromatic aberration object. It is absent,
-    not null, when the profile carries no geometry, so a geometry-free
-    profile compares equal to a pre-geometry roll."""
+    With a calibrated profile, the `geometry` bucket carries the profile
+    id, the geometry object, and — only in "maps" mode — the chromatic
+    aberration object. It is absent, not null, when the profile carries no
+    geometry, so a geometry-free profile compares equal to a pre-geometry
+    roll."""
     params: dict[str, Any] = {
         "detection_long_edge": DETECTION_LONG_EDGE,
         "use_clahe": USE_CLAHE,
@@ -251,38 +247,46 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         "max_overlap_mad": MAX_OVERLAP_MAD,
         # Measured against uncorrected overlaps; now gates the post-gain
         # residual and is pending re-measurement at a user gate
-        # (composite.py's module docstring, docs/DECISIONS.md).
+        # (composite.py's module docstring).
         "max_overlap_mad_semantics": "post-gain-residual",
         "min_gain_overlap_px": MIN_GAIN_OVERLAP_PX,
         "gain_drift_warn": GAIN_DRIFT_WARN,
         "max_global_rms_px": MAX_GLOBAL_RMS_PX,
         "strip_spread_ratio": STRIP_SPREAD_RATIO,
-        # docs/GRID_STITCH_PLAN.md sections 2.4 and 4.2: the grid
-        # regularity gates, landed here so `_stitch_params` lands once.
-        # Unmeasured starting values, pending a user gate (layout.py's
+        # The grid regularity gates, landed here so `_stitch_params` lands
+        # once. Unmeasured starting values, pending a user gate (layout.py's
         # comment).
         "grid_pitch_ratio_min": layout_module.GRID_PITCH_RATIO_MIN,
         "grid_alignment_ratio_max": layout_module.GRID_ALIGNMENT_RATIO_MAX,
-        # docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1: the separable
-        # (grid) feather's floor as a fraction of full weight, likewise
-        # unmeasured. Unused until Chunk G-4 wires the two-axis path up.
+        # The separable (grid) feather's floor as a fraction of full
+        # weight, likewise unmeasured. Unused until Chunk G-4 wires the
+        # two-axis path up.
         "feather_floor_fraction": composite_module._FEATHER_FLOOR_FRACTION,
-        # docs/STITCH_QUALITY_PLAN.md section 2.4: distinguishes a manifest
-        # written before this change (implicitly rigid, scale forced to 1)
-        # from one written after, without consulting the build.
+        # Distinguishes a manifest written before the layout model became a
+        # similarity (implicitly rigid, scale forced to 1) from one written
+        # after, without consulting the build.
         "layout_model": "similarity",
-        # docs/STITCH_QUALITY_PLAN.md section 3: how the layout's three
-        # solves weight each pairwise row.
+        # How the layout's three linear solves weight each pairwise row.
         "layout_row_weight": "sqrt(inliers)/rms",
         "rms_weight_floor_px": RMS_WEIGHT_FLOOR_PX,
+        # The joint nonlinear refinement run after the linear solves
+        # (layout.py stage 3): same similarity model, minimising global_rms
+        # itself, falling back to the linear placements unless it strictly
+        # improves it. It moves every placement, so it is a roll invariant.
+        "layout_refinement": layout_module.LAYOUT_REFINEMENT,
+        "layout_refinement_loss": layout_module.REFINEMENT_LOSS,
         "interpolation": "INTER_LANCZOS4",
         "mask_erode_px": composite_module.MASK_ERODE_PX,
         "memory_safety_factor": composite_module.MEMORY_SAFETY_FACTOR,
         "fill_color": list(FILL_COLOR),
         "feather": composite_module.FEATHER,
-        # The rig-tilt rectification in force (docs/RECTIFICATION_PLAN.md):
-        # the model name is fixed policy; whether a given negative actually
-        # carried a correction is that negative's own `rectification` block.
+        # The exponent narrowing the feather's crossfade to a band around
+        # the overlap midline. Unmeasured starting value, pending a user
+        # gate.
+        "feather_exponent": composite_module.FEATHER_EXPONENT,
+        # The rig-tilt rectification in force: the model name is fixed
+        # policy; whether a given negative actually carried a correction is
+        # that negative's own `rectification` block.
         "rectification_model": "global-2-param",
         "rectification_min_accepted_pairs": MIN_ACCEPTED_PAIRS,
         "rectification_min_improvement": MIN_RELATIVE_IMPROVEMENT,
@@ -405,9 +409,8 @@ def _read_curated_exif(
 
 def _verify_intermediates(work_dir: Path, group: GroupRecord) -> None:
     """Step 4: every intermediate exists and still matches the work
-    manifest's size and SHA-256. Phase 1's section 3.7 requires exactly
-    this, and it is the one guarantee section 3.6's `--allow-partial`
-    amendment does not relax."""
+    manifest's size and SHA-256. Phase 1 requires exactly this, and it is
+    the one guarantee the `--allow-partial` amendment does not relax."""
     for output in group.outputs:
         path = work_dir / output.name
         if not path.exists():
@@ -463,8 +466,7 @@ def _detect_all(
 
     Each frame's full-resolution pixels are released as soon as its
     detection image exists, so peak residency here is one intermediate,
-    not the whole negative — `jobs` bounds this step and nothing else
-    (section 3.6).
+    not the whole negative — `jobs` bounds this step and nothing else.
     """
 
     def one(path: Path) -> registration.FrameFeatures:
@@ -581,15 +583,14 @@ def _attempt_solve(
     `use_clahe`. Raises `StitchError` for anything that fails the negative.
 
     Writes the pairs it computes onto `entry` before any gate can raise, so
-    a negative that fails still records its per-pair section 3.4 metrics:
-    those numbers are exactly what a reader needs to see *why* it failed.
+    a negative that fails still records its per-pair metrics: those
+    numbers are exactly what a reader needs to see *why* it failed.
     `progress` is `None` on a CLAHE retry, which spends no further budget.
 
     With a calibrated profile, matched points are undistorted before RANSAC
-    (docs/GEOMETRIC_PLAN.md section 5.3) and the memory estimate includes
-    the band-map terms. Registration runs twice when the rig-tilt
-    rectification is accepted (docs/RECTIFICATION_PLAN.md section 4.2):
-    pass 1 as always, the fit on pass 1's accepted pairs, then pass 2
+    and the memory estimate includes the band-map terms. Registration runs
+    twice when the rig-tilt rectification is accepted: pass 1 as always,
+    the fit on pass 1's accepted pairs, then pass 2
     re-registers every pair with the rectifier composed into the
     undistorter's slot, so the gates, the layout, and the composite all
     work in rectified space under the model that actually fits them. Pass 2
@@ -643,9 +644,9 @@ def _attempt_solve(
         progress.advance(source_index, PipelineStep.MATCH)
 
     for pair in pairs:
-        # docs/STITCH_QUALITY_PLAN.md section 2.5: with a per-frame scale in
-        # the layout solve, `scale_drift` no longer means "this pair should
-        # have been scale 1" — it reports how much magnification the pair
+        # With a per-frame scale in the layout solve, `scale_drift` no
+        # longer means "this pair should have been scale 1" — it reports
+        # how much magnification the pair
         # carries, still gated at SCALE_DRIFT_WARN/FAIL because film cannot
         # plausibly carry more than that between two frames of one strip.
         if pair.accepted and pair.scale_drift > SCALE_DRIFT_WARN:
@@ -690,8 +691,7 @@ def _attempt_solve(
 
     if grid is not None and not grid.is_strip:
         # The spread ratio is the wrong question for a grid; the cell
-        # assignment and regularity checks are the structural gate instead
-        # (docs/GRID_STITCH_PLAN.md section 3.2).
+        # assignment and regularity checks are the structural gate instead.
         if layout.cells is None:
             on_warning(
                 Code.STITCH_LAYOUT_UNEXPECTED,
@@ -735,7 +735,7 @@ def _attempt_solve(
     # `composite` actually allocates one of per frame — not the canvas. The
     # per-axis max across frames keeps it an upper bound on every frame's
     # box, which is what the `frame_count ×` multiplier assumes (docs/
-    # GRID_STITCH_PLAN.md section 1a).
+    # frame_bbox_size).
     boxes = [
         composite_module.frame_bbox(
             placement.matrix(), frame_size[0], frame_size[1], layout.canvas_size
@@ -761,10 +761,9 @@ def _attempt_solve(
 def record_rectification(
     record: NegativeRecord, rectification: Rectification
 ) -> None:
-    """The per-negative `rectification` manifest block
-    (docs/RECTIFICATION_PLAN.md section 7): `l` in 1/px about `centre`,
-    with the fit's own before/after diagnostics. Interpretable without a
-    focal length, like the gauge rule requires."""
+    """The per-negative `rectification` manifest block: `l` in 1/px about
+    `centre`, with the fit's own before/after diagnostics. Interpretable
+    without a focal length, like the gauge rule requires."""
     record.rectification = {
         "l": [float(rectification.l[0]), float(rectification.l[1])],
         "centre": [float(rectification.centre[0]), float(rectification.centre[1])],
@@ -830,11 +829,10 @@ def _normalization_record(
     analysis_rect: tuple[int, int, int, int],
     base_check: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """The per-negative `normalization` block (docs/DECISIONS.md, "Normalization
-    decisions"): the bounds the published pixels were stretched with, the
-    recorded-not-acted-on metering, the observed pre-clip extrema and
-    headroom clipping (section 3.6), the analysis region, the rebate
-    finding (section 3.13, recorded but not yet consumed), and the
+    """The per-negative `normalization` block: the bounds the published
+    pixels were stretched with, the recorded-not-acted-on metering, the
+    observed pre-clip extrema and headroom clipping, the analysis region,
+    the rebate finding (recorded but not yet consumed), and the
     dense-border finding and clamp outcome. `source` names D-4's
     per-negative policy; the clamp is a safety net on top of it, not a
     policy change."""
@@ -843,7 +841,7 @@ def _normalization_record(
         "floors": list(bounds.floors),
         "ceils": list(bounds.ceils),
         "shadow_refs": list(result.shadow_refs),
-        # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral
+        # The dense end's same-pixel neutral
         # reference (null when the band held no trustworthy neutrals) and
         # the frame's residual neutral offset (null when there was no
         # estimate). Recorded, read by nothing in the stitch stage; the
@@ -885,8 +883,8 @@ def _normalization_record(
             "mask_fraction": result.opaque.mask_fraction,
             "threshold": result.opaque.threshold,
         },
-        # The film-extent pass's finding (docs/BLACK_POINT_REFINEMENT.md):
-        # where the film's own extent was judged to sit. `insets` is
+        # The film-extent pass's finding: where the film's own extent was
+        # judged to sit. `insets` is
         # (top, bottom, left, right) in GRID CELLS -- the manifest already
         # records `analysis_block_px`, so pixels are one multiplication
         # away; `analysis_rect` beside it is in canvas pixels.
@@ -955,7 +953,7 @@ def _normalization_aggregate(
     if not normalization_blocks:
         return None
 
-    # MONOCHROME_PLAN §4: sized to the published channel count — 3 on a
+    # Sized to the published channel count — 3 on a
     # colour roll, 1 on a mono roll's collapsed image — read from the
     # first block, since every negative in one run shares the roll's
     # frozen film kind.
@@ -1027,23 +1025,22 @@ def run_stitch(
     Raises `StitchError` for any run-level validation problem. A negative
     that cannot be stitched fails alone: its failure is recorded in the
     roll manifest, reported through `NegativeFailed`, and the run continues
-    and ends `partial` (section 3.5). A cancelled negative is abandoned,
-    not failed, and emits no `NegativeFailed`.
+    and ends `partial`. A cancelled negative is abandoned, not failed, and
+    emits no `NegativeFailed`.
 
     `overwrite` is accepted and unused: a stitch replaces a published file
     only by adopting the covered negative in place, which needs no flag.
 
     `negatives`, when given, restricts this stitch to the work manifest
-    groups whose members exactly match one of the roll's existing negatives
-    named by `negatives` (section 3.5's `--negatives` re-stitch path). Each
+    groups whose members exactly match one of the roll's existing
+    negatives named by `negatives` (the `--negatives` re-stitch path). Each
     match adopts the existing negative in place — same `negative_id`, same
     output name — per the replacement rule.
 
     `flatfield_profile_id` names the calibration profile whose geometry
-    (and, in "maps" mode, CA maps) reach the stitch warp
-    (docs/GEOMETRIC_PLAN.md section 5.4). Omitting it on a roll whose
-    `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH` through
-    the existing check, with no new code.
+    (and, in "maps" mode, CA maps) reach the stitch warp. Omitting it on a
+    roll whose `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH`
+    through the existing check, with no new code.
 
     `auto_rotate` (default on, `--no-auto-rotate` to turn it off) seeds each
     *newly published* negative with the rebate-squaring rotation
@@ -1060,7 +1057,7 @@ def run_stitch(
     def on_warning(code: Code, message: str) -> None:
         emit(WarningEvent(run_id=run_id, code=code, message=message))
 
-    # 1. --work and --out must be different directories (section 3.6).
+    # 1. --work and --out must be different directories.
     if work_dir.resolve() == out_dir.resolve():
         raise StitchError(
             Code.WORK_SAME_AS_OUTPUT,
@@ -1073,8 +1070,7 @@ def run_stitch(
     except OutputFolderError as exc:
         raise StitchError(exc.code, exc.message) from exc
 
-    # 3. The work manifest must be usable (section 3.6's amendment to
-    #    Phase 1's section 3.7).
+    # 3. The work manifest must be usable.
     try:
         work_manifest = load_manifest(work_dir)
     except BadManifestError as exc:
@@ -1104,9 +1100,8 @@ def run_stitch(
     for group in groups:
         _verify_intermediates(work_dir, group)
 
-    # 5. The roll must already exist (section 5.4 decision 1: `stitch` never
-    #    creates one). Load it early: film kind and invariants both come from
-    #    the manifest.
+    # 5. The roll must already exist (`stitch` never creates one). Load it
+    #    early: film kind and invariants both come from the manifest.
     if not repo.roll_registered(out_dir):
         raise StitchError(
             Code.ROLL_NOT_FOUND,
@@ -1119,9 +1114,9 @@ def run_stitch(
 
     film_kind = _film_kind_from_manifest(roll_peek)
 
-    # The calibration profile, if any: its geometry reaches the stitch warp
-    # (docs/GEOMETRIC_PLAN.md sections 3.6 and 5.4). Loaded before the
-    # invariants are built, because the geometry bucket is part of them.
+    # The calibration profile, if any: its geometry reaches the stitch
+    # warp. Loaded before the invariants are built, because the geometry
+    # bucket is part of them.
     profile = None
     if flatfield_profile_id is not None:
         try:
@@ -1129,7 +1124,7 @@ def run_stitch(
         except flatfield.FlatFieldError as exc:
             raise StitchError(exc.code, exc.message) from exc
         if profile.geometry is not None:
-            width, height = _read_intermediate_size(
+            height, width = _read_intermediate_size(
                 _intermediate_paths(work_dir, groups[0])[0]
             )
             try:
@@ -1141,10 +1136,10 @@ def run_stitch(
         processing_params=work_manifest.processing_params,
         icc_profile_sha256=work_manifest.icc_profile.get("sha256", ""),
         # The density profile the published TIFFs are tagged with is a
-        # second invariant (section 3.12's split), sourced from
-        # `icc_profile.PROFILES` — not from the work manifest, which only
-        # knows the intermediates'. It is film-kind-dependent
-        # (MONOCHROME_PLAN §2.3/§4): a mono roll seeds DENSITY_GREY, via
+        # second invariant, sourced from `icc_profile.PROFILES` — not from
+        # the work manifest, which only knows the intermediates'. It is
+        # film-kind-dependent
+        # A mono roll seeds DENSITY_GREY, via
         # the roll's film kind set at init.
         published_icc_profile_sha256=profile_record(
             published_profile_kind(film_kind)
@@ -1267,7 +1262,7 @@ def run_stitch(
     )
     source_index_by_group = {g.group_id: i for i, g in enumerate(groups)}
 
-    # Solve every layout before the disk check, so section 3.8's formula
+    # Solve every layout before the disk check, so the free-space formula
     # has real canvas sizes (see the module docstring).
     solved: list[_SolvedNegative] = []
     cancelled = False
@@ -1404,7 +1399,7 @@ def run_stitch(
         status = "partial"
 
     # The status belongs to *this run*, not to the roll: a roll is additive
-    # and has no single status (section 3.3).
+    # and has no single status.
     run_record.status = status
     run_record.finished_at = _now_iso()
     # D-4: record the run's aggregate bounds. Nothing reads it yet.
@@ -1461,16 +1456,15 @@ def _pick_adopted(covered: list[NegativeRecord], first_member: str) -> NegativeR
 def _seed_camera_color(
     roll: RollManifest, work_manifest: Manifest, emit: EmitFn
 ) -> None:
-    """The roll manifest's `camera_color` block (docs/EXPORT_PLAN.md §3.2):
-    the capturing body's colour response, taken from the work manifest's
-    curated metadata — the run's first source.
+    """The roll manifest's `camera_color` block: the capturing body's
+    colour response, taken from the work manifest's curated metadata — the
+    run's first source.
 
     Written on the roll's first run and then frozen: the block is a
     property of the camera body, and a roll is shot on one rig. A later
     run whose source reports a different matrix — a different body
     mid-roll — emits a `CAMERA_MATRIX_CONFLICT` warning and keeps the
-    frozen value, the same posture MONOCHROME_PLAN §2.3 takes for
-    `film.kind`: a warning, not an error, because half the roll may
+    frozen value — a warning, not an error, because half the roll may
     already be exported. Rolls whose run predates the block have none —
     the export decides what that means (§3.4).
 
@@ -1781,12 +1775,11 @@ def _composite_and_publish(
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
 ) -> dict | None:
-    """Composite one negative, apply the remaining section 3.4 gates, and
-    stage-then-publish it atomically, exactly as Phase 1 publishes a group.
+    """Composite one negative, apply the remaining gates, and stage-then-
+    publish it atomically, exactly as Phase 1 publishes a group.
 
     With a calibrated profile, the warp folds in the profile's geometry and
-    — in "maps" mode only — its chromatic aberration maps
-    (docs/GEOMETRIC_PLAN.md section 5.3).
+    — in "maps" mode only — its chromatic aberration maps.
 
     With `seed_rotation` set, the composite also gets one pass of
     `auto_rotate.estimate_rotation` and — when it finds a trustworthy
@@ -1802,8 +1795,8 @@ def _composite_and_publish(
     assert layout is not None
     record = entry.record
     # The adopted record's previous capture time, kept aside before this
-    # publish overwrites it: its applied time is what section 3.9 carries
-    # forward onto the new file.
+    # publish overwrites it: its applied time is what carries forward onto
+    # the new file.
     previous_capture_time = record.capture_time
     paths = _intermediate_paths(work_dir, entry.group)
     by_name = {path.name: path for path in paths}
@@ -1882,8 +1875,8 @@ def _composite_and_publish(
                 )
             )
 
-        # The film-extent pass's findings (docs/BLACK_POINT_REFINEMENT.md).
-        # The withheld rect is applied inside `composite`; what reaches here
+        # The film-extent pass's findings. The withheld rect is applied
+        # inside `composite`; what reaches here
         # is the record. The informational event names the four insets in
         # *canvas pixels* — the user thinks in pixels; the cells they come
         # from are one multiplication by ANALYSIS_BLOCK_PX away.
@@ -1921,8 +1914,8 @@ def _composite_and_publish(
                 )
 
         # Fold the measured photometric numbers back into the pairs and the
-        # frames, warn on solved gains far from unity, then apply the honest
-        # gate (section 3.4). `overlap_mad` is now the post-gain residual —
+        # frames, warn on solved gains far from unity, then apply the
+        # honest gate. `overlap_mad` is now the post-gain residual —
         # the gate is a registration check, not a lamp-drift check — while
         # `overlap_mad_pregain` records why a gain was applied. The gate's
         # threshold was measured against uncorrected overlaps and is pending
@@ -1992,10 +1985,10 @@ def _composite_and_publish(
         # and exports will see, fill sentinel and all.
         auto_rotation_deg = estimate_rotation(result.image) if seed_rotation else None
 
-        # Section 5.4 decision 4: the roll records the capture time the
-        # negative's first frame actually carries, which is exactly the value
-        # just read. `intended_`, `applied_`, and `date_override` stay null —
-        # they are the metadata stage's, not the stitch stage's (section 3.8).
+        # The roll records the capture time the negative's first frame
+        # actually carries, which is exactly the value just read.
+        # `intended_`, `applied_`, and `date_override` stay null — they are
+        # the metadata stage's, not the stitch stage's.
         record.capture_time = CaptureTime(
             source_datetime_original=exif.date_time_original.isoformat()
         )
@@ -2017,17 +2010,55 @@ def _composite_and_publish(
                 model=model,
             ),
             exif=exif,
-            # The primary published-TIFF tag site (MONOCHROME_PLAN §4): the profile
-            # is film-kind-dependent — DENSITY_GREY on a mono roll — via
+            # The primary published-TIFF tag site: the profile is
+            # film-kind-dependent — DENSITY_GREY on a mono roll — via
             # this run's decided (or already-frozen) film kind, exactly as
             # the invariant seed above.
             icc_bytes=load_icc_profile(
                 published_profile_kind(film_kind)
-            ),  # section 3.12
+            ),
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
         height, width = result.image.shape[0], result.image.shape[1]
+
+        # Scratch detection on colour rolls.  Runs at stitch time on the
+        # published representation; the result is recorded as an ordinary
+        # edit op.  Failure never fails the stitch.
+        if film_kind is FilmKind.COLOUR:
+            try:
+                spans = tuple(
+                    record.normalization["ceils"][ch]
+                    - record.normalization["floors"][ch]
+                    for ch in range(3)
+                )
+                film_extent = record.normalization.get("film_extent")
+                candidates = scratches.detect(result.image, spans, film_extent)
+                fits = [scratches.fit(result.image, c) for c in candidates]
+                # Carry forward the previous enabled state when it exists,
+                # defaulting to True for a fresh detection.
+                prev = repo.net_edit_state(out_dir, record.negative_id).scratches
+                enabled = prev["enabled"] if prev and "enabled" in prev else True
+                params = scratches.scratches_params(
+                    canvas=(width, height),
+                    fits=fits,
+                    enabled=enabled,
+                )
+                repo.append_scratches_edit(out_dir, record.negative_id, params)
+            except Exception:  # noqa: BLE001
+                # Detection failure must never fail the stitch.
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.SCRATCH_DETECTION_FAILED,
+                        message=(
+                            f"{record.negative_id}: scratch detection "
+                            "failed; the negative was published without "
+                            "scratch removal"
+                        ),
+                    )
+                )
+
         del result
 
         cancel.raise_if_cancelled()
@@ -2095,6 +2126,8 @@ def _composite_and_publish(
                         else None,
                         (record.output["height"], record.output["width"]),
                         quarter_turns=quarter_turns,
+                        flipped_horizontally=flipped,
+                        fine_angle_deg=fine_angle,
                     )
                 ),
             }

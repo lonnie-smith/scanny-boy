@@ -12,8 +12,7 @@ import Testing
 ///
 /// These are the automated half of Chunk 10's manual-verification list. They
 /// prove the behaviour; they do not stand in for the user's own sign-off on
-/// replacement and cancellation in the finished app, which is approval point
-/// 4 of section 8.
+/// replacement and cancellation in the finished app.
 ///
 /// Both prerequisites — the built app hosting these tests, and the sample
 /// files at `tests/fixtures/nef/` — are absent from CI, so the suite skips
@@ -36,9 +35,8 @@ struct RunIntegrationTests {
         if !SampleFixtures.areAvailable {
             reasons.append(
                 """
-                The real sample NEFs are not present at tests/fixtures/nef/ \
-                (see docs/IMPLEMENTATION_PLAN.md appendix A). The Chunk 10 \
-                run flow — a six-frame conversion, the blocked selections, \
+                The real sample NEFs are not present at tests/fixtures/nef/. \
+                The run flow — a six-frame conversion, the blocked selections, \
                 the rerun that overlaps, and cooperative cancellation \
                 keeping earlier negatives — did not run.
                 """
@@ -88,7 +86,7 @@ struct RunIntegrationTests {
     }
 
     /// `roll init` for real, through the CLI — every scenario below targets a
-    /// roll it actually created, exactly as the app does (section 3.1: Swift
+    /// roll it actually created, exactly as the app does (Swift
     /// never invents a roll folder of its own).
     private static func createRoll() async throws -> URL {
         let library = try Self.makeTemporaryDirectory()

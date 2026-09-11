@@ -36,16 +36,10 @@ struct PreviewCacheTests {
             mode: .negative
         )
 
-        #expect(
-            region.path
-                == "/caches/ScannyBoy/preview-regions/roll-1/"
-                    + "abc-negative-01-g1-true-flat-positive-10-20-30-40.png"
-        )
-        #expect(
-            preview.path
-                == "/caches/ScannyBoy/rendered-previews/roll-1/"
-                    + "abc-negative-01-g1-true-flat-negative.png"
-        )
+        #expect(region.path.hasPrefix("/caches/ScannyBoy/preview-regions/roll-1/abc-negative-01-g"))
+        #expect(region.path.hasSuffix("-positive-10-20-30-40.rgba"))
+        #expect(preview.path.hasPrefix("/caches/ScannyBoy/rendered-previews/roll-1/abc-negative-01-g"))
+        #expect(preview.path.hasSuffix("-negative.png"))
     }
 
     @Test("The generation's separators never become path components")
@@ -59,6 +53,51 @@ struct PreviewCacheTests {
 
         #expect(!url.lastPathComponent.contains("#"))
         #expect(url.deletingLastPathComponent().lastPathComponent == "roll-1")
+    }
+
+    @Test("The same generation always hashes to the same component, and different generations differ")
+    func testGenerationHashIsStableAndDistinct() throws {
+        let cache = PreviewCache(cachesDirectory: URL(filePath: "/caches"))
+
+        let first = cache.previewURL(
+            rollID: "roll-1", negativeID: "abc-negative-01", generation: "0#false#flat",
+            mode: .positive
+        )
+        let repeated = cache.previewURL(
+            rollID: "roll-1", negativeID: "abc-negative-01", generation: "0#false#flat",
+            mode: .positive
+        )
+        let different = cache.previewURL(
+            rollID: "roll-1", negativeID: "abc-negative-01", generation: "1#false#flat",
+            mode: .positive
+        )
+
+        #expect(first.path == repeated.path)
+        #expect(first.path != different.path)
+    }
+
+    /// Regression: `EditModel.renderGeneration`'s camera colour term carries
+    /// the full RGB→XYZ matrix and camera model name verbatim — for a camera
+    /// like "NIKON CORPORATION NIKON Z f" that alone is well over 100
+    /// characters — and a region filename used to embed `generation`
+    /// character-for-character. That pushed the filename past macOS's
+    /// 255-byte component limit, and `edit render-region` failed every
+    /// request with `INTERNAL_ERROR` ("File name too long"): the 100% zoom's
+    /// crop never arrived, and nothing distinguished that failure from
+    /// "still loading", so it just spun forever.
+    @Test("An arbitrarily long generation still produces a short filename")
+    func testLongGenerationProducesAShortFilename() throws {
+        let cache = PreviewCache(cachesDirectory: URL(filePath: "/caches"))
+        let longGeneration = "0#false#flat#neutral#none#false#"
+            + "NIKON CORPORATION NIKON Z f#"
+            + Array(repeating: "1.1606999635696411", count: 9).joined(separator: ",")
+
+        let region = cache.regionURL(
+            rollID: "roll-1", negativeID: "abc-negative-01", generation: longGeneration,
+            mode: .positive, rect: CGRect(x: 4642, y: 5499, width: 852, height: 707)
+        )
+
+        #expect(region.lastPathComponent.utf8.count < 255)
     }
 
     @Test("removeAll takes both kinds for one roll and leaves the rest")

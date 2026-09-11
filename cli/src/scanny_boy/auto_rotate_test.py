@@ -49,7 +49,7 @@ def test_rotate_with_fill_keeps_the_canvas_dimensions():
 
 def test_rotate_with_fill_fills_the_uncovered_pixels_with_the_sentinel():
     """Pixels whose source falls outside the image are exactly the
-    stitching fill sentinel — the thin rail, section 3.14."""
+    stitching fill sentinel — the thin rail."""
     image = np.zeros((40, 60, 3), dtype=np.uint16)
 
     rotated = rotate_with_fill(image, 45.0)

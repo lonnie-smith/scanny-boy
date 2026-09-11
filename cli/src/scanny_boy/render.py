@@ -1,6 +1,6 @@
 """The positive render: a published TIFF's normalized log density becomes a
 display-encoded positive in Adobe RGB (1998)-compatible colour, with the
-negative's recorded tone and colour ops baked in (docs/EXPORT_PLAN.md §4).
+negative's recorded tone and colour ops baked in.
 
 This is the only place the published TIFF's codes become display pixels at
 full resolution — deliberately separate from `exporter.py` (which stays
@@ -35,7 +35,7 @@ The chain, when a camera colour matrix is present, is:
 - Not at stitch time, baked into the published TIFF — that would change
   every published pixel, break the roll invariants, and make
   `decode_normalized` no longer the single inverse of the encode. The
-  published TIFF stays what `DECISIONS.md` says it is.
+  published TIFF stays a normalized log-density working intermediate.
 
 When `matrix is None` on a three-channel image the gamma sandwich is
 skipped — the preview fallback for a colour roll whose stitch has not yet
@@ -49,7 +49,7 @@ import numpy as np
 from scanny_boy import color, normalization, resample, tone
 from scanny_boy.icc_profile import TRC_G_EXPORT
 
-# One constant, three places (docs/EXPORT_PLAN.md §2.2): the profile's TRC
+# One constant, three places: the profile's TRC
 # tag writes it in s15Fixed16 (`TRC_G_EXPORT`), the generator's `curv` tag
 # writes the same value in u8Fixed8, and this module derives its gamma
 # from the pinned constant. 563/256 = 2.19921875, the published Adobe RGB
@@ -62,7 +62,7 @@ MAX_CODE = 65535
 # -NORMALIZED_HEADROOM_LOW inverts to 1 + NORMALIZED_HEADROOM_LOW. Every
 # stage between the inversion and the tone curve carries values on
 # [0, DISPLAY_CEILING] rather than [0, 1]; the curve is what brings them
-# back (docs/HEADROOM.md §1).
+# back.
 DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
 
 _LINEAR_CEILING = DISPLAY_CEILING**GAMMA_ADOBE
@@ -97,7 +97,7 @@ def export_matrix(rgb_xyz_matrix) -> np.ndarray:
     """The 3x3 camera-RGB -> Adobe RGB matrix for one body (§4.3).
 
     `rgb_xyz_matrix` is LibRaw's `rgb_xyz_matrix` — the DNG `ColorMatrix`
-    convention's **XYZ -> camera RGB** matrix (docs/EXPORT_PLAN.md §3.1;
+    convention's **XYZ -> camera RGB** matrix (
     the name reads the other way, verified against real NEFs by
     `metadata_test`'s slow direction check). Compose its pseudo-inverse
     (camera -> XYZ, D65) with the XYZ -> Adobe RGB matrix, then
@@ -190,8 +190,14 @@ def _needs_separation(color_obj: color.ColorParams, channels: int) -> bool:
     )
 
 
+def _has_render_op(
+    tone_obj: tone.ToneParams | None,
+    color_obj: color.ColorParams,
+) -> bool:
+    return tone_obj is not None or color_obj != color.NEUTRAL_COLOR
+
+
 def _linear_lut_from_codes(
-    tone_obj: tone.ToneParams,
     color_obj: color.ColorParams,
     meter: color.Metering,
     *,
@@ -222,6 +228,7 @@ def _curve_lut_from_display_codes(
     meter: color.Metering,
     *,
     channels: int,
+    display_ceiling: float,
 ) -> np.ndarray:
     """Post-matrix display code j -> curved float, shape `(channels, 65536)`."""
     if tone_obj is None and color_obj == color.NEUTRAL_COLOR:
@@ -229,15 +236,14 @@ def _curve_lut_from_display_codes(
         return np.broadcast_to(display_codes, (channels, MAX_CODE + 1)).copy()
 
     display_codes = (
-        np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * DISPLAY_CEILING
+        np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * display_ceiling
     )
     apply_color = channels > 1
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
-    tone_params = tone_obj if tone_obj is not None else tone.NEUTRAL
     for ch in range(channels):
         tables[ch] = tone.curve_values(
             display_codes,
-            tone_params,
+            tone_obj,
             color_obj,
             channel=ch if apply_color else None,
             metering=meter,
@@ -249,7 +255,7 @@ def _curve_lut_from_display_codes(
 def _positive_values(codes: np.ndarray) -> np.ndarray:
     """Codes -> positive normalized log exposure: `1 - decode_normalized`,
     clipped at 0 — the fill sentinel (above 1.0 decoded) renders black,
-    exactly as the stitch-side property (MONOCHROME_PLAN §3.4) expects."""
+    exactly as the stitch-side property expects."""
     return np.maximum(1.0 - normalization.decode_normalized(codes), 0.0)
 
 
@@ -330,7 +336,7 @@ def render_positive_float(
                 tone_params, color_params, metering, channels=1
             )
             tables = tone.build_channel_tables(
-                tone_obj or tone.NEUTRAL, color.NEUTRAL_COLOR, meter, channels=1
+                tone_obj, color.NEUTRAL_COLOR, meter, channels=1
             )
             result = tables[0][image]
             return np.clip(result, 0.0, 1.0), (0.0,)
@@ -374,26 +380,26 @@ def render_positive_float(
         tone_params, color_params, metering, channels=3
     )
 
+    has_op = _has_render_op(tone_obj, color_obj)
+    display_ceiling = DISPLAY_CEILING if has_op else 1.0
+    linear_ceiling = _LINEAR_CEILING if has_op else 1.0
+
     if matrix is None:
-        tables = tone.build_channel_tables(
-            tone_obj or tone.NEUTRAL, color_obj, meter, channels=3
-        )
+        tables = tone.build_channel_tables(tone_obj, color_obj, meter, channels=3)
         result = _gather_channel_lut(image, tables.astype(np.float32))
         if _needs_separation(color_obj, channels=3):
             result = color.apply_separation(result, color_obj)
         return np.clip(result, 0.0, 1.0), (0.0, 0.0, 0.0)
 
     linear_luts = _linear_lut_from_codes(
-        tone_obj or tone.NEUTRAL,
         color_obj,
         meter,
         channels=3,
-        allow_headroom=tone_obj is not None,
+        allow_headroom=has_op,
     )
     linear = _gather_channel_lut(image, linear_luts)
     linear = linear @ np.asarray(matrix, dtype=np.float32).T
     preclip = linear
-    linear_ceiling = _LINEAR_CEILING if tone_obj is not None else 1.0
     linear = np.clip(preclip, 0.0, linear_ceiling)
     fractions = _clipped_fractions(preclip, linear)
 
@@ -412,10 +418,9 @@ def render_positive_float(
         )
 
     display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
-    display_ceiling = DISPLAY_CEILING if tone_obj is not None else 1.0
     j = np.rint(display / display_ceiling * MAX_CODE).astype(np.uint16)
     curve_luts = _curve_lut_from_display_codes(
-        tone_obj, color_obj, meter, channels=3
+        tone_obj, color_obj, meter, channels=3, display_ceiling=display_ceiling
     )
     result = _gather_channel_lut(j, curve_luts)
     if _needs_separation(color_obj, channels=3):
@@ -475,7 +480,7 @@ def render_export(
         raise ValueError(
             "a colour image needs the camera colour matrix; a silent "
             "identity fallback is precisely the bug the export plan "
-            "exists to remove (EXPORT_PLAN §3.4)"
+            "exists to remove"
         )
     floats, fractions = render_positive_float(
         image, matrix, tone_params, color_params, metering, long_edge=long_edge

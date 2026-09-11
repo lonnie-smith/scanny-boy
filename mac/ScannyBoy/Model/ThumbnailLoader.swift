@@ -20,7 +20,7 @@ struct Thumbnail: @unchecked Sendable {
 /// This is display only. It reads nothing the CLI has not already reported —
 /// every URL handed to it is built from a `probe` catalogue entry — and it
 /// never influences the catalogue, the selection, or anything sent back to
-/// the CLI, so section 3.2's rule that Python owns all logic is untouched.
+/// the CLI, so the rule that Python owns all logic is untouched.
 ///
 /// Two native paths produce the picture, in order:
 ///
@@ -71,8 +71,8 @@ actor ThumbnailLoader {
         await cachedThumbnail(url: url, pointSize: pointSize, scale: scale, generate: Self.generate)
     }
 
-    /// The thumbnail for one negative's published TIFF (section 3.10's Edit
-    /// tab), skipping QuickLook.
+    /// The thumbnail for one negative's published TIFF, for the Edit
+    /// tab, skipping QuickLook.
     ///
     /// QuickLook is tuned for a RAW or JPEG preview; against a full-resolution,
     /// multi-megapixel stitched TIFF it is both slower and less predictable
@@ -189,7 +189,7 @@ actor ThumbnailLoader {
     ///
     /// `kCGImageSourceCreateThumbnailWithTransform` applies the camera's
     /// orientation, so a portrait frame shows upright — the same rule
-    /// section 3.4 sets for the converted TIFFs, applied here only to the
+    /// applied to the converted TIFFs, applied here only to the
     /// picture on screen.
     static func embeddedPreview(url: URL, pointSize: CGSize, scale: CGFloat) -> Thumbnail? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary

@@ -1,7 +1,7 @@
 """The Auto Cast Removal solve: closed-form global CMY from a negative's
 recorded neutral estimate.
 
-Mirrors `auto_tone.py`'s shape (docs/CAST_REMOVAL_PLAN.md §3.3): pure
+Mirrors `auto_tone.py`'s shape: pure
 functions over a negative's recorded `normalization` block, no image I/O,
 no metering pass — the meter (`normalization.measure_neutral_residual`)
 ran at stitch time and is read back here.
@@ -9,7 +9,7 @@ ran at stitch time and is read back here.
 The estimator is a port of darktable's grey-surfaces illuminant detector;
 the solve turns its `(R-G, B-G)` residual into the three CMY slider values
 a printer would dial. Auto writes `wb_cyan / wb_magenta / wb_yellow` and
-touches nothing else (§0.5): the two ties are anchored on this negative's
+touches nothing else: the two ties are anchored on this negative's
 own percentile references and are fully determined by them, while the
 grey-surfaces estimator measures a *global* neutral residual over the
 whole tonal range — a filtration correction.
@@ -23,17 +23,15 @@ from scanny_boy import color
 def _neutral_defaults_target(
     residual_a: float, residual_b: float
 ) -> tuple[float, float, float]:
-    """Step 2: the mean-removed global CMY offsets that null the residual.
+    """Step 2: the luma-neutral global CMY offsets that null the residual.
 
     A global CMY offset adds `o_ch` to the normalized `u_ch`. Nulling the
-    residual means `o_R - o_G = -a` and `o_B - o_G = -b`; combined with the
-    mean removal `o_R + o_G + o_B = 0` that solves in closed form. The sum
-    is zero by construction."""
-    return (
-        (residual_b - 2.0 * residual_a) / 3.0,
-        (residual_a + residual_b) / 3.0,
-        (residual_a - 2.0 * residual_b) / 3.0,
-    )
+    residual means `o_R - o_G = -a` and `o_B - o_G = -b`; combined with
+    the luma removal constraint from `color.cmy_offsets` that solves in
+    closed form."""
+    w_r, _w_g, w_b = color.LUMA_WEIGHTS
+    o_g = w_r * residual_a + w_b * residual_b
+    return (o_g - residual_a, o_g, o_g - residual_b)
 
 
 def solve_cmy(
@@ -91,9 +89,9 @@ def solve_cmy(
             continue
         d_ch = slope_ch * (pivot_in - pivot_ch)
         offsets[ch] -= -d_ch / slope
-    # Re-remove the mean of the three after the compensation.
-    mean = sum(offsets) / 3.0
-    offsets = [value - mean for value in offsets]
+    # Re-remove the luma mean of the three after the compensation.
+    luma_mean = color._luma_weighted_sum(tuple(offsets))
+    offsets = [value - luma_mean for value in offsets]
 
     # Step 4: the inverse of `cmy_offsets` (slider -> offset * range /
     # CMY_MAX_DENSITY), clamped into the sliders' range.

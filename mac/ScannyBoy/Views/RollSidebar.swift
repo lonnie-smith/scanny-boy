@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The library sidebar (section 3.10): rolls sorted by name, a **+** to
+/// The library sidebar: rolls sorted by name, a **+** to
 /// create one, and a context menu with Rename and Delete. Its whole content
 /// comes from `RollLibrary`'s one `roll list` scan — no filesystem
 /// enumeration of its own.
@@ -8,7 +8,7 @@ struct RollSidebar: View {
     let library: RollLibrary
     @Binding var selection: Roll.ID?
     /// Disables roll switching and every mutating action while a helper is
-    /// active app-wide (section 3.10).
+    /// active app-wide.
     let runIsActive: Bool
     /// `ContentView` owns `NewRollSheet`'s presentation (L5): the sidebar's
     /// toolbar **+** and the empty-state's "New Roll…" button used to each

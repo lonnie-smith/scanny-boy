@@ -1,21 +1,20 @@
 """Output-folder validation, rerun detection, and overwrite-conflict
-planning. See `docs/IMPLEMENTATION_PLAN.md` section 3.6.
+planning.
 
 `plan_rerun` decides whether an output folder is usable at all (empty, or
 related to a valid, matching prior manifest) and, if it is a rerun, which
 outputs need consent to overwrite (`conflicting_outputs`, from groups the
 prior manifest marked `completed`) versus which can be cleaned up
 automatically (`stale_outputs`/`stale_staging_dirs`, from groups that never
-reached a final state — recovery per section 3.6's crash-safety rules, not
-an overwrite decision).
+reached a final state — recovery, not an overwrite decision).
 
-Phase 3 section 3.4 makes rolls additive: a nonempty roll folder holding
-published outputs from earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and
-under `ROLL_RULES` a completed negative's published output is neither a
-conflict needing consent nor a stale output — section 5.4 decision 3, no
-roll content is ever re-rendered or replaced in place. Only the conflict
-classification changes: an unrelated nonempty folder is still rejected, and
-never-finished negatives still get recovery cleanup.
+Rolls are additive: a nonempty roll folder holding published outputs from
+earlier runs is normal, not `OUTPUT_NOT_EMPTY`, and under `ROLL_RULES` a
+completed negative's published output is neither a conflict needing
+consent nor a stale output — no roll content is ever re-rendered or
+replaced in place. Only the conflict classification changes: an unrelated
+nonempty folder is still rejected, and never-finished negatives still get
+recovery cleanup.
 """
 
 from __future__ import annotations
@@ -57,13 +56,13 @@ class UnitView:
 @dataclasses.dataclass(frozen=True)
 class FolderRules:
     """Everything `_plan_rerun` needs to know about *which* manifest kind an
-    output folder holds. Section 3.7: generalise this module over the
-    manifest it is reading rather than copying it.
+    output folder holds — this module is generalised over the manifest it
+    is reading rather than copying it.
 
     A roll folder's record lives in the library database, not in a file, so
     "does this folder hold one?" is `registered` rather than a filename
-    existence check; `manifest_filename` survives only to name the Phase 1
-    work manifest in errors and the known-artifacts list."""
+    existence check; `manifest_filename` survives only to name the work
+    manifest in errors and the known-artifacts list."""
 
     manifest_filename: str
     registered: Callable[[Path], bool]
@@ -100,9 +99,9 @@ ROLL_RULES = FolderRules(
         f"{output_dir} is not empty and is not a registered roll; create the roll first"
     ),
     load=load_roll_manifest,
-    # Phase 3 section 5.4 decision 2: the v2 roll manifest has no top-level
-    # `run_id`. Staging directories belong to the run in flight, which is
-    # always the last appended one; a roll with no runs yet has none.
+    # The roll manifest has no top-level `run_id`. Staging directories
+    # belong to the run in flight, which is always the last appended one;
+    # a roll with no runs yet has none.
     run_id_of=lambda manifest: manifest.runs[-1].run_id if manifest.runs else "",
     units_of=lambda manifest: [
         UnitView(
@@ -124,9 +123,9 @@ class OutputFolderError(Exception):
 
 
 def list_non_dot_entries(output_dir: Path) -> list[Path]:
-    """Every direct child of `output_dir` except dot-files (section 3.6:
-    `.DS_Store`, `._*` AppleDouble files, `.Spotlight-V100`, and anything
-    else macOS or Scanny Boy itself never creates without a leading dot)."""
+    """Every direct child of `output_dir` except dot-files: `.DS_Store`,
+    `._*` AppleDouble files, `.Spotlight-V100`, and anything else macOS or
+    Scanny Boy itself never creates without a leading dot."""
     return [p for p in output_dir.iterdir() if not p.name.startswith(".")]
 
 
@@ -143,10 +142,10 @@ def validate_writable(output_dir: Path) -> None:
         raise OutputFolderError(
             Code.OUTPUT_NOT_WRITABLE, f"{output_dir} is not an existing directory"
         )
-    # No probe file: section 3.6 says Scanny Boy never creates dot-files
-    # itself, and a non-dot probe would itself trip the folder-relatedness
-    # check above. os.access() answers the writability question without
-    # creating anything.
+    # No probe file: Scanny Boy never creates dot-files itself, and a
+    # non-dot probe would itself trip the folder-relatedness check above.
+    # os.access() answers the writability question without creating
+    # anything.
     if not os.access(output_dir, os.W_OK):
         raise OutputFolderError(
             Code.OUTPUT_NOT_WRITABLE, f"cannot write to {output_dir}"
@@ -225,11 +224,11 @@ def _plan_rerun(
     for unit in rules.units_of(existing):
         unit_dir = staging_dir_path(output_dir, run_id, unit.unit_id)
         if unit.is_completed:
-            # Section 3.4: rolls are additive. A completed negative's
-            # published output belongs to an earlier run and is never
-            # re-rendered or replaced, so under ROLL_RULES it is neither a
-            # conflict needing consent nor a stale output (section 5.4
-            # decision 3: nothing in a roll is ever overwritten in place).
+            # Rolls are additive. A completed negative's published output
+            # belongs to an earlier run and is never re-rendered or
+            # replaced, so under ROLL_RULES it is neither a conflict
+            # needing consent nor a stale output — nothing in a roll is
+            # ever overwritten in place.
             if rules is not ROLL_RULES:
                 conflicting.extend(
                     name
@@ -254,10 +253,9 @@ def plan_rerun(
     schema-invalid manifest, and `manifest.ManifestMismatchError` when a
     valid manifest describes a different run.
 
-    The comparison itself is manifest-kind-specific — Phase 1's
-    `check_rerun_matches` compares a `Manifest`, Phase 3's
-    `check_roll_invariants` a `RollInvariants` (section 3.4) — so it is
-    selected from `rules` here rather than carried as a sixth `FolderRules`
+    The comparison itself is manifest-kind-specific — `check_rerun_matches`
+    compares a `Manifest`, `check_roll_invariants` a `RollInvariants` — so
+    it is selected from `rules` here rather than carried as a sixth `FolderRules`
     field. Under `ROLL_RULES`, `candidate` is therefore a `RollInvariants`,
     not a manifest, and the folder is additive: completed negatives'
     published outputs are never reported as conflicts."""
@@ -281,8 +279,8 @@ def plan_rerun_preview(
     icc_sha256: str | None,
     grid: dict[str, int] | None = None,
 ) -> RerunPlan:
-    """The `probe --out` counterpart to `plan_rerun` (section 4.1:
-    "output-folder validation and the overwrite-conflict preview"). Compares
+    """The `probe --out` counterpart to `plan_rerun`: output-folder
+    validation and the overwrite-conflict preview. Compares
     only the fields known before a film date has been entered; `convert`
     still calls `plan_rerun` with a complete candidate manifest and repeats
     the full comparison before it writes anything."""
@@ -303,8 +301,8 @@ def plan_rerun_preview(
 
 def apply_recovery_cleanup(output_dir: Path, plan: RerunPlan) -> None:
     """Delete stray outputs and staging directories left by groups that
-    never reached a final state in a prior run (section 3.6: "the manifest
-    records progress so a rerun can safely replace an incomplete group").
+    never reached a final state in a prior run: the manifest records
+    progress so a rerun can safely replace an incomplete group.
     Unconditional: these files were never a protected, completed result."""
     for name in plan.stale_outputs:
         (output_dir / name).unlink(missing_ok=True)

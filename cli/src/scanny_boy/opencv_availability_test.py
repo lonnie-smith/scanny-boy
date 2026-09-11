@@ -1,6 +1,6 @@
-"""Pins section 2.1 of the Phase 2 plan: the OpenCV 4.x line and the symbols
-Phase 2 depends on. OpenCV 5.0 drops AKAZE, which is still a live detector
-candidate until Chunk P2-1 decides otherwise (see cli/pyproject.toml)."""
+"""Pins the OpenCV 4.x line and the symbols this program depends on.
+OpenCV 5.0 drops AKAZE, which is still a live detector candidate (see
+cli/pyproject.toml)."""
 
 import cv2
 
@@ -16,7 +16,7 @@ def test_opencv_version_and_symbols():
         "distanceTransform",
         "warpAffine",
         "createCLAHE",
-        # Geometric calibration (docs/GEOMETRIC_PLAN.md section 8).
+        # Geometric calibration.
         "undistortPoints",
         "remap",
     ):

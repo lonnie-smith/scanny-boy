@@ -1,6 +1,6 @@
 """Tests for `jxl_writer`: the ctypes shim over the bundled libjxl.
 
-docs/EXPORT_PLAN.md §1.6. The `JxlBasicInfo` layout test is the tripwire
+The `JxlBasicInfo` layout test is the tripwire
 for a libjxl ABI change — struct-layout drift otherwise shows up as
 silent pixel corruption, not an error.
 """
@@ -162,7 +162,7 @@ def test_pixel_format_is_the_documented_24_byte_layout():
 # libjxl validates the ICC profile's colour space against
 # `num_color_channels` (a mismatch is `JXL_ENC_ERR_BAD_INPUT`), so the
 # colour images need the RGB profile and the 1-channel images the grey
-# one — which is also exactly how the exporter picks them (§5.1).
+# one — which is also exactly how the exporter picks them.
 ICC = load_icc_profile(ProfileKind.LINEAR)
 ICC_GREY = load_icc_profile(ProfileKind.DENSITY_GREY)
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The Edit tab's spot-review state (protocol version 13, SPOTTING_PLAN §8).
+/// The Edit tab's spot-review state.
 ///
 /// Two shapes ride the wire and they are deliberately separate: the full
 /// spot list comes from `edit list-spots` (and the recording commands'
@@ -33,7 +33,7 @@ struct NegativeSpots: Sendable, Hashable {
         let sensitivity: Double
         let repair: Bool
         /// True when the set was detected against a canvas a re-stitch has
-        /// replaced (SPOTTING_PLAN §1.5): it repairs nothing and needs
+        /// replaced: it repairs nothing and needs
         /// re-detecting.
         let stale: Bool
         let count: Int

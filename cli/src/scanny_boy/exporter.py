@@ -5,20 +5,19 @@ TIFF — the canonical `(quarter_turns, flipped)` net transform, applied as a
 horizontal mirror followed by `np.rot90` quarter turns — and renders the
 result as a **positive in Adobe RGB (1998)-compatible colour, with the
 negative's recorded tone and colour ops baked in** (`render.render_export`), written as
-a **16-bit lossless JPEG XL** with the export ICC profile embedded
-(docs/EXPORT_PLAN.md §5). A mono roll's export is single-channel, tagged
+a **16-bit lossless JPEG XL** with the export ICC profile embedded.
+A mono roll's export is single-channel, tagged
 with the grey export profile and rendered without a colour matrix. The
 roll's own TIFF is never opened for writing: exports land elsewhere, and a
 re-export after further edits simply runs again.
 
 A colour roll predating the `camera_color` block fails the export outright
 (`CAMERA_MATRIX_MISSING`, raised once before anything is written): a silent
-identity matrix would produce a file that claims Adobe RGB and is not,
-which is precisely the bug the export plan exists to remove (§3.4). A mono
-roll needs no matrix and is never failed for its absence.
+identity matrix would produce a file that claims Adobe RGB and is not. A
+mono roll needs no matrix and is never failed for its absence.
 
 An optional downsampling reduces the export to a chosen long edge before
-the encode (`--downsample 6048|9072`). The resize itself lives inside the
+the encode (`--downsample 6048|9072|12096`). The resize itself lives inside the
 render (`render.render_export`'s `long_edge`), where it belongs: a
 Lanczos3 resample of the *linear-light* values, between the gamut clip
 and the display re-encode — not a resample of the finished gamma-encoded
@@ -45,7 +44,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import color, jxl_writer, previews, render, resample, spots
+from scanny_boy import color, jxl_writer, previews, render, resample, scratches, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -68,7 +67,7 @@ EmitFn = Any
 
 EXPORT_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy export"
 
-DOWNSAMPLE_CHOICES = ("none", "6048", "9072")
+DOWNSAMPLE_CHOICES = ("none", "6048", "9072", "12096")
 
 
 def parse_downsample(value: str) -> int | None:
@@ -140,16 +139,16 @@ def applied_downsample(
 def export_image_description(negative: NegativeRecord) -> str:
     """The export's `ImageDescription`: the short human string. The
     interpretability record — the negative's `normalization` block —
-    moved to the XMP's `scannyboy:provenance` (§5.2), where it belongs:
-    after the render the pixels are no longer the encoded thing that
-    record describes."""
+    moved to the XMP's `scannyboy:provenance`, where it belongs: after
+    the render the pixels are no longer the encoded thing that record
+    describes."""
     return f"{negative.negative_id}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
 
 
 def camera_matrix_for(roll: RollManifest) -> np.ndarray | None:
     """The export's 3x3 camera -> Adobe RGB matrix, or `None` for a roll
     with no recorded block — which only a mono roll may proceed without
-    (§3.4: the caller gates on the published TIFF's channel count before
+    (the caller gates on the published TIFF's channel count before
     calling this for colour). Built once per run: the block is a property
     of the camera body, frozen on the roll's first run."""
     if roll.camera_color is None:
@@ -165,16 +164,19 @@ def provenance_record(
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> dict[str, Any]:
-    """The `scannyboy:provenance` payload (§5.2): what makes an exported
+    """The `scannyboy:provenance` payload: what makes an exported
     file interpretable without the database. The published TIFF's
     `normalization` block — the encoding the *published* file still
     carries — plus a `rendered` sibling recording what the export actually
     did to make the display pixels. The `spots` entry records the repair:
     "some pixels here are interpolated" is exactly the kind of thing the
-    XMP exists to say (SPOTTING_PLAN §6). The `crop` entry records the
+    XMP exists to say. The `scratches` entry records scratch correction:
+    "some pixels here were replaced by level-dependent background
+    interpolation" is the same intent. The `crop` entry records the
     window the exported frame was taken from — the published TIFF beside
     the export still holds the full frame, and the record says which part
     of it this file is."""
@@ -186,6 +188,12 @@ def provenance_record(
             "repaired": sum(
                 1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
             ),
+        }
+    scratch_record = None
+    if scratches_params is not None and scratches_params.get("enabled"):
+        scratch_record = {
+            "detector_version": scratches_params.get("detector_version"),
+            "corrected": len(scratches_params.get("scratches") or []),
         }
     cropped = None
     if crop_params is not None:
@@ -214,6 +222,7 @@ def provenance_record(
             "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
+            "scratches": scratch_record,
             "crop": cropped,
             "downsample": (
                 None
@@ -255,7 +264,7 @@ def run_export(
     reduce each export to (`None` keeps full resolution; an image already
     smaller than the target is skipped silently). Raises
     `ExportFailure` when the roll itself can't be read — including a
-    colour roll predating the `camera_color` block (§3.4, raised once
+    colour roll predating the `camera_color` block (raised once
     before anything is written); one negative's problem is a warning plus
     a `failed` entry, and never stops the rest."""
     if not repo.roll_registered(roll_dir):
@@ -299,13 +308,13 @@ def run_export(
             Code.OUTPUT_NOT_WRITABLE, f"{output_dir} is not a directory"
         )
 
-    # §3.4's gate, before anything is written: a **colour** roll with no
-    # recorded `camera_color` predates the colour-managed export and must
-    # be re-converted (or deleted). A **mono** roll does not need the
-    # matrix and must not be failed for its absence (§4.5), so the check
-    # is conditional on the published TIFF's channel count — the same fact
-    # §4.5's render gates on. Peeking the first completed negative's
-    # header keeps the failure "raised once, before anything is written".
+    # A **colour** roll with no recorded `camera_color` predates the
+    # colour-managed export and must be re-converted (or deleted). A
+    # **mono** roll does not need the matrix and must not be failed for its
+    # absence, so the check is conditional on the published TIFF's channel
+    # count — the same fact the render gates on. Peeking the first
+    # completed negative's header keeps the failure "raised once, before
+    # anything is written".
     channels = _first_published_channel_count(roll_dir, negatives)
     if channels is not None and channels > 1 and roll.camera_color is None:
         raise ExportFailure(
@@ -370,17 +379,18 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params = (
+        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params, scratches_params = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
             state.tone,
             state.color,
             state.spots,
+            state.scratches,
         )
         meter = color.read_metering(negative.normalization)
         # The crop and spot repair apply before any other geometry: both
-        # ops' coordinates are TIFF space (SPOTTING_PLAN §3.3). A stale
+        # ops' coordinates are TIFF space. A stale
         # crop — a re-stitch changed the canvas — applies as nothing, the
         # same degrade `apply_crop` performs for the previews.
         crop_params = (
@@ -390,14 +400,13 @@ def _export_negative(
             )
             else None
         )
+        image = scratches.apply(image, scratches_params)
         image = spots.apply_repair(image, spots_params)
         rotated = apply_edits(
             image, quarter_turns, flipped, fine_angle, crop_params
         )
-        # §4.5: the matrix follows the channel count — `None` for a mono
-        # roll's 2-D published TIFF, the recorded camera matrix for a
-        # colour one. (When MONOCHROME_PLAN §2's film block lands, the
-        # two agree by construction.)
+        # The matrix follows the channel count — `None` for a mono roll's
+        # 2-D published TIFF, the recorded camera matrix for a colour one.
         matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)
         # The downsample decision is made on the rotated image's shape —
         # the shape the render receives — but the resize itself happens
@@ -424,11 +433,12 @@ def _export_negative(
             color_params,
             clipped_fractions,
             spots_params,
+            scratches_params,
             crop_params,
             applied,
         )
     except jxl_writer.JxlEncoderUnavailable as exc:
-        # A packaging failure, not a user error (§1.2): stop the export
+        # A packaging failure, not a user error: stop the export
         # and say what broke, rather than failing every negative with a
         # per-file warning.
         raise ExportFailure(Code.JXL_ENCODER_UNAVAILABLE, str(exc)) from exc
@@ -456,18 +466,19 @@ def _write_export(
     color_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> None:
     """The single write: rendered pixels, the export ICC profile embedded,
     and the metadata boxes built at encode time. The `.tmp`-and-replace
-    lives in `write_jxl` (§1.4), so there is no second pass and no nested
+    lives in `write_jxl`, so there is no second pass and no nested
     tmp dance.
 
     The `has_any` guard: a field nobody set writes nothing — with no
-    metadata at all there is no Exif box (§5.1). The XMP always goes,
+    metadata at all there is no Exif box. The XMP always goes,
     because the provenance record is not user-set metadata but the file's
-    interpretability record (§5.2)."""
+    interpretability record."""
     metadata = export_metadata_for(roll, negative)
     exif = (
         build_exif(metadata, export_image_description(negative))
@@ -482,6 +493,7 @@ def _write_export(
         profile_kind,
         clipped_fractions,
         spots_params,
+        scratches_params,
         crop_params,
         applied_downsample,
     )

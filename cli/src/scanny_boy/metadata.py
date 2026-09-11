@@ -1,11 +1,7 @@
 """Per-file capture settings needed for setup-consistency validation.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.2 (what to compare) and section
-3.5 (the required/optional tag mapping, which this module dumps in full for
-the Chunk 2 pull request).
-
-Reading is split in two, for testability per section 7 ("Do not mock
-rawpy's decoding"):
+Reading is split in two, for testability — the rule is "do not mock
+rawpy's decoding":
 
 - `read_exif_settings` reads ordinary TIFF/EXIF tags with `exifread`. It can
   be exercised against small crafted TIFF fixtures (see
@@ -63,8 +59,8 @@ class SourceSettings:
     make: str | None
     model: str | None
     # LibRaw's `rgb_xyz_matrix`, first three rows: the DNG `ColorMatrix`
-    # convention's XYZ -> camera RGB matrix (docs/EXPORT_PLAN.md §3.1 —
-    # the name reads the other way). Recorded data for the export path's
+    # convention's XYZ -> camera RGB matrix (the name reads the other
+    # way). Recorded data for the export path's
     # colour matrix; the decode never uses it. `None` when LibRaw reports
     # no usable matrix (or an all-zero one).
     rgb_xyz_matrix: tuple[
@@ -76,8 +72,8 @@ class SourceSettings:
 
 @dataclasses.dataclass(frozen=True)
 class DigitizationSourceFields:
-    """The raw source strings section 3.5's "digitized" curation chooses
-    between. Kept separate from `ExifSettings` because these are read
+    """The raw source strings the "digitized" curation chooses between.
+    Kept separate from `ExifSettings` because these are read
     verbatim (never compared across a selection) and a caller needs all
     six before picking, not a single curated result — see
     `choose_digitized_fields`."""
@@ -122,7 +118,7 @@ def _ascii(tag: Any) -> str | None:
 
 
 def read_exif_settings(path: Path) -> ExifSettings:
-    """Read the section-3.5 comparison fields with `exifread`."""
+    """Read the setup-consistency comparison fields with `exifread`."""
     with path.open("rb") as f:
         tags = exifread.process_file(f, details=False)
 
@@ -139,7 +135,7 @@ def read_exif_settings(path: Path) -> ExifSettings:
 
 
 def read_digitization_fields(path: Path) -> DigitizationSourceFields:
-    """Read the six raw source strings section 3.5's "digitized" curation
+    """Read the six raw source strings the "digitized" curation
     (`choose_digitized_fields`) picks between."""
     with path.open("rb") as f:
         tags = exifread.process_file(f, details=False)
@@ -155,7 +151,7 @@ def read_digitization_fields(path: Path) -> DigitizationSourceFields:
 
 
 def choose_digitized_fields(source: DigitizationSourceFields) -> DigitizedFields:
-    """Section 3.5: the three copied "digitized" fields follow whichever
+    """The three copied "digitized" fields follow whichever
     source date was used to fill them — source `DateTimeOriginal` when
     present, otherwise source `DateTimeDigitized`; `SubSecTime*` and
     `OffsetTime*` follow the same choice. Never invent an offset for the
@@ -181,8 +177,8 @@ def _read_rawpy_fields(
 ]:
     """Reads `raw.camera_whitebalance` and `raw.rgb_xyz_matrix` from one
     `rawpy.imread` context — the caller must not open the RAW a second
-    time (docs/EXPORT_PLAN.md §3.2). Both are `None` when LibRaw reports
-    fewer than four multipliers / no usable matrix."""
+    time. Both are `None` when LibRaw reports fewer than four multipliers
+    / no usable matrix."""
     try:
         with rawpy.imread(str(path)) as raw:
             wb = raw.camera_whitebalance
@@ -208,17 +204,17 @@ def _read_rawpy_fields(
 
 
 def read_camera_whitebalance(path: Path) -> tuple[float, float, float, float] | None:
-    """Read `raw.camera_whitebalance`, per section 3.2. Returns `None` when
-    LibRaw reports fewer than four multipliers."""
+    """Read `raw.camera_whitebalance`. Returns `None` when LibRaw reports
+    fewer than four multipliers."""
     return _read_rawpy_fields(path)[0]
 
 
 def read_rgb_xyz_matrix(path: Path) -> tuple[tuple[float, float, float], ...] | None:
-    """Read `raw.rgb_xyz_matrix`'s first three rows (docs/EXPORT_PLAN.md
-    §3.1). Returns `None` when LibRaw reports no usable matrix. Not used
-    by the decode or the stitch — recorded data for the export path's
-    colour matrix, which is why it lives beside the curated metadata and
-    not in `processing_params` (EXPORT_PLAN §3.3)."""
+    """Read `raw.rgb_xyz_matrix`'s first three rows. Returns `None` when
+    LibRaw reports no usable matrix. Not used by the decode or the
+    stitch — recorded data for the export path's colour matrix, which is
+    why it lives beside the curated metadata and not in
+    `processing_params`."""
     return _read_rawpy_fields(path)[1]
 
 

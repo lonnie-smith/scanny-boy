@@ -1,7 +1,7 @@
-"""Chunk 7: the packaged command-line program (section 5.2).
+"""The packaged command-line program.
 
 Every check here runs the frozen `ScannyBoyCLI.app`, never the development
-import path, because the two failures section 5.2 warns about — `tifftools`
+import path, because two known failure modes — `tifftools`
 reading its own package metadata, and `imagecodecs` loading codecs through
 delayed imports — produce a perfectly clean build and fail only at run time.
 That is also why the conversions below decode real NEFs and write real
@@ -59,6 +59,10 @@ from scanny_boy.sample_nef_support import (
 )
 from scanny_boy.tiff_fingerprint_support import tiff_fingerprint
 
+BASE_FRAME = (
+    Path(__file__).resolve().parents[3] / "tests/fixtures/base-frame/base-frame.dng"
+)
+
 pytestmark = [
     pytest.mark.slow,
     requires_packaged_app,
@@ -69,7 +73,7 @@ pytestmark = [
 ]
 
 VERSION = importlib.metadata.version("scanny-boy")
-DEFLATE_COMPRESSION = 32946  # Adobe Deflate, per section 3.4
+DEFLATE_COMPRESSION = 32946  # Adobe Deflate
 HORIZONTAL_PREDICTOR = 2
 
 # System locations a bundled library is allowed to come from. Anything else
@@ -158,7 +162,7 @@ def development_run(tmp_path_factory) -> Path:
 
 def test_codesign_verify_strict_succeeds_for_the_helper_bundle():
     """PyInstaller ad-hoc signs the bundle. Xcode's Code Sign On Copy phase
-    in Chunk 8 re-signs it, and a bundle that fails here fails there."""
+    re-signs it later, and a bundle that fails here fails there."""
     result = subprocess.run(
         ["codesign", "--verify", "--strict", "--verbose=1", str(BUNDLE_PATH)],
         capture_output=True,
@@ -170,7 +174,7 @@ def test_codesign_verify_strict_succeeds_for_the_helper_bundle():
 
 
 def test_helper_bundle_is_background_only_with_a_unique_identifier():
-    """Section 5.2: a unique helper identifier and `LSBackgroundOnly`, so
+    """A unique helper identifier and `LSBackgroundOnly`, so
     the helper never appears in the Dock."""
     plist = plistlib.loads((BUNDLE_PATH / "Contents" / "Info.plist").read_bytes())
 
@@ -184,10 +188,10 @@ def test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata():
     """The bundled profiles are ordinary package data — the linear one for
     prepare-stage intermediates, the density pair for published TIFFs, the
     export pair for JPEG XL exports (`icc_profile.py`) — and the
-    `copy_metadata` entries of section 5.2 are what keep
+    `copy_metadata` entries are what keep
     `importlib.metadata` working in the frozen program. (The grey density
-    profile was missing from the spec's `datas` until the export plan's
-    §8 caught it: the frozen program could not export a mono roll.)"""
+    profile was once missing from the spec's `datas`, and the frozen
+    program could not export a mono roll until this test caught it.)"""
     for filename, expected_sha256 in (
         ("ScannyBoy-Linear-v1.icc", LINEAR_PROFILE_SHA256),
         ("ScannyBoy-Density-v1.icc", DENSITY_PROFILE_SHA256),
@@ -208,8 +212,8 @@ def test_bundle_carries_the_vetted_icc_profiles_and_its_own_metadata():
 
 def test_bundle_carries_scipy_optimize_and_opencv_aruco():
     """Geometric calibration's two runtime dependencies, confirmed against
-    the frozen bundle rather than the spec's hooks (docs/GEOMETRIC_PLAN.md
-    sections 8–9): PyInstaller has a scipy hook, but a hook that silently
+    the frozen bundle rather than the spec's hooks: PyInstaller has a scipy
+    hook, but a hook that silently
     stops collecting is exactly the failure mode this file exists to catch.
     The bundle cannot run arbitrary Python, so the check is on the shipped
     artefacts: scipy.optimize's compiled extension modules and OpenCV's
@@ -233,7 +237,7 @@ def test_bundle_carries_scipy_optimize_and_opencv_aruco():
 
 def test_bundle_links_only_bundled_or_system_libraries():
     """Inspect the real Mach-O dependencies rather than assuming no hook is
-    missing (section 5.2). LibRaw in particular is expected to be collected
+    missing. LibRaw in particular is expected to be collected
     without a hook, so its own dependencies must resolve inside the bundle."""
     libraw = next(BUNDLE_PATH.rglob("libraw_r.*.dylib"))
     for binary in (BUNDLE_EXECUTABLE, libraw):
@@ -331,11 +335,11 @@ def test_packaged_conversion_writes_real_tiffs(fixture_name, request):
 
 @requires_real_samples
 def test_packaged_program_runs_a_real_stitch(tmp_path):
-    """Chunk P2-8: the frozen binary performs a complete `run` on the
+    """The frozen binary performs a complete `run` on the
     sample NEFs and the resulting stitched TIFF is opened and checked.
 
     An import check, a `--version` check, or a conversion-only check does
-    not discharge this (section 4.2) — OpenCV, like `imagecodecs` before
+    not discharge this — OpenCV, like `imagecodecs` before
     it, can fail only in the frozen bundle. This is the packaged
     equivalent of `run_pipeline_test.py`'s real-sample coverage: full
     RAW decode, registration, compositing, and the two-pass TIFF write,
@@ -343,7 +347,7 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     """
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    # Section 5.4 decision 1: `run` publishes into a roll, and never creates
+    # `run` publishes into a roll, and never creates
     # one. The roll is created through the packaged binary itself — its
     # record lands in the packaged process's own library database, so an
     # in-process write would not be visible to it.
@@ -354,10 +358,23 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         str(tmp_path),
         "--name",
         "packaged",
+        "--film-kind",
+        "colour",
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
     out_dir = tmp_path / "packaged"
+
+    result = run_packaged(
+        "roll",
+        "set-base-frame",
+        "--roll",
+        str(out_dir),
+        "--frame",
+        str(BASE_FRAME),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
 
     result = run_packaged(
         "run",
@@ -404,17 +421,17 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
         "manifest"
     ]
     assert_matches_roll_manifest_schema(manifest, load_roll_manifest_schema())
-    # Section 3.3: a roll is additive, so the status belongs to the run.
+    # A roll is additive, so the status belongs to the run.
     assert manifest["runs"][0]["status"] == "complete"
     assert manifest["negatives"][0]["status"] == "completed"
 
-    # `--work` was supplied explicitly, so it survives a complete run
-    # (section 3.5) — proving the packaged program's cleanup logic, not
+    # `--work` was supplied explicitly, so it survives a complete run —
+    # proving the packaged program's cleanup logic, not
     # just its pixel output.
     assert work_dir.exists()
     assert (work_dir / "scanny-boy-manifest.json").exists()
 
-    # docs/EXPORT_PLAN.md section 8: the frozen binary must reach libjxl —
+    # The frozen binary must reach libjxl —
     # the one check that would catch a `.dylibs`-collection regression,
     # since `jxl_writer` resolves libjxl through the process's symbol
     # namespace and a missing library fails only at encode time.

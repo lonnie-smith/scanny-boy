@@ -1,9 +1,9 @@
-"""Tests for the CA fit (docs/GEOMETRIC_PLAN.md section 8).
+"""Tests for the CA fit.
 
 The direction test is the one that matters: most of this module could ship
 backwards and still pass every other test. Synthesise a per-channel pure
 scale, fit it, and prove the decoder scales remove the aberration rather
-than doubling it (section 3.3 exists because of exactly this hazard).
+than doubling it.
 """
 
 import numpy as np
@@ -20,7 +20,7 @@ from scanny_boy.ca_fit import (
 from scanny_boy.raw_decode import RAW_PARAMS
 
 FRAME_WIDTH, FRAME_HEIGHT = 6048, 4024
-# Pixel figures are reported in full-resolution pixels (section 4.6),
+# Pixel figures are reported in full-resolution pixels,
 # whatever resolution the corner data was detected at.
 FX = float(FRAME_WIDTH)
 
@@ -137,8 +137,7 @@ def test_maps_mode_residual_stays_below_the_accept_gate():
 
 
 def test_no_improvement_is_rejected():
-    """A fit that does not measurably help is dropped rather than carried
-    (section 4.5's discipline, applied to CA)."""
+    """A fit that does not measurably help is dropped rather than carried."""
     # No CA at all: before is ~0, so the improvement gate cannot clear.
     frames = [
         _synthetic_frame(scale=1.0, seed=seed) for seed in range(6)
@@ -149,7 +148,7 @@ def test_no_improvement_is_rejected():
 
 
 def test_half_size_and_full_size_fits_agree():
-    """Normalised coordinates make the resolution irrelevant (section 0.7):
+    """Normalised coordinates make the resolution irrelevant:
     the same correspondences expressed at half size and full size must fit
     to the same coefficients."""
     frames = [

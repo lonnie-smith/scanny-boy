@@ -3,16 +3,16 @@ import Foundation
 import Observation
 
 /// The library sidebar's model: every roll under the library base, refreshed
-/// by one `roll list` invocation. Section 3.1: "The filesystem is the source
-/// of truth... That scan is the CLI's, not Swift's" — this type does no
+/// by one `roll list` invocation. The filesystem is the source
+/// of truth, and that scan is the CLI's, not Swift's — this type does no
 /// directory enumeration and no manifest parsing of its own. `scan()` is the
 /// only way it learns what is in the library.
 ///
-/// Renaming (section 5.5), creating a roll, and unregistering a deleted
+/// Renaming, creating a roll, and unregistering a deleted
 /// roll all go through the CLI — `roll rename`, `roll init`, and
 /// `roll delete` — so the only thing this type ever touches on disk
-/// directly is moving a roll's folder to the Trash, via `NSWorkspace.recycle`
-/// (section 3.10), which needs no server-side cooperation at all.
+/// directly is moving a roll's folder to the Trash, via `NSWorkspace.recycle`,
+/// which needs no server-side cooperation at all.
 @MainActor
 @Observable
 final class RollLibrary {
@@ -56,7 +56,7 @@ final class RollLibrary {
 
     @ObservationIgnored private var scanTask: Task<Void, Never>?
 
-    /// `libraryBase` defaults to `~/Pictures/Scanny Boy` (section 3.1) when
+    /// `libraryBase` defaults to `~/Pictures/Scanny Boy` when
     /// not given; tests always inject one explicitly, and must never fall
     /// through to `.picturesDirectory`.
     init(
@@ -211,8 +211,8 @@ final class RollLibrary {
 
     // MARK: - Rename
 
-    /// `roll rename --roll --name` (section 5.5). `runIsActive` is the
-    /// app's own one-run-at-a-time state (section 3.10); the CLI has no
+    /// `roll rename --roll --name`. `runIsActive` is the
+    /// app's own one-run-at-a-time state; the CLI has no
     /// notion of it, so this is checked here, before the command is ever
     /// built.
     func renameRoll(_ roll: Roll, to newName: String, runIsActive: Bool) async throws -> Roll {
@@ -281,7 +281,7 @@ final class RollLibrary {
 
     /// Moves the roll's folder to the Trash and unregisters it, so the next
     /// `roll list` drops it. Two steps, in this order: the folder goes first
-    /// via `NSWorkspace.recycle` (section 3.10: pure Swift, no server-side
+    /// via `NSWorkspace.recycle` (pure Swift, no server-side
     /// cooperation; a failed move leaves both the folder and the
     /// registration untouched), then `roll delete` removes the database
     /// registration — with the folder already gone, a crash between the two

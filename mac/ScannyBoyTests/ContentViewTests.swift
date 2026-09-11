@@ -6,7 +6,7 @@ import Testing
 
 /// `ContentView.closestExistingAncestor(of:)`: the fallback that lets the
 /// folder-choosing panel open somewhere sensible when the last-used folder
-/// (persisted in `UserDefaults`, section 3.2) has since been renamed,
+/// (persisted in `UserDefaults`) has since been renamed,
 /// deleted, or lives on an unmounted volume.
 struct ContentViewTests {
     @Test
@@ -112,6 +112,72 @@ struct ContentViewTests {
             negativeCount: 2
         )
         #expect(ContentView.shouldConfirmConvert(into: roll) == true)
+    }
+
+    // MARK: - CatalogueDragSupport.filenamesForDrag
+
+    @Test
+    func filenamesForDragReturnsSelectionWhenRowIsSelected() {
+        let selected: Set = ["a.NEF", "b.NEF", "c.NEF"]
+        let names = CatalogueDragSupport.filenamesForDrag(name: "b.NEF", selectedFiles: selected)
+        #expect(Set(names) == selected)
+    }
+
+    @Test
+    func filenamesForDragReturnsOnlyRowWhenNotSelected() {
+        let selected: Set = ["a.NEF", "b.NEF"]
+        let names = CatalogueDragSupport.filenamesForDrag(name: "c.NEF", selectedFiles: selected)
+        #expect(names == ["c.NEF"])
+    }
+
+    // MARK: - CatalogueDragSupport encode/decode
+
+    @Test
+    func dragPayloadRoundTripsFilenames() {
+        let names = ["a.NEF", "b.NEF", "c.NEF"]
+        let encoded = CatalogueDragSupport.encodeDragPayload(names)
+        #expect(encoded != nil)
+        #expect(CatalogueDragSupport.decodeDragPayload(encoded!) == names)
+    }
+
+    @Test
+    func decodeDragPayloadReturnsNilForInvalidJSON() {
+        #expect(CatalogueDragSupport.decodeDragPayload("not json") == nil)
+    }
+
+    // MARK: - convertReadyLabel
+
+    @Test
+    func convertReadyLabelUsesSingularForOneScan() {
+        #expect(ContentView.convertReadyLabel(scanCount: 1) == "1 scan ready to convert")
+    }
+
+    @Test
+    func convertReadyLabelUsesPluralForMultipleScans() {
+        #expect(ContentView.convertReadyLabel(scanCount: 8) == "8 scans ready to convert")
+    }
+
+    // MARK: - resolveFileName
+
+    @Test
+    func resolveFileNameReturnsNameWhenFileIsInsideInputFolder() {
+        let input = URL(filePath: "/photos/scans")
+        let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
+    }
+
+    @Test
+    func resolveFileNameReturnsNilWhenFileIsOutsideInputFolder() {
+        let input = URL(filePath: "/photos/scans")
+        let file = URL(filePath: "/other-folder/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == nil)
+    }
+
+    @Test
+    func resolveFileNameHandlesTrailingSlash() {
+        let input = URL(filePath: "/photos/scans/")
+        let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
+        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
     }
 
     // MARK: - NewRollSheet.defaultName

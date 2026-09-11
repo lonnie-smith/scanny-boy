@@ -1,10 +1,10 @@
 """A roll's display order and applied timestamps, both pure functions of
-the manifest. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.7.
+the manifest.
 
 Nothing else recomputes either of these: `roll_manifest.write_roll_manifest`
 calls `sequence_negatives` to refresh every negative's `sequence` field on
-every write, and the metadata stage (Chunk P3-7) will call `intended_times`
-the same way. Neither function reads or writes anything itself.
+every write, and the metadata stage will call `intended_times` the same
+way. Neither function reads or writes anything itself.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def _rank_key(run_index: dict[str, int], negative) -> tuple:
 
 
 def sequence_negatives(manifest: RollManifest) -> list[str]:
-    """Section 3.7: every published negative's `negative_id`, ordered by the
-    real capture time of its first member across every run, ascending. Ties
+    """Every published negative's `negative_id`, ordered by the real
+    capture time of its first member across every run, ascending. Ties
     break by run index (the order runs were appended in, i.e.
     `manifest.runs`' own order), then by first member's filename."""
     run_index = {run.run_id: i for i, run in enumerate(manifest.runs)}
@@ -43,14 +43,14 @@ def sequence_negatives(manifest: RollManifest) -> list[str]:
 
 
 def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
-    """Section 3.7's rank-based applied-timestamp formula: noon plus
-    `(rank - 1)` seconds on a negative's effective date -- the roll's
+    """The rank-based applied-timestamp formula: noon plus `(rank - 1)`
+    seconds on a negative's effective date -- the roll's
     `roll_capture_date`, or its own `date_override` when it has one. `rank`
     is the negative's 1-based position among every negative sharing that
     same effective date, counted in the roll's overall sequence order; a
     roll with no overrides at all reduces to noon plus `(sequence - 1)`
-    seconds on `roll_capture_date` for everyone, exactly as section 3.7
-    states it for the non-override case.
+    seconds on `roll_capture_date` for everyone, which is the non-override
+    case.
 
     Returns `{}` when the roll has no `roll_capture_date` yet -- there is
     no date to apply until one is set.

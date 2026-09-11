@@ -1,11 +1,11 @@
 """Lateral chromatic aberration: the half-size per-channel fit, the mode
-decision, and the acceptance gates (docs/GEOMETRIC_PLAN.md section 4.6).
+decision, and the acceptance gates.
 
 The fit decodes at half size (`RAW_PARAMS_HALF_SIZE`): each output pixel
 then comes from one Bayer quad with no interpolation, so the per-channel
 geometry is true rather than smeared by the demosaic. Because
 `K_half = K_full / 2`, normalised coordinates are identical at both
-resolutions — nothing here is ever scaled back up (section 0.7).
+resolutions — nothing here is ever scaled back up.
 
 The model is radial in normalised camera coordinates, per channel:
 
@@ -17,7 +17,7 @@ centre shows up as a spurious tangential component the radial model
 cannot absorb. Coefficients and centres are offsets from the principal
 point, in normalised units, exactly as the profile records them.
 
-Direction discipline (section 3.3): the fit measures where the red corner
+Direction discipline: the fit measures where the red corner
 *is* (`r_R = c0 * r_G`); the decoder is told what to *multiply* red by to
 put it back (`red_scale = 1 / c0`). The test suite proves the round trip.
 
@@ -37,16 +37,16 @@ from scanny_boy.raw_decode import RAW_PARAMS
 # The CA fit's decode deviates from production's `RAW_PARAMS` in exactly
 # one documented way: `half_size=True`. Each output pixel then comes from
 # one Bayer quad with no demosaic interpolation across channels, so the
-# per-channel geometry is measured, not smeared (section 4.6). Defined here
+# per-channel geometry is measured, not smeared. Defined here
 # as an explicit derivation so a change to `RAW_PARAMS` cannot silently
 # un-derive it.
 RAW_PARAMS_HALF_SIZE: dict = {**RAW_PARAMS, "half_size": True}
 
 # "scale" mode is enough when the radial terms contribute less than this
-# many full-resolution pixels at the image corner (section 4.6).
+# many full-resolution pixels at the image corner.
 CA_SCALE_ONLY_PX = 0.05
 # Acceptance: residual misregistration after correction, in full-resolution
-# pixels at the frame corners (section 4.6).
+# pixels at the frame corners.
 CA_RESIDUAL_ACCEPT_PX = 0.3
 # Acceptance: the correction must improve on the uncorrected figure by at
 # least this relative fraction.
@@ -79,8 +79,7 @@ class ChannelFit:
 
     def forward(self, points: np.ndarray) -> np.ndarray:
         """Green-space normalised points -> this channel's observed
-        position: the map composite's band map applies in "maps" mode
-        (section 5.3, step 3)."""
+        position: the map composite's band map applies in "maps" mode."""
         centre = np.array([self.center_x, self.center_y])
         delta = points - centre
         r = np.hypot(delta[:, 0], delta[:, 1])
@@ -109,7 +108,7 @@ class CAFitResult:
     red: ChannelFit
     blue: ChannelFit
     # Present only in "scale" mode: the values handed to rawpy's
-    # `chromatic_aberration` — the reciprocals of c0 (section 3.3).
+    # `chromatic_aberration` — the reciprocals of c0.
     red_scale: float | None
     blue_scale: float | None
     misregistration_before_px: dict[str, float]
@@ -151,8 +150,8 @@ def _fit_channel(green_norm: np.ndarray, channel_norm: np.ndarray) -> ChannelFit
 
 def _corner_points(green_norm: list[np.ndarray], count: int = 4) -> np.ndarray:
     """The detected corners nearest each of the four image corners, pooled
-    over the held-out frames — where the acceptance measurement happens
-    (section 4.6: "at the frame corners"). Normalised units."""
+    over the held-out frames — where the acceptance measurement happens.
+    Normalised units."""
     frame_corner_radius = float(np.hypot(0.5, 0.5))
     picked = []
     for points in green_norm:
@@ -209,7 +208,7 @@ def fit_ca(
     frame_height: int,
     geometry: tuple[float, float, float, float] | None,
 ) -> CAFitResult:
-    """Fit and gate the CA model (section 4.6).
+    """Fit and gate the CA model.
 
     Each frame tuple is `(red, green_for_red, blue, green_for_blue)` — the
     channel's *undistorted* corner positions in normalised coordinates
@@ -228,7 +227,7 @@ def fit_ca(
     # Normalised coordinates are resolution-independent, so this is the
     # *full*-resolution fx: every pixel figure this module reports — the
     # mode-decision radial term and the misregistration measurements — is
-    # expressed in full-resolution pixels (section 4.6).
+    # expressed in full-resolution pixels.
     fx = float(max(frame_width, frame_height))
 
     red_fit = _fit_channel(
@@ -241,7 +240,7 @@ def fit_ca(
     )
 
     # Mode decision: the radial terms' contribution in full-resolution
-    # pixels at the image corner (section 4.6).
+    # pixels at the image corner.
     corner_r = float(np.hypot(0.5, 0.5))
     radial = {
         "red": abs(red_fit.scale_at(corner_r) - red_fit.c0) * corner_r * fx,
@@ -305,9 +304,9 @@ def channel_ca_px(
 ) -> float:
     """Mean displacement between one channel's corners and green's, pooled
     over frames, in full-resolution pixels — the shared measurement behind
-    the report's `detection_channel_ca_px` (section 4.6: it gates
+    the report's `detection_channel_ca_px`. It gates
     nothing; it exists so the detect-on-green question can be settled
-    with a number later)."""
+    with a number later."""
     displacements: list[float] = []
     for points_g, points_c in zip(green_norm, other_norm, strict=True):
         n = min(len(points_g), len(points_c))

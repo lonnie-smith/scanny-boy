@@ -1,4 +1,4 @@
-"""`scanny-boy serve`'s tests (docs/OPTIMIZATION.md §2.2, §2.5).
+"""`scanny-boy serve`'s tests.
 
 The served variant of the contract the one-shot tests already hold:
 events partitioned by `request_id`, in-band cancellation that touches

@@ -9,15 +9,15 @@ import Testing
 /// The cases that need a real NEF need a *real* one: what is being checked is
 /// that macOS can turn a Nikon Z f RAW file into a picture at all, which no
 /// synthetic fixture can stand in for. They skip, loudly, when the sample
-/// files are absent (section 7).
+/// files are absent.
 struct ThumbnailLoaderTests {
     private static let size = CGSize(width: 80, height: 80)
 
     /// Why a case that needs a real RAW file was skipped, naming what went
     /// untested.
     static let samplesUnavailable: Comment = """
-        The real sample NEFs are not present at tests/fixtures/nef/ (see \
-        docs/IMPLEMENTATION_PLAN.md appendix A). Rendering a catalogue \
+        The real sample NEFs are not present at tests/fixtures/nef/. \
+        Rendering a catalogue \
         thumbnail from a real Nikon RAW file — through QuickLook and through \
         the NEF's own embedded preview — did not run.
         """
@@ -109,8 +109,8 @@ struct ThumbnailLoaderTests {
     }
 
     /// A `.NEF` neither path can read — a truncated file, or one of the
-    /// High Efficiency captures this project cannot decode at all (section 3,
-    /// "Input rules") — yields no thumbnail rather than a generic document
+    /// High Efficiency captures this project cannot decode at all —
+    /// yields no thumbnail rather than a generic document
     /// icon. The row then says "no preview", which is more honest than a
     /// picture of a page.
     @Test func reportsNoThumbnailForAnUnreadableNEF() async throws {
@@ -137,7 +137,7 @@ struct ThumbnailLoaderTests {
     /// A real TIFF, synthesized rather than a sample fixture: unlike the RAW
     /// cases above, nothing here depends on a real Nikon file — any TIFF
     /// ImageIO can open proves the point, and a small one keeps the test
-    /// fast and independent of `tests/fixtures/nef/` (section 7).
+    /// fast and independent of `tests/fixtures/nef/`.
     private static func writeSyntheticTIFF(width: Int, height: Int, to url: URL) throws {
         let representation = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -162,7 +162,7 @@ struct ThumbnailLoaderTests {
     /// `embeddedPreview`'s `CGImageSourceCreateThumbnailAtIndex` call, which
     /// never decodes the source at full resolution — this is what a stitched
     /// negative's TIFF, potentially tens of megapixels, needs to stay cheap
-    /// to preview (section 3.10's Edit tab).
+    /// to preview, for the Edit tab.
     @Test func testThumbnailLoadsFromAStitchedTIFFWithoutDecodingFullResolution() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
             let url = directory.appending(path: "negative-01.tif", directoryHint: .notDirectory)

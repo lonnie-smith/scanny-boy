@@ -1,17 +1,15 @@
 """Adds the nested EXIF directory to a base TIFF, with `tifftools`.
 
-`tiff_writer.write_base_tiff` (Chunk 3) writes `<name>.base.tif`: pixels,
-the ordinary IFD0 tags, and the ICC profile. This module performs the
-second pass of section 3.4's two-pass write — reading that file, adding
-the nested EXIF IFD from section 3.5's tag table, and writing
-`<name>.final.tif` — because `tifffile` cannot create a nested EXIF
-directory at all (see `tiff_writer`'s module docstring).
+`tiff_writer.write_base_tiff` writes `<name>.base.tif`: pixels, the
+ordinary IFD0 tags, and the ICC profile. This module performs the second
+pass of the two-pass write — reading that file, adding the nested EXIF
+IFD, and writing `<name>.final.tif` — because `tifffile` cannot create a
+nested EXIF directory at all (see `tiff_writer`'s module docstring).
 
 Every EXIF tag below is addressed by its numeric code, not by
 `tifftools.constants.EXIFTag`'s names: two of them are spelled differently
 there than in `CONTRACT.md`/exiftool's convention (36868 is `CreateDate`,
-and 34855 is `ISOSpeedRatings`), so numeric codes avoid the whole problem
-(section 3.5, "Writing the nested EXIF directory with tifftools").
+and 34855 is `ISOSpeedRatings`), so numeric codes avoid the whole problem.
 
 Do not copy Nikon MakerNotes, serial numbers, thumbnails, or arbitrary
 unknown tags: only the fields built here are ever written.
@@ -31,7 +29,7 @@ from tifftools.constants import Tag
 from scanny_boy import tiff_writer
 from scanny_boy.events import Code
 
-# EXIF tag codes for the nested IFD (section 3.5's mapping table).
+# EXIF tag codes for the nested IFD.
 DATE_TIME_ORIGINAL = 36867
 SUBSEC_TIME_ORIGINAL = 37521
 DATE_TIME_DIGITIZED = 36868
@@ -84,7 +82,7 @@ class NestedExifFields:
     """Everything needed to build the nested EXIF IFD for one frame.
 
     `exposure_time`, `f_number`, `iso`, and `focal_length` are all
-    **required** per section 3.5's tag table — by the time this is built,
+    **required** — by the time this is built,
     `consistency.check_consistency` has already confirmed every selected
     file carries them. `lens_model` and the three `*_digitized` fields are
     **optional**: `None` omits the corresponding tag.
@@ -118,8 +116,8 @@ def _short_tag(value: int) -> dict:
 
 def build_exif_tags(fields: NestedExifFields) -> dict[int, dict]:
     """The nested EXIF IFD's tag dict, in `tifftools`' `{code: {data,
-    datatype}}` shape. Pure and file-free, so section 3.5's curation rules
-    are testable without writing any TIFF."""
+    datatype}}` shape. Pure and file-free, so the curation rules are
+    testable without writing any TIFF."""
     tags: dict[int, dict] = {
         DATE_TIME_ORIGINAL: _ascii_tag(format_date_time(fields.date_time_original)),
         EXPOSURE_TIME: _rational_tag(fields.exposure_time),
@@ -191,9 +189,9 @@ def _verify_final_tiff(final_path: Path, fields: NestedExifFields) -> None:
 
 
 def finalize_tiff(base_path: Path, final_path: Path, fields: NestedExifFields) -> None:
-    """The full second pass (section 3.6): write the nested-EXIF
-    `final_path` from `base_path`, verify it, and only then remove
-    `base_path`. A failed verification leaves both files in place — the
+    """The full second pass: write the nested-EXIF `final_path` from
+    `base_path`, verify it, and only then remove `base_path`. A failed
+    verification leaves both files in place — the
     base file is never removed until the final file is proven usable."""
     write_nested_exif(base_path, final_path, fields)
     _verify_final_tiff(final_path, fields)

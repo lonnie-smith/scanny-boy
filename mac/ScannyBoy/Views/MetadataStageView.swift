@@ -32,7 +32,8 @@ struct MetadataStageView: View {
             FilmstripView(
                 negatives: edit.visibleNegatives,
                 cameraColor: edit.roll?.cameraColor,
-                isSelected: edit.isSelected
+                isSelected: edit.isSelected,
+                warningIDs: []
             ) { negativeID, additive, extendingRange in
                 edit.select(
                     negativeID,

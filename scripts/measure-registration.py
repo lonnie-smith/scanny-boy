@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Measure everything Chunk P2-1 has to decide, on the real gate-B scans.
+"""Measure everything needed to decide the registration parameters, on the
+real gate-B scans.
 
-`docs/PHASE2_IMPLEMENTATION_PLAN.md` Chunk P2-1 requires seven tables of
-measurements plus a linear gate, from which the user approves the constants in
-section 3.12 at gate C. This script produces them as GitHub-flavoured Markdown
-on stdout, so appendix B can be regenerated rather than remembered.
+Seven tables of measurements plus a linear gate, from which the constants are
+approved. This script produces them as GitHub-flavoured Markdown
+on stdout, so the report can be regenerated rather than remembered.
 
-**This script deliberately duplicates logic that Chunks P2-2 through P2-5 will
-put under `cli/src/scanny_boy/`.** P2-1 is forbidden from writing production
-code, and the modules it would import do not exist yet. Every algorithm here is
-written to match the plan's specification of those modules — the colour
-transfer of section 2.3.1, the detection image of P2-2, the rigid re-fit of
-P2-3, the two-step layout solve of P2-4, the feather blend of P2-5 — so the
-measurements predict what the real pipeline will do. Once those modules exist
-this script is something to check them against, not a second implementation to
-keep in step.
+**This script deliberately duplicates logic that also lives under
+`cli/src/scanny_boy/`.** Every algorithm here is
+written to match those modules' own implementation independently — the colour
+transfer, the detection image, the rigid re-fit,
+the two-step layout solve, the feather blend — so this script is something to
+check the real pipeline against, not a second implementation to keep in
+step.
 
 `MEASURE_*` below are the settings these measurements were taken *at*. They are
-not proposals for section 3.12; the proposals come out of the tables, in the
-pull request, for the user to approve at gate C.
+not proposals; the proposals come out of the tables, in the
+pull request, for review.
 
 Usage, from the repository root:
 
@@ -60,7 +58,7 @@ DEFAULT_NEF_DIR = ROOT / "tests" / "fixtures" / "nef"
 FILM_DATE = datetime.date(2026, 8, 29)
 MIB = 1024 * 1024
 
-# The gate-B negatives (plan section 5, user gate B). The last one is the
+# The gate-B negatives. The last one is the
 # negative that is *supposed* to fail: without it nothing here proves the gates
 # ever refuse anything.
 GOOD_NEGATIVES = ["normal", "wonky", "order", "tight"]
@@ -88,11 +86,11 @@ OVERLAPPING_PAIRS = {
     "mismatch": set(),
 }
 
-# Settings these measurements were taken at — not proposals for section 3.12.
+# Settings these measurements were taken at — not proposals.
 MEASURE_LONG_EDGE = 2000
 MEASURE_CLAHE = False
 MEASURE_RATIO = 0.75  # Lowe's original value, so table 1 starts somewhere neutral
-MEASURE_RANSAC_PX = 3.0  # full-resolution pixels, per section 3.12's note
+MEASURE_RANSAC_PX = 3.0  # full-resolution pixels
 MEASURE_INTERPOLATION = cv2.INTER_LANCZOS4
 
 # Provisional rejection used only so a layout can be solved at all, since a
@@ -108,7 +106,7 @@ MEASURE_MAX_RMS_PX = 10.0
 # fixed-point scaling — see cli/src/scanny_boy/linear.py.
 MAX_CODE = 65535
 
-MASK_ERODE_PX = 5  # section 3.3: Lanczos4 support radius 4, plus one
+MASK_ERODE_PX = 5  # Lanczos4 support radius 4, plus one
 
 # `ru_maxrss` is bytes on macOS and kilobytes on Linux.
 _RSS_SCALE = 1 if sys.platform == "darwin" else 1024
@@ -120,7 +118,7 @@ def decode_to_linear(image: np.ndarray) -> np.ndarray:
 
 def encode_from_linear(image: np.ndarray) -> np.ndarray:
     """float32 linear -> uint16, in row bands so a canvas-sized array does not
-    need three canvas-sized temporaries (section 3.8's `result` term).
+    need three canvas-sized temporaries.
     """
     out = np.empty(image.shape, dtype=np.uint16)
     per_row = max(1, int(np.prod(image.shape[1:])))
@@ -172,8 +170,8 @@ def to_full_resolution(points, scale: float) -> np.ndarray:
 
 DETECTOR_FACTORIES = {
     "SIFT": cv2.SIFT_create,
-    # Default nfeatures (500). The plan names `ORB_create` with no parameters,
-    # and inventing one is what section 5.1 forbids; that cap is why ORB's
+    # Default nfeatures (500). `ORB_create` is called with no parameters,
+    # and inventing one is deliberately avoided; that cap is why ORB's
     # keypoint counts in table 1 are so much lower than the others'.
     "ORB": cv2.ORB_create,
     "AKAZE": cv2.AKAZE_create,
@@ -446,7 +444,7 @@ def _feather_weight(mask: np.ndarray) -> np.ndarray:
 def warp_into_own_box(
     frame: np.ndarray, matrix: np.ndarray, interpolation: int, canvas_size: tuple[int, int]
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, int], float]:
-    """Warp into the frame's OWN bounding box (section 3.3), returning
+    """Warp into the frame's OWN bounding box, returning
     (linear rgb, feather weight, (offset_x, offset_y), min value before clamp).
 
     The box is clamped into the canvas. A frame whose placed corner lands on
@@ -528,7 +526,7 @@ def pairwise_overlap(
 
 
 # --------------------------------------------------------------------------
-# Rebate edges (plan section 3.4's independent check, table 6)
+# Rebate edges (table 6)
 # --------------------------------------------------------------------------
 
 REBATE_CANNY_LOW = 50
@@ -540,9 +538,9 @@ def find_rebate_line(detection: DetectionImage) -> tuple[float, np.ndarray] | No
     """The longest straight edge, as (angle_deg, [x1, y1, x2, y2]) in detection
     pixels, or None.
 
-    The Canny and Hough settings above are this script's, not the plan's:
-    section 3.4 leaves the rebate check recorded-and-warned rather than a gate
-    precisely because its detectability is what P2-1 has to assess.
+    The Canny and Hough settings above are this script's own: the rebate
+    check is recorded-and-warned rather than a gate, precisely because its
+    detectability is what this measurement has to assess.
     """
     edges = cv2.Canny(detection.image, REBATE_CANNY_LOW, REBATE_CANNY_HIGH)
     min_length = int(min(detection.image.shape) * REBATE_MIN_LENGTH_FRACTION)
@@ -1204,7 +1202,7 @@ def _stitch_child(negative: str, work: Path, out: Path, detector: str) -> int:
     started = time.monotonic()
     covered = weights > 0
     np.divide(accumulator, weights[:, :, None], out=accumulator, where=covered[:, :, None])
-    accumulator[~covered] = 0.0  # FILL_COLOR, section 3.3
+    accumulator[~covered] = 0.0  # FILL_COLOR
     coverage = float(covered.mean())
     del weights, covered
     image = encode_from_linear(accumulator)

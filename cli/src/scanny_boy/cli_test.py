@@ -72,7 +72,7 @@ def test_main_with_no_arguments_returns_status_2():
 
 def test_version_prints_one_plain_text_line_and_exits_0(capsys):
     """`--version` is a diagnostic outside the event stream (CONTRACT.md);
-    the packaged checks of section 5.2 use it as their smoke test."""
+    the packaged checks use it as their smoke test."""
     import importlib.metadata
 
     assert main(["--version"]) == 0
@@ -545,7 +545,7 @@ def test_roll_rename_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
-# --- roll set-base-frame (docs/REBATE_ANCHORING.md section 7.1) -----------
+# --- roll set-base-frame -----------
 
 
 def _base_measurement(
@@ -1575,11 +1575,13 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
     edit_recorded = events[1]
     assert edit_recorded["edit"]["params"] == _reset_tone_params()
     # The trailing tone op was updated in place: the log holds the single
-    # coalesced op, not one per commit.
+    # coalesced op, not one per commit.  The scratch detection run during
+    # stitching adds a scratches op, so we see two total.
     edits = repo.edits_for(roll_dir, negative_id)
-    assert len(edits) == 1
-    assert edits[0]["op"] == "tone"
-    assert edits[0]["params"] == _reset_tone_params()
+    assert len(edits) == 2
+    assert edits[0]["op"] == "scratches"
+    assert edits[1]["op"] == "tone"
+    assert edits[1]["params"] == _reset_tone_params()
 
 
 def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
@@ -2008,7 +2010,7 @@ def test_exit_status_one_when_anything_was_skipped(work_dir, capsys, tmp_path):
 
 
 def test_film_date_argument_is_rejected(capsys):
-    """Phase 3 section 3.5: `--film-date` is removed from every command,
+    """`--film-date` is removed from every command,
     so `convert` (and `run`) no longer recognize it at all."""
     status = main(
         [
@@ -2204,7 +2206,7 @@ def test_convert_with_real_samples_writes_six_tiffs_and_completes(capsys, tmp_pa
 
 
 # =========================================================================
-# Chunk 6: --jobs, cancellation, and exit status 143 (section 3.8)
+# --jobs, cancellation, and exit status 143
 # =========================================================================
 
 
@@ -2388,7 +2390,7 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
 
     assert status == -signal.SIGKILL
 
-    # The forced stop left exactly the wreckage section 3.8 predicts. With
+    # The forced stop leaves exactly this wreckage: with
     # jobs=2 the run-wide pool stages every group up front, so one staging
     # directory per negative of the abandoned run remains.
     abandoned = load_manifest(out_dir)
@@ -2654,7 +2656,7 @@ def test_flatfield_create_list_and_delete_round_trip(capsys):
     assert events[1]["profile_id"] == profile["profile_id"]
 
 
-# --- --grid (docs/GRID_STITCH_PLAN.md sections 2.2 and 2.7) ----------------
+# --- --grid ----------------
 
 
 @requires_real_samples
@@ -2799,7 +2801,7 @@ def test_grid_2x5_is_a_legal_shape(capsys, tmp_path):
     assert events[1]["code"] == "NO_FILES"
 
 
-# --- the spotting commands (docs/SPOTTING_PLAN.md §7) --------------------------
+# --- the spotting commands --------------------------
 
 
 def _spots_roll(capsys, tmp_path):
@@ -3056,7 +3058,7 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
     assert negative["spots"]["rejected"] == 0
 
 
-# --- --cast-removal-highlights and --auto-cast (docs/CAST_REMOVAL_PLAN.md R-3)
+# --- --cast-removal-highlights and --auto-cast
 
 
 def test_cast_removal_highlights_round_trips_through_roll_info(work_dir, capsys, tmp_path):
@@ -3326,12 +3328,9 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
     assert status == 0
     events, _ = _stdout_events(capsys)
     reported = events[1]["manifest"]["negatives"][0]["crop"]
-    assert reported == {
-        "width": rect_w,
-        "height": rect_h,
-        "tilt_deg": recorded_crop["tilt_deg"],
-        "preset": "35mm",
-    }
+    assert reported == recorded_crop
+    assert reported["canvas_width"] == tiff_w
+    assert reported["canvas_height"] == tiff_h
 
     capsys.readouterr()
     status = main(

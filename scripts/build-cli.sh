@@ -2,7 +2,7 @@
 # Freezes the Python CLI into `ScannyBoyCLI.app` and stages it for the macOS
 # app, so the shipped app has no Python dependency.
 #
-# See docs/IMPLEMENTATION_PLAN.md section 5.2. PyInstaller also writes a plain
+# PyInstaller also writes a plain
 # `cli/dist/scanny-boy/` directory; that one is ignored on purpose — only the
 # `.app` is shipped, because a bundle is what Xcode can copy into
 # `Contents/Helpers` with Code Sign On Copy.

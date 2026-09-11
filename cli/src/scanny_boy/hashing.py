@@ -1,6 +1,6 @@
 """SHA-256 file hashing for the manifest's source and output records.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.7: every recorded source and
+Every recorded source and
 completed output carries a SHA-256, computed here by streaming the file
 rather than loading it whole (source NEFs run to tens of megabytes; outputs
 are full 140 MiB frames).

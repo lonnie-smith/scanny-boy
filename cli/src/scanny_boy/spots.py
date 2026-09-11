@@ -1,6 +1,6 @@
 """Spot detection and repair: crud proposals, review, then inpainting.
 
-**Polarity convention** (docs/SPOTTING_PLAN.md §0.3). The published TIFF
+**Polarity convention.** The published TIFF
 holds normalized log density, and `val` rises with the light that reached
 the sensor. Something on the film that blocks or scatters light — dust, a
 hair, a water spot's mineral residue — makes the negative read locally

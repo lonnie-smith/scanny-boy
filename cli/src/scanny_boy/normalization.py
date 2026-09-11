@@ -1,13 +1,12 @@
 """Scan normalization ("Convert"): the log transfer, the meters, and the
 encode.
 
-Modelled on NegPy's `docs/PIPELINE.md` section 2 (*Scan Normalization*) and
-`negpy/features/exposure/normalization.py`, adapted to this program's
-architecture — colour negative only, on a Bayer sensor under white light
-(see docs/DECISIONS.md, "Normalization decisions" for what is deliberately *not*
-ported: no E-6 branch, no channel unmix, no user-facing controls).
+Modelled on NegPy's `negpy/features/exposure/normalization.py`, adapted to
+this program's architecture — colour negative only, on a Bayer sensor
+under white light (no E-6 branch, no channel unmix, no user-facing
+controls).
 
-The transfer (section 3.2), ported unchanged:
+The transfer, ported unchanged:
 
     D_log  = log10(clamp(I_linear, 1e-6, 1.0))          # to_log_density
     val    = (D_log - floor_ch) / (ceil_ch - floor_ch)  # normalize_log_image
@@ -18,12 +17,11 @@ percentile (thin film / base = scene shadow) and maps to `1.0`. The
 published file remains, in appearance, a negative — inversion belongs to
 the print stage.
 
-Every constant of the feature is defined here and nowhere else
-(section 3.3). The two headroom constants and the fill value make the
-`uint16` encode reversible to within quantization; `decode_normalized` is
-the single inverse, and everything downstream — previews, the edit stage,
-export — goes through it, never through the file's ICC profile (section
-3.12's rule).
+Every constant of the feature is defined here and nowhere else. The two
+headroom constants and the fill value make the `uint16` encode reversible
+to within quantization; `decode_normalized` is the single inverse, and
+everything downstream — previews, the edit stage, export — goes through
+it, never through the file's ICC profile.
 """
 
 from __future__ import annotations
@@ -36,16 +34,15 @@ import numpy as np
 
 from scanny_boy.events import Code
 
-# --- section 3.3: the constants, ported verbatim from NegPy's
+# --- the constants, ported verbatim from NegPy's
 # EXPOSURE_CONSTANTS. Production code reads them from here and nowhere else.
 
 # Side of the block-median prefilter's cell, in *source-frame* pixels.
 #
 # Pinned, deliberately, rather than derived from the canvas. The rule this
 # replaced was `b = ceil(max(h, w) / 1024)`, which bounded the grid's long
-# side and so tied the cell to the canvas's *aspect ratio*: at the target
-# grid workload (docs/GRID_STITCH_PLAN.md section 7.1) one 6000x4000 frame
-# gives b = 6 while a 5x2's 22000x6667 canvas gives b = 22, a 13x larger
+# side and so tied the cell to the canvas's *aspect ratio*: one 6000x4000
+# frame gives b = 6 while a 5x2's 22000x6667 canvas gives b = 22, a 13x larger
 # cell over a grid holding 2.2x *fewer* samples. Measured on one frame
 # tiled to each canvas size, so the film content per unit area is
 # identical, the meters drifted monotonically with grid shape: the floor
@@ -58,8 +55,7 @@ from scanny_boy.events import Code
 # border detectors and the neutral residual's 3x3 neighbourhood are all
 # statements about a physical scale on film. It also makes
 # `film_base`'s measurement, which always runs on a single frame, use
-# literally the same reduction as the per-negative path, which is what
-# docs/REBATE_ANCHORING.md section 2.2 already claims.
+# literally the same reduction as the per-negative path.
 #
 # 6 source pixels is the value the single-frame case had all along: at the
 # reference rig (24MP over a 36x24mm patch, 166.7 px/mm) it is 36 um on
@@ -111,37 +107,23 @@ LUMA_R = 0.2126
 LUMA_G = 0.7152
 LUMA_B = 0.0722
 
-# --- section 3.6: encoding with headroom ---
+# --- encoding with headroom ---
 
 NORMALIZED_HEADROOM_LOW = 0.15  # dense end (scene highlights)
 NORMALIZED_HEADROOM_HIGH = 0.10  # thin end (film base / scene shadows)
-NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH  # section 3.14
-# MONOCHROME_PLAN section 5.1: v1 predates the mono feature. §1's detector
-# constants stay out of `build_params()` (they shape recorded evidence,
-# never published output); §2's thresholds and §3's merge weights join in
-# their own steps, and `upgrade_normalize_params` absorbs the invariant
-# break each addition would otherwise cause.
-# CAST_REMOVAL_PLAN R-1: v2 predates the two meters; the constants join
-# `build_params()` because the residual the auto solve reads is recorded
-# per negative against them.
-# v3 predates the pinned analysis cell (`ANALYSIS_BLOCK_PX`) and the two
-# region gates it let become absolute. This is the first bump where the
-# meters' *arithmetic* moved, not just the recorded constant set: a v3
-# roll re-stitched under v4 gets different bounds on any canvas that is
-# not one frame — that is the point of the change, and the version is what
-# says an old recorded value is not comparable with a fresh one.
-#
-# v4 predates the film-extent pass (docs/BLACK_POINT_REFINEMENT.md). A v4
-# roll's recorded bounds are not comparable with a v5 one — that is what
-# the version says — and the same bump folds the REBATE_*, OPAQUE_* and
-# FILM_EXTENT_* families into `build_params()`, all three of which shape
-# published output.
+NORMALIZED_FILL = 1.0 + NORMALIZED_HEADROOM_HIGH
+# Bumped whenever a constant family that shapes published output changes,
+# or the meters' arithmetic itself changes (not just the recorded constant
+# set) — the version is what says an older negative's recorded bounds are
+# not comparable with a fresh one. `upgrade_normalize_params` absorbs the
+# invariant break each bump would otherwise cause when comparing a stored
+# `processing_params` block against a fresh build.
 NORMALIZE_FORMAT_VERSION = 5
 
 # The fraction of pixels the headroom clips past which
-# NORMALIZE_HEADROOM_CLIPPED warns (section 3.6's "the signal that the
-# constants are too tight"). Provisional, unmeasured — recorded per
-# negative either way (section 3.6's observed_min/observed_max).
+# NORMALIZE_HEADROOM_CLIPPED warns — the signal that the constants are too
+# tight. Provisional, unmeasured — recorded per negative either way, via
+# `observed_min`/`observed_max`.
 HEADROOM_CLIP_WARN_FRACTION = 0.001
 
 _DENSITY_FLOOR = 1e-6  # log10 clamp floor: a hair above -6.0 decades
@@ -149,8 +131,8 @@ _NORMALIZE_EPSILON = 1e-6  # NegPy's sign-preserving degenerate-solve guard
 
 
 class NormalizationError(Exception):
-    """A degenerate normalization solve (section 3.4's degenerate-bounds
-    guard). Maps to `NORMALIZE_DEGENERATE_BOUNDS`."""
+    """A degenerate normalization solve. Maps to
+    `NORMALIZE_DEGENERATE_BOUNDS`."""
 
     def __init__(
         self, message: str, code: Code = Code.NORMALIZE_DEGENERATE_BOUNDS
@@ -165,8 +147,7 @@ class Bounds:
     """Per-channel log-density bounds of one negative's composite:
     `floors` are the dense ends (scene highlights), `ceils` the thin ends
     (film base / scene shadows). One entry per published channel — three
-    (R, G, B) for a colour roll, one merged channel on a mono roll
-    (MONOCHROME_PLAN §4)."""
+    (R, G, B) for a colour roll, one merged channel on a mono roll."""
 
     floors: tuple[float, ...]
     ceils: tuple[float, ...]
@@ -174,8 +155,8 @@ class Bounds:
 
 @dataclasses.dataclass(frozen=True)
 class Rebate:
-    """The rebate detector's finding for one negative (section 3.13).
-    `base_density` is the RAW per-channel median log density inside the
+    """The rebate detector's finding for one negative. `base_density`
+    is the RAW per-channel median log density inside the
     rebate mask — no exposure-time correction applied; that belongs to the
     consumer. `None` when the base is sensor-clipped (clipped base is
     worthless base) or nothing was detected."""
@@ -186,7 +167,7 @@ class Rebate:
     clipped: bool
 
 
-# --- section 3.2: the transfer ---------------------------------------------
+# --- the transfer -----------------------------------------------------------
 
 
 def to_log_density(linear: np.ndarray) -> np.ndarray:
@@ -206,8 +187,8 @@ def to_log_density(linear: np.ndarray) -> np.ndarray:
 def luma_of_log(img_log: np.ndarray) -> np.ndarray:
     """Rec.709-weighted luma of a log-density image. Log values are
     negative; **thinner is larger**. On a single channel (a mono roll's
-    collapsed image, MONOCHROME_PLAN §4) there is no weighting to do and
-    the channel is its own luma."""
+    collapsed image) there is no weighting to do and the channel is its
+    own luma."""
     if img_log.shape[-1] == 1:
         return np.asarray(img_log[..., 0], dtype=np.float32)
     return (
@@ -215,7 +196,7 @@ def luma_of_log(img_log: np.ndarray) -> np.ndarray:
     ).astype(np.float32)
 
 
-# --- section 3.5: the block-median prefilter --------------------------------
+# --- the block-median prefilter ----------------------------------------------
 
 
 def analysis_grid_block_sizes(image_shape: tuple[int, ...]) -> tuple[int, int]:
@@ -242,7 +223,7 @@ def analysis_grid_block_sizes(image_shape: tuple[int, ...]) -> tuple[int, int]:
 
 def block_median_grid(img_log: np.ndarray) -> np.ndarray:
     """Reduce the analysis image by taking the median of each b x b block,
-    `b = ANALYSIS_BLOCK_PX` (section 3.5).
+    `b = ANALYSIS_BLOCK_PX`.
 
     Isolated extremes — speculars, dust pinholes, a scratch — vanish
     inside their block's median, so the extreme percentiles are robust
@@ -253,8 +234,8 @@ def block_median_grid(img_log: np.ndarray) -> np.ndarray:
 
     Images at or below `ANALYSIS_PASSTHROUGH_PX` pass through unchanged.
     Edge blocks are padded by replicating the image edge, so the median of
-    a partial block stays representative. Single-threaded, per section
-    3.5: the composite accumulator is deliberately single-threaded, and
+    a partial block stays representative. Single-threaded: the composite
+    accumulator is deliberately single-threaded, and
     the reduction's cost is the whole-canvas copy rather than the block
     size — 6.9 s on the largest canvas in scope, against 7.5 s for the
     coarser rule it replaced.
@@ -280,9 +261,9 @@ def block_median_grid(img_log: np.ndarray) -> np.ndarray:
     return np.median(blocks, axis=(1, 3)).astype(np.float32)
 
 
-# --- section 3.13: the analysis region ---------------------------------------
+# --- the analysis region ------------------------------------------------------
 
-ANALYSIS_INSET = 0.0  # section 3.13's fallback; the detector does the work
+ANALYSIS_INSET = 0.0  # pinned fallback inset; the rebate detector does the work
 
 
 def resolve_analysis_region(
@@ -290,8 +271,8 @@ def resolve_analysis_region(
     valid_rect: tuple[int, int, int, int] | None = None,
     crop_roi: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
-    """The analysis region as a flat boolean over the prefiltered grid
-    (section 3.13). Resolution order, first hit wins:
+    """The analysis region as a flat boolean over the prefiltered grid.
+    Resolution order, first hit wins:
 
         explicit crop ROI      (does not exist yet -- the crop tool
                                 attaches here; grid-cell coordinates)
@@ -302,8 +283,7 @@ def resolve_analysis_region(
     coordinates; `composite()` maps its canvas-space rect through
     `analysis_grid_block_sizes`. The region restricts the meters only —
     it never crops the output. `ANALYSIS_INSET` is pinned at 0.0: the
-    section's fallback inset is shut off, because the rebate detector does
-    the work.
+    fallback inset is shut off, because the rebate detector does the work.
     """
     grid_rows, grid_cols = grid_shape
     keep = np.zeros((grid_rows, grid_cols), dtype=bool)
@@ -327,7 +307,7 @@ def resolve_analysis_region(
     return keep
 
 
-# --- section 3.4: the meters, two axes recombined ----------------------------
+# --- the meters, two axes recombined ------------------------------------------
 
 
 def _percentile(values: np.ndarray, q: float) -> float:
@@ -339,7 +319,7 @@ def _same_pixel_color_floor_refs(
 ) -> list[float] | None:
     """The dense-end colour references: one shared, chroma-gated pixel set
     drawn from the luma-extreme band, chroma measured base-anchored, with a
-    two-pass provisional refinement (section 3.4).
+    two-pass provisional refinement.
 
     Independent per-channel percentiles at the dense end read a *different
     scene object per channel*, so coloured highlight content masquerades
@@ -399,12 +379,10 @@ def _thin_end_refs(
     base_refs: tuple[float, ...] | None = None,
 ) -> list[float]:
     """The thin-end per-channel colour references: the roll's measured film
-    base when it has one (REBATE_ANCHORING §4), else plain per-channel
-    percentiles of scene content. Lifted out of `analyze_bounds` (whose
-    fallback branch and `len(base_refs) == channels` guard are that plan's)
-    so `measure_highlight_refs` can measure the dense end against the same
-    physically anchored thin end the published pixels use
-    (docs/CAST_REMOVAL_PLAN.md §0.6 point 3).
+    base when it has one, else plain per-channel percentiles of scene
+    content. Lifted out of `analyze_bounds` so `measure_highlight_refs` can
+    measure the dense end against the same physically anchored thin end
+    the published pixels use.
 
     With `base_refs=None` — and on a mono roll, where a 3-array cannot
     match a 1-channel image — this is exactly what `analyze_bounds` computed
@@ -423,7 +401,7 @@ def analyze_bounds(
     base_refs: tuple[float, ...] | None = None,
 ) -> Bounds:
     """The bounds meters, ported from NegPy's
-    `analyze_log_exposure_bounds_from_log` (section 3.4).
+    `analyze_log_exposure_bounds_from_log`.
 
     Bounds are sampled on **two independent axes** and recombined:
 
@@ -447,8 +425,8 @@ def analyze_bounds(
     axes degenerate correctly and by construction: the luma percentile pair
     *is* the channel's percentile pair, `c_floors[0] == mean_cf`, so the
     colour deviation vanishes and `floors`/`ceils` are the luma percentile
-    pair unchanged. That is the collapse's point (MONOCHROME_PLAN §0.2),
-    not a special case: with no colour there is no colour deviation to add
+    pair unchanged. That is the collapse's point, not a special case: with
+    no colour there is no colour deviation to add
     back, and the generalised arithmetic below reaches it on its own.
     """
     channels = grid_log.shape[-1]
@@ -466,11 +444,11 @@ def analyze_bounds(
     mean_lf = _percentile(lum, BASE_LUMA_CLIP)
     mean_lc = _percentile(lum, 100.0 - BASE_LUMA_CLIP)
 
-    # Colour pass. Thin end: the roll's measured film base when it has one
-    # (docs/REBATE_ANCHORING.md §4), falling back to plain per-channel
-    # percentiles of scene content. Only the deviation from the median
-    # survives the recombination below, so the base frame's own exposure
-    # cancels and never has to match the roll's (§0.2 of that plan).
+    # Colour pass. Thin end: the roll's measured film base when it has one,
+    # falling back to plain per-channel percentiles of scene content. Only
+    # the deviation from the median survives the recombination below, so
+    # the base frame's own exposure cancels and never has to match the
+    # roll's.
     c_ceils = _thin_end_refs(values, channels, base_refs)
     # Dense end: the shared, chroma-gated pixel set, falling back to plain
     # per-channel percentiles when the band holds no trustworthy neutrals.
@@ -502,7 +480,7 @@ def analyze_bounds(
     return Bounds(floors=floors, ceils=ceils)
 
 
-# --- section 3.7: metering, recorded, never acted on -------------------------
+# --- metering, recorded, never acted on ---------------------------------------
 
 
 def measure_shadow_refs(
@@ -510,7 +488,7 @@ def measure_shadow_refs(
 ) -> tuple[float, ...]:
     """Per-channel shadow references: the `SHADOW_NEUTRAL_PERCENTILE`
     percentile of each channel over the analysis region. Recorded for the
-    print stage; nothing in this plan reads them back (section 3.7)."""
+    print stage; nothing here reads them back."""
     channels = grid_log.shape[-1]
     values = grid_log.reshape(-1, channels)[keep.reshape(-1)]
     return tuple(
@@ -539,7 +517,7 @@ def measure_clip_fractions(linear: np.ndarray) -> tuple[float, float, float]:
     """Per-channel fraction of pixels at or above `SCAN_CLIP_LEVEL` —
     sensor-white clipping. `linear` is uint16 codes or float linear light;
     clipping is a property of the capture, so this runs in the prepare
-    stage, per frame, before flat-field touches the pixels (section N-4)."""
+    stage, per frame, before flat-field touches the pixels."""
     values = np.asarray(linear)
     if values.dtype == np.uint16:
         values = values.astype(np.float32) / 65535.0
@@ -548,12 +526,12 @@ def measure_clip_fractions(linear: np.ndarray) -> tuple[float, float, float]:
     return tuple(float(np.mean(values[..., ch] >= SCAN_CLIP_LEVEL)) for ch in range(3))
 
 
-# --- MONOCHROME_PLAN: film kind and channel collapse -------------------------
+# --- film kind and channel collapse -------------------------------------------
 
 
 class FilmKind(enum.StrEnum):
-    """A roll's film kind, set at `roll init` and never per-negative
-    (§0.3). A plain `str` subclass: it serializes into the roll manifest's
+    """A roll's film kind, set at `roll init` and never per-negative. A
+    plain `str` subclass: it serializes into the roll manifest's
     `film.kind` and `icc_profile.published_profile_kind`'s comparison
     unchanged."""
 
@@ -561,7 +539,7 @@ class FilmKind(enum.StrEnum):
     MONOCHROME = "monochrome"
 
 
-# --- MONOCHROME_PLAN section 3: the collapse ----------------------------------
+# --- the mono collapse ---------------------------------------------------------
 
 # Three noisy measurements of one physical quantity — silver density — not
 # a colorimetry problem. The minimum-variance estimator weights by
@@ -573,7 +551,7 @@ class FilmKind(enum.StrEnum):
 # worse post-demosaic MTF, so weighting them in costs a little sharpness.
 # Green-only (0, 1, 0) is a defensible fallback if a measurement ever says
 # so — measuring the real per-channel sigma from the flat-field
-# calibration frames is out of scope here (§8/docs/punchlist.md).
+# calibration frames is out of scope here.
 #
 # Deliberately not Rec.709 luma: those coefficients model the eye's
 # response to display primaries, a photometric weighting for scene
@@ -584,8 +562,8 @@ MONO_MERGE_WEIGHTS = (0.25, 0.50, 0.25)
 
 
 def collapse_to_mono(img_log: np.ndarray, covered: np.ndarray) -> np.ndarray:
-    """§3.1: merge a colour composite's three log-density channels into
-    one, for a roll whose frozen `film.kind` is monochrome.
+    """Merge a colour composite's three log-density channels into one, for
+    a roll whose frozen `film.kind` is monochrome.
 
     An offset-aligned, inverse-variance-weighted mean in log density:
 
@@ -618,11 +596,9 @@ def collapse_to_mono(img_log: np.ndarray, covered: np.ndarray) -> np.ndarray:
     return merged[..., np.newaxis].astype(np.float32)
 
 
-# --- section 3.13: the rebate detector ---------------------------------------
+# --- the rebate detector -------------------------------------------------------
 
-# All five provisional and unmeasured — the same status
-# `MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` carry; they go on the
-# punchlist together (docs/DECISIONS.md, "Normalization decisions").
+# All five below are provisional and unmeasured.
 
 # Robust thin-end anchor for the candidate band.
 REBATE_ANCHOR_PERCENTILE = 99.9
@@ -677,7 +653,7 @@ def _region_border(keep: np.ndarray) -> np.ndarray:
 
 def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, Rebate]:
     """Detect the film rebate / clear base among the region's thinnest
-    cells and exclude it from `keep` (section 3.13).
+    cells and exclude it from `keep`.
 
     On a **negative**, base is strictly the thinnest thing on the film —
     no scene content can be thinner than unexposed film — which gives a
@@ -697,8 +673,7 @@ def detect_rebate(grid_log: np.ndarray, keep: np.ndarray) -> tuple[np.ndarray, R
     5. `base_density` is the per-channel median log inside the mask, or
        `None` with `clipped=True` when the grid's linear estimate inside
        the mask clips past `SCAN_CLIP_WARN` — clipped base is worthless
-       base (section 3.13's first gotcha), but the cells are excluded
-       either way.
+       base, but the cells are excluded either way.
 
     The known false positive: a genuinely deep, featureless shadow
     touching the region border can pass flatness and connectivity. When
@@ -957,7 +932,7 @@ def withhold_opaque(
     return new_keep, opaque
 
 
-# --- BLACK_POINT_REFINEMENT: the film-extent pass -----------------------------
+# --- the film-extent pass -------------------------------------------------------
 #
 # The negative carrier beyond the film edge defeats every detector above it:
 # `withhold_opaque`'s absolute gate is decades too dense to reach it, the
@@ -982,8 +957,8 @@ def withhold_opaque(
 # with different carrier geometry invalidates that and needs the mask path
 # this pass deliberately does not carry.
 #
-# The governing principle (docs/BLACK_POINT_REFINEMENT.md §0.1): the
-# analysis region does not have to be maximal. It has to be entirely film
+# The governing principle: the analysis region does not have to be
+# maximal. It has to be entirely film
 # and representative of the scene; losing 10% of the film costs a percentile
 # meter nothing, admitting 0.01% of non-film destroys it. Every rule here is
 # biased toward shrinking.
@@ -1057,7 +1032,7 @@ class FilmExtent:
     insets: tuple[int, int, int, int]
     region_fraction: float          # of `keep` surviving
     convergence_steps: int
-    # §5.3's rebate cross-check: None when no rebate component was detected
+    # The rebate cross-check: None when no rebate component was detected
     # on any inset edge, otherwise whether every such component lies
     # inboard of the corresponding inset. Recorded, read by nothing.
     rebate_agrees: bool | None = None
@@ -1124,7 +1099,7 @@ def _keep_bbox(keep: np.ndarray) -> tuple[int, int, int, int]:
 
 
 def per_edge_insets(keep: np.ndarray, mask: np.ndarray) -> tuple[int, int, int, int]:
-    """§3.1: each mask cell is assigned to the edge of `keep`'s bounding
+    """Each mask cell is assigned to the edge of `keep`'s bounding
     box it is nearest to; the inset for an edge is the deepest such cell's
     distance from that edge, plus one. Edges with no mask cells get 0.
 
@@ -1174,7 +1149,7 @@ def _region_viable(rect: np.ndarray) -> bool:
 def _converge_insets(
     lum: np.ndarray, keep: np.ndarray, insets: tuple[int, int, int, int]
 ) -> tuple[tuple[int, int, int, int], int]:
-    """§3.2: the convergence loop replaces a pinned margin. The margin is
+    """The convergence loop replaces a pinned margin. The margin is
     measured, per negative, by pushing each edge until the floor stops
     moving: the probe is the floor itself (`_percentile(lum[rect],
     BASE_LUMA_CLIP)` -- the same statistic the floor percentile reads, and
@@ -1216,8 +1191,8 @@ def _converge_insets(
 def rebate_insets_agreement(
     rebate_mask: np.ndarray, region: np.ndarray, insets: tuple[int, int, int, int]
 ) -> bool | None:
-    """§5.3's cross-check, recorded and read by nothing. It exists so that
-    a later plan deciding whether to promote the rebate detector to a hard
+    """This cross-check is recorded and read by nothing. It exists so that
+    a later decision on whether to promote the rebate detector to a hard
     outer bound has evidence from real rolls rather than argument: rebate
     is good for corroboration (anything outboard of a detected rebate
     component is not film at any density), and this records whether the
@@ -1258,8 +1233,7 @@ def withhold_non_film(
     grid_log: np.ndarray, keep: np.ndarray
 ) -> tuple[np.ndarray, FilmExtent]:
     """Find the film's own extent and inset the analysis rect inside it --
-    the pass that keeps the negative carrier out of the meters
-    (docs/BLACK_POINT_REFINEMENT.md).
+    the pass that keeps the negative carrier out of the meters.
 
     Runs after `withhold_opaque` (a wholly-opaque rect must raise its own
     diagnostic rather than reach a histogram) and before `detect_rebate`
@@ -1267,22 +1241,22 @@ def withhold_non_film(
     and does not disturb the dense tail, so leaving it in `keep` during
     the histogram is harmless.
 
-    The statistic (§2.1) locates the incursion: `_find_valley` finds the
-    density splitting a second dense mode from the film lobe. The mask
-    (§2.3) is hysteresis plus border connectivity -- the same two-level
-    trick Canny uses, for the same reason: the loose level alone would
-    leak into film, the tight level alone would miss the ramp. Border
-    connectivity here is physics, not a heuristic: non-film is *outside*
-    the film, so on a canvas it is always connected to the outside -- and
-    it is the only thing standing between this pass and a dark object in
-    the middle of the frame.
+    The statistic locates the incursion: `_find_valley` finds the density
+    splitting a second dense mode from the film lobe. The mask is
+    hysteresis plus border connectivity -- the same two-level trick Canny
+    uses, for the same reason: the loose level alone would leak into film,
+    the tight level alone would miss the ramp. Border connectivity here is
+    physics, not a heuristic: non-film is *outside* the film, so on a
+    canvas it is always connected to the outside -- and it is the only
+    thing standing between this pass and a dark object in the middle of
+    the frame.
 
-    The rectangle (§3.1/§3.2) clears it: mask-derived per-edge insets, plus
-    a margin, then the convergence loop pushing each edge until the floor
-    stops moving. The two ideas are not alternatives -- the gap statistic
+    The rectangle clears it: mask-derived per-edge insets, plus a margin,
+    then the convergence loop pushing each edge until the floor stops
+    moving. The two ideas are not alternatives -- the gap statistic
     locates the incursion, the rectangle clears it.
 
-    The no-op path is the important one (§2.4): a negative with no carrier
+    The no-op path is the important one: a negative with no carrier
     in frame must reach it. `withhold_non_film` returns `keep` unchanged
     with `FilmExtent(detected=False, ...)` when `_find_valley` returns
     None, or no seed cell survives, or no component contains both a seed
@@ -1359,7 +1333,7 @@ def withhold_non_film(
     return new_keep, extent
 
 
-# --- section 3.13's dense mirror: the dense-border detector -------------------
+# --- the dense mirror: the dense-border detector -------------------------------
 
 # All provisional and unmeasured, like the REBATE_* five. The failure that
 # shaped them: a dark, partially-lit sliver beyond the film edge (light-panel
@@ -1605,8 +1579,7 @@ def _is_featureless(component: np.ndarray, lum: np.ndarray) -> bool:
     ) <= DENSE_BORDER_MAX_SPREAD
 
 
-# --- CAST_REMOVAL_PLAN R-1: the highlight reference and the neutral
-# --- residual meter ---------------------------------------------------------
+# --- the highlight reference and the neutral residual meter --------------------
 
 
 def measure_highlight_refs(
@@ -1616,8 +1589,8 @@ def measure_highlight_refs(
 ) -> tuple[float, ...] | None:
     """The dense end's colour references: the same shared, chroma-gated,
     same-pixel neutral set `_same_pixel_color_floor_refs` returns for
-    `analyze_bounds` (docs/CAST_REMOVAL_PLAN.md §0.4/§3.2). Independent
-    per-channel percentiles at the dense end read a *different scene object
+    `analyze_bounds`. Independent per-channel percentiles at the dense end
+    read a *different scene object
     per channel*, so the highlight reference reuses the gated set rather
     than mirroring the shadow percentile.
 
@@ -1641,8 +1614,7 @@ def measure_highlight_refs(
 
 
 # Ported from darktable's DT_ILLUMINANT_DETECT_SURFACES weighting
-# (src/iop/channelmixerrgb.c:_auto_detect_WB) into our coordinates
-# (docs/CAST_REMOVAL_PLAN.md §3.1).
+# (src/iop/channelmixerrgb.c:_auto_detect_WB) into our coordinates.
 # darktable's Minkowski p, unchanged: downweights strongly-coloured
 # patches.
 NEUTRAL_RESIDUAL_P_NORM = 8.0
@@ -1659,7 +1631,7 @@ def measure_neutral_residual(
 ) -> tuple[float, float] | None:
     """The frame's residual neutral offset, `(R-G, B-G)` in normalized
     units, over structured low-chroma regions — the meter `auto_color`'s
-    solve reads back (docs/CAST_REMOVAL_PLAN.md §3.1/§3.3). Runs on the
+    solve reads back. Runs on the
     block-median grid, normalized by the same `bounds` the published image
     is stretched by, so the per-channel stretch is already removed and
     what is left is exactly the residual the auto solve wants. Recorded,
@@ -1726,7 +1698,7 @@ def measure_neutral_residual(
     )
 
 
-# --- section 3.4's clamp: the roll-population safety net ----------------------
+# --- the roll-population safety net ---------------------------------------------
 
 # The per-negative bounds a clamp needs before it will act.
 CLAMP_MIN_SAMPLES = 3
@@ -1739,7 +1711,7 @@ CLAMP_MIN_WINDOW = 0.5
 
 
 def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool]:
-    """D-4's safety net, from data the pipeline already records: pull
+    """A safety net, from data the pipeline already records: pull
     per-channel bounds back toward the roll's population when a negative's
     own meters latched contamination the per-frame detectors missed.
 
@@ -1782,12 +1754,12 @@ def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool
     return Bounds(floors=floors, ceils=ceils), floors != bounds.floors or ceils != bounds.ceils
 
 
-# --- section 3.2 / 3.6: normalize, encode, decode -----------------------------
+# --- normalize, encode, decode --------------------------------------------------
 
 
 def normalize_log_image(img_log: np.ndarray, bounds: Bounds) -> np.ndarray:
-    """Per-channel affine stretch of log density into normalized values
-    (section 3.2): `floor -> 0.0`, `ceil -> 1.0`, **unclamped outside** —
+    """Per-channel affine stretch of log density into normalized values:
+    `floor -> 0.0`, `ceil -> 1.0`, **unclamped outside** —
     NegPy deliberately does not clamp; tones outside the detected bounds
     are kept for the encode's headroom and the print curve's soft toe and
     shoulder. A degenerate `ceil == floor` channel divides by NegPy's
@@ -1806,8 +1778,8 @@ def normalize_log_image(img_log: np.ndarray, bounds: Bounds) -> np.ndarray:
 def observed_extrema(
     normalized: np.ndarray,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """The per-channel minimum and maximum normalized value of the input
-    (section 3.6): recorded per negative so the two headroom constants can
+    """The per-channel minimum and maximum normalized value of the input:
+    recorded per negative so the two headroom constants can
     be tuned from real scans instead of estimated — `observed_min` pinned
     at `-NORMALIZED_HEADROOM_LOW` means the headroom is clipping and
     tones have been lost."""
@@ -1822,7 +1794,7 @@ def headroom_clip_fractions(
     normalized: np.ndarray,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """Per-channel fraction of normalized values the encode's headroom
-    clips (section 3.6), split by which rail they clip against: below
+    clips, split by which rail they clip against: below
     `-NORMALIZED_HEADROOM_LOW` is the dense end (scene highlights), above
     `1.0 + NORMALIZED_HEADROOM_HIGH` is the thin end (scene shadows) — see
     the constants' own comments. Returns `(highlights, shadows)`."""
@@ -1836,8 +1808,7 @@ def headroom_clip_fractions(
 
 
 def encode_normalized(normalized: np.ndarray) -> np.ndarray:
-    """Normalized values -> uint16 codes, reserving the asymmetric headroom
-    (section 3.6):
+    """Normalized values -> uint16 codes, reserving the asymmetric headroom:
 
         code = rint(clip((val + LOW) / span, 0, 1) * 65535)
         span = 1.0 + NORMALIZED_HEADROOM_LOW + NORMALIZED_HEADROOM_HIGH
@@ -1859,10 +1830,10 @@ def encode_normalized(normalized: np.ndarray) -> np.ndarray:
 
 
 def decode_normalized(codes: np.ndarray) -> np.ndarray:
-    """The single inverse of `encode_normalized` (section 3.6): uint16
+    """The single inverse of `encode_normalized`: uint16
     codes -> normalized float32. Everything downstream — previews, the
     edit stage, export — decodes through this, never through the file's
-    ICC profile (section 3.12's rule)."""
+    ICC profile."""
     span = 1.0 + NORMALIZED_HEADROOM_LOW + NORMALIZED_HEADROOM_HIGH
     return (
         np.asarray(codes, dtype=np.float32) / 65535.0 * span - NORMALIZED_HEADROOM_LOW
@@ -1871,9 +1842,9 @@ def decode_normalized(codes: np.ndarray) -> np.ndarray:
 
 def build_params() -> dict:
     """Every constant of the feature plus a `format_version`, folded into
-    `processing_params` under the key `normalize` — a roll invariant
-    (section 3.8). A file written by any build is interpretable through
-    this record and `decode_normalized`."""
+    `processing_params` under the key `normalize` — a roll invariant. A
+    file written by any build is interpretable through this record and
+    `decode_normalized`."""
     return {
         "format_version": NORMALIZE_FORMAT_VERSION,
         "analysis_block_px": ANALYSIS_BLOCK_PX,
@@ -1890,13 +1861,10 @@ def build_params() -> dict:
         "textural_range_clip": TEXTURAL_RANGE_CLIP,
         "scan_clip_level": SCAN_CLIP_LEVEL,
         "scan_clip_warn": SCAN_CLIP_WARN,
-        # BLACK_POINT_REFINEMENT §4.1: the REBATE_*, OPAQUE_* and
-        # FILM_EXTENT_* families all shape published output — the rebate
-        # detector's base measurement feeds `analyze_bounds`' thin end, the
-        # other two withhold cells from the meters — so all three join here
-        # with the film-extent bump that already moved the format version.
-        # `OPAQUE_*` shipped without a version bump of its own; this is the
-        # last moment where folding it in is free.
+        # The REBATE_*, OPAQUE_* and FILM_EXTENT_* families all shape
+        # published output — the rebate detector's base measurement feeds
+        # `analyze_bounds`' thin end, the other two withhold cells from the
+        # meters — so all three join here.
         "rebate_anchor_percentile": REBATE_ANCHOR_PERCENTILE,
         "rebate_density_tolerance": REBATE_DENSITY_TOLERANCE,
         "rebate_min_area_cells": REBATE_MIN_AREA_CELLS,
@@ -1932,12 +1900,11 @@ def build_params() -> dict:
         "normalized_headroom_low": NORMALIZED_HEADROOM_LOW,
         "normalized_headroom_high": NORMALIZED_HEADROOM_HIGH,
         "normalized_fill": NORMALIZED_FILL,
-        # MONOCHROME_PLAN §3: the merge weights shape published output on
-        # mono rolls, so they are roll invariants from the step that
-        # introduces them.
+        # The merge weights shape published output on mono rolls, so they
+        # are roll invariants.
         "mono_merge_weights": list(MONO_MERGE_WEIGHTS),
-        # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants and
-        # the highlight reference's provenance.
+        # The neutral-residual meter's constants and the highlight
+        # reference's provenance.
         "neutral_residual_p_norm": NEUTRAL_RESIDUAL_P_NORM,
         "neutral_residual_min_cells": NEUTRAL_RESIDUAL_MIN_CELLS,
         "highlight_neutral_source": "same_pixel_color_refs",
@@ -1945,18 +1912,14 @@ def build_params() -> dict:
 
 
 def upgrade_normalize_params(params: dict) -> dict:
-    """MONOCHROME_PLAN section 5.1's forward shim, for the exact-dict
-    comparison `manifest.py` and `roll_manifest.py` run over
-    `processing_params`: a stored `normalize` block is upgraded in memory
-    by injecting the current defaults for every key it lacks, then
-    compared. Because the injected defaults are read from the live
-    `build_params()`, this covers not just a v1 block (predating the mono
-    feature entirely) but also a v2 block written between §1 shipping and
-    a later step (§2's thresholds, §3's weights) adding a new key —
-    exactly what a roll stitched during the plan's own measurement gate
-    produces. Either one compares equal to a fresh build as long as the
-    new constants sit at their defaults, which for an existing colour roll
-    they do.
+    """A forward shim for the exact-dict comparison `manifest.py` and
+    `roll_manifest.py` run over `processing_params`: a stored `normalize`
+    block is upgraded in memory by injecting the current defaults for
+    every key it lacks, then compared. Because the injected defaults are
+    read from the live `build_params()`, this covers a block written
+    before a later addition introduced a new key. Such a block compares
+    equal to a fresh build as long as the new constants sit at their
+    defaults, which for an existing colour roll they do.
 
     Not gated on the stored `format_version` at all: `setdefault` is a
     no-op for a key already present, so a fully current block passes

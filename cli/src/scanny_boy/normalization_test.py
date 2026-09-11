@@ -1,8 +1,8 @@
 """Tests for the normalization transfer, the encode, the meters, and the
-rebate detector (docs/DECISIONS.md, "Normalization decisions").
+rebate detector.
 
 The golden-value tests against NegPy's own implementation — the
-highest-value tests in the plan, since the port is subtle and NegPy is the
+highest-value tests here, since the port is subtle and NegPy is the
 reference — need the `negpy` package importable; they skip when it is not
 installed, and run with the rebate detector disabled (NegPy has no
 equivalent).
@@ -191,9 +191,8 @@ def test_analysis_grid_block_sizes_and_grid_shape(shape, expected_grid):
 def test_analysis_cell_is_the_same_size_at_every_canvas_shape():
     """The invariant the pinned block exists for, and the one the retired
     long-side-bounded rule did not hold: the *cell* is fixed and the grid's
-    dimensions are what grow with the canvas. Shapes are the grid workload
-    of docs/GRID_STITCH_PLAN.md §7.1, where the old rule ran the cell from
-    6 px on one frame to 22 px on a 5×2 while shrinking the grid from
+    dimensions are what grow with the canvas. The old rule ran the cell
+    from 6 px on one frame to 22 px on a 5×2 while shrinking the grid from
     667k cells to 304k.
     """
     canvases = {
@@ -284,7 +283,7 @@ def test_orange_mask_cast_is_recovered_and_the_normalized_output_is_neutral():
 
 
 def test_fill_corners_do_not_destroy_the_bounds():
-    """The test that matters (section 1.5): a canvas whose uncovered corners
+    """The test that matters: a canvas whose uncovered corners
     sit at log10(1e-6) = -6.0 produces the *same* bounds as the same canvas
     cropped to its valid rect — and without the region restriction the
     whole stretch is garbage."""
@@ -719,7 +718,7 @@ def test_film_extent_band_with_ramp_is_located_and_inset():
 
 
 def test_film_extent_no_op_on_a_unimodal_grid():
-    """§2.4: the no-op path is the important one. A grid with no carrier —
+    """The no-op path is the important one. A grid with no carrier —
     a plain unimodal dense tail — must return `keep` unchanged, with
     `detected=False` and zero insets."""
     grid = _colour(_carrier_grid())
@@ -730,7 +729,7 @@ def test_film_extent_no_op_on_a_unimodal_grid():
     assert extent.insets == (0, 0, 0, 0)
     assert extent.region_fraction == 1.0
     assert extent.convergence_steps == 0
-    # Contents identical (the plan asks for equality of contents, not
+    # Contents identical (equality of contents matters here, not
     # identity -- the no-op returns the input array, as the detectors
     # beside it do).
     assert np.array_equal(new_keep, keep)
@@ -769,8 +768,9 @@ def test_film_extent_lobe_below_the_fraction_gate_is_not_detected():
 
 
 def test_film_extent_ramp_cut_by_the_region_is_still_found_by_the_probe():
-    """§3.2's whole justification: a ramp whose core is outside `keep`
-    seeds no component, so that edge's mask-derived inset is 0 — and the
+    """The convergence loop's whole justification: a ramp whose core is
+    outside `keep` seeds no component, so that edge's mask-derived inset
+    is 0 — and the
     convergence probe, which walks all four edges, finds it anyway."""
     luma = _carrier_grid(height=400, width=500)
     _add_ramped_band(luma)  # top edge: fires the detector, provides seeds
@@ -838,7 +838,7 @@ def test_film_extent_max_steps_is_honoured_on_an_adversarial_gradient():
 
 
 def test_film_extent_region_below_the_fraction_gate_still_applies():
-    """§3.4: a rect that keeps less than
+    """A rect that keeps less than
     FILM_EXTENT_MIN_REGION_FRACTION of the region is not refused — a region
     that is more than half non-film has a floor that is certainly wrong —
     it applies and records the fraction. The warning is the stitch stage's."""
@@ -879,7 +879,7 @@ def test_film_extent_empty_keep_is_handled_cleanly():
 
 
 def test_rebate_insets_agreement_records_the_cross_check():
-    """§5.3: None when no rebate component was detected on any inset edge;
+    """None when no rebate component was detected on any inset edge;
     otherwise whether every such component lies inboard of the inset."""
     keep = np.ones((100, 100), dtype=bool)
     rebate = np.zeros((100, 100), dtype=bool)
@@ -1068,9 +1068,8 @@ def test_underexposed_scan_is_not_mistaken_for_a_holder_rect():
 
 
 def test_mono_collapsed_grid_is_gated_the_same():
-    """MONOCHROME_PLAN section 4: one channel, and `luma_of_log` returns it
-    unchanged. The gate reads `shape[-1]`-agnostic luma like its
-    neighbours."""
+    """One channel, and `luma_of_log` returns it unchanged. The gate reads
+    `shape[-1]`-agnostic luma like its neighbours."""
     grid = _scene_grid(200, 200)[..., :1]
     grid[0:30, 0:50, 0] = -6.0
     keep = np.ones(grid.shape[:2], dtype=bool)
@@ -1079,7 +1078,7 @@ def test_mono_collapsed_grid_is_gated_the_same():
     assert not new_keep[:30, :50].any()
 
 
-# --- section 3.4's clamp ------------------------------------------------------
+# --- the clamp ------------------------------------------------------------------
 
 
 def _population(
@@ -1163,14 +1162,14 @@ def test_resolve_analysis_region_clamps_and_falls_back_on_degenerate_rects():
     assert degenerate.all()
 
 
-# --- section 3.8: normalize_params ---------------------------------------------
+# --- normalize_params ------------------------------------------------------------
 
 
 def test_build_params_carries_every_constant_and_the_format_version():
     params = build_params()
-    # CAST_REMOVAL_PLAN R-1: the neutral-residual meter's constants join
-    # build_params() because the residual the auto solve reads is recorded
-    # per negative against them.
+    # The neutral-residual meter's constants join build_params() because
+    # the residual the auto solve reads is recorded per negative against
+    # them.
     assert params["format_version"] == 5
     assert params["analysis_block_px"] == ANALYSIS_BLOCK_PX
     assert params["analysis_passthrough_px"] == nz.ANALYSIS_PASSTHROUGH_PX
@@ -1201,8 +1200,8 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["clamp_min_samples"] == nz.CLAMP_MIN_SAMPLES
     assert params["clamp_k_mad"] == nz.CLAMP_K_MAD
     assert params["clamp_min_window"] == nz.CLAMP_MIN_WINDOW
-    # BLACK_POINT_REFINEMENT §4.1: the three detector families that shape
-    # published output join build_params() with the v5 bump.
+    # The three detector families that shape published output join
+    # build_params() with the v5 bump.
     assert params["rebate_anchor_percentile"] == nz.REBATE_ANCHOR_PERCENTILE
     assert params["rebate_density_tolerance"] == nz.REBATE_DENSITY_TOLERANCE
     assert params["rebate_min_area_cells"] == nz.REBATE_MIN_AREA_CELLS
@@ -1231,17 +1230,17 @@ def test_build_params_carries_every_constant_and_the_format_version():
 
     assert json.loads(json.dumps(params)) == params
 
-    # §3's merge weights shape published output on mono rolls, so they are
-    # roll invariants from the step that introduces them.
+    # The merge weights shape published output on mono rolls, so they are
+    # roll invariants.
     assert params["mono_merge_weights"] == list(nz.MONO_MERGE_WEIGHTS)
 
-    # CAST_REMOVAL_PLAN R-1: the two meters' record.
+    # The two meters' record.
     assert params["neutral_residual_p_norm"] == nz.NEUTRAL_RESIDUAL_P_NORM
     assert params["neutral_residual_min_cells"] == nz.NEUTRAL_RESIDUAL_MIN_CELLS
     assert params["highlight_neutral_source"] == "same_pixel_color_refs"
 
 
-# --- MONOCHROME_PLAN section 5.1: the forward shim -----------------------------
+# --- the forward shim -------------------------------------------------------------
 
 
 def test_upgrade_normalize_params_injects_missing_v1_keys():
@@ -1267,9 +1266,9 @@ def test_upgrade_normalize_params_leaves_v2_blocks_alone():
 
 
 def test_upgrade_normalize_params_covers_keys_added_later(monkeypatch):
-    """The forward property the plan demands: a key a later step (§2's
-    thresholds, §3's weights) adds to build_params() is absorbed by the
-    same shim, with no second migration. Proved by faking such a key."""
+    """The forward property this shim is meant to have: a key a later
+    step adds to build_params() is absorbed by the same shim, with no
+    second migration. Proved by faking such a key."""
     v1 = {"format_version": 1, "analysis_grid": 1024}
     monkeypatch.setattr(
         nz, "build_params", lambda: {**build_params(), "future_threshold": 1.5}
@@ -1301,8 +1300,8 @@ def test_upgrade_normalize_params_retires_the_canvas_scaled_keys():
 def test_upgrade_normalize_params_also_covers_a_v2_block_missing_a_later_key(
     monkeypatch,
 ):
-    """The real gap this shim must close: a roll stitched between §1's
-    format_version-2 bump and a later step (§2/§3) adding a new
+    """The real gap this shim must close: a roll stitched between a
+    format_version-2 bump and a later step adding a new
     build_params() key already carries `format_version: 2` — it is not a
     v1 block — but its stored `normalize` block still lacks that key.
     Gating the shim on `format_version == 1` alone would leave such a roll
@@ -1318,7 +1317,7 @@ def test_upgrade_normalize_params_also_covers_a_v2_block_missing_a_later_key(
 
 
 def test_v1_roll_invariant_survives_the_v2_build():
-    """The integration property §5.1 exists for: a roll whose stored
+    """The integration property this shim exists for: a roll whose stored
     `normalize` block is v1 does not raise ROLL_INVARIANT_MISMATCH against
     a v2 candidate, through the real comparison in `roll_manifest`."""
     from scanny_boy.roll_manifest import (
@@ -1363,7 +1362,7 @@ def test_v1_roll_invariant_survives_the_v2_build():
 
 def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
     """FilmKind must drop into `icc_profile.published_profile_kind`'s
-    plain-string comparison unchanged (MONOCHROME_PLAN §2/§4)."""
+    plain-string comparison unchanged."""
     from scanny_boy.icc_profile import ProfileKind, published_profile_kind
 
     assert published_profile_kind(nz.FilmKind.MONOCHROME) is ProfileKind.DENSITY_GREY
@@ -1372,7 +1371,7 @@ def test_film_kind_is_a_plain_str_and_matches_published_profile_kind():
     assert nz.FilmKind.COLOUR == "colour"
 
 
-# --- MONOCHROME_PLAN section 3: the collapse -------------------------------------
+# --- the mono collapse -----------------------------------------------------------
 
 
 def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
@@ -1388,8 +1387,8 @@ def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
 
 
 def test_collapse_to_mono_recovers_the_plane_up_to_a_constant_offset():
-    """§3.4: an image whose three channels are one plane under three
-    different per-channel *offsets* (§3.1's model: same silver density,
+    """An image whose three channels are one plane under three
+    different per-channel *offsets* (same silver density,
     different film-base/CFA level) collapses back to that plane, shifted
     by one constant everywhere — the weighted mean of the removed offsets,
     which step 3 adds back."""
@@ -1411,7 +1410,7 @@ def test_collapse_to_mono_recovers_the_plane_up_to_a_constant_offset():
 
 
 def test_collapse_to_mono_median_is_the_weighted_mean_of_input_medians():
-    """§3.1 step 3's actual guarantee: the merged channel's median equals
+    """The collapse's actual guarantee: the merged channel's median equals
     the weighted mean of the input channels' medians — not that the output
     brackets its inputs, which a weighted mean never does by construction.
 
@@ -1419,7 +1418,8 @@ def test_collapse_to_mono_median_is_the_weighted_mean_of_input_medians():
     noise: `median` is shift-invariant (`median(x + c) == median(x) + c`)
     but not additive over independent random variables in general, so
     proving this property needs channels whose only difference is a
-    constant shift — exactly §3.1's own model of a silver negative."""
+    constant shift — exactly the collapse's own model of a silver
+    negative."""
     plane_linear = _mono_plane(seed=13)
     plane_log = np.log10(plane_linear).astype(np.float32)
     offsets = (0.1, -0.15, 0.25)
@@ -1465,7 +1465,7 @@ def test_golden_values_match_negpy():
     assert bounds.ceils == pytest.approx(reference.ceils, abs=1e-5)
 
 
-# --- MONOCHROME_PLAN section 4: one-channel plumbing ----------------------------
+# --- one-channel plumbing ---------------------------------------------------------
 
 
 def _ramp_scene_1ch(side: int = 64) -> np.ndarray:
@@ -1480,7 +1480,7 @@ def test_luma_of_log_on_one_channel_is_the_channel_itself():
 
 
 def test_analyze_bounds_on_one_channel_reduces_to_the_luma_percentile_pair():
-    """MONOCHROME_PLAN §4: the two-axis recombination degenerates on one
+    """The two-axis recombination degenerates on one
     channel — the colour deviation vanishes and the bounds are the luma
     percentile pair. The correct answer, reached by the generalised
     arithmetic, not a special case."""
@@ -1561,7 +1561,7 @@ def test_clamp_bounds_on_one_channel():
 
 def test_detect_rebate_base_density_on_one_channel():
     """The rebate detector's base_density records one entry per published
-    channel (MONOCHROME_PLAN §4)."""
+    channel."""
     grid = np.full((16, 16, 1), -2.0, dtype=np.float32)
     grid[:2, :] = -0.3  # a thin band touching the border: rebate-like
     keep = np.ones(grid.shape[:2], dtype=bool)
@@ -1574,8 +1574,8 @@ def test_detect_rebate_base_density_on_one_channel():
 
 def test_encode_decode_round_trip_with_one_element_bounds():
     """A mono composite's recorded 1-element floors/ceils stretch the one
-    channel exactly as a colour roll's three do (§3.4's round-trip
-    property, at the unit level): encode then decode returns the
+    channel exactly as a colour roll's three do (the round-trip property,
+    at the unit level): encode then decode returns the
     normalized values within quantization."""
     grid = _ramp_scene_1ch()
     keep = np.ones(grid.shape[:2], dtype=bool)
@@ -1587,7 +1587,7 @@ def test_encode_decode_round_trip_with_one_element_bounds():
     assert decode_normalized(codes) == pytest.approx(normalized, abs=2e-5)
 
 
-# --- docs/CAST_REMOVAL_PLAN.md chunk R-1 ------------------------------------
+# --- the neutral residual meter and highlight reference -----------------------
 
 
 def _structured_grid(
@@ -1731,7 +1731,7 @@ def test_measure_highlight_refs_returns_none_without_trustworthy_neutrals():
 
 
 def test_measure_highlight_refs_prefers_a_threaded_base_refs():
-    """§0.6: with a roll anchor threaded in, the dense-end chroma is
+    """With a roll anchor threaded in, the dense-end chroma is
     measured against the measured film base rather than a scene
     percentile — the same thin end the published pixels use. Here the
     anchor's deviations match the band's true chroma, so the gated set is
@@ -1750,12 +1750,12 @@ def test_measure_highlight_refs_prefers_a_threaded_base_refs():
     assert nz.measure_highlight_refs(grid, keep, base_refs) is not None
 
 
-# --- REBATE_ANCHORING section 4.1: base_refs at the consumption site ----
+# --- base_refs at the consumption site --------------------------------------
 
 
 def test_analyze_bounds_with_base_refs_none_matches_omitting_it():
-    """B-5 regression lock: `base_refs=None` is identical to omitting the
-    argument — the pre-B-5 behaviour every other test in this file assumes."""
+    """A regression lock: `base_refs=None` is identical to omitting the
+    argument — the behaviour every other test in this file assumes."""
     img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
     keep = np.ones(img.shape[:2], dtype=bool)
     omitted = analyze_bounds(img, keep)
@@ -1764,7 +1764,7 @@ def test_analyze_bounds_with_base_refs_none_matches_omitting_it():
 
 
 def test_analyze_bounds_with_base_refs_sets_ceils_deviations_and_keeps_mean_lc():
-    """§4.1: the roll anchor supplies `c_ceils`; only deviations survive
+    """The roll anchor supplies `c_ceils`; only deviations survive
     recombination and `mean_lc` stays on the luma axis."""
     img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
     keep = np.ones(img.shape[:2], dtype=bool)
@@ -1783,7 +1783,7 @@ def test_analyze_bounds_with_base_refs_sets_ceils_deviations_and_keeps_mean_lc()
 
 
 def test_analyze_bounds_base_refs_are_exposure_invariant_at_consumption():
-    """§0.2: a common-mode shift in `base_refs` cancels in the
+    """A common-mode shift in `base_refs` cancels in the
     recombination — asserted at the consumption site, not only measurement."""
     img = _ramp_scene(256, 256, -2.0, -0.2, (0.0, 0.1, -0.1))
     keep = np.ones(img.shape[:2], dtype=bool)
@@ -1794,7 +1794,7 @@ def test_analyze_bounds_base_refs_are_exposure_invariant_at_consumption():
 
 
 def test_analyze_bounds_three_array_base_refs_falls_back_on_mono():
-    """§5: a 3-array `base_refs` on a 1-channel image silently falls back."""
+    """A 3-array `base_refs` on a 1-channel image silently falls back."""
     grid = _ramp_scene_1ch()
     keep = np.ones(grid.shape[:2], dtype=bool)
     base_refs = (-0.42, -0.12, -0.99)
@@ -1803,9 +1803,9 @@ def test_analyze_bounds_three_array_base_refs_falls_back_on_mono():
 
 
 def test_upgrade_normalize_params_upgrades_a_stored_v2_block_to_v3():
-    """CAST_REMOVAL_PLAN R-1: a roll stitched between REBATE anchoring and
-    this chunk carries `format_version: 2` and lacks the three new keys;
-    the shim must still compare it equal to a fresh build."""
+    """A roll stitched before the neutral-residual meter's constants were
+    added carries `format_version: 2` and lacks the three new keys; the
+    shim must still compare it equal to a fresh build."""
     from scanny_boy import normalization
 
     v2 = normalization.build_params()

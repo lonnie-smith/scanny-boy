@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-# docs/OPTIMIZATION.md §1: only the cheap, always-needed modules are
+# Only the cheap, always-needed modules are
 # imported at module scope. Each subcommand's implementation imports
 # inside the function that dispatches it, so `edit list-spots` does not
 # pay for scipy (via `calibration`) or the rest of the application.
@@ -45,6 +45,7 @@ from scanny_boy.events import (
     RollListingEntry,
     RollListingReason,
     RollRenamed,
+    ScratchesReported,
     SpotsReported,
     Started,
     WarningEvent,
@@ -69,8 +70,8 @@ CANCELLED_EXIT_STATUS = 143
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scanny-boy")
     # A diagnostic, not part of the event stream: it prints one plain-text
-    # line and exits 0. The app never calls it; the packaged checks of
-    # section 5.2 do, as the cheapest proof that the frozen bundle starts
+    # line and exits 0. The app never calls it; the packaged checks
+    # do, as the cheapest proof that the frozen bundle starts
     # and can read its own package metadata.
     parser.add_argument(
         "--version",
@@ -79,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # docs/OPTIMIZATION.md §2.1: the resident helper. It reads
+    # The resident helper. It reads
     # newline-delimited JSON requests on stdin and writes this stream's
     # events on stdout; each request re-enters `run_argv`, so there is
     # exactly one implementation of every command.
@@ -410,6 +411,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="clear the crop and return to the full frame",
     )
+    edit_crop.add_argument(
+        "--full-frame",
+        action="store_true",
+        help=(
+            "the rect is on the full uncropped display canvas — for "
+            "re-entering crop mode on the whole frame with the saved "
+            "window superimposed"
+        ),
+    )
 
     edit_render_region = edit_subparsers.add_parser(
         "render-region",
@@ -457,6 +467,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     edit_render_preview.add_argument("--output", required=True, metavar="PATH")
+    edit_render_preview.add_argument(
+        "--full-frame",
+        action="store_true",
+        help=(
+            "ignore the live crop and render the whole uncropped display "
+            "image — for re-entering crop mode on the full frame"
+        ),
+    )
 
     edit_tone = edit_subparsers.add_parser(
         "tone",
@@ -687,6 +705,55 @@ def build_parser() -> argparse.ArgumentParser:
     edit_list_spots.add_argument("--roll", required=True, metavar="DIR")
     edit_list_spots.add_argument("--negative", required=True, metavar="ID")
 
+    edit_detect_scratches = edit_subparsers.add_parser(
+        "detect-scratches",
+        help=(
+            "Run the scratch detector over one or more negatives' published "
+            "TIFFs and record the set as a `scratches` op per negative."
+        ),
+    )
+    edit_detect_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_detect_scratches.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to detect on; repeat for a selection",
+    )
+
+    edit_scratches = edit_subparsers.add_parser(
+        "scratches",
+        help=(
+            "Toggle scratch correction on or off for one or more negatives."
+        ),
+    )
+    edit_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_scratches.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to toggle; repeat for a selection",
+    )
+    on_off_group = edit_scratches.add_mutually_exclusive_group()
+    on_off_group.add_argument(
+        "--on",
+        action="store_true",
+        help="enable scratch correction",
+    )
+    on_off_group.add_argument(
+        "--off",
+        action="store_true",
+        help="disable scratch correction",
+    )
+
+    edit_list_scratches = edit_subparsers.add_parser(
+        "list-scratches",
+        help="List one negative's scratch set as display-space rects (pure query).",
+    )
+    edit_list_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_list_scratches.add_argument("--negative", required=True, metavar="ID")
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -698,7 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--downsample",
         # `exporter.DOWNSAMPLE_CHOICES` kept literal: the parser build must
         # not pay for exporter's cv2 import (module-scope lazy-import rule).
-        choices=("none", "6048", "9072"),
+        choices=("none", "6048", "9072", "12096"),
         default="none",
         help="Reduce the export's long edge to the chosen size (no upscale).",
     )
@@ -773,7 +840,7 @@ def _color_flag_updates(args) -> dict[str, float | None]:
 
 
 def _validate_color_args(args) -> None:
-    """docs/CAST_REMOVAL_PLAN.md §7.3: `--auto-cast` owns all three global
+    """`--auto-cast` owns all three global
     CMY sliders outright — it is a usage error with `--reset` (which
     contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
     (which it would overwrite). The `--temperature` exclusivity rules are
@@ -880,7 +947,7 @@ def _roll_listing_entry(listing) -> RollListingEntry:
 
 def _run_roll_command(args, writer: EventWriter) -> int:
     """The `roll init` / `roll list` / `roll info` / `roll rename`
-    subcommands (section 3.5; `rename` added at section 5.5). Each mirrors
+    subcommands. Each mirrors
     the other commands' started/finished bracketing; none carries a
     `run_id`, since none is a pipeline run."""
     from scanny_boy import previews
@@ -1013,6 +1080,8 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             live_crop,
             (output_height, output_width),
             quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
         )
         tone_params = state.tone
         negative["tone_grade_r"] = (
@@ -1056,7 +1125,7 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         )
         # The spots summary, not the list: a 36-negative roll with 500
         # spots each would otherwise put megabytes of JSON through every
-        # `roll info` (SPOTTING_PLAN §7.3). The full list is
+        # `roll info`. The full list is
         # `edit list-spots`' job.
         spots_params = state.spots
         if spots_params is None:
@@ -1078,6 +1147,23 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                     0 if stale else sum(1 for s in spot_list if s.get("rejected"))
                 ),
             }
+        # The scratches summary: enabled state and count, not the full list.
+        scratches_params = state.scratches
+        if scratches_params is None:
+            negative["scratches"] = None
+        else:
+            output = negative.get("output") or {}
+            stale = tuple(scratches_params.get("canvas") or (None, None)) != (
+                output.get("width"),
+                output.get("height"),
+            )
+            scratch_list = scratches_params.get("scratches") or []
+            negative["scratches"] = {
+                "detector_version": scratches_params.get("detector_version"),
+                "enabled": scratches_params.get("enabled"),
+                "stale": stale,
+                "count": 0 if stale else len(scratch_list),
+            }
     if manifest.film is not None:
         info["film_kind"] = manifest.film.get("kind")
     else:
@@ -1089,8 +1175,8 @@ def _run_roll_command(args, writer: EventWriter) -> int:
 
 def _camera_model_from_source(frame: Path) -> str | None:
     """The base frame's EXIF camera model, joined the way
-    `pipeline.build_curated_metadata` joins a scan's (`docs/EXPORT_PLAN.md
-    §3.2`'s recorded `camera_model`). The comparison is a warning, so a
+    `pipeline.build_curated_metadata` joins a scan's recorded
+    `camera_model`. The comparison is a warning, so a
     frame whose EXIF cannot be read measures and attaches regardless."""
     from scanny_boy.metadata import (
         UnreadableRawError,
@@ -1106,8 +1192,7 @@ def _camera_model_from_source(frame: Path) -> str | None:
 
 
 def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
-    """The `roll set-base-frame` subcommand (docs/REBATE_ANCHORING.md
-    §7.1, §3.2 rules 1-3): decode, measure, gate, and attach (or replace)
+    """The `roll set-base-frame` subcommand: decode, measure, gate, and attach (or replace)
     the roll's film-base reference. A gate failure emits the error and
     changes nothing on disk; a locked roll refuses outright. Emits one
     `base_frame_set` event on success."""
@@ -1312,12 +1397,15 @@ def _run_edit_command(args, writer: EventWriter) -> int:
         run_edit_color,
         run_edit_crop,
         run_edit_delete,
+        run_edit_detect_scratches,
         run_edit_detect_spots,
         run_edit_flip,
+        run_edit_list_scratches,
         run_edit_list_spots,
         run_edit_render_preview,
         run_edit_render_region,
         run_edit_rotate,
+        run_edit_scratches,
         run_edit_spots,
         run_edit_tone,
     )
@@ -1417,6 +1505,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                         rect=(args.x, args.y, args.width, args.height),
                         tilt_deg=args.tilt,
                         preset=args.preset,
+                        full_frame=args.full_frame,
                         emit=writer.write,
                     )
                 ]
@@ -1450,6 +1539,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                     args.negative,
                     Path(args.output),
                     mode=args.mode,
+                    full_frame=args.full_frame,
                     emit=writer.write,
                 )
             ]
@@ -1480,6 +1570,28 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 emit=writer.write,
             )]
             confirmation = SpotsReported
+        elif args.edit_command == "detect-scratches":
+            results = run_edit_detect_scratches(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )
+            confirmation = ScratchesReported
+        elif args.edit_command == "scratches":
+            results = run_edit_scratches(
+                Path(args.roll),
+                args.negative,
+                enabled=True if args.on else (False if args.off else None),
+                emit=writer.write,
+            )
+            confirmation = ScratchesReported
+        elif args.edit_command == "list-scratches":
+            results = [run_edit_list_scratches(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )]
+            confirmation = ScratchesReported
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
     except EditFailure as exc:
@@ -1793,8 +1905,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     `run_argv` is the body; `scanny-boy serve` calls it per request with a
     writer carrying the request's `request_id` and the request's own
-    cancellation token, so one implementation serves both paths
-    (docs/OPTIMIZATION.md §2.1)."""
+    cancellation token, so one implementation serves both paths."""
     return run_argv(argv, EventWriter(sys.stdout))
 
 
@@ -1821,7 +1932,7 @@ def run_argv(
     # grouping from the work manifest, which already recorded it. `probe`
     # needs one only when it has a selection to group — a catalogue-only
     # probe has no negatives. `prepare` and `run` require exactly one of
-    # the two flags (docs/GRID_STITCH_PLAN.md section 2.2).
+    # the two flags.
     per_negative = getattr(args, "per_negative", None)
     grid_text = getattr(args, "grid", None)
 
@@ -1897,8 +2008,8 @@ def run_argv(
         # can only say "produced no result"; with it, the user sees the
         # exception itself and the exit is an ordinary failed one.
         #
-        # docs/OPTIMIZATION.md §1: `library.db` (and its SQLAlchemy leaf)
-        # is no longer imported eagerly, so the one failure that can
+        # `library.db` (and its SQLAlchemy leaf)
+        # is not imported eagerly, so the one failure that can
         # strike every command alike is identified here, inside the
         # handler, at the moment one actually arrives.
         from scanny_boy.library.db import LibraryDBError
@@ -2013,8 +2124,7 @@ def _dispatch_command(
     if args.command == "run":
         return _run_run_command(args, writer, files, jobs, spec, cancel)
 
-    # prepare — stage 1 of the pipeline, renamed from `convert`
-    # (docs/DECISIONS.md, "Normalization decisions"): "Convert" is reserved,
+    # prepare — stage 1 of the pipeline. "Convert" is reserved,
     # unambiguously, for the whole `run`.
     from scanny_boy.pipeline import ConvertFailure, run_convert
 
@@ -2024,7 +2134,7 @@ def _dispatch_command(
     # The SIGTERM handler is installed for the whole conversion and
     # removed afterwards; it only sets the token's flag, and every
     # deletion, manifest update, and final event below happens on this
-    # thread through ordinary control flow (section 3.8).
+    # thread through ordinary control flow.
     try:
         with command_cancellation(cancel) as scope:
             outcome = run_convert(

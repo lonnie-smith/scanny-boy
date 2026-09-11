@@ -1,5 +1,4 @@
-"""Worker-count policy and the per-worker memory budget of
-`docs/IMPLEMENTATION_PLAN.md` section 3.8.
+"""Worker-count policy and the per-worker memory budget.
 
 Every machine shape here is passed in explicitly rather than read from the
 host, so the same assertions hold on the developer's 64 GiB Mac and on a
@@ -32,9 +31,9 @@ PLENTY_OF_MEMORY = 64 * GIB
 
 
 def test_budget_is_640_mib_per_worker():
-    # Raised from the plan's starting figure of 512 MiB by section 3.8's
-    # own instruction: the measured serial peak plus 25% is 594 MiB. See
-    # the comment on the constant and scripts/measure-concurrency.py.
+    # Raised from a starting figure of 512 MiB: the measured serial peak
+    # plus 25% is 594 MiB. See the comment on the constant and
+    # scripts/measure-concurrency.py.
     assert WORKER_MEMORY_BUDGET_BYTES == 640 * MIB
 
 

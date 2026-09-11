@@ -1,5 +1,4 @@
-"""The per-negative rectification record (docs/RECTIFICATION_PLAN.md
-section 7).
+"""The per-negative rectification record.
 
 Nullable column: existing rows read back with NULLs and stay valid — there
 is no data migration. `negatives.rectification` records the fitted rig-tilt

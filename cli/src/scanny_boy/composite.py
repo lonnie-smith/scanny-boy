@@ -2,12 +2,11 @@
 photometric mismatch between frames with per-frame per-channel gains, then
 feather-blend in linear light and encode the finished canvas.
 
-`MAX_OVERLAP_MAD` and `INTERPOLATION` are Chunk P2-1's measured constants.
+`MAX_OVERLAP_MAD` and `INTERPOLATION` are measured constants.
 Production code reads them from here and from nowhere else. Note:
 `MAX_OVERLAP_MAD = 0.20` was measured against *uncorrected* overlaps. Since
 gain compensation now runs before the measurement, it gates the post-gain
-residual, and 0.20 is looser than the residual a healthy capture produces
-(see docs/DECISIONS.md, "Quality gates").
+residual, and 0.20 is looser than the residual a healthy capture produces.
 
 `MIN_GAIN_OVERLAP_PX` and `GAIN_DRIFT_WARN` are **provisional, unmeasured**
 values: `MIN_GAIN_OVERLAP_PX` borrows the floor NegPy measured for its own
@@ -61,32 +60,43 @@ from scanny_boy.normalization import (
 )
 from scanny_boy.registration import Rectification, StitchError, rectify
 
-FILL_COLOR: tuple[int, int, int] = (0, 0, 0)  # section 3.3: one constant, one place
+FILL_COLOR: tuple[int, int, int] = (0, 0, 0)  # one constant, one place
 MASK_ERODE_PX = 5  # Lanczos4 support radius 4, plus one
 MAX_CANVAS_DIMENSION = 30_000  # warn above this
 MAX_STITCHED_BYTES = int(3.5 * 1024**3)  # fail above this
-MEMORY_SAFETY_FACTOR = 3.5  # section 3.8.1; measured, not padding
+MEMORY_SAFETY_FACTOR = 3.5  # measured, not padding
 
 MAX_OVERLAP_MAD = 0.20
 INTERPOLATION = cv2.INTER_LANCZOS4
 
 FEATHER = "axis-separable"  # recorded in the roll manifest's stitch params
-# Numerical guard, not a measured threshold: every covered pixel keeps a
-# positive weight, the same invariant cv2.distanceTransform gave for free
-# (it never returns less than 1.0 inside a mask).
-_FEATHER_FLOOR = 1.0  # px
 # The two-axis (grid) feather's floor, as a *fraction* of full weight: the
-# separable product of the two axis ramps is dimensionless in [0, 1], so
-# the px-valued `_FEATHER_FLOOR` cannot govern it. **Unmeasured starting
-# value** (docs/GRID_STITCH_PLAN.md sections 2.4 and 5.1): chosen as the
-# same order as the strip floor's relative magnitude (1.0 px against a
+# separable product of the two axis ramps is dimensionless in [0, 1], so a
+# px-valued floor cannot govern it. **Unmeasured starting value**:
+# chosen as the same order
+# as the pre-grid strip floor's relative magnitude (1.0 px against a
 # ~3000 px ramp is ~3e-4), recorded in `_stitch_params` as
 # `feather_floor_fraction`, and revisited at the same user gate as the
 # grid-pitch/alignment constants.
 _FEATHER_FLOOR_FRACTION = 1e-3
 
+# The exponent applied to the normalised ramp product, narrowing the
+# crossfade to a band around the overlap midline.
+# **Unmeasured starting value**: 1 reproduces the pre-existing full-extent ramp exactly.
+# Recorded in the roll manifest's stitch params as `feather_exponent`.
+#
+# Bounded to [1, 8]: the floor runs *before* the power, so the
+# floored region's weight becomes `_FEATHER_FLOOR_FRACTION ** FEATHER_EXPONENT`.
+# In float32, with `_FEATHER_FLOOR_FRACTION = 1e-3`, p=8 gives 1e-24 (a
+# normal float32, comfortable); p=12 gives 1e-36 (normal, marginal); p=13
+# gives 1e-39 (subnormal — the covered-implies-positive-weight invariant
+# starts to erode). A larger exponent needs the floor redesigned first, not
+# just a higher bound here.
+FEATHER_EXPONENT = 4
+assert isinstance(FEATHER_EXPONENT, int) and 1 <= FEATHER_EXPONENT <= 8
+
 # Rows of output corrected per cv2.remap call when a profile's geometry is
-# applied (docs/GEOMETRIC_PLAN.md section 5.3): the band map is generated
+# applied: the band map is generated
 # closed-form a band at a time, so no frame-sized base map ever exists.
 GEOMETRY_BAND_ROWS = 256
 
@@ -94,7 +104,7 @@ GEOMETRY_BAND_ROWS = 256
 MIN_GAIN_OVERLAP_PX = 1000
 GAIN_DRIFT_WARN = 0.05
 
-_USABLE_MEMORY_FRACTION = 0.5  # section 3.8: "must not exceed half of physical RAM"
+_USABLE_MEMORY_FRACTION = 0.5  # must not exceed half of physical RAM
 # A disk-shaped structuring element erodes a uniform margin regardless of
 # the mask boundary's orientation; a repeated small square kernel erodes by
 # Chebyshev (not Euclidean) distance and under-erodes a diagonal edge,
@@ -106,20 +116,19 @@ _EROSION_KERNEL = cv2.getStructuringElement(
 
 @dataclasses.dataclass(frozen=True)
 class CompositeResult:
-    image: np.ndarray  # uint16 (H, W, 3), normalized log density (section 3.11)
+    image: np.ndarray  # uint16 (H, W, 3), normalized log density
     gains: dict[str, tuple[float, float, float]]
     overlap_mad: dict[tuple[str, str], float]  # post-gain residual
     overlap_mad_pregain: dict[tuple[str, str], float]
     overlap_fraction: dict[tuple[str, str], float]
     coverage_fraction: float
-    # The normalization meters (docs/DECISIONS.md, "Normalization decisions"
-    # 3.7, 3.13): per-negative bounds, the recorded-not-acted-on print-stage
-    # statistics, the observed pre-clip extrema (section 3.6), the fraction
+    # The normalization meters: per-negative bounds, the recorded-not-acted-on print-stage
+    # statistics, the observed pre-clip extrema, the fraction
     # of pixels the encode's headroom clipped, and the rebate,
     # dense-border and opaque-holder findings.
     bounds: Bounds
     shadow_refs: tuple[float, float, float]
-    # CAST_REMOVAL_PLAN R-1: the dense end's same-pixel neutral reference
+    # The dense end's same-pixel neutral reference
     # (None when the band held no trustworthy neutrals) and the frame's
     # residual neutral offset — both recorded, read by nothing in the
     # stitch stage.
@@ -155,36 +164,39 @@ def estimate_peak_bytes(
     ca_maps: bool = False,
     rectification: bool = False,
 ) -> int:
-    """Section 3.8's revised formula, exactly, including MEMORY_SAFETY_FACTOR.
+    """The memory-estimate formula, exactly, including MEMORY_SAFETY_FACTOR.
 
-    `frame_size` is (height, width) at full resolution — the revised formula
+    `frame_size` is (height, width) at full resolution — the formula
     needs it because the decoded source frame has to be resident for
-    cv2.warpAffine and the original formula omitted it (section 3.8.1).
+    cv2.warpAffine.
     `frame_count` is the negative's frame count: every warped frame stays
     resident until all frames are warped, because the pairwise photometric
     stats, the gain solve, and both overlap-MAD passes need any pair's two
     frames side by side.
 
-    With a profile's geometry applied (docs/GEOMETRIC_PLAN.md section 5.3)
+    With a profile's geometry applied
     the warp is a banded cv2.remap, which adds the band maps
     (`3 * GEOMETRY_BAND_ROWS * bbox_width * 2 * 4` — the worst case, three
     channels' maps in "maps" mode) and, in "maps" mode, one contiguous
     single-channel source view held during each remap
     (`frame_pixels * 4`). MEMORY_SAFETY_FACTOR is unchanged.
 
-    A rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 6) routes
+    A rig-tilt rectification routes
     the warp through the same banded remap even without geometry, so with
     `rectification=True` and no geometry the band-map term applies too.
     With geometry already active there is no additional term: the maps are
-    counted once either way. The per-worker budget is not re-measured, per
-    the docs/STITCH_QUALITY_PLAN.md section 1.4 precedent.
+    counted once either way. The per-worker budget is not re-measured.
 
     The feather (`_feather_weight`) needs bbox-sized float32 scratch — in
     the two-axis case three buffers (one per axis ramp plus the product),
     in the one-axis case two — live for one frame at a time in the
     accumulate pass, since the weight is computed lazily there rather than
-    retained per frame (docs/GRID_STITCH_PLAN.md section 5.2): one additive
+    retained per frame: one additive
     term, not `frame_count` of them.
+
+    Scratch detection at stitch time adds negligible transient memory next
+    to the composite budget: band responses are ``(H/64) × W float32`` and
+    fit strips are roughly ``65 × H × 3 float32`` per accepted scratch.
     """
     canvas_width, canvas_height = canvas_size
     frame_height, frame_width = frame_size
@@ -197,8 +209,7 @@ def estimate_peak_bytes(
     accum = canvas_pixels * 3 * 4  # float32 RGB weighted sum
     weight = canvas_pixels * 4  # float32 weight sum
     result = canvas_pixels * 3 * 2  # uint16 encoded output
-    # The normalization pass (docs/DECISIONS.md, "Normalization decisions"):
-    # log density and the normalized image are both canvas-sized float32,
+    # The normalization pass: log density and the normalized image are both canvas-sized float32,
     # alive alongside the accumulators before the encode.
     log_density = canvas_pixels * 3 * 4
     normalized = canvas_pixels * 3 * 4
@@ -279,7 +290,7 @@ def frame_bbox(
 
     With a rectification the corners first map through `W`: the frame's
     canvas footprint is the rectified keystone quad, not the affine image
-    of the raw rectangle (docs/RECTIFICATION_PLAN.md section 6.2).
+    of the raw rectangle.
 
     `layout.py` computes the canvas size from the *aggregate* min/max
     corner across every frame (`ceil(global_max - global_min)`), while this
@@ -289,8 +300,7 @@ def frame_bbox(
     loss, since anything in that last pixel is inside MASK_ERODE_PX anyway.
 
     Under pincushion distortion the frame's true content corners pull
-    inward by the corner-displacement amount (1-7 px at the magnitudes this
-    plan expects, section 1.1), so the rect computed here is off by that
+    inward by the corner-displacement amount (typically 1-7 px), so the rect computed here is off by that
     much at the corners when a profile's geometry is applied. Accepted:
     `MASK_ERODE_PX` already discards a comparable margin, and complicating
     this function for it is not worth it.
@@ -301,8 +311,7 @@ def frame_bbox(
     )
     if rectification is not None:
         # The frame's canvas footprint is the rectified keystone quad, not
-        # the affine image of the raw rectangle
-        # (docs/RECTIFICATION_PLAN.md section 6.2) — `layout.frame_corners`
+        # the affine image of the raw rectangle — `layout.frame_corners`
         # does the same for the canvas bounds and the valid rect.
         corners_local = rectify(corners_local, rectification)
     rotation, translation = matrix[:, :2], matrix[:, 2]
@@ -317,31 +326,6 @@ def frame_bbox(
     return x, y, right - x, bottom - y
 
 
-def _axis_ramp(
-    mask: np.ndarray,
-    bbox_x: int,
-    bbox_y: int,
-    axis: tuple[float, float],
-) -> np.ndarray:
-    """One axis's ramp for `_feather_weight`, in pixels: the distance from
-    the nearer end of this frame's own extent along `axis`, floored at
-    `_FEATHER_FLOOR` px so a covered pixel always contributes. The
-    `if not covered.any()` early-out guards the projection arithmetic,
-    which is undefined on an all-empty mask."""
-    ax, ay = axis
-    height, width = mask.shape
-    s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[np.newaxis, :]
-    s = s + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
-    covered = mask > 0
-    if not covered.any():
-        return np.zeros(mask.shape, dtype=np.float32)
-    s_min = float(s[covered].min())
-    s_max = float(s[covered].max())
-    weight = np.maximum(np.minimum(s - s_min, s_max - s), _FEATHER_FLOOR)
-    weight[~covered] = 0.0
-    return weight.astype(np.float32)
-
-
 def _feather_weight(
     mask: np.ndarray,
     bbox_x: int,
@@ -352,41 +336,42 @@ def _feather_weight(
 
     `axes` is a tuple of one or two unit vectors. Along each, the weight
     ramps from the frame's own extent on that axis — distance from the
-    nearer end — and the returned weight is the *product* of the per-axis
-    ramps, floored once at the end. One axis is the strip case
-    (docs/STITCH_QUALITY_PLAN.md section 1.3), unchanged. Two axes is a
-    grid: the ramp is separable, so a pixel's crossfade profile across a
-    vertical seam is the same at the top of the canvas as in the middle,
-    and likewise for horizontal seams — the same guarantee the strip ramp
-    makes, in both directions at once. Empty `axes` (a layout that is
-    neither) falls back to the distance transform.
+    nearer end — normalised by the axis's own `(s_max - s_min) / 2` so each
+    per-axis ramp is dimensionless in [0, 1]. The returned weight is the
+    *product* of the per-axis ramps, floored once at the end at
+    `_FEATHER_FLOOR_FRACTION` and then raised to `FEATHER_EXPONENT`,
+    narrowing the crossfade to a band
+    around the overlap midline without moving it. One axis is
+    the strip case; two axes is a
+    grid, where the ramp is separable, so a pixel's crossfade profile
+    across a vertical seam is the same at the top of the canvas as in the
+    middle, and likewise for horizontal seams. Empty `axes` (a layout that
+    is neither) falls back to the distance transform, unpowered — it is
+    isotropic, not a product of independent ramps.
 
-    In the two-axis case each ramp is divided by its own
-    `(s_max - s_min) / 2`, so the product is dimensionless in [0, 1] and
-    the floor is a fixed *fraction* of full weight
-    (`_FEATHER_FLOOR_FRACTION`); the accumulate pass normalises by the
-    summed weight, so the per-frame constant cancels. The one-axis case
-    stays pixel-valued with the `_FEATHER_FLOOR` constant — the strip
-    weights must remain byte-identical to the pre-grid build's. The floor
-    and the `weight[~covered] = 0.0` are applied to the *product*, not
+    The floor **must** run before the power: flooring first keeps the
+    floored region byte-identically the same set of pixels for every
+    `FEATHER_EXPONENT` — the predicate is `product < _FEATHER_FLOOR_FRACTION`,
+    which the power never sees. Powering first would floor wherever
+    `product < _FEATHER_FLOOR_FRACTION ** (1 / FEATHER_EXPONENT)` instead, a
+    much larger region. The floor and
+    the `weight[~covered] = 0.0` are applied to the *product*, not
     per-axis: a covered pixel keeps a positive weight, and a four-way
-    corner does not land on `floor²`.
+    corner does not land on `floor**2`.
     """
     if not axes:
         return cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    if len(axes) == 1:
-        return _axis_ramp(mask, bbox_x, bbox_y, axes[0])
 
     height, width = mask.shape
     covered = mask > 0
+    if not covered.any():
+        return np.zeros(mask.shape, dtype=np.float32)
     product = np.ones(mask.shape, dtype=np.float32)
     for axis in axes:
         ax, ay = axis
         s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[
             np.newaxis, :
         ] + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
-        if not covered.any():
-            return np.zeros(mask.shape, dtype=np.float32)
         s_min = float(s[covered].min())
         s_max = float(s[covered].max())
         half_span = (s_max - s_min) / 2.0
@@ -396,6 +381,7 @@ def _feather_weight(
         ramp[~covered] = 0.0
         product *= ramp.astype(np.float32)
     weight = np.maximum(product, _FEATHER_FLOOR_FRACTION)
+    np.power(weight, FEATHER_EXPONENT, out=weight)
     weight[~covered] = 0.0
     return weight.astype(np.float32)
 
@@ -448,7 +434,7 @@ def _mean_level_mad(a_values: np.ndarray, b_values: np.ndarray) -> float:
 
 
 def _geometry_camera(geometry: dict) -> tuple[np.ndarray, np.ndarray]:
-    """K and D for a section 3.2 geometry object: the coefficients are in
+    """K and D for a geometry object: the coefficients are in
     the OpenCV forward convention, so they drop straight in."""
     K = np.array(
         [
@@ -472,11 +458,11 @@ def _warp_bands(
     ca: dict | None,
     rectification: Rectification | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The composed band map of section 5.3: warp through distortion (and,
+    """The composed band map: warp through distortion (and,
     in "maps" mode, the per-channel CA maps) with `cv2.remap`, a band of
     GEOMETRY_BAND_ROWS output rows at a time.
 
-    With a rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 6.1),
+    With a rig-tilt rectification,
     the placement lives in rectified space, so an inverse-rectification
     step sits between the affine inverse and the distortion steps:
 
@@ -509,10 +495,9 @@ def _warp_bands(
 
     rotation = bbox_matrix[:, :2]
     translation = bbox_matrix[:, 2]
-    # Inverse of the placement's scaled rotation block (docs/
-    # STITCH_QUALITY_PLAN.md section 2: a frame's own matrix() is now
-    # scale * R, not R), so this undoes both the rotation and the per-frame
-    # scale in one step.
+    # Inverse of the placement's scaled rotation block (a frame's own
+    # matrix() is scale * R, not R), so this undoes both the rotation and
+    # the per-frame scale in one step.
     scaled_rotation_inv = np.linalg.inv(rotation)
 
     centre = rectification.centre if rectification is not None else None
@@ -537,9 +522,9 @@ def _warp_bands(
         py = scaled_rotation_inv[1, 0] * du + scaled_rotation_inv[1, 1] * dv
 
         if rectification is not None:
-            # 1.5. inverse rectification, rectified -> undistorted frame px
-            # (docs/RECTIFICATION_PLAN.md section 6.1). Closed form; the
-            # weight is bounded away from zero by the fit's excursion gate.
+            # 1.5. inverse rectification, rectified -> undistorted frame px.
+            # Closed form; the weight is bounded away from zero by the
+            # fit's excursion gate.
             qx = px - centre[0]
             qy = py - centre[1]
             w = 1.0 - l[0] * qx - l[1] * qy
@@ -652,13 +637,12 @@ def composite(
 
     `region` is the analysis region `(x, y, width, height)` in canvas
     pixels — the caller's `largest_valid_rect`, moved above the composite
-    call so the meters can be told where the fill is not
-    (docs/DECISIONS.md, "Normalization decisions"). It restricts the meters
-    only; the canvas stays the full union bounding box and nothing
+    call so the meters can be told where the fill is not. It restricts the
+    meters only; the canvas stays the full union bounding box and nothing
     captured is discarded.
 
     `rectification`, when given, is the negative's fitted rig-tilt
-    rectification (docs/RECTIFICATION_PLAN.md section 6): the placements
+    rectification: the placements
     live in rectified space, so the warp undoes the rectification per
     output pixel through the banded remap — with or without a profile's
     geometry. The plain cv2.warpAffine path runs only when neither is
@@ -669,7 +653,7 @@ def composite(
       2. cv2.warpAffine into the frame's OWN bounding box (not the canvas)
          with INTERPOLATION, BORDER_CONSTANT, borderValue 0 — or, when
          geometry or rectification is present, the composed banded remap.
-      3. np.clip(warped, 0.0, None) — section 2.3's measured -0.088
+      3. np.clip(warped, 0.0, None) — clips the measured -0.088
          undershoot.
       4. Warp a ones-mask with INTER_NEAREST; cv2.erode by MASK_ERODE_PX.
       5. weight = _feather_weight(mask, bbox_x, bbox_y, axes): the
@@ -702,26 +686,25 @@ def composite(
 
     Finally: divide where weight > 0, and — blending, warping and the gain
     solve having stayed in linear light, which is where they are
-    physically correct (section 1.3) — fuse the normalization into the
+    physically correct — fuse the normalization into the
     encode on the float32 accumulator that already exists:
 
       img_log    = to_log_density(result_linear)
       img_log    = collapse_to_mono(img_log, covered)  # mono roll only
-                   (MONOCHROME_PLAN section 3: after the log, before the
+                   (after the log, before the
                    bounds — averaging in linear light would weight by
                    intensity, not density, and biases toward the film
                    base; after the bounds, `analyze_bounds`' colour axis
                    would solve for an orange mask that is not there)
       keep       = resolve_analysis_region(...); opaque gate, film-extent
-                   pass and rebate detector refine it (section 3.13,
-                   docs/BLACK_POINT_REFINEMENT.md)
+                   pass and rebate detector refine it
       bounds     = analyze_bounds(keep)
       normalized = normalize_log_image(img_log, bounds)
       encoded    = encode_normalized(normalized)
 
-    The published image is normalized log density (section 3.11), a
+    The published image is normalized log density, a
     working intermediate — not the deliverable. Uncovered canvas pixels
-    take `encode_normalized(NORMALIZED_FILL)` — code 65535 (section 3.14);
+    take `encode_normalized(NORMALIZED_FILL)` — code 65535;
     `FILL_COLOR` survives as the linear-era record only.
 
     overlap_mad for a pair is the mean absolute difference between the two
@@ -754,8 +737,7 @@ def composite(
 
         ones_mask = np.ones((source_height, source_width), dtype=np.uint8)
         if geometry is not None or rectification is not None:
-            # The composed band map (docs/GEOMETRIC_PLAN.md section 5.3;
-            # docs/RECTIFICATION_PLAN.md section 6): distortion, CA, and the
+            # The composed band map: distortion, CA, and the
             # inverse rectification folded into the warp, one interpolation
             # pass per pixel.
             warped, warped_mask = _warp_bands(
@@ -892,7 +874,7 @@ def composite(
     result_linear = np.zeros_like(accum)
     result_linear[covered] = accum[covered] / weight_canvas[covered, np.newaxis]
 
-    # The normalization pass, fused into the encode (section 1.3). One
+    # The normalization pass, fused into the encode. One
     # uint16 code at a linear value of 0.008 is ~8.3e-4 in log10 density —
     # about 11.3 effective bits at the densest end, against a uniform 16
     # once the data is log-encoded.
@@ -910,7 +892,7 @@ def composite(
     # thin-end anchor still reads the film base.
     keep, opaque = withhold_opaque(grid, keep)
     keep_before_non_film = keep
-    # The film-extent pass (docs/BLACK_POINT_REFINEMENT.md): locate the
+    # The film-extent pass: locate the
     # negative carrier's incursion and inset the analysis rect inside it.
     # E-3: the returned keep applies — this is the line that moves
     # published pixels.
@@ -929,7 +911,7 @@ def composite(
     keep, dense_border = withhold_dense_border(grid, keep)
     bounds = analyze_bounds(grid, keep, base_refs)
     shadow_refs = measure_shadow_refs(grid, keep)
-    # CAST_REMOVAL_PLAN R-1: the dense end's neutral reference, beside the
+    # The dense end's neutral reference, beside the
     # other meters. `None` is recorded as null — it is load-bearing
     # information (the plan's §0.4), not an error.
     highlight_refs = measure_highlight_refs(grid, keep, base_refs)
@@ -952,7 +934,7 @@ def composite(
             unclamped_bounds = bounds
             bounds = clamped_bounds
 
-    # CAST_REMOVAL_PLAN R-1: the residual is measured against the *clamped*
+    # The residual is measured against the *clamped*
     # bounds — the ones the published pixels are actually stretched by —
     # which is why `del grid, keep` waits until here.
     neutral_residual = measure_neutral_residual(grid, keep, bounds)
@@ -961,7 +943,7 @@ def composite(
     normalized = normalize_log_image(img_log, bounds)
     del img_log
     # The observed extrema and headroom clipping are picture statistics:
-    # measured over the covered pixels only, never the fill (section 3.6).
+    # measured over the covered pixels only, never the fill.
     observed_min, observed_max = observed_extrema(normalized[covered])
     headroom_clipped_highlights, headroom_clipped_shadows = headroom_clip_fractions(
         normalized[covered]
@@ -970,13 +952,13 @@ def composite(
     del normalized
 
     # Sized to the published channel count: three on a colour roll, one on
-    # a mono roll's collapsed image (MONOCHROME_PLAN section 4).
+    # a mono roll's collapsed image.
     fill_code = encode_normalized(
         np.full((1, 1, encoded.shape[-1]), NORMALIZED_FILL, dtype=np.float32)
     )[0, 0]
     encoded[~covered] = fill_code
     if encoded.shape[-1] == 1:
-        # MONOCHROME_PLAN §4 (tiff_writer.py:81's `photometric` site, and
+        # (`tiff_writer.py`'s `photometric` site, and
         # `write_stitched_tiff`'s own shape check): the published mono TIFF
         # is a true 2-D array, not a (H, W, 1) one — the collapse point
         # keeps a trailing channel axis throughout the meters because every
@@ -1020,8 +1002,8 @@ def _region_keep(
 ) -> np.ndarray:
     """Map a canvas-space `(x, y, width, height)` analysis region onto the
     prefiltered grid, rounding *inward* so no uncovered-canvas cell ever
-    leaks into the meters (section 1.5: the fill would otherwise drag the
-    floor percentile to log10(1e-6) = -6.0 and garbage the whole stretch).
+    leaks into the meters: the fill would otherwise drag the
+    floor percentile to log10(1e-6) = -6.0 and garbage the whole stretch.
 
     Inward rounding is not enough on its own: the blend's `covered` mask
     can hold interior holes the layout's `largest_valid_rect` never saw,
@@ -1076,7 +1058,7 @@ def _intersect_with_coverage(
     caller's valid rect: the rect comes from the layout's coverage, and the
     blend's `covered` can hold interior holes the layout never saw — a hole
     would meter the fill (linear 0, log -6.0) and garbage the floor
-    percentile (docs/DECISIONS.md, "Normalization decisions").
+    percentile.
 
     "Mostly", not "fully", because the test is `block_median_grid` over the
     coverage indicator: a block survives while covered pixels are its

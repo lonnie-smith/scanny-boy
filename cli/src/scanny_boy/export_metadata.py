@@ -2,7 +2,7 @@
 
 The extended-metadata editing feature's one rule about deliverables:
 metadata lives in the database and reaches a file only at export. This
-module is that moment (docs/EXPORT_PLAN.md §5.2).
+module is that moment.
 
 Since the export became a JPEG XL write, there is no second pass: JPEG XL
 takes metadata as boxes at encode time, so nothing is reopened or
@@ -14,13 +14,13 @@ and the boxes; this module *builds* the two box payloads:
   with `DateTimeOriginal` (36867), `SubSecTimeOriginal` (37521) and
   `LensModel` (42036). Built with `tifftools` over an in-memory 1x1
   placeholder image — readers take the tags from IFD0 and ignore the
-  strip — because hand-rolling nested-IFD offsets is the fiddliest work
-  in the export plan and there is no reason to do it.
+  strip — because hand-rolling nested-IFD offsets by hand is the
+  fiddliest part of this and there is no reason to do it.
 - `build_xmp` — the XMP packet: `dc:description` (the caption),
   `photoshop:City`, `photoshop:State`, and the `scannyboy:provenance`
   record (the file's interpretability record — what the published TIFF's
   `ImageDescription` JSON used to carry, plus what the render actually
-  did; §5.2).
+  did).
 
 Effective values follow the live-fallback rule: the negative's explicit
 value, else the roll's. A field nobody set writes nothing at all — no
@@ -56,9 +56,9 @@ DATE_TIME_ORIGINAL = 36867
 SUBSEC_TIME_ORIGINAL = 37521
 LENS_MODEL = 42036
 
-# The provenance record's namespace (docs/EXPORT_PLAN.md §5.2): a JSON
-# string in a `scannyboy:provenance` property — what makes an exported
-# file interpretable without the database.
+# The provenance record's namespace: a JSON string in a
+# `scannyboy:provenance` property — what makes an exported file
+# interpretable without the database.
 SCANNY_BOY_NS = "http://scannyboy.local/ns/1.0/"
 
 

@@ -13,17 +13,16 @@ enum PreviewDisplayMode: String {
     case negative
 }
 
-/// State for the Edit tab (section 3.10): the selected roll's negatives in
+/// State for the Edit tab: the selected roll's negatives in
 /// sequence order and the dirty count Apply acts on. Apply itself is not
 /// driven from here — it goes through the app's
-/// one shared `RunModel`/`CLISession`, exactly like Run and re-stitch
-/// (section 3.10: "There is one `RunModel` and one `CLISession`, as now").
+/// one shared `RunModel`/`CLISession`, exactly like Run and re-stitch.
 /// This model only reads the roll back and reports what it sees.
 ///
 /// The roll capture date and each negative's date override are read-only
 /// here: no CLI command exists yet to write `metadata.roll_capture_date` or
-/// a negative's `capture_time.date_override` (section 3.7/3.8), so Chunk
-/// P3-12 stops short of letting the Edit tab set them. `shots_per_negative`
+/// a negative's `capture_time.date_override`, so the Edit tab
+/// stops short of letting the user set them here. `shots_per_negative`
 /// is read-only for the same reason — nothing updates an existing roll's
 /// value, only `roll init` sets it once.
 @MainActor
@@ -34,6 +33,7 @@ final class EditModel {
     /// Where the 1:1 region crops and whole-image renders below are written.
     /// Injected so tests never touch the real user's caches.
     @ObservationIgnored private let previewCache: PreviewCache
+    @ObservationIgnored private let regionMemoryCache: RegionMemoryCache
 
     /// Set by `ContentView` from the sidebar selection, exactly like
     /// `ConfigurationModel.rollURL`.
@@ -47,7 +47,7 @@ final class EditModel {
         }
     }
 
-    /// `roll info` for `rollURL` (section 3.1: Swift never parses
+    /// `roll info` for `rollURL` (Swift never parses
     /// `scanny-boy-roll.json` itself).
     private(set) var roll: RollManifest?
     @ObservationIgnored private var rollTask: Task<Void, Never>?
@@ -59,7 +59,7 @@ final class EditModel {
         didSet {
             guard selectedNegativeID != oldValue else { return }
             // The spot markers belong to the negative on screen; a new
-            // selection fetches its set (SPOTTING_PLAN §8.2).
+            // selection fetches its set.
             fetchSpotsForSelection()
         }
     }
@@ -103,6 +103,9 @@ final class EditModel {
     /// there is no debounce here.
     private(set) var isReviewingSpots = false
 
+    private(set) var isDetectingScratches = false
+    private(set) var isTogglingScratches = false
+
     /// The spot set of the negative the preview pane shows (protocol
     /// version 13): display-space rects straight from the CLI, refreshed
     /// by `list-spots` whenever the selection changes and after a roll
@@ -127,17 +130,22 @@ final class EditModel {
     @ObservationIgnored private var colorCommitTask: Task<Void, Never>?
     @ObservationIgnored private var activeColorSession: CLISession?
 
-    init(runner: CLIRunner, previewCache: PreviewCache = .shared) {
+    init(
+        runner: CLIRunner,
+        previewCache: PreviewCache = .shared,
+        regionMemoryCache: RegionMemoryCache = RegionMemoryCache()
+    ) {
         self.runner = runner
         self.previewCache = previewCache
+        self.regionMemoryCache = regionMemoryCache
     }
 
     // MARK: - Derived state
 
-    /// Negatives to show, ordered by `sequence` (section 3.7) — unranked
+    /// Negatives to show, ordered by `sequence` — unranked
     /// ones (`sequence == nil`, i.e. `pending`/`failed`) sort after every
     /// ranked one, in `negatives`' own append order among themselves, since
-    /// section 3.7 gives them no rank to compare by.
+    /// they have no rank to compare by.
     var visibleNegatives: [RollManifest.Negative] {
         (roll?.negatives ?? []).sorted { lhs, rhs in
             switch (lhs.sequence, rhs.sequence) {
@@ -490,7 +498,7 @@ final class EditModel {
         }
     }
 
-    // MARK: - Cropping (protocol version 19, docs/CROP_PLAN.md)
+    // MARK: - Cropping (protocol version 19)
 
     /// Records the anchor negative's crop — the tilted window drawn over
     /// the preview, in display space with the tilt counter-clockwise as
@@ -503,7 +511,8 @@ final class EditModel {
         _ negative: RollManifest.Negative,
         rect: CGRect,
         tiltDegrees: Double,
-        preset: String?
+        preset: String?,
+        fullFrame: Bool = false
     ) async {
         await recordCrop(negative) { rollURL in
             .editCrop(
@@ -511,7 +520,8 @@ final class EditModel {
                 negative: negative.negativeID,
                 rect: rect,
                 tiltDegrees: tiltDegrees,
-                preset: preset
+                preset: preset,
+                fullFrame: fullFrame
             )
         }
     }
@@ -546,7 +556,7 @@ final class EditModel {
         refresh()
     }
 
-    // MARK: - Spotting (protocol version 13, SPOTTING_PLAN §8.2)
+    // MARK: - Spotting (protocol version 13)
 
     /// Runs the detector over the whole selection — one `edit detect-spots`
     /// round trip — and refreshes the roll: the summary in `roll info` has
@@ -655,6 +665,63 @@ final class EditModel {
         refresh()
     }
 
+    func detectScratches(_ targets: [RollManifest.Negative]) async {
+        guard let rollURL, !isDetectingScratches, !isTogglingScratches, !targets.isEmpty else {
+            return
+        }
+        isDetectingScratches = true
+        defer { isDetectingScratches = false }
+        let command = CLICommand.editDetectScratches(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID)
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .scratchesReported {
+                    applyScratchesReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    func setScratchRemoval(_ targets: [RollManifest.Negative], on: Bool) async {
+        guard let rollURL, !isDetectingScratches, !isTogglingScratches, !targets.isEmpty else {
+            return
+        }
+        isTogglingScratches = true
+        defer { isTogglingScratches = false }
+        let command = CLICommand.editScratches(
+            roll: rollURL,
+            negatives: targets.map(\.negativeID),
+            enabled: on
+        )
+        do {
+            for await output in try await runner.session(for: command).start() {
+                if case .event(let event) = output, event.kind == .scratchesReported {
+                    applyScratchesReported(event)
+                }
+            }
+        } catch {
+            return
+        }
+        refresh()
+    }
+
+    private func applyScratchesReported(_ event: CLIEvent) {
+        guard
+            let negativeID = event.scratchesNegativeID,
+            let summary = event.scratchesSummary,
+            let manifest = roll,
+            let index = manifest.negatives.firstIndex(where: { $0.negativeID == negativeID })
+        else { return }
+        var updated = manifest.negatives[index]
+        updated.scratchesSummary = summary
+        roll = manifest.replacingNegative(updated)
+    }
+
     /// The `list-spots` query for the negative the preview pane shows: a
     /// pure query — nothing recorded, no pixels touched — so it never
     /// calls `refresh()` (that would loop: the refresh fetches the roll,
@@ -690,8 +757,8 @@ final class EditModel {
     /// Applies a `spots_reported` payload to the local state: the full set
     /// to `spots`, and the matching summary into the in-memory manifest —
     /// the way `applyEditRecorded` does, so the UI moves without a `roll
-    /// info` round trip. A stale set arrives as an empty list (SPOTTING_PLAN
-    /// §1.5); the next `refresh()` reconciles the summary's `stale` flag.
+    /// info` round trip. A stale set arrives as an empty list;
+    /// the next `refresh()` reconciles the summary's `stale` flag.
     private func applySpotsReported(_ event: CLIEvent) {
         guard let loaded = NegativeSpots(event: event),
             let negativeID = event.spotsNegativeID
@@ -936,6 +1003,16 @@ final class EditModel {
             mode: mode,
             rect: rect
         )
+        if let cached = regionMemoryCache.image(for: output) {
+            return Thumbnail(image: cached)
+        }
+        if let image = Self.loadRegionImage(at: output) {
+            regionMemoryCache.store(image, for: output)
+            return Thumbnail(image: image)
+        }
+        #if DEBUG
+        let fetchStarted = CFAbsoluteTimeGetCurrent()
+        #endif
         let command = CLICommand.editRenderRegion(
             roll: rollURL,
             negative: negative.negativeID,
@@ -956,9 +1033,19 @@ final class EditModel {
         } catch {
             return nil
         }
-        guard rendered, let image = Self.fullResolutionImage(at: output) else {
+        guard rendered, let image = Self.loadRegionImage(at: output) else {
             return nil
         }
+        #if DEBUG
+        let elapsed = CFAbsoluteTimeGetCurrent() - fetchStarted
+        print(
+            String(
+                format: "renderRegion %.0fx%.0f took %.3f s",
+                rect.width, rect.height, elapsed
+            )
+        )
+        #endif
+        regionMemoryCache.store(image, for: output)
         return Thumbnail(image: image)
     }
 
@@ -971,12 +1058,14 @@ final class EditModel {
     /// it (`negativeViewGeneration`).
     func renderPreview(
         _ negative: RollManifest.Negative,
-        mode: PreviewDisplayMode
+        mode: PreviewDisplayMode,
+        fullFrame: Bool = false
     ) async -> Thumbnail? {
         guard let rollURL, let rollID = roll?.rollID else { return nil }
-        let generation = mode == .negative
+        var generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
             : Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor)
+        if fullFrame { generation += "#fullFrame" }
         let output = previewCache.previewURL(
             rollID: rollID,
             negativeID: negative.negativeID,
@@ -987,7 +1076,8 @@ final class EditModel {
             roll: rollURL,
             negative: negative.negativeID,
             mode: mode.rawValue,
-            output: output
+            output: output,
+            fullFrame: fullFrame
         )
         var rendered = false
         do {
@@ -1014,8 +1104,8 @@ final class EditModel {
     /// are rejected (a rejected spot's mask leaves the repair), or the
     /// set is re-detected.
     ///
-    /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`,
-    /// docs/OPTIMIZATION.md §3.1/§3.3) keys on the same idea minus the
+    /// The CLI's own decoded-pixel cache (`previews.cached_preview_codes`)
+    /// keys on the same idea minus the
     /// tone and colour terms — its array is pre-LUT, so tone and colour
     /// are encode steps there, not decode steps — and folds the whole
     /// spot set in hashed rather than summarized. The two sites cannot
@@ -1040,7 +1130,7 @@ final class EditModel {
             colour = "neutral"
         }
         let matrix = cameraColor?.cacheTerm ?? "none"
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(matrix)"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(matrix)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
@@ -1049,9 +1139,9 @@ final class EditModel {
     /// reaches it. The crop is deliberately present: it changes which
     /// pixels the display shows. The spot repair is deliberately present:
     /// what the user compares when they toggle repair on and off is the
-    /// same in both views (SPOTTING_PLAN §3.3).
+    /// same in both views.
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))"
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))"
     }
 
     /// The crop half of a cache-generation token: dimensions, tilt, and
@@ -1067,6 +1157,50 @@ final class EditModel {
     private static func spotsTerm(of negative: RollManifest.Negative) -> String {
         guard let summary = negative.spotsSummary else { return "none" }
         return "\(summary.repair)#\(summary.count)#\(summary.rejected)"
+    }
+
+    private static func scratchesTerm(of negative: RollManifest.Negative) -> String {
+        guard let summary = negative.scratchesSummary else { return "none" }
+        return "\(summary.enabled)#\(summary.count)#\(summary.stale)"
+    }
+
+    /// Loads one cached 1:1 region — raw RGBA first, then legacy PNG.
+    static func loadRegionImage(at url: URL) -> NSImage? {
+        if let image = rawRegionImage(at: url) { return image }
+        return fullResolutionImage(at: PreviewCache.legacyRegionPNGURL(from: url))
+    }
+
+    /// The fast path for region caches written as `SB01` + width + height
+    /// + contiguous RGBA8888 pixels.
+    static func rawRegionImage(at url: URL) -> NSImage? {
+        guard let data = try? Data(contentsOf: url), data.count >= 12 else { return nil }
+        guard data.prefix(4) == Data([0x53, 0x42, 0x30, 0x31]) else { return nil }
+        let width = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) })
+        let height = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self) })
+        guard width > 0, height > 0 else { return nil }
+        let payloadBytes = width * height * 4
+        guard data.count == 12 + payloadBytes else { return nil }
+        let pixels = data.subdata(in: 12 ..< data.count) as CFData
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: pixels),
+            let cgImage = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+            )
+        else { return nil }
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: width, height: height)
+        )
     }
 
     /// The PNG the CLI rendered, decoded at its native size — a pane-sized
@@ -1232,8 +1366,8 @@ final class EditModel {
             guard let self, !Task.isCancelled else { return }
             self.roll = manifest
             // The refreshed manifest carries fresh summaries; the displayed
-            // negative's full spot list rides `list-spots` (SPOTTING_PLAN
-            // §8.2: run on selection change and after a roll refresh).
+            // negative's full spot list rides `list-spots` (run on
+            // selection change and after a roll refresh).
             if let negative = self.selectedNegative {
                 await self.loadSpots(negative)
             }

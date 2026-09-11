@@ -1,26 +1,23 @@
 """Setup-consistency validation over already-read per-file settings.
 
 Kept independent of file I/O (operates on `metadata.SourceSettings`) so it
-can be tested without real NEFs or rawpy. See
-`docs/IMPLEMENTATION_PLAN.md` section 3.2.
+can be tested without real NEFs or rawpy.
 
-Exposure time is required per section 3.5's tag table: missing anywhere
+Exposure time is required: missing anywhere
 stops with `CAPTURE_METADATA_MISSING`, but its value is deliberately not
 compared across the selection — exposure properties may differ across a
 roll (see `docs/ARCHITECTURE.md`'s blending discussion).
 
-Aperture, ISO, focal length, and source orientation are required per
-section 3.5's tag table (or, for orientation, per section 3.2's general
-comparison list, since orientation is not itself a section 3.5 output
-tag): missing anywhere stops with `CAPTURE_METADATA_MISSING`, and a
+Aperture, ISO, focal length, and source orientation are all required:
+missing anywhere stops with `CAPTURE_METADATA_MISSING`, and a
 present-but-differing value stops with `CAPTURE_SETTINGS_DIFFER`.
 
-Lens model is `optional` per section 3.5: missing is a warning, not a stop.
-But section 3.2 still lists lens among the fields to compare, so among the
+Lens model is optional: missing is a warning, not a stop.
+But among the
 files that *do* report a lens, a differing value still stops with
 `CAPTURE_SETTINGS_DIFFER`.
 
-Camera white balance is required per section 3.2 ("Require four finite,
+Camera white balance is required ("four finite,
 positive multipliers"): missing or invalid stops with
 `CAPTURE_METADATA_MISSING`; a differing normalised vector (beyond the
 documented 1e-6 tolerance) stops with `CAPTURE_SETTINGS_DIFFER`.

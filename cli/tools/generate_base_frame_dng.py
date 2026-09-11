@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic generator for tests/fixtures/base-frame/base-frame.dng.
 
-Chunk B-7 of docs/REBATE_ANCHORING.md. The fast tier needs a realistic
-base frame — a film-base reference the detector measures and gates — and
+The fast tier needs a realistic base frame — a film-base reference the
+detector measures and gates — and
 a NEF cannot be authored (the container is proprietary). What can be
 authored is a DNG, which LibRaw decodes through the locked
 `raw_decode.RAW_PARAMS` like any NEF.

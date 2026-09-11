@@ -152,7 +152,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":19,"event":"negative_deleted",\
+                {"protocol_version":21,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -209,7 +209,8 @@ struct CLIEventTests {
                 "params":{"x":10},"created_at":"2026-09-01T00:00:00Z"},\
                 "rotation_quarter_turns":0,"flipped_horizontally":false,\
                 "fine_rotation_deg":0.0,\
-                "crop":{"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm"},\
+                "crop":{"width":50,"height":24,"tilt_deg":2.5,"preset":"35mm",\
+                "x":10,"y":8,"canvas_width":300,"canvas_height":200},\
                 "preview_path":"/tmp/preview.png"}
                 """)
         )
@@ -220,6 +221,10 @@ struct CLIEventTests {
         #expect(crop.height == 24)
         #expect(crop.tiltDegrees == 2.5)
         #expect(crop.preset == "35mm")
+        #expect(crop.x == 10)
+        #expect(crop.y == 8)
+        #expect(crop.canvasWidth == 300)
+        #expect(crop.canvasHeight == 200)
     }
 
     @Test("edit_recorded with a null crop reports no live crop")
@@ -254,7 +259,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":19,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":21,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -336,7 +341,6 @@ struct CLIEventTests {
         "INSUFFICIENT_DISK", "INSUFFICIENT_MEMORY", "BAD_MANIFEST",
         "MANIFEST_MISMATCH", "ICC_PROFILE_INVALID", "TIFF_WRITE_FAILED",
         "CANCELLED",
-        // Phase 2 section 3.10.
         "WORK_SAME_AS_OUTPUT", "WORK_MANIFEST_UNUSABLE", "INTERMEDIATE_MISSING",
         "INTERMEDIATE_CHANGED", "STITCH_INSUFFICIENT_MATCHES",
         "STITCH_UNDERCONSTRAINED", "STITCH_RESIDUAL_TOO_HIGH",
@@ -359,7 +363,7 @@ struct CLIEventTests {
         "GEOMETRY_FRAME_SIZE_MISMATCH", "GEOMETRY_FIT_REJECTED",
         "GEOMETRY_MAGNITUDE_SUSPECT", "GEOMETRY_FEW_FRAMES",
         "CHROMATIC_FIT_REJECTED",
-        // Protocol version 8: normalization (docs/DECISIONS.md, "Normalization decisions").
+        // Protocol version 8: normalization.
         "SCAN_CLIPPED", "NORMALIZE_DEGENERATE_BOUNDS",
         "NORMALIZE_HEADROOM_CLIPPED",
         "LIBRARY_DB_UNSUPPORTED", "INTERNAL_ERROR",
@@ -372,7 +376,7 @@ struct CLIEventTests {
 
     @Test("every pipeline step maps to a known case", arguments: [
         "decode", "write_tiff", "add_metadata",
-        // Phase 2 section 3.9's stitch-stage steps.
+        // The stitch-stage steps.
         "load", "detect", "match", "solve", "warp", "blend", "write_stitched",
         // Protocol version 8's normalization step.
         "normalize",
@@ -476,7 +480,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":19,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":21,"command":"probe"}"#)
         }
     }
 
@@ -548,6 +552,29 @@ struct CLIEventTests {
         #expect(spots.spots.isEmpty)
         #expect(spots.found == 0)
         #expect(event.previewPath == nil)
+    }
+
+    @Test("scratches_reported and the roll-info summary decode")
+    func scratchesReportedDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"scratches_reported","negative_id":"n1","detector_version":1,"enabled":true,"count":2,"stale":false,"preview_path":null}"#
+            )
+        )
+        #expect(event.kind == .scratchesReported)
+        let summary = try #require(event.scratchesSummary)
+        #expect(summary.detectorVersion == 1)
+        #expect(summary.enabled)
+        #expect(summary.count == 2)
+        #expect(!summary.stale)
+        let block = NegativeScratches.Summary(fields: [
+            "detector_version": .int(1),
+            "enabled": .bool(false),
+            "stale": .bool(true),
+            "count": .int(0),
+        ])
+        #expect(block?.enabled == false)
+        #expect(block?.stale == true)
     }
 
     @Test("the spots summary decodes and a malformed block is no block")

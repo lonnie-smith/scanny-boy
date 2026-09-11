@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the packaged command-line program.
 
-One-directory mode wrapped in `ScannyBoyCLI.app` (`docs/IMPLEMENTATION_PLAN.md`
-section 5.2). One-file mode is deliberately not used: the app launches `probe`
+One-directory mode wrapped in `ScannyBoyCLI.app`. One-file mode is
+deliberately not used: the app launches `probe`
 often, and one-file mode would unpack the whole distribution on every call.
 
 The `datas` and `hiddenimports` below are not decoration. Each one fixes a
@@ -23,10 +23,8 @@ datas = [
     # same code works in a checkout and in the bundle (section 3.4).
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Linear-v1.icc"), "scanny_boy/resources"),
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Density-v1.icc"), "scanny_boy/resources"),
-    # The grey density profile (MONOCHROME_PLAN section 4) and the two
-    # export profiles (docs/EXPORT_PLAN.md section 2) ride along the same
-    # way. (The grey one was missing here until the export plan's section
-    # 8 caught it: the frozen program could not export a mono roll.)
+    # The grey density profile and the two export profiles ride along the
+    # same way.
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Density-Grey-v1.icc"), "scanny_boy/resources"),
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Export-AdobeRGB-v1.icc"), "scanny_boy/resources"),
     (str(SRC_DIR / "scanny_boy" / "resources" / "ScannyBoy-Export-Grey-v1.icc"), "scanny_boy/resources"),

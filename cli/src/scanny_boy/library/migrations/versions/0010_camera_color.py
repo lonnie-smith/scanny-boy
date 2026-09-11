@@ -1,4 +1,4 @@
-"""The roll manifest's `camera_color` block (docs/EXPORT_PLAN.md §3.2).
+"""The roll manifest's `camera_color` block.
 
 A nullable JSON column on `rolls` only: existing rows read back with NULL
 and no block — there is no data migration, matching the module's stance

@@ -4,8 +4,7 @@ import Observation
 /// The state of one `convert` invocation, from Run through progress,
 /// cancellation, and completion.
 ///
-/// `docs/IMPLEMENTATION_PLAN.md` Chunk 10. Three rules from section 4.2 and
-/// section 3.6 shape almost everything here:
+/// Three rules shape almost everything here:
 ///
 /// - Overall progress comes from `progress`'s `completed` and `total` counts,
 ///   never from the largest `source_index` seen. Frames finish out of order
@@ -39,7 +38,7 @@ final class RunModel {
     }
 
     /// One `negative_done` event: a stitched TIFF was published, with the
-    /// section 3.4 quality numbers it was published with.
+    /// quality numbers it was published with.
     struct StitchedNegative: Sendable, Hashable {
         let negativeID: String
         let output: String
@@ -98,7 +97,7 @@ final class RunModel {
     private(set) var runID: String?
 
     /// Pipeline steps completed and expected, straight from `progress`.
-    /// `run_pipeline.py` reports one span across both stages (section 3.9),
+    /// `run_pipeline.py` reports one span across both stages,
     /// so this needs no special handling to cover a `run`'s stitch stage too.
     private(set) var completedSteps = 0
     private(set) var totalSteps = 0
@@ -132,12 +131,12 @@ final class RunModel {
     /// the same reason a cancelled group is not in `failedGroups`.
     private(set) var failedNegatives: [FailedGroup] = []
 
-    /// One `negative_id` per `metadata_applied` event (section 3.8): `apply-
+    /// One `negative_id` per `metadata_applied` event: `apply-
     /// metadata`'s own progress, distinct from `stitchedNegatives`, which is
     /// about publishing rather than metadata.
     private(set) var appliedNegativeIDs: [String] = []
     /// One entry per `metadata_skipped` event — `OUTPUT_MODIFIED_EXTERNALLY`
-    /// is the only code section 3.8 defines for this, but the message is
+    /// is the only code defined for this, but the message is
     /// carried through unparsed regardless.
     private(set) var skippedMetadata: [FailedGroup] = []
 
@@ -242,7 +241,7 @@ final class RunModel {
     }
 
     /// What to tell the user once the run has ended. Deliberately built from
-    /// `outcome` rather than from message text, which section 4.2 says is not
+    /// `outcome` rather than from message text, which is not
     /// the machine-readable interface.
     ///
     /// Counts **negatives**, not frames (Chunk P2-9): for `run` and `stitch`,
@@ -492,8 +491,8 @@ final class RunModel {
     // MARK: - Running
 
     /// Starts one `convert`. `files` must be the selection in canonical order:
-    /// it is what turns a `source_index` back into a filename, and section 3.3
-    /// forbids this app from working that order out for itself.
+    /// it is what turns a `source_index` back into a filename, and this app
+    /// is forbidden from working that order out for itself.
     func start(
         command: CLICommand, files: [String], outputFolder: URL, totalNegatives: Int? = nil
     ) {
@@ -531,7 +530,7 @@ final class RunModel {
         case .event(let event):
             apply(event)
         case .log:
-            // stderr is human-readable and is never parsed (section 4.2).
+            // stderr is human-readable and is never parsed.
             break
         case .failure(let failure):
             streamFailures.append(failure)
@@ -624,7 +623,7 @@ final class RunModel {
              .metadataUpdated, .metadataValues,
              .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
              .gridCreated, .gridList, .gridDeleted,
-             .spotsReported, .baseFrameSet:
+             .spotsReported, .scratchesReported, .baseFrameSet:
             break
         }
     }
@@ -641,7 +640,7 @@ final class RunModel {
         // `convert` writes `scanny-boy-manifest.json` into the output folder;
         // `run` and `stitch` write `scanny-boy-roll.json` there instead — the
         // work directory `scanny-boy-manifest.json` still lives in may
-        // already be gone by the time this runs (section 3.5's cleanup).
+        // already be gone by the time this runs.
         if touchesRollManifest {
             let report = await Self.readRollManifest(
                 runner: runner, roll: outputFolder, runID: runID
@@ -735,7 +734,7 @@ final class RunModel {
         }.value
     }
 
-    /// Reads the roll manifest back through `roll info` (section 3.1: Swift
+    /// Reads the roll manifest back through `roll info` (Swift
     /// never parses `scanny-boy-roll.json` itself) rather than from disk —
     /// unlike `readManifest`, this is a real CLI round trip, since a roll
     /// manifest has no `Decodable`-from-file counterpart any more.

@@ -11,134 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-# Protocol 9 added two features: the extended-metadata editing feature (the
-# `metadata` command family — `metadata_updated`, `metadata_values` events,
-# the `INVALID_METADATA` code — and the roll/negative extended-metadata
-# fields in the roll manifest), and the `edit render-region` command with
-# its `region_rendered` event: a 1:1 PNG of one display-space region of a
-# published TIFF, with the net rotation folded in, for the app's 100% zoom.
-#
-# Protocol 10 (2D grid stitching) adds `--grid AxD` on `probe`, `prepare`,
-# and `run` (mutually exclusive with `--per-negative`; a strip is the
-# down=1 case) and the `INVALID_GRID` error code.
-# Protocol 11 is the colour-managed export (docs/EXPORT_PLAN.md): the
-# export becomes a rendered positive in Adobe RGB (1998)-compatible colour
-# (grey for a mono roll), with the negative's recorded tone op baked in,
-# written as a 16-bit lossless JPEG XL with the ICC profile embedded and
-# Exif/XMP boxes at encode time. New: the `JXL_ENCODER_UNAVAILABLE` error
-# (libjxl could not be reached — a packaging failure), the
-# `CAMERA_MATRIX_MISSING` error (a colour roll predating the roll
-# manifest's `camera_color` block), and the `CAMERA_MATRIX_CONFLICT`
-# warning (a later run's source reports a different matrix than the roll's
-# frozen one). The roll manifest gains the optional `camera_color` block
-# and the work manifest's curated block gains `rgb_xyz_matrix`/
-# `camera_model`. No `export_done` payload change.
-#
-# Protocol 11 also adds the app's positive/negative display toggle: a `--mode
-# positive|negative` flag on `edit render-region` and the new `edit
-# render-preview` command (with its `preview_rendered` event) — a
-# pure-query render of a negative's whole display image, downscaled like
-# the cached preview. The negative mode is the un-inverted density view;
-# no tone ever reaches it.
-#
-# Protocol 15 retires the film-kind auto-detector: `--film-kind` moves to
-# `roll init` (required, `colour` or `monochrome` only); `run`/`stitch`
-# read the roll manifest's `film.kind` instead. The `MONO_DETECT_AMBIGUOUS`
-# and `MONO_DECISION_CONFLICT` warning codes are removed; `FILM_KIND_REQUIRED`
-# is added for unseeded rolls with no `film` block.
-#
-# Protocol 11 (MONOCHROME_PLAN) added monochrome film support: single-channel
-# published TIFFs on silver B&W rolls, the top-level `film` block, and the
-# `ScannyBoy-Density-Grey-v1.icc` profile.
-#
-# Protocol 11 also extends the preview tone adjustment: seven curve
-# controls and two auto flags on `edit tone`, matching `tone_*` fields on
-# `roll info`, and the `TONE_METERING_UNAVAILABLE` code.
-# Protocol 12 adds the preview colour adjustment: the `edit color`
-# subcommand, thirteen derived `color_*` fields (twelve stored params plus
-# `color_temperature`) and `film_kind` on `roll info`, and the `color` op
-# in the ops log.
-#
-# Protocol 13 is the film-base reference (docs/REBATE_ANCHORING.md): the
-# new `roll set-base-frame` command (with its `base_frame_set` event)
-# attaches a measured per-roll film-base reference — the thin-end colour
-# anchor for every negative on the roll — through a new top-level
-# `film_base` block on the roll manifest (`roll info` reports it verbatim).
-# The reference is replaceable until the roll's first negative is
-# published, then locked (`FILM_BASE_LOCKED`); a run/stitch on a roll
-# without one fails `FILM_BASE_REQUIRED`; a roll whose manifest predates
-# the feature cannot take new negatives or a base frame
-# (`ROLL_PREDATES_FILM_BASE`); `run`/`stitch`/`set-base-frame` refuse old
-# manifests. Seven gate/diagnostic codes (`FILM_BASE_NOT_FOUND`,
-# `_TOO_SMALL`, `_CLIPPED`, `_TOO_DARK`, `_AMBIGUOUS`) shape the attach
-# path, and two warnings (`FILM_BASE_CAMERA_CONFLICT`,
-# `FILM_BASE_FLATFIELD_CONFLICT`) record rig disagreements. `probe --roll`
-# reports `film_base` so the app can gate Convert without starting a run.
-#
-# The same protocol 13 also carries spotting (SPOTTING_PLAN, merged from
-# origin/main): `edit detect-spots` (the detector's proposals, one `spots`
-# op per negative), `edit spots` (review — reject/accept ids by id, the
-# whole-negative repair switch, clear), and `edit list-spots` (a pure
-# query). One new event, `spots_reported` — carrying the spots as
-# **display-space** rects, ids unchanged, never the RLE masks (Swift
-# converts no coordinates) — plus `SPOT_LIMIT_REACHED` (the detector
-# capped its proposals) and `SPOTS_STALE` (a re-stitch changed the canvas;
-# the set needs re-detecting). `roll info` gains a per-negative `spots`
-# summary block. No new error codes of its own: every failure there is
-# `INVALID_EDIT`, `ROLL_NOT_FOUND` or `NEGATIVE_NOT_FOUND`.
-#
-# Protocol 14 is cast removal's second tie and auto solve
-# (docs/CAST_REMOVAL_PLAN.md): `edit color` gains `--cast-removal-highlights`
-# (the highlight-end tie strength, 0..1) and `--auto-cast` (solve the global
-# filtration from the negative's recorded neutral estimate — exclusive with
-# `--reset` and with an explicit `--cyan`/`--magenta`/`--yellow`), the
-# `color_cast_removal_highlights` derived field joins the other `color_*`
-# fields on `roll info`, and the per-negative `normalization` block gains
-# two recorded meters — `highlight_refs` (the dense end's same-pixel
-# neutral set, null when the band held no trustworthy neutrals) and
-# `neutral_residual` (the `(R-G, B-G)` offset the auto solve reads). The
-# auto reads a stitch-time meter, so it is unavailable on rolls stitched by
-# an older build — that absence warns `TONE_METERING_UNAVAILABLE`, reused
-# for the colour-only condition rather than renamed (it shipped in protocol
-# 11; renaming a live contract code costs more than the wart). Global and
-# regional CMY are now mean-removed, which changes how already-recorded
-# colour ops render — accepted, the op being preview-only (§0.3). No new
-# codes.
-# Protocol 16 adds named grid configuration presets: the `grid create` /
-# `grid list` / `grid delete` command family and the `grid_created`,
-# `grid_list`, and `grid_deleted` events. Each preset is a user label for
-# an `across` x `down` shape the app picks when adding scans.
-# Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`: cell assignment is
-# geometry-only and capture order is not checked.
-#
-# Protocol 18 (docs/OPTIMIZATION.md §2.1) adds `scanny-boy serve`: the
-# resident process that reads newline-delimited JSON *requests* on stdin
-# and answers on this same stdout stream. Every event emitted while a
-# served request is in flight gains an optional `request_id` field, and
-# each request ends with a `finished` carrying its `request_id` and the
-# exit status the one-shot CLI would have returned. One-shot invocations
-# continue to emit events without `request_id`; the app's decoder treats
-# it as optional for exactly that reason.
-#
-# The same protocol 18 adds the film-extent pass
-# (docs/BLACK_POINT_REFINEMENT.md): the per-negative `normalization`
-# block gains a `film_extent` finding, and the stitch stage emits
-# `NORMALIZE_FILM_EXTENT_WITHHELD` (informational: a non-film border band
-# was withheld from the meters, insets named in canvas pixels) and
-# `NORMALIZE_FILM_EXTENT_EXCESSIVE` (warning: the withheld rect kept less
-# than half the analysis region — the frame is unusual, and the user should
-# look at it). Both ride the warning event channel; severity is recorded in
-# CONTRACT.md's code table.
-#
-# Protocol 19 (docs/CROP_PLAN.md) adds the `crop` op: the new `edit crop`
-# subcommand records a tilted crop window per negative — a state op in the
-# same family as `tone`/`color`/`spots`, stored in published-TIFF pixels
-# with the tilt the window carries as displayed. The `edit_recorded`
-# confirmation gains a `crop` field (a display-space report: dimensions,
-# tilt, preset label; None for no live crop) carried by every edit
-# confirmation, and `roll info`'s per-negative block gains the same `crop`
-# field. No new codes.
-PROTOCOL_VERSION = 19
+PROTOCOL_VERSION = 21
 
 
 class EventType(enum.StrEnum):
@@ -176,12 +49,12 @@ class EventType(enum.StrEnum):
     GRID_DELETED = "grid_deleted"
     BASE_FRAME_SET = "base_frame_set"
     SPOTS_REPORTED = "spots_reported"
+    SCRATCHES_REPORTED = "scratches_reported"
 
 
 class Stage(enum.StrEnum):
-    # Renamed `convert` -> `prepare` (docs/DECISIONS.md, "Normalization
-    # decisions"): "Convert" is reserved, unambiguously, for the whole `run`, so
-    # stage 1 — decode + flat-field + write intermediates — is `prepare`.
+    # "Convert" is reserved, unambiguously, for the whole `run`, so stage 1
+    # — decode + flat-field + write intermediates — is `prepare`.
     PREPARE = "prepare"
     STITCH = "stitch"
 
@@ -197,7 +70,7 @@ class PipelineStep(enum.StrEnum):
     WARP = "warp"
     BLEND = "blend"
     # Emitted per negative in the stitch stage between BLEND and
-    # WRITE_STITCHED (section 3.10).
+    # WRITE_STITCHED.
     NORMALIZE = "normalize"
     WRITE_STITCHED = "write_stitched"
 
@@ -254,10 +127,10 @@ class Code(enum.StrEnum):
     INVALID_EDIT = "INVALID_EDIT"
     INVALID_METADATA = "INVALID_METADATA"
     EXPORT_FAILED = "EXPORT_FAILED"
-    # EXPORT_PLAN §1.2: libjxl could not be reached through the process's
-    # symbol namespace. A packaging failure, not a user error.
+    # libjxl could not be reached through the process's symbol namespace. A
+    # packaging failure, not a user error.
     JXL_ENCODER_UNAVAILABLE = "JXL_ENCODER_UNAVAILABLE"
-    # EXPORT_PLAN §3: the camera colour matrix recorded in the roll manifest.
+    # The camera colour matrix recorded in the roll manifest is missing.
     CAMERA_MATRIX_MISSING = "CAMERA_MATRIX_MISSING"
     CAMERA_MATRIX_CONFLICT = "CAMERA_MATRIX_CONFLICT"
     PREVIEW_FAILED = "PREVIEW_FAILED"
@@ -279,17 +152,20 @@ class Code(enum.StrEnum):
     SCAN_CLIPPED = "SCAN_CLIPPED"
     NORMALIZE_DEGENERATE_BOUNDS = "NORMALIZE_DEGENERATE_BOUNDS"
     NORMALIZE_HEADROOM_CLIPPED = "NORMALIZE_HEADROOM_CLIPPED"
-    # BLACK_POINT_REFINEMENT §E-3: the film-extent pass. WITHHELD is
-    # informational (a carrier band was found and the meters inset past
-    # it); EXCESSIVE warns that what was withheld kept less than half the
-    # analysis region — the frame is unusual.
+    # The film-extent pass. WITHHELD is informational (a carrier band was
+    # found and the meters inset past it); EXCESSIVE warns that what was
+    # withheld kept less than half the analysis region — the frame is
+    # unusual.
     NORMALIZE_FILM_EXTENT_WITHHELD = "NORMALIZE_FILM_EXTENT_WITHHELD"
     NORMALIZE_FILM_EXTENT_EXCESSIVE = "NORMALIZE_FILM_EXTENT_EXCESSIVE"
+    # Also raised for the colour-only "no stitch-time meter" condition,
+    # despite the tone-specific name: renaming a live contract code costs
+    # more than the wart.
     TONE_METERING_UNAVAILABLE = "TONE_METERING_UNAVAILABLE"
     FILM_KIND_REQUIRED = "FILM_KIND_REQUIRED"
     FILM_KIND_LOCKED = "FILM_KIND_LOCKED"
-    # REBATE_ANCHORING §7.2: the film-base reference. Codes may exist before
-    # anything raises them (chunk B-1); the consumers arrive with B-2/B-3.
+    # The film-base reference. Some of these codes exist before anything
+    # raises them; the consumers land separately.
     FILM_BASE_REQUIRED = "FILM_BASE_REQUIRED"
     FILM_BASE_LOCKED = "FILM_BASE_LOCKED"
     FILM_BASE_NOT_FOUND = "FILM_BASE_NOT_FOUND"
@@ -300,14 +176,18 @@ class Code(enum.StrEnum):
     ROLL_PREDATES_FILM_BASE = "ROLL_PREDATES_FILM_BASE"
     FILM_BASE_CAMERA_CONFLICT = "FILM_BASE_CAMERA_CONFLICT"
     FILM_BASE_FLATFIELD_CONFLICT = "FILM_BASE_FLATFIELD_CONFLICT"
-    # SPOTTING_PLAN §1.4: the detector found more spots than it may
-    # propose; the highest-scoring ones were kept. The remedy is a lower
-    # --sensitivity.
+    # The detector found more spots than it may propose; the
+    # highest-scoring ones were kept. The remedy is a lower --sensitivity.
     SPOT_LIMIT_REACHED = "SPOT_LIMIT_REACHED"
-    # SPOTTING_PLAN §1.5: the negative's spot set was recorded against a
-    # canvas a re-stitch has replaced; it repairs nothing and needs
-    # re-detecting.
+    # The negative's spot set was recorded against a canvas a re-stitch has
+    # replaced; it repairs nothing and needs re-detecting.
     SPOTS_STALE = "SPOTS_STALE"
+    # The scratch detector failed at stitch time; the negative was published
+    # without scratch removal.  The message carries the exception.
+    SCRATCH_DETECTION_FAILED = "SCRATCH_DETECTION_FAILED"
+    # The negative's scratches op was recorded against a canvas a re-stitch
+    # has replaced; it corrects nothing and needs re-detecting.
+    SCRATCHES_STALE = "SCRATCHES_STALE"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -380,16 +260,16 @@ class ProbeResult(Event):
     warnings: list[str] = dataclasses.field(default_factory=list)
     groups: list[list[str]] = dataclasses.field(default_factory=list)
     # Present (non-empty/non-null) only when `--out` was given alongside
-    # `--files` and validation reached the disk estimate (section 4.1).
+    # `--files` and validation reached the disk estimate.
     output_conflicts: list[str] = dataclasses.field(default_factory=list)
     estimated_required_bytes: int | None = None
     available_bytes: int | None = None
     # Present only when `--roll` was given alongside a validated `--files`
-    # selection (Phase 3 section 3.5).
+    # selection.
     roll_overlap: list[RollOverlapEntry] = dataclasses.field(default_factory=list)
     # The roll's film-base reference block, verbatim from the roll manifest,
-    # when `--roll` was given (docs/REBATE_ANCHORING.md §7.1) — how the app
-    # gates Convert without starting a run.
+    # when `--roll` was given — how the app gates Convert without starting
+    # a run.
     film_base: dict[str, Any] | None = None
 
 
@@ -662,8 +542,8 @@ class ExportDone(Event):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class BaseFrameSet(Event):
-    """`roll set-base-frame`'s confirmation (docs/REBATE_ANCHORING.md
-    §7.1): the attached (or replaced) film-base reference's identity and
+    """`roll set-base-frame`'s confirmation: the attached (or replaced)
+    film-base reference's identity and
     measurement summary. `density` is the per-channel median log10 density
     of the chosen population; `area_fraction` is its share of the frame;
     `population_count` is every population the detector found; `locked` is
@@ -702,13 +582,29 @@ class SpotsReported(Event):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
+class ScratchesReported(Event):
+    """The scratch command family's event: summary fields for one negative.
+    ``count`` is the number of accepted scratches. ``enabled`` defaults on
+    when a fresh detection finds scratches. ``preview_path`` is set when
+    the command regenerated the preview (toggle); null for ``list-scratches``."""
+
+    event_type: ClassVar[EventType] = EventType.SCRATCHES_REPORTED
+
+    negative_id: str
+    detector_version: int
+    enabled: bool
+    count: int
+    stale: bool
+    preview_path: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class FlatFieldProfileSummary:
     """The profile fields a `flatfield` event carries. The gain map's path
     and SHA-256 are deliberately absent: the path is app-private storage the
     UI has no use for, and the hash is roll-invariant bookkeeping the CLI
-    owns. The calibration fields (docs/GEOMETRIC_PLAN.md section 6) are a
-    straight decode of what the profile record holds — no computation in
-    Swift."""
+    owns. The calibration fields are a straight decode of what the profile
+    record holds — no computation in Swift."""
 
     profile_id: str
     name: str
@@ -745,9 +641,9 @@ class FlatFieldDeleted(Event):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class FlatFieldProgress(Event):
-    """Progress of a long `flatfield create` (docs/GEOMETRIC_PLAN.md section
-    4.8). Deliberately carries no `run_id`: the `flatfield` family is not a
-    pipeline run, and this keeps that rule."""
+    """Progress of a long `flatfield create`. Deliberately carries no
+    `run_id`: the `flatfield` family is not a pipeline run, and this keeps
+    that rule."""
 
     event_type: ClassVar[EventType] = EventType.FLATFIELD_PROGRESS
 
@@ -791,8 +687,8 @@ class GridDeleted(Event):
 class EventWriter:
     """Writes events to a stream as one flushed JSON line each.
 
-    `request_id` is `scanny-boy serve`'s addition (docs/OPTIMIZATION.md
-    §2.1): when set, every event written through this writer carries it,
+    `request_id` is `scanny-boy serve`'s addition: when set, every event
+    written through this writer carries it,
     which is how one shared stdout stream is partitioned among the
     requests the resident process answers. One-shot invocations leave it
     None and emit events without the field, exactly as before.

@@ -1,6 +1,5 @@
 """`apply-metadata --roll DIR`: writes each dirty negative's intended
-capture time into its published TIFF. See
-`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.8.
+capture time into its published TIFF.
 
 **Intent lives in the manifest; the TIFF is the artefact.** A negative is
 *dirty* when `capture_time.intended_datetime_original` differs from
@@ -59,7 +58,7 @@ def _now_iso() -> str:
 
 
 def _is_dirty(negative: NegativeRecord) -> bool:
-    """Section 3.8: dirty, `completed`, and actually published — exactly the
+    """Dirty, `completed`, and actually published — exactly the
     negatives `apply-metadata` processes."""
     return (
         negative.status == "completed"
@@ -70,9 +69,9 @@ def _is_dirty(negative: NegativeRecord) -> bool:
 
 
 def _verify_rewrite(tmp_path: Path, intended: datetime.datetime) -> None:
-    """"Verify it reads back with the expected tags" (section 3.8):
-    both `DateTimeOriginal` and `SubSecTimeOriginal`, the only two tags
-    `rewrite_date_time_original` touched."""
+    """Verify it reads back with the expected tags: both `DateTimeOriginal`
+    and `SubSecTimeOriginal`, the only two tags `rewrite_date_time_original`
+    touched."""
     info = tifftools.read_tiff(str(tmp_path))
     exif_tags = info["ifds"][0]["tags"][Tag.ExifIFD.value]["ifds"][0][0]["tags"]
 
@@ -94,7 +93,7 @@ def _verify_rewrite(tmp_path: Path, intended: datetime.datetime) -> None:
 
 
 def rewrite_date_time_original(tiff_path: Path, intended: datetime.datetime) -> None:
-    """Section 3.8 point 2: rewrite `DateTimeOriginal`/`SubSecTimeOriginal`
+    """Rewrite `DateTimeOriginal`/`SubSecTimeOriginal`
     in `tiff_path`'s nested EXIF directory. Writes a sibling temp file,
     verifies it, then renames over `tiff_path` — `tiff_path` is untouched
     until the rename. Raises `ApplyMetadataFailure(METADATA_WRITE_FAILED)`
@@ -132,10 +131,9 @@ def rewrite_date_time_original(tiff_path: Path, intended: datetime.datetime) -> 
 
 
 def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
-    """Section 3.8, in full. Raises `ApplyMetadataFailure` when the roll
+    """Raises `ApplyMetadataFailure` when the roll
     itself can't be read; a single negative's problem is reported through
-    `MetadataSkipped` and never stops the rest (section 3.8: "never fail
-    the whole roll for one")."""
+    `MetadataSkipped` and never stops the rest."""
     if not repo.roll_registered(roll_dir):
         raise ApplyMetadataFailure(
             Code.ROLL_NOT_FOUND,

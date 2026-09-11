@@ -1,5 +1,5 @@
 """Synthetic-ground-truth tests for the rig-tilt rectification fit and the
-closed-form rectification core (docs/RECTIFICATION_PLAN.md sections 2-4).
+closed-form rectification core.
 
 Scenes are built from point correspondences, not rendered frames: a known
 `W` rectifies frame b's points, a known similarity maps them onto frame a,
@@ -120,8 +120,8 @@ def test_recovers_a_known_two_axis_tilt():
 def test_true_zero_tilt_is_rejected_not_invented():
     """The regression that keeps this honest: similarity-consistent
     correspondences must not produce a tilt (the synthetic zero case in
-    docs/RECTIFICATION_PLAN.md section 0 recovered ±0.02° and was dropped
-    by the improvement gate)."""
+    a synthetic zero case recovered ±0.02° and was dropped by the
+    improvement gate)."""
     truth = _make_rectification(0.0, 0.0)
     pairs = _scene_pairs(truth, shift=(1500.0, 0.0))
 

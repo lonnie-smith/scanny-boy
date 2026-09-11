@@ -1,6 +1,6 @@
 """The cancellation flag and its SIGTERM handler.
 
-`docs/IMPLEMENTATION_PLAN.md` section 3.8 says the handler must do nothing
+The handler must do nothing
 but set a flag, so these tests check exactly that: the signal arrives, the
 token flips, and the previous handler comes back afterwards.
 """

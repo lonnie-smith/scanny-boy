@@ -121,7 +121,7 @@ struct CLIIntegrationTests {
         #expect(collected.terminalCompletion?.outcome == .usageError)
     }
 
-    // MARK: - The resident helper (docs/OPTIMIZATION.md §2.5)
+    // MARK: - The resident helper
 
     /// The same runner, with the daemon routing the app's own runner has.
     private static func servingRunner() throws -> CLIRunner {
@@ -239,7 +239,7 @@ struct CLIIntegrationTests {
             #expect(completion.terminationReason == .uncaughtSignal)
             #expect(completion.terminationStatus == SIGKILL)
 
-            // Exactly the wreckage section 3.8 predicts.
+            // Exactly the wreckage a forced kill leaves behind.
             #expect(try Self.manifestStatus(in: out) == "running")
             #expect(try Self.stagingDirectories(in: out).count == 1)
 

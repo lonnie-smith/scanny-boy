@@ -3,7 +3,7 @@ import Testing
 
 @testable import ScannyBoy
 
-/// `docs/IMPLEMENTATION_PLAN.md` section 5.2: the helper is signed on copy,
+/// The helper is signed on copy,
 /// before the outer app, and both must verify strictly. These run against the
 /// app bundle hosting the tests, which is the app Xcode has just built and
 /// signed.

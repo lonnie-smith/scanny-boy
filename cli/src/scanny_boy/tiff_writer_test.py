@@ -149,7 +149,7 @@ def test_image_description_names_source_and_marks_unstitched():
     assert "unstitched scan frame" in text
 
 
-# --- MONOCHROME_PLAN section 4: one-channel writes ------------------------------
+# --- one-channel writes --------------------------------------------------------
 
 
 def _grey_pixels(height: int = 8, width: int = 12) -> np.ndarray:
@@ -162,7 +162,7 @@ def _grey_pixels(height: int = 8, width: int = 12) -> np.ndarray:
 
 
 def test_mono_pixels_write_minisblack_and_round_trip(tmp_path):
-    """MONOCHROME_PLAN §4: a single-channel published TIFF is grayscale
+    """A single-channel published TIFF is grayscale
     data — `photometric="minisblack"`, never `"rgb"` — and round-trips."""
     pixels = _grey_pixels()
     path = tmp_path / "mono.tif"

@@ -325,6 +325,31 @@ struct CLICommandTests {
         )
     }
 
+    @Test("edit crop can name the full uncropped display canvas")
+    func editCropFullFrameArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out,
+            negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            tiltDegrees: 2.5,
+            preset: "35mm",
+            fullFrame: true
+        )
+        #expect(command.arguments.contains("--full-frame"))
+    }
+
+    @Test("edit render-preview can ignore the live crop")
+    func editRenderPreviewFullFrameArguments() {
+        let command = CLICommand.editRenderPreview(
+            roll: Self.out,
+            negative: "neg-01",
+            mode: "positive",
+            output: URL(filePath: "/tmp/preview.png"),
+            fullFrame: true
+        )
+        #expect(command.arguments.contains("--full-frame"))
+    }
+
     @Test("edit crop without a rect is the reset")
     func editCropResetArguments() {
         let command = CLICommand.editCrop(
@@ -602,6 +627,25 @@ struct CLICommandTests {
         )
     }
 
+    @Test("detect-scratches and scratches on/off round-trip the CLI flags")
+    func scratchesCommandArguments() {
+        #expect(
+            CLICommand.editDetectScratches(roll: Self.roll, negatives: ["n1", "n2"]).arguments
+                == ["edit", "detect-scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--negative", "n2"]
+        )
+        #expect(
+            CLICommand.editScratches(roll: Self.roll, negatives: ["n1"], enabled: true).arguments
+                == ["edit", "scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--on"]
+        )
+        #expect(
+            CLICommand.editScratches(roll: Self.roll, negatives: ["n1"], enabled: false).arguments
+                == ["edit", "scratches", "--roll", "/Volumes/Scans/roll-12",
+                    "--negative", "n1", "--off"]
+        )
+    }
+
     @Test("roll init passes library and name, with optional film kind")
     func rollInitArguments() {
         let library = URL(filePath: "/Volumes/Scans/library")
@@ -693,6 +737,15 @@ struct CLICommandTests {
                     "export", "--roll", "/Volumes/Scans/roll-12",
                     "--output", "/Volumes/Scans/roll-12-tif",
                     "--downsample", "9072",
+                ]
+        )
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, downsample: 12096)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--downsample", "12096",
                 ]
         )
     }

@@ -72,8 +72,8 @@ public struct CLICommand: Sendable, Hashable {
 
     /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]`
     ///
-    /// REBATE_ANCHORING §7.1: the only writer of `film_base.density`. The
-    /// app calls this immediately when the user chooses a base frame on
+    /// The only writer of `film_base.density`. The app calls this
+    /// immediately when the user chooses a base frame on
     /// the Add Scans sheet — never deferred to Convert.
     public static func rollSetBaseFrame(
         roll: URL,
@@ -113,7 +113,7 @@ public struct CLICommand: Sendable, Hashable {
     /// that includes output-folder validation and the overwrite-conflict
     /// preview (Phase 2's rerun path). Adding `--roll` instead validates the
     /// selection against a roll's invariants and reports `roll_overlap`
-    /// (Phase 3 section 3.5) — the Add Scans stage's own probe call.
+    /// — the Add Scans stage's own probe call.
     public static func probe(
         input: URL,
         files: [String] = [],
@@ -146,7 +146,7 @@ public struct CLICommand: Sendable, Hashable {
     /// There is no `--film-date`: Phase 3 removed it from every command, and
     /// the CLI derives `film_date` from the scans' own capture times
     /// (CONTRACT.md). `overwrite` is only ever set after the user has
-    /// confirmed the replacements (section 3.6).
+    /// confirmed the replacements.
     public static func prepare(
         input: URL,
         files: [String],
@@ -178,12 +178,12 @@ public struct CLICommand: Sendable, Hashable {
     ///
     /// One process, one event stream, one cancellation, from a selection of
     /// NEFs all the way to finished, stitched negatives, published into a
-    /// roll rather than a bare output folder (Phase 3 section 3.5). This is
+    /// roll rather than a bare output folder. This is
     /// the app's normal path — `Run` builds this, not `.convert`. `work` is
-    /// left `nil` here: a chosen work directory is Chunk P2-10's re-stitch
+    /// left `nil` here: a chosen work directory is the re-stitch
     /// feature, not this one's. There is no `--overwrite`: replacing an
     /// existing negative is expressed by *not* skipping its sources
-    /// (`skipSources`), which the overlap sheet derives (section 3.4).
+    /// (`skipSources`), which the overlap sheet derives.
     public static func run(
         input: URL,
         files: [String],
@@ -442,7 +442,7 @@ public struct CLICommand: Sendable, Hashable {
 
     /// `scanny-boy edit crop --roll DIR --negative ID (--x PX --y PX --width PX --height PX [--tilt DEG] [--preset NAME] | --reset)`
     ///
-    /// Protocol version 19 (docs/CROP_PLAN.md): records one negative's
+    /// Protocol version 19: records one negative's
     /// tilted crop window — the rect in display space (the image as it
     /// currently renders, live crop included), the tilt counter-clockwise
     /// as displayed — as a state op in the library database, and
@@ -455,7 +455,8 @@ public struct CLICommand: Sendable, Hashable {
         negative: String,
         rect: CGRect?,
         tiltDegrees: Double = 0,
-        preset: String? = nil
+        preset: String? = nil,
+        fullFrame: Bool = false
     ) -> CLICommand {
         var arguments = [
             "edit", "crop",
@@ -473,6 +474,7 @@ public struct CLICommand: Sendable, Hashable {
             if let preset {
                 arguments.append(contentsOf: ["--preset", preset])
             }
+            if fullFrame { arguments.append("--full-frame") }
         } else {
             arguments.append("--reset")
         }
@@ -524,20 +526,23 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         negative: String,
         mode: String,
-        output: URL
+        output: URL,
+        fullFrame: Bool = false
     ) -> CLICommand {
-        CLICommand(arguments: [
+        var arguments = [
             "edit", "render-preview",
             "--roll", roll.path,
             "--negative", negative,
             "--mode", mode,
             "--output", output.path,
-        ])
+        ]
+        if fullFrame { arguments.append("--full-frame") }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy edit detect-spots --roll DIR --negative ID [--negative ID ...] [--sensitivity S]`
     ///
-    /// Protocol version 13 (SPOTTING_PLAN): runs the defect detector over
+    /// Runs the defect detector over
     /// each selected negative's published TIFF and records the proposals
     /// as one `spots` op per negative — proposals only; no pixel anywhere
     /// changes until an explicit repair is switched on. Re-detecting
@@ -605,6 +610,33 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    public static func editDetectScratches(
+        roll: URL, negatives: [String]
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "detect-scratches",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    public static func editScratches(
+        roll: URL, negatives: [String], enabled: Bool
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "scratches",
+            "--roll", roll.path,
+        ]
+        for negative in negatives {
+            arguments.append(contentsOf: ["--negative", negative])
+        }
+        arguments.append(enabled ? "--on" : "--off")
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]
     /// [--downsample N]`
     ///
@@ -639,8 +671,8 @@ public struct CLICommand: Sendable, Hashable {
     /// work directory is exactly as likely to be `partial` (kept because one
     /// negative failed) as `complete`, and passing it is a no-op when the
     /// manifest is already `complete`. `overwrite` is only ever set after the
-    /// user has explicitly agreed (section 3.6). `--out` became `--roll` in
-    /// Phase 3 section 3.5; a re-stitch's target is a roll folder same as
+    /// user has explicitly agreed. `--out` became `--roll`;
+    /// a re-stitch's target is a roll folder same as
     /// everything else now. `flatfield` names the calibration profile whose
     /// geometry reaches the stitch warp (protocol version 7); a roll locked
     /// to a profile's geometry refuses a stitch without it.
@@ -738,7 +770,7 @@ public struct CLIRunner: Sendable {
     /// bundled helper use this to point `SCANNY_BOY_LIBRARY_DB` at a
     /// per-test database, so they never touch the user's real library.
     public let environmentOverrides: [String: String]
-    /// Whether the interactive queries §2.4 routes to the resident helper
+    /// Whether the interactive queries route to the resident helper
     /// actually go there. The app's runner is built with this on; tests
     /// that drive fake one-shot executables keep the default off, so the
     /// existing one-shot tests stay exactly as they are.
@@ -792,12 +824,12 @@ public struct CLIRunner: Sendable {
 
     public init(locator: CLILocator = .mainBundle()) throws {
         // The app's one runner routes the Edit tab's queries through the
-        // resident helper (§2.4); tests build their own runners and keep
+        // resident helper; tests build their own runners and keep
         // the default.
         self.init(executable: try locator.locate(), daemonRouting: true)
     }
 
-    /// docs/OPTIMIZATION.md §2.4's routing: the Edit tab's cheap queries go
+    /// The routing rule: the Edit tab's cheap queries go
     /// to the resident helper; long jobs keep their own one-shot process,
     /// with their own cancellation and progress semantics, and a crash in
     /// one cannot take the interactive session down. `probe`, `prepare`,
