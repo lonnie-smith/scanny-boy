@@ -33,6 +33,10 @@ final class AppActivity {
         run.isActive
             || edit.isRotating
             || edit.isDeleting
+            || edit.isDetectingScratches
+            || edit.isTogglingScratches
+            || edit.isDetectingSpots
+            || edit.isReviewingSpots
             || export.isExporting
             || flatField.isCreating
             || configuration.isAttachingBaseFrame

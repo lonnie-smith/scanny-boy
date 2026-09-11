@@ -12,7 +12,7 @@ import Testing
 /// process, real pipes, real request envelopes — so these run in the fast
 /// tier; the real helper gets its own served variants in
 /// `CLIIntegrationTests`.
-@Suite("Resident helper daemon")
+@Suite("Resident helper daemon", .serialized)
 struct CLIDaemonTests {
     /// A fake `scanny-boy serve`: answers every request with the ordinary
     /// started/…/finished bracket, honours in-band cancellation for a
@@ -79,14 +79,24 @@ struct CLIDaemonTests {
     }
 
     /// `fakeServeSource`, prefixed with one line appending this process's
-    /// pid to `$LAUNCH_LOG` — so a test can tell how many times the fake
+    /// pid to `launchLog` — so a test can tell how many times the fake
     /// helper actually launched, independent of how many requests it
-    /// answered.
-    private static let pidLoggingServeSource = #"""
-    import os
-    with open(os.environ["LAUNCH_LOG"], "a") as f:
-        f.write(f"{os.getpid()}\n")
-    """# + "\n" + fakeServeSource
+    /// answered. The path is baked into the script rather than passed
+    /// through the environment: setting `Process.environment` replaces
+    /// inheritance wholesale, and the copy GitHub Actions' test runner
+    /// hands us is missing `PATH`, which breaks `#!/usr/bin/env python3`.
+    private static func pidLoggingServeSource(launchLog: URL) -> String {
+        let path = launchLog.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let header = """
+            import os
+            with open('\(path)', 'a') as f:
+                f.write(f'{os.getpid()}\\n')
+
+            """
+        return header + fakeServeSource
+    }
 
     private static func waitUntil(
         timeout: Duration = .seconds(10),
@@ -179,18 +189,14 @@ struct CLIDaemonTests {
     @Test("concurrent submits before the helper starts share one launch, not one each")
     func concurrentSubmitsLaunchOneHelper() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let launchLog = directory.appending(path: "launches.log", directoryHint: .notDirectory)
+            FileManager.default.createFile(atPath: launchLog.path, contents: nil)
             let executable = try TestSupport.writePythonExecutable(
-                Self.pidLoggingServeSource,
+                Self.pidLoggingServeSource(launchLog: launchLog),
                 named: "fake-serve",
                 in: directory
             )
-            let launchLog = directory.appending(path: "launches.log", directoryHint: .notDirectory)
-            FileManager.default.createFile(atPath: launchLog.path, contents: nil)
-            let runner = CLIRunner(
-                executable: executable,
-                environmentOverrides: ["LAUNCH_LOG": launchLog.path],
-                daemonRouting: true
-            )
+            let runner = Self.runner(executable: executable)
 
             // Every one of these calls sees no daemon running yet — the
             // ordinary shape at app launch, when several models each fire
@@ -198,24 +204,42 @@ struct CLIDaemonTests {
             // guard against re-entrant launches, each could start its own
             // `scanny-boy serve` before any of the others had registered
             // theirs.
-            try await withThrowingTaskGroup(of: [CLISessionOutput].self) { group in
+            try await withThrowingTaskGroup(of: (Int, [CLISessionOutput]).self) { group in
                 for index in 0..<8 {
                     group.addTask {
                         let session = runner.session(
                             for: CLICommand(arguments: ["edit", "list-spots", "req-\(index)"])
                         )
-                        return await TestSupport.drain(try await session.start())
+                        let collected = await TestSupport.drain(try await session.start())
+                        return (index, collected)
                     }
                 }
-                for try await collected in group {
-                    #expect(collected.failures.isEmpty)
-                    #expect(collected.terminalCompletion?.outcome == .success)
+                for try await (index, collected) in group {
+                    #expect(
+                        collected.failures.isEmpty,
+                        "req-\(index) saw \(collected.failures.count) stream failures"
+                    )
+                    #expect(
+                        collected.terminalCompletion?.outcome == .success,
+                        "req-\(index) ended with \(String(describing: collected.terminalCompletion?.outcome))"
+                    )
                 }
             }
 
+            let sawOneLaunch = await Self.waitUntil {
+                guard let text = try? String(contentsOf: launchLog, encoding: .utf8) else {
+                    return false
+                }
+                return !text.split(separator: "\n", omittingEmptySubsequences: true).isEmpty
+            }
+            #expect(sawOneLaunch, "the helper never logged a launch pid")
+
             let launches = try String(contentsOf: launchLog, encoding: .utf8)
-                .split(separator: "\n")
-            #expect(launches.count == 1)
+                .split(separator: "\n", omittingEmptySubsequences: true)
+            #expect(
+                launches.count == 1,
+                "expected one helper launch, saw \(launches.count): \(launches.joined(separator: ", "))"
+            )
         }
     }
 

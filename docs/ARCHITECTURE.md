@@ -167,6 +167,9 @@ edit detect-spots --roll DIR --negative ID [...] [--sensitivity S]
 edit spots  --roll DIR --negative ID [--accept ID ...] [--reject ID ...]
             [--repair | --no-repair] [--clear]
 edit list-spots --roll DIR --negative ID
+edit detect-scratches --roll DIR --negative ID [...]
+edit scratches --roll DIR --negative ID [...] [--on | --off]
+edit list-scratches --roll DIR --negative ID
 edit render-region  --roll DIR --negative ID --x PX --y PX --width PX --height PX
                     --output PATH [--mode positive|negative]
 edit render-preview --roll DIR --negative ID --output PATH [--mode positive|negative]
@@ -276,6 +279,7 @@ to bottom.
 | `tone.py` | The preview/export paper-grade tone curve (grade, snap, density, zone density, toe/shoulder), a simplified port of NegPy's H&D curve. |
 | `color.py` | The preview/export colour adjustment (CMY, cast removal, dye separation) and the metering the auto solves read. |
 | `spots.py` | The dust/scratch spot detector and the `spots` op's mask arithmetic. |
+| `scratches.py` | Film-length scratch detection, level-binned correction tables, and the `scratches` op (see [SCRATCH_REMOVAL_PLAN.md](SCRATCH_REMOVAL_PLAN.md)). |
 | `auto_rotate.py` | The rebate-squaring angle estimator (stitch-time seeding) and the fine-rotation warp both preview and export replay. |
 | `render.py` | The shared positive render: decode normalized density, invert, tone/colour, camera-matrix + Adobe RGB encode; preview and export both drive it. |
 | `resample.py` | The export's long-edge downscale. |

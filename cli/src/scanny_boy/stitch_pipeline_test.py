@@ -1908,6 +1908,7 @@ def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
     assert roll.published_icc_profile["sha256"] == DENSITY_GREY_PROFILE_SHA256
     published = out_dir / roll.negatives[0].output["name"]
     assert tifffile.imread(published).ndim == 2
+    assert repo.net_edit_state(out_dir, roll.negatives[0].negative_id).scratches is None
 
 
 def test_film_kind_required_when_roll_has_no_film_block(tmp_path):

@@ -110,6 +110,7 @@ public struct CLIEvent: Sendable, Hashable {
         case gridList
         case gridDeleted
         case spotsReported
+        case scratchesReported
         case baseFrameSet
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
@@ -150,6 +151,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "grid_list": self = .gridList
             case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
+            case "scratches_reported": self = .scratchesReported
             case "base_frame_set": self = .baseFrameSet
             default: self = .unknown(name)
             }
@@ -190,6 +192,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .gridList: "grid_list"
             case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
+            case .scratchesReported: "scratches_reported"
             case .baseFrameSet: "base_frame_set"
             case .unknown(let name): name
             }
@@ -430,6 +433,26 @@ extension CLIEvent {
     public var spotsSensitivity: Double? { fields["sensitivity"]?.doubleValue }
     public var spotsRepair: Bool? { fields["repair"]?.boolValue }
     public var spotsFound: Int? { fields["found"]?.intValue }
+
+    public var scratchesNegativeID: String? { fields["negative_id"]?.stringValue }
+    public var scratchesDetectorVersion: Int? { fields["detector_version"]?.intValue }
+    public var scratchesEnabled: Bool? { fields["enabled"]?.boolValue }
+    public var scratchesCount: Int? { fields["count"]?.intValue }
+    public var scratchesStale: Bool? { fields["stale"]?.boolValue }
+    var scratchesSummary: NegativeScratches.Summary? {
+        guard
+            let detectorVersion = scratchesDetectorVersion,
+            let enabled = scratchesEnabled,
+            let stale = scratchesStale,
+            let count = scratchesCount
+        else { return nil }
+        return NegativeScratches.Summary(
+            detectorVersion: detectorVersion,
+            enabled: enabled,
+            stale: stale,
+            count: count
+        )
+    }
     // `preview_path` rides the shared `previewPath` accessor above.
 }
 
