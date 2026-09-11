@@ -12,6 +12,7 @@ struct FilmstripView: View {
     let negatives: [RollManifest.Negative]
     let cameraColor: RollManifest.CameraColor?
     let isSelected: (String) -> Bool
+    let warningIDs: Set<String>
     let onSelect: (String, _ additive: Bool, _ extendingRange: Bool) -> Void
 
     var body: some View {
@@ -21,7 +22,8 @@ struct FilmstripView: View {
                     FilmstripCell(
                         negative: negative,
                         cameraColor: cameraColor,
-                        isSelected: isSelected(negative.negativeID)
+                        isSelected: isSelected(negative.negativeID),
+                        hasWarning: warningIDs.contains(negative.negativeID)
                     ) { additive, extendingRange in
                         onSelect(negative.negativeID, additive, extendingRange)
                     }
@@ -41,6 +43,7 @@ struct FilmstripCell: View {
     let negative: RollManifest.Negative
     let cameraColor: RollManifest.CameraColor?
     let isSelected: Bool
+    let hasWarning: Bool
     let onSelect: (_ additive: Bool, _ extendingRange: Bool) -> Void
 
     @Environment(\.displayScale) private var displayScale
@@ -69,6 +72,14 @@ struct FilmstripCell: View {
                         )
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay(alignment: .topTrailing) {
+                    if hasWarning {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                            .padding(2)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .help(negative.expectedOutput)

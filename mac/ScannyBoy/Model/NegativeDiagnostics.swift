@@ -141,6 +141,10 @@ enum NegativeDiagnostics {
         return titles
     }
 
+    static func hasWarnings(for negative: RollManifest.Negative) -> Bool {
+        !manifestWarningTitles(for: negative).isEmpty
+    }
+
     private static func normalizationPart(for negative: RollManifest.Negative) -> String? {
         guard let normalization = negative.normalization else { return nil }
         guard normalization.maxHeadroomClippedHighlight > headroomClipWarnFraction
