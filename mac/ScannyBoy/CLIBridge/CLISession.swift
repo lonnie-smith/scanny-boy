@@ -3,7 +3,7 @@ import Foundation
 
 /// One invocation of the CLI, and everything that belongs to it.
 ///
-/// `docs/IMPLEMENTATION_PLAN.md` section 5.3: each invocation is an owned
+/// Each invocation is an owned
 /// object rather than global mutable state, process and stream state is
 /// isolated for Swift 6 concurrency, stdout is streamed by line while stderr
 /// is drained concurrently, and the output stream finishes exactly once —
@@ -18,7 +18,7 @@ public actor CLISession {
         public var environment: [String: String]?
         /// What the child reads. The one-shot CLI reads nothing and gets
         /// `/dev/null`; the resident `serve` helper reads newline-delimited
-        /// requests and gets a pipe (docs/OPTIMIZATION.md §2.4).
+        /// requests and gets a pipe.
         public var standardInput: StandardInput
         /// When set, this session represents one request answered by the
         /// resident helper rather than a process of its own: `start()`
@@ -50,7 +50,7 @@ public actor CLISession {
         case pipe
     }
 
-    /// One request's identity inside the shared daemon (§2.4).
+    /// One request's identity inside the shared daemon.
     public struct ServedRequest: Sendable {
         public let daemon: CLIDaemon
         public let requestID: String
@@ -62,7 +62,7 @@ public actor CLISession {
     }
 
     /// How long the app waits for a cooperative cancellation before forcing
-    /// the issue (section 3.8).
+    /// the issue.
     public static let defaultGracePeriod: Duration = .seconds(5)
 
     private let configuration: Configuration
@@ -87,7 +87,7 @@ public actor CLISession {
     /// that failure is deliberately separate from the stream, because a
     /// process that never ran has no completion to report.
     ///
-    /// A served session (§2.4) launches nothing: it submits its command to
+    /// A served session launches nothing: it submits its command to
     /// the resident helper and returns the request's own event stream. If
     /// the daemon cannot be reached, this request falls back to a one-shot
     /// process — the app must never become unusable because a helper died —
@@ -129,7 +129,7 @@ public actor CLISession {
         process.standardOutput = standardOutput
         process.standardError = standardError
         // The one-shot CLI reads no input and gets /dev/null; the `serve`
-        // helper gets a pipe and reads requests from it (§2.4).
+        // helper gets a pipe and reads requests from it.
         if configuration.standardInput == .pipe {
             let pipe = Pipe()
             process.standardInput = pipe
@@ -250,10 +250,10 @@ public actor CLISession {
         return stream
     }
 
-    /// Asks the CLI to cancel cooperatively (section 3.8).
+    /// Asks the CLI to cancel cooperatively.
     ///
     /// A one-shot child is cancelled with SIGTERM. A served request is
-    /// cancelled in band (§2.2): the message sets that one request's
+    /// cancelled in band: the message sets that one request's
     /// token, and every other request the helper is answering is untouched.
     public func requestCancellation() {
         if let served = configuration.served {
@@ -319,7 +319,7 @@ public actor CLISession {
         signalChild(SIGTERM)
     }
 
-    /// §2.4: a daemon that failed to start or died mid-request is logged to
+    /// A daemon that failed to start or died mid-request is logged to
     /// stderr, never surfaced; the request already fell back to one-shot.
     private static func logFallback(_ error: Error) {
         let text = "scanny-boy: the resident helper was unavailable "
@@ -513,7 +513,7 @@ public enum CLIOutcome: Sendable, Hashable {
         case .uncaughtSignal:
             // A user-requested cancellation counts as cancelled whether the
             // CLI exited 143 itself or was reported as terminated by signal
-            // 15 (section 3.8).
+            // 15.
             if forced {
                 self = .cancelled(forced: true)
             } else if terminationStatus == SIGTERM {

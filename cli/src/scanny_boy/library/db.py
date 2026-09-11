@@ -34,7 +34,7 @@ _ENGINES_LOCK = threading.Lock()
 
 _BUSY_TIMEOUT_MS = 30_000
 
-# docs/OPTIMIZATION.md §1: Alembic is imported only on the migration path
+# Alembic is imported only on the migration path
 # (below), never at module scope — a database already at head, which is
 # every command's ordinary case, must not pay for it. The fast path reads
 # the version table through SQLAlchemy and compares it against a revision

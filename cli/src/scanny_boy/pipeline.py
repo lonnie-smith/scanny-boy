@@ -1,22 +1,18 @@
 """Group-by-group conversion pipeline: decode -> base TIFF -> nested
 EXIF -> staging -> publish -> manifest.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.6 (staging, overwriting, and
-grouping), section 3.7 (manifest), section 3.8 (concurrency and
-cancellation), and section 3.9 (disk checks).
-
-Per section 3.6, "never publish only part of a group": every frame in a
+The governing rule is "never publish only part of a group": every frame in a
 group is decoded and written into that group's staging directory first
 (`_stage_group`, wrapped in a single try/except — an ordinary per-frame
 failure there deletes the whole staging directory and fails the group).
 Publishing — moving each finished file from staging into the output folder
 (`_publish_group`) — happens only after every frame in the group has staged
-successfully, and is deliberately *not* wrapped in that same handler:
-section 3.6 frames this move as the one place a real crash can leave a
+successfully, and is deliberately *not* wrapped in that same handler: this
+move is the one place a real crash can leave a
 group half-published, and recovery for that is a rerun's job
 (`output_folder.plan_rerun` + `apply_recovery_cleanup`), not this run's.
 
-Concurrency (section 3.8) spans the whole run, not just one group.
+Concurrency spans the whole run, not just one group.
 `--jobs 1` runs every frame serially — `_stage_group_serial`, which never
 constructs an executor at all. Otherwise `run_convert` opens one
 `ThreadPoolExecutor` for the entire run, sized from the run's total frame
@@ -158,7 +154,7 @@ class ConvertFailure(Exception):
 
 class _SourceChangedError(Exception):
     """A selected source's size or modification time no longer matches the
-    value recorded during hashing (section 3.7). There is no dedicated
+    value recorded during hashing. There is no dedicated
     CONTRACT.md code for this; `UNREADABLE_RAW` ("File exists but could not
     be decoded") is the closest fit among the locked codes, since the file
     can no longer be trusted to decode to the hashed content."""
@@ -169,8 +165,7 @@ class _SourceChangedError(Exception):
 
 
 def _output_name_for(source_filename: str) -> str:
-    """`docs/IMPLEMENTATION_PLAN.md` section 3.4: `DSC_0042.NEF` becomes
-    `DSC_0042.tif`."""
+    """`DSC_0042.NEF` becomes `DSC_0042.tif`."""
     return f"{Path(source_filename).stem}.tif"
 
 
@@ -192,9 +187,9 @@ class _ValidatedSelection:
 class _StagedFrame:
     """Everything a thread worker hands back to the parent.
 
-    Section 3.8: "Each worker opens one RAW, writes its staged TIFF, adds
-    metadata, and returns only status and paths. Do not return full image
-    arrays to the parent." A name, an index, and a path — the decoded
+    Each worker opens one RAW, writes its staged TIFF, adds metadata, and
+    returns only status and paths — never full image arrays. A name, an
+    index, and a path — the decoded
     array is dropped when `_stage_one_frame` returns. The per-channel
     sensor-clip fractions measured at decode ride along (they are three
     floats, not pixels).
@@ -280,11 +275,11 @@ class _GroupContext:
     settings_by_name: dict[str, SourceSettings]
     icc_profile: bytes
     # The full-resolution gain map, resized once per run and shared
-    # read-only across workers (docs/FLATFIELD_PLAN.md section 2.7). `None`
+    # read-only across workers. `None`
     # for a run without `--flatfield`.
     full_res_gain: np.ndarray | None
     # The profile's CA scales in "scale" mode, merged into every decode
-    # (docs/GEOMETRIC_PLAN.md section 5.2). None otherwise.
+    # None otherwise.
     ca_scales: tuple[float, float] | None
     progress: _ProgressReporter
     cancel: CancellationToken
@@ -429,7 +424,7 @@ def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetada
     first = settings_list[0]
     # The camera model is the EXIF make/model joined; a lone one of the two
     # is used alone. Recorded for the roll manifest's `camera_color` block
-    # (docs/EXPORT_PLAN.md §3.2).
+    # block.
     camera_model = " ".join(
         part for part in (first.make, first.model) if part
     ) or None
@@ -495,8 +490,8 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
     pixels = raw_decode.decode_raw(path, chromatic_aberration=ctx.ca_scales).pixels
     # Sensor clipping is measured here, before anything touches the pixels:
     # it is a property of the capture, and the flat-field gain would move
-    # the level it is measured against (docs/DECISIONS.md, "Normalization
-    # decisions"). The pipeline attempts no reconstruction, exactly as NegPy says.
+    # the level it is measured against. The pipeline attempts no
+    # reconstruction, exactly as NegPy says.
     clip_fractions = normalization.measure_clip_fractions(pixels)
     for channel, fraction in enumerate(clip_fractions):
         if fraction > normalization.SCAN_CLIP_WARN:
@@ -509,7 +504,7 @@ def _stage_one_frame(member: str, ctx: _GroupContext) -> _StagedFrame:
     # Flat-field correction sits inside the DECODE step boundary: after the
     # RAW decode, before the base TIFF, so the stitch stage's per-frame
     # photometric gain solve is asked to explain real exposure mismatch, not
-    # spatial falloff (docs/FLATFIELD_PLAN.md section 1).
+    # spatial falloff.
     if ctx.full_res_gain is not None:
         clipped = flatfield.apply_in_place(pixels, ctx.full_res_gain)
         height, width = pixels.shape[:2]
@@ -670,7 +665,7 @@ def build_processing_params(profile) -> dict:
     3.4): the raw decode params, the normalization constants (section 3.8 —
     the key is always present, normalization is not optional), and, when a
     flat-field profile applies, its token and any CA decode scales (the
-    second invariant bucket of docs/GEOMETRIC_PLAN.md section 3.6).
+    second invariant bucket).
 
     `run_convert` and `probe --roll` must both present exactly this shape,
     so both go through this one function rather than keeping copies that
@@ -721,7 +716,7 @@ def run_convert(
     plain strip batch, recorded as `across=per_negative, down=1` via
     `grid_spec`. It is recorded on the work manifest alongside
     `shots_per_negative == grid.count` and is what the stitch stage reads
-    the grid back from (docs/GRID_STITCH_PLAN.md section 2.3).
+    the grid back from.
 
     `jobs` is `None` for the section 3.8 default worker count, or an
     explicit 1-12. Cancelling `cancel` abandons the group in flight,
@@ -1010,7 +1005,7 @@ def run_convert(
 
             # Record each source's measured sensor-clip fractions on the
             # manifest's source records, so they ride through `merge_sources`
-            # into the roll (docs/DECISIONS.md, "Normalization decisions").
+            # into the roll.
             clips_by_member = {f.member: f.scan_clip_fractions for f in staged_frames}
             candidate.sources = [
                 (

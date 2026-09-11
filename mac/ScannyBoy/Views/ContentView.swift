@@ -2,12 +2,11 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Section 3.10: `NavigationSplitView` shell — the library sidebar
+/// A `NavigationSplitView` shell — the library sidebar
 /// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
-/// picker. Chunk P3-10 adds the shell and the sidebar. Chunk P3-11 reworks
-/// the workspace's Add Scans tab onto the selected roll: no output-folder
-/// picker, no film date, and the overwrite-confirmation dialog replaced by
-/// the overlap sheet (section 3.4/3.5). Chunk P3-12 adds the Edit tab:
+/// picker. The workspace's Add Scans tab is built on the selected roll: no
+/// output-folder picker, no film date, and the overwrite-confirmation
+/// dialog replaced by the overlap sheet. The Edit tab holds
 /// negatives, thumbnails, the dirty count, and Apply.
 ///
 /// Scans-per-negative is no longer a roll property at all: it is each
@@ -15,10 +14,10 @@ import UniformTypeIdentifiers
 /// before the Stitch button enables — so one roll can hold negatives
 /// stitched from different scan counts.
 ///
-/// Chunk 9: folder selection, one-range selection, grouping preview.
-/// Chunk 10 adds Run with live progress, cooperative Cancel, the
+/// Add Scans covers folder selection, one-range selection, and the grouping
+/// preview. Run adds live progress, cooperative Cancel, the
 /// completed/failed negatives, Reveal in Finder, and the manifest the run
-/// left behind. Chunk P2-10 adds re-stitch: the same `run` driving
+/// left behind. Re-stitch is the same `run` driving
 /// `scanny-boy stitch` over a work directory you point at instead of
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
@@ -31,7 +30,7 @@ struct ContentView: View {
     let export: ExportModel
     /// The union of every helper session in the app — Convert, rotate,
     /// delete, export, flat-field calibration — since "one helper at a
-    /// time" (section 3.10) is an app-wide rule, not `RunModel`'s alone.
+    /// time" is an app-wide rule, not `RunModel`'s alone.
     let activity: AppActivity
     @Bindable var keyboard: AppKeyboardState
 
@@ -45,6 +44,7 @@ struct ContentView: View {
     @State private var isPresentingGridProfiles = false
     @State private var isConfirmingConvert = false
     @State private var pendingConvertAfterNewRoll = false
+    @State private var isConvertDropTarget = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -322,7 +322,7 @@ struct ContentView: View {
     }
 
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
-    /// selection (section 3.10): neither model has a folder picker of its
+    /// selection: neither model has a folder picker of its
     /// own, so this is the only thing that ever sets them.
     ///
     /// When `selection` names no roll in `library.rolls`, the roll behind it
@@ -367,7 +367,11 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.catalogue, id: \.self, selection: $model.selectedFiles) { name in
-                    CatalogueRow(name: name, url: model.fileURL(for: name))
+                    CatalogueRow(
+                        name: name,
+                        url: model.fileURL(for: name),
+                        selectedFiles: model.selectedFiles
+                    )
                 }
                 .listStyle(.inset)
             }
@@ -442,7 +446,8 @@ struct ContentView: View {
                 onReplace: { chooseBaseFrame(replace: true) },
                 onDropFrame: { url in
                     Task { await model.attachBaseFrame(at: url) }
-                }
+                },
+                fileURL: model.fileURL(for:)
             )
             Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)
@@ -492,6 +497,12 @@ struct ContentView: View {
 
     private var convertSection: some View {
         Section("Convert") {
+            convertDropZone
+        }
+    }
+
+    private var convertDropZone: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Spacer()
                 if run.isActive {
@@ -513,8 +524,45 @@ struct ContentView: View {
                 } else {
                     RunResultView(run: run)
                 }
+            } else if !model.selectedFiles.isEmpty {
+                Text(Self.convertReadyLabel(scanCount: model.selectedFiles.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isConvertDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isConvertDropTarget ? Color.accentColor : Color.secondary.opacity(0.35),
+                    style: StrokeStyle(
+                        lineWidth: isConvertDropTarget ? 2 : 1,
+                        dash: isConvertDropTarget ? [] : [5, 3]
+                    )
+                )
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onDrop(of: [.plainText], isTargeted: $isConvertDropTarget) { providers in
+            handleConvertDrop(providers)
+        }
+    }
+
+    private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !activity.isBusy, let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: String.self) { string, _ in
+            guard let string,
+                let names = CatalogueDragSupport.decodeDragPayload(string)
+            else { return }
+            Task { @MainActor in
+                applyConvertDrop(filenames: names)
+            }
+        }
+        return true
     }
 
     private func handleConvertTap() {
@@ -526,6 +574,22 @@ struct ContentView: View {
                 startRun()
             }
         }
+    }
+
+    @discardableResult
+    private func applyConvertDrop(filenames: [String]) -> Bool {
+        guard !activity.isBusy else { return false }
+        let valid = Set(filenames.filter { model.catalogue.contains($0) })
+        guard !valid.isEmpty else { return false }
+        model.selectedFiles = valid
+        return true
+    }
+
+    @discardableResult
+    private func applyConvertDrop(urls: [URL]) -> Bool {
+        guard !activity.isBusy, let inputFolder = model.inputFolder else { return false }
+        let names = urls.compactMap { Self.resolveFileName($0, relativeTo: inputFolder) }
+        return applyConvertDrop(filenames: names)
     }
 
     /// Rejects sidebar selection changes while any helper is active (section
@@ -630,6 +694,20 @@ struct ContentView: View {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return exists && isDir.boolValue
+    }
+
+    /// Caption for the Convert zone while idle and scans are selected.
+    nonisolated static func convertReadyLabel(scanCount: Int) -> String {
+        "\(scanCount) scan\(scanCount == 1 ? "" : "s") ready to convert"
+    }
+
+    /// Given a dropped file URL and the input folder, returns the file's
+    /// name if it resides inside the folder, or `nil` otherwise.
+    nonisolated static func resolveFileName(_ url: URL, relativeTo inputFolder: URL) -> String? {
+        let inputPath = inputFolder.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        guard filePath.hasPrefix(inputPath) else { return nil }
+        return url.lastPathComponent
     }
 
     /// `canCreateDirectories` is off by default and on only where a new

@@ -1,8 +1,8 @@
 """Shared helper for validating emitted events against schema.json.
 
 This is a small hand-rolled check rather than a full JSON Schema engine, so
-that the dev dependency set stays exactly what section 5.1 of the
-implementation plan lists (pytest, pytest-cov, ruff, PyInstaller). It reads
+that the dev dependency set stays exactly pytest, pytest-cov, ruff, and
+PyInstaller. It reads
 its enums and required-field rules straight out of schema.json, so it stays
 correct as the schema grows.
 """

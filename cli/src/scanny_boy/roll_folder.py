@@ -1,6 +1,6 @@
 """The library: slugged roll folders, and the two ways `roll list` and
-`roll info` see them. See `docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.1
-for the library's rules and section 3.2 for slugging and renaming.
+`roll info` see them. See `docs/ARCHITECTURE.md` §5 for the library's
+rules and slugging.
 
 Rolls are registered in the library database (`scanny_boy.library`), which
 is what `scan_library` reports from; the filesystem supplies the folder the

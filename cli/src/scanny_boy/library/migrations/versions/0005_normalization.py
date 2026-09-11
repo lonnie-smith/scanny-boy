@@ -1,9 +1,8 @@
-"""The normalization record and the second ICC profile
-(docs/DECISIONS.md, "Normalization decisions").
+"""The normalization record and the second ICC profile.
 
 Nullable columns throughout: existing rows read back with NULLs and stay
 valid — there is no data migration. `rolls.published_icc_profile` is
-section 3.12's split of the single-profile invariant into the intermediates'
+a split of the single-profile invariant into the intermediates'
 (linear, already in `rolls.icc_profile`) and the published TIFFs' (density).
 
 Revision ID: 0005

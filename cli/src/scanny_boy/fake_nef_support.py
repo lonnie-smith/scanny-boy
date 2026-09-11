@@ -9,8 +9,8 @@ pixel data.
 
 These fixtures are not openable by rawpy as RAW files, so anything that goes
 through `rawpy.imread` (camera_whitebalance, and the full `probe --files`
-pipeline) must still be tested against the real sample NEFs. See
-`docs/IMPLEMENTATION_PLAN.md` section 7: "Do not mock rawpy's decoding."
+pipeline) must still be tested against the real sample NEFs. Do not mock
+rawpy's decoding.
 """
 
 from __future__ import annotations

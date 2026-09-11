@@ -1299,7 +1299,7 @@ def test_missing_lens_model_emits_the_consistency_warning(monkeypatch, tmp_path)
     assert all(w.run_id == "run-1" for w in warnings)
 
 
-# --- grid plumbing (docs/GRID_STITCH_PLAN.md section 2.2) -----------------
+# --- grid plumbing ---------------------------------------------------------
 
 
 @requires_real_samples

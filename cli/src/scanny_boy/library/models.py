@@ -69,8 +69,8 @@ class RollRow(Base):
     updated_at: Mapped[str] = mapped_column(Text)
     processing_params: Mapped[dict] = mapped_column(JSONText)
     icc_profile: Mapped[dict] = mapped_column(JSONText)
-    # The density profile the published TIFFs carry (section 3.12's
-    # second-profile split); a roll invariant beside `icc_profile`.
+    # The density profile the published TIFFs carry; a roll invariant
+    # beside `icc_profile`.
     published_icc_profile: Mapped[dict] = mapped_column(JSONText)
     stitch_params: Mapped[dict] = mapped_column(JSONText)
     # `metadata`: two nullable strings rather than a nested object.
@@ -80,7 +80,7 @@ class RollRow(Base):
     # throughout — pre-0009 rows read back with NULLs.
     film: Mapped[str | None] = mapped_column(Text)
     iso: Mapped[str | None] = mapped_column(Text)
-    # The capturing body's colour response (docs/EXPORT_PLAN.md §3.2):
+    # The capturing body's colour response:
     # `{"rgb_xyz_matrix": [[...], [...], [...]], "source": "libraw",
     # "camera_model": ..., "matrix_version": 1}`. Nullable throughout —
     # pre-0010 rolls read back with NULL and no block.
@@ -94,12 +94,12 @@ class RollRow(Base):
     camera: Mapped[str | None] = mapped_column(Text)
     lens: Mapped[str | None] = mapped_column(Text)
     caption: Mapped[str | None] = mapped_column(Text)
-    # MONOCHROME_PLAN §2.3: the roll's frozen film-kind decision — a JSON
+    # The roll's frozen film-kind decision — a JSON
     # object (`{kind, source, statistic, samples, detector_version}`) or
     # NULL until the first stitch run seeds it. Not to be confused with
     # `film` above, the free-text film-stock metadata string.
     film_kind: Mapped[dict | None] = mapped_column(JSONText)
-    # REBATE_ANCHORING §3.1: the roll's film-base reference — a JSON object
+    # The roll's film-base reference — a JSON object
     # (`density`, `locked_at`, `attached_at`, `source_name`, `source_sha256`,
     # `flat_field_profile_id`, `camera_model`, `chosen_index`, `populations`,
     # `clipped_fractions`, `grid_cells`, `measure_version`) or NULL until
@@ -132,7 +132,7 @@ class RunRow(Base):
     work_dir: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[str] = mapped_column(Text)
     finished_at: Mapped[str | None] = mapped_column(Text)
-    # D-4: the per-channel median of the run's negatives' bounds; recorded,
+    # The per-channel median of the run's negatives' bounds; recorded,
     # nothing reads it yet.
     normalization_aggregate: Mapped[dict | None] = mapped_column(JSONText)
 
@@ -177,13 +177,12 @@ class NegativeRow(Base):
     canvas: Mapped[dict | None] = mapped_column(JSONText)
     valid_rect: Mapped[list | None] = mapped_column(JSONText)
     fill_color: Mapped[list] = mapped_column(JSONText)
-    # The per-negative normalization record and section 3.14's fill value
-    # (docs/DECISIONS.md, "Normalization decisions"); null/None when this
-    # build predates normalization or the negative never published.
+    # The per-negative normalization record and fill value; null/None when
+    # this build predates normalization or the negative never published.
     normalization: Mapped[dict | None] = mapped_column(JSONText)
     normalized_fill: Mapped[float | None] = mapped_column(SQLFloat)
-    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
-    # section 7); null when the fit was rejected or this build predates it.
+    # The fitted rig-tilt rectification; null when the fit was rejected or
+    # this build predates it.
     rectification: Mapped[dict | None] = mapped_column(JSONText)
     rebate_deviation_px: Mapped[float | None] = mapped_column(SQLFloat)
     used_clahe_fallback: Mapped[bool] = mapped_column(Integer)
@@ -202,8 +201,8 @@ class NegativeRow(Base):
     # Set by the preview generator once a small preview of the published
     # TIFF exists; null until then.
     preview_path: Mapped[str | None] = mapped_column(Text)
-    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 2.4 and 4);
-    # null/None for pre-grid rows and for failed assignments.
+    # 2D grid stitching; null/None for pre-grid rows and for failed
+    # assignments.
     grid: Mapped[dict | None] = mapped_column(JSONText)
     grid_cells: Mapped[dict | None] = mapped_column(JSONText)
     grid_pitch_ratio: Mapped[float | None] = mapped_column(SQLFloat)
@@ -257,7 +256,7 @@ class FlatFieldProfileRow(Base):
     params: Mapped[dict] = mapped_column(JSONText)
     scanny_boy_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
-    # Geometric calibration (docs/GEOMETRIC_PLAN.md section 3): all four
+    # Geometric calibration: all four
     # nullable, and rows from migration 0003 and earlier read back with
     # four Nones and behave exactly as they did before.
     board_key: Mapped[str | None] = mapped_column(Text)

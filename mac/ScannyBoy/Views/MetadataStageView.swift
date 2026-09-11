@@ -33,7 +33,8 @@ struct MetadataStageView: View {
                 negatives: edit.visibleNegatives,
                 cameraColor: edit.roll?.cameraColor,
                 highlightLock: edit.roll?.highlightLock,
-                isSelected: edit.isSelected
+                isSelected: edit.isSelected,
+                warningIDs: []
             ) { negativeID, additive, extendingRange in
                 edit.select(
                     negativeID,

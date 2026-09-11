@@ -27,8 +27,7 @@ enum TestEvents {
 ///
 /// Paths are resolved from this source file's own location, never from the
 /// current working directory, so the tests behave the same however
-/// `xcodebuild` was invoked — the same rule `docs/IMPLEMENTATION_PLAN.md`
-/// section 7 sets for the Python tests.
+/// `xcodebuild` was invoked — the same rule the Python tests follow.
 enum TestSupport {
     /// The repository root: `mac/ScannyBoyTests/` is two levels below it.
     static let repositoryRoot: URL = URL(filePath: #filePath)
@@ -37,7 +36,7 @@ enum TestSupport {
         .deletingLastPathComponent()
 
     /// Runs `body` with a fresh, uniquely named temporary directory and
-    /// removes it afterwards. Section 7: isolated temporary directories, and
+    /// removes it afterwards: isolated temporary directories, and
     /// no filename shared between concurrently running tests.
     static func withTemporaryDirectory<T>(
         _ body: (URL) async throws -> T
@@ -80,7 +79,9 @@ enum TestSupport {
     /// on stdin, answers them out of order when one is slow, honours in-band
     /// cancellation, and can exit mid-request on command — JSON parsing and
     /// threads that `sh` does not have. `/usr/bin/python3` ships with the
-    /// Xcode the Swift job already requires.
+    /// Xcode the Swift job already requires; it is used directly rather
+    /// than `/usr/bin/env python3` so the child still starts when a test
+    /// replaces `Process.environment` with a copy that omits `PATH`.
     @discardableResult
     static func writePythonExecutable(
         _ source: String,
@@ -88,7 +89,7 @@ enum TestSupport {
         in directory: URL
     ) throws -> URL {
         let url = directory.appending(path: name, directoryHint: .notDirectory)
-        let contents = "#!/usr/bin/env python3\n" + source
+        let contents = "#!/usr/bin/python3\n" + source
         try contents.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
@@ -187,8 +188,8 @@ enum SampleFixtures {
 
     /// Why a test that needs them was skipped, naming what went untested.
     static let unavailableComment: Comment = """
-        The real sample NEFs are not present at tests/fixtures/nef/ (see \
-        docs/IMPLEMENTATION_PLAN.md appendix A). The end-to-end run of the \
+        The real sample NEFs are not present at tests/fixtures/nef/. \
+        The end-to-end run of the \
         bundled helper — a forced stop, the `running` manifest and staging \
         directory it leaves behind, and the rerun that recovers them — did \
         not run.

@@ -3,19 +3,13 @@ database instead of `scanny-boy-roll.json`.
 
 A *roll* is a named folder the user returns to, holding the stitched TIFFs of
 one roll of film across many runs. That is the whole reason this record is a
-break rather than a patch: Phase 2's version 1 carried one `run_id`, one
-`input_folder`, and one `film_date`, and refused any rerun that changed them,
-version 2's supersession tombstones are gone in version 3 — a rerun
-adopts the covered negative in place instead of publishing a replacement —
-version 4 adds per-frame solved photometric gains and per-pair pre-gain
-overlap MAD, version 5 drops the roll-level `shots_per_negative`: each
-stitch batch's grouping lives in its own work manifest, so one roll can hold
-negatives stitched from different scan counts, and version 6 adds a
-per-frame solved `scale` (docs/STITCH_QUALITY_PLAN.md section 2: the global
-layout is now a similarity, not a rigid transform). See
-`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.3
-for the shape and section 3.4 for the invariants and naming rules this
-module enforces. The record's shape is unchanged from the JSON-manifest era
+break rather than a patch: a rerun adopts the negative it covers in place
+instead of publishing a replacement, one roll can hold negatives stitched
+from different scan counts (each stitch batch's grouping lives in its own
+work manifest, not the roll), and negatives carry per-frame solved
+photometric gains, per-pair pre-gain overlap MAD, and a per-frame solved
+scale (the global layout is a similarity, not a rigid transform). The
+record's shape is unchanged from the JSON-manifest era
 otherwise — `to_dict()` still emits exactly the fields
 `roll-manifest.schema.json` and the `roll info` event describe — but the
 file is gone: `load_roll_manifest` and `write_roll_manifest` read and write
@@ -46,7 +40,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 8
+ROLL_MANIFEST_FORMAT_VERSION = 10
 ROLL_MANIFEST_KIND = "roll"
 
 # The extended metadata fields, in display order. Every one lives on both
@@ -56,16 +50,16 @@ METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
 # Roll-only extended metadata: no negative columns, no per-image override.
 ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
 
-# Section 3.4: `short_id` starts at six characters of the run's UUID and
-# lengthens until it is free within the roll.
+# `short_id` starts at six characters of the run's UUID and lengthens until
+# it is free within the roll.
 SHORT_ID_LENGTHS = (6, 8, 10)
 
 
 class RollInvariantMismatchError(Exception):
-    """Maps to `ROLL_INVARIANT_MISMATCH` (section 3.12): this run's
-    parameters differ from the ones the roll already established. Section 3.4
-    keeps `MANIFEST_MISMATCH` for the Phase 1 work manifest, so the two never
-    share a code."""
+    """Maps to `ROLL_INVARIANT_MISMATCH`: this run's parameters differ from
+    the ones the roll already established. Kept distinct from
+    `MANIFEST_MISMATCH`, which is the Phase 1 work manifest's code, so the
+    two never share a code."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -107,8 +101,8 @@ class FrameRecord:
     # linear values were multiplied by this before the blend. Geometric
     # mean of the gains across a negative's frames is 1 by construction.
     gain: tuple[float, float, float]
-    # Solved per-frame isotropic scale (docs/STITCH_QUALITY_PLAN.md section
-    # 2): the global layout is a similarity, not a rigid transform. Geometric
+    # Solved per-frame isotropic scale: the global layout is a similarity,
+    # not a rigid transform. Geometric
     # mean of the scales across a negative's frames is 1 by construction,
     # the same gauge convention as `gain`.
     scale: float
@@ -125,10 +119,9 @@ class FrameRecord:
 
 @dataclasses.dataclass(frozen=True)
 class RollSourceRecord:
-    """Section 3.3: "as Phase 1, plus `run_id` naming the run that first
-    contributed it". Phase 1's `SourceRecord` is shared with the work
-    manifest and must not grow a field, so the roll keeps its own record
-    (section 5.4)."""
+    """As Phase 1's `SourceRecord`, plus `run_id` naming the run that first
+    contributed it. Phase 1's `SourceRecord` is shared with the work
+    manifest and must not grow a field, so the roll keeps its own record."""
 
     filename: str
     absolute_path: str
@@ -137,8 +130,8 @@ class RollSourceRecord:
     sha256: str
     run_id: str
     # Per-channel fraction of pixels at or above sensor white, measured in
-    # the prepare stage at decode (docs/DECISIONS.md, "Normalization decisions").
-    # Null when the contributing run predates the measurement.
+    # the prepare stage at decode. Null when the contributing run predates
+    # the measurement.
     scan_clip_fractions: tuple[float, float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,10 +144,10 @@ class RollSourceRecord:
 
 @dataclasses.dataclass
 class CaptureTime:
-    """Section 3.3. `source_datetime_original` is what the negative's first
-    frame actually carries; `intended_` is what the metadata stage wants;
-    `applied_` is what was last written into the published TIFF. A negative
-    is *dirty* when the last two differ (section 3.8)."""
+    """`source_datetime_original` is what the negative's first frame actually
+    carries; `intended_` is what the metadata stage wants; `applied_` is
+    what was last written into the published TIFF. A negative is *dirty*
+    when the last two differ."""
 
     source_datetime_original: str | None = None
     intended_datetime_original: str | None = None
@@ -167,9 +160,9 @@ class CaptureTime:
 
 @dataclasses.dataclass
 class RunRecord:
-    """Section 3.3. One invocation of `run` or `stitch` that added negatives
-    to this roll. `short_id` is assigned by `append_run` and never
-    recomputed, so `negative_id`s are stable for the life of the roll."""
+    """One invocation of `run` or `stitch` that added negatives to this
+    roll. `short_id` is assigned by `append_run` and never recomputed, so
+    `negative_id`s are stable for the life of the roll."""
 
     run_id: str
     kind: str
@@ -229,8 +222,8 @@ class NegativeRecord:
     expected_output: str
     fill_color: tuple[int, int, int]
     status: str = "pending"
-    # Section 3.7: the 1-based position in the roll, recomputed by
-    # `roll_sequence.py` (Chunk P3-6). Null while unranked (pending/failed).
+    # The 1-based position in the roll, recomputed by `roll_sequence.py`.
+    # Null while unranked (pending/failed).
     sequence: int | None = None
     capture_time: CaptureTime = dataclasses.field(default_factory=CaptureTime)
     # The negative's explicit extended-metadata values (None = inherit the
@@ -245,28 +238,26 @@ class NegativeRecord:
     global_rms_px: float | None = None
     canvas: tuple[int, int] | None = None  # (width, height)
     valid_rect: tuple[int, int, int, int] | None = None
-    # The normalization record (docs/DECISIONS.md, "Normalization decisions"):
-    # per-negative bounds, metering, observed extrema, headroom clipping,
-    # and the rebate finding. Null when this build predates normalization
-    # or the negative never published.
+    # The normalization record: per-negative bounds, metering, observed
+    # extrema, headroom clipping, and the rebate finding. Null when this
+    # build predates normalization or the negative never published.
     normalization: dict[str, Any] | None = None
-    # The fitted rig-tilt rectification (docs/RECTIFICATION_PLAN.md
-    # section 7): `l` in 1/px, the centre it acts about, and the fit's
-    # before/after diagnostics. Null when the fit was rejected, the
-    # negative failed before it ran, or this build predates it.
+    # The fitted rig-tilt rectification: `l` in 1/px, the centre it acts
+    # about, and the fit's before/after diagnostics. Null when the fit was
+    # rejected, the negative failed before it ran, or this build predates
+    # it.
     rectification: dict[str, Any] | None = None
-    # Section 3.14's fill value, recorded beside `fill_color` for the same
+    # The normalized fill value, recorded beside `fill_color` for the same
     # reason: a file is interpretable without knowing which build wrote it.
     normalized_fill: float | None = None
-    # Phase 2 section 3.12.2: never set, because Chunk P2-1 found the rebate
-    # is not cleanly detectable with a generic straight-edge finder. The
-    # field stays in the contract; its value is always null.
+    # Never set: the rebate is not cleanly detectable with a generic
+    # straight-edge finder. The field stays in the contract; its value is
+    # always null.
     rebate_deviation_px: float | None = None
     # Whether registration needed the CLAHE retry (stitch_pipeline.py's
-    # `_solve_negative`) to solve this negative's layout — section 3.7's
-    # "every threshold in force" promise extended to a per-negative choice,
-    # since the roll-level `stitch_params` records the fallback as a fixed
-    # policy, not which negatives actually used it.
+    # `_solve_negative`) to solve this negative's layout — recorded per
+    # negative because the roll-level `stitch_params` records the fallback
+    # threshold as a fixed policy, not which negatives actually needed it.
     used_clahe_fallback: bool = False
     error_code: str | None = None
     error_message: str | None = None
@@ -274,8 +265,8 @@ class NegativeRecord:
     # the negative's edits applied so far; set by `previews.py`, consumed
     # by the app's Edit tab. Null until first generated.
     preview_path: str | None = None
-    # 2D grid stitching (docs/GRID_STITCH_PLAN.md sections 2.4 and 4).
-    # All four are null for a negative written by a pre-grid build, and
+    # 2D grid stitching. All four are null for a negative written by a
+    # pre-grid build, and
     # for one whose cell assignment failed (`grid_cells` then carries no
     # solved map, and the pitch/alignment ratios nothing to measure).
     grid: dict[str, int] | None = None  # {"across": A, "down": D} as declared
@@ -322,9 +313,9 @@ class NegativeRecord:
 @dataclasses.dataclass
 class RollMetadata:
     """The roll's metadata stage record. `roll_capture_date` is the
-    section 3.7 fallback date every negative without a `date_override`
-    ranks on; the five extended-metadata fields are the roll-level
-    fallbacks each negative without its own value inherits."""
+    fallback date every negative without a `date_override` ranks on; the
+    five extended-metadata fields are the roll-level fallbacks each
+    negative without its own value inherits."""
 
     roll_capture_date: str | None = None
     last_applied_at: str | None = None
@@ -359,14 +350,13 @@ def effective_metadata(
 
 @dataclasses.dataclass(frozen=True)
 class RollInvariants:
-    """Section 3.4's roll-invariant set, and section 5.4's name for it.
-    Everything else — input folder, source list, order, grouping, and the
-    batch's `shots_per_negative` — is expected to differ between runs and is
-    never compared.
+    """The roll-invariant set. Everything else — input folder, source list,
+    order, grouping, and the batch's `shots_per_negative` — is expected to
+    differ between runs and is never compared.
 
     `icc_profile_sha256` is the *intermediates'* linear profile, sourced
     from the work manifest; `published_icc_profile_sha256` is the density
-    profile the published TIFF is tagged with (section 3.12's split)."""
+    profile the published TIFF is tagged with."""
 
     processing_params: dict[str, Any]
     icc_profile_sha256: str
@@ -379,12 +369,12 @@ MATRIX_VERSION = 1
 
 @dataclasses.dataclass(frozen=True)
 class CameraColor:
-    """The roll manifest's `camera_color` block (docs/EXPORT_PLAN.md §3.2):
-    the capturing body's colour response, written by the stitch stage from
-    the run's first source and then **frozen** — a property of the camera
-    body, and a roll is shot on one rig.
+    """The roll manifest's `camera_color` block: the capturing body's
+    colour response, written by the stitch stage from the run's first
+    source and then **frozen** — a property of the camera body, and a roll
+    is shot on one rig.
 
-    This is recorded data, not a roll invariant (§3.3): it affects no
+    This is recorded data, not a roll invariant: it affects no
     published pixel — the export's render reads it — so it must not sit in
     `processing_params`, whose exact-dict equality is the
     `ROLL_INVARIANT_MISMATCH` check; that would break every existing roll
@@ -442,11 +432,11 @@ class RollManifest:
     sources: list[RollSourceRecord] = dataclasses.field(default_factory=list)
     negatives: list[NegativeRecord] = dataclasses.field(default_factory=list)
     metadata: RollMetadata = dataclasses.field(default_factory=RollMetadata)
-    # The capturing body's colour response (docs/EXPORT_PLAN.md §3.2) —
-    # written by the stitch stage's first run, frozen thereafter. Recorded
-    # data for the export path, deliberately NOT a roll invariant (§3.3).
-    # `None` on a roll whose runs predate the block; a colour roll in that
-    # state fails the export (`CAMERA_MATRIX_MISSING`).
+    # The capturing body's colour response — written by the stitch stage's
+    # first run, frozen thereafter. Recorded data for the export path,
+    # deliberately NOT a roll invariant. `None` on a roll whose runs predate
+    # the block; a colour roll in that state fails the export
+    # (`CAMERA_MATRIX_MISSING`).
     camera_color: CameraColor | None = None
     # The roll's film kind — set via `roll set-film-kind` on the Add Scans
     # stage (or optionally at `roll init`), never rewritten once the roll
@@ -524,14 +514,14 @@ class RollManifest:
 def new_roll_manifest(
     *, roll_id: str, roll_name: str, film_kind: str | None = None
 ) -> RollManifest:
-    """Section 5.4 decision 1: the one constructor of an empty roll. No runs,
-    no sources, no negatives — and no grouping of its own, since
-    `shots_per_negative` is each stitch batch's choice, not the roll's.
+    """The one constructor of an empty roll. No runs, no sources, no
+    negatives — and no grouping of its own, since `shots_per_negative` is
+    each stitch batch's choice, not the roll's.
 
     `icc_profile` is seeded from the bundled linear profile's compile-time
     constants and `published_icc_profile` from the density profile matching
-    `film_kind` when set (DENSITY vs DENSITY_GREY), because section 3.4 makes
-    both hashes roll invariants. `film.kind` is chosen on the Add Scans
+    `film_kind` when set (DENSITY vs DENSITY_GREY), because both hashes are
+    roll invariants. `film.kind` is chosen on the Add Scans
     stage via `roll set-film-kind` when `film_kind` is omitted here.
     `processing_params` and `stitch_params` stay empty — they are
     established by the first run, and `check_roll_invariants` knows not to
@@ -561,10 +551,10 @@ def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
     """Persist the manifest to the library database, registering (or moving)
     the roll row for `output_dir` as a side effect.
 
-    Section 3.3/3.7: `updated_at` is rewritten and every negative's
-    `sequence` is recomputed on every write, so this mutates the manifest
-    it is given. The import is local to avoid a circular import: this
-    module builds `RollManifest`, and `roll_sequence` reads it."""
+    `updated_at` is rewritten and every negative's `sequence` is recomputed
+    on every write, so this mutates the manifest it is given. The import is
+    local to avoid a circular import: this module builds `RollManifest`,
+    and `roll_sequence` reads it."""
     from scanny_boy.roll_sequence import sequence_negatives
 
     manifest.updated_at = _now_iso()
@@ -607,7 +597,7 @@ def load_roll_manifest(output_dir: Path) -> RollManifest:
     return manifest
 
 
-# --- Section 3.4: invariants, additive runs, naming -----------------------
+# --- Invariants, additive runs, naming ------------------------------------
 
 # `flat_field`/`chromatic_aberration` name the flat-field profile a run
 # used. A roll does not lock to one profile: different runs into the same
@@ -624,8 +614,8 @@ ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry",)
 
 
 def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:
-    """MONOCHROME_PLAN section 5.1: the stored `normalize` block is upgraded
-    through `normalization.upgrade_normalize_params` before comparison, so
+    """The stored `normalize` block is upgraded through
+    `normalization.upgrade_normalize_params` before comparison, so
     a v1 roll compares equal to a v2 build whose new constants sit at their
     defaults. Idempotent; a no-op for v2+ blocks."""
     from scanny_boy.normalization import upgrade_normalize_params
@@ -651,7 +641,7 @@ def _stitch_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]
 def check_roll_invariants(
     manifest: RollManifest, candidate_params: RollInvariants
 ) -> None:
-    """Section 3.4's roll-invariant check, replacing Phase 2's
+    """The roll-invariant check, replacing Phase 2's
     `check_roll_rerun_matches` entirely. Input folder, source list, order,
     grouping, each batch's `shots_per_negative`, and the flat-field profile
     (including its optional geometric calibration) are *expected* to differ
@@ -690,7 +680,7 @@ def check_roll_invariants(
 
 
 def append_run(manifest: RollManifest, run: RunRecord) -> None:
-    """Append `run` to the roll, assigning its `short_id` per section 3.4.
+    """Append `run` to the roll, assigning its `short_id`.
 
     `run_id` is a UUID, so six hex characters can collide between two runs
     of one roll. Lengthen to eight, then ten, then the whole `run_id`, until
@@ -711,8 +701,8 @@ def append_run(manifest: RollManifest, run: RunRecord) -> None:
 def merge_sources(
     manifest: RollManifest, sources: list[SourceRecord], run_id: str
 ) -> None:
-    """Section 3.3: `sources` is keyed by `sha256`. A file already present is
-    never appended twice, even from a different folder or under a different
+    """`sources` is keyed by `sha256`. A file already present is never
+    appended twice, even from a different folder or under a different
     name, and keeps the `run_id` of the run that *first* contributed it."""
     known = {s.sha256 for s in manifest.sources}
     for source in sources:
@@ -733,8 +723,8 @@ def merge_sources(
 
 
 def format_negative_id(short_id: str, index: int) -> str:
-    """Section 3.4: `<run.short_id>-negative-NN`, `NN` being the existing
-    per-run two-digit index."""
+    """`<run.short_id>-negative-NN`, `NN` being the existing per-run
+    two-digit index."""
     return f"{short_id}-negative-{index:02d}"
 
 
@@ -759,7 +749,7 @@ def allocate_output_name(
     negative_id: str,
     adoptable: set[str] | None = None,
 ) -> str:
-    """Section 3.4's output-naming rule, and the **only** place a published
+    """The output-naming rule, and the **only** place a published
     name is chosen.
 
     Phase 2's rule unchanged — the stem of the group's first member in

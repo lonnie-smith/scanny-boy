@@ -11,7 +11,7 @@ published TIFF (`tone` is baked in there through `render.render_export`;
 `color` is a judgement aid the export now bakes in, same as `tone`. The
 `spots` op is the exception that proves the log's replay rule: it is the
 only op whose replay *synthesizes* pixel values, at export and in the
-preview alike (SPOTTING_PLAN §1.1).
+preview alike.
 
 Every subcommand accepts a *selection* of negatives: the whole selection is
 validated before anything is written, so a batch either records or fails
@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scanny_boy import color, previews, render, spots
+from scanny_boy import color, previews, render, scratches, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -52,7 +52,7 @@ _COLOR_REGION_KEYS = {
 
 
 def roll_is_monochrome(roll: RollManifest) -> bool:
-    """The roll's frozen film kind (MONOCHROME_PLAN §2). Colour has no
+    """The roll's frozen film kind. Colour has no
     meaning on a single-density roll: there are no layers to balance and
     no dyes to separate."""
     film = roll.film
@@ -154,7 +154,11 @@ def _crop_report_fields(
         else None
     )
     return previews.crop_report(
-        crop, (height, width), quarter_turns=state.quarter_turns
+        crop,
+        (height, width),
+        quarter_turns=state.quarter_turns,
+        flipped_horizontally=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
     )
 
 
@@ -323,16 +327,20 @@ def run_edit_crop(
     tilt_deg: float = 0.0,
     preset: str | None = None,
     reset: bool = False,
+    full_frame: bool = False,
     emit: EmitFn,
 ) -> dict:
     """Records one negative's crop — a tilted window over the image as it
     currently renders (live crop included), or `--reset` for the full
-    frame. The op is a state, not a transform: the latest one wins, and it
-    stores the **fully-composed** window in published-TIFF pixels — the
-    drawn rect and tilt are mapped backwards through the net state
-    (`previews.display_crop_window_to_tiff`), so a re-crop composes into
-    one window and the replay never has to. Like every edit, the published
-    TIFF is untouched: the crop is baked only at export.
+    frame. With `--full-frame`, the rect is on the full uncropped display
+    canvas — the space the app uses when re-entering crop mode — rather
+    than on the live cropped display. The op is a state, not a transform:
+    the latest one wins, and it stores the **fully-composed** window in
+    published-TIFF pixels — the drawn rect and tilt are mapped backwards
+    through the net state (`previews.display_crop_window_to_tiff`), so a
+    re-crop composes into one window and the replay never has to. Like
+    every edit, the published TIFF is untouched: the crop is baked only at
+    export.
 
     The whole intent is validated before anything is written: the drawn
     rect must fit the display image, the tilt within ±45, the composed
@@ -369,7 +377,7 @@ def run_edit_crop(
         display_h, display_w = previews.display_shape(
             (tiff_h, tiff_w),
             quarter_turns=state.quarter_turns,
-            crop_params=existing,
+            crop_params=None if full_frame else existing,
         )
         if w < repo.CROP_MIN_SIZE_PX or h < repo.CROP_MIN_SIZE_PX:
             raise EditFailure(
@@ -391,6 +399,7 @@ def run_edit_crop(
             flipped_horizontally=state.flipped,
             fine_angle_deg=state.fine_angle_deg,
             crop_params=existing,
+            full_frame=full_frame,
         )
         # The stored window must sit inside the canvas — the crop step
         # slices the warped canvas at the rect, and a slice past the edge
@@ -433,10 +442,9 @@ def _merge_color_params(
     from scanny_boy.library.repo import _color_neutral_defaults
 
     # Build the base from the neutral defaults and overlay the recorded
-    # dict, instead of indexing the recorded dict directly
-    # (docs/CAST_REMOVAL_PLAN.md R-2 §6.2): a twelve-key recorded state —
-    # an op written before the thirteenth key existed — must not raise,
-    # and a missing newer key keeps its neutral default.
+    # dict, instead of indexing the recorded dict directly: a twelve-key
+    # recorded state — an op written before the thirteenth key existed —
+    # must not raise, and a missing newer key keeps its neutral default.
     base = _color_neutral_defaults()
     if recorded is not None:
         for key, value in recorded.items():
@@ -463,10 +471,10 @@ def run_edit_color(
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview colour adjustment — the full
-    thirteen-key colour state (docs/CAST_REMOVAL_PLAN.md R-2), or all
+    thirteen-key colour state, or all
     `None` for the reset.
 
-    `auto_cast` (docs/CAST_REMOVAL_PLAN.md §7.2) solves the global CMY
+    `auto_cast` solves the global CMY
     from the negative's recorded neutral estimate and writes the three
     values over whatever the merge produced — composing with explicit
     flags exactly as `--auto-density` does: the auto result wins over a
@@ -504,10 +512,9 @@ def run_edit_color(
                 updates[mag_key] = m
                 updates[yellow_key] = y
             solved = _merge_color_params(state.color, updates)
-            # The metering warning, widened (docs/CAST_REMOVAL_PLAN.md
-            # §7.2): fire when EITHER tie strength is non-zero and the
-            # metering it needs is missing — one warning per negative, not
-            # two.
+            # The metering warning: fire when EITHER tie strength is
+            # non-zero and the metering it needs is missing — one warning
+            # per negative, not two.
             cast_shadow = float(solved.get("cast_removal", 0.0) or 0.0) != 0.0
             cast_highlights = (
                 float(solved.get("cast_removal_highlights", 0.0) or 0.0) != 0.0
@@ -684,6 +691,7 @@ def run_edit_render_preview(
     output_path: Path,
     *,
     mode: str = "positive",
+    full_frame: bool = False,
     emit: EmitFn,
 ) -> dict:
     """Render the whole display image — the ops log's net transform folded
@@ -707,6 +715,18 @@ def run_edit_render_preview(
     )
     matrix = render.camera_matrix_from_roll(_roll)
     try:
+        live_crop = (
+            None
+            if full_frame
+            else (
+                state.crop
+                if previews.crop_is_live(
+                    state.crop,
+                    (negative.output["height"], negative.output["width"]),
+                )
+                else None
+            )
+        )
         width, height = previews.render_preview(
             tiff_path,
             output_path,
@@ -715,7 +735,7 @@ def run_edit_render_preview(
             fine_angle_deg=state.fine_angle_deg,
             mode=mode,
             tone_params=state.tone,
-            crop_params=state.crop,
+            crop_params=live_crop,
             color_params=state.color,
             metering=meter,
             matrix=matrix,
@@ -825,7 +845,7 @@ def run_edit_delete(
     return results
 
 
-# --- spotting (docs/SPOTTING_PLAN.md §7) --------------------------------------
+# --- spotting --------------------------------------
 
 
 def _spots_for_report(
@@ -850,7 +870,7 @@ def _spots_for_report(
     # axis-aligned marker rects have no faithful drawing, and the repair
     # they stand for is replayed before the crop anyway, so nothing is
     # lost but the overlay (the Heal panel's counts still read from the
-    # manifest summary). CROP_PLAN §4.
+    # manifest summary).
     if previews.crop_is_live(
         state.crop, (height, width)
     ):
@@ -1116,3 +1136,167 @@ def run_edit_list_spots(
         "found": len(params["spots"]) if params else 0,
         "preview_path": None,
     }
+
+
+def _scratches_stale(
+    negative: NegativeRecord, params: dict | None
+) -> bool:
+    """The scratch set was recorded against a canvas that a re-stitch
+    replaced — it corrects nothing and needs re-detecting."""
+    if params is None or not params.get("scratches"):
+        return False
+    canvas = params.get("canvas")
+    if canvas is None:
+        return False
+    return canvas != (negative.output["width"], negative.output["height"])
+
+
+def _scratch_spans(negative: NegativeRecord) -> tuple[float, float, float]:
+    norm = negative.normalization
+    return tuple(
+        norm["ceils"][ch] - norm["floors"][ch] for ch in range(3)
+    )
+
+
+def run_edit_detect_scratches(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    *,
+    emit: EmitFn,
+) -> list[dict]:
+    """Run the scratch detector over each selected negative's published
+    TIFF and record one `scratches` op per negative.  The selection is
+    validated up front, so a batch either records or fails whole.  Returns
+    one `ScratchesReported` field set per negative."""
+    from scanny_boy.events import ScratchesReported
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — scratch removal applies to colour film only",
+        )
+
+    import tifffile
+
+    results: list[dict] = []
+    for negative in negatives:
+        tiff_path = roll_dir / negative.output["name"]
+        image = tifffile.imread(tiff_path)
+        previous = repo.net_edit_state(roll_dir, negative.negative_id).scratches
+        enabled = bool(previous["enabled"]) if previous else True
+        spans = _scratch_spans(negative)
+        film_extent = (negative.normalization or {}).get("film_extent")
+        candidates = scratches.detect(image, spans, film_extent)
+        fits = [scratches.fit(image, c) for c in candidates]
+        params = scratches.scratches_params(
+            canvas=(image.shape[1], image.shape[0]),
+            fits=fits,
+            enabled=enabled,
+        )
+        repo.append_scratches_edit(roll_dir, negative.negative_id, params)
+        _refresh_preview(
+            roll_dir,
+            roll,
+            negative,
+            repo.SCRATCHES_OP,
+            what="scratch detection",
+            emit=emit,
+        )
+        results.append(
+            ScratchesReported(
+                negative_id=negative.negative_id,
+                detector_version=params["detector_version"],
+                enabled=params["enabled"],
+                count=len(params.get("scratches") or []),
+                stale=_scratches_stale(negative, params),
+                preview_path=negative.preview_path,
+            ).to_dict()
+        )
+    return results
+
+
+def run_edit_scratches(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    *,
+    enabled: bool | None = None,
+    emit: EmitFn,
+) -> list[dict]:
+    """Toggle scratch correction on or off for each selected negative.
+    The op is a state, so a trailing `scratches` op is updated in place.
+    Returns one `ScratchesReported` field set per negative."""
+    from scanny_boy.events import ScratchesReported
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — scratch removal applies to colour film only",
+        )
+
+    results: list[dict] = []
+    for negative in negatives:
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        current = state.scratches
+        if current is None:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"{negative.negative_id}: no scratch set has been detected "
+                "for this negative; run detect-scratches first",
+            )
+        if enabled is not None:
+            current["enabled"] = enabled
+        repo.append_scratches_edit(roll_dir, negative.negative_id, current)
+        _refresh_preview(
+            roll_dir,
+            roll,
+            negative,
+            repo.SCRATCHES_OP,
+            what="scratch edit",
+            emit=emit,
+        )
+        results.append(
+            ScratchesReported(
+                negative_id=negative.negative_id,
+                detector_version=current["detector_version"],
+                enabled=current["enabled"],
+                count=len(current.get("scratches") or []),
+                stale=_scratches_stale(negative, current),
+                preview_path=negative.preview_path,
+            ).to_dict()
+        )
+    return results
+
+
+def run_edit_list_scratches(
+    roll_dir: Path, negative_id: str, *, emit: EmitFn
+) -> dict:
+    """The pure query behind the app's scratch overlay: the negative's
+    scratch set as display-space rects, nothing recorded, no pixels touched.
+    A stale set reports an empty list plus a `SCRATCHES_STALE` warning."""
+    from scanny_boy.events import ScratchesReported
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    params = state.scratches
+    stale = _scratches_stale(negative, params)
+    if stale:
+        emit(
+            WarningEvent(
+                code=Code.SCRATCHES_STALE,
+                message=(
+                    f"{negative_id}: its scratch set was detected against a "
+                    "different canvas — the negative was re-stitched and "
+                    "needs re-detecting"
+                ),
+            )
+        )
+    return ScratchesReported(
+        negative_id=negative_id,
+        detector_version=params["detector_version"] if params else scratches.DETECTOR_VERSION,
+        enabled=bool(params["enabled"]) if params else False,
+        count=len(params.get("scratches") or []) if params else 0,
+        stale=stale,
+        preview_path=None,
+    ).to_dict()

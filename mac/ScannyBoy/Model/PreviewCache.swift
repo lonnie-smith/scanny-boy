@@ -1,3 +1,5 @@
+import AppKit
+import CryptoKit
 import Foundation
 
 /// The app's own render caches: the 1:1 region crops behind the Edit tab's
@@ -49,7 +51,7 @@ struct PreviewCache: Sendable {
     ) -> URL {
         let name = """
             \(negativeID)-g\(Self.generationComponent(generation))-\(mode.rawValue)\
-            -\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).png
+            -\(Int(rect.minX))-\(Int(rect.minY))-\(Int(rect.width))-\(Int(rect.height)).rgba
             """
         return directory(regionsRoot, forRoll: rollID)
             .appending(path: name, directoryHint: .notDirectory)
@@ -107,10 +109,20 @@ struct PreviewCache: Sendable {
         kind.appending(path: rollID, directoryHint: .isDirectory)
     }
 
-    /// `#` separates the generation's terms, and a path component is a poor
-    /// place for it; the CLI writes the file, so the name stays plain.
+    /// A short, filename-safe stand-in for `generation`, which folds in
+    /// unbounded CLI-reported text — `EditModel.renderGeneration`'s camera
+    /// colour term carries the full RGB→XYZ matrix and camera model name
+    /// verbatim, so a long model name (e.g. "NIKON CORPORATION NIKON Z f")
+    /// pushed a region filename past macOS's 255-byte component limit and
+    /// `edit render-region` failed every request with `INTERNAL_ERROR`
+    /// (`OSError: File name too long`) — silently, from the zoom UI's
+    /// perspective, since nothing there distinguishes a failed fetch from
+    /// one still in flight: the 100% zoom just spun forever. Hashing keeps
+    /// the name short regardless of how large `generation` grows, and still
+    /// changes whenever `generation` does, which is all a cache key needs.
     private static func generationComponent(_ generation: String) -> String {
-        generation.replacingOccurrences(of: "#", with: "-")
+        let digest = SHA256.hash(data: Data(generation.utf8))
+        return digest.map { String(format: "%02x", $0) }.prefix(16).joined()
     }
 
     /// A roll id is a UUID (`roll_folder.create_roll`), but it reaches the
@@ -119,5 +131,46 @@ struct PreviewCache: Sendable {
     /// could escape the cache directory is refused rather than sanitised.
     private static func isSafePathComponent(_ value: String) -> Bool {
         !value.isEmpty && value != "." && value != ".." && !value.contains("/")
+    }
+
+    /// The pre-raw-cache PNG path for the same region key — read-only
+    /// fallback when an older cache entry is still on disk.
+    static func legacyRegionPNGURL(from rgbaURL: URL) -> URL {
+        rgbaURL.deletingPathExtension().appendingPathExtension("png")
+    }
+}
+
+/// A small in-memory LRU of decoded 1:1 region bitmaps. Keys match
+/// `PreviewCache.regionURL` paths so revisiting a recent rect skips disk
+/// and ImageIO even when the file is already cached.
+@MainActor
+final class RegionMemoryCache {
+    private var images: [URL: NSImage] = [:]
+    private var order: [URL] = []
+    private let maxEntries: Int
+
+    init(maxEntries: Int = 5) {
+        self.maxEntries = maxEntries
+    }
+
+    func image(for url: URL) -> NSImage? {
+        guard let image = images[url] else { return nil }
+        if let index = order.firstIndex(of: url) {
+            order.remove(at: index)
+            order.append(url)
+        }
+        return image
+    }
+
+    func store(_ image: NSImage, for url: URL) {
+        if images[url] != nil {
+            order.removeAll { $0 == url }
+        }
+        images[url] = image
+        order.append(url)
+        while order.count > maxEntries {
+            let evicted = order.removeFirst()
+            images.removeValue(forKey: evicted)
+        }
     }
 }

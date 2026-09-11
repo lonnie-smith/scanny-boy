@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 ///
 /// The bar is driven by `fractionComplete`, which comes from
 /// `negativesCompleted`/`totalNegatives` — never from a source index
-/// (section 4.2) and never from elapsed time, which section 4.2's
-/// per-negative durations vary too much to extrapolate reliably.
+/// and never from elapsed time, since per-negative durations vary too much
+/// to extrapolate reliably.
 struct RunProgressView: View {
     let run: RunModel
 
@@ -239,7 +239,7 @@ struct FilmKindField: View {
     }
 }
 
-/// The Add Scans sheet's film-base reference field (REBATE_ANCHORING §8.1).
+/// The Add Scans sheet's film-base reference field.
 /// Choosing a file calls `roll set-base-frame` immediately; Convert stays
 /// disabled until a frame is attached.
 struct BaseFrameField: View {
@@ -250,6 +250,7 @@ struct BaseFrameField: View {
     let onChoose: () -> Void
     let onReplace: () -> Void
     let onDropFrame: (URL) -> Void
+    let fileURL: (String) -> URL?
 
     @State private var isDropTarget = false
 
@@ -286,6 +287,7 @@ struct BaseFrameField: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .background {
             RoundedRectangle(cornerRadius: 8)
                 .fill(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
@@ -300,16 +302,29 @@ struct BaseFrameField: View {
                     )
                 )
         }
-        .onDrop(of: [.fileURL], isTargeted: acceptsDrop ? $isDropTarget : .constant(false)) { providers in
+        .onDrop(of: [.plainText, .fileURL], isTargeted: acceptsDrop ? $isDropTarget : .constant(false)) {
+            providers in
             handleDrop(providers)
         }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard acceptsDrop, let provider = providers.first else { return false }
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url else { return }
-            Task { @MainActor in
+        if provider.canLoadObject(ofClass: String.self) {
+            _ = provider.loadObject(ofClass: String.self) { string, _ in
+                Task { @MainActor in
+                    guard let string,
+                        let names = CatalogueDragSupport.decodeDragPayload(string),
+                        let name = names.first,
+                        let url = fileURL(name)
+                    else { return }
+                    onDropFrame(url)
+                }
+            }
+            return true
+        }
+        Task { @MainActor in
+            if let url = await CatalogueDragSupport.loadFileURL(from: provider) {
                 onDropFrame(url)
             }
         }

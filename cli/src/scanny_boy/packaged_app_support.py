@@ -1,9 +1,8 @@
 """Shared lookup for the packaged helper bundle at `cli/dist/ScannyBoyCLI.app`.
 
 The bundle is build output: `cli/dist/` is ignored by Git and is absent from a
-clean checkout, so the packaged checks of `docs/IMPLEMENTATION_PLAN.md`
-section 5.2 skip clearly when it has not been built, in the same style as the
-real-sample-NEF helper.
+clean checkout, so the packaged checks skip clearly when it has not been
+built, in the same style as the real-sample-NEF helper.
 """
 
 from __future__ import annotations

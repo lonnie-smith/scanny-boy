@@ -2,9 +2,7 @@
 ordering, (with `--files`) selection, grouping, and setup-consistency
 validation, (with `--files` and `--out`) output-folder validation, disk
 estimate, and overwrite-conflict preview, and (with `--roll`) the roll
-folder's invariant validation plus the selection's overlap with prior runs
-(Phase 3 section 3.5). See `docs/IMPLEMENTATION_PLAN.md` section 4.1 and
-`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5.
+folder's invariant validation plus the selection's overlap with prior runs.
 
 Every problem this module detects is reported through `ProbeFailure`,
 carrying one of the stable `CONTRACT.md` codes. Some structural problems —
@@ -400,8 +398,8 @@ def run_probe(
     for warning in result.warnings:
         on_warning(warning.code, warning.message)
 
-    # docs/GEOMETRIC_PLAN.md section 5.4: a calibrated profile is only valid
-    # for the frame dimensions it was fitted at — fail here, before
+    # A calibrated profile is only valid for the frame dimensions it was
+    # fitted at — fail here, before
     # conversion starts.
     if profile is not None and profile.geometry is not None:
         try:

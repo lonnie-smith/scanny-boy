@@ -17,7 +17,7 @@ no-white-balance decode. Dividing each channel by its own mean cancels any
 constant per-channel scale, so the gain map is independent of the
 reference's as-shot white balance.
 
-Memory (docs/FLATFIELD_PLAN.md section 2.7): the gain map is computed and
+Memory: the gain map is computed and
 stored at `GAIN_MAP_MAX_EDGE`, materialised at frame resolution once per run
 and shared read-only across workers, and applied in horizontal bands of
 `FLATFIELD_BAND_ROWS` rows so a worker's peak transient is band-sized —
@@ -86,7 +86,7 @@ class FlatFieldProfile:
     params: dict
     scanny_boy_version: str
     created_at: str
-    # Geometric calibration (docs/GEOMETRIC_PLAN.md section 3.1): a profile
+    # Geometric calibration: a profile
     # may carry a distortion fit, a CA fit, and the human-readable report.
     # All four nullable; every pre-calibration profile reads back with four
     # Nones and behaves exactly as it does today — that backward
@@ -117,10 +117,9 @@ def build_params(chromatic_aberration_scales: tuple[float, float] | None = None)
     which build wrote it.
 
     `chromatic_aberration_scales`, when given, is the CA scale pair the
-    reference itself was decoded with (docs/GEOMETRIC_PLAN.md section 4.7:
-    in "scale" mode the reference must be decoded with the same CA scales
-    production will use, so the gain map's provenance says which decode
-    produced it)."""
+    reference itself was decoded with: in "scale" mode the reference must
+    be decoded with the same CA scales production will use, so the gain
+    map's provenance says which decode produced it."""
     params = {
         "gain_map_max_edge": GAIN_MAP_MAX_EDGE,
         "blur_sigma_divisor": BLUR_SIGMA_DIVISOR,
@@ -271,8 +270,8 @@ def chromatic_aberration_scales(
     profile: FlatFieldProfile,
 ) -> tuple[float, float] | None:
     """The rawpy decode scales a profile carries, or None: present only in
-    `"scale"` mode (docs/GEOMETRIC_PLAN.md section 3.6 — a decode
-    parameter, so it belongs to the convert stage's processing params)."""
+    `"scale"` mode — a decode parameter, so it belongs to the convert
+    stage's processing params."""
     if profile.chromatic_aberration is None:
         return None
     if profile.chromatic_aberration.get("mode") != "scale":
@@ -287,7 +286,7 @@ def check_geometry_frame_size(
     profile: FlatFieldProfile, width: int, height: int
 ) -> None:
     """A profile's geometry is only valid for the frame dimensions it was
-    fitted at (section 1.2): `k1` is normalised by `fx`, which is derived
+    fitted at: `k1` is normalised by `fx`, which is derived
     from the frame dimensions. A dimension change means a different decode,
     and a silently rescaled calibration is worse than none — fail
     `GEOMETRY_FRAME_SIZE_MISMATCH` before anything is written."""
@@ -331,5 +330,5 @@ def _current_scanny_boy_version() -> str:
     return current_scanny_boy_version()
 
 
-# `create_profile` moved to `calibration.py` (docs/GEOMETRIC_PLAN.md
-# section 4): this module owns only the gain map.
+# `create_profile` lives in `calibration.py`; this module owns only the
+# gain map.

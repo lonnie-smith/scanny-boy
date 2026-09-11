@@ -1,6 +1,6 @@
 import Foundation
 
-/// The roll's film-base reference block (REBATE_ANCHORING §3.1), decoded
+/// The roll's film-base reference block, decoded
 /// from `roll info`'s `film_base` field.
 struct FilmBase: Sendable, Hashable {
     struct Population: Sendable, Hashable {
@@ -90,7 +90,7 @@ struct RollManifest: Sendable, Hashable {
         }
     }
 
-    /// The roll manifest's optional `camera_color` block (EXPORT_PLAN §3.2):
+    /// The roll manifest's optional `camera_color` block:
     /// frozen after the first stitch; preview encode and export both read it.
     struct CameraColor: Sendable, Hashable {
         let rgbXYZMatrix: [[Double]]
@@ -211,7 +211,7 @@ struct RollManifest: Sendable, Hashable {
         /// 1-based position in the roll; `nil` when unranked (pending/failed).
         let sequence: Int?
         /// The source NEFs this negative was built from, in canonical order
-        /// — the Edit tab's "source frames" (section 3.10).
+        /// — the Edit tab's "source frames".
         let members: [String]
         let expectedOutput: String
         /// `pending`, `completed`, or `failed`.
@@ -221,8 +221,8 @@ struct RollManifest: Sendable, Hashable {
         /// The negative's explicit extended-metadata values (`nil` = inherit
         /// the roll's fallback).
         let metadata: ImageMetadata
-        /// The registration quality numbers Chunk P2-9 already reports on
-        /// `negative_done` (section 3.4), read back here for the Edit tab's
+        /// The registration quality numbers already reported on
+        /// `negative_done`, read back here for the Edit tab's
         /// display: RMS pixel error across every accepted pair, and the
         /// deviation `nil` unless a rebate check ran.
         let globalRMSPixels: Double?
@@ -239,9 +239,8 @@ struct RollManifest: Sendable, Hashable {
         /// the CLI. A flip and a rotation do not commute, so the pair — not
         /// the turn count alone — is what identifies the rendered state.
         let flippedHorizontally: Bool
-        /// The negative's fitted rig-tilt rectification
-        /// (docs/RECTIFICATION_PLAN.md section 7). `nil` when the fit was
-        /// rejected, the negative failed before it ran, or the roll's record
+        /// The negative's fitted rig-tilt rectification. `nil` when the fit
+        /// was rejected, the negative failed before it ran, or the roll's record
         /// predates the field. Swift displays it; it never re-fits or
         /// recomputes anything.
         let rectification: Rectification?
@@ -297,7 +296,7 @@ struct RollManifest: Sendable, Hashable {
         let normalization: NormalizationSummary?
         /// Whether registration needed the CLAHE retry to solve this negative.
         let usedClaheFallback: Bool
-        /// Grid regularity measures (docs/GRID_STITCH_PLAN.md section 4.2).
+        /// Grid regularity measures.
         let gridPitchRatio: Double?
         let gridAlignmentRatio: Double?
         /// Protocol 13's per-negative spots summary from `roll info` — the
@@ -307,6 +306,8 @@ struct RollManifest: Sendable, Hashable {
         /// the field. Defaults to `nil` so every construction site that
         /// predates the field keeps compiling.
         var spotsSummary: NegativeSpots.Summary? = nil
+        /// Protocol 21's per-negative scratches summary from `roll info`.
+        var scratchesSummary: NegativeScratches.Summary? = nil
         /// Protocol 19's net crop state — the cropped display image's
         /// dimensions, the window's tilt, and the ratio-preset label. The
         /// published TIFF is never cropped; the preview already shows the
@@ -378,10 +379,10 @@ struct RollManifest: Sendable, Hashable {
     let metadata: Metadata
     /// The roll's frozen film kind (`colour` or `monochrome`), protocol 12.
     let filmKind: String?
-    /// The roll's film-base reference (REBATE_ANCHORING §3.1). `nil` when
+    /// The roll's film-base reference. `nil` when
     /// the roll has none attached yet.
     let filmBase: FilmBase?
-    /// The roll's frozen camera colour matrix (EXPORT_PLAN §3.2).
+    /// The roll's frozen camera colour matrix.
     let cameraColor: CameraColor?
     /// The roll's highlight-colour lock (docs/ROLL_HIGHLIGHT_LOCK.md §1).
     let highlightLock: HighlightLock?
@@ -591,6 +592,8 @@ struct RollManifest: Sendable, Hashable {
             gridAlignmentRatio: fields["grid_alignment_ratio"]?.doubleValue,
             spotsSummary: fields["spots"]?.objectValue
                 .flatMap(NegativeSpots.Summary.init(fields:)),
+            scratchesSummary: fields["scratches"]?.objectValue
+                .flatMap(NegativeScratches.Summary.init(fields:)),
             crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:))
         )
     }

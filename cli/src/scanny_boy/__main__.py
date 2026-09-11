@@ -2,7 +2,7 @@
 
 `python -m scanny_boy` and the packaged `ScannyBoyCLI.app` executable both
 run this file, so the packaged program starts through exactly the same code
-path as a development run (see `docs/IMPLEMENTATION_PLAN.md` section 5.2).
+path as a development run.
 """
 
 from __future__ import annotations

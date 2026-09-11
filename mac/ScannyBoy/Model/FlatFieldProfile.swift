@@ -1,7 +1,7 @@
 import Foundation
 
 /// One flat-field profile, as `flatfield list` and `flatfield_created`
-/// report it — section 3.1's rule again: the library's storage is the CLI's,
+/// report it — the library's storage is the CLI's,
 /// and Swift only reads back what an event handed it.
 ///
 /// The gain map's path and SHA-256 are deliberately absent: the path is
@@ -17,7 +17,7 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
     /// Provenance only — the CLI never reads the reference again.
     let sourcePath: String?
     let createdAt: String?
-    /// The ChArUco board the calibration was fitted with ("35mm" | "6x9"),
+    /// The ChArUco board the calibration was fitted with ("2mm"),
     /// or nil for a flat-field-only profile (protocol version 7).
     let boardKey: String?
     /// Whether the profile carries a distortion fit.

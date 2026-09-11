@@ -282,7 +282,7 @@ requires_gate_b_samples = pytest.mark.skipif(
     bool(_gate_b_missing),
     reason=(
         "gate-B sample NEFs not present at tests/fixtures/nef/ (see "
-        "docs/PHASE2_IMPLEMENTATION_PLAN.md appendix C); missing: "
+        "AGENTS.md sample fixtures, gate-B scans); missing: "
         f"{_gate_b_missing}"
     ),
 )

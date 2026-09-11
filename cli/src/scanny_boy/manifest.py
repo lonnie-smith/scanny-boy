@@ -1,9 +1,8 @@
 """`scanny-boy-manifest.json`: data model, atomic read/write, structural
 validation, and rerun-mismatch comparison.
 
-See `docs/IMPLEMENTATION_PLAN.md` section 3.6 (output folder, overwriting,
-and grouping) and section 3.7 (manifest). `shared/contract/manifest.schema.json`
-is the authoritative shape; this module's structural checks are hand-written
+`shared/contract/manifest.schema.json` is the authoritative shape; this
+module's structural checks are hand-written
 (not schema-driven) so the packaged CLI never needs to load a file outside
 `cli/src/scanny_boy/` at runtime — the schema file itself is read only by
 tests, the same split `schema_test_support.py` already uses for event
@@ -44,7 +43,7 @@ class BadManifestError(Exception):
 class ManifestMismatchError(Exception):
     """Maps to `MANIFEST_MISMATCH`: a valid manifest exists, but this run's
     sources, order, grouping, film date, processing settings, or ICC hash
-    differ from it (section 3.6)."""
+    differ from it."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -60,8 +59,8 @@ class SourceRecord:
     mtime: float
     sha256: str
     # Per-channel fraction of pixels at or above sensor white, measured at
-    # decode, before flat-field (docs/DECISIONS.md, "Normalization decisions").
-    # Null when this build predates the measurement.
+    # decode, before flat-field. Null when this build predates the
+    # measurement.
     scan_clip_fractions: tuple[float, float, float] | None = None
     # This source's own EXIF exposure (docs/ROLL_HIGHLIGHT_LOCK.md §3): read
     # once, at prepare time, for the base-frame exposure-match check —
@@ -98,16 +97,15 @@ class CuratedMetadata:
     lens_model: str | None
     orientation: int
     camera_whitebalance: tuple[float, float, float, float]
-    # LibRaw's `rgb_xyz_matrix`, first three rows (docs/EXPORT_PLAN.md
-    # §3.2). Recorded data, read at decode for the export path's colour
-    # matrix and never used by this or any pixel pipeline: it is
-    # deliberately **not** in `processing_params`, whose exact-dict
-    # equality is the roll invariant — adding a key there would break
-    # every existing roll's check for a value no published pixel depends
-    # on (EXPORT_PLAN §3.3). `camera_whitebalance`/`daylight_whitebalance`
-    # are deliberately not applied either: the stitch stage's per-channel
-    # normalization is the white balance (§3.1), and layering a second one
-    # would double-correct. `None` when LibRaw reported no usable matrix.
+    # LibRaw's `rgb_xyz_matrix`, first three rows. Recorded data, read at
+    # decode for the export path's colour matrix and never used by this or
+    # any pixel pipeline: it is deliberately **not** in `processing_params`,
+    # whose exact-dict equality is the roll invariant — adding a key there
+    # would break every existing roll's check for a value no published
+    # pixel depends on. `camera_whitebalance`/`daylight_whitebalance` are
+    # deliberately not applied either: the stitch stage's per-channel
+    # normalization is the white balance, and layering a second one would
+    # double-correct. `None` when LibRaw reported no usable matrix.
     rgb_xyz_matrix: tuple[
         tuple[float, float, float],
         tuple[float, float, float],
@@ -177,7 +175,7 @@ class Manifest:
     manifest_format_version: int = MANIFEST_FORMAT_VERSION
     # The batch's grid as declared (`{"across": A, "down": D}`), or None
     # for a pre-grid manifest — read back as `grid_spec` below, which is
-    # what every consumer sees (docs/GRID_STITCH_PLAN.md section 2.3).
+    # what every consumer sees.
     grid: dict[str, int] | None = None
 
     @property
@@ -227,9 +225,9 @@ def manifest_path(output_dir: Path) -> Path:
 
 
 def write_manifest(output_dir: Path, manifest: Manifest) -> None:
-    """Write to a temporary file, `fsync` it, then rename it into place
-    (section 3.7) so readers never see a half-written manifest. `fsync`s the
-    directory afterward where the platform permits it."""
+    """Write to a temporary file, `fsync` it, then rename it into place so
+    readers never see a half-written manifest. `fsync`s the directory
+    afterward where the platform permits it."""
     final_path = manifest_path(output_dir)
     tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
     data = json.dumps(manifest.to_dict(), indent=2, sort_keys=True)
@@ -278,9 +276,8 @@ def _validate_source_dict(data: Any) -> None:
     )
     _require(isinstance(data["mtime"], int | float), "source mtime is invalid")
     _require(_looks_like_sha256(data["sha256"]), "source sha256 is invalid")
-    # Per-source sensor-clip fractions (docs/DECISIONS.md, "Normalization
-    # decisions"), written by this program only; older manifests read back as
-    # null through the dataclass default.
+    # Per-source sensor-clip fractions, written by this program only;
+    # older manifests read back as null through the dataclass default.
     clips = data.get("scan_clip_fractions")
     if clips is not None:
         _require(
@@ -402,10 +399,9 @@ def validate_manifest_dict(data: Any) -> None:
     _require(
         isinstance(data["curated_metadata"], dict), "curated_metadata is not an object"
     )
-    # The camera colour matrix (docs/EXPORT_PLAN.md §3.2): optional, written
-    # by this program only; older manifests read back as null through the
-    # dataclass defaults. Recorded data for the export path — never part of
-    # `processing_params` (§3.3).
+    # The camera colour matrix: optional, written by this program only;
+    # older manifests read back as null through the dataclass defaults.
+    # Recorded data for the export path — never part of `processing_params`.
     matrix = data["curated_metadata"].get("rgb_xyz_matrix")
     if matrix is not None:
         _require(
@@ -430,9 +426,9 @@ def validate_manifest_dict(data: Any) -> None:
 def resolve_within(output_dir: Path, name: str) -> Path:
     """Resolve a manifest-recorded relative output `name` against
     `output_dir`, rejecting any escape via an absolute path, `..`, or a
-    symlink (section 3.6: "A valid manifest contains only relative output
-    names without .., absolute components, or symlink escapes. Every
-    resolved output must remain inside the chosen output folder."). Raises
+    symlink: a valid manifest contains only relative output names without
+    `..`, absolute components, or symlink escapes, and every resolved
+    output must remain inside the chosen output folder. Raises
     `ValueError` on escape."""
     candidate = Path(name)
     if candidate.is_absolute():
@@ -573,7 +569,7 @@ def check_rerun_compatible(
     """The subset of `check_rerun_matches`'s comparison available before a
     film date is known: source order and hashes, grouping, the grid, and
     the ICC profile. `probe --out` uses this for its overwrite-conflict
-    preview (section 4.1); `convert` still runs the complete
+    preview; `convert` still runs the complete
     `check_rerun_matches` below before it writes anything, so a film date
     entered differently from what was previewed is still caught."""
     if existing.source_order != source_order:
@@ -595,8 +591,8 @@ def check_rerun_compatible(
         )
 
     # The grid, not just the count: a 3x2 and a 6x1 batch are not the same
-    # batch even though both are six scans (docs/GRID_STITCH_PLAN.md
-    # section 2.3). A pre-grid manifest's grid is None.
+    # batch even though both are six scans. A pre-grid manifest's grid is
+    # None.
     if existing.grid != grid:
         raise ManifestMismatchError(
             "the negative grid changed from "
@@ -615,10 +611,11 @@ def check_rerun_compatible(
 
 
 def _processing_params_for_comparison(params: dict[str, Any]) -> dict[str, Any]:
-    """MONOCHROME_PLAN section 5.1: the stored `normalize` block is upgraded
-    through `normalization.upgrade_normalize_params` before the exact-dict
-    comparison, so a v1 roll compares equal to a v2 build whose new
-    constants sit at their defaults. Idempotent; a no-op for v2+ blocks."""
+    """The stored `normalize` block is upgraded through
+    `normalization.upgrade_normalize_params` before the exact-dict
+    comparison, so an older roll compares equal to a newer build whose new
+    constants sit at their defaults. Idempotent; a no-op for an
+    already-current block."""
     from scanny_boy.normalization import upgrade_normalize_params
 
     compared = dict(params)
@@ -628,11 +625,11 @@ def _processing_params_for_comparison(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def check_rerun_matches(existing: Manifest, candidate: Manifest) -> None:
-    """Section 3.6: "A rerun in the same folder must match the previous
-    source filenames and hashes, order, grouping, film date, processing
-    settings, and ICC hash." Raises `ManifestMismatchError` naming the first
-    field that differs; `run_id`, `status`, and timing fields are expected
-    to differ and are not compared."""
+    """A rerun in the same folder must match the previous source filenames
+    and hashes, order, grouping, film date, processing settings, and ICC
+    hash. Raises `ManifestMismatchError` naming the first field that
+    differs; `run_id`, `status`, and timing fields are expected to differ
+    and are not compared."""
     check_rerun_compatible(
         existing,
         source_order=candidate.source_order,

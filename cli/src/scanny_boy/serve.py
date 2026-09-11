@@ -1,7 +1,7 @@
 """`scanny-boy serve`: one resident process answering requests on stdin.
 
-docs/OPTIMIZATION.md §2. The Edit tab pays 0.4-0.7 s of startup on every
-gesture because each one-shot invocation re-imports the application; the
+The Edit tab pays 0.4-0.7 s of startup on every gesture because each
+one-shot invocation re-imports the application; the
 daemon pays it once. The transport does not change: this is the same
 newline-delimited JSON event stream on stdout the one-shot CLI writes,
 read by the app's existing `CLISession` machinery. What changes is the

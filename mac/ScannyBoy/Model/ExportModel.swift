@@ -198,7 +198,7 @@ final class ExportModel {
             .metadataUpdated, .metadataValues,
             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
             .gridCreated, .gridList, .gridDeleted,
-            .spotsReported, .baseFrameSet,
+            .spotsReported, .scratchesReported, .baseFrameSet,
             .unknown:
             break
         }

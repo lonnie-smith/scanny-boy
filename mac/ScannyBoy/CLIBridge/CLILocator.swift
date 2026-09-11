@@ -2,8 +2,8 @@ import Foundation
 
 /// Finds the `scanny-boy` executable the app should run.
 ///
-/// `docs/IMPLEMENTATION_PLAN.md` section 5.2: the shipped location is the
-/// helper bundle inside `Contents/Helpers`, Debug builds additionally honour
+/// The shipped location is the helper bundle inside `Contents/Helpers`,
+/// Debug builds additionally honour
 /// an *absolute* `SCANNY_BOY_CLI` override, and a Release build never falls
 /// back to the repository. Nothing here is resolved relative to the process's
 /// current directory, which is why a relative override is rejected outright

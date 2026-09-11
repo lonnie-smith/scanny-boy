@@ -4,112 +4,31 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-This file summarises `docs/IMPLEMENTATION_PLAN.md` section 4 for Phase 1,
-`docs/PHASE2_IMPLEMENTATION_PLAN.md` section 3 for Phase 2, and
-`docs/PHASE3_IMPLEMENTATION_PLAN.md` section 3.5 for Phase 3. If this file
-and any plan ever disagree, the plan is authoritative.
+`PROTOCOL_VERSION` (`events.py`) is the current event-stream version, and
+`manifest_format_version` (roll record) is currently 10. `schema.json` is the
+authoritative JSON Schema for one event line; `manifest.schema.json` and
+`roll-manifest.schema.json` cover the work manifest and the roll record.
+There is no migration path anywhere in this format family: a client that
+only understands an older protocol version must reject a newer stream
+rather than guess at new fields, and a roll or manifest built by an older
+version is rejected outright (`ROLL_INVARIANT_MISMATCH` / `BAD_MANIFEST` /
+`ROLL_MANIFEST_UNSUPPORTED`) rather than upgraded in place — the remedy is
+always a new roll. The version history (what each protocol bump added and
+why) is in git log and `ARCHITECTURE.md` §3, not repeated here; what
+follows is current behaviour only.
 
-Protocol version 19 keeps every event's shape and adds **the `crop` op**
-(docs/CROP_PLAN.md): a new `edit crop` subcommand records a tilted crop
-window per negative — a state op in the same family as `tone`/`color`/
-`spots`, stored in published-TIFF pixels with `{"canvas", "x", "y", "w",
-"h", "tilt_deg", "preset"}` params (`tilt_deg` counter-clockwise as
-displayed, ±45 at the widest; the app's slider is ±10; `--reset` clears).
-The op is nondestructive exactly like every other edit: the published TIFF
-is never touched, previews fold the window in (the replay applies it right
-after the spot repair, before the mirror and rotations), and the export
-bakes it — the exported JXL contains only the window's pixels, and its
-XMP provenance records the window. `edit_recorded` gains a `crop` field on
-*every* edit confirmation — a display-space report
-(`{width, height, tilt_deg, preset}` for a live crop, `null` otherwise) —
-and `roll info`'s per-negative block gains the same field. A crop recorded
-against a canvas a re-stitch has replaced degrades to `null` everywhere,
-the spots-canvas rule. No new codes.
-
-Protocol version 18 keeps every event's shape and adds **the resident
-helper** (docs/OPTIMIZATION.md §2): a new `serve` command that reads
-newline-delimited JSON *requests* on stdin — one object per line,
-`{"request_id": "<uuid>", "command": [<the argv a one-shot invocation
-would have received>]}` — and answers on this same stdout event stream.
-Every event emitted while a served request is in flight gains an optional
-`request_id` string field, and each request ends with a `finished` event
-carrying its `request_id` and the exit status the one-shot CLI would have
-returned. A request whose body is instead `{"request_id": "<uuid>",
-"cancel": true}` asks the daemon to cancel **that one request** in band;
-SIGTERM to the daemon keeps its one-shot meaning (shut down: cancel every
-live token, answer the rest as cancelled at exit status 143, exit 0). The
-decoder must treat `request_id` as optional: one-shot invocations, which
-have no daemon to scope an event to, continue to emit events without it.
-The app's ordinary SIGTERM-cancels-everything semantics belong only to the
-one-shot path; a served request's cancellation is its own.
-
-The same bump adds **the film-extent pass**
-(docs/BLACK_POINT_REFINEMENT.md): the stitch stage now locates the film's
-own extent on each negative and insets the meters' analysis region inside
-it, so a negative carrier photographed beyond the film edge no longer owns
-the black point. The published TIFF is never cropped — the pass restricts
-the meters only, exactly like the analysis region it refines. Each
-negative's `normalization` block gains an optional `film_extent` object:
-`{detected, valley, lobe_fraction, mask_fraction, insets (4 integers: top,
-bottom, left, right in **grid cells** — `analysis_block_px` in
-processing_params multiplies to canvas pixels, while `analysis_rect` beside
-it is already in canvas pixels), region_fraction, convergence_steps,
-rebate_agrees (nullable boolean, recorded and read by nothing)}`. The same
-bump declares the previously undeclared `opaque` block beside it. The same
-block's `normalize` processing constants gain the `REBATE_*`, `OPAQUE_*` and
-`FILM_EXTENT_*` families and `format_version` bumps 4 → 5, so a roll
-stitched before this change refuses new runs with `ROLL_INVARIANT_MISMATCH`
-(the upgrade shim absorbs the new keys for comparison; the recorded bounds
-of a v4 roll are not comparable with a v5 one). Two new codes, both riding
-the warning event channel: `NORMALIZE_FILM_EXTENT_WITHHELD` (informational:
-a non-film border band was withheld from the metering; the message names
-the four insets in canvas pixels) and `NORMALIZE_FILM_EXTENT_EXCESSIVE`
-(warning: the withheld band kept less than half the analysis region — the
-frame is unusual and the user should look at it). The Swift results view
-labels the first informationally; neither code fails anything.
-
-Protocol version 16 keeps version 15's roll model and adds **named grid
-configuration presets**: the `grid create` / `grid list` / `grid delete`
-command family and the `grid_created`, `grid_list`, and `grid_deleted`
-events. Each preset is a user label for an `across` x `down` shape the app
-picks when adding scans. Two new codes: `GRID_PROFILE_NOT_FOUND` and
-`GRID_PROFILE_EXISTS`.
-
-Protocol version 14 keeps version 13's roll model — the film-base
-reference and spotting both stay as protocol 13 shipped them — and adds
-**cast removal's second tie and auto solve** (docs/CAST_REMOVAL_PLAN.md):
-`edit color` gains `--cast-removal-highlights V` (the highlight-end tie
-strength, 0..1, 0 neutral — with a highlight reference recorded in the
-negative's `normalization` block and a non-zero strength, the per-channel
-tie becomes a genuine affine, gain *and* offset) and `--auto-cast` (solve
-the global filtration from the negative's recorded neutral estimate;
-exclusive with `--reset` and with an explicit `--cyan`, `--magenta` or
-`--yellow`, which it would overwrite). The auto reads a stitch-time meter
-(`neutral_residual` in the `normalization` block), so it is unavailable on
-rolls stitched by an older build — that absence warns
-`TONE_METERING_UNAVAILABLE` and records the state unchanged, as does a
-non-zero tie strength on a negative with no reference for the end it
-drives. `roll info` gains the derived `color_cast_removal_highlights`
-field beside the other `color_*` fields. Global and regional CMY are now
-**mean-removed**, so filtration changes hue and never the display's
-channel mean — this changes how already-recorded colour ops render, which
-is accepted because the op is preview-only. No new codes.
-
-Protocol version 13 keeps version 12's roll model and adds **the film-base
-reference** (docs/REBATE_ANCHORING.md).
-
-**The film-base reference**: a new `roll set-base-frame --roll DIR --frame
-FILE [--flatfield PROFILE_ID]` command attaches one measured per-roll
-film-base reference — the per-channel median log density inside the film
-rebate of one dedicated reference frame, shot once per roll showing as much
-clear rebate as possible, exposed about two stops darker than the roll's
-scans. The measurement is exposure-invariant (only per-channel deviations
-from the median are consumed), so the base frame's exposure never has to
-match the roll's; it does have to be the same film, the same light source,
-the same camera body, and the same flat-field profile. The block is a new
-optional top-level `film_base` object on the roll manifest, reported by
-`roll info` verbatim and by `probe --roll` (as `film_base` on
-`probe_result`) so the app can gate Convert without starting a run:
+**The film-base reference**: `roll set-base-frame --roll DIR --frame FILE
+[--flatfield PROFILE_ID]` attaches one measured per-roll film-base
+reference — the per-channel median log density inside the film rebate of
+one dedicated reference frame, shot once per roll showing as much clear
+rebate as possible, exposed about two stops darker than the roll's scans.
+The measurement is exposure-invariant (only per-channel deviations from the
+median are consumed), so the base frame's exposure never has to match the
+roll's; it does have to be the same film, the same light source, the same
+camera body, and the same flat-field profile. The block is an optional
+top-level `film_base` object on the roll manifest, reported by `roll info`
+verbatim and by `probe --roll` (as `film_base` on `probe_result`) so the
+app can gate Convert without starting a run:
 `{density (3-array), locked_at, attached_at, source_name, source_sha256,
 flat_field_profile_id, camera_model, chosen_index, populations (array of
 {density, luma, area_fraction, cells, spread}, thinnest first),
@@ -119,31 +38,25 @@ consumed). The state machine: ABSENT (`film_base` null) → ATTACHED
 (`locked_at` null) → LOCKED (`locked_at` set). `set-base-frame` attaches or
 replaces freely while unlocked and emits one `base_frame_set` event
 (`roll_id`, `source_name`, `density`, `area_fraction`, `population_count`,
-`locked` — always false); a locked roll refuses with `FILM_BASE_LOCKED`;
-a gate failure emits the error and changes nothing on disk. The first
+`locked` — always false); a locked roll refuses with `FILM_BASE_LOCKED`; a
+gate failure emits the error and changes nothing on disk. The first
 negative published against the reference sets `locked_at` in the same
 manifest write; a run that fails before publishing anything leaves it null.
 `run`/`stitch` on an ABSENT roll fail `FILM_BASE_REQUIRED` before any pixel
-work. Ten new codes: `FILM_BASE_REQUIRED` (error), `FILM_BASE_LOCKED`
-(error), `FILM_BASE_NOT_FOUND` (error), `FILM_BASE_TOO_SMALL` (error),
-`FILM_BASE_CLIPPED` (error), `FILM_BASE_TOO_DARK` (error),
-`FILM_BASE_AMBIGUOUS` (error), `ROLL_PREDATES_FILM_BASE` (error),
-`FILM_BASE_CAMERA_CONFLICT` (warning), `FILM_BASE_FLATFIELD_CONFLICT`
-(warning). Each negative's `normalization` block gains an optional
-`base_check` object — `{level_offset, shape_residual}` — recorded whenever
-the roll has a locked anchor and the negative's own rebate detector fired
-unclipped, and read by nothing (§6). It also gains `highlight_refs` (the
-dense end's same-pixel neutral reference, or `null` when the band held no
-trustworthy neutrals) and `neutral_residual` (the frame's `(R-G, B-G)`
-offset in normalized units, or `null` when there was no estimate) — both
-recorded by the stitch stage and read only by `--auto-cast`
-(docs/CAST_REMOVAL_PLAN.md §3). Roll manifest format version bumps
-**7 → 8**: rolls stitched before this feature stay readable, editable and
-exportable, but cannot take new negatives or a base frame
-(`ROLL_PREDATES_FILM_BASE`). There is no migration.
-
-The same protocol 13 also adds **spotting** (docs/SPOTTING_PLAN.md,
-merged from origin/main).
+work. Codes: `FILM_BASE_REQUIRED`, `FILM_BASE_LOCKED`, `FILM_BASE_NOT_FOUND`,
+`FILM_BASE_TOO_SMALL`, `FILM_BASE_CLIPPED`, `FILM_BASE_TOO_DARK`,
+`FILM_BASE_AMBIGUOUS`, `ROLL_PREDATES_FILM_BASE` (all errors),
+`FILM_BASE_CAMERA_CONFLICT`, `FILM_BASE_FLATFIELD_CONFLICT` (warnings). Each
+negative's `normalization` block gains an optional `base_check` object —
+`{level_offset, shape_residual}` — recorded whenever the roll has a locked
+anchor and the negative's own rebate detector fired unclipped, and read by
+nothing. It also carries `highlight_refs` (the dense end's same-pixel
+neutral reference, or `null` when the band held no trustworthy neutrals)
+and `neutral_residual` (the frame's `(R-G, B-G)` offset in normalized
+units, or `null` when there was no estimate) — both recorded by the stitch
+stage and read only by `--auto-cast`. Rolls stitched before this feature
+stay readable, editable and exportable, but cannot take new negatives or a
+base frame (`ROLL_PREDATES_FILM_BASE`).
 
 **The spotting feature**: dust, hairs, water spots and scratches are
 detected, reviewed, and repaired — the published TIFF is never touched, and
@@ -175,197 +88,53 @@ when stale. The export applies a live repair (before any geometry) and
 records it in the XMP provenance's `rendered.spots`:
 `{detector_version, sensitivity, repaired}`, `null` when none.
 
-Protocol version 12 keeps version 11's roll model and adds **the preview
-colour adjustment**.
+**The scratch-removal feature**: long, thin film-length scratches on
+colour negatives are detected at stitch time (or on demand) and corrected
+by replaying a stored fit table — the published TIFF is never touched.
+Three commands join the `edit` family: `edit detect-scratches` takes a
+`--negative` selection (repeatable), runs the detector over each negative's
+published TIFF, and records one `scratches` op per negative — a state op,
+coalesced in place like `tone` and `color`, carrying the scratch set's
+exact parameters. The detector runs only on colour rolls; monochrome rolls
+never get an op. The op carries an `enabled` flag (**on by default** when
+anything is found; a re-stitch preserves the previous enabled state). The
+user toggles correction with `edit scratches --on` or `edit scratches --off`
+(repeatable selection). `edit list-scratches` is a pure query: nothing
+recorded, no pixels touched. All three emit `scratches_reported`. A scratch
+set recorded against a canvas a re-stitch has replaced is *stale*: it
+corrects nothing, reports zero count with a `SCRATCHES_STALE` warning, and
+needs re-detecting. `roll info` gains a per-negative `scratches` **summary**
+(not the list): `{detector_version, enabled, stale, count}`, `null` for a
+negative with no scratch set, counts zeroed when stale. The export applies
+a live correction (before any geometry) and records it in the XMP
+provenance's `rendered.scratches`:
+`{detector_version, corrected}`, `null` when none. v1 has no scratch overlay.
 
-**The preview's colour adjustment** (docs/COLOR_PLAN.md): a new `edit color`
-command records white balance (global, shadow, and highlight CMY), cast
-removal, dye separation, and separation damping as a `color` op in the
-negative's ops log — preview-only, coalesced like `tone`, ignored by export.
-Unlike `edit tone`, unspecified flags take the negative's currently recorded
-value (partial updates). `--temperature` is a Kelvin lever over the named
-region's magenta and yellow (mutually exclusive with that region's
-`--magenta`); `--region` defaults to `global`. `roll info` reports twelve
-derived `color_*` fields plus `color_temperature` (nominal Kelvin from
-global M/Y) per negative, and `film_kind` on the roll. Colour edits are
-refused on a monochrome roll except `--reset`.
-
-Protocol version 11 keeps version 10's roll model and adds four features.
-
-**The positive/negative display toggle** for the Edit tab's preview: `edit
-render-region` gains `--mode positive|negative`, and a new `edit
-render-preview` command renders a negative's whole display image — the ops
-log's net transform folded in, downscaled like the cached preview — into a
-caller-named path, emitting `preview_rendered` with the written PNG's pixel
-dimensions. `"positive"` (the default) is the inverted look the cached
-preview holds, with the tone adjustment composed in; `"negative"` is the
-un-inverted density view — the published TIFF's own appearance — which the
-tone adjustment never reaches (grading is a positive-view judgement aid,
-and a graded density is not the density). Both are pure rendering queries:
-nothing is recorded, the published TIFF is never modified. The managed,
-on-disk preview stays a positive in every mode.
-
-**Monochrome film support** (docs/MONOCHROME_PLAN.md): `roll init` requires
-`--film-kind {colour,monochrome}` — the user chooses once at roll creation.
-`"colour"` is the path for colour negatives and chromogenic B&W (XP2, BW400CN,
-stained pyro); `"monochrome"` is silver B&W only. `run` and `stitch` read the
-frozen `film.kind` from the roll manifest; an unseeded roll with no `film`
-block fails `FILM_KIND_REQUIRED`. Legacy rolls that already have runs but no
+**Monochrome film support**: `roll init` requires `--film-kind
+{colour,monochrome}` — the user chooses once at roll creation. `"colour"` is
+the path for colour negatives and chromogenic B&W (XP2, BW400CN, stained
+pyro); `"monochrome"` is silver B&W only. `run` and `stitch` read the frozen
+`film.kind` from the roll manifest; an unseeded roll with no `film` block
+fails `FILM_KIND_REQUIRED`. Legacy rolls that already have runs but no
 `film` block are treated as frozen colour. A monochrome roll's published
 TIFFs are single-channel (`photometric=minisblack`), tagged with
 `ScannyBoy-Density-Grey-v1.icc` instead of the colour density profile; every
 per-channel roll-manifest field (`floors`, `ceils`, `shadow_refs`,
-`observed_min`/`_max`, the headroom-clip fractions, `unclamped_floors`/`_ceils`)
-carries one entry instead of three, and `rebate.base_density` is `null`, a
-1-array, or a 3-array. The per-frame `gain` array is unaffected and stays
-3-wide even on a monochrome roll's negatives, since the photometric solve that
-produces it still runs in linear light on three channels. `roll info` reports
-`film_kind` (the `kind` field only).
+`observed_min`/`_max`, the headroom-clip fractions,
+`unclamped_floors`/`_ceils`) carries one entry instead of three, and
+`rebate.base_density` is `null`, a 1-array, or a 3-array. The per-frame
+`gain` array is unaffected and stays 3-wide even on a monochrome roll's
+negatives, since the photometric solve that produces it still runs in
+linear light on three channels. `roll info` reports `film_kind` (the `kind`
+field only).
 
-**The colour-managed export** (docs/EXPORT_PLAN.md): `export` renders each
-negative as a positive in Adobe RGB (1998)-compatible colour — the
-negative's recorded tone op baked in — written as a 16-bit lossless JPEG
-XL with its ICC profile embedded and Exif/XMP boxes at encode time. A mono
-roll's export is single-channel with the grey export profile and no colour
-matrix. The roll manifest gains an optional top-level `camera_color` block
-(the capturing body's colour matrix, written by the stitch stage's first
-run and frozen thereafter), the work manifest's curated block gains
-`rgb_xyz_matrix`/`camera_model`, and three event codes: `CAMERA_MATRIX_MISSING`
-(error), `CAMERA_MATRIX_CONFLICT` (warning), `JXL_ENCODER_UNAVAILABLE`
-(error). `METADATA_WRITE_FAILED` becomes **reserved**: protocol 11
-removes the exporter's raiser (metadata is built at encode time; there is
-no second write to fail), but the code stays in the shipped protocol —
-`apply-metadata` still raises it — and removing an event code is a
-breaking change for zero benefit.
-
-**Extended preview tone adjustment** (docs/DENSITY_PLAN.md): seven new curve
-controls on `edit tone` (print density, zone density, toe/shoulder and
-their widths), `--auto-density` and `--auto-grade` (solve once from the
-negative's recorded normalization and write the value — not a persistent
-mode), the matching seven `tone_*` derived fields on `roll info`'s
-negatives, and the `TONE_METERING_UNAVAILABLE` warning code.
-
-Protocol version 10 keeps version 9's roll model and adds two features.
-
-**2D grid stitching** (docs/GRID_STITCH_PLAN.md): `probe`, `prepare`, and
-`run` accept `--grid AxD` (e.g. `--grid 3x2`) — five across, two down —
-naming the 2D arrangement of one negative's scans, mutually exclusive with
-`--per-negative`. Exactly one of the two flags is required on `prepare` and
-`run`, and on `probe` when `--files` is given; omitting both is a usage
-error naming both flags. A strip is the `down == 1` case:
-`--per-negative N` and `--grid Nx1` declare the same batch. The batch shape
-is constrained by **`min(across, down) <= 2`**: every cell of the grid must
-show film rebate, which only holds when every cell touches the grid's outer
-boundary — a 3x3 or larger square cannot satisfy it. This rule is stated
-here once and referenced elsewhere. `across * down` remains capped at 12.
-Note that **`2x5` is legal and CLI-only**: the Mac app's Down picker caps at
-2, so `--grid 2x5` is reachable only on the command line. A well-formed
-grid that breaks a rule fails with `INVALID_GRID`; a malformed one
-(anything not of the `AxD` form) is a usage error.
-
-**The preview's nondestructive tone adjustment**: the new `edit tone`
-command records an ISO-R paper grade (`--grade`, 50–180) plus a midtone
-snap (`--snap`, −0.5…0.5) — or `--reset` — as a `tone` op in the negative's
-ops log (a state, not a transform: the latest op wins and a trailing one
-coalesces in place). The published TIFF is never touched; the preview's
-display encode composes the curve in, and the export's render bakes the
-same curve into the exported pixels (docs/EXPORT_PLAN.md §4.6). `roll
-info` reports the net tone per negative as `tone_grade_r`/`tone_snap_gamma`
-(both `null` when flat).
-
-Roll manifest format version 7 keeps version 6's shape and adds one
-optional per-negative field: `rectification`, the fitted rig-tilt
-rectification (docs/RECTIFICATION_PLAN.md section 7) — `l` (two numbers,
-1/px, acting on coordinates centred at `centre`), `centre`, `frame_size`,
-the fit's `rms_before_px`/`rms_after_px`/`relative_improvement` diagnostics,
-and `pair_count`. It is `null` when the fit was rejected, the negative
-failed before it ran, or the build predates the field. The stitch-params
-record also changed — the feather is recorded as `axis-separable` for
-every roll, strip or grid, three new grid threshold keys landed, and
-`stitch_params` gains `rectification_model` (always `"global-2-param"`)
-plus the three rectification gate constants — and it remains a roll
-invariant, so **every roll written by an earlier build refuses new runs
-with `ROLL_INVARIANT_MISMATCH`**; there is no migration, and the remedy is
-to delete the old roll folders.
-
-Protocol version 9 keeps version 8's roll model and adds **1:1 region
-rendering** for the app's 100% zoom: the new `edit render-region` command
-renders one display-space region of a negative's published TIFF at 1:1 — the
-ops log's net rotation folded in, the same inverted display encode as the
-cached preview, no downscale — into a caller-named path as a lossless PNG,
-emitting `region_rendered` with the rect actually rendered (post-clamp). It
-is a pure rendering query: nothing is recorded, the published TIFF is never
-modified. Only the TIFF strips the region overlaps are decoded. It also
-added the extended-metadata editing feature (the `metadata` command family
-— `metadata_updated`, `metadata_values`, the `INVALID_METADATA` code — and
-the roll/negative extended-metadata fields in the roll manifest).
-
-Protocol version 8 keeps version 7's roll model and makes two changes:
-it adds a **per-frame scale** to the layout solve
-(docs/STITCH_QUALITY_PLAN.md section 2) and **scan normalization**
-(docs/DECISIONS.md, "Normalization decisions"), renaming the prepare stage
-and adding a per-negative normalization record. The layout change: the
-global layout is now a similarity (rotation, translation, and one isotropic
-scale per frame) rather than a rigid transform, because film does not sit
-at a constant height above the stage from frame to frame. Each frame record
-gains `scale` (positive number; geometric mean 1 across a negative's
-frames, the same gauge convention as `gain`). The pairwise fit and its
-acceptance gates (`rms_residual_px`, `scale_drift`) are unchanged — they
-still measure the scale-1 rigid fit; only the global layout's placement
-model changed. The normalization change: stage 1 is renamed — the `convert`
-subcommand is now `prepare` (the UI's "Convert" is reserved, unambiguously,
-for the whole `run`), and `progress` gains stage value `prepare` in place
-of `convert`. The stitch stage emits a new `normalize` step between `blend`
-and `write_stitched`, and the published TIFF is a normalized log-density
-working intermediate tagged with a second ICC profile — the roll manifest
-gains `published_icc_profile` and `check_roll_invariants` compares it
-alongside the intermediates' linear profile. Three new codes:
-`SCAN_CLIPPED` (a warning, per frame in the prepare stage),
-`NORMALIZE_DEGENERATE_BOUNDS`, and `NORMALIZE_HEADROOM_CLIPPED` (a
-warning). The work manifest's sources gain per-frame
-`scan_clip_fractions`; the roll manifest's negatives gain a `normalization`
-block and `normalized_fill`, its runs a `normalization_aggregate`, and its
-sources `scan_clip_fractions`. Every existing roll refuses new runs with
-`ROLL_INVARIANT_MISMATCH` (the processing-params invariant now carries the
-`normalize` bucket); the remedy is a new roll.
-
-Protocol version 7 keeps version 6's roll model and adds **geometric
-calibration** (docs/GEOMETRIC_PLAN.md): `flatfield create` gains
-`--calibration FILE [FILE ...]`, and a profile becomes the complete optical
-description of one rig configuration — gain map, radial distortion, and
-lateral chromatic aberration fitted from ChArUco frames. The distortion is
-applied inside the stitch warp (registration and compositing work in
-undistorted pixels); the CA is applied at decode in `"scale"` mode (rawpy's
-`chromatic_aberration` scales) or at composite in `"maps"` mode (per-channel
-maps). A profile's geometry is only valid for the frame dimensions it was
-fitted at — `GEOMETRY_FRAME_SIZE_MISMATCH` fails the run before anything is
-written. The `--flatfield` flag now names a whole calibration profile; the
-name is historical and unchanged.
-
-Protocol version 6 kept version 5's roll model and added **flat-field
-correction**: gain maps measured once from a reference shot of the bare
-light source (`.NEF` only), stored beside the library database and managed
-through a new `flatfield` command family (`create`, `list`, `delete`). A
-profile chosen with `--flatfield` on `convert`, `run`, or `probe` is applied
-per frame in the convert stage and folded into `processing_params` under
-`flat_field`. The profile is not a roll invariant — it is excluded from the
-`processing_params`/`stitch_params` comparison a roll's later runs are held
-to, so different runs into the same roll may each choose a different
-profile, or none. The key is absent, not null, when no profile is given, so
-pre-flat-field rolls still accept no-profile runs.
-
-Protocol version 5 kept version 4's roll model and added **nondestructive
-editing**: each roll's durable record moved from the roll folder's
-`scanny-boy-roll.json` into a library SQLite database (one row per roll,
-negative, run, and source, plus an ordered per-negative **edits ops log**),
-the CLI renders each negative's preview, and `edit rotate` records a
-rotation without ever touching a published TIFF. `roll info`'s payload keeps
-the roll-manifest shape; each negative additionally carries
-`preview_path` (the CLI-rendered preview) and `rotation_quarter_turns` +
-`flipped_horizontally` + `fine_rotation_deg` (the ops log's net effect,
-derived rather than stored). A client that only
-understands an earlier protocol version must reject a newer stream rather
-than guess at the new fields.
+Each negative's roll-manifest record may carry an optional `rectification`
+field — the fitted rig-tilt rectification (ARCHITECTURE.md §8): `l` (two
+numbers, 1/px, acting on coordinates centred at `centre`), `centre`,
+`frame_size`, the fit's `rms_before_px`/`rms_after_px`/`relative_improvement`
+diagnostics, and `pair_count`. It is `null` when the fit was rejected or the
+negative failed before it ran. See `roll-manifest.schema.json` for the full
+shape.
 
 ## Invocation
 
@@ -411,8 +180,12 @@ scanny-boy edit spots          --roll DIR --negative ID [--reject N ...]
                                [--accept N ...] [--repair | --no-repair] [--clear]
 scanny-boy edit list-spots     --roll DIR --negative ID
 
+scanny-boy edit detect-scratches --roll DIR --negative ID [ID ...]
+scanny-boy edit scratches        --roll DIR --negative ID [ID ...] [--on | --off]
+scanny-boy edit list-scratches   --roll DIR --negative ID
+
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
-                       [--downsample {none,6048,9072}]
+                       [--downsample {none,6048,9072,12096}]
 
 scanny-boy flatfield create --reference FILE --name NAME
                             [--calibration FILE [FILE ...]]
@@ -536,16 +309,18 @@ carrying `roll_id`, `roll_name`, and `path`. A roll records no grouping of
 its own: `--per-negative`/`--grid` is each stitch batch's choice, so one roll can
 hold negatives stitched from different scan counts.
 
-`--grid AxD` (protocol 10) names the 2D arrangement of one negative's
+`--grid AxD` names the 2D arrangement of one negative's
 scans: `across` frames left-to-right in capture space, `down`
 top-to-bottom, `across * down` scans per negative. It is accepted wherever
 `--per-negative` is (`probe` with `--files`, `prepare`, `run`) and is
 mutually exclusive with it; a strip is the `down == 1` case, so
 `--per-negative N` and `--grid Nx1` declare the same batch and the strip
-path is the R=1 case of the grid path, not a separate one. The shape
-constraints are the ones stated in the protocol-10 paragraph above:
-`min(across, down) <= 2` because every cell must show film rebate, and
-`across * down <= 12`. A batch declared with `--grid` records the grid on
+path is the R=1 case of the grid path, not a separate one. The shape is
+constrained by `min(across, down) <= 2` — every cell must show film
+rebate, which only holds when every cell touches the grid's outer boundary
+— and `across * down <= 12`. A well-formed grid that breaks a rule fails
+with `INVALID_GRID`; a malformed one (anything not of the `AxD` form) is a
+usage error. A batch declared with `--grid` records the grid on
 its work manifest alongside `shots_per_negative == across * down`, and the
 roll manifest's negatives record the declared grid, the solved per-frame
 cell assignment, and the solved grid's regularity measures. `stitch` takes
@@ -727,8 +502,9 @@ global, shadow, and highlight cyan/magenta/yellow enlarger filtration
 the negative's currently recorded value**, not the neutral default — a
 single-slider change need not resend all twelve keys. Validation runs on the
 merged twelve-key state. `--temperature` (3000–12000 K, 5500 K neutral) is
-a Kelvin lever over the named region's magenta and yellow, resolved before
-validation via `kelvin_to_wb`; it is mutually exclusive with that region's
+a Kelvin illuminant lever over the named region's magenta and yellow (higher
+K is warmer, Lightroom convention), resolved before validation via
+`kelvin_to_wb`; it is mutually exclusive with that region's
 `--magenta` (and `--shadow-magenta` / `--highlight-magenta` when
 `--region` is `shadows` / `highlights`). `--region` defaults to `global`
 and only applies with `--temperature`. Cyan is untouched by temperature.
@@ -827,7 +603,7 @@ selection before removing anything.
 `export` renders each negative's published TIFF into a **positive in Adobe
 RGB (1998)-compatible colour — the negative's recorded tone op baked in —
 written as a 16-bit lossless JPEG XL** named after the negative (`.jxl`),
-into `--output` (docs/EXPORT_PLAN.md). The ops log's geometric ops are
+into `--output`. The ops log's geometric ops are
 replayed over the published pixels exactly as before; the render then
 inverts, matrixes the colour into Adobe RGB via the roll's recorded
 `camera_color` matrix, and applies the tone curve — the same curve the
@@ -887,13 +663,13 @@ computed default is never rejected this way, only lowered.
 `manifest.schema.json` is the authoritative schema for
 `scanny-boy-manifest.json`, the work directory's conversion record.
 `roll-manifest.schema.json` is the authoritative schema for a roll's durable
-record as delivered by `roll info` (format version 7; now persisted in the
-library database rather than a JSON file in the roll folder).
+record as delivered by `roll info`, persisted in the library database
+rather than a JSON file in the roll folder.
 
 ### `serve`
 
-`scanny-boy serve` is the resident helper behind the app's Edit tab
-(docs/OPTIMIZATION.md §2). It reads one JSON request object per stdin line
+`scanny-boy serve` is the resident helper behind the app's Edit tab. It
+reads one JSON request object per stdin line
 and writes the ordinary event stream to stdout; it emits nothing of its
 own, so every line on stdout belongs to exactly one request, identified by
 its `request_id`:
@@ -1049,7 +825,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
-| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 8` |
+| `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 10` |
 | `ROLL_EXISTS` | `roll init` or `roll rename` could not find a free folder name |
 | `ROLL_RENAME_FAILED` | `roll rename`'s folder move failed; neither the folder nor the manifest changed |
 | `ROLL_INVARIANT_MISMATCH` | Run parameters differ from the roll's invariants |
@@ -1073,7 +849,7 @@ staging directories, and reruns the incomplete negative.
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
 | `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
 | `GEOMETRY_INSUFFICIENT_FRAMES` | Too few usable calibration frames |
-| `GEOMETRY_BOARD_NOT_DETECTED` | Neither calibration board detected, or the read is ambiguous |
+| `GEOMETRY_BOARD_NOT_DETECTED` | The calibration board was not detected in the first frame |
 | `GEOMETRY_FRAME_SIZE_MISMATCH` | The profile was fitted at other frame dimensions |
 | `GEOMETRY_FIT_REJECTED` | Warning: the distortion fit did not clear its acceptance gates; it is not applied |
 | `GEOMETRY_MAGNITUDE_SUSPECT` | Warning: the fitted distortion is outside the expected 0.03–0.2% band; it is applied |

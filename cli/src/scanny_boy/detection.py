@@ -1,9 +1,9 @@
 """Detection images: small, contrast-normalised 8-bit greyscale derivatives
 of an intermediate, used only for finding and matching features. Never
-composited, never written out. See Phase 2 plan section 1.1.
+composited, never written out.
 
-`DETECTION_LONG_EDGE` and `USE_CLAHE` are Chunk P2-1's measured constants,
-approved at user gate C (section 3.12). Production code reads them from here
+`DETECTION_LONG_EDGE` and `USE_CLAHE` are measured constants,
+approved at user gate C. Production code reads them from here
 and from nowhere else.
 """
 
@@ -20,8 +20,7 @@ DETECTION_LONG_EDGE = 2000
 USE_CLAHE = False
 
 # Rec.709 luminance weights and the percentile stretch, shared with
-# charuco.py's full-resolution calibration detection image
-# (docs/GEOMETRIC_PLAN.md section 4.2).
+# charuco.py's full-resolution calibration detection image.
 LUMINANCE_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
 LOW_PERCENTILE = 0.5
 HIGH_PERCENTILE = 99.5

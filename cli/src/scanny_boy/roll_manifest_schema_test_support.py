@@ -6,15 +6,8 @@ driving the test from the schema file itself, independent of any hand-written
 structural checks a production module may add, so a drift between the two
 would still be caught here.
 
-Phase 3 section 0: there is no migration, so this validates the current
-format version and nothing else. The v2 rules P3-2 carried through the
-contract chunk are gone with the supersession-tombstone removal; v4 added
-per-frame solved photometric gains and per-pair pre-gain overlap MAD; v5
-dropped the roll-level `shots_per_negative`; v6 added a per-frame solved
-scale (docs/STITCH_QUALITY_PLAN.md section 2); v7 added the per-negative
-rig-tilt rectification record (docs/RECTIFICATION_PLAN.md section 7);
-v8 added the top-level `film_base` block (docs/REBATE_ANCHORING.md §3.1)
-and the per-negative `normalization.base_check` sub-block (§6).
+There is no migration, so this validates the current format version and
+nothing else.
 """
 
 from __future__ import annotations

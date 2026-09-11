@@ -53,8 +53,8 @@ def _curated() -> CuratedMetadata:
 
 
 def _curated_with_matrix() -> CuratedMetadata:
-    """docs/EXPORT_PLAN.md §3.2: the curated block carries the camera's
-    recorded colour matrix and the body it names."""
+    """The curated block carries the camera's recorded colour matrix and
+    the body it names."""
     curated = _curated()
     return CuratedMetadata(
         **{
@@ -143,7 +143,7 @@ def test_every_written_manifest_validates_against_schema(tmp_path):
     assert_matches_manifest_schema(data, SCHEMA)
 
 
-# --- the camera colour matrix (docs/EXPORT_PLAN.md section 3) --------------
+# --- the camera colour matrix -------------------------------------------------
 
 
 def test_curated_metadata_round_trips_the_rgb_xyz_matrix(tmp_path):
@@ -361,10 +361,10 @@ def test_check_rerun_compatible_rejects_different_grouping():
 
 def test_check_rerun_compatible_ignores_a_different_film_date_or_processing_params():
     """The whole reason this check exists separately from
-    `check_rerun_matches`: at probe time neither field is known yet
-    (section 4.1), so a preview must not treat a difference in either as a
-    mismatch — even though `check_rerun_matches` (used by `convert`, once
-    the film date is known) still does."""
+    `check_rerun_matches`: at probe time neither field is known yet, so a
+    preview must not treat a difference in either as a mismatch — even
+    though `check_rerun_matches` (used by `convert`, once the film date is
+    known) still does."""
     existing = _manifest(film_date="2026-08-02", processing_params={"output_bps": 16})
     candidate = _manifest(film_date="2026-08-09", processing_params={"output_bps": 8})
 
@@ -381,7 +381,7 @@ def test_estimate_manifest_size_is_positive_and_reasonable():
     assert 0 < size < 10_000
 
 
-# --- grid (docs/GRID_STITCH_PLAN.md section 2.3) ---------------------------
+# --- grid ------------------------------------------------------------------
 
 
 def test_manifest_grid_defaults_to_none_and_grid_spec_falls_back_to_strip():
@@ -440,11 +440,11 @@ def test_check_rerun_compatible_rejects_a_changed_grid():
     candidate = _manifest(grid={"across": 6, "down": 1}, shots_per_negative=6)
     with pytest.raises(ManifestMismatchError, match="grid"):
         check_rerun_compatible(existing, **_known_fields(candidate))
-# --- MONOCHROME_PLAN section 5.1: the forward shim at the rerun compare ----
+# --- the forward shim at the rerun compare --------------------------------
 
 
 def test_rerun_matches_a_v1_normalize_block_against_a_v2_build():
-    """§5.1: a work manifest whose stored `normalize` block predates the
+    """A work manifest whose stored `normalize` block predates the
     mono feature (format_version 1) must not read as "processing settings
     differ" against a v2 build's candidate."""
     from scanny_boy.normalization import build_params

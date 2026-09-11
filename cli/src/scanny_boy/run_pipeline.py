@@ -2,17 +2,16 @@
 a selection of NEFs all the way to finished, stitched negatives.
 
     Calls Phase 1's `run_convert` in-process to build a work directory, then
-    `stitch_pipeline.run_stitch` to publish it, exactly as section 3.6
-    describes. Both stages' section 3.8 disk checks fire for free by simply
-    calling each function in turn — `run_convert` already refuses to write
-    anything if the work volume is short, and `run_stitch` already refuses to
-    publish anything if the output volume is short, so there is no separate
-    disk-check code here to add or to accidentally add together.
+    `stitch_pipeline.run_stitch` to publish it. Both stages' disk checks
+    fire for free by simply calling each function in turn — `run_convert`
+    already refuses to write anything if the work volume is short, and
+    `run_stitch` already refuses to publish anything if the output volume
+    is short, so there is no separate disk-check code here to add or to
+    accidentally add together.
 
-    `flatfield_profile_id` passes through to both stages (docs/GEOMETRIC_PLAN.md
-    section 5.4): the convert stage applies the profile's gain map and — in
-    "scale" mode — its CA scales at decode; the stitch stage applies its
-    geometry to the warp.
+    `flatfield_profile_id` passes through to both stages: the convert stage
+    applies the profile's gain map and — in "scale" mode — its CA scales at
+    decode; the stitch stage applies its geometry to the warp.
 """
 
 from __future__ import annotations
@@ -33,14 +32,14 @@ from scanny_boy.registration import StitchError
 from scanny_boy.selection import GridSpec
 from scanny_boy.stitch_pipeline import EmitFn, StitchOutcome, run_stitch
 
-# Section 3.12.1's table 7: 0.57s detect + 0.50s warp is 1.07s of per-frame
-# stitch work, and 0.5s match + 0.0s solve + 2.9s blend + 0.8s write is 4.2s
-# of per-negative stitch work. One conversion unit is ~0.48s (15 frames in
-# 21.7s at --jobs 4, 3 units per frame), so 1.07/0.48 ~= 2 and 4.2/0.48 ~= 9.
-# The normalization pass (docs/DECISIONS.md, "Normalization decisions") adds a
-# downscale plus a handful of percentile sorts on a 1024-grid — nearly free,
-# so the per-negative unit count moves 9 -> 10, to be re-measured with
-# `scripts/measure-registration.py` rather than asserted.
+# 0.57s detect + 0.50s warp is 1.07s of per-frame stitch work, and 0.5s
+# match + 0.0s solve + 2.9s blend + 0.8s write is 4.2s of per-negative
+# stitch work. One conversion unit is ~0.48s (15 frames in 21.7s at --jobs
+# 4, 3 units per frame), so 1.07/0.48 ~= 2 and 4.2/0.48 ~= 9. The
+# normalization pass adds a downscale plus a handful of percentile sorts on
+# a 1024-grid — nearly free, so the per-negative unit count moves 9 -> 10,
+# to be re-measured with `scripts/measure-registration.py` rather than
+# asserted.
 STITCH_UNITS_PER_FRAME = 2
 STITCH_UNITS_PER_NEGATIVE = 10
 
@@ -78,8 +77,8 @@ def _wrap_emit_for_stitch(
     combined span. `run_stitch` counts real step boundaries for its own
     sake (correct, but not weighted by wall-clock cost); this rescales that
     count proportionally into `weighted_total`, the gate-C time-weighted
-    share, so the combined total is exactly the formula section 3.9 asks
-    for while `completed` still advances monotonically through it. The raw
+    share, so the combined total is exactly the target formula while
+    `completed` still advances monotonically through it. The raw
     total is read from `run_stitch`'s own first Progress event rather than
     recomputed here, so this never has to know `stitch_pipeline`'s internal
     step-counting constants.
@@ -127,18 +126,18 @@ def run_full(
     (mirroring `ConvertFailure`/`StitchError`). A group or negative failure
     does not raise: it is recorded by the stage that hit it, and `run`
     continues and ends `partial`. Cancellation during the convert stage
-    skips the stitch stage entirely (section 3.5's "the group being
-    processed is not published" extends naturally to "no stitching starts
-    on a run that never finished converting").
+    skips the stitch stage entirely ("the group being processed is not
+    published" extends naturally to "no stitching starts on a run that
+    never finished converting").
 
-    `skip_sources` (section 3.5) names filenames, relative to `input_dir`,
-    to exclude from `files` before validation and grouping — so excluding
+    `skip_sources` names filenames, relative to `input_dir`, to exclude
+    from `files` before validation and grouping — so excluding
     anything but a whole group at a selection edge fails
     `NON_CONTIGUOUS_SELECTION` exactly as it would otherwise, with no
     special-cased check needed here.
 
-    Section 3.6: the default work directory is `<roll>/.work/<run_id>/`,
-    created here rather than a scattered temp directory. A work directory
+    The default work directory is `<roll>/.work/<run_id>/`, created here
+    rather than a scattered temp directory. A work directory
     this run created is always removed once it ends, on any outcome — a
     failure or cancellation is not a reason to keep it, since a rerun
     regenerates it. Only a caller-supplied `--work` directory ever survives,
@@ -228,8 +227,8 @@ def run_full(
         )
     finally:
         # Deleting a folder the user pointed at is never this program's
-        # decision (section 3.6): only a work dir this run created is ever
-        # removed, and that happens unconditionally — on any outcome,
+        # decision: only a work dir this run created is ever removed, and
+        # that happens unconditionally — on any outcome,
         # including the failures that raise — since a rerun regenerates it.
         if created_work_dir:
             shutil.rmtree(resolved_work_dir, ignore_errors=True)

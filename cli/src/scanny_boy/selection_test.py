@@ -67,7 +67,7 @@ def test_nearest_valid_counts(count, per_negative, expected):
     assert nearest_valid_counts(count, per_negative) == expected
 
 
-# --- GridSpec (docs/GRID_STITCH_PLAN.md section 2.1) -----------------------
+# --- GridSpec ---------------------------------------------------------
 
 
 def test_gridspec_count_and_is_strip():
@@ -113,5 +113,5 @@ def test_validate_grid_names_the_count_cap():
 def test_validate_grid_error_is_not_a_selection_usage_error():
     """`InvalidGridError` is a distinct type: the handlers that catch
     `SelectionUsageError` map it to `NO_FILES`, which would be actively
-    misleading for a bad grid shape (docs/GRID_STITCH_PLAN.md section 2.1)."""
+    misleading for a bad grid shape."""
     assert not issubclass(InvalidGridError, SelectionUsageError)

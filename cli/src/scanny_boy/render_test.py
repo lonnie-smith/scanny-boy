@@ -1,6 +1,6 @@
 """Tests for `render`: the export's rendering, at full resolution.
 
-docs/EXPORT_PLAN.md §4.7. The two anchor tests are the load-bearing ones:
+The two anchor tests are the load-bearing ones:
 the no-matrix path is exact by construction (single LUT, no
 exponentiation), and the colour path is bounded at 4 codes against it.
 """
@@ -160,7 +160,7 @@ def test_a_neutral_wedge_survives_the_full_colour_chain_unchanged():
 
 def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
     """The encode's white point inverts to DISPLAY_CEILING; neutrals must
-    still track (docs/HEADROOM.md §7.0)."""
+    still track."""
     white_code = int(
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
@@ -206,8 +206,8 @@ def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
 
 def test_normalized_fill_renders_to_black_through_the_full_colour_chain():
     """The fill sits above 1.0; `1 - val` is negative; the clip takes it
-    to 0; every later stage maps 0 to 0 (§4.7; MONOCHROME_PLAN §3.4 tests
-    the same property on the stitch side)."""
+    to 0; every later stage maps 0 to 0 (the stitch side tests the same
+    property)."""
     fill_code = int(
         encode_normalized(
             np.full((1, 1, 3), normalization.NORMALIZED_FILL, dtype=np.float32)
@@ -302,8 +302,48 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     assert difference.max() <= 1
 
 
+def test_colour_only_render_stays_on_identity_ramp():
+    """A colour op with no tone op must not turn on the paper grade."""
+    matrix = _TEST_MATRIX
+    metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
+    color_params = {"wb_magenta": 0.2}
+
+    for frac in (0.2, 0.5, 0.76):
+        code = int(frac * tone.MAX_CODE)
+        img = np.full((1, 1, 3), code, dtype=np.uint16)
+        out, _ = render.render_positive_float(
+            img, matrix, None, color_params, metering
+        )
+        if frac == 0.2:
+            assert out[0, 0, 1] > 0.08
+        if frac == 0.5:
+            assert 0.25 < out[0, 0, 1] < 0.55
+        if frac == 0.76:
+            assert out[0, 0, 1] < 0.85
+
+    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
+    rendered, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    for ch in range(3):
+        channel = rendered[0, :, ch]
+        assert np.all(np.diff(channel.astype(np.float64)) <= 1e-6)
+
+    mid_code = int(0.5 * tone.MAX_CODE)
+    mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
+    _neutral, _ = render.render_positive_float(
+        mid_img, matrix, None, {"wb_magenta": 0.0}, metering
+    )
+    colored, _ = render.render_positive_float(
+        mid_img, matrix, None, color_params, metering
+    )
+    assert colored[0, 0, 1] < colored[0, 0, 0]
+    assert colored[0, 0, 1] < colored[0, 0, 2]
+
+
 def test_preview_and_export_agree_with_headroom_and_shoulder():
-    """EXPORT_PLAN §4.7 with source codes inside the encode headroom."""
+    """Source codes inside the encode headroom."""
     matrix = _TEST_MATRIX
     tone_params = {
         "grade_r": 115.0,

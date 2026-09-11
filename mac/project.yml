@@ -1,6 +1,6 @@
 # XcodeGen definition for the macOS app. `mac/ScannyBoy.xcodeproj` is
 # generated from this file and is never committed
-# (docs/IMPLEMENTATION_PLAN.md section 3.1).
+# (see docs/ARCHITECTURE.md §2).
 #
 # `./scripts/build-cli.sh` is a prerequisite of `xcodegen generate`, not an
 # optional convenience: the copy-files phase below references

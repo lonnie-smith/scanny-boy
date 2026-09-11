@@ -1,16 +1,15 @@
 import SwiftUI
 
-/// Chunk P2-10's re-stitch action: takes a work directory and an output
+/// The re-stitch action: takes a work directory and an output
 /// folder and runs `stitch`, reusing `run` — the very `RunModel` a normal Run
-/// drives — so progress and results show up in the same UI.
-/// (`docs/PHASE2_IMPLEMENTATION_PLAN.md`, "App: re-stitch".) This is what
+/// drives — so progress and results show up in the same UI. This is what
 /// makes tuning cost minutes rather than hours: a work directory you keep
 /// (a run started with `--work`, since a run never keeps the one it creates
 /// itself) can be handed back here.
 ///
-/// Section 3.6 asks for "the exact files that will be replaced, and an
-/// explicit agreement, before `--overwrite` is ever passed" — the rule
-/// `run`'s own overlap sheet follows (section 3.4/3.5). A re-stitch has no
+/// The app's rule is to show the exact files that will be replaced, and get
+/// an explicit agreement, before `--overwrite` is ever passed — the rule
+/// `run`'s own overlap sheet follows. A re-stitch has no
 /// selection to probe for overlap at all, since it re-runs the stitch stage
 /// over intermediates already on disk rather than a fresh input selection.
 /// This sheet asks for one general, explicit agreement instead of an

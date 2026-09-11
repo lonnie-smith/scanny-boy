@@ -192,7 +192,7 @@ def test_end_to_end_on_real_samples(tmp_path):
         assert negative.capture_time.date_override is None
         assert negative.status == "completed"
         assert negative.output is not None
-        # Named after the group's first frame, per section 3.7.
+        # Named after the group's first frame.
         assert negative.expected_output == f"{Path(negative.members[0]).stem}.tif"
         published = out_dir / negative.output["name"]
         assert published.stat().st_size == negative.output["size"]
@@ -218,7 +218,7 @@ def test_end_to_end_on_real_samples(tmp_path):
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
 
 
-# --- the rig-tilt rectification (docs/RECTIFICATION_PLAN.md section 4.2) ---
+# --- the rig-tilt rectification -----------------------------------------
 
 
 def _tilt_hook(l_x, l_y):
@@ -336,14 +336,15 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 
     # Zero distortion: the warp is a no-op, so the synthetic scene still
     # stitches normally — only the plumbing, not the correction, is tested.
+    frame_height, frame_width = FRAME_SIZE
     geometry = {
         "format_version": 1,
-        "frame_width": FRAME_SIZE[0],
-        "frame_height": FRAME_SIZE[1],
-        "fx": float(FRAME_SIZE[0]),
-        "fy": float(FRAME_SIZE[0]),
-        "cx": FRAME_SIZE[0] / 2.0,
-        "cy": FRAME_SIZE[1] / 2.0,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "cx": frame_width / 2.0,
+        "cy": frame_height / 2.0,
         "k1": 0.0,
         "k2": 0.0,
     }
@@ -357,8 +358,8 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
             gain_map_path=str(path),
             gain_map_sha256=sha256,
             source_path=None,
-            reference_width=FRAME_SIZE[0],
-            reference_height=FRAME_SIZE[1],
+            reference_width=frame_width,
+            reference_height=frame_height,
             params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
@@ -383,6 +384,52 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
     assert captured
     assert captured[0]["geometry"] == geometry
     assert captured[0]["ca"] is None
+
+
+def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
+    """A profile fitted at different decode dimensions must fail before
+    stitch starts — width and height are not interchangeable."""
+    from scanny_boy import flatfield
+    from scanny_boy.library import repo
+
+    frame_height, frame_width = FRAME_SIZE
+    geometry = {
+        "format_version": 1,
+        "frame_width": frame_height,
+        "frame_height": frame_width,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "cx": frame_height / 2.0,
+        "cy": frame_width / 2.0,
+        "k1": 0.0,
+        "k2": 0.0,
+    }
+    path, sha256 = flatfield.save_gain_map(
+        "pid-mismatch", np.full((8, 8, 3), 1.0, dtype=np.float32)
+    )
+    repo.save_flatfield_profile(
+        flatfield.FlatFieldProfile(
+            profile_id="pid-mismatch",
+            name="Swapped",
+            gain_map_path=str(path),
+            gain_map_sha256=sha256,
+            source_path=None,
+            reference_width=frame_height,
+            reference_height=frame_width,
+            params=flatfield.build_params(),
+            scanny_boy_version="0.3.0",
+            created_at="2026-09-01T00:00:00Z",
+            geometry=geometry,
+        )
+    )
+
+    out_dir = make_roll_dir(tmp_path)
+
+    with pytest.raises(StitchError) as exc_info:
+        run_stitch_with_defaults(
+            work_dir, out_dir, flatfield_profile_id="pid-mismatch"
+        )
+    assert exc_info.value.code is Code.GEOMETRY_FRAME_SIZE_MISMATCH
 
 
 def test_gain_drift_warning_fires_when_solved_gains_leave_unity(tmp_path, monkeypatch):
@@ -485,7 +532,8 @@ def test_changed_intermediate_is_caught(work_dir, tmp_path):
     out_dir = make_roll_dir(tmp_path)
 
     # Same byte count, different content: only the SHA-256 can catch this,
-    # which is why section 3.7 requires both checks and not just the size.
+    # which is why the verification step requires both checks and not just
+    # the size.
     target = work_dir / "IMG_01.tif"
     data = bytearray(target.read_bytes())
     data[-1] ^= 0xFF
@@ -556,8 +604,8 @@ def test_failing_negative_does_not_stop_the_run(tmp_path):
     assert not [p for p in out_dir.iterdir() if p.is_dir()]
 
     failures = [e for e in events if isinstance(e, NegativeFailed)]
-    # The event carries the roll's `negative_id` (section 3.4), not the work
-    # manifest's group id, which is what `outcome.failed` still reports.
+    # The event carries the roll's `negative_id`, not the work manifest's
+    # group id, which is what `outcome.failed` still reports.
     assert [e.negative_id for e in failures] == ["stitch-negative-02"]
     assert failures[0].code is Code.STITCH_UNDERCONSTRAINED
 
@@ -837,7 +885,7 @@ def test_stitch_without_a_registered_roll_is_rejected(work_dir, tmp_path):
     assert not [p for p in out_dir.iterdir()]
 
 
-# --- the film-base state machine (docs/REBATE_ANCHORING.md section 3.2) ---
+# --- the film-base state machine ------------------------------------------
 
 
 def _baseless_roll(tmp_path: Path, name: str = "out") -> Path:
@@ -936,8 +984,7 @@ def test_a_differing_flatfield_profile_warns(work_dir, tmp_path):
             Code.NORMALIZE_HEADROOM_CLIPPED,
             # The synthetic scene's blurred dark content forms a second dense
             # mode, so the film-extent pass reports an informational
-            # withhold on it (docs/BLACK_POINT_REFINEMENT.md §E-3); it is
-            # not the warning this test is about.
+            # withhold on it; it is not the warning this test is about.
             Code.NORMALIZE_FILM_EXTENT_WITHHELD,
             Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
         )
@@ -984,8 +1031,7 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp
             Code.NORMALIZE_HEADROOM_CLIPPED,
             # The synthetic scene's blurred dark content forms a second dense
             # mode, so the film-extent pass reports an informational
-            # withhold on it (docs/BLACK_POINT_REFINEMENT.md §E-3); it is
-            # not the warning this test is about.
+            # withhold on it; it is not the warning this test is about.
             Code.NORMALIZE_FILM_EXTENT_WITHHELD,
             Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
         )
@@ -995,7 +1041,7 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp
     assert "NIKON Z 7" in warnings[0].message
 
 
-# --- the drift evidence (docs/REBATE_ANCHORING.md section 6) ---------------
+# --- the drift evidence ---------------------------------------------------
 
 
 def _forced_rebate(base_density, *, clipped: bool = False):
@@ -1093,7 +1139,7 @@ def test_base_check_is_absent_when_the_rebate_was_clipped(work_dir, tmp_path, mo
     assert "base_check" not in record
 
 
-# --- CAST_REMOVAL_PLAN R-1: the two new meters ------------------------------
+# --- the two new meters -----------------------------------------------------
 
 
 def test_normalization_record_carries_the_highlight_refs_and_residual(work_dir, tmp_path):
@@ -1291,7 +1337,9 @@ def test_anchor_consumption_changes_only_ceils_deviations(
     """REBATE_ANCHORING B-5: stitching with the roll anchor differs from
     the same roll with consumption disabled, and only in the per-channel
     `ceils` deviations — floors and the ceils level stay put."""
-    out_with = make_roll_dir(tmp_path / "with")
+    (tmp_path / "with").mkdir()
+    (tmp_path / "without").mkdir()
+    out_with = make_roll_dir(tmp_path / "with", "with")
     roll = load_roll_manifest(out_with)
     attach_base_frame(roll, density=[-0.50, -0.20, -0.90])
     write_roll_manifest(out_with, roll)
@@ -1299,8 +1347,11 @@ def test_anchor_consumption_changes_only_ceils_deviations(
     assert run_stitch_with_defaults(work_dir, out_with).status == "complete"
     norm_with = load_roll_manifest(out_with).negatives[0].normalization
 
-    out_without = make_roll_dir(tmp_path / "without")
+    out_without = make_roll_dir(tmp_path / "without", "without")
     roll2 = load_roll_manifest(out_with)
+    without_shell = load_roll_manifest(out_without)
+    roll2.roll_id = without_shell.roll_id
+    roll2.roll_name = without_shell.roll_name
     attach_base_frame(roll2, density=[-0.50, -0.20, -0.90])
     write_roll_manifest(out_without, roll2)
     monkeypatch.setattr(stitch_pipeline, "_locked_base_refs", lambda _roll: None)
@@ -1417,7 +1468,7 @@ def test_negatives_filter_restricts_stitch_to_the_named_negative(tmp_path):
     assert republished[0].negative_id == target.negative_id
 
 
-# --- P3-8: re-apply after re-stitch (section 3.9) -------------------------
+# --- re-apply after re-stitch ----------------------------------------------
 
 _REAPPLY_INTENDED = "2026-01-15T09:30:00.250000"
 
@@ -1506,7 +1557,7 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(work_dir, tmp_path, mon
     events: list = []
     second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
 
-    # A stitch is never failed by a metadata problem (section 3.9).
+    # A stitch is never failed by a metadata problem.
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
@@ -1527,8 +1578,8 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(work_dir, tmp_path, mon
 
 
 def test_phase_one_output_folder_behaviour_is_unchanged(work_dir, tmp_path):
-    """The explicit guard on the section 3.7 refactor: generalising
-    `output_folder.py` over which manifest it reads must not change what it
+    """The explicit guard on the `output_folder.py` refactor: generalising
+    it over which manifest it reads must not change what it
     does for Phase 1's. `output_folder_test.py`, `manifest_test.py`, and
     `pipeline_test.py` all still pass unmodified; this adds the direct
     statement that the default is Phase 1's rules and that the two manifest
@@ -1567,7 +1618,7 @@ def test_phase_one_output_folder_behaviour_is_unchanged(work_dir, tmp_path):
     assert exc_info.value.code is Code.OUTPUT_NOT_EMPTY
 
 
-# --- the memory estimate's frame_bbox_size input (GRID_STITCH_PLAN §1a) ----
+# --- the memory estimate's frame_bbox_size input ----------------------------
 
 
 def _make_grid_frames(*, across: int, down: int, seed: int = 3):
@@ -1753,7 +1804,7 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     whole canvas as its bounding box, so the estimate scaled with the canvas;
     after it, with the frame. A machine with room for the true peak but not
     the canvas-inflated one must now pass where it used to raise
-    INSUFFICIENT_MEMORY (docs/GRID_STITCH_PLAN.md section 1a.4)."""
+    INSUFFICIENT_MEMORY."""
     import scanny_boy.composite as composite_module
 
     across, down = 5, 2
@@ -1873,11 +1924,15 @@ def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(work_dir, tmp_path, m
     outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
 
     assert outcome.status == "complete"
-    (edit,) = repo.edits_for(out_dir, "stitch-negative-01")
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    (edit,) = rotate_edits
     assert edit["op"] == repo.ROTATE_FINE_OP
     assert edit["params"] == {"angle_deg": 1.5, "source": "auto"}
     assert repo.net_edit_state(out_dir, "stitch-negative-01") == repo.EditState(
-        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None
+        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None,
+        scratches={"detector_version": 1, "source": "auto", "enabled": True,
+                   "canvas": [2080, 730], "scratches": []},
     )
     (recorded,) = [e for e in events if isinstance(e, EditRecorded)]
     assert recorded.negative_id == "stitch-negative-01"
@@ -1900,7 +1955,9 @@ def test_auto_rotation_seeds_nothing_when_the_estimator_declines(
     outcome = run_stitch_with_defaults(work_dir, out_dir)
 
     assert outcome.status == "complete"
-    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert rotate_edits == []
 
 
 def test_auto_rotation_off_seeds_nothing(work_dir, tmp_path, monkeypatch):
@@ -1913,7 +1970,9 @@ def test_auto_rotation_off_seeds_nothing(work_dir, tmp_path, monkeypatch):
     outcome = run_stitch_with_defaults(work_dir, out_dir, auto_rotate=False)
 
     assert outcome.status == "complete"
-    assert repo.edits_for(out_dir, "stitch-negative-01") == []
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert rotate_edits == []
 
 
 def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkeypatch):
@@ -1931,7 +1990,9 @@ def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkey
     second = run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
 
     assert second.status == "complete"
-    assert len(repo.edits_for(out_dir, "stitch-negative-01")) == 1
+    edits = repo.edits_for(out_dir, "stitch-negative-01")
+    rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
+    assert len(rotate_edits) == 1
 
 
 # --- explicit film kind at roll init -------------------------------------
@@ -1954,6 +2015,7 @@ def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
     assert roll.published_icc_profile["sha256"] == DENSITY_GREY_PROFILE_SHA256
     published = out_dir / roll.negatives[0].output["name"]
     assert tifffile.imread(published).ndim == 2
+    assert repo.net_edit_state(out_dir, roll.negatives[0].negative_id).scratches is None
 
 
 def test_film_kind_required_when_roll_has_no_film_block(tmp_path):
@@ -2003,7 +2065,7 @@ def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
     )["sha256"]
 
 
-# --- the camera_color block (docs/EXPORT_PLAN.md section 3) ---------------
+# --- the camera_color block -------------------------------------------
 
 
 def test_seed_camera_color_writes_the_block_on_the_first_run():
@@ -2033,7 +2095,7 @@ def test_seed_camera_color_is_frozen_and_warns_on_a_conflict():
     events: list[WarningEvent] = []
 
     # A later run whose source reports a different matrix — a different
-    # body mid-roll — warns and keeps the frozen value (EXPORT_PLAN §3.2).
+    # body mid-roll — warns and keeps the frozen value.
     _seed_camera_color(
         roll,
         _work_manifest(curated_metadata=_curated_with_matrix(scale=0.9)),

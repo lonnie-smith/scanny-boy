@@ -106,7 +106,8 @@ enum ColorTemperature {
     private static let kYellow = 0.0057
 
     static func kelvin(magenta: Double, yellow: Double) -> Double {
-        let dmu = (kMagenta * magenta + kYellow * yellow) / (kMagenta * kMagenta + kYellow * kYellow)
+        let dmu = -(kMagenta * magenta + kYellow * yellow)
+            / (kMagenta * kMagenta + kYellow * kYellow)
         let mu = min(
             max(1e6 / refKelvin + dmu, 1e6 / maxKelvin),
             1e6 / minKelvin
@@ -123,9 +124,9 @@ enum ColorTemperature {
         anchorYellow: Double
     ) -> (magenta: Double, yellow: Double) {
         let clamped = min(max(kelvin, minKelvin), maxKelvin)
-        let dmuCurrent = (kMagenta * anchorMagenta + kYellow * anchorYellow)
+        let dmuCurrent = -(kMagenta * anchorMagenta + kYellow * anchorYellow)
             / (kMagenta * kMagenta + kYellow * kYellow)
-        let delta = (1e6 / clamped - 1e6 / refKelvin) - dmuCurrent
+        let delta = -(1e6 / clamped - 1e6 / refKelvin) - dmuCurrent
         let magenta = min(max(anchorMagenta + kMagenta * delta, -1), 1)
         let yellow = min(max(anchorYellow + kYellow * delta, -1), 1)
         return (magenta, yellow)

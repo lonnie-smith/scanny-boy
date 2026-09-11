@@ -54,7 +54,7 @@ struct CLILocatorTests {
     }
 
     /// A relative override would be resolved against the process's current
-    /// directory, which section 5.2 forbids outright.
+    /// directory, which is forbidden outright.
     @Test(
         "a relative override is rejected rather than resolved",
         arguments: ["cli/dist/ScannyBoyCLI.app/Contents/MacOS/scanny-boy", "./scanny-boy", "../scanny-boy"]

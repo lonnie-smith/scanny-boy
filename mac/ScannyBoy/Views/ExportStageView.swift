@@ -31,8 +31,9 @@ struct ExportStageView: View {
             Section("Image Size") {
                 Picker("Downsampling", selection: $export.downsampleLongEdge) {
                     Text("Full Resolution").tag(Int?.none)
-                    Text("6048 px").tag(Int?.some(6048))
-                    Text("9072 px").tag(Int?.some(9072))
+                    Text("6048px (24mp class)").tag(Int?.some(6048))
+                    Text("9072px (55mp class)").tag(Int?.some(9072))
+                    Text("12096px (100mp class)").tag(Int?.some(12096))
                 }
                 if let longEdge = export.downsampleLongEdge {
                     Text(

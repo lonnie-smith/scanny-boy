@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ScannyBoyManifest",
-  "description": "scanny-boy-manifest.json: the authoritative record of one conversion run. See docs/IMPLEMENTATION_PLAN.md section 3.7.",
+  "description": "scanny-boy-manifest.json: the authoritative record of one conversion run.",
   "type": "object",
   "definitions": {
     "status": {
@@ -104,7 +104,7 @@
           },
           "minItems": 3,
           "maxItems": 3,
-          "description": "LibRaw's rgb_xyz_matrix, first three rows - the DNG ColorMatrix convention's XYZ -> camera RGB (docs/EXPORT_PLAN.md section 3). Recorded data for the export path's colour matrix; null when the run predates the field. Deliberately not part of processing_params (section 3.3)."
+          "description": "LibRaw's rgb_xyz_matrix, first three rows - the DNG ColorMatrix convention's XYZ -> camera RGB. Recorded data for the export path's colour matrix; null when the run predates the field. Deliberately not part of processing_params, since it describes the camera body, not the conversion."
         },
         "camera_model": {
           "type": ["string", "null"],
@@ -153,7 +153,7 @@
         "across": { "type": "integer", "minimum": 1 },
         "down": { "type": "integer", "minimum": 1 }
       },
-      "description": "The batch's grid as declared with --grid (docs/GRID_STITCH_PLAN.md section 2.3); null for a pre-grid manifest, which declares the strip across=shots_per_negative, down=1."
+      "description": "The batch's grid as declared with --grid; null for a pre-grid manifest, which declares the strip across=shots_per_negative, down=1."
     },
     "processing_params": { "type": "object" },
     "icc_profile": { "$ref": "#/definitions/iccProfile" },

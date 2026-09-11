@@ -7,11 +7,12 @@ has none of this logic and only runs this program and reads its JSON event
 stream. The interface is defined in
 [`../shared/contract/`](../shared/contract/).
 
-Four commands: `probe` (validate without writing), `convert` (RAW to
+Core commands: `probe` (validate without writing), `prepare` (RAW to
 per-frame TIFFs), `stitch` (register and composite an existing conversion's
 intermediates into one TIFF per negative — the re-stitch path, since it pays
-for no RAW decoding), and `run` (convert and stitch in one invocation — the
-app's normal path). See
+for no RAW decoding), and `run` (prepare and stitch in one invocation — the
+app's normal path), plus the `roll`, `edit`, `metadata`, `export`,
+`flatfield`, and `grid` command families. See
 [`../shared/contract/CONTRACT.md`](../shared/contract/CONTRACT.md) for the
 full command reference.
 
@@ -38,11 +39,6 @@ uv run scanny-boy probe --input /path/to/nef/folder
 uv run scanny-boy --help
 ```
 
-See [`../docs/IMPLEMENTATION_PLAN.md`](../docs/IMPLEMENTATION_PLAN.md)
-section 4 and
-[`../docs/PHASE2_IMPLEMENTATION_PLAN.md`](../docs/PHASE2_IMPLEMENTATION_PLAN.md)
-section 3.6 for the authoritative contract behind `CONTRACT.md`.
-
 ## Test
 
 ```bash
@@ -51,10 +47,8 @@ uv run pytest
 ```
 
 Some tests need the real sample NEFs at `../tests/fixtures/nef/`, which are
-not committed (see the root README): Phase 1's original six frames for
-conversion tests, and Phase 2's gate-B stitching scans (appendix C of the
-Phase 2 plan) for registration tests. Those tests skip clearly and say what
-they didn't test when the files are absent.
+not committed — see the root README's "Sample RAW files". Those tests skip
+clearly and say what they didn't test when the files are absent.
 
 ## Freeze for the macOS app
 

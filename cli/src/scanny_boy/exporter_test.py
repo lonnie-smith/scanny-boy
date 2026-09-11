@@ -1,7 +1,7 @@
 """Tests for `export`: the ops log replayed over real pixels, rendered as a
 positive in Adobe RGB (or grey, for a mono roll), written as a lossless
 JPEG XL into a folder of the user's choosing — with the roll's own TIFF
-untouched (docs/EXPORT_PLAN.md §5.4)."""
+untouched."""
 
 from __future__ import annotations
 
@@ -135,8 +135,7 @@ def two_negative_roll_with_metadata(tmp_path: Path) -> Path:
 def stitched_roll(tmp_path: Path) -> Path:
     """A mono-shaped roll (2-D published TIFFs, no camera_color): the
     state every real roll was in before the colour-managed export, and
-    the state a mono roll is in by design — exports must succeed (§3.4,
-    §4.5)."""
+    the state a mono roll is in by design — exports must succeed."""
     roll_dir = make_roll_dir(tmp_path)
     manifest = load_roll_manifest(roll_dir)
     from scanny_boy.manifest import SourceRecord
@@ -326,7 +325,7 @@ def test_the_colour_export_is_3_channel_and_embeds_the_export_rgb_profile(
 def test_a_colour_roll_without_camera_color_fails_before_writing_anything(
     tmp_path,
 ):
-    """§3.4: a colour roll predating the colour-managed export fails the
+    """A colour roll predating the colour-managed export fails the
     export outright — once, with `CAMERA_MATRIX_MISSING`, before any file
     is written. Never an identity-matrix fallback."""
     from scanny_boy.manifest import SourceRecord
@@ -368,7 +367,7 @@ def test_a_colour_roll_without_camera_color_fails_before_writing_anything(
 
 
 def test_a_mono_roll_without_camera_color_exports_successfully(stitched_roll, tmp_path):
-    """§3.4/§4.5: the matrix check is conditional on the published TIFF's
+    """The matrix check is conditional on the published TIFF's
     channel count — a mono roll needs no matrix and is never failed for
     its absence."""
     outcome = run_export(stitched_roll, tmp_path / "export", [], emit=lambda event: None)
@@ -376,7 +375,7 @@ def test_a_mono_roll_without_camera_color_exports_successfully(stitched_roll, tm
     assert outcome.exported == ["_DSC0001.jxl", "_DSC0003.jxl"]
 
 
-# --- the tone op is baked in (docs/EXPORT_PLAN.md §4.6) ---------------------
+# --- the tone op is baked in --------------------------------------------
 
 
 def test_the_tone_op_changes_the_exported_pixels_and_matches_the_curve(
@@ -556,7 +555,7 @@ def test_a_failed_write_leaves_no_tmp_file_in_the_output_folder(
 def test_an_unavailable_encoder_stops_the_export_with_the_dedicated_code(
     stitched_roll, tmp_path, monkeypatch
 ):
-    """§1.2/§6: libjxl missing is a packaging failure, not a user error —
+    """libjxl missing is a packaging failure, not a user error —
     one `JXL_ENCODER_UNAVAILABLE` error, not a per-negative warning."""
 
     def unavailable(*args, **kwargs):
@@ -574,7 +573,7 @@ def test_an_unavailable_encoder_stops_the_export_with_the_dedicated_code(
 
 # --- metadata written on export ----------------------------------------------
 
-# The §1.6/§1.3 box payloads: the Exif box is a TIFF stream (parse it with
+# The box payloads: the Exif box is a TIFF stream (parse it with
 # tifftools over a BytesIO), the XMP box is the packet bytes.
 
 
@@ -624,7 +623,7 @@ def test_export_writes_roll_metadata(two_negative_roll_with_metadata, tmp_path):
     assert "dc:description" in xmp and "harbor morning" in xmp
     assert _exif_tag(tags, 36867) == "2026:08:01 12:00:00"
     assert _exif_tag(tags, 42036) == "50mm f/1.4"
-    # The ImageDescription is now the short human string (§5.2).
+    # The ImageDescription is the short human string.
     assert tags[270]["data"] == f"{_NEGATIVE_ID}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
 
 
@@ -649,7 +648,7 @@ def test_export_negative_value_overrides_roll(tmp_path, two_negative_roll_with_m
 def test_export_without_metadata_writes_no_exif_box_but_still_the_provenance(
     tmp_path, two_negative_roll_with_metadata
 ):
-    """§5.2: a field nobody set writes nothing — no Exif box at all when
+    """A field nobody set writes nothing — no Exif box at all when
     no metadata field is set. The XMP still goes, because the provenance
     record is not user-set metadata but the file's interpretability
     record."""
@@ -701,7 +700,7 @@ def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_pa
 def test_the_provenance_carries_the_published_tiffs_normalization(
     colour_roll, tmp_path
 ):
-    """The normalization block still rides along (§5.2) — describing the
+    """The normalization block still rides along — describing the
     *published* TIFF's encoding, which the export no longer is."""
     destination = _export_one(colour_roll, tmp_path)
 
@@ -722,14 +721,14 @@ def test_a_mono_provenance_has_no_matrix(stitched_roll, tmp_path):
 
 def test_the_provenance_names_the_profile_kind_constant_mapping(tmp_path):
     """The exporter selects the profile through `export_profile_kind` —
-    pin the mapping here too (§4.5)."""
+    pin the mapping here too."""
     from scanny_boy.icc_profile import export_profile_kind
 
     assert export_profile_kind(1) is ProfileKind.EXPORT_GREY
     assert export_profile_kind(3) is ProfileKind.EXPORT_RGB
 
 
-# --- the spots repair reaches the export (SPOTTING_PLAN §6) -------------------
+# --- the spots repair reaches the export ---------------------------------
 
 
 def _planted_original() -> np.ndarray:
@@ -811,7 +810,7 @@ def test_the_provenance_record_is_null_without_a_live_repair(stitched_roll, tmp_
     assert record["rendered"]["spots"] is None
 
 
-# --- the crop op reaches the export (docs/CROP_PLAN.md) ----------------------
+# --- the crop op reaches the export --------------------------------------
 
 
 @pytest.fixture()
@@ -927,6 +926,7 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         ProfileKind.EXPORT_GREY,
         (0.0,),
         None,
+        None,
         crop,
     )
     assert record["rendered"]["crop"] == {
@@ -963,6 +963,7 @@ def test_parse_downsample_maps_the_choices():
     assert parse_downsample("none") is None
     assert parse_downsample("6048") == 6048
     assert parse_downsample("9072") == 9072
+    assert parse_downsample("12096") == 12096
 
 
 def test_parse_downsample_rejects_an_unknown_value():

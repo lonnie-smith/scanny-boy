@@ -92,12 +92,12 @@ CROP_MIN_SIZE_PX = 16
 # sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
 
-# `color` params are the complete preview colour state — thirteen keys
-# (docs/CAST_REMOVAL_PLAN.md R-2), of which the original twelve are the
-# compatibility floor (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None`
-# for the reset (see `color.py`). A sibling of `tone`:
-# preview-only, independently resettable, coalesced in place. Baked at export
-# through the same render as the preview (docs/EXPORT_PLAN.md §4.6).
+# `color` params are the complete preview colour state — thirteen keys, of
+# which the original twelve are the compatibility floor
+# (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None` for the reset (see
+# `color.py`). A sibling of `tone`: preview-only, independently
+# resettable, coalesced in place. Baked at export through the same render
+# as the preview.
 COLOR_OP = "color"
 
 # `spots` params are the spot detector's proposals plus the whole-negative
@@ -107,8 +107,20 @@ COLOR_OP = "color"
 # `color` — a state, not a transform, the latest one wins, coalesced in
 # place — with one singular difference: it is the only op whose replay
 # *synthesizes* pixel values, which is why `repair` is part of the state and
-# why a canvas mismatch repairs nothing (SPOTTING_PLAN §1.5).
+# why a canvas mismatch repairs nothing.
 SPOTS_OP = "spots"
+
+# `scratches` params are the scratch detector's per-scratch fit tables and
+# the whole-negative ``enabled`` switch (see ``scratches.py``):
+# ``{"detector_version", "source", "enabled", "canvas", "scratches"}``, each
+# scratch carrying its subpixel centre path, the level-dependent correction
+# table (base64-encoded), and the detection score.  A sibling of
+# ``tone``/``color``/``spots``/``crop`` — a state, the latest one wins,
+# coalesced in place — with the same canvas guard as ``spots``.  Detection
+# runs at stitch time; the op records nothing when the detector finds
+# nothing, and an empty ``"scratches": []`` distinguishes ``"looked,
+# nothing there"`` from ``"never looked"`` (a pre-feature negative).
+SCRATCHES_OP = "scratches"
 
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
@@ -123,8 +135,11 @@ class EditState:
     tone: dict[str, float] | None
     color: dict[str, float] | None
     # The net `spots` op's params, or None — a state like `tone`/`color`,
-    # but one that reaches the export (SPOTTING_PLAN §3.3).
+    # but one that reaches the export.
     spots: dict | None = None
+    # The net `scratches` op's params, or None — a state like `spots`,
+    # TIFF-space geometry; the preview folds it in and the export bakes it.
+    scratches: dict | None = None
     # The net `crop` op's params, or None — same state family, TIFF-space
     # like `spots`; the preview folds it in and the export bakes it.
     crop: dict | None = None
@@ -465,9 +480,8 @@ def load_roll(roll_dir: Path) -> RollManifest:
                             # gain is unity, not a corrupt row.
                             gain=tuple(f.get("gain", _UNITY_GAIN)),
                             # Likewise, rows written before the per-frame scale
-                            # solve (docs/STITCH_QUALITY_PLAN.md section 2)
-                            # carry no `scale` — the layout was placed as a
-                            # rigid transform, which is scale 1.
+                            # solve carry no `scale` — the layout was placed as
+                            # a rigid transform, which is scale 1.
                             scale=f.get("scale", 1.0),
                         )
                         for f in n.frames
@@ -631,7 +645,7 @@ def validated_color_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
     """The `color` op's params: all twelve compatibility-floor keys set, or
-    all `None` (docs/CAST_REMOVAL_PLAN.md R-2 §6.2). A newer key absent
+    all `None`. A newer key absent
     from `params` is filled from the neutral defaults before validation —
     that is what "this op predates the control" means."""
     from scanny_boy import color
@@ -758,6 +772,14 @@ def append_spots_edit(roll_dir: Path, negative_id: str, params: dict) -> dict:
     return _coalesce_state_edit(roll_dir, negative_id, SPOTS_OP, validated)
 
 
+def append_scratches_edit(roll_dir: Path, negative_id: str, params: dict) -> dict:
+    """Records the negative's scratch removal state (see `scratches.py`),
+    coalescing a trailing `scratches` op in place — same state family as
+    `tone`/`color`/`spots`. Raises `ValueError` on malformed params."""
+    validated = validated_scratches_params(params)
+    return _coalesce_state_edit(roll_dir, negative_id, SCRATCHES_OP, validated)
+
+
 def _tone_neutral_defaults() -> dict[str, float]:
     from scanny_boy import tone
 
@@ -839,10 +861,10 @@ def _parse_tone_op(params: dict) -> dict[str, float] | None:
 def _parse_color_op(params: dict) -> dict[str, float] | None:
     from scanny_boy import color
 
-    # Gate on the ORIGINAL twelve (docs/CAST_REMOVAL_PLAN.md R-2 §6.1): an
-    # op written before that plan has no thirteenth key and is still a
-    # complete colour state. Newer keys fall back to their neutral
-    # defaults, which is what "this op predates the control" means.
+    # Gate on the ORIGINAL twelve: an op written before the thirteenth key
+    # was added has no thirteenth key and is still a complete colour
+    # state. Newer keys fall back to their neutral defaults, which is what
+    # "this op predates the control" means.
     if not all(key in params for key in color.COLOR_PARAM_KEYS_V1):
         return None
     if all(params.get(key) is None for key in color.COLOR_PARAM_KEYS_V1):
@@ -872,7 +894,7 @@ def _check_spots_params(params: dict) -> dict:
     and `_parse_spots_op` (which degrades to `None`). Unknown keys — on the
     params and on each spot — are ignored, not rejected: a parser that
     demands an exact key set silently discards real user state the day the
-    set grows (CAST_REMOVAL_PLAN §6.1's cautionary tale)."""
+    set grows)."""
     from scanny_boy import spots
 
     version = params.get("detector_version")
@@ -955,8 +977,7 @@ def validated_spots_params(params: dict) -> dict:
     """The `spots` op's params, validated. Raises `ValueError` with a
     specific message for each malformed shape; `edits.py` turns those into
     `INVALID_EDIT`. The parser cannot check `canvas` against a real image —
-    it has none — so that comparison stays in `spots.py` (SPOTTING_PLAN
-    §1.5)."""
+    it has none — so that comparison stays in `spots.py`."""
     if not isinstance(params, dict):
         raise ValueError("spots params must be an object")  # noqa: TRY004
     return _check_spots_params(params)
@@ -966,11 +987,95 @@ def _parse_spots_op(params: dict) -> dict | None:
     """The `spots` op as replayed into `EditState`. Never raises: anything
     malformed degrades to `None`, which means *no markers and no repair* —
     degrading toward "change no pixels" is the only safe direction
-    (SPOTTING_PLAN §5)."""
+    ."""
     if not isinstance(params, dict):
         return None
     try:
         return _check_spots_params(params)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+_SCRATCH_CORE_KEYS = ("axis", "centres", "table")
+_SCRATCH_AXES = ("vertical", "horizontal")
+
+
+def _check_scratches_params(params: dict) -> dict:
+    """The shared validation behind `validated_scratches_params` (which
+    raises) and `_parse_scratches_op` (which degrades to `None`). Unknown
+    keys are ignored."""
+    from scanny_boy import scratches
+
+    version = params.get("detector_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("scratches detector_version must be an int")  # noqa: TRY004
+    if version > scratches.DETECTOR_VERSION:
+        raise ValueError(
+            f"scratches detector_version {version} is newer than this "
+            f"build's {scratches.DETECTOR_VERSION}"
+        )
+    source = params.get("source")
+    if source is not None and not isinstance(source, str):
+        raise ValueError("scratches source must be a string or null")
+    enabled = params.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("scratches enabled must be a bool")  # noqa: TRY004
+    canvas = params.get("canvas")
+    if (
+        not isinstance(canvas, list)
+        or len(canvas) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in canvas
+        )
+    ):
+        raise ValueError("scratches canvas must be [width, height], two positive ints")
+    scratch_list = params.get("scratches")
+    if not isinstance(scratch_list, list):
+        raise ValueError("scratches must be a list")  # noqa: TRY004
+    checked: list[dict] = []
+    for scratch in scratch_list:
+        if not isinstance(scratch, dict):
+            raise ValueError("each scratch must be an object")  # noqa: TRY004
+        missing = [key for key in _SCRATCH_CORE_KEYS if key not in scratch]
+        if missing:
+            raise ValueError(f"scratch missing keys: {', '.join(missing)}")
+        if scratch["axis"] not in _SCRATCH_AXES:
+            raise ValueError(f"scratch axis must be one of {list(_SCRATCH_AXES)}")
+        centres = scratch["centres"]
+        if not isinstance(centres, list) or not centres:
+            raise ValueError("scratch centres must be a non-empty list")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in centres):
+            raise ValueError("scratch centres must contain only numbers")
+        table = scratch["table"]
+        if not isinstance(table, str) or not table:
+            raise ValueError("scratch table must be a non-empty base64 string")
+        checked.append(dict(scratch))
+    return {
+        "detector_version": version,
+        "source": source,
+        "enabled": enabled,
+        "canvas": list(canvas),
+        "scratches": checked,
+    }
+
+
+def validated_scratches_params(params: dict) -> dict:
+    """The `scratches` op's params, validated. Raises `ValueError` with a
+    specific message for each malformed shape; `edits.py` turns those into
+    `INVALID_EDIT`."""
+    if not isinstance(params, dict):
+        raise ValueError("scratches params must be an object")  # noqa: TRY004
+    return _check_scratches_params(params)
+
+
+def _parse_scratches_op(params: dict) -> dict | None:
+    """The `scratches` op as replayed into `EditState`. Never raises:
+    anything malformed degrades to `None` (no correction applied)."""
+    if not isinstance(params, dict):
+        return None
+    try:
+        return _check_scratches_params(params)
     except (ValueError, TypeError, KeyError, AttributeError):
         return None
 
@@ -1066,14 +1171,16 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
 def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     """Replays the negative's edit ops in order and reduces them to the
     canonical net state. Geometric ops compose; `tone`, `color`, `spots`,
-    and `crop` are states where only the latest op of each kind matters.
-    Unknown ops are skipped; malformed state ops degrade to no adjustment."""
+    `scratches`, and `crop` are states where only the latest op of each kind
+    matters. Unknown ops are skipped; malformed state ops degrade to no
+    adjustment."""
     turns = 0
     flipped = False
     fine_deg = 0.0
     tone: dict[str, float] | None = None
     color: dict[str, float] | None = None
     spots: dict | None = None
+    scratches: dict | None = None
     crop: dict | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
@@ -1101,6 +1208,10 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
             # The net spots state is TIFF-space geometry; it does not move
             # when the display transform does.
             spots = _parse_spots_op(edit["params"])
+        elif op == SCRATCHES_OP:
+            # Same family: TIFF-space geometry, a state where only the
+            # latest op matters.
+            scratches = _parse_scratches_op(edit["params"])
         elif op == CROP_OP:
             # Same family: TIFF-space geometry, a state where only the
             # latest op matters (each op already stores the fully-composed
@@ -1113,6 +1224,7 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
         tone=tone,
         color=color,
         spots=spots,
+        scratches=scratches,
         crop=crop,
     )
 
@@ -1217,9 +1329,9 @@ def rolls_using_flatfield(profile_id: str) -> list[str]:
 
 def rolls_using_profile_geometry(profile_id: str) -> list[str]:
     """Every roll whose `stitch_params.geometry.profile_id` names
-    `profile_id` — the stitch-side half of the two invariant buckets
-    (docs/GEOMETRIC_PLAN.md section 3.6). A profile whose geometry a roll
-    depends on is exactly as undeletable as one whose gain map it depends
+    `profile_id` — the stitch-side half of the two invariant buckets. A
+    profile whose geometry a roll depends on is exactly as undeletable as
+    one whose gain map it depends
     on; `flatfield delete` unions this with `rolls_using_flatfield`."""
     with _session() as session:
         rows = session.scalars(select(RollRow)).all()

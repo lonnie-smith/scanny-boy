@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// The resident `scanny-boy serve` process, and the per-request registry
-/// in front of it (docs/OPTIMIZATION.md §2.4).
+/// in front of it.
 ///
 /// One long-lived child answers every request the app routes here; this
 /// actor owns the child (a `CLISession` whose stdin is a pipe), pumps its
@@ -11,7 +11,7 @@ import Foundation
 /// stream ends exactly once, with a `completed` synthesized from its
 /// `finished` event's `exit_status` — so `CLIOutcome` maps over unchanged.
 ///
-/// Concurrency is the daemon's own serialized queue (§2.3): the helper
+/// Concurrency is the daemon's own serialized queue: the helper
 /// answers one request at a time, and a `cancel` envelope is written
 /// upstream without waiting for anything. If the child dies mid-request,
 /// every pending request is failed with an ordinary `completed` outcome and
@@ -25,6 +25,17 @@ public actor CLIDaemon {
     /// restart is owed on the next submit.
     private var child: CLISession?
     private var pumpTask: Task<Void, Never>?
+    /// Set while a child is being launched, cleared when it either lands in
+    /// `child` or fails. `ensureRunningChild`'s own check-then-launch is not
+    /// atomic across the `await session.start()` inside it: two concurrent
+    /// `submit`s that both find `child` nil (the ordinary case at launch,
+    /// when several models each fire their first request around the same
+    /// moment) would otherwise each pass the check before either had written
+    /// `child`, and each spawn its own `scanny-boy serve` — one answering
+    /// requests, the other an unstoppable orphan. Routing concurrent callers
+    /// through the same in-flight `Task` instead means only the first one
+    /// launches anything; the rest await its result.
+    private var startingChild: Task<CLISession, Error>?
     /// The pending requests, keyed by the id every one of their events
     /// carries.
     private var requests: [String: AsyncStream<CLISessionOutput>.Continuation] =
@@ -71,7 +82,7 @@ public actor CLIDaemon {
         return stream
     }
 
-    /// Cancels one request in band (§2.2). The helper sets that request's
+    /// Cancels one request in band. The helper sets that request's
     /// token; a request the helper has already finished is ignored there.
     public func cancelRequest(_ requestID: String) async {
         guard let child = child, await child.isRunning,
@@ -93,9 +104,34 @@ public actor CLIDaemon {
     // MARK: - Child plumbing
 
     private func ensureRunningChild() async throws -> CLISession {
-        if let child, await child.isRunning {
-            return child
+        while true {
+            if let child, await child.isRunning {
+                return child
+            }
+            if let launch = startingChild {
+                let session = try await launch.value
+                if await session.isRunning {
+                    return session
+                }
+                // The in-flight launch finished, but the child died before
+                // this caller got it — drop the stale task and retry.
+                startingChild = nil
+                continue
+            }
+            let launch = Task { try await self.startChild() }
+            startingChild = launch
+            do {
+                let session = try await launch.value
+                startingChild = nil
+                return session
+            } catch {
+                startingChild = nil
+                throw error
+            }
         }
+    }
+
+    private func startChild() async throws -> CLISession {
         var environment: [String: String]?
         if !environmentOverrides.isEmpty {
             environment = ProcessInfo.processInfo.environment
@@ -176,6 +212,7 @@ public actor CLIDaemon {
         guard child === session else { return }
         child = nil
         pumpTask = nil
+        startingChild = nil
         let pending = requests
         requests.removeAll()
         for requestID in pending.keys {

@@ -6,8 +6,8 @@ subprocess and reads its JSON event stream. The interface between them is
 side of it lives in [`ScannyBoy/CLIBridge/`](ScannyBoy/CLIBridge).
 
 Local-only Apple-silicon build: ad-hoc signing, no sandboxing, no
-notarisation, no Intel support. See
-[`../docs/DECISIONS.md`](../docs/DECISIONS.md) for why.
+notarisation, no Intel support — this is a single-user, single-machine
+release with no distribution story.
 
 ## Building
 
@@ -76,27 +76,17 @@ process's current directory.
 - `ScannyBoy/CLIBridge/` — event decoding (`CLIEvent`), line reassembly
   (`LineAssembler`), the owned streaming session (`CLISession`), helper
   resolution (`CLILocator`), and argument construction (`CLIRunner`), which
-  builds all four command invocations: `probe`, `convert`, `run`, `stitch`.
+  builds every command invocation the app drives.
 - `ScannyBoyTests/` — Swift Testing unit tests, plus end-to-end tests that
   drive the real helper and skip with a reason when the helper or the sample
   NEFs are absent.
-- `ScannyBoyUITests/` — an XCTest launch smoke test. Chunk 8 kept this target
-  out of the scheme's test targets because its runner would not start on this
-  machine; it starts now, so Chunk 10 put it back. Everything the run UI
-  decides is tested directly against `RunModel` and `ConfigurationModel`
-  instead of through XCUITest — this target has proven intermittently flaky
-  at actually launching the app under `xcodebuild test` on this development
-  machine, independent of app changes; a failure here that isn't an assertion
-  failure (`Failed to activate application ... Running Background`) is that,
-  not a regression.
+- `ScannyBoyUITests/` — an XCTest launch smoke test, excluded from the test
+  scheme: it has proven intermittently flaky at actually launching the app
+  under `xcodebuild test` on this machine, independent of app changes.
+  Everything the run UI decides is instead tested directly against
+  `RunModel` and `ConfigurationModel`.
 - `Scripts/check-staged-helper.sh` — pre-build check that fails legibly when
   the staged helper has been cleaned away.
 
-**Known, deliberate limitation:** `probe --out` has no notion of
-`scanny-boy-roll.json`, so `ConfigurationModel` and `RestitchSheet` cannot
-show an itemized preview of what a rerun or re-stitch into an
-already-published output folder would replace, the way they do for a plain
-`convert`/`run`. Both ask for one general, explicit acknowledgement instead
-and pass `--overwrite` unconditionally once it's given; real conflict
-enforcement happens for real, server-side, in `run_stitch`. See
-`docs/DECISIONS.md`'s Phase 2 section.
+See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §14 for known gaps
+between what the app does and what the README or CLI might suggest it does.

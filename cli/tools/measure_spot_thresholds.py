@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chunk S-6's calibration tool (docs/SPOTTING_PLAN.md §9): measure the
-spot detector's constants against a real roll.
+"""Chunk S-6's calibration tool: measure the spot detector's constants
+against a real roll.
 
 Given a roll folder and a list of negative ids, for each negative and for
 `sensitivity` in 0.0 … 1.0 step 0.1, this:
@@ -25,7 +25,7 @@ least 90% of the sampled crops are genuine crud; set
 range; repeat on a monochrome roll for `MONO_K_BONUS`; and measure
 `MAX_SPOT_MINOR_FRACTION` from the widest genuine defect found. The chosen
 values, the negatives they were measured on, and the observed precision go
-into a "Measured constants" section appended to SPOTTING_PLAN.md (§9.3).
+into comments beside the constants in `spots.py`.
 
 Run from the repository root:
 
@@ -193,7 +193,7 @@ def main() -> None:
     print(f"wrote {len(rows)} rows to {csv_path}")
     print(
         "Next: read the contact sheets from the most aggressive sensitivity "
-        "downward (SPOTTING_PLAN §9.2)."
+        "downward until the contact sheets look clean."
     )
 
 

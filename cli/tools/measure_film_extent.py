@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chunk E-0's measurement tool (docs/BLACK_POINT_REFINEMENT.md §1): replay
-the film-extent pass's meters against a real roll, off the published TIFFs.
+"""Chunk E-0's measurement tool: replay the film-extent pass's meters
+against a real roll, off the published TIFFs.
 
 The normalization is invertible from the recorded `floors`/`ceils`, so a
 negative's `grid_log` is reconstructed exactly — no re-stitching — and the
@@ -30,8 +30,7 @@ spanning a roll with carrier on one edge only, a roll with carrier on all
 four, and a roll with no carrier in frame at all — the no-op case, which
 matters most. For each, confirm from the histogram that the valley is
 where the detector put it, and from the sweep that the floor reaches a
-plateau at least 50 cells wide; append the results to
-docs/BLACK_POINT_REFINEMENT.md as a "Measured constants" section.
+plateau at least 50 cells wide; record the results as measured constants.
 
 It is a tool, not production code: nothing bundles it and nothing is
 tested against it.

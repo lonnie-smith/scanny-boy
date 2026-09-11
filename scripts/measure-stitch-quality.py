@@ -51,8 +51,7 @@ from scanny_boy.raw_decode import decode_raw
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_NEF_DIR = ROOT / "tests" / "fixtures" / "nef"
 
-# The gate-B negatives (docs/PHASE2_IMPLEMENTATION_PLAN.md section 5, user
-# gate B), the same ones registration_test.py's test_real_sample_pairs_meet_
+# The gate-B negatives, the same ones registration_test.py's test_real_sample_pairs_meet_
 # their_gates checks: a routine strip, a deliberately rotated one, one shot
 # out of spatial order, one at minimum overlap, and one whose three frames
 # share no film with each other at all (the negative that is *supposed* to
@@ -154,7 +153,7 @@ def measure_negative(
 
     `profile`, when given, is applied exactly as `stitch_pipeline.py` applies
     it: its geometry undistorts correspondences before RANSAC and warps the
-    composite (docs/GEOMETRIC_PLAN.md section 5.3), and its chromatic
+    composite, and its chromatic
     aberration maps (when in "maps" mode) are passed through to the
     composite too."""
     names = frame_names(negative)

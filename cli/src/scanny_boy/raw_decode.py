@@ -55,7 +55,7 @@ def jsonable_raw_params(
     `gamma` tuple becomes a list; everything else passes through unchanged.
 
     `chromatic_aberration`, when given, is the CA scale pair this decode
-    actually ran with (docs/GEOMETRIC_PLAN.md section 5.2) — `processing_params`
+    actually ran with — `processing_params`
     must describe the decode that happened, not the default one."""
     params: dict = RAW_PARAMS
     if chromatic_aberration is not None:
@@ -98,7 +98,7 @@ def decode_raw(
     """Decode `path` with `RAW_PARAMS`.
 
     `chromatic_aberration`, when given, is the profile's CA scale pair
-    (docs/GEOMETRIC_PLAN.md section 5.2), merged into the params for this
+    merged into the params for this
     call alone — the one rawpy knob that changes pixel geometry at decode
     time, applied before flat-field touches the pixels.
 

@@ -13,7 +13,7 @@ import pytest
 from scanny_boy import normalization, tone
 
 # Key codes from the neutral LUT at NEUTRAL — the acceptance anchor for
-# bit-identical neutral behaviour (docs/HEADROOM.md §3.4: barely moves).
+# bit-identical neutral behaviour (barely moves).
 _NEUTRAL_LUT_SAMPLES = {
     0: 255,
     1: 255,
