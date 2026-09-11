@@ -65,6 +65,7 @@ COLOR_PARAM_KEYS = (
     "cast_removal_highlights",
     "dye_separation",
     "separation_damping",
+    "auto_neutral",
 )
 
 # The original twelve, frozen, in their original order. This exists only so
@@ -102,6 +103,7 @@ class ColorParams:
     cast_removal_highlights: float = 0.0
     dye_separation: float = 1.0
     separation_damping: float = 0.0
+    auto_neutral: float = 1.0
 
 
 NEUTRAL_COLOR = ColorParams()
@@ -135,6 +137,8 @@ class Metering:
     shadow_refs_norm: tuple[float, ...] | None
     highlight_refs_norm: tuple[float, ...] | None = None
     highlight_floor_delta: tuple[float, ...] | None = None
+    auto_neutral_shadow: tuple[float, float] | None = None
+    auto_neutral_highlight: tuple[float, float] | None = None
 
 
 def _corrected_floors_and_delta(
@@ -267,11 +271,16 @@ def read_metering(record: dict | None, highlight_lock=None) -> Metering:
             normed.append((float(ref) - floor) / span)
         if len(normed) == channels:
             highlight_refs_norm = tuple(normed)
+    from scanny_boy import auto_neutral
+
+    bands = auto_neutral.read_auto_neutral(record)
     return Metering(
         ranges=tuple(ranges),
         shadow_refs_norm=shadow_refs_norm,
         highlight_refs_norm=highlight_refs_norm,
         highlight_floor_delta=highlight_floor_delta,
+        auto_neutral_shadow=None if bands is None else bands.shadow,
+        auto_neutral_highlight=None if bands is None else bands.highlight,
     )
 
 
@@ -365,6 +374,171 @@ def _luma_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
     """Subtract the scalar that zeroes the Rec.709 luma-weighted sum."""
     mean = _luma_weighted_sum(triple)
     return tuple(value - mean for value in triple)
+
+
+def _cast_slopes_one_point_targets(
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+    shadow_targets: tuple[float, float] | None,
+    highlight_targets: tuple[float, float] | None,
+) -> tuple[tuple[float, float], ...]:
+    """One-point tie at whichever end has a target; identity otherwise."""
+    achromatic = ((slope, pivot_in),) * 3
+    if shadow_targets is not None:
+        anchor = pivot_in
+        if metering.shadow_refs_norm is None or len(metering.shadow_refs_norm) != 3:
+            return achromatic
+        green_ref = 1.0 - metering.shadow_refs_norm[1]
+        targets = (green_ref + shadow_targets[0], green_ref, green_ref + shadow_targets[1])
+    elif highlight_targets is not None:
+        anchor = pivot_in
+        if (
+            metering.highlight_refs_norm is None
+            or len(metering.highlight_refs_norm) != 3
+        ):
+            return achromatic
+        green_ref = 1.0 - metering.highlight_refs_norm[1]
+        targets = (
+            green_ref + highlight_targets[0],
+            green_ref,
+            green_ref + highlight_targets[1],
+        )
+    else:
+        return achromatic
+
+    from scanny_boy import tone
+
+    result: list[tuple[float, float]] = []
+    for ch in range(3):
+        if ch == 1:
+            result.append((slope, pivot_in))
+            continue
+        target = targets[ch]
+        denom = anchor - target
+        if abs(denom) < 1e-6:
+            slope_ch = slope
+        else:
+            slope_ch = float(
+                np.clip(
+                    slope * (anchor - green_ref) / denom,
+                    tone.SLOPE_MIN,
+                    tone.SLOPE_MAX,
+                )
+            )
+        if abs(slope_ch) < 1e-6:
+            pivot_ch = pivot_in
+        else:
+            pivot_ch = anchor - (slope / slope_ch) * (anchor - pivot_in)
+        result.append((slope_ch, pivot_ch))
+    return tuple(result)
+
+
+def cast_slopes_from_residuals(
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+    shadow: tuple[float, float] | None,
+    highlight: tuple[float, float] | None,
+) -> tuple[tuple[float, float], ...]:
+    """Per-channel cast slopes that null tone-split `(R-G, B-G)` residuals.
+
+    Residuals are in normalized units, as returned by
+    `normalization.measure_neutral_residual`. Each end is clamped by
+    `CAST_MAX_OFFSET`. One band only selects the one-point branch at that
+    end; neither band is identity."""
+    achromatic = ((slope, pivot_in),) * 3
+    if shadow is None and highlight is None:
+        return achromatic
+
+    def _offsets(residual: tuple[float, float]) -> tuple[float, float]:
+        a, b = residual
+        return (
+            float(np.clip(-a, -CAST_MAX_OFFSET, CAST_MAX_OFFSET)),
+            float(np.clip(-b, -CAST_MAX_OFFSET, CAST_MAX_OFFSET)),
+        )
+
+    if shadow is not None and highlight is None:
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, _offsets(shadow), None
+        )
+    if highlight is not None and shadow is None:
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, None, _offsets(highlight)
+        )
+
+    if (
+        metering.shadow_refs_norm is None
+        or len(metering.shadow_refs_norm) != 3
+        or metering.highlight_refs_norm is None
+        or len(metering.highlight_refs_norm) != 3
+    ):
+        if shadow is not None:
+            return _cast_slopes_one_point_targets(
+                metering, slope, pivot_in, _offsets(shadow), None
+            )
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, None, _offsets(highlight)
+        )
+
+    from scanny_boy import tone
+
+    shadow_off = _offsets(shadow)
+    highlight_off = _offsets(highlight)
+    g_s = 1.0 - metering.shadow_refs_norm[1]
+    g_h = 1.0 - metering.highlight_refs_norm[1]
+    result: list[tuple[float, float]] = []
+    for ch in range(3):
+        if ch == 1:
+            result.append((slope, pivot_in))
+            continue
+        off_s = shadow_off[0 if ch == 0 else 1]
+        off_h = highlight_off[0 if ch == 0 else 1]
+        t_s = g_s + off_s
+        t_h = g_h + off_h
+        if abs(t_h - t_s) < 1e-6:
+            fallback = _cast_slopes_one_point_targets(
+                metering, slope, pivot_in, shadow_off, None
+            )
+            result.append(fallback[ch])
+            continue
+        slope_ch = float(
+            np.clip(
+                slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX
+            )
+        )
+        if abs(slope_ch) < 1e-6:
+            pivot_ch = pivot_in
+        else:
+            pivot_ch = t_s - (slope / slope_ch) * (g_s - pivot_in)
+        result.append((slope_ch, pivot_ch))
+    return tuple(result)
+
+
+def auto_neutral_active(params: ColorParams, metering: Metering) -> bool:
+    """Whether render-time auto-neutral correction should run."""
+    if params.auto_neutral <= 0.0:
+        return False
+    return (
+        metering.auto_neutral_shadow is not None
+        or metering.auto_neutral_highlight is not None
+    )
+
+
+def auto_neutral_cast_slopes(
+    params: ColorParams,
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+) -> tuple[tuple[float, float], ...]:
+    """Render-time auto-neutral cast slopes."""
+    return cast_slopes_from_residuals(
+        metering,
+        slope,
+        pivot_in,
+        metering.auto_neutral_shadow,
+        metering.auto_neutral_highlight,
+    )
 
 
 def _one_point_cast_slopes(
@@ -600,4 +774,5 @@ def _color_param_bounds() -> tuple[tuple[str, float, float], ...]:
         ),
         ("dye_separation", DYE_SEPARATION_MIN, DYE_SEPARATION_MAX),
         ("separation_damping", SEPARATION_DAMPING_MIN, SEPARATION_DAMPING_MAX),
+        ("auto_neutral", 0.0, 1.0),
     )

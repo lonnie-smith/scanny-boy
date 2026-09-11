@@ -1416,8 +1416,14 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     _render("positive", "positive-after.png")
 
     roll = load_roll_manifest(roll_dir)
+    negative = roll.negatives[0]
     matrix = render.camera_matrix_from_roll(roll)
     tone_params = {"grade_r": 160.0, "snap_gamma": 0.3}
+    from scanny_boy import color
+
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=roll.highlight_lock
+    )
     tiff = tifffile.imread(roll_dir / negative.output["name"])
     edge = max(tiff.shape[0], tiff.shape[1])
     if edge > PREVIEW_MAX_EDGE:
@@ -1428,7 +1434,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
             interpolation=cv2.INTER_AREA,
         )
     graded = cv2.cvtColor(
-        render.encode_positive_uint8(tiff, matrix, tone_params),
+        render.encode_positive_uint8(tiff, matrix, tone_params, metering=meter),
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(tmp_path / "positive-after.png"), cv2.IMREAD_UNCHANGED)
@@ -1796,6 +1802,8 @@ def test_edit_color_temperature_is_exclusive_with_region_magenta(work_dir, capsy
 
 
 def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
+    import dataclasses
+
     from scanny_boy import color
 
     roll_dir = make_roll_dir(tmp_path)
@@ -1835,6 +1843,8 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
         negative_id,
     ]
     for key, value in params.items():
+        if key not in flag_for_key:
+            continue
         argv.extend([flag_for_key[key], str(value)])
     assert main(argv) == 0
     capsys.readouterr()
@@ -1843,8 +1853,11 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     assert status == 0
     events, _err = _stdout_events(capsys)
     negative = events[1]["manifest"]["negatives"][0]
+    defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(params[key])
+        assert negative[f"color_{key}"] == pytest.approx(
+            params.get(key, defaults[key])
+        )
     assert negative["color_temperature"] == pytest.approx(
         color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
     )
@@ -3105,9 +3118,14 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    # Record a neutral residual for the negative to solve from.
+    # Record an auto-neutral estimate for the manual Auto button to read.
     roll = load_roll_manifest(roll_dir)
-    roll.negatives[0].normalization["neutral_residual"] = [0.06, -0.03]
+    roll.negatives[0].normalization["auto_neutral"] = {
+        "shadow": [0.06, -0.03],
+        "highlight": None,
+        "highlight_lock": roll.highlight_lock,
+        "measure_version": 1,
+    }
     write_roll_manifest(roll_dir, roll)
     capsys.readouterr()
 
@@ -3154,14 +3172,14 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     assert outcome.status == "complete"
     manifest = load_roll_manifest(roll_dir)
     negative_id = manifest.negatives[0].negative_id
-    # The state under test is a negative whose recorded normalization holds
-    # no `neutral_residual` — a stitch from before the meter existed, or one
-    # whose region gave the meter nothing to weight. Set it here rather than
-    # leaning on the fixture to fail to produce one: with the analysis cell
-    # pinned (normalization.ANALYSIS_BLOCK_PX) even this small synthetic
-    # negative clears NEUTRAL_RESIDUAL_MIN_CELLS, which is the change doing
-    # its job and not the path this test is about.
-    manifest.negatives[0].normalization["neutral_residual"] = None
+    # No stored auto-neutral estimate — the automatic correction has nothing
+    # to read and the manual Auto button must warn rather than invent sliders.
+    manifest.negatives[0].normalization["auto_neutral"] = {
+        "shadow": None,
+        "highlight": None,
+        "highlight_lock": manifest.highlight_lock,
+        "measure_version": 1,
+    }
     write_roll_manifest(roll_dir, manifest)
     capsys.readouterr()
 
@@ -3229,7 +3247,12 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     roll = load_roll_manifest(roll_dir)
-    roll.negatives[0].normalization["neutral_residual"] = [0.06, -0.03]
+    roll.negatives[0].normalization["auto_neutral"] = {
+        "shadow": [0.06, -0.03],
+        "highlight": None,
+        "highlight_lock": roll.highlight_lock,
+        "measure_version": 1,
+    }
     write_roll_manifest(roll_dir, roll)
     capsys.readouterr()
 

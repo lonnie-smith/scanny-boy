@@ -41,7 +41,7 @@ from scanny_boy import (
     scratches,
     tiff_exif,
 )
-from scanny_boy import highlight_lock
+from scanny_boy import auto_neutral, highlight_lock
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
@@ -1451,6 +1451,21 @@ def run_stitch(
     new_lock = highlight_lock.compute_roll_highlight_lock(roll)
     roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
     lock_changed = roll.highlight_lock != previous_lock
+    if lock_changed:
+        auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
+            roll, out_dir
+        )
+    else:
+        published_names = set(published)
+        published_ids = {
+            negative.negative_id
+            for negative in roll.negatives
+            if negative.output is not None
+            and negative.output["name"] in published_names
+        }
+        auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
+            roll, out_dir, negative_ids=published_ids
+        )
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows
@@ -1465,7 +1480,9 @@ def run_stitch(
     # preview PNG rather than only the newly published set, so a stale
     # colour never lingers in the filmstrip.
     try:
-        previews.sync_previews(out_dir, roll, published, force=lock_changed)
+        previews.sync_previews(
+            out_dir, roll, published, force=lock_changed or auto_neutral_changed
+        )
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(

@@ -229,26 +229,27 @@ def _curve_raw(
     only."""
     pivot_out = 0.5
     if flat_tone:
-        slope = 1.0
+        base_slope = 1.0
         pivot_in = pivot_out
-        if apply_color and channel is not None:
-            per_channel = color.cast_slopes(
-                color_params, metering, slope, pivot_in
-            )
-            slope, pivot_in = per_channel[channel]
-        v = pivot_out + slope * (values - pivot_in)
     else:
         assert tone_params is not None
         base_slope, pivot_in = base_slope_and_pivot(tone_params)
-        if apply_color and channel is not None:
-            per_channel = color.cast_slopes(
-                color_params, metering, base_slope, pivot_in
-            )
-            slope, pivot_in = per_channel[channel]
-        else:
-            slope = base_slope
 
-        v = pivot_out + slope * (values - pivot_in)
+    v = values
+    if apply_color and channel is not None:
+        if color.auto_neutral_active(color_params, metering):
+            auto_s, auto_p = color.auto_neutral_cast_slopes(
+                color_params, metering, base_slope, pivot_in
+            )[channel]
+            v = pivot_out + auto_s * (v - auto_p)
+        slope, pivot_in = color.cast_slopes(
+            color_params, metering, base_slope, pivot_in
+        )[channel]
+    else:
+        slope = base_slope
+    v = pivot_out + slope * (v - pivot_in)
+    if not flat_tone:
+        assert tone_params is not None
         if tone_params.snap_gamma != 0.0:
             v = v + tone_params.snap_gamma * SNAP_WIDTH * np.tanh(
                 (v - pivot_out) / SNAP_WIDTH

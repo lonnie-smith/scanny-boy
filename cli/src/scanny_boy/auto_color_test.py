@@ -15,7 +15,12 @@ def _record(residual, *, floors=None, ceils=None, highlight_refs=None) -> dict:
         "ceils": ceils if ceils is not None else [1.0, 1.0, 1.0],
         "shadow_refs": [0.2, 0.15, 0.15],
         "highlight_refs": highlight_refs,
-        "neutral_residual": residual,
+        "auto_neutral": {
+            "shadow": list(residual),
+            "highlight": None,
+            "highlight_lock": None,
+            "measure_version": 1,
+        },
     }
 
 
@@ -68,7 +73,7 @@ def test_solve_returns_none_for_malformed_input():
     assert auto_color.solve_cmy({}, color.ColorParams(), 1.55, 0.5) is None
     record = _record([0.06, -0.03])
     assert auto_color.solve_cmy(
-        {key: value for key, value in record.items() if key != "neutral_residual"},
+        {key: value for key, value in record.items() if key != "auto_neutral"},
         color.ColorParams(),
         1.55,
         0.5,

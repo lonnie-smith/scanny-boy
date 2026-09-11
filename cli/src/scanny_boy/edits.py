@@ -802,16 +802,19 @@ def run_edit_delete(
     new_lock = highlight_lock_module.compute_roll_highlight_lock(roll)
     roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
     lock_changed = roll.highlight_lock != previous_lock
+    from scanny_boy import auto_neutral
+
+    auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(roll, roll_dir)
     # One write for the whole batch: `write_roll_manifest` renumbers the
     # survivors' sequences and saves; the removed negatives' rows (and their
     # edits) are deleted by the save's diff.
     write_roll_manifest(roll_dir, roll)
 
-    if lock_changed:
+    if lock_changed or auto_neutral_changed:
         # §5: the surviving negatives' displayed colour may have moved even
         # though none of them were touched by this deletion — force every
         # completed negative's cached preview to regenerate, same as a
-        # stitch run whose highlight lock changed.
+        # stitch run whose highlight lock or auto-neutral estimate changed.
         try:
             previews.sync_previews(roll_dir, roll, force=True)
         except Exception as exc:  # noqa: BLE001 — a preview failure must not lose the delete

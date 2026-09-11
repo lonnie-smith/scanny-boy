@@ -811,6 +811,7 @@ def _color_neutral_defaults() -> dict[str, float]:
         "cast_removal_highlights": 0.0,
         "dye_separation": 1.0,
         "separation_damping": 0.0,
+        "auto_neutral": 1.0,
     }
 
 
