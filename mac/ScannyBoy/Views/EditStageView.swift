@@ -157,7 +157,7 @@ private struct PreviewPane: View {
     /// from frame to frame.
     @State private var showsNegative = false
     /// Sticky across negative changes, like `showsNegative`.
-    @State private var selectedTab: EditSidebarTab = .tone
+    @State private var selectedTab: EditSidebarTab = .geometry
     /// Tracks the last render path so pixel-only reloads keep the old frame
     /// visible until the new one is decoded.
     @State private var lastPreviewModeIdentity: String?
