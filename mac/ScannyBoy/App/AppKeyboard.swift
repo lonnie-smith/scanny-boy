@@ -24,8 +24,14 @@ final class AppKeyboardState {
     /// Set by the Edit tab's preview pane while it is mounted.
     var previewHasOutput = false
     var previewOperationsBlocked = false
+    /// True while `PreviewPane` is on screen — used to gate menu/keyboard
+    /// zoom; never route zoom through a stored closure, which captures a
+    /// stale `PreviewPane` value and crashes when invoked from the menu.
+    var previewPaneMounted = false
     var zoomToggleCenter = CGPoint.zero
-    var toggleZoom: ((CGPoint) -> Void)?
+    /// Incremented by `performToggleZoom()`; `PreviewPane` observes this and
+    /// toggles its own `@State` zoom model in a live SwiftUI context.
+    private(set) var zoomToggleRequest = 0
 
     var canSelectAll: Bool {
         !isBusy
@@ -48,7 +54,7 @@ final class AppKeyboardState {
             && !isBusy
             && previewHasOutput
             && !previewOperationsBlocked
-            && toggleZoom != nil
+            && previewPaneMounted
     }
 
     var canNavigate: Bool {
@@ -56,7 +62,7 @@ final class AppKeyboardState {
     }
 
     func performToggleZoom() {
-        toggleZoom?(zoomToggleCenter)
+        zoomToggleRequest += 1
     }
 }
 

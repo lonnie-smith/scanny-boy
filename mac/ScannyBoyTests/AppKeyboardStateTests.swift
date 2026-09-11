@@ -28,12 +28,12 @@ struct AppKeyboardStateTests {
         #expect(!keyboard.canSelectAll)
     }
 
-    @Test("zoom requires the Edit tab, output, and a registered toggle")
+    @Test("zoom requires the Edit tab, output, and a mounted preview pane")
     func canZoom() {
         let keyboard = AppKeyboardState()
         keyboard.workspaceTab = .edit
         keyboard.previewHasOutput = true
-        keyboard.toggleZoom = { _ in }
+        keyboard.previewPaneMounted = true
 
         #expect(keyboard.canZoom)
 
@@ -41,12 +41,22 @@ struct AppKeyboardStateTests {
         #expect(!keyboard.canZoom)
 
         keyboard.workspaceTab = .edit
-        keyboard.toggleZoom = nil
+        keyboard.previewPaneMounted = false
         #expect(!keyboard.canZoom)
 
-        keyboard.toggleZoom = { _ in }
+        keyboard.previewPaneMounted = true
         keyboard.previewOperationsBlocked = true
         #expect(!keyboard.canZoom)
+    }
+
+    @Test("performToggleZoom bumps the request counter for PreviewPane")
+    func performToggleZoomRequests() {
+        let keyboard = AppKeyboardState()
+        #expect(keyboard.zoomToggleRequest == 0)
+        keyboard.performToggleZoom()
+        #expect(keyboard.zoomToggleRequest == 1)
+        keyboard.performToggleZoom()
+        #expect(keyboard.zoomToggleRequest == 2)
     }
 
     @Test("navigation is limited to Edit and Metadata while idle")

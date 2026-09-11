@@ -66,7 +66,7 @@ struct EditStageView: View {
         }
         .onChange(of: edit.selectedNegative?.negativeID) { _, negativeID in
             if negativeID == nil {
-                keyboard.toggleZoom = nil
+                keyboard.previewPaneMounted = false
                 keyboard.previewHasOutput = false
             }
         }
@@ -205,7 +205,7 @@ private struct PreviewPane: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        scheduleZoomToggle(at: previewCenter)
+                        zoom.toggle(at: previewCenter)
                     } label: {
                         Image(systemName: zoom.mode == .fit ? "plus.magnifyingglass" : "minus.magnifyingglass")
                     }
@@ -270,6 +270,9 @@ private struct PreviewPane: View {
         }
         .onChange(of: paneSize) {
             keyboard.zoomToggleCenter = previewCenter
+        }
+        .onChange(of: keyboard.zoomToggleRequest) {
+            zoom.toggle(at: previewCenter)
         }
         .confirmationDialog(
             deleteDialogTitle,
@@ -337,22 +340,12 @@ private struct PreviewPane: View {
     }
 
     private func registerKeyboardShortcuts() {
-        keyboard.toggleZoom = { point in
-            scheduleZoomToggle(at: point)
-        }
+        keyboard.previewPaneMounted = true
         syncKeyboardShortcuts()
     }
 
-    /// Defers zoom toggles to the next run-loop turn so they never land in
-    /// the same SwiftUI frame as a layout pass from the fit ↔ 100% swap.
-    private func scheduleZoomToggle(at point: CGPoint) {
-        Task { @MainActor in
-            zoom.toggle(at: point)
-        }
-    }
-
     private func unregisterKeyboardShortcuts() {
-        keyboard.toggleZoom = nil
+        keyboard.previewPaneMounted = false
         keyboard.previewHasOutput = false
     }
 
