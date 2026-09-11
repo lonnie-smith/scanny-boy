@@ -95,8 +95,14 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **20** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 20 narrows the feather to a band around
+`PROTOCOL_VERSION` is **21** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 21 adds the layout solve's joint
+nonlinear refinement (§8 — the linear solution refined against the
+`global_rms` residual itself; `stitch_params` gains `layout_refinement` and
+`layout_refinement_loss`, and `manifest_format_version` bumps 9 → 10
+because every placement, and so every output pixel, moves — rolls stitched
+earlier refuse new runs with `ROLL_INVARIANT_MISMATCH`, no migration; no
+event shape or code changes); 20 narrows the feather to a band around
 the overlap midline (the separable ramp product raised to `FEATHER_EXPONENT`
 before flooring, §8); 19 adds the `crop` op (`edit crop`); 18 adds `serve`,
 the resident one-process request/response mode the app's Edit tab drives,
@@ -280,12 +286,12 @@ to bottom.
 | Module | Role |
 | --- | --- |
 | `detection.py` | Build the small 8-bit greyscale detection image (downscale, percentile-normalise, optional CLAHE). |
-| `charuco.py` | The two ChArUco calibration boards and everything corner-shaped around them: detection, sub-pixel refinement, board-format auto-detection, and the id-driven collinear-set grouping. |
+| `charuco.py` | The ChArUco calibration board and everything corner-shaped around it: detection (with the measured `CHARUCO_PERSPECTIVE_MARGIN` ArUco detector parameter), sub-pixel refinement, the board presence check, and the id-driven collinear-set grouping. |
 | `geometry_fit.py` | The staged plumb-line distortion fit, its held-out evaluation, and the acceptance/magnitude gates. |
 | `ca_fit.py` | The half-size per-channel chromatic-aberration fit, the `scale`/`maps` mode decision, and its acceptance gates. |
 | `registration.py` | Feature detect, match, RANSAC, the rigid fit, the per-pair gates, and the rig-tilt `Rectification` dataclass. |
 | `rectification_fit.py` | The two-parameter shared rig-tilt homography fit (`scipy.optimize.least_squares`), its acceptance gates, and the per-negative `rectification` record. |
-| `layout.py` | The global least-squares solve (in rectified coordinates), connectivity check, canvas size, valid rect — and the photometric counterpart `solve_gains`. |
+| `layout.py` | The global layout solve (in rectified coordinates: three linear least-squares stages, then the joint `scipy.optimize.least_squares` refinement with its linear fallback), connectivity check, canvas size, valid rect — and the photometric counterpart `solve_gains`. |
 | `normalization.py` | The published TIFF's normalized-log-density bake: log transfer, block-median grid, rebate/dense-border/opaque-holder detectors, film-extent pass, bounds analysis, and the encode's headroom. |
 | `composite.py` | Warp (undoing rectification and distortion), solve and apply per-frame photometric gains, the separable feather blend raised to `FEATHER_EXPONENT`, overlap MAD, and the fused normalization encode. |
 
@@ -556,15 +562,36 @@ property of the rig (film plane not fronto-parallel, measured at −0.10° to
 explain is recorded per negative, not corrected.
 
 **The solve** ([`layout.py`](../cli/src/scanny_boy/layout.py)) is three
-linear least-squares problems, not a bundle adjustment. Frame *i* maps
+linear least-squares problems followed by one joint nonlinear refinement of
+the same model. Frame *i* maps
 `p → sᵢR(θᵢ)p + tᵢ`; a pair gives `log sᵦ - log sₐ = log σ_ab`,
 `θ_b = θ_a + φ_ab`, and `t_b = t_a + sₐR(θ_a)·u_ab`. Scales solve first
 (log-space, `solve_gains`'s geometric-mean-1-anchor idiom), then rotations
 (linear in the scalar θs), then translations (linear once s and θ are
-known). **These stay linear by construction — do not replace them with a
-nonlinear optimiser**, which is why `layout.py` itself reaches for no SciPy.
-(SciPy *is* a runtime dependency elsewhere — the distortion fit, §8.4, and
-the rectification fit above — but never for the layout or gain solves.) The
+known). Each of those stages minimises its own relation between pairwise
+similarity *summaries*, one variable at a time — none minimises the
+number the gate and the manifest report, `global_rms` (canvas distance
+between each inlier's two placed predictions). On a measured 4×2 grid roll
+(10 negatives, pair RMS median 1.0–1.4 px) the linear solve left
+`global_rms` at 2.1–4.5 px. **Stage 3** (`_refine_placements`) therefore
+refines every frame's `(s, θ, t)` jointly against exactly that residual,
+over every accepted pair's every inlier, with `scipy.optimize.least_squares`
+(TRF, analytic sparse Jacobian — each residual touches two frames), starting
+from the linear solution: on that roll `global_rms` fell to 1.3–2.1 px
+(1.2–1.7× the pair median) in 11–105 ms per negative. It adds no degree of
+freedom and keeps the same gauge — frame 0 pinned at θ = 0, t = 0 and its
+linear scale while it runs, then one exact uniform canvas scaling restores
+the scales' geometric mean of 1. The loss is plain L2, not a robust loss:
+the cost is then exactly `global_rms²`, the inliers already passed RANSAC
+against their own pair, and what remains between pairs is systematic model
+error toward frame edges that a robust loss would down-weight exactly where
+seams sit (measured: `soft_l1` finished 0.03–0.16 px worse on the reported
+metric, 6–13× slower). **The linear stages are the initial guess and the
+fallback, not something the refinement replaces:** unless the refined
+placements strictly lower `global_rms`, the linear ones are kept
+(`Layout.refinement_applied`), so the refinement can never make a layout
+worse. Canvas bounds, the strip/grid geometry and cell assignment all read
+the placements that were kept. The
 model is a similarity — never an affine, never a homography — because film
 does not sit at a constant height above the stage from frame to frame; with
 scale forced to 1 that mismatch used to be absorbed into rotation and
@@ -690,8 +717,10 @@ worst-case gain excursion into the encode clamp is minimized. Names are
 sorted internally, so compositing a layout forward or reversed produces
 bitwise-identical gains. Rows whose channel means are degenerate are
 dropped, not errored; a frame surviving in no row keeps gain 1.0. Like the
-layout solve, this is `np.linalg.lstsq` on a deliberately linear system —
-the "no SciPy / no nonlinear optimiser" rule applies here too.
+layout solve's first three stages, this is `np.linalg.lstsq` on a
+deliberately linear system — and unlike the layout solve it has no
+nonlinear refinement stage: its log-space system *is* the objective, so
+there is no gap between what it solves and what it reports.
 
 **The application** ([`composite.py`](../cli/src/scanny_boy/composite.py))
 restructures compositing into two passes. Nothing is accumulated during the
@@ -730,12 +759,18 @@ board frames and applied inside the existing stitch warp.
 **The modules**: `charuco.py` owns the board (transcribed from
 `calibration/lens_calibration_targets.pdf`, which stays the authoritative
 artefact and is drawn by `cli/tools/generate_charuco_board.py`), its
-full-resolution corner detection, and the collinear-set grouping
-that turns `charucoId`s into straight-line families — rows, columns, and
+full-resolution corner detection, and the collinear-set grouping. One
+ArUco detector parameter departs from cv2's defaults:
+`CHARUCO_PERSPECTIVE_MARGIN` (`perspectiveRemoveIgnoredMarginPerCell`,
+0.30 against cv2's 0.13), measured on real 2 mm board frames, where the
+default reads a photographed print's soft cell borders as marker bits and
+detects a median 36 of ~160 corners; the half-size CA seeding goes through
+the same detector. The grouping is what turns
+`charucoId`s into straight-line families — rows, columns, and
 both diagonals, the diagonals being what constrains the principal point.
 `geometry_fit.py` is the staged plumb-line fit (`scipy.optimize.least_squares`,
-the first of the project's two nonlinear solvers — the other is the
-rig-tilt rectification, §8): `k1` alone, then `k1 k2`, then
+one of the project's three nonlinear solvers — the others are the
+rig-tilt rectification and the layout solve's refinement stage, §8): `k1` alone, then `k1 k2`, then
 `k1 k2 cx cy`, each stage kept only if the next does not beat it on
 held-out residual. `ca_fit.py` fits each colour channel's radial scale
 about its own centre on half-size decodes (`RAW_PARAMS_HALF_SIZE`, where

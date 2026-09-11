@@ -50,6 +50,26 @@ MIN_LINE_SET_MEMBERS = 4
 # and starts biasing it toward the local gradient centroid, which grows
 # with the window rather than shrinking (measured on rendered boards).
 CORNER_SUBPIX_MAX_WINDOW = 21
+# ArUco's `perspectiveRemoveIgnoredMarginPerCell`: the fraction of each
+# marker bit cell, per side, left out when the cell is read as black or
+# white. cv2's default is 0.13. cv2 unwarps each cell to
+# `perspectiveRemovePixelPerCell` (default 4) pixels and truncates
+# `margin * 4` to whole pixels, so any margin below 0.25 ignores nothing,
+# [0.25, 0.5) ignores 1 px per side, and 0.5 ignores the whole cell. A
+# photographed print's cell borders are soft, and reading them as bits
+# rejects most markers. Measured on 16 real 2 mm board frames
+# (_DSC5294-_DSC5310, ~330 px square pitch): margins 0.13 and 0.20 gave a
+# median 36 corners (16-117), leaving 3 frames under
+# MIN_CORNERS_PER_FRAME. Every margin from 0.25 to 0.40 gave identical
+# results: 156-172 corners, median 160, every frame kept. The distortion
+# refit went from 9 training frames, 25.32 px corner displacement,
+# jackknife SE 4.24 px (16.6% relative) to 12 frames, 23.21 px, SE 0.61 px
+# (2.6% relative). The half-size CA luminance seeding improved from a
+# median 112 corners to 160, and detection time did not change. 0.30
+# rather than the plateau's lower edge because 0.25 * 4 lands exactly on
+# the truncation boundary; the plateau's upper edge is a cliff (0.5 reads
+# no bits at all, measured: 0 corners).
+CHARUCO_PERSPECTIVE_MARGIN = 0.30
 
 
 class BoardDetectionError(Exception):
@@ -99,7 +119,11 @@ def make_board(spec: BoardSpec) -> cv2.aruco.CharucoBoard:
 
 
 def _make_detector(spec: BoardSpec) -> cv2.aruco.CharucoDetector:
-    return cv2.aruco.CharucoDetector(make_board(spec))
+    detector_params = cv2.aruco.DetectorParameters()
+    detector_params.perspectiveRemoveIgnoredMarginPerCell = CHARUCO_PERSPECTIVE_MARGIN
+    return cv2.aruco.CharucoDetector(
+        make_board(spec), cv2.aruco.CharucoParameters(), detector_params
+    )
 
 
 def percentile_stretch(luminance: np.ndarray) -> np.ndarray:

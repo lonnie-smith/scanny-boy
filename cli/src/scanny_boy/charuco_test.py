@@ -14,8 +14,10 @@ import pytest
 
 from scanny_boy.charuco import (
     BOARD,
+    CHARUCO_PERSPECTIVE_MARGIN,
     MIN_CORNERS_PER_FRAME,
     BoardDetectionError,
+    _make_detector,
     build_full_resolution_gray,
     collinear_sets,
     corner_grid,
@@ -63,6 +65,34 @@ def test_detection_finds_every_interior_corner_on_a_rendered_board():
     rows, cols = corner_grid(spec)
     assert len(ids) == rows * cols
     assert np.array_equal(np.sort(ids.ravel()), np.arange(rows * cols))
+
+
+def test_detector_uses_the_measured_perspective_margin():
+    params = _make_detector(BOARD).getDetectorParameters()
+    assert params.perspectiveRemoveIgnoredMarginPerCell == pytest.approx(
+        CHARUCO_PERSPECTIVE_MARGIN
+    )
+    # The constant exists because cv2's default is wrong for this board.
+    default = cv2.aruco.DetectorParameters().perspectiveRemoveIgnoredMarginPerCell
+    assert CHARUCO_PERSPECTIVE_MARGIN != pytest.approx(default)
+
+
+def test_a_soft_edged_board_detects_every_corner_with_the_measured_margin():
+    """A photographed print has soft cell edges, not the binary render's.
+    Blurred by a quarter of a module (2.5 px at 40 px/mm, a 10 px module),
+    cv2's default margin reads the blurred cell borders as bits and loses
+    markers; the measured margin samples inside them and finds the whole
+    grid. The second half proves this fixture exercises the regression
+    rather than passing under either margin."""
+    gray = cv2.GaussianBlur(_render(BOARD, pixels_per_mm=40), (0, 0), 2.5)
+    rows, cols = corner_grid(BOARD)
+
+    _, ids = detect_corners(gray, BOARD)
+    assert np.array_equal(np.sort(ids.ravel()), np.arange(rows * cols))
+
+    default_detector = cv2.aruco.CharucoDetector(make_board(BOARD))
+    _, default_ids, _, _ = default_detector.detectBoard(gray)
+    assert default_ids is None or len(default_ids) < rows * cols
 
 
 def test_collinear_sets_group_rows_cols_and_diagonals():

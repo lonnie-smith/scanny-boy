@@ -40,7 +40,7 @@ from scanny_boy.manifest import (
     resolve_within,
 )
 
-ROLL_MANIFEST_FORMAT_VERSION = 9
+ROLL_MANIFEST_FORMAT_VERSION = 10
 ROLL_MANIFEST_KIND = "roll"
 
 # The extended metadata fields, in display order. Every one lives on both
