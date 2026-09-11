@@ -38,6 +38,7 @@ from scanny_boy import (
     hashing,
     previews,
     registration,
+    scratches,
     tiff_exif,
 )
 from scanny_boy import layout as layout_module
@@ -2084,6 +2085,41 @@ def _composite_and_publish(
                     )
                 ),
             }
+
+        # Scratch detection on colour rolls.  Runs at stitch time on the
+        # published representation; the result is recorded as an ordinary
+        # edit op.  Failure never fails the stitch.
+        if film_kind is FilmKind.COLOUR:
+            try:
+                spans = tuple(
+                    result.normalization.ceils[ch] - result.normalization.floors[ch]
+                    for ch in range(3)
+                )
+                candidates = scratches.detect(result.image, spans)
+                fits = [scratches.fit(result.image, c) for c in candidates]
+                # Carry forward the previous enabled state when it exists,
+                # defaulting to True for a fresh detection.
+                prev = repo.net_edit_state(out_dir, record.negative_id).scratches
+                enabled = prev["enabled"] if prev and "enabled" in prev else True
+                params = scratches.scratches_params(
+                    canvas=(width, height),
+                    fits=fits,
+                    enabled=enabled,
+                )
+                repo.append_scratches_edit(out_dir, record.negative_id, params)
+            except Exception:
+                # Detection failure must never fail the stitch.
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.SCRATCH_DETECTION_FAILED,
+                        message=(
+                            f"{record.negative_id}: scratch detection "
+                            "failed; the negative was published without "
+                            "scratch removal"
+                        ),
+                    )
+                )
 
         emit(
             NegativeDone(

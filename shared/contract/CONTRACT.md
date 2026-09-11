@@ -88,6 +88,30 @@ when stale. The export applies a live repair (before any geometry) and
 records it in the XMP provenance's `rendered.spots`:
 `{detector_version, sensitivity, repaired}`, `null` when none.
 
+**The scratch-removal feature**: long, thin film-length scratches on
+colour negatives are detected, reviewed, and corrected — the published TIFF
+is never touched, and no pixel changes until the user enables the op. Three
+new commands join the `edit` family: `edit detect-scratches` takes a
+`--negative` selection (repeatable), runs the detector over each negative's
+published TIFF, and records one `scratches` op per negative — a state op,
+coalesced in place like `tone` and `color`, carrying the scratch set's
+exact parameters. The detector runs only on colour rolls; monochrome rolls
+never get an op. The op carries an `enabled` flag (default off); the user
+toggles correction with `edit scratches --on` or `edit scratches --off`
+(repeatable selection). `edit list-scratches` is a pure query: nothing
+recorded, no pixels touched. All three emit `scratches_reported` — and the
+rule the app must not break: **every reported scratch rect is display
+space, already transformed by the net rotation/flip/fine angle; the app
+never converts coordinates.** A scratch set recorded against a canvas a
+re-stitch has replaced is *stale*: it corrects nothing, draws no lines,
+reports an empty list with a `SCRATCHES_STALE` warning, and needs
+re-detecting. `roll info` gains a per-negative `scratches` **summary**
+(not the list): `{detector_version, enabled, stale, count}`, `null` for a
+negative with no scratch set, counts zeroed when stale. The export applies
+a live correction (before any geometry) and records it in the XMP
+provenance's `rendered.scratches`:
+`{detector_version, corrected}`, `null` when none.
+
 **Monochrome film support**: `roll init` requires `--film-kind
 {colour,monochrome}` — the user chooses once at roll creation. `"colour"` is
 the path for colour negatives and chromogenic B&W (XP2, BW400CN, stained
@@ -157,6 +181,10 @@ scanny-boy edit detect-spots   --roll DIR --negative ID [ID ...]
 scanny-boy edit spots          --roll DIR --negative ID [--reject N ...]
                                [--accept N ...] [--repair | --no-repair] [--clear]
 scanny-boy edit list-spots     --roll DIR --negative ID
+
+scanny-boy edit detect-scratches --roll DIR --negative ID [ID ...]
+scanny-boy edit scratches        --roll DIR --negative ID [ID ...] [--on | --off]
+scanny-boy edit list-scratches   --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
                        [--downsample {none,6048,9072,12096}]

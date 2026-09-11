@@ -44,7 +44,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import color, jxl_writer, previews, render, resample, spots
+from scanny_boy import color, jxl_writer, previews, render, resample, scratches, spots
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -164,6 +164,7 @@ def provenance_record(
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> dict[str, Any]:
@@ -173,7 +174,9 @@ def provenance_record(
     carries — plus a `rendered` sibling recording what the export actually
     did to make the display pixels. The `spots` entry records the repair:
     "some pixels here are interpolated" is exactly the kind of thing the
-    XMP exists to say. The `crop` entry records the
+    XMP exists to say. The `scratches` entry records scratch correction:
+    "some pixels here were replaced by level-dependent background
+    interpolation" is the same intent. The `crop` entry records the
     window the exported frame was taken from — the published TIFF beside
     the export still holds the full frame, and the record says which part
     of it this file is."""
@@ -185,6 +188,12 @@ def provenance_record(
             "repaired": sum(
                 1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
             ),
+        }
+    scratch_record = None
+    if scratches_params is not None and scratches_params.get("enabled"):
+        scratch_record = {
+            "detector_version": scratches_params.get("detector_version"),
+            "corrected": len(scratches_params.get("scratches") or []),
         }
     cropped = None
     if crop_params is not None:
@@ -213,6 +222,7 @@ def provenance_record(
             "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
+            "scratches": scratch_record,
             "crop": cropped,
             "downsample": (
                 None
@@ -369,13 +379,14 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params = (
+        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params, scratches_params = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
             state.tone,
             state.color,
             state.spots,
+            state.scratches,
         )
         meter = color.read_metering(negative.normalization)
         # The crop and spot repair apply before any other geometry: both
@@ -389,6 +400,7 @@ def _export_negative(
             )
             else None
         )
+        image = scratches.apply(image, scratches_params)
         image = spots.apply_repair(image, spots_params)
         rotated = apply_edits(
             image, quarter_turns, flipped, fine_angle, crop_params
@@ -421,6 +433,7 @@ def _export_negative(
             color_params,
             clipped_fractions,
             spots_params,
+            scratches_params,
             crop_params,
             applied,
         )
@@ -453,6 +466,7 @@ def _write_export(
     color_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> None:
@@ -479,6 +493,7 @@ def _write_export(
         profile_kind,
         clipped_fractions,
         spots_params,
+        scratches_params,
         crop_params,
         applied_downsample,
     )

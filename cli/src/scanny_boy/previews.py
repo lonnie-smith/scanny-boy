@@ -58,7 +58,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import auto_rotate, color, normalization, render, spots, tone
+from scanny_boy import auto_rotate, color, normalization, render, scratches, spots, tone
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
 
@@ -98,12 +98,28 @@ def _spots_cache_key(spots_params: dict | None) -> tuple:
     return ("spots", digest)
 
 
+def _scratches_cache_key(scratches_params: dict | None) -> tuple:
+    """The scratches half of the pixel-cache key.
+
+    A live scratches op changes decoded pixels — its correction is the
+    first step of the display replay — so the whole set is folded into the
+    key, hashed rather than compared.  Swift's counterpart term is
+    `EditModel.scratchesTerm` (`enabled#count#stale`), a coarser summary
+    of the same rule; the two sites are commented at each other."""
+    if scratches_params is None:
+        return (None,)
+    canonical = json.dumps(scratches_params, sort_keys=True, default=str)
+    digest = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
+    return ("scratches", digest)
+
+
 def cached_preview_codes(
     tiff_path: Path,
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
 ) -> np.ndarray:
     """The display image's preview-resolution density codes — the decoded,
@@ -143,6 +159,7 @@ def cached_preview_codes(
         bool(flipped_horizontally),
         round(float(fine_angle_deg), 6),
         _spots_cache_key(spots_params),
+        _scratches_cache_key(scratches_params),
         crop_key,
     )
     with _DISPLAY_PREVIEW_CACHE_LOCK:
@@ -158,6 +175,7 @@ def cached_preview_codes(
             fine_angle_deg,
             spots_params,
             crop_params,
+            scratches_params,
         )
     )
     with _DISPLAY_PREVIEW_CACHE_LOCK:
@@ -568,25 +586,26 @@ def _display_image(
     fine_angle_deg: float = 0.0,
     spots_params: dict | None = None,
     crop_params: dict | None = None,
+    scratches_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (the spot repair, then the crop, then the mirror,
-    then the fine rotation's warp with the fill sentinel, then the quarter
-    turns) — the pixels `generate_preview`, `render_preview`, and
-    `render_region`'s exact path all work from. uint16 RGB in density
-    codes, like the TIFF.
+    in canonical order (scratch correction, then spot repair, then the crop,
+    then the mirror, then the fine rotation's warp with the fill sentinel,
+    then the quarter turns) — the pixels `generate_preview`,
+    `render_preview`, and `render_region`'s exact path all work from.
+    uint16 RGB in density codes, like the TIFF.
 
-    The spot repair (when `spots_params` carries a live one) is the first
-    step, before any geometry: the op's coordinates are TIFF space, and the
-    repair applies in both display modes — what the user compares when they
-    toggle repair on and off is the same in both views. The crop is the
-    second step, for the same reason: its window is
-    TIFF space too (`crop_is_live` drops a stale one), and every later
-    transform — the mirror the user may record after the crop — applies to
-    the cropped frame wholesale, exactly as the export does."""
+    The scratch correction (when `scratches_params` carries a live one) is
+    the first step, before any geometry: the op's coordinates are TIFF
+    space.  The spot repair (when `spots_params` carries a live one) is the
+    second step, for the same reason.  The crop is the third step, for the
+    same reason: its window is TIFF space too (`crop_is_live` drops a stale
+    one), and every later transform applies to the cropped frame wholesale,
+    exactly as the export does."""
     import tifffile
 
     image = _promote_to_rgb(tifffile.imread(tiff_path))
+    image = scratches.apply(image, scratches_params)
     image = spots.apply_repair(image, spots_params)
     image = apply_crop(image, crop_params)
     if flipped_horizontally:
@@ -611,6 +630,7 @@ def generate_preview(
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
@@ -638,6 +658,7 @@ def generate_preview(
         flipped_horizontally,
         fine_angle_deg,
         spots_params,
+        scratches_params,
         crop_params,
     )
     channels = image.shape[2] if image.ndim == 3 else 1
@@ -667,6 +688,7 @@ def render_preview(
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     matrix: np.ndarray | None = None,
 ) -> tuple[int, int]:
@@ -688,6 +710,7 @@ def render_preview(
         flipped_horizontally,
         fine_angle_deg,
         spots_params,
+        scratches_params,
         crop_params,
     )
     _encode_display_png(
@@ -941,6 +964,7 @@ def render_region(
     destination: Path | None = None,
     mode: str = "positive",
     spots_params: dict | None = None,
+    scratches_params: dict | None = None,
     crop_params: dict | None = None,
     matrix: np.ndarray | None = None,
 ) -> Region:
@@ -983,12 +1007,14 @@ def render_region(
         abs(fine_angle_deg) >= 1e-9
         or crop_is_live(crop_params, (tiff_h, tiff_w))
         or spots.is_repairing(spots_params, (tiff_h, tiff_w))
+        or scratches.is_live(scratches_params, (tiff_h, tiff_w))
     ):
         # The fine warp interpolates across its source's boundaries, the
-        # crop warp does the same, and inpainting a crop uses different
-        # surroundings than inpainting the whole image — either way
-        # crop-then-transform is no longer exact: replay the transform on
-        # the full decode, the way `generate_preview` does, then slice.
+        # crop warp does the same, inpainting a crop uses different
+        # surroundings than inpainting the whole image, and scratch
+        # correction is local — either way crop-then-transform is no
+        # longer exact: replay the transform on the full decode, the way
+        # `generate_preview` does, then slice.
         image = _display_image(
             tiff_path,
             quarter_turns,
@@ -996,6 +1022,7 @@ def render_region(
             fine_angle_deg,
             spots_params,
             crop_params,
+            scratches_params,
         )
         if destination is not None:
             _encode_display_png(
@@ -1051,7 +1078,7 @@ def render_region(
 # lossless-geometry only. The crop op joins too — its
 # window changes which pixels exist, and a tilted window is a warp.
 PREVIEW_OPS = {"cw", "ccw", "flip"}
-_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP, repo.CROP_OP}
+_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP, repo.SCRATCHES_OP, repo.CROP_OP}
 
 
 def ensure_preview(
@@ -1089,6 +1116,7 @@ def ensure_preview(
             color_params=state.color,
             metering=meter,
             spots_params=state.spots,
+            scratches_params=state.scratches,
             crop_params=state.crop,
         )
     if op is not None:
@@ -1106,6 +1134,7 @@ def ensure_preview(
                 color_params=state.color,
                 metering=meter,
                 spots_params=state.spots,
+                scratches_params=state.scratches,
                 crop_params=state.crop,
             )
         return transform_preview(Path(negative.preview_path), op)
@@ -1144,6 +1173,7 @@ def sync_previews(
             color_params=state.color,
             metering=meter,
             spots_params=state.spots,
+            scratches_params=state.scratches,
             crop_params=state.crop,
         )
         if preview is not None:

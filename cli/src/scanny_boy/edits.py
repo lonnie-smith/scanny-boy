@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scanny_boy import color, previews, render, spots
+from scanny_boy import color, previews, render, scratches, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -1080,3 +1080,143 @@ def run_edit_list_spots(
         "found": len(params["spots"]) if params else 0,
         "preview_path": None,
     }
+
+
+def _scratches_stale(
+    negative: NegativeRecord, params: dict | None
+) -> bool:
+    """The scratch set was recorded against a canvas that a re-stitch
+    replaced — it corrects nothing and needs re-detecting."""
+    if params is None or not params.get("scratches"):
+        return False
+    canvas = params.get("canvas")
+    if canvas is None:
+        return False
+    return canvas != (negative.output["width"], negative.output["height"])
+
+
+def run_edit_detect_scratches(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    *,
+    emit: EmitFn,
+) -> list[dict]:
+    """Run the scratch detector over each selected negative's published
+    TIFF and record one `scratches` op per negative.  The selection is
+    validated up front, so a batch either records or fails whole.  Returns
+    one `ScratchesReported` field set per negative."""
+    from scanny_boy.events import ScratchesReported
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+
+    import tifffile
+
+    results: list[dict] = []
+    for negative in negatives:
+        tiff_path = roll_dir / negative.output["name"]
+        image = tifffile.imread(tiff_path)
+        previous = repo.net_edit_state(roll_dir, negative.negative_id).scratches
+        enabled = bool(previous["enabled"]) if previous else False
+        params = scratches.detect(image)
+        params["enabled"] = enabled
+        repo.append_scratches_edit(roll_dir, negative.negative_id, params)
+        _refresh_preview(
+            roll_dir,
+            roll,
+            negative,
+            repo.SCRATCHES_OP,
+            what="scratch detection",
+            emit=emit,
+        )
+        results.append(
+            ScratchesReported(
+                negative_id=negative.negative_id,
+                detector_version=params["detector_version"],
+                enabled=params["enabled"],
+                count=len(params.get("scratches") or []),
+                stale=_scratches_stale(negative, params),
+                preview_path=negative.preview_path,
+            ).to_dict()
+        )
+    return results
+
+
+def run_edit_scratches(
+    roll_dir: Path,
+    negative_ids: str | Sequence[str],
+    *,
+    enabled: bool | None = None,
+    emit: EmitFn,
+) -> list[dict]:
+    """Toggle scratch correction on or off for each selected negative.
+    The op is a state, so a trailing `scratches` op is updated in place.
+    Returns one `ScratchesReported` field set per negative."""
+    from scanny_boy.events import ScratchesReported
+
+    roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+
+    results: list[dict] = []
+    for negative in negatives:
+        state = repo.net_edit_state(roll_dir, negative.negative_id)
+        current = state.scratches
+        if current is None:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"{negative.negative_id}: no scratch set has been detected "
+                "for this negative; run detect-scratches first",
+            )
+        if enabled is not None:
+            current["enabled"] = enabled
+        repo.append_scratches_edit(roll_dir, negative.negative_id, current)
+        _refresh_preview(
+            roll_dir,
+            roll,
+            negative,
+            repo.SCRATCHES_OP,
+            what="scratch edit",
+            emit=emit,
+        )
+        results.append(
+            ScratchesReported(
+                negative_id=negative.negative_id,
+                detector_version=current["detector_version"],
+                enabled=current["enabled"],
+                count=len(current.get("scratches") or []),
+                stale=_scratches_stale(negative, current),
+                preview_path=negative.preview_path,
+            ).to_dict()
+        )
+    return results
+
+
+def run_edit_list_scratches(
+    roll_dir: Path, negative_id: str, *, emit: EmitFn
+) -> dict:
+    """The pure query behind the app's scratch overlay: the negative's
+    scratch set as display-space rects, nothing recorded, no pixels touched.
+    A stale set reports an empty list plus a `SCRATCHES_STALE` warning."""
+    from scanny_boy.events import ScratchesReported
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    params = state.scratches
+    stale = _scratches_stale(negative, params)
+    if stale:
+        emit(
+            WarningEvent(
+                code=Code.SCRATCHES_STALE,
+                message=(
+                    f"{negative_id}: its scratch set was detected against a "
+                    "different canvas — the negative was re-stitched and "
+                    "needs re-detecting"
+                ),
+            )
+        )
+    return ScratchesReported(
+        negative_id=negative_id,
+        detector_version=params["detector_version"] if params else scratches.DETECTOR_VERSION,
+        enabled=bool(params["enabled"]) if params else False,
+        count=len(params.get("scratches") or []) if params else 0,
+        stale=stale,
+        preview_path=None,
+    ).to_dict()

@@ -45,6 +45,7 @@ from scanny_boy.events import (
     RollListingEntry,
     RollListingReason,
     RollRenamed,
+    ScratchesReported,
     SpotsReported,
     Started,
     WarningEvent,
@@ -687,6 +688,55 @@ def build_parser() -> argparse.ArgumentParser:
     edit_list_spots.add_argument("--roll", required=True, metavar="DIR")
     edit_list_spots.add_argument("--negative", required=True, metavar="ID")
 
+    edit_detect_scratches = edit_subparsers.add_parser(
+        "detect-scratches",
+        help=(
+            "Run the scratch detector over one or more negatives' published "
+            "TIFFs and record the set as a `scratches` op per negative."
+        ),
+    )
+    edit_detect_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_detect_scratches.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to detect on; repeat for a selection",
+    )
+
+    edit_scratches = edit_subparsers.add_parser(
+        "scratches",
+        help=(
+            "Toggle scratch correction on or off for one or more negatives."
+        ),
+    )
+    edit_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_scratches.add_argument(
+        "--negative",
+        required=True,
+        action="append",
+        metavar="ID",
+        help="negative to toggle; repeat for a selection",
+    )
+    on_off_group = edit_scratches.add_mutually_exclusive_group()
+    on_off_group.add_argument(
+        "--on",
+        action="store_true",
+        help="enable scratch correction",
+    )
+    on_off_group.add_argument(
+        "--off",
+        action="store_true",
+        help="disable scratch correction",
+    )
+
+    edit_list_scratches = edit_subparsers.add_parser(
+        "list-scratches",
+        help="List one negative's scratch set as display-space rects (pure query).",
+    )
+    edit_list_scratches.add_argument("--roll", required=True, metavar="DIR")
+    edit_list_scratches.add_argument("--negative", required=True, metavar="ID")
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -1078,6 +1128,23 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                     0 if stale else sum(1 for s in spot_list if s.get("rejected"))
                 ),
             }
+        # The scratches summary: enabled state and count, not the full list.
+        scratches_params = state.scratches
+        if scratches_params is None:
+            negative["scratches"] = None
+        else:
+            output = negative.get("output") or {}
+            stale = tuple(scratches_params.get("canvas") or (None, None)) != (
+                output.get("width"),
+                output.get("height"),
+            )
+            scratch_list = scratches_params.get("scratches") or []
+            negative["scratches"] = {
+                "detector_version": scratches_params.get("detector_version"),
+                "enabled": scratches_params.get("enabled"),
+                "stale": stale,
+                "count": 0 if stale else len(scratch_list),
+            }
     if manifest.film is not None:
         info["film_kind"] = manifest.film.get("kind")
     else:
@@ -1311,12 +1378,15 @@ def _run_edit_command(args, writer: EventWriter) -> int:
         run_edit_color,
         run_edit_crop,
         run_edit_delete,
+        run_edit_detect_scratches,
         run_edit_detect_spots,
         run_edit_flip,
+        run_edit_list_scratches,
         run_edit_list_spots,
         run_edit_render_preview,
         run_edit_render_region,
         run_edit_rotate,
+        run_edit_scratches,
         run_edit_spots,
         run_edit_tone,
     )
@@ -1479,6 +1549,28 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 emit=writer.write,
             )]
             confirmation = SpotsReported
+        elif args.edit_command == "detect-scratches":
+            results = run_edit_detect_scratches(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )
+            confirmation = ScratchesReported
+        elif args.edit_command == "scratches":
+            results = run_edit_scratches(
+                Path(args.roll),
+                args.negative,
+                enabled=True if args.on else (False if args.off else None),
+                emit=writer.write,
+            )
+            confirmation = ScratchesReported
+        elif args.edit_command == "list-scratches":
+            results = [run_edit_list_scratches(
+                Path(args.roll),
+                args.negative,
+                emit=writer.write,
+            )]
+            confirmation = ScratchesReported
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
     except EditFailure as exc:

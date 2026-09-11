@@ -40,7 +40,8 @@
         "metadata_updated",
         "metadata_values",
         "base_frame_set",
-        "spots_reported"
+        "spots_reported",
+        "scratches_reported"
       ]
     },
     "stage": {
@@ -158,6 +159,8 @@
         "FILM_BASE_FLATFIELD_CONFLICT",
         "SPOT_LIMIT_REACHED",
         "SPOTS_STALE",
+        "SCRATCH_DETECTION_FAILED",
+        "SCRATCHES_STALE",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -250,7 +253,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 20
+      "const": 21
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -716,6 +719,27 @@
             }
           },
           "found": { "type": "integer", "minimum": 0 },
+          "preview_path": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "scratches_reported" } } },
+      "then": {
+        "required": [
+          "negative_id",
+          "detector_version",
+          "enabled",
+          "count",
+          "stale",
+          "preview_path"
+        ],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "detector_version": { "type": "integer", "minimum": 1 },
+          "enabled": { "type": "boolean" },
+          "count": { "type": "integer", "minimum": 0 },
+          "stale": { "type": "boolean" },
           "preview_path": { "type": ["string", "null"] }
         }
       }

@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 20
+PROTOCOL_VERSION = 21
 
 
 class EventType(enum.StrEnum):
@@ -49,6 +49,7 @@ class EventType(enum.StrEnum):
     GRID_DELETED = "grid_deleted"
     BASE_FRAME_SET = "base_frame_set"
     SPOTS_REPORTED = "spots_reported"
+    SCRATCHES_REPORTED = "scratches_reported"
 
 
 class Stage(enum.StrEnum):
@@ -181,6 +182,12 @@ class Code(enum.StrEnum):
     # The negative's spot set was recorded against a canvas a re-stitch has
     # replaced; it repairs nothing and needs re-detecting.
     SPOTS_STALE = "SPOTS_STALE"
+    # The scratch detector failed at stitch time; the negative was published
+    # without scratch removal.  The message carries the exception.
+    SCRATCH_DETECTION_FAILED = "SCRATCH_DETECTION_FAILED"
+    # The negative's scratches op was recorded against a canvas a re-stitch
+    # has replaced; it corrects nothing and needs re-detecting.
+    SCRATCHES_STALE = "SCRATCHES_STALE"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -571,6 +578,23 @@ class SpotsReported(Event):
     repair: bool
     spots: list[dict[str, Any]]  # display space, no rle
     found: int
+    preview_path: str | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ScratchesReported(Event):
+    """The scratch detection command's event: the negative's scratch set
+    as the app draws it.  ``count`` is the number of accepted scratches.
+    ``preview_path`` is null for ``detect-scratches``, which is a pure
+    detection (no pixel changes until the user enables the op)."""
+
+    event_type: ClassVar[EventType] = EventType.SCRATCHES_REPORTED
+
+    negative_id: str
+    detector_version: int
+    enabled: bool
+    count: int
+    stale: bool
     preview_path: str | None
 
 
