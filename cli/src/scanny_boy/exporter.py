@@ -110,19 +110,28 @@ def apply_edits(
     the rotation keeps the canvas dimensions and fills what it uncovers
     with the stitching fill sentinel), then rotates. Quarter turns count
     clockwise, the fine angle counts clockwise too; np.rot90 turns
-    counter-clockwise, so negate. The `crop` op's window sits before all
-    of it — its coordinates are published-TIFF pixels like the spots op's
-    (`previews.apply_crop`: warp about the rect's centre by the stored
-    tilt, then slice the rect) — so everything the crop uncovers from the
-    log's later transforms lands on the cropped frame wholesale, and the
-    exported file's dimensions are the cropped display's.
+    counter-clockwise, so negate. The stored `crop` window (TIFF space in
+    the ops log) is converted to display space and applied last via
+    `previews.apply_crop`, matching crop mode's uncropped display plus
+    slider tilt; the exported file's dimensions are the cropped display's.
     """
-    image = previews.apply_crop(image, crop_params)
+    tiff_size = (image.shape[0], image.shape[1])
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
         image = rotate_with_fill(image, fine_angle_deg)
-    return np.rot90(image, k=(-rotation_quarter_turns) % 4)
+    if rotation_quarter_turns % 4:
+        image = np.ascontiguousarray(np.rot90(image, k=(-rotation_quarter_turns) % 4))
+    return previews.apply_crop(
+        image,
+        previews.display_crop_params(
+            crop_params,
+            tiff_size,
+            quarter_turns=rotation_quarter_turns,
+            flipped_horizontally=flipped_horizontally,
+            fine_angle_deg=fine_angle_deg,
+        ),
+    )
 
 
 def applied_downsample(
@@ -397,8 +406,8 @@ def _export_negative(
         meter = color.read_metering(
             negative.normalization, highlight_lock=roll.highlight_lock
         )
-        # The crop and spot repair apply before any other geometry: both
-        # ops' coordinates are TIFF space. A stale
+        # Spot repair runs in TIFF space before the net transform replay.
+        # The crop is replayed last on the uncropped display canvas; a stale
         # crop — a re-stitch changed the canvas — applies as nothing, the
         # same degrade `apply_crop` performs for the previews.
         crop_params = (

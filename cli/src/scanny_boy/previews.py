@@ -580,9 +580,9 @@ def display_shape(
     crop_params: dict | None,
 ) -> tuple[int, int]:
     """The display image's `(height, width)`: the published TIFF's own
-    dimensions — or a live crop window's, which the replay puts before
-    every other transform — swapped when the net quarter turns are odd.
-    The flip and the fine rotation never change dimensions."""
+    dimensions — or a live crop window's output size when cropped — swapped
+    when the net quarter turns are odd. The flip and the fine rotation
+    never change dimensions."""
     if crop_is_live(crop_params, tiff_size):
         inner_h, inner_w = int(crop_params["h"]), int(crop_params["w"])
     else:
@@ -683,6 +683,43 @@ def tiff_crop_window_to_display(
     elif r == 3:
         corners = [(stage_h - 1 - py, px) for px, py in corners]
     return _window_from_tilted_corners(corners)
+
+
+def display_crop_params(
+    crop_params: dict | None,
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> dict | None:
+    """The stored TIFF-space crop as params for `apply_crop` on the full
+    uncropped display image — the last replay step, matching crop mode's
+    uncropped display plus slider tilt."""
+    if not crop_params or not crop_is_live(crop_params, tiff_size):
+        return None
+    x, y, w, h, display_tilt = tiff_crop_window_to_display(
+        crop_params,
+        tiff_size,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+    )
+    canvas_h, canvas_w = display_shape(
+        tiff_size, quarter_turns=quarter_turns, crop_params=None
+    )
+    result: dict = {
+        "canvas": [canvas_w, canvas_h],
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "tilt_deg": display_tilt,
+    }
+    preset = crop_params.get("preset")
+    if preset is not None:
+        result["preset"] = preset
+    return result
 
 
 def crop_report(
@@ -835,25 +872,22 @@ def _display_image(
     scratches_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (scratch correction, then spot repair, then the crop,
-    then the mirror, then the fine rotation's warp with the fill sentinel,
-    then the quarter turns) — the pixels `generate_preview`,
-    `render_preview`, and `render_region`'s exact path all work from.
-    uint16 RGB in density codes, like the TIFF.
+    in canonical order (scratch correction, then spot repair, then the
+    mirror, then the fine rotation's warp with the fill sentinel, then the
+    quarter turns, then the crop on the uncropped display canvas) — the
+    pixels `generate_preview`, `render_preview`, and `render_region`'s
+    exact path all work from. uint16 RGB in density codes, like the TIFF.
 
-    The scratch correction (when `scratches_params` carries a live one) is
-    the first step, before any geometry: the op's coordinates are TIFF
-    space.  The spot repair (when `spots_params` carries a live one) is the
-    second step, for the same reason.  The crop is the third step, for the
-    same reason: its window is TIFF space too (`crop_is_live` drops a stale
-    one), and every later transform applies to the cropped frame wholesale,
-    exactly as the export does."""
+    Scratch and spot ops run in TIFF space before any geometry. The stored
+    crop window is TIFF space in the ops log; replay converts it to
+    display space via `display_crop_params` and applies it last, matching
+    crop mode's uncropped display plus slider tilt."""
     import tifffile
 
     image = _promote_to_rgb(tifffile.imread(tiff_path))
+    tiff_size = (image.shape[0], image.shape[1])
     image = scratches.apply(image, scratches_params)
     image = spots.apply_repair(image, spots_params)
-    image = apply_crop(image, crop_params)
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
@@ -862,7 +896,16 @@ def _display_image(
         # np.rot90 turns counter-clockwise; the count is net clockwise
         # quarter turns.
         image = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
-    return image
+    return apply_crop(
+        image,
+        display_crop_params(
+            crop_params,
+            tiff_size,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped_horizontally,
+            fine_angle_deg=fine_angle_deg,
+        ),
+    )
 
 
 def generate_preview(
@@ -889,9 +932,9 @@ def generate_preview(
     replay says, so the caller passes the canonical angle through
     untouched. `tone_params` is the net `tone` op's full param dict (None =
     the flat look), composed into the display LUT. The net `crop` op's
-    window (`crop_params`, TIFF space like the spots op) is the first
-    geometric step, before the mirror and rotations — which is why a live
-    crop's window is what `display_shape` sizes.
+    window (`crop_params`, TIFF space in the ops log) is replayed last on
+    the uncropped display canvas — which is why a live crop's window is
+    what `display_shape` sizes.
     Returns the preview path, or None when the negative has no published
     output to preview."""
     if negative.output is None:
@@ -1216,11 +1259,11 @@ def render_region(
 ) -> Region:
     """Encode the published TIFF's `(x, y, width, height)` display-space
     region as a lossless 1:1 PNG — display space is the TIFF with the net
-    transform folded in, exactly as `generate_preview` shows it: the live
-    crop's window first (a tilted warp, `apply_crop`), then mirrored
+    transform folded in, exactly as `generate_preview` shows it: mirrored
     horizontally (when flipped), then fine-rotated (the auto-seeded
     `rotate_fine` angle, a warp about the canvas center with the fill
-    sentinel in the uncovered pixels), then rotated — and the encode is the
+    sentinel in the uncovered pixels), then rotated, then the live crop's
+    window (a tilted warp, `apply_crop`) — and the encode is the
     8-bit display LUT named by `mode` (the inverted positive, with the net
     `tone` op composed in when `tone_params` is given — or the un-inverted
     negative, which no tone reaches) with no downscale. A live crop's

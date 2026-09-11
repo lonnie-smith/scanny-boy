@@ -850,9 +850,9 @@ def croppable_export_roll(tmp_path: Path) -> Path:
 
 
 def test_apply_edits_applies_the_crop_window():
-    """The crop is the replay's first geometric step — the exported frame
+    """The crop is the replay's last geometric step — the exported frame
     is the crop window's content, its dimensions the window's."""
-    from scanny_boy.previews import apply_crop
+    from scanny_boy.previews import apply_crop, display_crop_params
 
     crop = {
         "canvas": [_ORIGINAL.shape[1], _ORIGINAL.shape[0]],
@@ -862,8 +862,58 @@ def test_apply_edits_applies_the_crop_window():
         "h": _ORIGINAL.shape[0],
         "tilt_deg": 0.0,
     }
+    tiff_size = (_ORIGINAL.shape[0], _ORIGINAL.shape[1])
     np.testing.assert_array_equal(
-        apply_edits(_ORIGINAL, 0, False, 0.0, crop), apply_crop(_ORIGINAL, crop)
+        apply_edits(_ORIGINAL, 0, False, 0.0, crop),
+        apply_crop(_ORIGINAL, display_crop_params(crop, tiff_size, quarter_turns=0, flipped_horizontally=False, fine_angle_deg=0.0)),
+    )
+
+
+def test_apply_edits_matches_display_image_with_fine_rotation_and_crop(tmp_path):
+    """Export replay matches the preview path when fine rotation and crop
+    compose — the _DSC5329 class of bug."""
+    from scanny_boy.previews import _display_image
+
+    tiff_path = tmp_path / "fine_crop.tif"
+    image = np.repeat(np.arange(1200, dtype=np.uint16).reshape(30, 40, 1), 3, axis=-1)
+    image = (image * 50).astype(np.uint16)
+    tifffile.imwrite(tiff_path, image)
+    tiff_size = (image.shape[0], image.shape[1])
+    rect = (5, 4, 20, 12)
+    display_tilt = -2.3
+    fine_angle_deg = 1.39
+    quarter_turns = 2
+
+    from scanny_boy import previews
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=display_tilt,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=False,
+        fine_angle_deg=fine_angle_deg,
+        crop_params=None,
+        full_frame=True,
+    )
+    crop = {
+        "canvas": [tiff_size[1], tiff_size[0]],
+        "x": window[0],
+        "y": window[1],
+        "w": window[2],
+        "h": window[3],
+        "tilt_deg": window[4],
+    }
+    np.testing.assert_array_equal(
+        apply_edits(image, quarter_turns, False, fine_angle_deg, crop),
+        _display_image(
+            tiff_path,
+            quarter_turns,
+            False,
+            fine_angle_deg,
+            None,
+            crop,
+        ),
     )
 
 

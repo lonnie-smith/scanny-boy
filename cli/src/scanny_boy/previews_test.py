@@ -1330,6 +1330,62 @@ def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
     assert np.max(np.abs(cropped.astype(int) - expected.astype(int))) < 600
 
 
+def test_tilted_crop_replay_matches_drawn_tilt_under_a_fine_angle(tmp_path):
+    """With a non-zero fine rotation, replayed crop equals the uncropped
+    display warped by the drawn slider tilt — the same semantics crop mode
+    shows. Regression for negatives like _DSC5329 (+1.39° fine, large
+    slider tilt, 180° net turns)."""
+    import cv2
+
+    from scanny_boy import previews
+    from scanny_boy.previews import _display_image
+
+    tiff_path, image = _gradient_tiff(tmp_path, height=200, width=300)
+    tiff_size = (image.shape[0], image.shape[1])
+    rect = (40, 30, 120, 80)
+    display_tilt = -2.3
+    fine_angle_deg = 1.39
+    quarter_turns = 2
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=display_tilt,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=False,
+        fine_angle_deg=fine_angle_deg,
+        crop_params=None,
+        full_frame=True,
+    )
+    assert abs(window[4] - (display_tilt + fine_angle_deg)) < 0.1
+
+    cropped = _display_image(
+        tiff_path,
+        quarter_turns,
+        False,
+        fine_angle_deg,
+        None,
+        _window_params(window, tiff_size),
+    )
+    assert cropped.shape[:2] == (rect[3], rect[2])
+    uncropped = _display_image(
+        tiff_path, quarter_turns, False, fine_angle_deg
+    )
+
+    centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, -display_tilt, 1.0)
+    warped = cv2.warpAffine(
+        uncropped,
+        matrix,
+        (uncropped.shape[1], uncropped.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    expected = warped[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
+    assert np.max(np.abs(cropped.astype(int) - expected.astype(int))) < 600
+
+
 def test_positive_tilt_samples_the_ccw_diagonal(tmp_path):
     """A +tilt crop must sample the overlay's CCW window — more of the
     image's top-right than its top-left — not the opposite diagonal."""
