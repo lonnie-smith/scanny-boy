@@ -609,7 +609,7 @@ def _recompute_row_levels(
     levels = np.zeros((height, 3), dtype=np.float32)
     for y in range(height):
         cx = centre_path[y]
-        x0 = int(round(cx)) - STRIP_HALF_WIDTH
+        x0 = round(cx) - STRIP_HALF_WIDTH
         x1 = x0 + 2 * STRIP_HALF_WIDTH + 1
         pad_left = max(0, -x0)
         pad_right = max(0, x1 - width)
@@ -617,7 +617,7 @@ def _recompute_row_levels(
         x1_c = min(width, x1)
         row = val[y : y + 1, x0_c:x1_c]
         if row.shape[1] == 0:
-            levels[y] = val[y, min(max(int(round(cx)), 0), width - 1)]
+            levels[y] = val[y, min(max(round(cx), 0), width - 1)]
             continue
         if pad_left > 0 or pad_right > 0:
             row = np.pad(row, ((0, 0), (pad_left, pad_right), (0, 0)), mode="edge")
@@ -686,8 +686,8 @@ def _apply_one_scratch(val: np.ndarray, image: np.ndarray, scratch: dict) -> Non
 
     for y in range(height):
         cx = centre_path[y]
-        x_lo = max(0, int(math.floor(cx - half_w)))
-        x_hi = min(width, int(math.ceil(cx + half_w)) + 1)
+        x_lo = max(0, math.floor(cx - half_w))
+        x_hi = min(width, math.ceil(cx + half_w) + 1)
         if x_lo >= x_hi:
             continue
         xs = np.arange(x_lo, x_hi, dtype=np.float32)

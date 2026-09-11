@@ -79,14 +79,24 @@ struct CLIDaemonTests {
     }
 
     /// `fakeServeSource`, prefixed with one line appending this process's
-    /// pid to `$LAUNCH_LOG` — so a test can tell how many times the fake
+    /// pid to `launchLog` — so a test can tell how many times the fake
     /// helper actually launched, independent of how many requests it
-    /// answered.
-    private static let pidLoggingServeSource = #"""
-    import os
-    with open(os.environ["LAUNCH_LOG"], "a") as f:
-        f.write(f"{os.getpid()}\n")
-    """# + "\n" + fakeServeSource
+    /// answered. The path is baked into the script rather than passed
+    /// through the environment: setting `Process.environment` replaces
+    /// inheritance wholesale, and the copy GitHub Actions' test runner
+    /// hands us is missing `PATH`, which breaks `#!/usr/bin/env python3`.
+    private static func pidLoggingServeSource(launchLog: URL) -> String {
+        let path = launchLog.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let header = """
+            import os
+            with open('\(path)', 'a') as f:
+                f.write(f'{os.getpid()}\\n')
+
+            """
+        return header + fakeServeSource
+    }
 
     private static func waitUntil(
         timeout: Duration = .seconds(10),
@@ -179,18 +189,14 @@ struct CLIDaemonTests {
     @Test("concurrent submits before the helper starts share one launch, not one each")
     func concurrentSubmitsLaunchOneHelper() async throws {
         try await TestSupport.withTemporaryDirectory { directory in
+            let launchLog = directory.appending(path: "launches.log", directoryHint: .notDirectory)
+            FileManager.default.createFile(atPath: launchLog.path, contents: nil)
             let executable = try TestSupport.writePythonExecutable(
-                Self.pidLoggingServeSource,
+                Self.pidLoggingServeSource(launchLog: launchLog),
                 named: "fake-serve",
                 in: directory
             )
-            let launchLog = directory.appending(path: "launches.log", directoryHint: .notDirectory)
-            FileManager.default.createFile(atPath: launchLog.path, contents: nil)
-            let runner = CLIRunner(
-                executable: executable,
-                environmentOverrides: ["LAUNCH_LOG": launchLog.path],
-                daemonRouting: true
-            )
+            let runner = Self.runner(executable: executable)
 
             // Every one of these calls sees no daemon running yet — the
             // ordinary shape at app launch, when several models each fire

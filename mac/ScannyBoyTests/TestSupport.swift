@@ -79,7 +79,9 @@ enum TestSupport {
     /// on stdin, answers them out of order when one is slow, honours in-band
     /// cancellation, and can exit mid-request on command — JSON parsing and
     /// threads that `sh` does not have. `/usr/bin/python3` ships with the
-    /// Xcode the Swift job already requires.
+    /// Xcode the Swift job already requires; it is used directly rather
+    /// than `/usr/bin/env python3` so the child still starts when a test
+    /// replaces `Process.environment` with a copy that omits `PATH`.
     @discardableResult
     static func writePythonExecutable(
         _ source: String,
@@ -87,7 +89,7 @@ enum TestSupport {
         in directory: URL
     ) throws -> URL {
         let url = directory.appending(path: name, directoryHint: .notDirectory)
-        let contents = "#!/usr/bin/env python3\n" + source
+        let contents = "#!/usr/bin/python3\n" + source
         try contents.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],

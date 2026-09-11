@@ -28,7 +28,7 @@ import cv2
 import numpy as np
 import tifffile
 
-from scanny_boy import color, previews, scratches
+from scanny_boy import previews, scratches
 from scanny_boy.roll_manifest import load_roll_manifest
 
 CROP_ROWS = 3
@@ -47,7 +47,7 @@ def _scratch_crop(
     image: np.ndarray, centre_x: float, row: int
 ) -> np.ndarray:
     height, width = image.shape[:2]
-    cx = int(round(centre_x))
+    cx = round(centre_x)
     x0 = max(0, cx - CROP_HALF_WIDTH)
     x1 = min(width, cx + CROP_HALF_WIDTH)
     y0 = max(0, row - CROP_ROWS)

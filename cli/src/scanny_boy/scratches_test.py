@@ -52,7 +52,7 @@ def inject_vertical_scratch(
     walk = np.cumsum(rng.normal(0, 0.03, val.shape[0])).astype(np.float32)
     walk = np.clip(walk - walk.mean(), -1.0, 1.0)
     for y in range(val.shape[0]):
-        cx = int(round(x + walk[y]))
+        cx = round(x + walk[y])
         for dx in range(-20, 21):
             xi = cx + dx
             if not 0 <= xi < val.shape[1]:
@@ -144,7 +144,7 @@ def test_heal_reduces_error_inside_window():
     healed = scratches.apply(scratched, params)
     clean_val = _decode(clean)
     healed_val = _decode(healed)
-    cx = int(round(candidates[0].centres[len(candidates[0].centres) // 2]))
+    cx = round(candidates[0].centres[len(candidates[0].centres) // 2])
     mask = np.zeros((H, W), dtype=bool)
     for y in range(H):
         for dx in range(-scratches.HALF_WIDTH_PX, scratches.HALF_WIDTH_PX + 1):
@@ -162,7 +162,7 @@ def test_heal_leaves_outside_window_unchanged():
     fits = [scratches.fit(scratched, c) for c in candidates]
     params = scratches.scratches_params((W, H), fits, enabled=True)
     healed = scratches.apply(scratched, params)
-    cx = int(round(candidates[0].centres[len(candidates[0].centres) // 2]))
+    cx = round(candidates[0].centres[len(candidates[0].centres) // 2])
     outside = np.ones((H, W), dtype=bool)
     for y in range(H):
         for dx in range(-scratches.HALF_WIDTH_PX, scratches.HALF_WIDTH_PX + 1):
