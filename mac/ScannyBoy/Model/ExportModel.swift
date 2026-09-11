@@ -199,6 +199,7 @@ final class ExportModel {
             .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
             .gridCreated, .gridList, .gridDeleted,
             .spotsReported, .scratchesReported, .baseFrameSet,
+             .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
             .unknown:
             break
         }

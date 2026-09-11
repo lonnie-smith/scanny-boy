@@ -1049,6 +1049,7 @@ def run_stitch(
     negatives: list[str] | None = None,
     flatfield_profile_id: str | None = None,
     auto_rotate: bool = True,
+    defer_roll_refresh: bool = False,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -1447,10 +1448,14 @@ def run_stitch(
     # `_remove_covered_negatives` and `edits.run_edit_delete` are the
     # other two. A change here is exactly when older negatives' previews
     # go stale, hence the forced `sync_previews` below.
-    previous_lock = roll.highlight_lock
-    new_lock = highlight_lock.compute_roll_highlight_lock(roll)
-    roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
-    lock_changed = roll.highlight_lock != previous_lock
+    if defer_roll_refresh:
+        roll.refresh_pending = True
+        lock_changed = False
+    else:
+        previous_lock = roll.highlight_lock
+        new_lock = highlight_lock.compute_roll_highlight_lock(roll)
+        roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
+        lock_changed = roll.highlight_lock != previous_lock
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows

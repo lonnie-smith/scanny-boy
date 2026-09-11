@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 21
+PROTOCOL_VERSION = 22
 
 
 class EventType(enum.StrEnum):
@@ -50,6 +50,10 @@ class EventType(enum.StrEnum):
     BASE_FRAME_SET = "base_frame_set"
     SPOTS_REPORTED = "spots_reported"
     SCRATCHES_REPORTED = "scratches_reported"
+    FRAME_ANALYZED = "frame_analyzed"
+    CAPTURE_CHECKED = "capture_checked"
+    CAPTURE_SUMMARY = "capture_summary"
+    ROLL_REFRESHED = "roll_refreshed"
 
 
 class Stage(enum.StrEnum):
@@ -194,6 +198,12 @@ class Code(enum.StrEnum):
     # The negative's scratches op was recorded against a canvas a re-stitch
     # has replaced; it corrects nothing and needs re-detecting.
     SCRATCHES_STALE = "SCRATCHES_STALE"
+    ROLL_BUSY = "ROLL_BUSY"
+    ROLL_REFRESH_PENDING = "ROLL_REFRESH_PENDING"
+    CAPTURE_CLIPPED = "CAPTURE_CLIPPED"
+    CAPTURE_DENSE_END_LOW = "CAPTURE_DENSE_END_LOW"
+    CAPTURE_FOCUS_DRIFT = "CAPTURE_FOCUS_DRIFT"
+    CAPTURE_FOCUS_TILT = "CAPTURE_FOCUS_TILT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -689,6 +699,48 @@ class GridDeleted(Event):
     event_type: ClassVar[EventType] = EventType.GRID_DELETED
 
     profile_id: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FrameAnalyzed(Event):
+    event_type: ClassVar[EventType] = EventType.FRAME_ANALYZED
+
+    frame: str
+    clip_fractions: list[float]
+    dense_end_stops: list[float]
+    focus_regions: list[float | None]
+    focus_relative: float | None
+    focus_spread: float | None
+    warnings: list[str]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class CaptureChecked(Event):
+    event_type: ClassVar[EventType] = EventType.CAPTURE_CHECKED
+
+    passed: bool
+    code: str | None
+    message: str | None
+    global_rms_px: float | None
+    used_clahe_fallback: bool
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class CaptureSummary(Event):
+    event_type: ClassVar[EventType] = EventType.CAPTURE_SUMMARY
+
+    frames: int
+    warning_counts: dict[str, int]
+    focus_trend: list[float | None]
+    exposure_mismatches: list[str]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RollRefreshed(Event):
+    event_type: ClassVar[EventType] = EventType.ROLL_REFRESHED
+
+    lock_changed: bool
+    previews_regenerated: bool
 
 
 class EventWriter:

@@ -99,12 +99,17 @@ struct AppActivityTests {
         let configuration = ConfigurationModel(
             runner: runner, defaults: isolatedDefaults()
         )
+        let camera = FakeTetherCamera()
+        let capture = CaptureSessionModel(runner: runner, camera: camera)
+        let stitchQueue = StitchQueueModel(runner: runner)
         let activity = AppActivity(
             run: RunModel(runner: runner),
             edit: EditModel(runner: runner),
             export: ExportModel(runner: runner),
             flatField: FlatFieldModel(runner: runner),
-            configuration: configuration
+            configuration: configuration,
+            capture: capture,
+            stitchQueue: stitchQueue
         )
         return (activity, configuration)
     }

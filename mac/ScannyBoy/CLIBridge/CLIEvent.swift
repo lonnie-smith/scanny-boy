@@ -65,7 +65,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 21
+    public static let supportedProtocolVersion = 22
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -112,6 +112,10 @@ public struct CLIEvent: Sendable, Hashable {
         case spotsReported
         case scratchesReported
         case baseFrameSet
+        case frameAnalyzed
+        case captureChecked
+        case captureSummary
+        case rollRefreshed
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -153,6 +157,10 @@ public struct CLIEvent: Sendable, Hashable {
             case "spots_reported": self = .spotsReported
             case "scratches_reported": self = .scratchesReported
             case "base_frame_set": self = .baseFrameSet
+            case "frame_analyzed": self = .frameAnalyzed
+            case "capture_checked": self = .captureChecked
+            case "capture_summary": self = .captureSummary
+            case "roll_refreshed": self = .rollRefreshed
             default: self = .unknown(name)
             }
         }
@@ -194,6 +202,10 @@ public struct CLIEvent: Sendable, Hashable {
             case .spotsReported: "spots_reported"
             case .scratchesReported: "scratches_reported"
             case .baseFrameSet: "base_frame_set"
+            case .frameAnalyzed: "frame_analyzed"
+            case .captureChecked: "capture_checked"
+            case .captureSummary: "capture_summary"
+            case .rollRefreshed: "roll_refreshed"
             case .unknown(let name): name
             }
         }
@@ -266,6 +278,21 @@ extension CLIEvent {
 
     // `roll_info`
     public var manifest: [String: JSONValue]? { fields["manifest"]?.objectValue }
+    public var refreshPending: Bool? { fields["refresh_pending"]?.boolValue }
+
+    // `frame_analyzed`
+    public var analyzedFrame: String? { fields["frame"]?.stringValue }
+
+    // `capture_checked`
+    public var captureCheckPassed: Bool? { fields["passed"]?.boolValue }
+    public var usedCLAHEFallback: Bool? { fields["used_clahe_fallback"]?.boolValue }
+
+    // `capture_summary`
+    public var captureSummaryFrames: Int? { fields["frames"]?.intValue }
+
+    // `roll_refreshed`
+    public var lockChanged: Bool? { fields["lock_changed"]?.boolValue }
+    public var previewsRegenerated: Bool? { fields["previews_regenerated"]?.boolValue }
 
     // `metadata_values`
     public var metadataField: String? { fields["field"]?.stringValue }
@@ -599,6 +626,12 @@ public enum CLICode: Sendable, Hashable {
     case filmBaseCameraConflict
     case filmBaseFlatfieldConflict
     case libraryDBUnsupported
+    case rollBusy
+    case rollRefreshPending
+    case captureClipped
+    case captureDenseEndLow
+    case captureFocusDrift
+    case captureFocusTilt
     case internalError
     case unknown(String)
 
@@ -687,6 +720,12 @@ public enum CLICode: Sendable, Hashable {
         case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
         case "FILM_BASE_FLATFIELD_CONFLICT": self = .filmBaseFlatfieldConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
+        case "ROLL_BUSY": self = .rollBusy
+        case "ROLL_REFRESH_PENDING": self = .rollRefreshPending
+        case "CAPTURE_CLIPPED": self = .captureClipped
+        case "CAPTURE_DENSE_END_LOW": self = .captureDenseEndLow
+        case "CAPTURE_FOCUS_DRIFT": self = .captureFocusDrift
+        case "CAPTURE_FOCUS_TILT": self = .captureFocusTilt
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
@@ -777,6 +816,12 @@ public enum CLICode: Sendable, Hashable {
         case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
         case .filmBaseFlatfieldConflict: "FILM_BASE_FLATFIELD_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
+        case .rollBusy: "ROLL_BUSY"
+        case .rollRefreshPending: "ROLL_REFRESH_PENDING"
+        case .captureClipped: "CAPTURE_CLIPPED"
+        case .captureDenseEndLow: "CAPTURE_DENSE_END_LOW"
+        case .captureFocusDrift: "CAPTURE_FOCUS_DRIFT"
+        case .captureFocusTilt: "CAPTURE_FOCUS_TILT"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }

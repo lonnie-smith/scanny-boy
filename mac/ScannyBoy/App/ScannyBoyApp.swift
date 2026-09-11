@@ -10,6 +10,8 @@ struct ScannyBoyApp: App {
     @State private var flatField: FlatFieldModel?
     @State private var grid: GridModel?
     @State private var model: ConfigurationModel?
+    @State private var capture: CaptureSessionModel?
+    @State private var stitchQueue: StitchQueueModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
     @State private var export: ExportModel?
@@ -70,6 +72,8 @@ struct ScannyBoyApp: App {
                 flatField: flatField,
                 grid: grid,
                 model: model,
+                capture: capture,
+                stitchQueue: stitchQueue,
                 edit: edit,
                 run: run,
                 export: export,
@@ -102,8 +106,8 @@ struct ScannyBoyApp: App {
         // Section 3.1: the library base is relocatable through a Settings
         // window.
         Settings {
-            if let library {
-                SettingsView(library: library)
+            if let library, let capture {
+                SettingsView(library: library, capture: capture)
             } else {
                 Text("Scanny Boy's CLI helper is unavailable.")
                     .padding(40)
@@ -125,15 +129,20 @@ struct ScannyBoyApp: App {
             let run = RunModel(runner: runner)
             let export = ExportModel(runner: runner)
             let configuration = ConfigurationModel(runner: runner)
+            let camera = TetherCamera()
+            let capture = CaptureSessionModel(runner: runner, camera: camera)
+            let stitchQueue = StitchQueueModel(runner: runner)
             self.flatField = flatField
             self.grid = grid
             model = configuration
+            self.capture = capture
+            self.stitchQueue = stitchQueue
             self.edit = edit
             self.run = run
             self.export = export
             activity = AppActivity(
                 run: run, edit: edit, export: export, flatField: flatField,
-                configuration: configuration
+                configuration: configuration, capture: capture, stitchQueue: stitchQueue
             )
         } catch let error as CLILocatorError {
             unavailableReason = error.description
@@ -189,6 +198,8 @@ struct RootView: View {
     let flatField: FlatFieldModel?
     let grid: GridModel?
     let model: ConfigurationModel?
+    let capture: CaptureSessionModel?
+    let stitchQueue: StitchQueueModel?
     let edit: EditModel?
     let run: RunModel?
     let export: ExportModel?
@@ -197,12 +208,16 @@ struct RootView: View {
     let keyboard: AppKeyboardState
 
     var body: some View {
-        if let library, let flatField, let grid, let model, let edit, let run, let export, let activity {
+        if let library, let flatField, let grid, let model, let capture, let stitchQueue,
+           let edit, let run, let export, let activity
+        {
             ContentView(
                 library: library,
                 flatField: flatField,
                 grid: grid,
                 model: model,
+                capture: capture,
+                stitchQueue: stitchQueue,
                 edit: edit,
                 run: run,
                 export: export,

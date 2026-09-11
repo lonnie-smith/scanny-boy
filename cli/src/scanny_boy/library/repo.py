@@ -206,6 +206,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.film_kind = manifest.film
         roll.film_base = manifest.film_base
         roll.highlight_lock = manifest.highlight_lock
+        roll.refresh_pending = 1 if manifest.refresh_pending else None
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -338,6 +339,18 @@ def roll_registered(roll_dir: Path) -> bool:
         )
 
 
+def roll_id_for_folder(roll_dir: Path) -> str:
+    """The library's stable id for the roll registered at ``roll_dir``."""
+    folder = _folder_key(roll_dir)
+    with _session() as session:
+        roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
+        if roll is None:
+            raise RollNotRegisteredError(
+                f"{roll_dir} is not a registered roll; create the roll first"
+            )
+        return roll.roll_id
+
+
 def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
     """Every registered roll whose folder sits directly under `library`:
     `(folder_path, roll_id, roll_name, negative_count)`, sorted by folder
@@ -428,6 +441,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             film=roll.film_kind,
             film_base=roll.film_base,
             highlight_lock=roll.highlight_lock,
+            refresh_pending=bool(roll.refresh_pending),
             runs=[
                 RunRecord(
                     run_id=r.run_id,

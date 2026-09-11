@@ -25,6 +25,8 @@ struct ContentView: View {
     let flatField: FlatFieldModel
     let grid: GridModel
     @Bindable var model: ConfigurationModel
+    @Bindable var capture: CaptureSessionModel
+    @Bindable var stitchQueue: StitchQueueModel
     let edit: EditModel
     let run: RunModel
     let export: ExportModel
@@ -35,7 +37,7 @@ struct ContentView: View {
     @Bindable var keyboard: AppKeyboardState
 
     @State private var selection: Roll.ID?
-    @State private var workspaceTab: AppWorkspaceTab = .addScans
+    @State private var workspaceTab: AppWorkspaceTab = .capture
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
@@ -54,8 +56,10 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(
                 library: library,
-                selection: Self.guardedRollSelection($selection, isBusy: activity.isBusy),
-                runIsActive: activity.isBusy,
+                selection: Self.guardedRollSelection(
+                    $selection, isBusy: activity.isSidebarSelectionLocked
+                ),
+                runIsActive: activity.isSidebarSelectionLocked,
                 isPresentingNewRollSheet: $isPresentingNewRollSheet
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
@@ -95,7 +99,7 @@ struct ContentView: View {
         .onChange(of: workspaceTab) { _, tab in
             keyboard.workspaceTab = tab
             switch tab {
-            case .addScans:
+            case .capture, .addScans:
                 columnVisibility = .all
             case .edit, .metadata, .export:
                 columnVisibility = .detailOnly
@@ -104,13 +108,12 @@ struct ContentView: View {
         .onChange(of: activity.isBusy) { _, isBusy in
             keyboard.isBusy = isBusy
         }
-        .onAppear {
-            keyboard.workspaceTab = workspaceTab
-            keyboard.isBusy = activity.isBusy
-        }
+        .onAppear(perform: installKeyboardState)
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectAll)) { _ in
             guard keyboard.canSelectAll else { return }
             switch workspaceTab {
+            case .capture:
+                break
             case .addScans:
                 model.selectAll()
             case .edit, .metadata:
@@ -122,6 +125,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyDeselectAll)) { _ in
             guard keyboard.canDeselectAll else { return }
             switch workspaceTab {
+            case .capture:
+                break
             case .addScans:
                 model.deselectAll()
             case .edit, .metadata:
@@ -258,6 +263,7 @@ struct ContentView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             Picker("Stage", selection: $workspaceTab) {
+                Text("Capture").tag(AppWorkspaceTab.capture)
                 Text("Add Scans").tag(AppWorkspaceTab.addScans)
                 Text("Edit").tag(AppWorkspaceTab.edit)
                 Text("Metadata").tag(AppWorkspaceTab.metadata)
@@ -266,10 +272,18 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Stage")
-            .disabled(activity.isBusy)
+            .disabled(activity.isBusy && workspaceTab != .capture)
             .padding()
 
             switch workspaceTab {
+            case .capture:
+                CaptureStageView(
+                    capture: capture,
+                    stitchQueue: stitchQueue,
+                    flatField: flatField,
+                    grid: grid,
+                    activity: activity
+                )
             case .addScans:
                 addScansStage
             case .edit:
@@ -334,12 +348,63 @@ struct ContentView: View {
     /// `NewRollSheet` is legitimately selected before the rescan that will
     /// include it lands, and that transient window must not be mistaken for
     /// a vanished roll.
+    private func installKeyboardState() {
+        keyboard.workspaceTab = workspaceTab
+        keyboard.isBusy = activity.isBusy
+        installCaptureHandlers()
+        wireCaptureToRoll()
+    }
+
+    private func installCaptureHandlers() {
+        if capture.onNegativeCompleted == nil {
+            capture.onNegativeCompleted = { [stitchQueue] negative in
+                stitchQueue.enqueue(negative)
+            }
+        }
+        if capture.onSessionClosed == nil {
+            capture.onSessionClosed = { [stitchQueue] in
+                stitchQueue.endSession()
+            }
+        }
+    }
+
     private func resolveSelectedRoll() {
         let rollURL = library.rolls.first { $0.id == selection }?.path
         model.rollURL = rollURL
         edit.rollURL = rollURL
+        wireCaptureToRoll()
         if selection != nil, rollURL == nil, !library.isScanning {
             selection = nil
+        }
+    }
+
+    private func wireCaptureToRoll() {
+        capture.rollURL = model.rollURL
+        capture.filmKind = model.filmKind
+        capture.filmBase = model.filmBase
+        capture.flatFieldProfileID = model.flatFieldProfileID
+        if let profileID = capture.gridProfileID,
+           let profile = grid.profiles.first(where: { $0.profileID == profileID })
+        {
+            capture.applyGridDimensions(from: profile)
+        }
+        if capture.gridProfileID == nil {
+            capture.gridProfileID = model.gridProfileID
+            capture.across = model.across
+            capture.down = model.down
+        }
+        if let rollURL = model.rollURL,
+           let captureFolder = capture.captureFolder,
+           let across = capture.across,
+           let flatFieldProfileID = capture.flatFieldProfileID
+        {
+            stitchQueue.configure(
+                roll: rollURL,
+                captureFolder: captureFolder,
+                flatFieldProfileID: flatFieldProfileID,
+                across: across,
+                down: capture.down
+            )
         }
     }
 

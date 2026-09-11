@@ -42,7 +42,7 @@ def assert_matches_schema(event: dict[str, Any], schema: dict[str, Any]) -> None
             f"event {event['event']!r} missing fields: {required - event.keys()}"
         )
         properties = then.get("properties", {})
-        if "code" in properties:
+        if "code" in properties and event.get("code") is not None:
             codes = schema["definitions"]["code"]["enum"]
             assert event["code"] in codes, f"{event['code']!r} not in {codes}"
         if "step" in properties:

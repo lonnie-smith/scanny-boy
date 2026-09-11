@@ -274,6 +274,16 @@ def run_edit_tone(
     from scanny_boy import auto_tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if roll.refresh_pending and (auto_density or auto_grade):
+        emit(
+            WarningEvent(
+                code=Code.ROLL_REFRESH_PENDING,
+                message=(
+                    "this roll's highlight lock has not been refreshed since "
+                    "the last tethered capture; auto tone may read stale colour"
+                ),
+            )
+        )
 
     results: list[dict] = []
     for negative in negatives:
@@ -484,6 +494,16 @@ def run_edit_color(
     from scanny_boy import auto_color, color, tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
+    if auto_cast and roll.refresh_pending:
+        emit(
+            WarningEvent(
+                code=Code.ROLL_REFRESH_PENDING,
+                message=(
+                    "this roll's highlight lock has not been refreshed since "
+                    "the last tethered capture; auto cast may read stale colour"
+                ),
+            )
+        )
     if not reset and roll_is_monochrome(roll):
         raise EditFailure(
             Code.INVALID_EDIT,

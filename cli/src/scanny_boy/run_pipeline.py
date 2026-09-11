@@ -118,6 +118,7 @@ def run_full(
     flatfield_profile_id: str | None = None,
     auto_rotate: bool = True,
     grid: GridSpec | None = None,
+    defer_roll_refresh: bool = False,
 ) -> RunOutcome:
     """Convert `files` into a work directory, then stitch it into `out_dir`
     (a roll).
@@ -202,6 +203,7 @@ def run_full(
                     emit=stitch_emit,
                     flatfield_profile_id=flatfield_profile_id,
                     auto_rotate=auto_rotate,
+                    defer_roll_refresh=defer_roll_refresh,
                 )
             except StitchError as exc:
                 raise RunFailure(exc.code, exc.message) from exc

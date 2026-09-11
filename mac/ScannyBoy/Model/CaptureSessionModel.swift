@@ -1,0 +1,465 @@
+import AppKit
+import Foundation
+import Observation
+
+/// Injectable clock for sequence timing tests.
+protocol CaptureClock: Sendable {
+    func now() -> Date
+    func sleep(until: Date) async throws
+}
+
+struct ContinuousCaptureClock: CaptureClock {
+    func now() -> Date { Date() }
+    func sleep(until target: Date) async throws {
+        let interval = target.timeIntervalSinceNow
+        if interval > 0 {
+            try await Task.sleep(for: .seconds(interval))
+        }
+    }
+}
+
+enum CaptureCellState: Sendable, Equatable {
+    case empty
+    case next
+    case exposing
+    case downloading
+    case filled(URL)
+    case failed(String)
+}
+
+enum CaptureSequencePhase: Sendable, Equatable {
+    case idle
+    case running
+    case paused
+    case waitingForDownload
+}
+
+/// Setup, sequence state machine, interval clock, and cues for the Capture tab.
+@MainActor
+@Observable
+final class CaptureSessionModel {
+    static let lastIntervalKey = "com.lonniesmith.scanny-boy.captureInterval"
+    static let cuesEnabledKey = "com.lonniesmith.scanny-boy.captureCuesEnabled"
+    static let destinationKey = "com.lonniesmith.scanny-boy.captureDestination"
+    static let captureBaseKey = "com.lonniesmith.scanny-boy.captureBaseFolder"
+
+    struct CompletedNegative: Identifiable, Sendable {
+        let id: UUID
+        let stamp: String
+        let frameURLs: [URL]
+        let startedAt: Date
+    }
+
+    let runner: CLIRunner
+    private let camera: any CameraControlling
+    private let clock: any CaptureClock
+    private let defaults: UserDefaults
+    private var sequenceTask: Task<Void, Never>?
+
+    var rollURL: URL?
+    var filmKind: String?
+    var filmBase: FilmBase?
+    var flatFieldProfileID: String?
+    var gridProfileID: String?
+    var across: Int?
+    var down: Int = 1
+    var intervalSeconds: Int {
+        didSet { defaults.set(intervalSeconds, forKey: Self.lastIntervalKey) }
+    }
+
+    var cuesEnabled: Bool {
+        didSet { defaults.set(cuesEnabled, forKey: Self.cuesEnabledKey) }
+    }
+
+    var destination: CaptureDestination {
+        didSet {
+            defaults.set(destination.rawValue, forKey: Self.destinationKey)
+            Task { await camera.startBrowsing() }
+        }
+    }
+
+    var captureBaseFolder: URL {
+        didSet { defaults.set(captureBaseFolder, forKey: Self.captureBaseKey) }
+    }
+
+    private(set) var connectionState: TetherConnectionState = .absent
+    private(set) var exposure: TetherExposureSettings?
+    private(set) var cellStates: [CaptureCellState] = []
+    private(set) var sequencePhase: CaptureSequencePhase = .idle
+    private(set) var countdownText = ""
+    private(set) var completedNegatives: [CompletedNegative] = []
+    private(set) var isSessionOpen = false
+    private(set) var isShootingBaseFrame = false
+    private(set) var baseFrameError: ConfigurationModel.Issue?
+    private(set) var currentNegativeIndex = 0
+    private(set) var pausedAfterCell = false
+    private(set) var cellWarnings: [Int: [String]] = [:]
+    private var baselineFrameURLs: [URL] = []
+
+    var sessionOpen: Bool {
+        get { isSessionOpen }
+        set {
+            guard newValue != isSessionOpen else { return }
+            if newValue { openSession() } else { closeSession() }
+        }
+    }
+
+    init(
+        runner: CLIRunner,
+        camera: any CameraControlling,
+        clock: any CaptureClock = ContinuousCaptureClock(),
+        defaults: UserDefaults = .standard
+    ) {
+        self.runner = runner
+        self.camera = camera
+        self.clock = clock
+        self.defaults = defaults
+        intervalSeconds = defaults.object(forKey: Self.lastIntervalKey) as? Int ?? 4
+        cuesEnabled = defaults.object(forKey: Self.cuesEnabledKey) as? Bool ?? true
+        destination = CaptureDestination(
+            rawValue: defaults.string(forKey: Self.destinationKey) ?? CaptureDestination.buffer.rawValue
+        ) ?? .buffer
+        captureBaseFolder = defaults.url(forKey: Self.captureBaseKey)
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: "Pictures/Scanny Boy Captures", directoryHint: .isDirectory)
+        Task { await refreshConnection() }
+    }
+
+    var perNegative: Int? {
+        across.map { $0 * down }
+    }
+
+    var captureFolder: URL? {
+        guard let rollURL else { return nil }
+        return captureBaseFolder.appending(path: rollURL.lastPathComponent, directoryHint: .isDirectory)
+    }
+
+    var runEnabled: Bool {
+        connectionState == .ready
+            && (exposure?.isManualProgram ?? false)
+            && (exposure?.isManualFocus ?? false)
+            && perNegative != nil
+            && rollURL != nil
+            && flatFieldProfileID != nil
+            && filmKind != nil
+            && filmBase != nil
+            && sequencePhase == .idle
+    }
+
+    func refreshConnection() async {
+        await camera.startBrowsing()
+        connectionState = await camera.connectionState
+        exposure = await camera.exposure
+    }
+
+    func openSession() {
+        guard !isSessionOpen else { return }
+        isSessionOpen = true
+        resetCells()
+    }
+
+    func closeSession() {
+        sequenceTask?.cancel()
+        sequenceTask = nil
+        isSessionOpen = false
+        sequencePhase = .idle
+        countdownText = ""
+        onSessionClosed?()
+    }
+
+    func handleSpace() {
+        switch sequencePhase {
+        case .idle where runEnabled:
+            startNegative()
+        case .running:
+            pauseAfterCurrentShot()
+        case .paused:
+            resumeSequence()
+        default:
+            break
+        }
+    }
+
+    func handleDelete() {
+        guard sequencePhase == .paused else { return }
+        retakeLastFilledCell()
+    }
+
+    func handleEscape() {
+        guard sequencePhase == .running || sequencePhase == .paused else { return }
+        stopNegative()
+    }
+
+    func shootBaseFrame() async {
+        guard filmBase == nil, let rollURL, let captureFolder else { return }
+        isShootingBaseFrame = true
+        baseFrameError = nil
+        defer { isShootingBaseFrame = false }
+        do {
+            let url = try CaptureNaming.exclusiveURL(
+                in: captureFolder, firstRelease: clock.now(), shotNumber: 1
+            )
+            try await captureOneFrame(to: url)
+            let result = await Self.runSetBaseFrame(
+                runner: runner, roll: rollURL, frame: url, flatfield: flatFieldProfileID
+            )
+            if let error = result.error {
+                baseFrameError = error
+            } else {
+                filmBase = result.filmBase
+            }
+        } catch {
+            baseFrameError = ConfigurationModel.Issue(code: .internalError, message: error.localizedDescription)
+        }
+    }
+
+    private func startNegative() {
+        guard let count = perNegative else { return }
+        resetCells()
+        for index in 0..<count {
+            cellStates[index] = index == 0 ? .next : .empty
+        }
+        sequencePhase = .running
+        currentNegativeIndex = completedNegatives.count
+        sequenceTask = Task { await runSequence() }
+    }
+
+    private func runSequence() async {
+        guard let count = perNegative, let folder = captureFolder else { return }
+        let firstRelease = clock.now()
+        var handlesBefore = Set<UInt32>()
+        do {
+            try await camera.drainEvents()
+            handlesBefore = Set(try await camera.scanBuffer())
+        } catch TetherCaptureError.leftoverPresent {
+            sequencePhase = .paused
+            return
+        } catch {
+            markNextFailed(error.localizedDescription)
+            return
+        }
+
+        for shot in 1...count {
+            guard !Task.isCancelled else { return }
+            let cellIndex = shot - 1
+            cellStates[cellIndex] = .exposing
+            markNext(after: cellIndex)
+
+            do {
+                try await camera.release()
+                playMoveCue()
+                try await camera.waitForExposureEnd()
+
+                if shot < count {
+                    let intervalEnd = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
+                    try await waitForInterval(end: intervalEnd)
+                    playHoldCue(at: intervalEnd.addingTimeInterval(-TetherTiming.holdCueLead))
+                }
+
+                cellStates[cellIndex] = .downloading
+                let url = try CaptureNaming.exclusiveURL(
+                    in: folder, firstRelease: firstRelease, shotNumber: shot
+                )
+                let handle = try await camera.waitForFrame(after: handlesBefore)
+                let frame = try await camera.download(handle: handle, to: url)
+                try await camera.confirmBufferCleared(handle: frame.handle)
+                cellStates[cellIndex] = .filled(url)
+                handlesBefore.insert(handle)
+                analyzeFrame(url, cellIndex: cellIndex)
+            } catch {
+                cellStates[cellIndex] = .failed(error.localizedDescription)
+                sequencePhase = .paused
+                return
+            }
+        }
+        finishNegative(firstRelease: firstRelease)
+    }
+
+    private func finishNegative(firstRelease: Date) {
+        let stamp = CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
+            .replacingOccurrences(of: "_01.NEF", with: "")
+        let frames = cellStates.compactMap { state -> URL? in
+            if case .filled(let url) = state { return url }
+            return nil
+        }
+        completedNegatives.append(
+            CompletedNegative(id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease)
+        )
+        if baselineFrameURLs.isEmpty {
+            baselineFrameURLs = frames
+        }
+        sequencePhase = .idle
+        countdownText = ""
+        onNegativeCompleted?(completedNegatives.last!)
+    }
+
+    var onNegativeCompleted: ((CompletedNegative) -> Void)?
+    var onSessionClosed: (() -> Void)?
+
+    private func waitForInterval(end: Date) async throws {
+        while clock.now() < end {
+            if sequencePhase == .paused { return }
+            if case .downloading = cellStates.first(where: { if case .downloading = $0 { true } else { false } }) {
+                countdownText = "waiting for download"
+                try await clock.sleep(until: clock.now().addingTimeInterval(0.1))
+                continue
+            }
+            let remaining = end.timeIntervalSince(clock.now())
+            countdownText = String(format: "%.1f s", max(0, remaining))
+            try await clock.sleep(until: min(end, clock.now().addingTimeInterval(0.1)))
+        }
+        countdownText = ""
+    }
+
+    private func playMoveCue() {
+        guard cuesEnabled else { return }
+        NSSound(named: "Tink")?.play()
+    }
+
+    private func playHoldCue(at _: Date) {
+        guard cuesEnabled else { return }
+        NSSound(named: "Pop")?.play()
+    }
+
+    private func pauseAfterCurrentShot() {
+        pausedAfterCell = true
+        sequencePhase = .paused
+    }
+
+    private func resumeSequence() {
+        guard sequencePhase == .paused else { return }
+        sequencePhase = .running
+        pausedAfterCell = false
+        sequenceTask = Task { await runSequence() }
+    }
+
+    private func stopNegative() {
+        sequenceTask?.cancel()
+        sequencePhase = .idle
+        countdownText = ""
+    }
+
+    private func retakeLastFilledCell() {
+        guard let index = cellStates.lastIndex(where: {
+            if case .filled = $0 { true } else { false }
+        }) else { return }
+        cellStates[index] = .next
+    }
+
+    private func captureOneFrame(to url: URL) async throws {
+        try await camera.drainEvents()
+        _ = try await camera.scanBuffer()
+        try await camera.release()
+        try await camera.waitForExposureEnd()
+        let handle = try await camera.waitForFrame(after: [])
+        let frame = try await camera.download(handle: handle, to: url)
+        try await camera.confirmBufferCleared(handle: frame.handle)
+    }
+
+    private func resetCells() {
+        guard let count = perNegative else {
+            cellStates = []
+            cellWarnings = [:]
+            return
+        }
+        cellStates = Array(repeating: .empty, count: count)
+        cellWarnings = [:]
+    }
+
+    private func analyzeFrame(_ url: URL, cellIndex: Int) {
+        guard let folder = captureFolder else { return }
+        let log = folder.appendingPathComponent("capture-log.jsonl")
+        Task {
+            do {
+                let session = runner.session(
+                    for: .captureAnalyze(frame: url, log: log, baselines: baselineFrameURLs)
+                )
+                for await output in try await session.start() {
+                    guard case .event(let event) = output, event.kind == .frameAnalyzed else {
+                        continue
+                    }
+                    let warnings = event.warnings ?? []
+                    if !warnings.isEmpty {
+                        cellWarnings[cellIndex] = warnings
+                    }
+                }
+            } catch {
+                // Advisory analysis — never block capture.
+            }
+        }
+    }
+
+    private func markNext(after index: Int) {
+        guard index + 1 < cellStates.count else { return }
+        if case .empty = cellStates[index + 1] {
+            cellStates[index + 1] = .next
+        }
+    }
+
+    private func markNextFailed(_ message: String) {
+        if let index = cellStates.firstIndex(where: { $0 == .next || $0 == .exposing }) {
+            cellStates[index] = .failed(message)
+        }
+        sequencePhase = .paused
+    }
+
+    func applyGridDimensions(from profile: GridProfile) {
+        down = profile.down
+        across = profile.across
+        resetCells()
+    }
+
+    private struct SetBaseFrameResult: Sendable {
+        var filmBase: FilmBase?
+        var error: ConfigurationModel.Issue?
+    }
+
+    private static func runSetBaseFrame(
+        runner: CLIRunner,
+        roll: URL,
+        frame: URL,
+        flatfield: String?
+    ) async -> SetBaseFrameResult {
+        var result = SetBaseFrameResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetBaseFrame(roll: roll, frame: frame, flatfield: flatfield)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .baseFrameSet: succeeded = true
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = ConfigurationModel.Issue(code: code, message: message)
+                        }
+                    default: break
+                    }
+                case .completed(let completion):
+                    if completion.outcome == .success { succeeded = true }
+                case .log, .failure: break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            result.filmBase = await fetchFilmBase(runner: runner, roll: roll)
+        }
+        return result
+    }
+
+    private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                guard case .event(let event) = output, event.kind == .rollInfo,
+                      let fields = event.manifest
+                else { continue }
+                return RollManifest(fields: fields)?.filmBase
+            }
+        } catch {}
+        return nil
+    }
+}

@@ -193,7 +193,8 @@ public struct CLICommand: Sendable, Hashable {
         jobs: Int? = nil,
         skipSources: [String] = [],
         work: URL? = nil,
-        flatfield: String? = nil
+        flatfield: String? = nil,
+        deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
         arguments.append("--files")
@@ -212,6 +213,9 @@ public struct CLICommand: Sendable, Hashable {
         if !skipSources.isEmpty {
             arguments.append("--skip-sources")
             arguments.append(contentsOf: skipSources)
+        }
+        if deferRollRefresh {
+            arguments.append("--defer-roll-refresh")
         }
         return CLICommand(arguments: arguments)
     }
@@ -682,7 +686,8 @@ public struct CLICommand: Sendable, Hashable {
         jobs: Int? = nil,
         overwrite: Bool = false,
         allowPartial: Bool = true,
-        flatfield: String? = nil
+        flatfield: String? = nil,
+        deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
         if let jobs {
@@ -697,7 +702,46 @@ public struct CLICommand: Sendable, Hashable {
         if let flatfield {
             arguments.append(contentsOf: ["--flatfield", flatfield])
         }
+        if deferRollRefresh {
+            arguments.append("--defer-roll-refresh")
+        }
         return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy capture analyze --frame FILE [--baseline FILE ...] --log FILE`
+    public static func captureAnalyze(
+        frame: URL,
+        log: URL,
+        baselines: [URL] = []
+    ) -> CLICommand {
+        var arguments = [
+            "capture", "analyze",
+            "--frame", frame.path,
+            "--log", log.path,
+        ]
+        for baseline in baselines {
+            arguments.append(contentsOf: ["--baseline", baseline.path])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy capture summary --log FILE`
+    public static func captureSummary(log: URL) -> CLICommand {
+        CLICommand(arguments: ["capture", "summary", "--log", log.path])
+    }
+
+    /// `scanny-boy capture check --work DIR [--flatfield PROFILE_ID]`
+    public static func captureCheck(work: URL, flatfield: String? = nil) -> CLICommand {
+        var arguments = ["capture", "check", "--work", work.path]
+        if let flatfield {
+            arguments.append(contentsOf: ["--flatfield", flatfield])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy roll refresh --roll DIR`
+    public static func rollRefresh(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "refresh", "--roll", roll.path])
     }
 
     /// `scanny-boy flatfield create --reference FILE --name NAME [--calibration FILE ...]`
@@ -807,6 +851,7 @@ public struct CLIRunner: Sendable {
     }
 
     private let sharedDaemon: SharedDaemon
+    private let captureDaemon: SharedDaemon
 
     public init(
         executable: URL,
@@ -817,6 +862,10 @@ public struct CLIRunner: Sendable {
         self.environmentOverrides = environmentOverrides
         self.daemonRoutingEnabled = daemonRouting
         self.sharedDaemon = SharedDaemon(
+            executable: executable,
+            environmentOverrides: environmentOverrides
+        )
+        self.captureDaemon = SharedDaemon(
             executable: executable,
             environmentOverrides: environmentOverrides
         )
@@ -859,19 +908,32 @@ public struct CLIRunner: Sendable {
         }
     }
 
+    static func routesThroughCaptureDaemon(_ command: CLICommand) -> Bool {
+        var parts = command.arguments.makeIterator()
+        guard parts.next() == "capture" else { return false }
+        return parts.next() == "analyze"
+    }
+
     public func session(for command: CLICommand) -> CLISession {
         var environment: [String: String]?
         if !environmentOverrides.isEmpty {
             environment = ProcessInfo.processInfo.environment
             environment!.merge(environmentOverrides) { _, override in override }
         }
-        let served: CLISession.ServedRequest? =
-            daemonRoutingEnabled && Self.routesThroughDaemon(command)
-            ? CLISession.ServedRequest(
+        let served: CLISession.ServedRequest?
+        if daemonRoutingEnabled && Self.routesThroughCaptureDaemon(command) {
+            served = CLISession.ServedRequest(
+                daemon: captureDaemon.get(),
+                requestID: UUID().uuidString
+            )
+        } else if daemonRoutingEnabled && Self.routesThroughDaemon(command) {
+            served = CLISession.ServedRequest(
                 daemon: sharedDaemon.get(),
                 requestID: UUID().uuidString
             )
-            : nil
+        } else {
+            served = nil
+        }
         return CLISession(
             configuration: CLISession.Configuration(
                 executable: executable,

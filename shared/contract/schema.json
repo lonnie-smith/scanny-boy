@@ -41,7 +41,11 @@
         "metadata_values",
         "base_frame_set",
         "spots_reported",
-        "scratches_reported"
+        "scratches_reported",
+        "frame_analyzed",
+        "capture_checked",
+        "capture_summary",
+        "roll_refreshed"
       ]
     },
     "stage": {
@@ -161,6 +165,12 @@
         "SPOTS_STALE",
         "SCRATCH_DETECTION_FAILED",
         "SCRATCHES_STALE",
+        "ROLL_BUSY",
+        "ROLL_REFRESH_PENDING",
+        "CAPTURE_CLIPPED",
+        "CAPTURE_DENSE_END_LOW",
+        "CAPTURE_FOCUS_DRIFT",
+        "CAPTURE_FOCUS_TILT",
         "LIBRARY_DB_UNSUPPORTED",
         "INTERNAL_ERROR"
       ]
@@ -253,7 +263,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 21
+      "const": 22
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -395,7 +405,11 @@
               "flatfield delete",
               "grid create",
               "grid list",
-              "grid delete"
+              "grid delete",
+              "roll refresh",
+              "capture analyze",
+              "capture summary",
+              "capture check"
             ]
           }
         }
@@ -759,6 +773,92 @@
             "items": { "type": "string" },
             "description": "Previously-entered values, most-recently-used first."
           }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "frame_analyzed" } } },
+      "then": {
+        "required": [
+          "frame",
+          "clip_fractions",
+          "dense_end_stops",
+          "focus_regions",
+          "focus_relative",
+          "focus_spread",
+          "warnings"
+        ],
+        "properties": {
+          "frame": { "type": "string" },
+          "clip_fractions": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "dense_end_stops": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "focus_regions": {
+            "type": "array",
+            "items": { "type": ["number", "null"] }
+          },
+          "focus_relative": { "type": ["number", "null"] },
+          "focus_spread": { "type": ["number", "null"] },
+          "warnings": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "capture_checked" } } },
+      "then": {
+        "required": [
+          "passed",
+          "code",
+          "message",
+          "global_rms_px",
+          "used_clahe_fallback"
+        ],
+        "properties": {
+          "passed": { "type": "boolean" },
+          "code": { "type": ["string", "null"] },
+          "message": { "type": ["string", "null"] },
+          "global_rms_px": { "type": ["number", "null"] },
+          "used_clahe_fallback": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "capture_summary" } } },
+      "then": {
+        "required": ["frames", "warning_counts", "focus_trend", "exposure_mismatches"],
+        "properties": {
+          "frames": { "type": "integer", "minimum": 0 },
+          "warning_counts": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          },
+          "focus_trend": {
+            "type": "array",
+            "items": { "type": ["number", "null"] }
+          },
+          "exposure_mismatches": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "roll_refreshed" } } },
+      "then": {
+        "required": ["lock_changed", "previews_regenerated"],
+        "properties": {
+          "lock_changed": { "type": "boolean" },
+          "previews_regenerated": { "type": "boolean" }
         }
       }
     }

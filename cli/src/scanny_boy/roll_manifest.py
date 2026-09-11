@@ -459,6 +459,10 @@ class RollManifest:
     # so an old roll benefits immediately without re-stitching and without
     # tripping the `ROLL_PREDATES_FILM_BASE` gate.
     highlight_lock: dict[str, Any] | None = None
+    # Library metadata only — not part of the on-disk manifest schema. Set
+    # when a stitch runs with ``--defer-roll-refresh``; cleared by
+    # ``roll refresh``. Loaded from the database on every read.
+    refresh_pending: bool = False
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 

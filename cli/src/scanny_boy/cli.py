@@ -45,6 +45,10 @@ from scanny_boy.events import (
     RollListingEntry,
     RollListingReason,
     RollRenamed,
+    RollRefreshed,
+    CaptureChecked,
+    CaptureSummary,
+    FrameAnalyzed,
     ScratchesReported,
     SpotsReported,
     Started,
@@ -65,6 +69,12 @@ MAX_JOBS = 12
 
 # 128 + SIGTERM, per CONTRACT.md's exit-status table.
 CANCELLED_EXIT_STATUS = 143
+
+
+def _fail_roll_busy(writer: EventWriter, exc, *, run_id: str | None = None) -> int:
+    writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+    writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -147,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="colour (including chromogenic B&W) or silver monochrome",
     )
 
+    roll_refresh = roll_subparsers.add_parser(
+        "refresh",
+        help="Recompute the highlight lock and regenerate stale previews.",
+    )
+    roll_refresh.add_argument("--roll", required=True, metavar="DIR")
+
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
     )
@@ -211,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
+    stitch.add_argument(
+        "--defer-roll-refresh",
+        action="store_true",
+        dest="defer_roll_refresh",
+        help="skip the highlight-lock recompute and defer it to roll refresh",
+    )
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
     )
@@ -239,6 +261,36 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
+    run.add_argument(
+        "--defer-roll-refresh",
+        action="store_true",
+        dest="defer_roll_refresh",
+        help="skip the highlight-lock recompute and defer it to roll refresh",
+    )
+    capture = subparsers.add_parser("capture", help="Tethered capture analysis and checks.")
+    capture_subparsers = capture.add_subparsers(dest="capture_command", required=True)
+
+    capture_analyze = capture_subparsers.add_parser(
+        "analyze", help="Analyze one captured frame for clipping and focus."
+    )
+    capture_analyze.add_argument("--frame", required=True, metavar="FILE")
+    capture_analyze.add_argument(
+        "--baseline", nargs="*", metavar="FILE", dest="baseline_frames", default=[]
+    )
+    capture_analyze.add_argument("--log", required=True, metavar="FILE")
+
+    capture_summary = capture_subparsers.add_parser(
+        "summary", help="Summarize a capture session log."
+    )
+    capture_summary.add_argument("--log", required=True, metavar="FILE")
+    capture_summary.add_argument("--base-frame", metavar="FILE", dest="base_frame")
+
+    capture_check = capture_subparsers.add_parser(
+        "check", help="Run the stitch solve phase without compositing."
+    )
+    capture_check.add_argument("--work", required=True, metavar="DIR")
+    capture_check.add_argument("--flatfield", metavar="PROFILE_ID")
+
     flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
     flatfield_subparsers = flatfield.add_subparsers(
         dest="flatfield_command", required=True
@@ -875,6 +927,7 @@ def _run_stitch_command(
     """The `stitch` subcommand: mirrors `convert`'s event and exit-status
     shape exactly, over `run_stitch` instead of `run_convert`."""
     from scanny_boy.registration import StitchError
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.stitch_pipeline import run_stitch
 
     run_id = str(uuid.uuid4())
@@ -882,23 +935,27 @@ def _run_stitch_command(
 
     try:
         with command_cancellation(cancel) as scope:
-            outcome = run_stitch(
-                Path(args.work),
-                Path(args.roll),
-                run_id=run_id,
-                overwrite=args.overwrite,
-                allow_partial=args.allow_partial,
-                jobs=jobs,
-                cancel=scope,
-                emit=writer.write,
-                negatives=args.negatives,
-                flatfield_profile_id=args.flatfield,
-                auto_rotate=args.auto_rotate,
-            )
+            with exclusive_roll_lock(Path(args.roll)):
+                outcome = run_stitch(
+                    Path(args.work),
+                    Path(args.roll),
+                    run_id=run_id,
+                    overwrite=args.overwrite,
+                    allow_partial=args.allow_partial,
+                    jobs=jobs,
+                    cancel=scope,
+                    emit=writer.write,
+                    negatives=args.negatives,
+                    flatfield_profile_id=args.flatfield,
+                    auto_rotate=args.auto_rotate,
+                    defer_roll_refresh=args.defer_roll_refresh,
+                )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc, run_id=run_id)
 
     if outcome.status == "cancelled":
         writer.write(
@@ -992,6 +1049,8 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         return 0
 
     if args.roll_command == "rename":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
         writer.write(Started(command="roll rename"))
         roll_dir = Path(args.roll)
         if not repo.roll_registered(roll_dir):
@@ -1004,12 +1063,15 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         try:
-            new_dir = rename_roll(roll_dir, args.name)
+            with exclusive_roll_lock(roll_dir):
+                new_dir = rename_roll(roll_dir, args.name)
+                manifest = load_roll_manifest(new_dir)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
-        manifest = load_roll_manifest(new_dir)
         writer.write(
             RollRenamed(
                 roll_id=manifest.roll_id,
@@ -1021,15 +1083,62 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         return 0
 
     if args.roll_command == "delete":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
         writer.write(Started(command="roll delete"))
         roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
         try:
-            fields = delete_roll(roll_dir, emit=writer.write)
+            with exclusive_roll_lock(roll_dir):
+                fields = delete_roll(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         writer.write(RollDeleted(**fields))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.roll_command == "refresh":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+        from scanny_boy.roll_refresh import RollRefreshFailure, run_roll_refresh
+
+        writer.write(Started(command="roll refresh"))
+        roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            with exclusive_roll_lock(roll_dir):
+                outcome = run_roll_refresh(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
+        except RollRefreshFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(
+            RollRefreshed(
+                lock_changed=outcome.lock_changed,
+                previews_regenerated=outcome.previews_regenerated,
+            )
+        )
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
@@ -1168,6 +1277,7 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         info["film_kind"] = manifest.film.get("kind")
     else:
         info["film_kind"] = None
+    info["refresh_pending"] = manifest.refresh_pending
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -1230,6 +1340,8 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         load_roll_manifest,
         write_roll_manifest,
     )
+
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
 
     writer.write(Started(command="roll set-base-frame"))
     roll_dir = Path(args.roll)
@@ -1371,7 +1483,11 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         # each scan's at stitch time.
         "exposure": base_exposure,
     }
-    write_roll_manifest(roll_dir, manifest)
+    try:
+        with exclusive_roll_lock(roll_dir):
+            write_roll_manifest(roll_dir, manifest)
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc)
 
     chosen = measurement.populations[measurement.chosen_index]
     writer.write(
@@ -1636,6 +1752,78 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     return 0
 
 
+
+def _run_capture_command(args, writer: EventWriter) -> int:
+    from scanny_boy.capture_analysis import (
+        CaptureAnalysisError,
+        analyze_frame,
+        append_log_entry,
+        summarize_log,
+    )
+    from scanny_boy.capture_check import CaptureCheckFailure, run_capture_check
+
+    if args.capture_command == "analyze":
+        writer.write(Started(command="capture analyze"))
+        frame = Path(args.frame)
+        log_path = Path(args.log)
+        baseline_ratios: list[float | None] | None = None
+        if args.baseline_frames:
+            baseline_entries = []
+            for baseline_frame in args.baseline_frames:
+                baseline_entries.append(
+                    analyze_frame(Path(baseline_frame), baseline_ratios=None)
+                )
+            region_lists = [entry["focus_regions"] for entry in baseline_entries]
+            baseline_ratios = [
+                float(value)
+                for regions in region_lists
+                for value in regions
+                if value is not None
+            ] or None
+        try:
+            result = analyze_frame(frame, baseline_ratios=baseline_ratios)
+        except CaptureAnalysisError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        append_log_entry(log_path, result)
+        writer.write(FrameAnalyzed(**result))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.capture_command == "summary":
+        writer.write(Started(command="capture summary"))
+        summary = summarize_log(
+            Path(args.log),
+            base_frame=Path(args.base_frame) if args.base_frame else None,
+        )
+        writer.write(CaptureSummary(**summary))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    writer.write(Started(command="capture check"))
+    try:
+        outcome = run_capture_check(
+            Path(args.work),
+            flatfield_profile_id=args.flatfield,
+        )
+    except CaptureCheckFailure as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    writer.write(
+        CaptureChecked(
+            passed=outcome.passed,
+            code=outcome.code,
+            message=outcome.message,
+            global_rms_px=outcome.global_rms_px,
+            used_clahe_fallback=outcome.used_clahe_fallback,
+        )
+    )
+    writer.write(Finished(status="success" if outcome.passed else "failed", exit_status=0 if outcome.passed else 1))
+    return 0 if outcome.passed else 1
+
+
 def _run_flatfield_command(args, writer: EventWriter) -> int:
     """The `flatfield create` / `flatfield list` / `flatfield delete`
     subcommands: each mirrors `roll init`/`roll list`'s started/finished
@@ -1840,16 +2028,20 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
 
 def _run_export_command(args, writer: EventWriter) -> int:
     from scanny_boy.exporter import ExportFailure, parse_downsample, run_export
+    from scanny_boy.roll_lock import RollBusyError, shared_roll_lock
 
     writer.write(Started(command="export"))
     try:
-        outcome = run_export(
-            Path(args.roll),
-            Path(args.output),
-            args.negatives,
-            downsample=parse_downsample(args.downsample),
-            emit=writer.write,
-        )
+        with shared_roll_lock(Path(args.roll)):
+            outcome = run_export(
+                Path(args.roll),
+                Path(args.output),
+                args.negatives,
+                downsample=parse_downsample(args.downsample),
+                emit=writer.write,
+            )
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc)
     except ExportFailure as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
@@ -1875,6 +2067,7 @@ def _run_run_command(
     """The `run` subcommand: mirrors `convert`'s and `stitch`'s event and
     exit-status shape exactly, over `run_full` instead of `run_convert` or
     `run_stitch`."""
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.run_pipeline import RunFailure, run_full
 
     run_id = str(uuid.uuid4())
@@ -1882,25 +2075,29 @@ def _run_run_command(
 
     try:
         with command_cancellation(cancel) as scope:
-            outcome = run_full(
-                Path(args.input),
-                files,
-                Path(args.roll),
-                spec.count,
-                run_id=run_id,
-                work_dir=Path(args.work) if args.work else None,
-                skip_sources=args.skip_sources,
-                jobs=jobs,
-                cancel=scope,
-                emit=writer.write,
-                flatfield_profile_id=args.flatfield,
-                auto_rotate=args.auto_rotate,
-                grid=spec,
-            )
+            with exclusive_roll_lock(Path(args.roll)):
+                outcome = run_full(
+                    Path(args.input),
+                    files,
+                    Path(args.roll),
+                    spec.count,
+                    run_id=run_id,
+                    work_dir=Path(args.work) if args.work else None,
+                    skip_sources=args.skip_sources,
+                    jobs=jobs,
+                    cancel=scope,
+                    emit=writer.write,
+                    flatfield_profile_id=args.flatfield,
+                    auto_rotate=args.auto_rotate,
+                    grid=spec,
+                    defer_roll_refresh=args.defer_roll_refresh,
+                )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc, run_id=run_id)
 
     if outcome.status == "cancelled":
         writer.write(
@@ -2077,9 +2274,29 @@ def _dispatch_command(
         return _run_roll_command(args, writer)
 
     if args.command == "edit":
-        return _run_edit_command(args, writer)
+        from scanny_boy.library import repo
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+        read_only_edits = frozenset(
+            {"list-spots", "list-scratches", "render-preview", "render-region"}
+        )
+        if args.edit_command in read_only_edits or not repo.roll_registered(Path(args.roll)):
+            return _run_edit_command(args, writer)
+        try:
+            with exclusive_roll_lock(Path(args.roll)):
+                return _run_edit_command(args, writer)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
 
     if args.command == "metadata":
+        if args.metadata_command == "set":
+            from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+            try:
+                with exclusive_roll_lock(Path(args.roll)):
+                    return _run_metadata_command(args, writer)
+            except RollBusyError as exc:
+                return _fail_roll_busy(writer, exc)
         return _run_metadata_command(args, writer)
 
     if args.command == "flatfield":
@@ -2091,12 +2308,31 @@ def _dispatch_command(
     if args.command == "export":
         return _run_export_command(args, writer)
 
+    if args.command == "capture":
+        return _run_capture_command(args, writer)
+
     if args.command == "apply-metadata":
         from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+        from scanny_boy.library import repo
 
         writer.write(Started(command="apply-metadata"))
+        roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
         try:
-            outcome = run_apply_metadata(Path(args.roll), emit=writer.write)
+            with exclusive_roll_lock(roll_dir):
+                outcome = run_apply_metadata(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except ApplyMetadataFailure as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))

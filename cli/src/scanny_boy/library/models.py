@@ -112,6 +112,10 @@ class RollRow(Base):
     # build. Recomputed wholesale at the end of every stitch run and every
     # negative removal; nullable throughout, same posture as `film_base`.
     highlight_lock: Mapped[dict | None] = mapped_column(JSONText)
+    # docs/TETHER_PLAN.md §4.4: set by a deferred stitch, cleared by
+    # `roll refresh`. Nullable throughout — pre-0015 rows read back as NULL
+    # (treated as false).
+    refresh_pending: Mapped[bool | None] = mapped_column(Integer, nullable=True)
 
 
 class RunRow(Base):

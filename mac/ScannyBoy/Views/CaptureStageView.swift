@@ -1,0 +1,174 @@
+import SwiftUI
+
+/// The Capture workspace tab.
+struct CaptureStageView: View {
+    @Bindable var capture: CaptureSessionModel
+    @Bindable var stitchQueue: StitchQueueModel
+    let flatField: FlatFieldModel
+    let grid: GridModel
+    let activity: AppActivity
+    @FocusState private var captureFocused: Bool
+
+    private let intervalChoices = [2, 3, 4, 5, 6, 8, 10]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                connectionSection
+                setupSection
+                if capture.filmBase == nil {
+                    baseFrameSection
+                }
+                sequenceSection
+            }
+            .formStyle(.grouped)
+            .disabled(activity.isRollWriteLocked(for: capture.rollURL) && !capture.isSessionOpen)
+
+            if !stitchQueue.negatives.isEmpty {
+                CaptureQueueStrip(negatives: stitchQueue.negatives)
+                    .padding(.vertical, 8)
+            }
+        }
+        .focusable()
+        .focused($captureFocused)
+        .onKeyPress(.space) {
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
+            capture.handleSpace()
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            guard captureFocused else { return .ignored }
+            capture.handleDelete()
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            guard captureFocused else { return .ignored }
+            capture.handleEscape()
+            return .handled
+        }
+        .onAppear {
+            captureFocused = true
+            Task { await capture.refreshConnection() }
+        }
+    }
+
+    @ViewBuilder
+    private var connectionSection: some View {
+        Section("Camera") {
+            Text(connectionMessage)
+                .foregroundStyle(connectionStateColor)
+            if let exposure = capture.exposure {
+                LabeledContent("Program", value: exposure.programDescription)
+                LabeledContent("Shutter", value: exposure.shutterDescription)
+                LabeledContent("Aperture", value: PTP.decodePropertyValue(0x5007, raw: exposure.aperture))
+                LabeledContent("ISO", value: PTP.decodePropertyValue(0x500F, raw: exposure.iso))
+            }
+            if capture.exposure?.isManualProgram == false {
+                Text("Switch the camera to Manual exposure before capturing.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if capture.exposure?.isManualFocus == false {
+                Text("Switch the camera to manual focus before capturing.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var setupSection: some View {
+        Section("Setup") {
+            Picker("Scanning Rig Profile", selection: $capture.flatFieldProfileID) {
+                Text("None").tag(String?.none)
+                ForEach(flatField.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
+                }
+            }
+            Picker("Grid", selection: $capture.gridProfileID) {
+                Text("Choose…").tag(String?.none)
+                ForEach(grid.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.profileID))
+                }
+            }
+            if let across = capture.across {
+                Text("\(across) × \(capture.down) — \(across * capture.down) scans per negative")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("Interval", selection: $capture.intervalSeconds) {
+                ForEach(intervalChoices, id: \.self) { seconds in
+                    Text("\(seconds) s").tag(seconds)
+                }
+            }
+            Toggle("Session open", isOn: $capture.sessionOpen)
+        }
+    }
+
+    @ViewBuilder
+    private var baseFrameSection: some View {
+        Section("Base frame") {
+            Button("Shoot base frame") {
+                Task { await capture.shootBaseFrame() }
+            }
+            .disabled(!capture.sessionOpen || capture.connectionState != .ready || capture.isShootingBaseFrame)
+            if capture.isShootingBaseFrame {
+                ProgressView()
+            }
+            if let error = capture.baseFrameError {
+                IssueLabel(issue: error, style: .error)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sequenceSection: some View {
+        Section("Capture") {
+            if let across = capture.across, capture.down > 0, !capture.cellStates.isEmpty {
+                CaptureMiniView(
+                    across: across,
+                    down: capture.down,
+                    cellStates: capture.cellStates,
+                    cellWarnings: capture.cellWarnings
+                )
+            }
+            if !capture.countdownText.isEmpty {
+                Text(capture.countdownText)
+                    .font(.largeTitle.monospacedDigit())
+                    .frame(maxWidth: .infinity)
+            }
+            Text("Space starts or pauses a negative · Delete retakes · Esc stops")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var connectionMessage: String {
+        switch capture.connectionState {
+        case .absent:
+            "Connect the camera over USB and switch it on."
+        case .massStorage:
+            "The camera is connected as a disk. Set its USB mode to PTP."
+        case .unavailable:
+            "Another app is using the camera. Quit Photos or Image Capture."
+        case .preparing:
+            "Preparing the camera — the first connection after plugging in can take a minute."
+        case .unsupported:
+            "This camera doesn't support tethered capture."
+        case .ready:
+            "Ready."
+        case .busy:
+            "Busy."
+        case .lost:
+            "The camera disconnected. Reconnect to continue."
+        }
+    }
+
+    private var connectionStateColor: Color {
+        switch capture.connectionState {
+        case .ready: .primary
+        case .busy, .preparing: .secondary
+        default: .orange
+        }
+    }
+}
