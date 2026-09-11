@@ -1627,7 +1627,11 @@ _BSPLINE_KERNEL = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], np.float32) / 16.0
 
 
 def measure_neutral_residual(
-    grid_log: np.ndarray, keep: np.ndarray, bounds: Bounds
+    grid_log: np.ndarray,
+    keep: np.ndarray,
+    bounds: Bounds,
+    *,
+    band: np.ndarray | None = None,
 ) -> tuple[float, float] | None:
     """The frame's residual neutral offset, `(R-G, B-G)` in normalized
     units, over structured low-chroma regions — the meter `auto_color`'s
@@ -1681,6 +1685,8 @@ def measure_neutral_residual(
             borderValue=0,
         ).astype(bool)
     )
+    if band is not None:
+        keep_eroded &= band
 
     p_norm = (
         np.power(np.abs(a_bar), NEUTRAL_RESIDUAL_P_NORM)
