@@ -1505,6 +1505,13 @@ private struct ColorAdjustmentPanel: View {
             .background(alignment: .center) {
                 SliderTrackBackground(colors: CMYSliderTrackColors.temperature)
             }
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    temperatureKelvin = ColorTemperature.neutralKelvin
+                    applyTemperature(temperatureKelvin)
+                    onCommitNow(values, [])
+                }
+            )
         }
     }
 
@@ -1550,6 +1557,11 @@ private struct SpotsReviewPanel: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(value: $sensitivity, in: 0...1, step: 0.05)
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            sensitivity = 0.5
+                        }
+                    )
                 Text("0.0 misses crud before risking detail; 1.0 proposes aggressively.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
