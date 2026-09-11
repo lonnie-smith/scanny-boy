@@ -1162,6 +1162,88 @@ def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, f
     np.testing.assert_array_equal(cropped, expected)
 
 
+def test_crop_report_returns_display_slider_tilt_not_composed_tiff_tilt():
+    """`crop_report`'s `tilt_deg` is the display slider value, not the
+    composed TIFF-space angle the ops log stores — otherwise re-entering
+    crop mode reseeds the wrong tilt when a fine rotation is present."""
+    from scanny_boy import previews
+
+    tiff_size = (800, 1000)
+    rect = (100, 50, 400, 300)
+    display_tilt = 0.3
+    fine_angle_deg = -0.1
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=display_tilt,
+        quarter_turns=0,
+        flipped_horizontally=False,
+        fine_angle_deg=fine_angle_deg,
+        crop_params=None,
+        full_frame=True,
+    )
+    assert abs(window[4] - (display_tilt + fine_angle_deg)) < 0.05
+
+    crop = _window_params(window, tiff_size)
+    report = previews.crop_report(
+        crop,
+        tiff_size,
+        quarter_turns=0,
+        fine_angle_deg=fine_angle_deg,
+    )
+    assert abs(report["tilt_deg"] - display_tilt) < 0.05
+    assert abs(report["x"] - rect[0]) <= 1
+    assert abs(report["y"] - rect[1]) <= 1
+
+
+@pytest.mark.parametrize("quarter_turns", range(4))
+@pytest.mark.parametrize("flipped", [False, True])
+@pytest.mark.parametrize("fine_angle_deg", [0.0, -0.1, 1.5])
+def test_crop_window_round_trips_between_display_and_tiff(
+    quarter_turns, flipped, fine_angle_deg
+):
+    """The display→TIFF record map and the TIFF→display report map are
+    inverses on the full uncropped canvas."""
+    from scanny_boy import previews
+
+    tiff_size = (800, 1000)
+    rect = (100, 50, 400, 300)
+    display_tilt = 0.3
+
+    window = previews.display_crop_window_to_tiff(
+        rect,
+        tiff_size,
+        tilt_deg=display_tilt,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+        fine_angle_deg=fine_angle_deg,
+        crop_params=None,
+        full_frame=True,
+    )
+    crop = _window_params(window, tiff_size)
+    back = previews.tiff_crop_window_to_display(
+        crop,
+        tiff_size,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+        fine_angle_deg=fine_angle_deg,
+    )
+    assert abs(back[4] - display_tilt) < 0.05
+    assert abs(back[0] - rect[0]) <= 1
+    assert abs(back[1] - rect[1]) <= 1
+    assert back[2] == rect[2] and back[3] == rect[3]
+
+    report = previews.crop_report(
+        crop,
+        tiff_size,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+        fine_angle_deg=fine_angle_deg,
+    )
+    assert abs(report["tilt_deg"] - display_tilt) < 0.05
+
+
 def test_full_frame_crop_round_trips_through_rotation():
     """With `--full-frame`, a rect on the uncropped display round-trips
     through the stored TIFF window and back — even when quarter_turns is

@@ -503,6 +503,37 @@ private struct PreviewPane: View {
         return URL(filePath: previewPath)
     }
 
+    /// The fit preview during crop mode: the image rotates about the crop
+    /// centre (matching `apply_crop`'s warp) while the overlay stays
+    /// axis-aligned. Outside crop mode the image aspect-fits the pane.
+    @ViewBuilder
+    private func cropAwarePreviewImage(_ image: NSImage, container: CGSize) -> some View {
+        if cropSession.isActive, displaySize.width > 0, displaySize.height > 0 {
+            let fit = PreviewZoomModel.fitRect(displaySize: displaySize, container: container)
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.medium)
+                        .frame(width: fit.width, height: fit.height)
+                        .rotationEffect(
+                            .degrees(cropSession.tiltDegrees),
+                            anchor: UnitPoint(
+                                x: cropSession.rect.midX / displaySize.width,
+                                y: cropSession.rect.midY / displaySize.height
+                            )
+                        )
+                        .offset(x: fit.minX, y: fit.minY)
+                }
+        } else {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .aspectRatio(contentMode: .fit)
+        }
+    }
+
     @ViewBuilder
     private var preview: some View {
         GeometryReader { geo in
@@ -511,10 +542,7 @@ private struct PreviewPane: View {
                     if zoom.mode == .pixels100, negative.output != nil {
                         zoomedCrop
                     } else if let thumbnail {
-                        Image(nsImage: thumbnail.image)
-                            .resizable()
-                            .interpolation(.medium)
-                            .aspectRatio(contentMode: .fit)
+                        cropAwarePreviewImage(thumbnail.image, container: geo.size)
                     } else if isLoadingPreview && negative.isCompleted {
                         PreviewPlaceholder(kind: .loading)
                     } else if negative.isCompleted {
@@ -591,9 +619,8 @@ private struct PreviewPane: View {
 
     /// Markers show while a set exists and repair is off; with repair on
     /// they hide unless the Heal tab is selected — the point of turning
-    /// repair on is to look at the result. Crop mode hides them too: over
-    /// a cropped-and-tilted display the axis-aligned rects have no
-    /// faithful drawing.
+    /// repair on is to look at the result. Crop mode hides them too: the
+    /// live tilt preview rotates the image under an axis-aligned crop box.
     private var showsSpotMarkers: Bool {
         guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
             return false
@@ -1016,7 +1043,7 @@ private struct GeometryAdjustmentPanel: View {
                     onCommitNow: {}
                 )
                 .accessibilityLabel("Crop tilt")
-                Text("Counter-clockwise tilt of the crop window, ±10°")
+                Text("Counter-clockwise rotation of the image under the crop, ±10°")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

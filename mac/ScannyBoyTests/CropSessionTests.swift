@@ -285,49 +285,151 @@ struct CropGeometryTests {
         #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
     }
 
-    @Test("tilted top-right handle keeps the bottom-left corner fixed")
-    func tiltedTopRightHandleKeepsBottomLeftFixed() {
-        let tilt = 10.0
-        let centre = CGPoint(x: Self.rect.midX, y: Self.rect.midY)
-        let handlePoint = CropGeometry.handlePoint(
-            .topRight, on: Self.rect, tiltDegrees: tilt
-        )
-        let dragged = CGPoint(x: handlePoint.x + 30, y: handlePoint.y - 20)
-        let unrotated = CropGeometry.unrotated(
-            dragged, about: centre, tiltDegrees: tilt
-        )
+    @Test("bottom handle with ratio keeps the top edge fixed and centres width")
+    func bottomHandleWithRatioCentresWidth() {
         let resized = CropGeometry.resized(
             Self.rect,
-            handle: .topRight,
-            to: unrotated,
-            ratio: nil,
+            handle: .bottom,
+            to: CGPoint(x: 200, y: 300),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.minY == Self.rect.minY)
+        #expect(resized.maxY == 300)
+        #expect(resized.midX == Self.rect.midX)
+        #expect(resized.minX < Self.rect.minX)
+        #expect(resized.maxX > Self.rect.maxX)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
+    }
+
+    @Test("top handle with ratio keeps the bottom edge fixed and centres width")
+    func topHandleWithRatioCentresWidth() {
+        let resized = CropGeometry.resized(
+            Self.rect,
+            handle: .top,
+            to: CGPoint(x: 200, y: 80),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.maxY == Self.rect.maxY)
+        #expect(resized.minY == 80)
+        #expect(resized.midX == Self.rect.midX)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
+    }
+
+    @Test("right handle with ratio keeps the left edge fixed and centres height")
+    func rightHandleWithRatioCentresHeight() {
+        let resized = CropGeometry.resized(
+            Self.rect,
+            handle: .right,
+            to: CGPoint(x: 350, y: 175),
+            ratio: Self.ratio35,
             in: Self.bounds
         )
         #expect(resized.minX == Self.rect.minX)
-        #expect(resized.maxY == Self.rect.maxY)
-        #expect(resized.maxX > Self.rect.maxX)
+        #expect(resized.maxX == 350)
+        #expect(resized.midY == Self.rect.midY)
+        #expect(resized.minY < Self.rect.minY)
+        #expect(resized.maxY > Self.rect.maxY)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
     }
 
-    @Test("tilted bottom-left handle keeps the top-right corner fixed")
-    func tiltedBottomLeftHandleKeepsTopRightFixed() {
-        let tilt = -8.0
-        let centre = CGPoint(x: Self.rect.midX, y: Self.rect.midY)
-        let handlePoint = CropGeometry.handlePoint(
-            .bottomLeft, on: Self.rect, tiltDegrees: tilt
-        )
-        let dragged = CGPoint(x: handlePoint.x - 25, y: handlePoint.y + 15)
-        let unrotated = CropGeometry.unrotated(
-            dragged, about: centre, tiltDegrees: tilt
-        )
+    @Test("left handle with ratio keeps the right edge fixed and centres height")
+    func leftHandleWithRatioCentresHeight() {
         let resized = CropGeometry.resized(
             Self.rect,
-            handle: .bottomLeft,
-            to: unrotated,
-            ratio: nil,
+            handle: .left,
+            to: CGPoint(x: 80, y: 175),
+            ratio: Self.ratio35,
             in: Self.bounds
         )
         #expect(resized.maxX == Self.rect.maxX)
-        #expect(resized.minY == Self.rect.minY)
-        #expect(resized.minX < Self.rect.minX)
+        #expect(resized.minX == 80)
+        #expect(resized.midY == Self.rect.midY)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
     }
+
+    @Test("bottom handle with ratio flush left grows only to the right")
+    func bottomHandleWithRatioFlushLeftGrowsRight() {
+        let flushLeft = CGRect(x: 0, y: 100, width: 200, height: 150)
+        let resized = CropGeometry.resized(
+            flushLeft,
+            handle: .bottom,
+            to: CGPoint(x: 100, y: 300),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.minX == 0)
+        #expect(resized.minY == flushLeft.minY)
+        #expect(resized.maxY == 300)
+        #expect(resized.maxX > flushLeft.maxX)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
+    }
+
+    @Test("bottom handle with ratio flush right grows only to the left")
+    func bottomHandleWithRatioFlushRightGrowsLeft() {
+        let flushRight = CGRect(x: 800, y: 100, width: 200, height: 150)
+        let resized = CropGeometry.resized(
+            flushRight,
+            handle: .bottom,
+            to: CGPoint(x: 900, y: 300),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.maxX == Self.bounds.width)
+        #expect(resized.minY == flushRight.minY)
+        #expect(resized.maxY == 300)
+        #expect(resized.minX < flushRight.minX)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
+    }
+
+    @Test("bottom handle with ratio at full width does not grow")
+    func bottomHandleWithRatioAtFullWidthDoesNotGrow() {
+        let fullWidth = CGRect(x: 0, y: 100, width: Self.bounds.width, height: 150)
+        let resized = CropGeometry.resized(
+            fullWidth,
+            handle: .bottom,
+            to: CGPoint(x: 500, y: 400),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.width == Self.bounds.width)
+        #expect(resized.height == fullWidth.height)
+        #expect(resized.minY == fullWidth.minY)
+        #expect(resized.maxY == fullWidth.maxY)
+    }
+
+    @Test("right handle with ratio at full height does not grow")
+    func rightHandleWithRatioAtFullHeightDoesNotGrow() {
+        let fullHeight = CGRect(x: 100, y: 0, width: 200, height: Self.bounds.height)
+        let resized = CropGeometry.resized(
+            fullHeight,
+            handle: .right,
+            to: CGPoint(x: 400, y: 400),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.height == Self.bounds.height)
+        #expect(resized.width == fullHeight.width)
+        #expect(resized.minX == fullHeight.minX)
+        #expect(resized.maxX == fullHeight.maxX)
+    }
+
+    @Test("bottom handle with ratio flush left shrinks from the left edge")
+    func bottomHandleWithRatioFlushLeftShrinksFromLeft() {
+        let flushLeft = CGRect(x: 0, y: 100, width: 400, height: 200)
+        let resized = CropGeometry.resized(
+            flushLeft,
+            handle: .bottom,
+            to: CGPoint(x: 200, y: 250),
+            ratio: Self.ratio35,
+            in: Self.bounds
+        )
+        #expect(resized.minX > 0)
+        #expect(resized.midX == flushLeft.midX)
+        #expect(resized.minY == flushLeft.minY)
+        #expect(resized.maxY == 250)
+        #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
+    }
+
 }

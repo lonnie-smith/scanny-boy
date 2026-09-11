@@ -47,7 +47,8 @@ enum CropPreset: String, CaseIterable, Identifiable {
 
 /// One crop-mode editing session: the rect (display space, the
 /// axis-aligned frame the `crop` op names), the tilt (counter-clockwise
-/// as displayed, what the op stores), and the ratio preset. The preview
+/// as displayed, what the op stores — the preview rotates the image by
+/// this amount about the rect's centre), and the ratio preset. The preview
 /// pane owns the session; the Geometry sidebar's crop section and the
 /// overlay both drive it.
 @Observable
@@ -58,8 +59,8 @@ final class CropSession {
     /// Whether the overlay is up. Leaving the tab, changing negatives,
     /// or Apply/Cancel clears it.
     var isActive = false
-    /// The crop rect in display space — the axis-aligned frame, which the
-    /// tilt then rotates about its own centre (the `crop` op's semantics).
+    /// The crop rect in display space — the axis-aligned frame the overlay
+    /// draws and the `crop` op stores; tilt rotates the image beneath it.
     var rect: CGRect = .zero
     var tiltDegrees: Double = 0
     var preset: CropPreset = .free
@@ -162,8 +163,7 @@ enum CropGeometry {
     }
 
     /// Translates `rect` by `delta`, clamped so the frame stays inside
-    /// the bounds. Translation commutes with the tilt, so a tilted rect
-    /// moves with the same drag.
+    /// the bounds.
     static func translated(
         _ rect: CGRect, by delta: CGSize, in bounds: CGSize
     ) -> CGRect {
@@ -173,9 +173,9 @@ enum CropGeometry {
     }
 
     /// Resizes `rect` by dragging `handle` to `point` (display space),
-    /// anchoring the opposite side. With a `ratio`, the dominant dragged
-    /// axis drives and the other follows. Callers pass an unrotated point
-    /// when the overlay is tilted (`CropGeometry.unrotated`).
+    /// anchoring the opposite side. Corners use the dominant dragged axis;
+    /// edges keep the opposite edge fixed on the dragged axis and centre
+    /// the coupled axis unless a bound forces a slide.
     static func resized(
         _ rect: CGRect,
         handle: Handle,
@@ -195,6 +195,11 @@ enum CropGeometry {
             }
             return cornerResized(anchor: anchor, dragged: point, ratio: ratio, bounds: bounds)
         case .top, .bottom:
+            if let ratio {
+                return verticalEdgeResized(
+                    rect, handle: handle, to: point, ratio: ratio, in: bounds
+                )
+            }
             let originY: CGFloat
             let height: CGFloat
             if handle == .top {
@@ -206,17 +211,16 @@ enum CropGeometry {
                 originY = rect.minY
                 height = bottom - rect.minY
             }
-            let width: CGFloat
-            if let ratio {
-                width = max(CGFloat(ratio) * height, minSize)
-            } else {
-                width = rect.width
-            }
             return clamped(
-                CGRect(x: rect.minX, y: originY, width: width, height: height),
+                CGRect(x: rect.minX, y: originY, width: rect.width, height: height),
                 in: bounds
             )
         case .left, .right:
+            if let ratio {
+                return horizontalEdgeResized(
+                    rect, handle: handle, to: point, ratio: ratio, in: bounds
+                )
+            }
             let originX: CGFloat
             let width: CGFloat
             if handle == .left {
@@ -228,17 +232,97 @@ enum CropGeometry {
                 originX = rect.minX
                 width = right - rect.minX
             }
-            let height: CGFloat
-            if let ratio {
-                height = max(CGFloat(width / ratio), minSize)
-            } else {
-                height = rect.height
-            }
             return clamped(
-                CGRect(x: originX, y: rect.minY, width: width, height: height),
+                CGRect(x: originX, y: rect.minY, width: width, height: rect.height),
                 in: bounds
             )
         }
+    }
+
+    /// Top/bottom handle with ratio lock: the dragged axis anchors the
+    /// opposite edge; width follows height and stays centred unless a bound
+    /// blocks one side (then the crop grows only on the free side).
+    private static func verticalEdgeResized(
+        _ rect: CGRect,
+        handle: Handle,
+        to point: CGPoint,
+        ratio: Double,
+        in bounds: CGSize
+    ) -> CGRect {
+        let originY: CGFloat
+        let height: CGFloat
+        if handle == .top {
+            let top = min(max(point.y, 0), rect.maxY - minSize)
+            originY = top
+            height = rect.maxY - top
+        } else {
+            let bottom = min(max(point.y, rect.minY + minSize), bounds.height)
+            originY = rect.minY
+            height = bottom - rect.minY
+        }
+
+        var width = max(CGFloat(ratio) * height, minSize)
+        var finalHeight = height
+        var finalOriginY = originY
+
+        if width > bounds.width {
+            width = bounds.width
+            finalHeight = max(width / CGFloat(ratio), minSize)
+            finalOriginY = handle == .top
+                ? rect.maxY - finalHeight
+                : rect.minY
+        }
+
+        var originX = rect.midX - width / 2
+        originX = min(max(originX, 0), bounds.width - width)
+
+        return clamped(
+            CGRect(x: originX, y: finalOriginY, width: width, height: finalHeight),
+            in: bounds
+        )
+    }
+
+    /// Left/right handle with ratio lock: the dragged axis anchors the
+    /// opposite edge; height follows width and stays centred unless a bound
+    /// blocks one side (then the crop grows only on the free side).
+    private static func horizontalEdgeResized(
+        _ rect: CGRect,
+        handle: Handle,
+        to point: CGPoint,
+        ratio: Double,
+        in bounds: CGSize
+    ) -> CGRect {
+        let originX: CGFloat
+        let width: CGFloat
+        if handle == .left {
+            let left = min(max(point.x, 0), rect.maxX - minSize)
+            originX = left
+            width = rect.maxX - left
+        } else {
+            let right = min(max(point.x, rect.minX + minSize), bounds.width)
+            originX = rect.minX
+            width = right - rect.minX
+        }
+
+        var height = max(width / CGFloat(ratio), minSize)
+        var finalWidth = width
+        var finalOriginX = originX
+
+        if height > bounds.height {
+            height = bounds.height
+            finalWidth = max(height * CGFloat(ratio), minSize)
+            finalOriginX = handle == .left
+                ? rect.maxX - finalWidth
+                : rect.minX
+        }
+
+        var originY = rect.midY - height / 2
+        originY = min(max(originY, 0), bounds.height - height)
+
+        return clamped(
+            CGRect(x: finalOriginX, y: originY, width: finalWidth, height: height),
+            in: bounds
+        )
     }
 
     /// The frame between a fixed anchor corner and a dragged point, the
@@ -276,71 +360,6 @@ enum CropGeometry {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
-    /// The tilted rect's four corners, in display space: the frame
-    /// rotated counter-clockwise by `tiltDegrees` about its own centre —
-    /// exactly the window the `crop` op's warp samples. In y-down display
-    /// coordinates a visual counter-clockwise rotation maps (1, 0) to
-    /// (cos θ, −sin θ).
-    static func corners(of rect: CGRect, tiltDegrees: Double) -> [CGPoint] {
-        let radians = tiltDegrees * Double.pi / 180
-        let cosine = CGFloat(cos(radians))
-        let sine = CGFloat(sin(radians))
-        let centre = CGPoint(x: rect.midX, y: rect.midY)
-        let halfWidth = rect.width / 2
-        let halfHeight = rect.height / 2
-        var points: [CGPoint] = []
-        let offsets = [
-            (-halfWidth, -halfHeight), (halfWidth, -halfHeight),
-            (halfWidth, halfHeight), (-halfWidth, halfHeight),
-        ]
-        for (dx, dy) in offsets {
-            points.append(
-                CGPoint(
-                    x: centre.x + dx * cosine + dy * sine,
-                    y: centre.y - dx * sine + dy * cosine
-                )
-            )
-        }
-        return points
-    }
-
-    /// Maps a display point from the tilted window back into the untilted
-    /// frame's coordinates — the inverse of `corners(of:tiltDegrees:)`.
-    static func unrotated(
-        _ point: CGPoint, about centre: CGPoint, tiltDegrees: Double
-    ) -> CGPoint {
-        let dx = point.x - centre.x
-        let dy = point.y - centre.y
-        let radians = -tiltDegrees * Double.pi / 180
-        let cosine = CGFloat(cos(radians))
-        let sine = CGFloat(sin(radians))
-        return CGPoint(
-            x: centre.x + dx * cosine + dy * sine,
-            y: centre.y - dx * sine + dy * cosine
-        )
-    }
-
-    /// A handle's position on the tilted window — corner or edge midpoint
-    /// of `corners(of:tiltDegrees:)`. At zero tilt this equals `point(on:)`.
-    static func handlePoint(
-        _ handle: Handle, on rect: CGRect, tiltDegrees: Double
-    ) -> CGPoint {
-        let quad = corners(of: rect, tiltDegrees: tiltDegrees)
-        func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
-            CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-        }
-        switch handle {
-        case .topLeft: return quad[0]
-        case .top: return midpoint(quad[0], quad[1])
-        case .topRight: return quad[1]
-        case .right: return midpoint(quad[1], quad[2])
-        case .bottomRight: return quad[2]
-        case .bottom: return midpoint(quad[2], quad[3])
-        case .bottomLeft: return quad[3]
-        case .left: return midpoint(quad[3], quad[0])
-        }
-    }
-
     enum Handle: CaseIterable {
         case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
 
@@ -351,8 +370,7 @@ enum CropGeometry {
             .topLeft, .topRight, .bottomRight, .bottomLeft,
         ]
 
-        /// The handle's position on the untilted frame; the overlay draws
-        /// on the tilted quad via `handlePoint(on:tiltDegrees:)`.
+        /// The handle's position on the axis-aligned crop frame.
         func point(on rect: CGRect) -> CGPoint {
             switch self {
             case .topLeft: CGPoint(x: rect.minX, y: rect.minY)
@@ -401,12 +419,13 @@ enum CropGeometry {
     }
 }
 
-/// The crop-mode overlay: a dark scrim outside the tilted window, its
-/// border, a move surface, and the resize handles. All drawing happens in
-/// the fit rect's pane coordinates — the display-space rect maps in
-/// through `fitRect` the same way the preview image does; Apply sends
-/// display-space values to the CLI, so Swift converts nothing on the way
-/// out either.
+/// The crop-mode overlay: a dark scrim outside the axis-aligned crop
+/// window, its border, a move surface, and the resize handles. The preview
+/// image rotates beneath; this overlay stays square to the screen. All
+/// drawing happens in the fit rect's pane coordinates — the display-space
+/// rect maps in through `fitRect` the same way the preview image does;
+/// Apply sends display-space values to the CLI, so Swift converts nothing
+/// on the way out either.
 struct CropOverlayView: View {
     let session: CropSession
     let fitRect: CGRect
@@ -447,12 +466,16 @@ struct CropOverlayView: View {
     private var frame: CGRect { session.rect }
     private var bounds: CGSize { displaySize }
     private var windowPath: Path {
-        var path = Path()
-        let corners = CropGeometry
-            .corners(of: frame, tiltDegrees: session.tiltDegrees)
-            .map(panePoint)
-        path.addLines(corners + [corners[0]])
-        return path
+        Path(paneRect(frame))
+    }
+
+    private func paneRect(_ display: CGRect) -> CGRect {
+        CGRect(
+            x: fitRect.minX + display.minX * scale,
+            y: fitRect.minY + display.minY * scale,
+            width: display.width * scale,
+            height: display.height * scale
+        )
     }
 
     private func panePoint(_ display: CGPoint) -> CGPoint {
@@ -462,27 +485,15 @@ struct CropOverlayView: View {
         )
     }
 
-    private func displayPoint(_ pane: CGPoint) -> CGPoint {
-        CGPoint(
-            x: (pane.x - fitRect.minX) / scale,
-            y: (pane.y - fitRect.minY) / scale
-        )
-    }
-
-    /// Where a handle is drawn and hit-tested — on the tilted window's
-    /// border (or the axis-aligned border at zero tilt).
+    /// Where a handle is drawn and hit-tested — on the axis-aligned border.
     private func handleCentre(_ handle: CropGeometry.Handle) -> CGPoint {
-        panePoint(
-            CropGeometry.handlePoint(
-                handle, on: frame, tiltDegrees: session.tiltDegrees
-            )
-        )
+        panePoint(handle.point(on: frame))
     }
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                // The scrim: the whole fit rect minus the tilted window,
+                // The scrim: the whole fit rect minus the crop window,
                 // even-odd filled.
                 Path { path in
                     path.addRect(fitRect)
@@ -596,21 +607,15 @@ struct CropOverlayView: View {
                     resizingHandle = handle
                 }
                 let base = session.dragBaseRect ?? frame
-                let centre = CGPoint(x: base.midX, y: base.midY)
-                let start = CropGeometry.handlePoint(
-                    handle, on: base, tiltDegrees: session.tiltDegrees
-                )
+                let start = handle.point(on: base)
                 let dragged = CGPoint(
                     x: start.x + value.translation.width / scale,
                     y: start.y + value.translation.height / scale
                 )
-                let unrotated = CropGeometry.unrotated(
-                    dragged, about: centre, tiltDegrees: session.tiltDegrees
-                )
                 session.rect = CropGeometry.resized(
                     base,
                     handle: handle,
-                    to: unrotated,
+                    to: dragged,
                     ratio: session.orientedRatio,
                     in: bounds
                 )

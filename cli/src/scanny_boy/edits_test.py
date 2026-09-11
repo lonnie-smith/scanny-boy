@@ -1267,6 +1267,36 @@ def test_crop_records_the_tilt_in_tiff_space(croppable_roll):
     )
 
     assert abs(fields["crop"]["tilt_deg"] - 5.0) < 0.51
+
+
+def test_crop_report_carries_display_tilt_when_fine_rotation_is_present(
+    croppable_roll,
+):
+    """`edit_recorded`'s crop report names the slider tilt, not the
+    composed TIFF angle, so re-entering crop mode reseeds correctly."""
+    from scanny_boy.library import repo
+
+    fine_angle_deg = -0.1
+    display_tilt = 0.3
+    repo.append_edit(
+        croppable_roll,
+        _NEGATIVE_ID,
+        repo.ROTATE_FINE_OP,
+        {"angle_deg": fine_angle_deg, "source": "auto"},
+    )
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        tilt_deg=display_tilt,
+        full_frame=True,
+        emit=lambda event: None,
+    )
+
+    assert abs(fields["crop"]["tilt_deg"] - display_tilt) < 0.05
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert abs(state.crop["tilt_deg"] - (display_tilt + fine_angle_deg)) < 0.05
     state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
     assert state.crop["w"] == 50
     assert state.crop["h"] == 24

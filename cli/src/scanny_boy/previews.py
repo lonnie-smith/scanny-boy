@@ -591,6 +591,100 @@ def display_shape(
     return (inner_w, inner_h) if r % 2 else (inner_h, inner_w)
 
 
+def _window_from_tilted_corners(
+    corners: list[tuple[float, float]],
+) -> tuple[int, int, int, int, float]:
+    """Axis-aligned window `(x, y, w, h, tilt_deg)` from four tilted
+    pixel-index corners — the centre, edge lengths, and CCW tilt that
+    `display_crop_window_to_tiff` and `tiff_crop_window_to_display` share."""
+    (x0, y0), (x1, y1), x2y2, (x3, y3) = corners
+    centre_x = (x0 + x1 + x2y2[0] + x3) / 4.0
+    centre_y = (y0 + y1 + x2y2[1] + y3) / 4.0
+    edge_x, edge_y = x1 - x0, y1 - y0
+    width = math.hypot(edge_x, edge_y) + 1.0
+    height = math.hypot(x3 - x0, y3 - y0) + 1.0
+    tilt = -auto_rotate.edge_degrees(edge_y, edge_x)
+    while tilt > 45.0:
+        tilt -= 90.0
+        width, height = height, width
+    while tilt <= -45.0:
+        tilt += 90.0
+        width, height = height, width
+    return (
+        math.floor(centre_x - width / 2.0 + 0.5),
+        math.floor(centre_y - height / 2.0 + 0.5),
+        max(round(width), 1),
+        max(round(height), 1),
+        round(tilt, 2),
+    )
+
+
+def tiff_crop_window_to_display(
+    crop_params: dict,
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> tuple[int, int, int, int, float]:
+    """The stored TIFF-space crop window as the display-space rect and
+    slider tilt the app re-enters crop mode with — the forward map that
+    inverts `display_crop_window_to_tiff` on the full uncropped canvas."""
+    import cv2
+
+    tiff_h, tiff_w = tiff_size
+    stage_h, stage_w = tiff_h, tiff_w
+    x, y, w, h = (
+        int(crop_params["x"]),
+        int(crop_params["y"]),
+        int(crop_params["w"]),
+        int(crop_params["h"]),
+    )
+    tilt_deg = float(crop_params["tilt_deg"])
+    centre_x, centre_y = x + (w - 1) / 2.0, y + (h - 1) / 2.0
+    corners = [
+        (float(px), float(py))
+        for px, py in (
+            (x, y),
+            (x + w - 1, y),
+            (x + w - 1, y + h - 1),
+            (x, y + h - 1),
+        )
+    ]
+    if abs(tilt_deg) >= 1e-9:
+        tilt_matrix = cv2.getRotationMatrix2D(
+            (centre_x, centre_y), float(tilt_deg), 1.0
+        )
+        corners = [
+            (
+                tilt_matrix[0, 0] * px + tilt_matrix[0, 1] * py + tilt_matrix[0, 2],
+                tilt_matrix[1, 0] * px + tilt_matrix[1, 1] * py + tilt_matrix[1, 2],
+            )
+            for px, py in corners
+        ]
+    if flipped_horizontally:
+        corners = [(stage_w - 1 - px, py) for px, py in corners]
+    if abs(fine_angle_deg) >= 1e-9:
+        matrix = cv2.getRotationMatrix2D(
+            (stage_w / 2.0, stage_h / 2.0), -float(fine_angle_deg), 1.0
+        )
+        corners = [
+            (
+                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
+                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
+            )
+            for px, py in corners
+        ]
+    r = (-int(quarter_turns)) % 4
+    if r == 1:
+        corners = [(py, stage_w - 1 - px) for px, py in corners]
+    elif r == 2:
+        corners = [(stage_w - 1 - px, stage_h - 1 - py) for px, py in corners]
+    elif r == 3:
+        corners = [(stage_h - 1 - py, px) for px, py in corners]
+    return _window_from_tilted_corners(corners)
+
+
 def crop_report(
     crop_params: dict | None,
     tiff_size: tuple[int, int],  # (height, width)
@@ -601,11 +695,11 @@ def crop_report(
 ) -> dict | None:
     """The net crop as `roll info` and `edit_recorded` report it, in
     display space — the cropped image's final dimensions (quarter turns
-    folded in, the only transform that changes them) plus the stored tilt
-    and preset label for the sidebar. When a live crop exists, the report
-    also carries the crop window's origin and the full uncropped display
-    canvas so the app can re-enter crop mode on the whole frame with the
-    saved rect superimposed."""
+    folded in, the only transform that changes them) plus the display
+    slider tilt and preset label for the sidebar. When a live crop exists,
+    the report also carries the crop window's origin and the full
+    uncropped display canvas so the app can re-enter crop mode on the
+    whole frame with the saved rect superimposed."""
     if not crop_params:
         return None
     height, width = display_shape(
@@ -614,23 +708,17 @@ def crop_report(
     canvas_h, canvas_w = display_shape(
         tiff_size, quarter_turns=quarter_turns, crop_params=None
     )
-    x, y, _w, _h = tiff_rect_to_display(
-        (
-            int(crop_params["x"]),
-            int(crop_params["y"]),
-            int(crop_params["w"]),
-            int(crop_params["h"]),
-        ),
+    x, y, _w, _h, display_tilt = tiff_crop_window_to_display(
+        crop_params,
         tiff_size,
         quarter_turns=quarter_turns,
         flipped_horizontally=flipped_horizontally,
         fine_angle_deg=fine_angle_deg,
-        crop_params=None,
     )
     return {
         "width": width,
         "height": height,
-        "tilt_deg": crop_params["tilt_deg"],
+        "tilt_deg": display_tilt,
         "preset": crop_params.get("preset"),
         "x": x,
         "y": y,
@@ -734,35 +822,7 @@ def display_crop_window_to_tiff(
             )
         mapped.append((j, i))
 
-    (x0, y0), (x1, y1), x2y2, (x3, y3) = mapped
-    # The corners are pixel indices, so the centre they average to is the
-    # window's continuous centre, and its pixel extents are the index
-    # distances plus one — the same floor/ceil+1 convention
-    # `tiff_rect_to_display`'s bounding box uses.
-    centre_x = (x0 + x1 + x2y2[0] + x3) / 4.0
-    centre_y = (y0 + y1 + x2y2[1] + y3) / 4.0
-    # The display-width edge's direction and length, in TIFF space.
-    edge_x, edge_y = x1 - x0, y1 - y0
-    width = math.hypot(edge_x, edge_y) + 1.0
-    height = math.hypot(x3 - x0, y3 - y0) + 1.0
-    # The window's counter-clockwise tilt as displayed is the width edge's
-    # direction; `auto_rotate.edge_degrees` counts clockwise in viewing
-    # space, so negate. Fold into (-45, 45], swapping the sides whenever
-    # the "width" edge turns out to be the more vertical one.
-    tilt = -auto_rotate.edge_degrees(edge_y, edge_x)
-    while tilt > 45.0:
-        tilt -= 90.0
-        width, height = height, width
-    while tilt <= -45.0:
-        tilt += 90.0
-        width, height = height, width
-    return (
-        math.floor(centre_x - width / 2.0 + 0.5),
-        math.floor(centre_y - height / 2.0 + 0.5),
-        max(round(width), 1),
-        max(round(height), 1),
-        round(tilt, 2),
-    )
+    return _window_from_tilted_corners(mapped)
 
 
 def _display_image(
