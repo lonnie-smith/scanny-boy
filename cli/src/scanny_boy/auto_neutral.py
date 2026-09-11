@@ -152,8 +152,8 @@ def _downscale_uint16(image: np.ndarray, scale: float) -> np.ndarray:
     if scale >= 1.0:
         return image
     height, width = image.shape[0], image.shape[1]
-    new_h = max(1, int(round(height * scale)))
-    new_w = max(1, int(round(width * scale)))
+    new_h = max(1, round(height * scale))
+    new_w = max(1, round(width * scale))
     if image.ndim == 2:
         return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
     channels = [
@@ -176,7 +176,6 @@ def _norm_to_log_grid(
         floor = float(floors[ch])
         if delta is not None and ch < len(delta):
             floor -= float(delta[ch])
-        ceil = float(ceils[ch])
         out[..., ch] = floor + norm[..., ch] * metering.ranges[ch]
     return out
 
@@ -247,10 +246,10 @@ def measure_auto_neutral_from_tiff(
         if valid_rect is not None:
             x, y, w, h = valid_rect
             valid_rect = (
-                int(round(x * scale)),
-                int(round(y * scale)),
-                max(1, int(round(w * scale))),
-                max(1, int(round(h * scale))),
+                round(x * scale),
+                round(y * scale),
+                max(1, round(w * scale)),
+                max(1, round(h * scale)),
             )
     return measure_auto_neutral_from_image(
         image,

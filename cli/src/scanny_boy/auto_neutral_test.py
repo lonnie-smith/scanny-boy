@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from scanny_boy import auto_neutral, color, normalization, render, tone
 from scanny_boy.auto_neutral import (
-    AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_HIGH,
-    AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_LOW,
     AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_HIGH,
     AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_LOW,
     measure_auto_neutral_bands,
@@ -170,10 +169,10 @@ def test_recompute_changes_when_lock_changes(monkeypatch):
 
     monkeypatch.setattr(auto_neutral, "measure_auto_neutral_from_tiff", _fake_measure)
 
-    class _Negative:
-        output = {"name": "a.tif"}
-        valid_rect = None
-        normalization = {
+    negative = SimpleNamespace(
+        output={"name": "a.tif"},
+        valid_rect=None,
+        normalization={
             "floors": [0.0, 0.0, 0.0],
             "ceils": [1.0, 1.0, 1.0],
             "auto_neutral": {
@@ -182,12 +181,13 @@ def test_recompute_changes_when_lock_changes(monkeypatch):
                 "highlight_lock": {"k": [1.0, 1.0, 1.0]},
                 "measure_version": 1,
             },
-        }
+        },
+    )
 
     lock = {"k": [1.1, 1.0, 0.9], "base": [0.0, 0.0, 0.0], "qualifying_count": 1}
     monkeypatch.setattr(Path, "exists", lambda self: True)
     changed = auto_neutral.recompute_negative_auto_neutral(
-        _Negative(), Path("/tmp"), highlight_lock=lock
+        negative, Path("/tmp"), highlight_lock=lock
     )
     assert changed
     assert calls[-1] == lock

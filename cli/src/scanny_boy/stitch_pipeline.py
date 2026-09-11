@@ -29,7 +29,6 @@ import tifffile
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import composite as composite_module
 from scanny_boy import (
     auto_neutral,
     concurrency,
@@ -43,6 +42,7 @@ from scanny_boy import (
     scratches,
     tiff_exif,
 )
+from scanny_boy import composite as composite_module
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
