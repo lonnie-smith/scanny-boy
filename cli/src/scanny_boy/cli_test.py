@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import signal
 import subprocess
@@ -37,17 +38,9 @@ SCHEMA = load_schema()
 def _tone_params(grade_r: float = 90.0, snap_gamma: float = 0.2, **overrides: float):
     from scanny_boy import tone
 
-    params = {
-        "grade_r": grade_r,
-        "snap_gamma": snap_gamma,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
-    }
+    params = dataclasses.asdict(tone.NEUTRAL)
+    params["grade_r"] = grade_r
+    params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
 
@@ -1418,8 +1411,10 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     roll = load_roll_manifest(roll_dir)
     negative = roll.negatives[0]
     matrix = render.camera_matrix_from_roll(roll)
-    tone_params = {"grade_r": 160.0, "snap_gamma": 0.3}
+    from scanny_boy.edits_test import _tone_params
     from scanny_boy import color
+
+    tone_params = _tone_params(160.0, 0.3)
 
     meter = color.read_metering(
         negative.normalization, highlight_lock=roll.highlight_lock

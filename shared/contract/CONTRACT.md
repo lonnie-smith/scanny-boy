@@ -468,17 +468,19 @@ a crop whose canvas no longer matches the published TIFF (a re-stitch)
 reports as `null`. While a live crop exists, spot sets report no markers
 (the repair itself is replayed before the crop and still applies).
 
-`edit tone` records a preview tone adjustment for one or more negatives: an
-ISO-R paper grade (`--grade`, 50–180, or `--auto-grade` to solve from the
-negative's recorded normalization; lower is harder), a midtone snap
-(`--snap`, −0.5…0.5), print density (`--density`, 0.0–2.0, neutral 1.0,
-higher is denser, or `--auto-density`), zone density offsets
-(`--shadow-density` ±0.9, `--highlight-density` ±0.5; positive adds
-density), and toe/shoulder shaping (`--toe` / `--shoulder` −1…1,
-`--toe-width` / `--shoulder-width` 0.1–5.0, neutral 2.5), or `--reset` for
-the flat linear look. `--density` and `--auto-density` are mutually
-exclusive, as are `--grade` and `--auto-grade`. Auto flags solve once per
-negative and record the computed value — they are not a persistent mode.
+`edit tone` records a preview tone adjustment for one or more negatives: a
+stored grade (`--grade`, 50–180, or `--auto-grade` to solve from the
+negative's recorded normalization; lower is punchier in the ends), midtone
+contrast (`--snap`, −0.8…1.5), density/brightness (`--density`, 0.0–2.0,
+neutral 1.0, higher is denser/darker, or `--auto-density`), zone density
+offsets (`--shadow-density` ±0.9, `--highlight-density` ±0.5; positive
+adds density/darkens), and toe/shoulder shaping (`--toe` / `--shoulder`
+−1…1, `--toe-width` / `--shoulder-width` 0.1–5.0, neutral 2.5), or
+`--reset` for the default scan-start curve (no recorded adjustment). With
+no `tone` op the positive preview still applies the same default curve.
+`--density` and `--auto-density` are mutually exclusive, as are `--grade`
+and `--auto-grade`. Auto flags solve once per negative and record the
+computed value — they are not a persistent mode.
 The op is a state, not a transform — the latest `tone` op wins, and a
 trailing `tone` op is updated in place rather than appended behind. The
 published TIFF is never touched (the export's render bakes the curve into

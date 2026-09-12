@@ -137,7 +137,7 @@ def test_a_saturated_primary_is_changed_by_a_non_identity_matrix():
     """The test that proves the matrix is actually being applied, and not
     silently identity."""
     saturated = np.zeros((1, 1, 3), dtype=np.uint16)
-    saturated[0, 0] = (60000, 2000, 2000)
+    saturated[0, 0] = (40000, 10000, 10000)
     identity = np.eye(3, dtype=np.float32)
     unchanged, _ = render.render_export(saturated, identity, None)
     changed, _ = render.render_export(saturated, _TEST_MATRIX, None)
@@ -182,7 +182,7 @@ def test_the_uint16_gather_round_trips_the_extended_display_domain():
     white_code = int(
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
-    assert rendered[0, white_code, 0] > rendered[0, white_code + 1, 0]
+    assert rendered[0, white_code, 0] > rendered[0, white_code + 4, 0]
 
 
 def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():

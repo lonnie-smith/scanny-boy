@@ -102,7 +102,10 @@ def solve_density(normalization: dict | None, highlight_lock=None) -> float | No
 
 
 def solve_grade(normalization: dict | None, highlight_lock=None) -> float | None:
-    """Solve paper grade from the recorded textural range."""
+    """Solve stored grade from the recorded textural range.
+
+    Targets the scan-start default (``NEUTRAL_GRADE_R``) on a nominal
+    negative, not the legacy R115 print reference."""
     if not normalization:
         return None
     textural = normalization.get("textural_range")
@@ -122,5 +125,5 @@ def solve_grade(normalization: dict | None, highlight_lock=None) -> float | None
         effective = AUTO_GRADE_TARGET * (
             NOMINAL_RATIO + AUTO_GRADE_STRENGTH * (ratio - NOMINAL_RATIO)
         )
-    grade_r = tone.GRADE_REFERENCE * NOMINAL_RANGE / effective
+    grade_r = tone.NEUTRAL_GRADE_R * NOMINAL_RANGE / effective
     return max(tone.GRADE_MIN, min(tone.GRADE_MAX, grade_r))

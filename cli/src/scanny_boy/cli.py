@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     edit_tone = edit_subparsers.add_parser(
         "tone",
         help=(
-            "Record a preview tone adjustment (paper grade, density, zone "
+            "Record a preview tone adjustment (grade, contrast, density, zone "
             "density, toe/shoulder) for one or more negatives."
         ),
     )
@@ -496,7 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--grade",
         type=float,
         metavar="R",
-        help="ISO-R paper grade, 50-180 (lower is harder); with --snap",
+        help="stored grade, 50-180 (lower is punchier in the ends); with --snap",
     )
     grade_group.add_argument(
         "--auto-grade",
@@ -507,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--snap",
         type=float,
         metavar="G",
-        help="midtone snap, -0.5..0.5; with --grade or --auto-grade",
+        help="midtone contrast, -0.8..1.5; with --grade or --auto-grade",
     )
     density_group = edit_tone.add_mutually_exclusive_group()
     density_group.add_argument(
@@ -560,7 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     edit_tone.add_argument(
         "--reset",
         action="store_true",
-        help="reset to the flat linear preview, removing the adjustment",
+        help="reset to the default scan-start curve, removing the adjustment",
     )
 
     edit_color = edit_subparsers.add_parser(
@@ -790,25 +790,30 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
 
     if args.reset:
         return {key: None for key in tone.TONE_PARAM_KEYS}
+    neutral = dataclasses.asdict(tone.NEUTRAL)
     return {
-        "grade_r": args.grade if args.grade is not None else tone.GRADE_REFERENCE,
-        "snap_gamma": args.snap,
-        "density": args.density if args.density is not None else tone.DENSITY_REFERENCE,
-        "shadow_density": args.shadow_density
-        if args.shadow_density is not None
-        else 0.0,
-        "highlight_density": (
-            args.highlight_density if args.highlight_density is not None else 0.0
+        "grade_r": args.grade if args.grade is not None else neutral["grade_r"],
+        "snap_gamma": args.snap if args.snap is not None else neutral["snap_gamma"],
+        "density": args.density if args.density is not None else neutral["density"],
+        "shadow_density": (
+            args.shadow_density
+            if args.shadow_density is not None
+            else neutral["shadow_density"]
         ),
-        "toe": args.toe if args.toe is not None else 0.0,
-        "toe_width": args.toe_width
-        if args.toe_width is not None
-        else tone.WIDTH_REFERENCE,
-        "shoulder": args.shoulder if args.shoulder is not None else 0.0,
+        "highlight_density": (
+            args.highlight_density
+            if args.highlight_density is not None
+            else neutral["highlight_density"]
+        ),
+        "toe": args.toe if args.toe is not None else neutral["toe"],
+        "toe_width": (
+            args.toe_width if args.toe_width is not None else neutral["toe_width"]
+        ),
+        "shoulder": args.shoulder if args.shoulder is not None else neutral["shoulder"],
         "shoulder_width": (
             args.shoulder_width
             if args.shoulder_width is not None
-            else tone.WIDTH_REFERENCE
+            else neutral["shoulder_width"]
         ),
     }
 

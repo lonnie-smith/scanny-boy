@@ -6,6 +6,7 @@ before anything is recorded."""
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -35,17 +36,9 @@ _NEGATIVE_ID = "stitch-negative-01"
 def _tone_params(grade_r: float = 115.0, snap_gamma: float = 0.0, **overrides: float):
     from scanny_boy import tone
 
-    params = {
-        "grade_r": grade_r,
-        "snap_gamma": snap_gamma,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
-    }
+    params = dataclasses.asdict(tone.NEUTRAL)
+    params["grade_r"] = grade_r
+    params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
 

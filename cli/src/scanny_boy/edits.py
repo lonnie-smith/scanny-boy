@@ -263,8 +263,9 @@ def run_edit_tone(
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview tone adjustment — the full
-    nine-key tone state, or all `None` for the reset to the flat linear
-    look (see `tone.py`). Auto flags solve density and/or grade from each
+    nine-key tone state, or all `None` for the reset to the default
+    scan-start curve (see `tone.py`). Auto flags solve density and/or grade
+    from each
     negative's recorded normalization before validation.
 
     The op is a state, not a transform: the latest one wins and a trailing

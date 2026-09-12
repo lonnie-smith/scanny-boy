@@ -1122,7 +1122,7 @@ private struct ToneAdjustmentPanel: View {
     let onReset: () -> Void
 
     private static let gradeRange: ClosedRange<Double> = 50...180
-    private static let snapRange: ClosedRange<Double> = -0.5...0.5
+    private static let snapRange: ClosedRange<Double> = -0.8...1.5
     private static let densityRange: ClosedRange<Double> = 0...2
     private static let shadowDensityRange: ClosedRange<Double> = -0.9...0.9
     private static let highlightDensityRange: ClosedRange<Double> = -0.5...0.5
@@ -1132,76 +1132,93 @@ private struct ToneAdjustmentPanel: View {
     @State private var values = ToneAdjustment.neutral
     @State private var isDragging = false
 
+    private func inverted(_ value: Double, in range: ClosedRange<Double>) -> Double {
+        range.upperBound + range.lowerBound - value
+    }
+
+    private var brightness: Double {
+        get { inverted(values.density, in: Self.densityRange) }
+        nonmutating set { values.density = inverted(newValue, in: Self.densityRange) }
+    }
+
+    private var shadows: Double {
+        get { inverted(values.shadowDensity, in: Self.shadowDensityRange) }
+        nonmutating set { values.shadowDensity = inverted(newValue, in: Self.shadowDensityRange) }
+    }
+
+    private var highlights: Double {
+        get { inverted(values.highlightDensity, in: Self.highlightDensityRange) }
+        nonmutating set { values.highlightDensity = inverted(newValue, in: Self.highlightDensityRange) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            sectionHeader("Print")
+            sectionHeader("Tone")
                 sliderRow(
-                    title: "Print Density",
-                    valueLabel: String(format: "%.2f", values.density),
-                    value: $values.density,
+                    title: "Brightness",
+                    valueLabel: String(format: "%.2f", brightness),
+                    value: Binding(get: { brightness }, set: { brightness = $0 }),
                     range: Self.densityRange,
                     step: 0.05,
-                    resetValue: ToneAdjustment.neutral.density,
-                    accessibilityLabel: "Print density",
-                    help: "0.0–2.0, higher is denser",
-                    autoHelp: "Solve the density from this negative's own metering",
+                    resetValue: inverted(ToneAdjustment.neutral.density, in: Self.densityRange),
+                    accessibilityLabel: "Brightness",
+                    help: "0.0–2.0, higher is brighter",
+                    autoHelp: "Solve brightness from this negative's own metering",
                     autoFlag: .density
                 )
                 sliderRow(
-                    title: "Paper Grade",
-                    valueLabel: "R\(Int(values.gradeR))",
-                    value: $values.gradeR,
-                    range: Self.gradeRange,
-                    step: 1,
-                    resetValue: ToneAdjustment.neutral.gradeR,
-                    reversed: true,
-                    accessibilityLabel: "Paper grade",
-                    help: "50–180, lower is harder",
-                    autoHelp: "Solve the grade from this negative's own metering",
-                    autoFlag: .grade
-                )
-                sliderRow(
-                    title: "Snap",
+                    title: "Contrast",
                     valueLabel: String(format: "%+.2f", values.snapGamma),
                     value: $values.snapGamma,
                     range: Self.snapRange,
                     step: 0.05,
-                    resetValue: 0,
-                    accessibilityLabel: "Midtone snap",
-                    help: "Midtone contrast trim"
+                    resetValue: ToneAdjustment.neutral.snapGamma,
+                    accessibilityLabel: "Contrast",
+                    help: "−0.8–1.5, midtone contrast"
                 )
 
                 sectionHeader("Zones")
                 sliderRow(
-                    title: "Shadows Density",
-                    valueLabel: String(format: "%+.2f", values.shadowDensity),
-                    value: $values.shadowDensity,
+                    title: "Shadows",
+                    valueLabel: String(format: "%+.2f", shadows),
+                    value: Binding(get: { shadows }, set: { shadows = $0 }),
                     range: Self.shadowDensityRange,
                     step: 0.05,
                     resetValue: 0,
-                    accessibilityLabel: "Shadows density",
-                    help: "±0.9, positive adds density"
+                    accessibilityLabel: "Shadows",
+                    help: "±0.9, positive brightens"
                 )
                 sliderRow(
-                    title: "Highlights Density",
-                    valueLabel: String(format: "%+.2f", values.highlightDensity),
-                    value: $values.highlightDensity,
+                    title: "Highlights",
+                    valueLabel: String(format: "%+.2f", highlights),
+                    value: Binding(get: { highlights }, set: { highlights = $0 }),
                     range: Self.highlightDensityRange,
                     step: 0.05,
                     resetValue: 0,
-                    accessibilityLabel: "Highlights density",
-                    help: "±0.5, positive adds density"
+                    accessibilityLabel: "Highlights",
+                    help: "±0.5, positive brightens"
                 )
 
                 DisclosureGroup("Curve") {
                     VStack(alignment: .leading, spacing: 12) {
+                        sliderRow(
+                            title: "End Contrast",
+                            valueLabel: String(format: "%.0f", values.gradeR),
+                            value: $values.gradeR,
+                            range: Self.gradeRange,
+                            step: 1,
+                            resetValue: ToneAdjustment.neutral.gradeR,
+                            reversed: true,
+                            accessibilityLabel: "End contrast",
+                            help: "50–180, lower is punchier in the ends"
+                        )
                         sliderRow(
                             title: "Toe",
                             valueLabel: String(format: "%+.2f", values.toe),
                             value: $values.toe,
                             range: Self.toeRange,
                             step: 0.05,
-                            resetValue: 0,
+                            resetValue: ToneAdjustment.neutral.toe,
                             accessibilityLabel: "Toe",
                             help: "Shadow roll-off"
                         )
@@ -1221,7 +1238,7 @@ private struct ToneAdjustmentPanel: View {
                             value: $values.shoulder,
                             range: Self.toeRange,
                             step: 0.05,
-                            resetValue: 0,
+                            resetValue: ToneAdjustment.neutral.shoulder,
                             accessibilityLabel: "Shoulder",
                             help: "Highlight roll-off"
                         )
@@ -1247,7 +1264,7 @@ private struct ToneAdjustmentPanel: View {
                         onReset()
                     }
                     .disabled(isBusy)
-                    .help("Return every control to the default print curve")
+                    .help("Return every control to the default scan-start curve")
                     Spacer()
                     if isBusy {
                         ProgressView()

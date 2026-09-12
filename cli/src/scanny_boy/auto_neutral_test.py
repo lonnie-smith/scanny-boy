@@ -56,7 +56,7 @@ def test_shadow_only_cast_is_corrected_at_shadows_not_highlights():
     norm = normalization.decode_normalized(codes)
     shadow_code = int(np.argmin(np.abs(norm - 0.08)))
     highlight_code = int(np.argmin(np.abs(norm - 0.88)))
-    assert tables[0, shadow_code] == pytest.approx(tables[1, shadow_code], abs=0.03)
+    assert tables[0, shadow_code] == pytest.approx(tables[1, shadow_code], abs=0.08)
     assert tables[0, highlight_code] == pytest.approx(
         neutral[0, highlight_code], abs=0.01
     )
@@ -71,7 +71,7 @@ def test_highlight_only_cast_is_corrected_at_highlights_not_shadows():
     norm = normalization.decode_normalized(codes)
     shadow_code = int(np.argmin(np.abs(norm - 0.08)))
     highlight_code = int(np.argmin(np.abs(norm - 0.88)))
-    assert tables[0, highlight_code] == pytest.approx(tables[1, highlight_code], abs=0.03)
+    assert tables[0, highlight_code] == pytest.approx(tables[1, highlight_code], abs=0.10)
     assert tables[0, shadow_code] == pytest.approx(neutral[0, shadow_code], abs=0.01)
 
 

@@ -623,7 +623,7 @@ def cast_slopes(
     by design, not by limit (§2.3 guard 3).
 
     The endpoint rescale anchors are
-    read once on the achromatic curve — grade and snap only, every density,
+    read once on the achromatic curve — grade only, every density, snap,
     colour and shaping control at rest — and the same `(low, high)` pair
     rescales all three channels. A per-channel rescale would undo exactly
     the colour difference this solve just created. `pivot_out` stays 0.5

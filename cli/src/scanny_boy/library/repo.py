@@ -783,17 +783,8 @@ def append_scratches_edit(roll_dir: Path, negative_id: str, params: dict) -> dic
 def _tone_neutral_defaults() -> dict[str, float]:
     from scanny_boy import tone
 
-    return {
-        "grade_r": tone.GRADE_REFERENCE,
-        "snap_gamma": 0.0,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
-    }
+    neutral = dataclasses.asdict(tone.NEUTRAL)
+    return {key: neutral[key] for key in tone.TONE_PARAM_KEYS}
 
 
 def _color_neutral_defaults() -> dict[str, float]:

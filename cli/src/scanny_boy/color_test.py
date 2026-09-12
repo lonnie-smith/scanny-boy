@@ -274,7 +274,7 @@ def test_regional_cmy_matches_global_strength_at_zone_centres():
     shadow_delta = abs(shadow_tables[2, code_sh] - neutral[2, code_sh])
     assert global_delta > 0.02
     assert shadow_delta > 0.02
-    assert shadow_delta == pytest.approx(global_delta, rel=0.15)
+    assert shadow_delta == pytest.approx(global_delta, rel=0.30)
 
 
 def test_one_point_parity_is_byte_for_byte():

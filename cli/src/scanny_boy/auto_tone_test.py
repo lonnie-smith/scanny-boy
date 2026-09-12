@@ -28,7 +28,7 @@ def test_nominal_ratio_solves_to_reference_grade():
         floors=[-1.0],
         ceils=[0.0],
     )
-    assert auto_tone.solve_grade(record) == pytest.approx(tone.GRADE_REFERENCE)
+    assert auto_tone.solve_grade(record) == pytest.approx(tone.NEUTRAL_GRADE_R)
 
 
 def test_dense_metering_solves_darker():
