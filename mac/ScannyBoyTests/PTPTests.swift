@@ -119,6 +119,23 @@ struct PTPTests {
         #expect(bytes == payload)
     }
 
+    @Test("objectPayload accepts a large data buffer with no response container")
+    func objectPayloadAcceptsEmptyResponse() {
+        let payload = Array(repeating: UInt8(0xEF), count: 256)
+        let dataPhase = Self.dataContainer(payload: payload)
+        let bytes = PTP.objectPayload(
+            dataPhase: dataPhase, response: Data(), expectedSize: UInt32(payload.count)
+        )
+        #expect(bytes.count == payload.count)
+        #expect(bytes == payload)
+    }
+
+    @Test("objectPayload returns empty when both buffers are empty")
+    func objectPayloadEmptyWhenBothBuffersEmpty() {
+        let bytes = PTP.objectPayload(dataPhase: Data(), response: Data(), expectedSize: 256)
+        #expect(bytes.isEmpty)
+    }
+
     @Test("releaseFailed has a readable description")
     func releaseFailedErrorPresentation() {
         let error: Error = TetherCaptureError.releaseFailed("0x2019 (Device busy)")

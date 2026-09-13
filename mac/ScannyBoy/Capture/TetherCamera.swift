@@ -1,5 +1,8 @@
 import Foundation
 import ImageCaptureCore
+import os
+
+private let tetherLog = Logger(subsystem: "ScannyBoy", category: "Tether")
 
 /// Actor wrapping `ICDeviceBrowser` and one `ICCameraDevice` for tethered
 /// capture over raw PTP (docs/TETHER_PLAN.md §2).
@@ -48,11 +51,14 @@ actor TetherCamera: CameraControlling {
         if liveViewActive {
             await endLiveView()
         }
-        let activeBridge = bridge
-        await MainActor.run { activeBridge?.stop() }
-        bridge = nil
+        // Keep the bridge: its browser still knows the camera, so the next
+        // Connect reopens the session instead of waiting for re-enumeration.
+        if let bridge {
+            await bridge.stop()
+        }
         exposure = nil
         leftovers = []
+        releaseInFlight = false
         updateState(.absent)
     }
 
@@ -192,15 +198,15 @@ actor TetherCamera: CameraControlling {
         }
         let partial = url.deletingPathExtension().appendingPathExtension("NEF.partial")
         let (dataPhase, response) = try await sendPTPPair(PTP.getObject, params: [handle])
-        guard PTP.responseCode(response) == PTP.responseOK else {
-            throw TetherCaptureError.downloadFailed(
-                PTP.describeResponse(PTP.responseCode(response))
-            )
-        }
         let bytes = PTP.objectPayload(
             dataPhase: dataPhase, response: response, expectedSize: info.size
         )
         guard bytes.count == Int(info.size) else {
+            if PTP.responseCode(response) != PTP.responseOK {
+                throw TetherCaptureError.downloadFailed(
+                    PTP.describeResponse(PTP.responseCode(response))
+                )
+            }
             throw TetherCaptureError.downloadFailed(
                 "size mismatch: expected \(info.size), got \(bytes.count)"
             )
@@ -376,6 +382,9 @@ actor TetherCamera: CameraControlling {
             guard !events.isEmpty else { break }
             drained.append(contentsOf: events)
             for event in events {
+                tetherLog.debug(
+                    "event \(String(format: "0x%04x param 0x%08x", event.code, event.param), privacy: .public)"
+                )
                 if event.code == 0x4002 || event.code == 0xC101 {
                     ignoredHandles.insert(event.param)
                 }
@@ -443,12 +452,23 @@ actor TetherCamera: CameraControlling {
 // MARK: - ImageCaptureCore bridge
 
 /// ImageCaptureCore requires NSObject delegates on the main thread.
+///
+/// One bridge lives for the app's lifetime. Disconnect closes the session but
+/// keeps the browser and the last device it reported, so Connect reopens the
+/// session directly.
 final class TetherCameraBridge: NSObject, @unchecked Sendable {
     weak var owner: TetherCamera?
     private let browser = ICDeviceBrowser()
+    /// The camera whose session is open or opening.
     private var camera: ICCameraDevice?
+    /// The last camera the browser reported, kept across Disconnect.
+    private var knownDevice: ICCameraDevice?
+    private var browsing = false
+    private var wantsSession = false
     private var ptpPairContinuations: [UInt32: CheckedContinuation<(Data, Data), Error>] = [:]
     private var nextTransaction: UInt32 = 1
+    private var closeContinuation: CheckedContinuation<Void, Never>?
+    private var closeGeneration = 0
     var releaseInFlight = false
 
     override init() {
@@ -457,20 +477,72 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
     }
 
     func start() {
-        browser.browsedDeviceTypeMask = ICDeviceTypeMask(
-            rawValue: ICDeviceTypeMask.camera.rawValue
-                | ICDeviceLocationTypeMask.local.rawValue
-        )!
-        browser.start()
+        wantsSession = true
+        if !browsing {
+            browser.browsedDeviceTypeMask = ICDeviceTypeMask(
+                rawValue: ICDeviceTypeMask.camera.rawValue
+                    | ICDeviceLocationTypeMask.local.rawValue
+            )!
+            browser.start()
+            browsing = true
+        }
+        if camera == nil, let knownDevice {
+            tetherLog.info("reopening session on known device")
+            adopt(knownDevice)
+        }
     }
 
-    func stop() {
-        browser.stop()
-        if let camera {
-            camera.ptpEventHandler = { _ in }
-            camera.requestCloseSession()
+    @MainActor
+    func stop() async {
+        wantsSession = false
+        cancelPendingPTPCommands(throwing: .notConnected)
+        guard let activeCamera = camera else { return }
+        activeCamera.ptpEventHandler = { _ in }
+        closeGeneration += 1
+        let generation = closeGeneration
+        tetherLog.info("closing session")
+        await withCheckedContinuation { continuation in
+            closeContinuation = continuation
+            activeCamera.requestCloseSession()
+            Task { @MainActor in
+                try? await Task.sleep(for: TetherTiming.closeSessionTimeout)
+                guard self.closeGeneration == generation, self.closeContinuation != nil else { return }
+                tetherLog.error("didCloseSession did not arrive; tearing down anyway")
+                self.finishClose()
+            }
         }
+    }
+
+    private func finishClose() {
+        guard let continuation = closeContinuation else { return }
+        closeContinuation = nil
+        detachCamera()
+        continuation.resume()
+    }
+
+    private func detachCamera() {
+        camera?.ptpEventHandler = { _ in }
         camera = nil
+    }
+
+    private func cancelPendingPTPCommands(throwing error: TetherCaptureError) {
+        let waiting = ptpPairContinuations
+        ptpPairContinuations.removeAll()
+        for (_, continuation) in waiting {
+            continuation.resume(throwing: error)
+        }
+    }
+
+    /// The device vanished or ImageCaptureCore closed the session on its own.
+    /// Fail in-flight commands now instead of leaving them to complete empty.
+    private func cameraGone(_ reason: String) {
+        tetherLog.error(
+            "camera gone (\(reason, privacy: .public)); \(self.ptpPairContinuations.count) commands pending"
+        )
+        detachCamera()
+        cancelPendingPTPCommands(throwing: .connectionDropped)
+        guard wantsSession else { return }
+        Task { await owner?.bridgeDeviceLost() }
     }
 
     @MainActor
@@ -493,6 +565,7 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
         }
         let transaction = nextTransaction
         nextTransaction &+= 1
+        let started = ContinuousClock.now
         return try await withCheckedThrowingContinuation { continuation in
             ptpPairContinuations[transaction] = continuation
             // ImageCaptureCore calls this off the main thread. Keep it
@@ -504,16 +577,26 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
                 let copiedData = Data(data)
                 let copiedResponse = Data(response)
                 Task { @MainActor in
-                    guard let self else { return }
                     let ordered = PTP.orderedCommandResult(
                         data: copiedData, response: copiedResponse
                     )
-                    let key = PTP.responseParameter(ordered.1, 0) ?? transaction
-                    guard let waiting = self.ptpPairContinuations.removeValue(forKey: key)
-                        ?? self.ptpPairContinuations.removeValue(forKey: transaction)
+                    let line = String(
+                        format: "PTP 0x%04x #%u: %@, data %d B, response %@",
+                        opcode, transaction, "\(ContinuousClock.now - started)",
+                        ordered.0.count, PTP.describeResponse(PTP.responseCode(ordered.1))
+                    )
+                    tetherLog.debug("\(line, privacy: .public) \(error?.localizedDescription ?? "", privacy: .public)")
+                    // Route by our own transaction: the response's first
+                    // parameter is a command result, not a transaction ID.
+                    guard let self,
+                          let waiting = self.ptpPairContinuations.removeValue(forKey: transaction)
                     else { return }
                     if let error {
                         waiting.resume(throwing: error)
+                    } else if copiedData.isEmpty, copiedResponse.isEmpty {
+                        // No response container at all: the session went away
+                        // mid-command (didRemove may not have arrived yet).
+                        waiting.resume(throwing: TetherCaptureError.connectionDropped)
                     } else {
                         waiting.resume(returning: ordered)
                     }
@@ -527,50 +610,76 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
         }
     }
 
-    private func adopt(_ device: ICDevice) {
-        guard camera == nil, let found = device as? ICCameraDevice else { return }
-        if found.transportType == ICDeviceTransport.transportTypeMassStorage.rawValue {
+    private func adopt(_ device: ICCameraDevice) {
+        guard wantsSession, camera == nil else { return }
+        if device.transportType == ICDeviceTransport.transportTypeMassStorage.rawValue {
             Task { await owner?.bridgeDidUpdate(state: .massStorage) }
             return
         }
-        camera = found
+        camera = device
         let cameraOwner = owner
-        found.ptpEventHandler = { data in
+        device.ptpEventHandler = { data in
             guard let event = PTP.decodeEvent(data) else { return }
             Task { await cameraOwner?.bridgeDidReceivePushedEvent(code: event.code, params: event.params) }
         }
-        found.delegate = self
+        device.delegate = self
+        tetherLog.info("opening session")
         Task { await owner?.bridgeDidUpdate(state: .preparing) }
-        found.requestOpenSession()
+        device.requestOpenSession()
     }
 }
 
 extension TetherCameraBridge: ICDeviceBrowserDelegate {
     func deviceBrowser(_: ICDeviceBrowser, didAdd device: ICDevice, moreComing _: Bool) {
-        adopt(device)
+        guard let found = device as? ICCameraDevice else { return }
+        tetherLog.info("browser added camera")
+        knownDevice = found
+        adopt(found)
     }
 
     func deviceBrowser(_: ICDeviceBrowser, didRemove device: ICDevice, moreGoing _: Bool) {
+        tetherLog.info("browser removed device")
+        if device === knownDevice {
+            knownDevice = nil
+        }
         guard device === camera else { return }
-        camera = nil
-        Task { await owner?.bridgeDeviceLost() }
+        if closeContinuation != nil {
+            finishClose()
+        } else {
+            cameraGone("browser removed device")
+        }
     }
 }
 
 extension TetherCameraBridge: ICCameraDeviceDelegate {
-    func didRemove(_: ICDevice) {}
+    func didRemove(_: ICDevice) {
+        tetherLog.info("device didRemove")
+    }
 
     func device(_: ICDevice, didOpenSessionWithError error: Error?) {
-        if error != nil {
+        if let error {
+            tetherLog.error("open session failed: \(error.localizedDescription, privacy: .public)")
+            // Drop the device so Retry adopts it again.
+            detachCamera()
             Task { await owner?.bridgeDidUpdate(state: .unavailable) }
             return
         }
+        tetherLog.info("session open")
         Task { await connectAfterOpen() }
     }
 
-    func device(_: ICDevice, didCloseSessionWithError _: Error?) {}
+    func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
+        tetherLog.info("session closed: \(error?.localizedDescription ?? "no error", privacy: .public)")
+        if closeContinuation != nil {
+            finishClose()
+        } else if device === camera {
+            cameraGone("session closed by ImageCaptureCore")
+        }
+    }
 
-    func deviceDidBecomeReady(withCompleteContentCatalog _: ICCameraDevice) {}
+    func deviceDidBecomeReady(withCompleteContentCatalog _: ICCameraDevice) {
+        tetherLog.info("content catalog complete")
+    }
 
     func cameraDevice(_: ICCameraDevice, didAdd _: [ICCameraItem]) {}
 
@@ -600,17 +709,20 @@ extension TetherCameraBridge: ICCameraDeviceDelegate {
     @MainActor
     private func connectAfterOpen() async {
         guard let owner else { return }
+        let started = ContinuousClock.now
         do {
             let (data, response) = try await sendPTPPair(PTP.getDeviceInfo)
+            tetherLog.info("first PTP reply after \(ContinuousClock.now - started, privacy: .public)")
             guard PTP.responseCode(response) == PTP.responseOK,
                   let info = PTP.DeviceInfo(payload: data)
             else {
                 await owner.bridgeDidUpdate(state: .unsupported)
                 return
             }
-            _ = info
             try await owner.finishConnect(deviceInfo: info)
+            tetherLog.info("ready after \(ContinuousClock.now - started, privacy: .public)")
         } catch {
+            tetherLog.error("connect failed: \(error.localizedDescription, privacy: .public)")
             await owner.bridgeDidUpdate(state: .unavailable)
         }
     }

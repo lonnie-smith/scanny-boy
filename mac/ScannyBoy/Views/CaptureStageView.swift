@@ -16,12 +16,8 @@ struct CaptureStageView: View {
             Form {
                 connectionSection
                 setupSection
-                if capture.flatField == nil {
-                    flatFieldReferenceSection
-                }
-                if capture.filmBase == nil {
-                    baseFrameSection
-                }
+                flatFieldReferenceSection
+                baseFrameSection
                 sequenceSection
             }
             .formStyle(.grouped)
@@ -165,21 +161,27 @@ struct CaptureStageView: View {
     @ViewBuilder
     private var flatFieldReferenceSection: some View {
         Section("Bare-light reference") {
-            Text(
-                "Remove the film and photograph the bare light source alone. "
-                    + "Use the same f-stop as your scans; shutter and ISO may differ "
-                    + "to avoid clipping."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Button("Shoot bare-light reference") {
-                Task { await capture.shootFlatFieldReference() }
+            if let flatField = capture.flatField {
+                Label("Captured", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(flatField.sourceName)
+                    .font(.body.monospaced())
+                Text("\(flatField.referenceWidth) × \(flatField.referenceHeight)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if flatField.lockedAt != nil {
+                    Text("Locked when this roll's first negative was converted.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    captureFlatFieldButton("Capture again")
+                }
+            } else {
+                Text(Self.bareLightInstructions)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                captureFlatFieldButton("Capture bare-light reference")
             }
-            .disabled(
-                !capture.sessionOpen
-                    || capture.connectionState != .ready
-                    || capture.isShootingFlatFieldReference
-            )
             if capture.isShootingFlatFieldReference {
                 ProgressView()
             }
@@ -192,10 +194,32 @@ struct CaptureStageView: View {
     @ViewBuilder
     private var baseFrameSection: some View {
         Section("Base frame") {
-            Button("Shoot base frame") {
-                Task { await capture.shootBaseFrame() }
+            if let filmBase = capture.filmBase {
+                Label("Captured", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(filmBase.sourceName)
+                    .font(.body.monospaced())
+                Text(baseFrameDensitySummary(filmBase.density))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let percent = filmBase.areaFractionPercent {
+                    Text("rebate: \(percent)% of frame")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if filmBase.lockedAt != nil {
+                    Text("Locked when this roll's first negative was converted.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    captureBaseFrameButton("Capture again")
+                }
+            } else {
+                Text(Self.baseFrameInstructions)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                captureBaseFrameButton("Capture base frame")
             }
-            .disabled(!capture.sessionOpen || capture.connectionState != .ready || capture.isShootingBaseFrame)
             if capture.isShootingBaseFrame {
                 ProgressView()
             }
@@ -204,6 +228,46 @@ struct CaptureStageView: View {
             }
         }
     }
+
+    private func captureFlatFieldButton(_ title: String) -> some View {
+        Button(title) {
+            Task { await capture.shootFlatFieldReference() }
+        }
+        .disabled(
+            !capture.sessionOpen
+                || capture.connectionState != .ready
+                || capture.isShootingFlatFieldReference
+                || capture.flatField?.lockedAt != nil
+        )
+    }
+
+    private func captureBaseFrameButton(_ title: String) -> some View {
+        Button(title) {
+            Task { await capture.shootBaseFrame() }
+        }
+        .disabled(
+            !capture.sessionOpen
+                || capture.connectionState != .ready
+                || capture.isShootingBaseFrame
+                || capture.filmBase?.lockedAt != nil
+        )
+    }
+
+    private func baseFrameDensitySummary(_ density: [Double]) -> String {
+        density.map { String(format: "%.2f", $0) }.joined(separator: ", ")
+    }
+
+    private static let bareLightInstructions = """
+        Remove the film and photograph the bare light source alone. Use the \
+        same f-stop as your scans; shutter and ISO may differ to avoid clipping.
+        """
+
+    private static let baseFrameInstructions = """
+        Frame a piece of leader (or any stretch where clear rebate dominates \
+        the frame). Keep bare light and sprocket holes out of the frame. \
+        Expose at the same shutter, aperture and ISO as your scans, clear \
+        of clipping.
+        """
 
     @ViewBuilder
     private var sequenceSection: some View {

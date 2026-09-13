@@ -9,6 +9,9 @@ enum TetherTiming {
     /// Poll interval while scanning for a buffer frame after release.
     static let framePollInterval: Duration = .milliseconds(100)
 
+    /// Maximum wait for `didCloseSession` on Disconnect.
+    static let closeSessionTimeout: Duration = .seconds(5)
+
     /// Grace after the measured exposure before giving up on `DeviceReady`.
     static let exposureGrace: Duration = .seconds(10)
 
