@@ -35,7 +35,7 @@ struct StitchQueueModelTests {
         queue.configure(
             roll: directory.appending(path: "roll", directoryHint: .isDirectory),
             captureFolder: captureFolder,
-            flatFieldProfileID: "ff-1",
+            rigProfileID: "rig-1",
             across: 2,
             down: 1
         )
@@ -82,7 +82,7 @@ struct StitchQueueModelTests {
             queue.configure(
                 roll: directory.appending(path: "roll", directoryHint: .isDirectory),
                 captureFolder: captureFolder,
-                flatFieldProfileID: "ff-1",
+                rigProfileID: "rig-1",
                 across: 1,
                 down: 1
             )

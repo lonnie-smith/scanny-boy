@@ -544,29 +544,18 @@ def test_probe_reports_a_null_film_base_block_when_absent(tmp_path):
 # --- flat-field: --roll does not lock a roll to one profile ----------------
 
 
-def _save_flatfield_profile(profile_id: str, name: str, *, geometry: dict | None = None):
-    import numpy as np
-
-    from scanny_boy import flatfield
+def _save_rig_profile(profile_id: str, name: str, *, geometry: dict | None = None):
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
-    path, sha256 = flatfield.save_gain_map(
-        profile_id, np.full((8, 8, 3), 1.25, dtype=np.float32)
-    )
-    profile = flatfield.FlatFieldProfile(
+    profile = RigProfile(
         profile_id=profile_id,
         name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path=None,
-        reference_width=12,
-        reference_height=8,
-        params=flatfield.build_params(),
         scanny_boy_version="0.3.0",
         created_at="2026-09-01T00:00:00Z",
         geometry=geometry,
     )
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
     return profile
 
 
@@ -578,7 +567,7 @@ def _catalogue_dir(tmp_path):
     return input_dir
 
 
-def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
+def test_probe_with_unknown_rig_profile_fails_before_the_roll(tmp_path):
     from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 
     input_dir = _catalogue_dir(tmp_path)
@@ -586,12 +575,12 @@ def test_probe_with_unknown_flatfield_profile_fails_before_the_roll(tmp_path):
     write_roll_manifest(roll_dir, new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour"))
 
     with pytest.raises(ProbeFailure) as excinfo:
-        run_probe(input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id="nope")
+        run_probe(input_dir, None, 2, roll_dir=roll_dir, rig_profile_id="nope")
 
-    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
+    assert excinfo.value.code == Code.RIG_PROFILE_NOT_FOUND
 
 
-def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
+def test_probe_with_roll_accepts_a_different_rig_profile(tmp_path):
     """A roll does not lock to the profile its first run used: probing the
     same roll with a different profile — or none — still validates, since
     `flat_field`/`chromatic_aberration` are excluded from the roll's
@@ -604,8 +593,8 @@ def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
     )
     from scanny_boy.stitch_pipeline import _stitch_params
 
-    profile_a = _save_flatfield_profile("pid-a", "Profile A")
-    profile_b = _save_flatfield_profile("pid-b", "Profile B")
+    profile_a = _save_rig_profile("pid-a", "Profile A")
+    profile_b = _save_rig_profile("pid-b", "Profile B")
     input_dir = _catalogue_dir(tmp_path)
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
@@ -622,7 +611,7 @@ def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
 
     # The roll's own profile probes clean...
     run_probe(
-        input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id=profile_a.profile_id
+        input_dir, None, 2, roll_dir=roll_dir, rig_profile_id=profile_a.profile_id
     )
 
     # ...and so does a different one, or none at all — the profile is a
@@ -632,7 +621,7 @@ def test_probe_with_roll_accepts_a_different_flatfield_profile(tmp_path):
         None,
         2,
         roll_dir=roll_dir,
-        flatfield_profile_id=profile_b.profile_id,
+        rig_profile_id=profile_b.profile_id,
     )
     run_probe(input_dir, None, 2, roll_dir=roll_dir)
 
@@ -650,7 +639,7 @@ def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
     )
     from scanny_boy.stitch_pipeline import _stitch_params
 
-    profile = _save_flatfield_profile(
+    profile = _save_rig_profile(
         "pid-geo",
         "Profile Geo",
         geometry={"format_version": 1, "k1": -0.001},
@@ -667,5 +656,5 @@ def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
     write_roll_manifest(roll_dir, manifest)
 
     run_probe(
-        input_dir, None, 2, roll_dir=roll_dir, flatfield_profile_id=profile.profile_id
+        input_dir, None, 2, roll_dir=roll_dir, rig_profile_id=profile.profile_id
     )

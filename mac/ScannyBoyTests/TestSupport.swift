@@ -200,8 +200,8 @@ enum SampleFixtures {
 /// `tests/fixtures/flatfield/bare-light.dng` — a DNG (the one RAW container
 /// that can be authored) holding a smooth radial falloff, written by
 /// `cli/tools/generate_bare_light_dng.py`. The integration scenarios build
-/// their flat-field profile from it: the app requires a profile on Add
-/// Scans, and a real film frame must not stand in — its scene content
+/// their roll flat-field reference from it: the app requires a reference on
+/// Add Scans, and a real film frame must not stand in — its scene content
 /// survives the gain map's smoothing and corrupts the correction, failing
 /// the very runs these scenarios exercise.
 enum BareLightReference {
@@ -216,8 +216,8 @@ enum BareLightReference {
         The synthetic bare-light reference is not present at \
         tests/fixtures/flatfield/bare-light.dng. Regenerate it with \
         uv run --project cli python cli/tools/generate_bare_light_dng.py. \
-        No flat-field profile could be created, so the scenarios that need \
-        one did not run.
+        No flat-field reference could be attached, so the scenarios that \
+        need one did not run.
         """
 }
 

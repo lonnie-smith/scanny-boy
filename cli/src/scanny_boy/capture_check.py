@@ -6,7 +6,7 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
-from scanny_boy import flatfield, repo
+from scanny_boy import repo
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.events import Code, Event
 from scanny_boy.manifest import BadManifestError, load_manifest
@@ -39,7 +39,7 @@ class CaptureCheckOutcome:
 def run_capture_check(
     work_dir: Path,
     *,
-    flatfield_profile_id: str | None = None,
+    rig_profile_id: str | None = None,
 ) -> CaptureCheckOutcome:
     """Run detection, matching, and the layout solve for one work folder."""
     from scanny_boy import concurrency
@@ -65,11 +65,13 @@ def run_capture_check(
     group = groups[0]
     _verify_intermediates(work_dir, group)
 
+    from scanny_boy import calibration
+
     profile = None
-    if flatfield_profile_id is not None:
+    if rig_profile_id is not None:
         try:
-            profile = repo.load_flatfield_profile(flatfield_profile_id)
-        except flatfield.FlatFieldError as exc:
+            profile = repo.load_rig_profile(rig_profile_id)
+        except calibration.RigError as exc:
             raise CaptureCheckFailure(exc.code, exc.message) from exc
 
     record = NegativeRecord(

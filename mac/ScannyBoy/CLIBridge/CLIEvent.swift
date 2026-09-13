@@ -102,10 +102,11 @@ public struct CLIEvent: Sendable, Hashable {
         case regionRendered
         case previewRendered
         case exportDone
-        case flatfieldCreated
-        case flatfieldList
-        case flatfieldDeleted
-        case flatfieldProgress
+        case rigCreated
+        case rigList
+        case rigDeleted
+        case rigProgress
+        case flatFieldReferenceSet
         case gridCreated
         case gridList
         case gridDeleted
@@ -147,10 +148,11 @@ public struct CLIEvent: Sendable, Hashable {
             case "region_rendered": self = .regionRendered
             case "preview_rendered": self = .previewRendered
             case "export_done": self = .exportDone
-            case "flatfield_created": self = .flatfieldCreated
-            case "flatfield_list": self = .flatfieldList
-            case "flatfield_deleted": self = .flatfieldDeleted
-            case "flatfield_progress": self = .flatfieldProgress
+            case "rig_created": self = .rigCreated
+            case "rig_list": self = .rigList
+            case "rig_deleted": self = .rigDeleted
+            case "rig_progress": self = .rigProgress
+            case "flat_field_reference_set": self = .flatFieldReferenceSet
             case "grid_created": self = .gridCreated
             case "grid_list": self = .gridList
             case "grid_deleted": self = .gridDeleted
@@ -192,10 +194,11 @@ public struct CLIEvent: Sendable, Hashable {
             case .regionRendered: "region_rendered"
             case .previewRendered: "preview_rendered"
             case .exportDone: "export_done"
-            case .flatfieldCreated: "flatfield_created"
-            case .flatfieldList: "flatfield_list"
-            case .flatfieldDeleted: "flatfield_deleted"
-            case .flatfieldProgress: "flatfield_progress"
+            case .rigCreated: "rig_created"
+            case .rigList: "rig_list"
+            case .rigDeleted: "rig_deleted"
+            case .rigProgress: "rig_progress"
+            case .flatFieldReferenceSet: "flat_field_reference_set"
             case .gridCreated: "grid_created"
             case .gridList: "grid_list"
             case .gridDeleted: "grid_deleted"
@@ -435,18 +438,25 @@ extension CLIEvent {
     // `width`/`height` accessors above.
     public var previewRenderedPath: String? { fields["path"]?.stringValue }
 
-    // `flatfield_created` and `flatfield_list`
-    public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
-    public var flatFieldProfiles: [[String: JSONValue]]? {
+    // `rig_created` and `rig_list`
+    public var rigProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
+    public var rigProfiles: [[String: JSONValue]]? {
         fields["profiles"]?.arrayValue?.compactMap { entry in
             entry.objectValue
         }
     }
-    // `flatfield_deleted`
-    public var flatFieldProfileID: String? { fields["profile_id"]?.stringValue }
+    // `rig_deleted`
+    public var rigProfileID: String? { fields["profile_id"]?.stringValue }
 
-    // `flatfield_progress`
-    public var flatFieldPhase: String? { fields["phase"]?.stringValue }
+    // `rig_progress`
+    public var rigPhase: String? { fields["phase"]?.stringValue }
+
+    // `flat_field_reference_set`
+    public var flatFieldReferenceSourceName: String? { fields["source_name"]?.stringValue }
+    public var flatFieldReferenceWidth: Int? { fields["reference_width"]?.intValue }
+    public var flatFieldReferenceHeight: Int? { fields["reference_height"]?.intValue }
+    public var flatFieldReferenceRigProfileID: String? { fields["rig_profile_id"]?.stringValue }
+    public var flatFieldReferenceLocked: Bool? { fields["locked"]?.boolValue }
 
     // `grid_created` and `grid_list`
     public var gridProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
@@ -595,10 +605,12 @@ public enum CLICode: Sendable, Hashable {
     case invalidMetadata
     case exportFailed
     case previewFailed
-    // Protocol version 6: flat-field profiles.
-    case flatFieldProfileNotFound
-    case flatFieldProfileExists
-    case flatFieldProfileInUse
+    // Rig profiles and roll flat-field references.
+    case rigProfileNotFound
+    case rigProfileExists
+    case rigProfileInUse
+    case flatFieldReferenceLocked
+    case flatFieldReferenceRigConflict
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
@@ -631,7 +643,6 @@ public enum CLICode: Sendable, Hashable {
     case filmBaseAmbiguous
     case rollPredatesFilmBase
     case filmBaseCameraConflict
-    case filmBaseFlatfieldConflict
     case libraryDBUnsupported
     case rollBusy
     case rollRefreshPending
@@ -692,9 +703,11 @@ public enum CLICode: Sendable, Hashable {
         case "INVALID_METADATA": self = .invalidMetadata
         case "EXPORT_FAILED": self = .exportFailed
         case "PREVIEW_FAILED": self = .previewFailed
-        case "FLATFIELD_PROFILE_NOT_FOUND": self = .flatFieldProfileNotFound
-        case "FLATFIELD_PROFILE_EXISTS": self = .flatFieldProfileExists
-        case "FLATFIELD_PROFILE_IN_USE": self = .flatFieldProfileInUse
+        case "RIG_PROFILE_NOT_FOUND": self = .rigProfileNotFound
+        case "RIG_PROFILE_EXISTS": self = .rigProfileExists
+        case "RIG_PROFILE_IN_USE": self = .rigProfileInUse
+        case "FLATFIELD_REFERENCE_LOCKED": self = .flatFieldReferenceLocked
+        case "FLATFIELD_REFERENCE_RIG_CONFLICT": self = .flatFieldReferenceRigConflict
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
@@ -725,7 +738,6 @@ public enum CLICode: Sendable, Hashable {
         case "FILM_BASE_AMBIGUOUS": self = .filmBaseAmbiguous
         case "ROLL_PREDATES_FILM_BASE": self = .rollPredatesFilmBase
         case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
-        case "FILM_BASE_FLATFIELD_CONFLICT": self = .filmBaseFlatfieldConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "ROLL_BUSY": self = .rollBusy
         case "ROLL_REFRESH_PENDING": self = .rollRefreshPending
@@ -788,9 +800,11 @@ public enum CLICode: Sendable, Hashable {
         case .invalidMetadata: "INVALID_METADATA"
         case .exportFailed: "EXPORT_FAILED"
         case .previewFailed: "PREVIEW_FAILED"
-        case .flatFieldProfileNotFound: "FLATFIELD_PROFILE_NOT_FOUND"
-        case .flatFieldProfileExists: "FLATFIELD_PROFILE_EXISTS"
-        case .flatFieldProfileInUse: "FLATFIELD_PROFILE_IN_USE"
+        case .rigProfileNotFound: "RIG_PROFILE_NOT_FOUND"
+        case .rigProfileExists: "RIG_PROFILE_EXISTS"
+        case .rigProfileInUse: "RIG_PROFILE_IN_USE"
+        case .flatFieldReferenceLocked: "FLATFIELD_REFERENCE_LOCKED"
+        case .flatFieldReferenceRigConflict: "FLATFIELD_REFERENCE_RIG_CONFLICT"
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
@@ -821,7 +835,6 @@ public enum CLICode: Sendable, Hashable {
         case .filmBaseAmbiguous: "FILM_BASE_AMBIGUOUS"
         case .rollPredatesFilmBase: "ROLL_PREDATES_FILM_BASE"
         case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
-        case .filmBaseFlatfieldConflict: "FILM_BASE_FLATFIELD_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .rollBusy: "ROLL_BUSY"
         case .rollRefreshPending: "ROLL_REFRESH_PENDING"

@@ -30,10 +30,11 @@
         "region_rendered",
         "preview_rendered",
         "export_done",
-        "flatfield_created",
-        "flatfield_list",
-        "flatfield_deleted",
-        "flatfield_progress",
+        "rig_created",
+        "rig_list",
+        "rig_deleted",
+        "rig_progress",
+        "flat_field_reference_set",
         "grid_created",
         "grid_list",
         "grid_deleted",
@@ -128,12 +129,14 @@
         "CAMERA_MATRIX_MISSING",
         "CAMERA_MATRIX_CONFLICT",
         "PREVIEW_FAILED",
-        "FLATFIELD_PROFILE_NOT_FOUND",
-        "FLATFIELD_PROFILE_EXISTS",
-        "FLATFIELD_PROFILE_IN_USE",
+        "RIG_PROFILE_NOT_FOUND",
+        "RIG_PROFILE_EXISTS",
+        "RIG_PROFILE_IN_USE",
         "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH",
         "FLATFIELD_HIGHLIGHT_CLIPPED",
+        "FLATFIELD_REFERENCE_LOCKED",
+        "FLATFIELD_REFERENCE_RIG_CONFLICT",
         "GRID_PROFILE_NOT_FOUND",
         "GRID_PROFILE_EXISTS",
         "GEOMETRY_INSUFFICIENT_FRAMES",
@@ -160,7 +163,6 @@
         "FILM_BASE_AMBIGUOUS",
         "ROLL_PREDATES_FILM_BASE",
         "FILM_BASE_CAMERA_CONFLICT",
-        "FILM_BASE_FLATFIELD_CONFLICT",
         "SPOT_LIMIT_REACHED",
         "SPOTS_STALE",
         "SCRATCH_DETECTION_FAILED",
@@ -203,14 +205,11 @@
         "message": { "type": "string" }
       }
     },
-    "flatFieldProfile": {
+    "rigProfile": {
       "type": "object",
       "required": [
         "profile_id",
         "name",
-        "reference_width",
-        "reference_height",
-        "source_path",
         "created_at",
         "board_key",
         "has_geometry",
@@ -220,9 +219,6 @@
       "properties": {
         "profile_id": { "type": "string" },
         "name": { "type": "string" },
-        "reference_width": { "type": "integer", "minimum": 1 },
-        "reference_height": { "type": "integer", "minimum": 1 },
-        "source_path": { "type": ["string", "null"] },
         "created_at": { "type": "string" },
         "board_key": { "type": ["string", "null"] },
         "has_geometry": { "type": "boolean" },
@@ -400,9 +396,10 @@
               "edit spots",
               "edit list-spots",
               "export",
-              "flatfield create",
-              "flatfield list",
-              "flatfield delete",
+              "rig create",
+              "rig list",
+              "rig delete",
+              "roll set-flatfield-reference",
               "grid create",
               "grid list",
               "grid delete",
@@ -538,28 +535,28 @@
       }
     },
     {
-      "if": { "properties": { "event": { "const": "flatfield_created" } } },
+      "if": { "properties": { "event": { "const": "rig_created" } } },
       "then": {
         "required": ["profile"],
         "properties": {
-          "profile": { "$ref": "#/definitions/flatFieldProfile" }
+          "profile": { "$ref": "#/definitions/rigProfile" }
         }
       }
     },
     {
-      "if": { "properties": { "event": { "const": "flatfield_list" } } },
+      "if": { "properties": { "event": { "const": "rig_list" } } },
       "then": {
         "required": ["profiles"],
         "properties": {
           "profiles": {
             "type": "array",
-            "items": { "$ref": "#/definitions/flatFieldProfile" }
+            "items": { "$ref": "#/definitions/rigProfile" }
           }
         }
       }
     },
     {
-      "if": { "properties": { "event": { "const": "flatfield_deleted" } } },
+      "if": { "properties": { "event": { "const": "rig_deleted" } } },
       "then": {
         "required": ["profile_id"],
         "properties": {
@@ -568,16 +565,37 @@
       }
     },
     {
-      "if": { "properties": { "event": { "const": "flatfield_progress" } } },
+      "if": { "properties": { "event": { "const": "rig_progress" } } },
       "then": {
         "required": ["phase", "completed", "total"],
         "properties": {
           "phase": {
             "type": "string",
-            "enum": ["detect", "fit", "chromatic", "reference"]
+            "enum": ["detect", "fit", "chromatic"]
           },
           "completed": { "type": "integer", "minimum": 0 },
           "total": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "flat_field_reference_set" } } },
+      "then": {
+        "required": [
+          "roll_id",
+          "source_name",
+          "reference_width",
+          "reference_height",
+          "rig_profile_id",
+          "locked"
+        ],
+        "properties": {
+          "roll_id": { "type": "string" },
+          "source_name": { "type": "string" },
+          "reference_width": { "type": "integer", "minimum": 1 },
+          "reference_height": { "type": "integer", "minimum": 1 },
+          "rig_profile_id": { "type": ["string", "null"] },
+          "locked": { "type": "boolean" }
         }
       }
     },

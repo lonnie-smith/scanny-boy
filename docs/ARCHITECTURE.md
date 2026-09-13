@@ -95,14 +95,19 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **21** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 21 adds the layout solve's joint
-nonlinear refinement (§8 — the linear solution refined against the
-`global_rms` residual itself; `stitch_params` gains `layout_refinement` and
-`layout_refinement_loss`, and `manifest_format_version` bumps 9 → 10
-because every placement, and so every output pixel, moves — rolls stitched
-earlier refuse new runs with `ROLL_INVARIANT_MISMATCH`, no migration; no
-event shape or code changes); 20 narrows the feather to a band around
+`PROTOCOL_VERSION` is **22** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 22 splits the scanning-rig profile from
+the per-roll flat-field reference (`flatfield_*` events → `rig_*`,
+`FLATFIELD_PROFILE_*` → `RIG_PROFILE_*`, new `flat_field_reference_set` and
+`rolls.flat_field`; see `docs/FLATFIELD_REFERENCE.md` and
+`docs/DECISIONS.md` §"Rig profile vs flat-field reference"); 21 adds the
+layout solve's joint nonlinear refinement (§8 — the linear solution refined
+against the `global_rms` residual itself; `stitch_params` gains
+`layout_refinement` and `layout_refinement_loss`, and
+`manifest_format_version` bumps 9 → 10 because every placement, and so
+every output pixel, moves — rolls stitched earlier refuse new runs with
+`ROLL_INVARIANT_MISMATCH`, no migration; no event shape or code changes); 20
+narrows the feather to a band around
 the overlap midline (the separable ramp product raised to `FEATHER_EXPONENT`
 before flooring, §8); 19 adds the `crop` op (`edit crop`); 18 adds `serve`,
 the resident one-process request/response mode the app's Edit tab drives,
@@ -1129,9 +1134,9 @@ any in-flight export — one helper invocation at a time.
 | Type | Role |
 | --- | --- |
 | `RollLibrary` | The library. Its only direct filesystem touch is `NSWorkspace.recycle` for the delete's Trash move; create/rename/list/delete all go through the CLI. |
-| `FlatFieldModel` | The flat-field profile list. Every call is a CLI call: `flatfield list` to read, `flatfield create` / `flatfield delete` to change. |
+| `RigModel` / `RigProfile` | The scanning-rig calibration profile list. Every call is a CLI call: `rig list` to read, `rig create` / `rig delete` to change. |
 | `GridModel` / `GridProfile` | The named grid-shape presets (`grid create`/`list`/`delete`) offered by the Add Scans grouping picker. |
-| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll` (film kind, base frame, overlap). `perNegative`/`across`/`down` is each stitch batch's own choice, required before a run can start. A flat-field profile is required (`flatFieldProfileID != nil` gates `runEnabled`); it is a per-run choice, not the roll's, defaulted from `UserDefaults` to whichever profile was used last. |
+| `ConfigurationModel` | Add Scans state. Every rule beyond UI bookkeeping is read back from `probe --roll` (film kind, base frame, flat-field reference, overlap). `perNegative`/`across`/`down` is each stitch batch's own choice, required before a run can start. A per-roll bare-light flat-field reference is required (`flatField != nil` gates `runEnabled`); an optional rig profile (`rigProfileID`) supplies geometry/CA and defaults from `UserDefaults` to whichever profile was used last. |
 | `EditModel` | Edit + Metadata tab state, from `roll info`. Drives every `edit` op round trip (rotate, flip, delete, tone, color, crop, detect/accept/reject spots) and `metadata set`; derives `visibleNegatives`, `dirtyNegatives`, `applyCommand`. |
 | `CropState` | The crop overlay's editing session (rect, tilt, ratio preset). |
 | `ToneAdjustment`, `ColorAdjustment`, `NegativeSpots` | The Tone / Color / Heal panels' state and their op payloads. |

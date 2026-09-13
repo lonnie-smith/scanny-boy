@@ -14,7 +14,7 @@ import pytest
 
 from scanny_boy import flatfield
 from scanny_boy.events import Code
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
+from scanny_boy.flatfield import FlatFieldError
 from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.sample_nef_support import FIXTURES_DIR, requires_real_samples
 
@@ -181,21 +181,21 @@ def test_identity_gain_map_round_trips_a_real_frame_to_identical_bytes():
 # --- the store ---------------------------------------------------------------
 
 
-def _profile(**overrides) -> FlatFieldProfile:
+def _flat_field_block(**overrides) -> dict:
     defaults = {
-        "profile_id": "pid-1",
-        "name": "Copy stand",
         "gain_map_path": "nowhere.npz",
         "gain_map_sha256": "deadbeef",
-        "source_path": "/refs/bare.NEF",
+        "source_name": "bare.NEF",
+        "source_sha256": "abc123",
         "reference_width": 6064,
         "reference_height": 4040,
+        "rig_profile_id": None,
         "params": flatfield.build_params(),
-        "scanny_boy_version": "0.3.0",
-        "created_at": "2026-09-01T00:00:00Z",
+        "locked_at": None,
+        "attached_at": "2026-09-01T00:00:00Z",
     }
     defaults.update(overrides)
-    return FlatFieldProfile(**defaults)
+    return defaults
 
 
 def test_save_and_load_round_trip_the_array_and_the_hash(tmp_path, monkeypatch):
@@ -205,13 +205,11 @@ def test_save_and_load_round_trip_the_array_and_the_hash(tmp_path, monkeypatch):
     library_db.reset_engine_cache()
     gain_map = np.linspace(0.25, 4.0, 16 * 16 * 3, dtype=np.float32).reshape(16, 16, 3)
     try:
-        path, sha256 = flatfield.save_gain_map("pid-1", gain_map)
+        path = flatfield.flatfield_root() / "test.npz"
+        path, sha256 = flatfield.save_gain_map(path, gain_map)
 
-        assert path == flatfield.flatfield_root() / "pid-1.npz"
         assert path.exists()
-
-        profile = _profile(gain_map_path=str(path), gain_map_sha256=sha256)
-        loaded = flatfield.load_gain_map(profile)
+        loaded = flatfield.load_gain_map(str(path), sha256)
         assert np.array_equal(loaded, gain_map)
         assert loaded.dtype == np.float32
     finally:
@@ -219,10 +217,8 @@ def test_save_and_load_round_trip_the_array_and_the_hash(tmp_path, monkeypatch):
 
 
 def test_load_gain_map_missing_file_raises_typed_error(tmp_path):
-    profile = _profile(gain_map_path=str(tmp_path / "gone.npz"))
-
     with pytest.raises(FlatFieldError) as excinfo:
-        flatfield.load_gain_map(profile)
+        flatfield.load_gain_map(str(tmp_path / "gone.npz"), "deadbeef")
 
     assert excinfo.value.code == Code.FLATFIELD_GAIN_MAP_MISSING
 
@@ -233,29 +229,27 @@ def test_load_gain_map_rejects_a_tampered_file(tmp_path, monkeypatch):
 
     library_db.reset_engine_cache()
     try:
+        path = flatfield.flatfield_root() / "test.npz"
         path, sha256 = flatfield.save_gain_map(
-            "pid-2", np.ones((8, 8, 3), dtype=np.float32)
+            path, np.ones((8, 8, 3), dtype=np.float32)
         )
-        profile = _profile(gain_map_path=str(path), gain_map_sha256=sha256)
-        # Rewrite the file with a different map: same shape, wrong bytes.
         np.savez(path, format_version=flatfield.GAIN_MAP_FORMAT_VERSION,
                  gain_map=np.full((8, 8, 3), 2.0, dtype=np.float32))
 
         with pytest.raises(FlatFieldError) as excinfo:
-            flatfield.load_gain_map(profile)
+            flatfield.load_gain_map(str(path), sha256)
 
         assert excinfo.value.code == Code.FLATFIELD_GAIN_MAP_MISSING
     finally:
         library_db.reset_engine_cache()
 
 
-def test_profile_token_carries_the_map_identity_and_not_the_name():
-    profile = _profile(name="Whatever it is called tomorrow")
+def test_flat_field_token_carries_the_map_identity():
+    block = _flat_field_block()
 
-    token = flatfield.profile_token(profile)
+    token = flatfield.flat_field_token(block)
 
     assert token == {
-        "profile_id": "pid-1",
         "gain_map_sha256": "deadbeef",
         "params": flatfield.build_params(),
     }

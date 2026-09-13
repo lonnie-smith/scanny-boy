@@ -36,7 +36,7 @@ final class StitchQueueModel {
     struct PersistedState: Codable, Sendable {
         var rollPath: String
         var captureFolder: String
-        var flatFieldProfileID: String
+        var rigProfileID: String?
         var across: Int
         var down: Int
         var negatives: [QueuedNegative]
@@ -50,7 +50,7 @@ final class StitchQueueModel {
 
     private(set) var rollURL: URL?
     private var captureFolder: URL?
-    private var flatFieldProfileID: String?
+    private var rigProfileID: String?
     private var across: Int = 1
     private var down: Int = 1
     private var drainTask: Task<Void, Never>?
@@ -70,13 +70,13 @@ final class StitchQueueModel {
     func configure(
         roll: URL,
         captureFolder: URL,
-        flatFieldProfileID: String,
+        rigProfileID: String? = nil,
         across: Int,
         down: Int
     ) {
         rollURL = roll
         self.captureFolder = captureFolder
-        self.flatFieldProfileID = flatFieldProfileID
+        self.rigProfileID = rigProfileID
         self.across = across
         self.down = down
     }
@@ -114,7 +114,7 @@ final class StitchQueueModel {
 
     private func startPreparesIfNeeded() {
         guard activePrepareCount < Self.maxParallelPrepares else { return }
-        guard let captureFolder, let flatFieldProfileID else { return }
+        guard let captureFolder else { return }
         let waiting = negatives.filter { $0.step == .waitingPrepare || $0.step == .waitingForDisk }
         for entry in waiting.prefix(Self.maxParallelPrepares - activePrepareCount) {
             guard let index = negatives.firstIndex(where: { $0.id == entry.id }) else { continue }
@@ -125,7 +125,7 @@ final class StitchQueueModel {
                 await runPrepare(
                     index: index,
                     captureFolder: captureFolder,
-                    flatFieldProfileID: flatFieldProfileID
+                    rigProfileID: rigProfileID
                 )
                 activePrepareCount -= 1
                 if let idx = negatives.firstIndex(where: { $0.id == id }) {
@@ -136,7 +136,7 @@ final class StitchQueueModel {
         }
     }
 
-    private func runPrepare(index: Int, captureFolder: URL, flatFieldProfileID: String) async {
+    private func runPrepare(index: Int, captureFolder: URL, rigProfileID: String?) async {
         let entry = negatives[index]
         let files = entry.framePaths.map { URL(fileURLWithPath: $0).lastPathComponent }
         let work = URL(fileURLWithPath: entry.workFolder)
@@ -146,7 +146,7 @@ final class StitchQueueModel {
             out: work,
             across: across,
             down: down,
-            flatfield: flatFieldProfileID
+            rig: rigProfileID
         )
         let result = await runCommand(command)
         guard negatives.indices.contains(index) else { return }
@@ -163,15 +163,15 @@ final class StitchQueueModel {
             return
         }
         negatives[index].step = .waitingCheck
-        await runCheck(index: index, flatFieldProfileID: flatFieldProfileID)
+        await runCheck(index: index, rigProfileID: rigProfileID)
         persistState()
         pump()
     }
 
-    private func runCheck(index: Int, flatFieldProfileID: String) async {
+    private func runCheck(index: Int, rigProfileID: String?) async {
         negatives[index].step = .checking
         let work = URL(fileURLWithPath: negatives[index].workFolder)
-        let command = CLICommand.captureCheck(work: work, flatfield: flatFieldProfileID)
+        let command = CLICommand.captureCheck(work: work, rig: rigProfileID)
         let result = await runCaptureCheck(command)
         guard negatives.indices.contains(index) else { return }
         if result.passed {
@@ -186,7 +186,7 @@ final class StitchQueueModel {
     }
 
     private func startNextStitchIfNeeded() {
-        guard !isStitching, let rollURL, let flatFieldProfileID else { return }
+        guard !isStitching, let rollURL else { return }
         guard negatives.allSatisfy({ $0.step != .preparing && $0.step != .checking }) else { return }
         guard let index = negatives.firstIndex(where: { $0.step == .waitingStitch }) else { return }
         isStitching = true
@@ -194,7 +194,7 @@ final class StitchQueueModel {
         let work = URL(fileURLWithPath: negatives[index].workFolder)
         Task {
             let command = CLICommand.stitch(
-                work: work, roll: rollURL, flatfield: flatFieldProfileID, deferRollRefresh: true
+                work: work, roll: rollURL, rig: rigProfileID, deferRollRefresh: true
             )
             let result = await runCommand(command)
             if negatives.indices.contains(index) {
@@ -244,11 +244,11 @@ final class StitchQueueModel {
     }
 
     private func persistState() {
-        guard let rollURL, let captureFolder, let flatFieldProfileID else { return }
+        guard let rollURL, let captureFolder else { return }
         let state = PersistedState(
             rollPath: rollURL.path,
             captureFolder: captureFolder.path,
-            flatFieldProfileID: flatFieldProfileID,
+            rigProfileID: rigProfileID,
             across: across,
             down: down,
             negatives: negatives
@@ -268,7 +268,7 @@ final class StitchQueueModel {
         else { return }
         rollURL = URL(fileURLWithPath: state.rollPath)
         captureFolder = URL(fileURLWithPath: state.captureFolder)
-        flatFieldProfileID = state.flatFieldProfileID
+        rigProfileID = state.rigProfileID
         across = state.across
         down = state.down
         negatives = state.negatives.map { entry in

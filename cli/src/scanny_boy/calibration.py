@@ -1,21 +1,19 @@
-"""The calibration orchestrator: `flatfield create` with
+"""The calibration orchestrator: `rig create` with
 `--calibration FILE [FILE ...]`.
 
-One profile record carries the whole optical description of one rig
-configuration — gain map, radial distortion, lateral chromatic
-aberration, and the human-readable calibration report. The ordering here
-is load-bearing: in `"scale"` mode the flat-field reference
-must be decoded with the *same* CA scales production will use, or the gain
-map and the frames disagree about geometry.
+One rig profile record carries the optical description of one rig
+configuration — radial distortion, lateral chromatic aberration, and the
+human-readable calibration report. The bare-light gain map is attached
+per roll via `roll set-flatfield-reference`.
 
-`flatfield.create_profile` moved here; `flatfield.py` went back to owning
-only the gain map. Every calibration constant of the orchestrator lives
-here and nowhere else; the fits' constants live in `geometry_fit.py` and
-`ca_fit.py`, and the boards' in `charuco.py`.
+Every calibration constant of the orchestrator lives here and nowhere
+else; the fits' constants live in `geometry_fit.py` and `ca_fit.py`, and
+the boards' in `charuco.py`.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import uuid
 from collections.abc import Callable
@@ -27,15 +25,15 @@ import cv2
 import numpy as np
 
 from scanny_boy import ca_fit as ca_fit_module
-from scanny_boy import charuco, concurrency, flatfield, geometry_fit
+from scanny_boy import charuco, concurrency, geometry_fit
 from scanny_boy.charuco import BoardDetectionError, BoardSpec
 from scanny_boy.events import (
     Code,
     Event,
-    FlatFieldProgress,
+    RigProfileSummary,
+    RigProgress,
     WarningEvent,
 )
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.linear import decode_to_linear
 from scanny_boy.raw_decode import decode_raw
 
@@ -46,6 +44,77 @@ RECOMMENDED_CALIBRATION_FRAMES = 16
 # The deterministic held-out split: sorted by filename, hold out every 4th
 # (indices 3, 7, 11, ...). No randomness, no seed, no UI control.
 HELDOUT_EVERY = 4
+
+
+class RigError(Exception):
+    """A rig profile operation failed with a stable CONTRACT.md code."""
+
+    def __init__(self, code: Code, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclasses.dataclass(frozen=True)
+class RigProfile:
+    profile_id: str
+    name: str
+    scanny_boy_version: str
+    created_at: str
+    board_key: str | None = None
+    geometry: dict | None = None
+    chromatic_aberration: dict | None = None
+    calibration_report: dict | None = None
+
+
+def chromatic_aberration_scales(
+    profile: RigProfile,
+) -> tuple[float, float] | None:
+    """The rawpy decode scales a profile carries, or None: present only in
+    `"scale"` mode — a decode parameter, so it belongs to the convert
+    stage's processing params."""
+    if profile.chromatic_aberration is None:
+        return None
+    if profile.chromatic_aberration.get("mode") != "scale":
+        return None
+    return (
+        profile.chromatic_aberration["red_scale"],
+        profile.chromatic_aberration["blue_scale"],
+    )
+
+
+def check_geometry_frame_size(
+    profile: RigProfile, width: int, height: int
+) -> None:
+    """A profile's geometry is only valid for the frame dimensions it was
+    fitted at."""
+    geometry = profile.geometry
+    if geometry is None:
+        return
+    if geometry["frame_width"] != width or geometry["frame_height"] != height:
+        raise RigError(
+            Code.GEOMETRY_FRAME_SIZE_MISMATCH,
+            f"profile {profile.name!r} was fitted at "
+            f"{geometry['frame_width']}x{geometry['frame_height']} but these "
+            f"frames decode at {width}x{height}",
+        )
+
+
+def rig_profile_summary(profile: RigProfile) -> RigProfileSummary:
+    """The fields a `rig` event carries."""
+    return RigProfileSummary(
+        profile_id=profile.profile_id,
+        name=profile.name,
+        created_at=profile.created_at,
+        board_key=profile.board_key,
+        has_geometry=profile.geometry is not None,
+        chromatic_aberration_mode=(
+            profile.chromatic_aberration.get("mode")
+            if profile.chromatic_aberration is not None
+            else None
+        ),
+        calibration_report=profile.calibration_report,
+    )
 
 
 def _now_iso() -> str:
@@ -63,16 +132,16 @@ def _current_scanny_boy_version() -> str:
 EmitFn = Callable[[Event], None]
 
 
-def _map_board_error(exc: BoardDetectionError) -> FlatFieldError:
-    return FlatFieldError(exc.code, exc.message)
+def _map_board_error(exc: BoardDetectionError) -> RigError:
+    return RigError(exc.code, exc.message)
 
 
-def _map_geometry_error(exc: geometry_fit.GeometryFitError) -> FlatFieldError:
-    return FlatFieldError(exc.code, exc.message)
+def _map_geometry_error(exc: geometry_fit.GeometryFitError) -> RigError:
+    return RigError(exc.code, exc.message)
 
 
-def _map_ca_error(exc: ca_fit_module.CAFitError) -> FlatFieldError:
-    return FlatFieldError(exc.code, exc.message)
+def _map_ca_error(exc: ca_fit_module.CAFitError) -> RigError:
+    return RigError(exc.code, exc.message)
 
 
 def _split_heldout(paths: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -158,7 +227,7 @@ def _detect_ca_paths(
         except BoardDetectionError as exc:  # defensive: same contract path
             raise _map_board_error(exc) from exc
         result.update(detected)
-        emit(FlatFieldProgress(phase="chromatic", completed=index + 1, total=total))
+        emit(RigProgress(phase="chromatic", completed=index + 1, total=total))
         return result
 
     indexed = list(enumerate(paths))
@@ -259,70 +328,32 @@ def _channel_dict(fit: ca_fit_module.ChannelFit) -> dict:
 
 
 def create_profile(
-    reference: Path,
     name: str,
-    calibration_paths: list[Path] | None = None,
+    calibration_paths: list[Path],
     *,
     emit: EmitFn = lambda event: None,
-) -> FlatFieldProfile:
-    """Decode, build, save, and insert — the one path `flatfield create`
-    and the app's New Profile sheet both use. Raises the reference decode's
-    own errors for a bad NEF and `FlatFieldError`
-    (`FLATFIELD_PROFILE_EXISTS`) when the name is already taken.
-
-    `calibration_paths` is empty or None for today's flat-field-only
-    profile: byte-identical to the pre-calibration code path. With frames,
-    the full order of operations runs: board detect, full-res
-    detect, distortion fit, half-size per-channel CA fit, mode decision,
-    and only then the reference decode — with the CA scales applied to it
-    when the mode is `"scale"`."""
+) -> RigProfile:
+    """Fit geometry and CA from ChArUco frames and insert a rig profile.
+    Raises `RigError` (`RIG_PROFILE_EXISTS`) when the name is already taken."""
     from scanny_boy.library import repo
 
-    existing = repo.list_flatfield_profiles()
+    existing = repo.list_rig_profiles()
     if any(profile.name == name for profile in existing):
-        raise FlatFieldError(
-            Code.FLATFIELD_PROFILE_EXISTS, f"a profile named {name!r} already exists"
+        raise RigError(
+            Code.RIG_PROFILE_EXISTS, f"a profile named {name!r} already exists"
         )
 
-    if not calibration_paths:
-        return _create_gain_only_profile(reference, name)
-    return _create_calibrated_profile(reference, name, calibration_paths, emit)
-
-
-def _create_gain_only_profile(reference: Path, name: str) -> FlatFieldProfile:
-    """The pre-calibration path, unchanged: decode with `RAW_PARAMS`, build
-    the gain map, insert. `calibration_test.py` pins this as byte-identical
-    to the historical code path."""
-    gain_map, width, height = flatfield.build_gain_map(reference)
-    profile_id = str(uuid.uuid4())
-    path, sha256 = flatfield.save_gain_map(profile_id, gain_map)
-    profile = flatfield.FlatFieldProfile(
-        profile_id=profile_id,
-        name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path=str(reference),
-        reference_width=width,
-        reference_height=height,
-        params=flatfield.build_params(),
-        scanny_boy_version=_current_scanny_boy_version(),
-        created_at=_now_iso(),
-    )
-    from scanny_boy.library import repo
-
-    repo.save_flatfield_profile(profile)
-    return profile
+    return _create_calibrated_profile(name, calibration_paths, emit)
 
 
 def _create_calibrated_profile(
-    reference: Path,
     name: str,
     calibration_paths: list[Path],
     emit: EmitFn,
-) -> FlatFieldProfile:
+) -> RigProfile:
     paths = sorted(calibration_paths, key=lambda path: path.name)
     if len(paths) < MIN_CALIBRATION_FRAMES:
-        raise FlatFieldError(
+        raise RigError(
             Code.GEOMETRY_INSUFFICIENT_FRAMES,
             f"{len(paths)} calibration frames is fewer than the minimum of "
             f"{MIN_CALIBRATION_FRAMES}",
@@ -355,11 +386,11 @@ def _create_calibrated_profile(
         raise _map_board_error(exc) from exc
     frame_width, frame_height = first.width, first.height
     del first
-    emit(FlatFieldProgress(phase="detect", completed=1, total=len(paths)))
+    emit(RigProgress(phase="detect", completed=1, total=len(paths)))
 
     # 2. Decode and detect all calibration frames at full resolution.
     detections = _detect_paths(paths, board, workers)
-    emit(FlatFieldProgress(phase="detect", completed=len(paths), total=len(paths)))
+    emit(RigProgress(phase="detect", completed=len(paths), total=len(paths)))
 
     train_paths, heldout_paths = _split_heldout(paths)
     heldout_names = {path.name for path in heldout_paths}
@@ -380,7 +411,7 @@ def _create_calibrated_profile(
         surviving.append((path, (corners, ids)))
 
     if len(surviving) < MIN_CALIBRATION_FRAMES:
-        raise FlatFieldError(
+        raise RigError(
             Code.GEOMETRY_INSUFFICIENT_FRAMES,
             f"only {len(surviving)} calibration frames yielded "
             f"{charuco.MIN_CORNERS_PER_FRAME}+ corners; the minimum is "
@@ -396,14 +427,14 @@ def _create_calibrated_profile(
         (heldout_sets if path.name in heldout_names else train_sets).append(sets)
 
     # 3. Fit and gate the distortion.
-    emit(FlatFieldProgress(phase="fit", completed=1, total=3))
+    emit(RigProgress(phase="fit", completed=1, total=3))
     try:
         fit = geometry_fit.fit_geometry(
             train_sets, heldout_sets, frame_width, frame_height
         )
     except geometry_fit.GeometryFitError as exc:
         raise _map_geometry_error(exc) from exc
-    emit(FlatFieldProgress(phase="fit", completed=3, total=3))
+    emit(RigProgress(phase="fit", completed=3, total=3))
 
     geometry_dict: dict | None = None
     geometry_params: tuple[float, float, float, float] | None = None
@@ -480,7 +511,7 @@ def _create_calibrated_profile(
             prepared.append((path, frame))
 
     if len(prepared) < MIN_CALIBRATION_FRAMES:
-        raise FlatFieldError(
+        raise RigError(
             Code.CHROMATIC_FIT_REJECTED,
             f"only {len(prepared)} calibration frames yielded corners in all "
             f"three channels; the minimum is {MIN_CALIBRATION_FRAMES}",
@@ -548,17 +579,7 @@ def _create_calibrated_profile(
         green_norm_by_frame, luminance_norm, float(max(frame_width, frame_height))
     )
 
-    # 6. Decode the flat-field reference with `RAW_PARAMS` plus the CA
-    #    scales when the mode is "scale" — the gain
-    #    map and the frames must agree about geometry.
-    emit(FlatFieldProgress(phase="reference", completed=0, total=1))
-    reference_frame = decode_raw(reference, chromatic_aberration=ca_scales)
-    gain_map = flatfield.compute_gain(decode_to_linear(reference_frame.pixels))
-    reference_width, reference_height = reference_frame.width, reference_frame.height
-    del reference_frame
-    emit(FlatFieldProgress(phase="reference", completed=1, total=1))
-
-    # 7. Assemble the report, save the gain map, insert the row. The frame
+    # 6. Assemble the report and insert the row. The frame
     #    counts describe the fit that actually happened: the ones that
     #    survived corner detection and reached the train/heldout split.
     surviving_names = {path.name for path, _ in surviving}
@@ -600,17 +621,9 @@ def _create_calibrated_profile(
         "detection_channel_ca_px": detection_channel_ca,
     }
 
-    profile_id = str(uuid.uuid4())
-    path, sha256 = flatfield.save_gain_map(profile_id, gain_map)
-    profile = flatfield.FlatFieldProfile(
-        profile_id=profile_id,
+    profile = RigProfile(
+        profile_id=str(uuid.uuid4()),
         name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path=str(reference),
-        reference_width=reference_width,
-        reference_height=reference_height,
-        params=flatfield.build_params(chromatic_aberration_scales=ca_scales),
         scanny_boy_version=_current_scanny_boy_version(),
         created_at=_now_iso(),
         board_key=board.key,
@@ -620,5 +633,5 @@ def _create_calibrated_profile(
     )
     from scanny_boy.library import repo
 
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
     return profile

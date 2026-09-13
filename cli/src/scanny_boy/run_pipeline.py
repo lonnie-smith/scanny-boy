@@ -9,9 +9,10 @@ a selection of NEFs all the way to finished, stitched negatives.
     is short, so there is no separate disk-check code here to add or to
     accidentally add together.
 
-    `flatfield_profile_id` passes through to both stages: the convert stage
-    applies the profile's gain map and — in "scale" mode — its CA scales at
-    decode; the stitch stage applies its geometry to the warp.
+    `rig_profile_id` passes through to both stages: the convert stage applies
+    — in "scale" mode — its CA scales at decode; the stitch stage applies
+    its geometry to the warp. The roll's attached flat-field reference, when
+    present, supplies the gain map at convert time.
 """
 
 from __future__ import annotations
@@ -115,7 +116,7 @@ def run_full(
     jobs: int | None,
     cancel: CancellationToken,
     emit: EmitFn,
-    flatfield_profile_id: str | None = None,
+    rig_profile_id: str | None = None,
     auto_rotate: bool = True,
     grid: GridSpec | None = None,
     defer_roll_refresh: bool = False,
@@ -154,6 +155,49 @@ def run_full(
 
     files = [f for f in files if f not in skip_sources]
 
+    from scanny_boy import calibration, flatfield
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    rig_profile = None
+    if rig_profile_id is not None:
+        try:
+            rig_profile = repo.load_rig_profile(rig_profile_id)
+        except calibration.RigError as exc:
+            raise RunFailure(exc.code, exc.message) from exc
+
+    flat_field_block = None
+    gain_map = None
+    try:
+        roll_manifest = load_roll_manifest(out_dir)
+        flat_field_block = roll_manifest.flat_field
+        if flat_field_block is not None:
+            try:
+                gain_map = flatfield.load_gain_map_from_block(flat_field_block)
+            except flatfield.FlatFieldError as exc:
+                raise RunFailure(exc.code, exc.message) from exc
+        if (
+            flat_field_block is not None
+            and rig_profile_id is not None
+            and flat_field_block.get("rig_profile_id") != rig_profile_id
+        ):
+            from scanny_boy.events import Code, WarningEvent
+
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.FLATFIELD_REFERENCE_RIG_CONFLICT,
+                    message=(
+                        "this run's rig profile differs from the one the "
+                        "roll's flat-field reference was decoded with "
+                        f"({flat_field_block.get('rig_profile_id') or 'none'} "
+                        f"vs {rig_profile_id})"
+                    ),
+                )
+            )
+    except repo.RollNotRegisteredError:
+        pass
+
     frame_count = len(files)
     negative_count = frame_count // per_negative if per_negative else 0
     convert_total = frame_count * STEPS_PER_FRAME
@@ -177,7 +221,9 @@ def run_full(
                 emit=emit,
                 completed_offset=0,
                 total_override=combined_total,
-                flatfield_profile_id=flatfield_profile_id,
+                gain_map=gain_map,
+                rig_profile=rig_profile,
+                flat_field_block=flat_field_block,
                 grid=grid,
             )
         except ConvertFailure as exc:
@@ -201,7 +247,7 @@ def run_full(
                     jobs=jobs,
                     cancel=cancel,
                     emit=stitch_emit,
-                    flatfield_profile_id=flatfield_profile_id,
+                    rig_profile_id=rig_profile_id,
                     auto_rotate=auto_rotate,
                     defer_roll_refresh=defer_roll_refresh,
                 )

@@ -2,6 +2,30 @@ import Foundation
 
 /// The roll's film-base reference block, decoded
 /// from `roll info`'s `film_base` field.
+/// The roll's bare-light flat-field reference block, decoded from
+/// `roll info`'s `flat_field` field.
+struct FlatFieldReference: Sendable, Hashable {
+    let sourceName: String
+    let referenceWidth: Int
+    let referenceHeight: Int
+    let rigProfileID: String?
+    let lockedAt: String?
+
+    init?(fields: [String: JSONValue]) {
+        guard
+            let sourceName = fields["source_name"]?.stringValue,
+            let referenceWidth = fields["reference_width"]?.intValue,
+            let referenceHeight = fields["reference_height"]?.intValue
+        else { return nil }
+
+        self.sourceName = sourceName
+        self.referenceWidth = referenceWidth
+        self.referenceHeight = referenceHeight
+        rigProfileID = fields["rig_profile_id"]?.stringValue
+        lockedAt = fields["locked_at"]?.stringValue
+    }
+}
+
 struct FilmBase: Sendable, Hashable {
     struct Population: Sendable, Hashable {
         let density: [Double]
@@ -382,6 +406,9 @@ struct RollManifest: Sendable, Hashable {
     /// The roll's film-base reference. `nil` when
     /// the roll has none attached yet.
     let filmBase: FilmBase?
+    /// The roll's bare-light flat-field reference. `nil` when the roll
+    /// has none attached yet.
+    let flatField: FlatFieldReference?
     /// The roll's frozen camera colour matrix.
     let cameraColor: CameraColor?
     /// The roll's highlight-colour lock (docs/ROLL_HIGHLIGHT_LOCK.md §1).
@@ -409,6 +436,7 @@ struct RollManifest: Sendable, Hashable {
             metadata: metadata,
             filmKind: filmKind,
             filmBase: filmBase,
+            flatField: flatField,
             cameraColor: cameraColor,
             highlightLock: highlightLock
         )
@@ -426,6 +454,7 @@ struct RollManifest: Sendable, Hashable {
         metadata: Metadata,
         filmKind: String? = nil,
         filmBase: FilmBase? = nil,
+        flatField: FlatFieldReference? = nil,
         cameraColor: CameraColor? = nil,
         highlightLock: HighlightLock? = nil
     ) {
@@ -438,6 +467,7 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = filmKind
         self.filmBase = filmBase
+        self.flatField = flatField
         self.cameraColor = cameraColor
         self.highlightLock = highlightLock
     }
@@ -477,6 +507,7 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = fields["film_kind"]?.stringValue
         self.filmBase = fields["film_base"]?.objectValue.flatMap(FilmBase.init(fields:))
+        self.flatField = fields["flat_field"]?.objectValue.flatMap(FlatFieldReference.init(fields:))
         self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
         self.highlightLock = fields["highlight_lock"]?.objectValue.flatMap(HighlightLock.init(fields:))
     }

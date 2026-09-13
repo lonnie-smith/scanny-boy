@@ -70,23 +70,39 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
     }
 
-    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]`
+    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE`
     ///
     /// The only writer of `film_base.density`. The app calls this
     /// immediately when the user chooses a base frame on
     /// the Add Scans sheet — never deferred to Convert.
     public static func rollSetBaseFrame(
         roll: URL,
-        frame: URL,
-        flatfield: String? = nil
+        frame: URL
     ) -> CLICommand {
-        var arguments = [
+        CLICommand(arguments: [
             "roll", "set-base-frame",
             "--roll", roll.path,
             "--frame", frame.path,
+        ])
+    }
+
+    /// `scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]`
+    ///
+    /// Attaches or replaces the roll's bare-light flat-field reference.
+    /// The app calls this immediately when the user chooses a reference
+    /// frame on the Add Scans sheet — never deferred to Convert.
+    public static func rollSetFlatFieldReference(
+        roll: URL,
+        frame: URL,
+        rig: String? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "roll", "set-flatfield-reference",
+            "--roll", roll.path,
+            "--frame", frame.path,
         ]
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -121,7 +137,7 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL? = nil,
         across: Int? = nil,
         down: Int = 1,
-        flatfield: String? = nil
+        rig: String? = nil
     ) -> CLICommand {
         var arguments = ["probe", "--input", input.path]
         if !files.isEmpty {
@@ -135,8 +151,8 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--roll", roll.path])
         }
         arguments.append(contentsOf: groupingArguments(across: across, down: down))
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -155,7 +171,7 @@ public struct CLICommand: Sendable, Hashable {
         down: Int = 1,
         jobs: Int? = nil,
         overwrite: Bool = false,
-        flatfield: String? = nil
+        rig: String? = nil
     ) -> CLICommand {
         var arguments = ["prepare", "--input", input.path]
         arguments.append("--files")
@@ -168,8 +184,8 @@ public struct CLICommand: Sendable, Hashable {
         if overwrite {
             arguments.append("--overwrite")
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -193,7 +209,7 @@ public struct CLICommand: Sendable, Hashable {
         jobs: Int? = nil,
         skipSources: [String] = [],
         work: URL? = nil,
-        flatfield: String? = nil,
+        rig: String? = nil,
         deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
@@ -207,8 +223,8 @@ public struct CLICommand: Sendable, Hashable {
         if let work {
             arguments.append(contentsOf: ["--work", work.path])
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         if !skipSources.isEmpty {
             arguments.append("--skip-sources")
@@ -667,7 +683,7 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--flatfield ID]`
+    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--rig ID]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in
     /// `work`, verifies every intermediate, and stitches — without paying for
@@ -677,16 +693,15 @@ public struct CLICommand: Sendable, Hashable {
     /// manifest is already `complete`. `overwrite` is only ever set after the
     /// user has explicitly agreed. `--out` became `--roll`;
     /// a re-stitch's target is a roll folder same as
-    /// everything else now. `flatfield` names the calibration profile whose
-    /// geometry reaches the stitch warp (protocol version 7); a roll locked
-    /// to a profile's geometry refuses a stitch without it.
+    /// everything else now. `rig` names the calibration profile whose
+    /// geometry reaches the stitch warp.
     public static func stitch(
         work: URL,
         roll: URL,
         jobs: Int? = nil,
         overwrite: Bool = false,
         allowPartial: Bool = true,
-        flatfield: String? = nil,
+        rig: String? = nil,
         deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
@@ -699,8 +714,8 @@ public struct CLICommand: Sendable, Hashable {
         if allowPartial {
             arguments.append("--allow-partial")
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         if deferRollRefresh {
             arguments.append("--defer-roll-refresh")
@@ -730,11 +745,11 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["capture", "summary", "--log", log.path])
     }
 
-    /// `scanny-boy capture check --work DIR [--flatfield PROFILE_ID]`
-    public static func captureCheck(work: URL, flatfield: String? = nil) -> CLICommand {
+    /// `scanny-boy capture check --work DIR [--rig PROFILE_ID]`
+    public static func captureCheck(work: URL, rig: String? = nil) -> CLICommand {
         var arguments = ["capture", "check", "--work", work.path]
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -744,41 +759,35 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "refresh", "--roll", roll.path])
     }
 
-    /// `scanny-boy flatfield create --reference FILE --name NAME [--calibration FILE ...]`
+    /// `scanny-boy rig create --name NAME --calibration FILE ...`
     ///
-    /// Protocol version 7: decodes the bare light source reference, builds
-    /// and stores the gain map, and inserts the profile. With
-    /// `calibrationFrames` (ChArUco board NEFs, absolute paths), the profile
-    /// additionally carries the geometric calibration — and the command runs
-    /// for minutes, driven by `flatfield_progress` events.
-    public static func flatfieldCreate(
-        reference: URL,
+    /// Fits geometric calibration from ChArUco frames and inserts the
+    /// profile. The command runs for minutes, driven by `rig_progress`
+    /// events.
+    public static func rigCreate(
         name: String,
-        calibrationFrames: [URL] = []
+        calibrationFrames: [URL]
     ) -> CLICommand {
         var arguments = [
-            "flatfield", "create",
-            "--reference", reference.path,
+            "rig", "create",
             "--name", name,
+            "--calibration",
         ]
-        if !calibrationFrames.isEmpty {
-            arguments.append("--calibration")
-            arguments.append(contentsOf: calibrationFrames.map(\.path))
-        }
+        arguments.append(contentsOf: calibrationFrames.map(\.path))
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy flatfield list`
-    public static func flatfieldList() -> CLICommand {
-        CLICommand(arguments: ["flatfield", "list"])
+    /// `scanny-boy rig list`
+    public static func rigList() -> CLICommand {
+        CLICommand(arguments: ["rig", "list"])
     }
 
-    /// `scanny-boy flatfield delete --profile ID`
+    /// `scanny-boy rig delete --profile ID`
     ///
-    /// The CLI refuses with `FLATFIELD_PROFILE_IN_USE` when any roll's
+    /// The CLI refuses with `RIG_PROFILE_IN_USE` when any roll's
     /// invariants name the profile; the app surfaces that as an alert.
-    public static func flatfieldDelete(profile: String) -> CLICommand {
-        CLICommand(arguments: ["flatfield", "delete", "--profile", profile])
+    public static func rigDelete(profile: String) -> CLICommand {
+        CLICommand(arguments: ["rig", "delete", "--profile", profile])
     }
 
     /// `scanny-boy grid create --name NAME --across N --down N`
@@ -882,10 +891,10 @@ public struct CLIRunner: Sendable {
     /// to the resident helper; long jobs keep their own one-shot process,
     /// with their own cancellation and progress semantics, and a crash in
     /// one cannot take the interactive session down. `probe`, `prepare`,
-    /// `apply-metadata`, `export`, `run`, `stitch` and `flatfield
+    /// `apply-metadata`, `export`, `run`, `stitch` and `rig
     /// create`/`delete` stay one-shot; `roll init`/`rename`/`delete`/
-    /// `set-base-frame`/`set-film-kind` mutate the roll folder and stay
-    /// one-shot with them.
+    /// `set-base-frame`/`set-flatfield-reference`/`set-film-kind` mutate
+    /// the roll folder and stay one-shot with them.
     static func routesThroughDaemon(_ command: CLICommand) -> Bool {
         var parts = command.arguments.makeIterator()
         guard let head = parts.next() else { return false }
@@ -901,7 +910,7 @@ public struct CLIRunner: Sendable {
         case "grid":
             let sub = parts.next()
             return sub == "create" || sub == "list" || sub == "delete"
-        case "flatfield":
+        case "rig":
             return parts.next() == "list"
         default:
             return false

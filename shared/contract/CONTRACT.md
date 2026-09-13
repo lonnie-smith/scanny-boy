@@ -4,7 +4,8 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`) is the current event-stream version, and
+`PROTOCOL_VERSION` (`events.py`, currently **22**) is the current
+event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
 `roll-manifest.schema.json` cover the work manifest and the roll record.
@@ -46,7 +47,7 @@ manifest write; a run that fails before publishing anything leaves it null.
 work. Codes: `FILM_BASE_REQUIRED`, `FILM_BASE_LOCKED`, `FILM_BASE_NOT_FOUND`,
 `FILM_BASE_TOO_SMALL`, `FILM_BASE_CLIPPED`, `FILM_BASE_TOO_DARK`,
 `FILM_BASE_AMBIGUOUS`, `ROLL_PREDATES_FILM_BASE` (all errors),
-`FILM_BASE_CAMERA_CONFLICT`, `FILM_BASE_FLATFIELD_CONFLICT` (warnings). Each
+`FILM_BASE_CAMERA_CONFLICT`, `FLATFIELD_REFERENCE_RIG_CONFLICT` (warnings). Each
 negative's `normalization` block gains an optional `base_check` object —
 `{level_offset, shape_residual}` — recorded whenever the roll has a locked
 anchor and the negative's own rebate detector fired unclipped, and read by
@@ -147,21 +148,22 @@ scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
-scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]
+scanny-boy roll set-base-frame --roll DIR --frame FILE
+scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N | --grid AxD] [--roll DIR]
-                      [--flatfield ID]
+                      [--rig ID]
 
 scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
                       [--per-negative N | --grid AxD]
-                      [--jobs N] [--overwrite] [--flatfield ID]
+                      [--jobs N] [--overwrite] [--rig ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ...] [--flatfield ID]
+                      [--negatives ID ...] [--rig ID]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
-                      [--jobs N] [--skip-sources FILE ...] [--work DIR] [--flatfield ID]
+                      [--jobs N] [--skip-sources FILE ...] [--work DIR] [--rig ID]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -190,10 +192,9 @@ scanny-boy edit list-scratches   --roll DIR --negative ID
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
                        [--downsample {none,6048,9072,12096}]
 
-scanny-boy flatfield create --reference FILE --name NAME
-                            [--calibration FILE [FILE ...]]
-scanny-boy flatfield list
-scanny-boy flatfield delete --profile ID
+scanny-boy rig create --name NAME --calibration FILE [FILE ...]
+scanny-boy rig list
+scanny-boy rig delete --profile ID
 
 scanny-boy grid create --name NAME --across N --down N
 scanny-boy grid list
@@ -253,48 +254,46 @@ and what was applied is recorded in the XMP's `scannyboy:provenance`
 `rendered.downsample` block. An image smaller than the target exports
 at full resolution; no warning, no error.
 
-`--flatfield` on `convert`, `run`, `stitch`, and `probe` names a calibration
-profile built by `flatfield create` — a profile may carry a gain map only,
-or a gain map plus a distortion fit and a chromatic aberration fit (the
-flag's name is historical; it names the whole profile). The gain-map
-correction is multiplicative gain only, applied per frame immediately after
-RAW decode. A profile whose CA mode is `"scale"` additionally decodes every
-frame with rawpy's `chromatic_aberration` scales. An unknown profile id
-fails with `FLATFIELD_PROFILE_NOT_FOUND` before anything is written; a
-profile whose geometry was fitted at other frame dimensions fails with
-`GEOMETRY_FRAME_SIZE_MISMATCH`. A frame whose correction pushes more than
-0.1% of its pixels past full scale warns with `FLATFIELD_HIGHLIGHT_CLIPPED`;
-a profile whose reference aspect ratio differs from the frames' by more than
-1% warns with `FLATFIELD_ASPECT_MISMATCH` but proceeds.
+`--rig` on `run`, `stitch`, `probe`, and `prepare` names a scanning-rig
+calibration profile built by `rig create` — geometry and chromatic
+aberration only. A profile whose CA mode is `"scale"` decodes every frame
+with rawpy's `chromatic_aberration` scales. An unknown profile id fails with
+`RIG_PROFILE_NOT_FOUND` before anything is written; a profile whose geometry
+was fitted at other frame dimensions fails with `GEOMETRY_FRAME_SIZE_MISMATCH`.
 
-`--flatfield` is optional on `stitch`. A roll whose `stitch_params` carry a
-`geometry` bucket (because its first stitch ran with a calibrated profile)
-refuses a `stitch` without the same profile:
-`ROLL_INVARIANT_MISMATCH`, through the existing check. The bucket is absent,
-not null, when the profile carries no geometry.
+The bare-light gain map is **not** on the rig profile. It is attached per
+roll via `roll set-flatfield-reference` (see `docs/FLATFIELD_REFERENCE.md`).
+A roll with no attached reference converts with zero flat-field correction.
+When attached, the gain-map correction is multiplicative gain only, applied
+per frame immediately after RAW decode. A frame whose correction pushes more
+than 0.1% of its pixels past full scale warns with `FLATFIELD_HIGHLIGHT_CLIPPED`;
+a reference whose aspect ratio differs from the frames' by more than 1% warns
+with `FLATFIELD_ASPECT_MISMATCH` but proceeds. When `run`/`probe --roll` and
+the roll's attached reference was decoded with a different rig than this
+run's `--rig`, warn with `FLATFIELD_REFERENCE_RIG_CONFLICT`.
 
-`flatfield create` decodes `--reference` (a `.NEF` of the bare light source
-with no negative in the holder), builds and stores the gain map, and inserts
-the profile; it emits `flatfield_created` carrying the profile (`profile_id`,
-`name`, `reference_width`, `reference_height`, `source_path`,
-`created_at`, `board_key`, `has_geometry`, `chromatic_aberration_mode`,
-`calibration_report`). With `--calibration FILE [FILE ...]` (absolute paths,
-at least 12 ChArUco board frames), the profile additionally carries the
-distortion fit, the CA fit, and the human-readable `calibration_report`; a
-fit that fails its acceptance gates is recorded as rejected in the report
-and left out of the profile, with a `warning`. Fewer than 12 usable frames
-fails `GEOMETRY_INSUFFICIENT_FRAMES`; fewer than 16 warns
-`GEOMETRY_FEW_FRAMES`. The command runs for minutes when calibrating and
-reports `flatfield_progress` events carrying `phase` (`detect`, `fit`,
-`chromatic`, or `reference`), `completed`, and `total`. A duplicate name
-fails with `FLATFIELD_PROFILE_EXISTS`. `flatfield list` emits
-`flatfield_list` carrying `profiles`, an array of the same shape.
-`flatfield delete --profile ID` refuses with `FLATFIELD_PROFILE_IN_USE` when
-any roll's invariants name the profile — in either invariant bucket,
-`processing_params.flat_field` or `stitch_params.geometry` — and otherwise
-removes the row and the `.npz`, emitting `flatfield_deleted` carrying
-`profile_id`. Each command brackets like `roll init`/`roll list` and carries
-no `run_id`; none is a pipeline run.
+`--rig` is optional on `stitch`. A roll whose `stitch_params` carry a
+`geometry` bucket refuses a `stitch` without the same profile:
+`ROLL_INVARIANT_MISMATCH`, through the existing check.
+
+`rig create --name NAME --calibration FILE [FILE ...]` fits distortion and
+CA from at least 12 ChArUco board frames and inserts the profile; it emits
+`rig_created` carrying the profile (`profile_id`, `name`, `created_at`,
+`board_key`, `has_geometry`, `chromatic_aberration_mode`,
+`calibration_report`). A fit that fails its acceptance gates is recorded as
+rejected in the report and left out of the profile, with a `warning`. Fewer
+than 12 usable frames fails `GEOMETRY_INSUFFICIENT_FRAMES`; fewer than 16
+warns `GEOMETRY_FEW_FRAMES`. The command runs for minutes and reports
+`rig_progress` events carrying `phase` (`detect`, `fit`, or `chromatic`),
+`completed`, and `total`. A duplicate name fails with `RIG_PROFILE_EXISTS`.
+`rig list` emits `rig_list`. `rig delete --profile ID` refuses with
+`RIG_PROFILE_IN_USE` when any roll's `stitch_params.geometry` names the
+profile. Each command brackets like `roll init`/`roll list` and carries no
+`run_id`.
+
+`roll set-flatfield-reference` decodes a bare-light `.NEF`, builds the gain
+map, writes the roll's `flat_field` block, and emits `flat_field_reference_set`.
+A locked roll refuses with `FLATFIELD_REFERENCE_LOCKED`.
 
 `grid create --name NAME --across N --down N` validates the shape with the
 same rules as `--grid AxD` (`INVALID_GRID` when refused), refuses duplicate
@@ -719,10 +718,11 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
 | `preview_rendered` | A negative's whole display image was rendered by `edit render-preview` in the requested display mode, downscaled like the cached preview. Carries `negative_id`, `path`, `width`, and `height`. Carries no `run_id`. |
 | `export_done` | One negative's edits were applied and written to the export folder. Carries `negative_id`, `output`, `width`, and `height`. |
-| `flatfield_created` | A flat-field profile was created. Carries `profile`. |
-| `flatfield_list` | The flat-field profile list. Carries `profiles`. |
-| `flatfield_deleted` | A flat-field profile was deleted. Carries `profile_id`. |
-| `flatfield_progress` | A long `flatfield create` is progressing. Carries `phase`, `completed`, `total`. Carries no `run_id`. |
+| `rig_created` | A rig profile was created. Carries `profile`. |
+| `rig_list` | The rig profile list. Carries `profiles`. |
+| `rig_deleted` | A rig profile was deleted. Carries `profile_id`. |
+| `rig_progress` | A long `rig create` is progressing. Carries `phase`, `completed`, `total`. Carries no `run_id`. |
+| `flat_field_reference_set` | A roll's bare-light reference was attached. Carries `roll_id`, `source_name`, `reference_width`, `reference_height`, `rig_profile_id`, `locked`. |
 | `grid_created` | A grid configuration preset was created. Carries `profile`. |
 | `grid_list` | The grid configuration preset list. Carries `profiles`. |
 | `grid_deleted` | A grid configuration preset was deleted. Carries `profile_id`. |
@@ -845,12 +845,14 @@ staging directories, and reruns the incomplete negative.
 | `CAMERA_MATRIX_MISSING` | A colour roll's manifest predates the `camera_color` block; the export is refused (a mono roll is not) |
 | `CAMERA_MATRIX_CONFLICT` | Warning: a later stitch run's source reports a different camera colour matrix than the roll's frozen one; the frozen value is kept |
 | `PREVIEW_FAILED` | Warning: a preview could not be generated or rotated; the edit itself was kept |
-| `FLATFIELD_PROFILE_NOT_FOUND` | No flat-field profile with the given id |
-| `FLATFIELD_PROFILE_EXISTS` | A flat-field profile with that name already exists |
+| `RIG_PROFILE_NOT_FOUND` | No rig profile with the given id |
+| `RIG_PROFILE_EXISTS` | A rig profile with that name already exists |
+| `RIG_PROFILE_IN_USE` | The profile is locked into a roll's stitch invariants and cannot be deleted |
+| `FLATFIELD_REFERENCE_LOCKED` | The roll's flat-field reference is locked and cannot be replaced |
+| `FLATFIELD_REFERENCE_RIG_CONFLICT` | Warning: the run's rig profile differs from the one the roll's flat-field reference was decoded with |
 | `GRID_PROFILE_NOT_FOUND` | No grid configuration preset with the given id |
 | `GRID_PROFILE_EXISTS` | A grid configuration preset with that name already exists |
-| `FLATFIELD_PROFILE_IN_USE` | The profile is locked into a roll's invariants and cannot be deleted |
-| `FLATFIELD_GAIN_MAP_MISSING` | The profile's `.npz` is missing or corrupt |
+| `FLATFIELD_GAIN_MAP_MISSING` | The roll's gain-map `.npz` is missing or corrupt |
 | `FLATFIELD_ASPECT_MISMATCH` | Warning: the reference's aspect ratio differs from the frames' by more than 1% |
 | `FLATFIELD_HIGHLIGHT_CLIPPED` | Warning: the correction pushed more than 0.1% of a frame's pixels past full scale |
 | `GEOMETRY_INSUFFICIENT_FRAMES` | Too few usable calibration frames |
@@ -876,7 +878,6 @@ staging directories, and reruns the incomplete negative.
 | `FILM_BASE_AMBIGUOUS` | Two large flat populations of different density; the frame is refused rather than guessed at |
 | `ROLL_PREDATES_FILM_BASE` | This roll was stitched before film-base anchoring and cannot take new negatives or a base frame |
 | `FILM_BASE_CAMERA_CONFLICT` | Warning: the base frame's EXIF camera model differs from the roll's; the measurement may still be fine |
-| `FILM_BASE_FLATFIELD_CONFLICT` | Warning: the run's flat-field profile differs from the one the base frame was measured with |
 | `FILM_BASE_EXPOSURE_MISMATCH` | Warning: a negative's EXIF shutter/aperture/ISO differs from the base frame's; it gets no highlight-lock correction |
 | `SPOT_LIMIT_REACHED` | Warning: the spot detector found more than 500 proposals on a negative and kept the highest-scoring 500; the remedy is a lower `--sensitivity` |
 | `SPOTS_STALE` | Warning: the negative's spot set was detected against a canvas a re-stitch has replaced; it repairs nothing and needs re-detecting |

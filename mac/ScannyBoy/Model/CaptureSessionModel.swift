@@ -59,7 +59,8 @@ final class CaptureSessionModel {
     var rollURL: URL?
     var filmKind: String?
     var filmBase: FilmBase?
-    var flatFieldProfileID: String?
+    var rigProfileID: String?
+    var flatField: FlatFieldReference?
     var gridProfileID: String?
     var across: Int?
     var down: Int = 1
@@ -91,6 +92,10 @@ final class CaptureSessionModel {
     private(set) var isSessionOpen = false
     private(set) var isShootingBaseFrame = false
     private(set) var baseFrameError: ConfigurationModel.Issue?
+    private(set) var isShootingFlatFieldReference = false
+    private(set) var flatFieldReferenceError: ConfigurationModel.Issue?
+    private(set) var referenceAperture: UInt32?
+    var onFlatFieldReferenceAttached: ((FlatFieldReference) -> Void)?
     private(set) var currentNegativeIndex = 0
     private(set) var pausedAfterCell = false
     private(set) var cellWarnings: [Int: [String]] = [:]
@@ -142,10 +147,18 @@ final class CaptureSessionModel {
             && (exposure?.isManualFocus ?? false)
             && perNegative != nil
             && rollURL != nil
-            && flatFieldProfileID != nil
+            && flatField != nil
             && filmKind != nil
             && filmBase != nil
             && sequencePhase == .idle
+    }
+
+    var apertureMismatchWarning: String? {
+        guard let referenceAperture, let exposure else { return nil }
+        guard exposure.aperture != referenceAperture else { return nil }
+        let expected = PTP.decodePropertyValue(0x5007, raw: referenceAperture)
+        let current = PTP.decodePropertyValue(0x5007, raw: exposure.aperture)
+        return "Aperture is \(current); bare-light reference was shot at \(expected)."
     }
 
     func refreshConnection() async {
@@ -195,6 +208,34 @@ final class CaptureSessionModel {
         stopNegative()
     }
 
+    func shootFlatFieldReference() async {
+        guard flatField == nil, let rollURL, let captureFolder else { return }
+        isShootingFlatFieldReference = true
+        flatFieldReferenceError = nil
+        defer { isShootingFlatFieldReference = false }
+        do {
+            let url = try CaptureNaming.bareLightURL(in: captureFolder, at: clock.now())
+            try await captureOneFrame(to: url)
+            referenceAperture = exposure?.aperture
+            let result = await Self.runSetFlatFieldReference(
+                runner: runner,
+                roll: rollURL,
+                frame: url,
+                rig: rigProfileID
+            )
+            if let error = result.error {
+                flatFieldReferenceError = error
+            } else if let flatField = result.flatField {
+                self.flatField = flatField
+                onFlatFieldReferenceAttached?(flatField)
+            }
+        } catch {
+            flatFieldReferenceError = ConfigurationModel.Issue(
+                code: .internalError, message: error.localizedDescription
+            )
+        }
+    }
+
     func shootBaseFrame() async {
         guard filmBase == nil, let rollURL, let captureFolder else { return }
         isShootingBaseFrame = true
@@ -206,7 +247,7 @@ final class CaptureSessionModel {
             )
             try await captureOneFrame(to: url)
             let result = await Self.runSetBaseFrame(
-                runner: runner, roll: rollURL, frame: url, flatfield: flatFieldProfileID
+                runner: runner, roll: rollURL, frame: url
             )
             if let error = result.error {
                 baseFrameError = error
@@ -430,17 +471,75 @@ final class CaptureSessionModel {
         var error: ConfigurationModel.Issue?
     }
 
-    private static func runSetBaseFrame(
+    private struct SetFlatFieldReferenceResult: Sendable {
+        var flatField: FlatFieldReference?
+        var error: ConfigurationModel.Issue?
+    }
+
+    private static func runSetFlatFieldReference(
         runner: CLIRunner,
         roll: URL,
         frame: URL,
-        flatfield: String?
+        rig: String?
+    ) async -> SetFlatFieldReferenceResult {
+        var result = SetFlatFieldReferenceResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetFlatFieldReference(roll: roll, frame: frame, rig: rig)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .flatFieldReferenceSet: succeeded = true
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = ConfigurationModel.Issue(code: code, message: message)
+                        }
+                    default: break
+                    }
+                case .completed(let completion):
+                    if completion.outcome == .success { succeeded = true }
+                case .log, .failure: break
+                }
+            }
+        } catch {
+            result.error = ConfigurationModel.Issue(
+                code: .internalError, message: error.localizedDescription
+            )
+            return result
+        }
+        if succeeded, result.error == nil {
+            result.flatField = await fetchFlatField(runner: runner, roll: roll)
+        }
+        return result
+    }
+
+    private static func fetchFlatField(runner: CLIRunner, roll: URL) async -> FlatFieldReference? {
+        do {
+            for await output in try await runner.session(for: .rollInfo(roll: roll)).start() {
+                guard case .event(let event) = output, event.kind == .rollInfo,
+                    let fields = event.manifest
+                else { continue }
+                return RollManifest(fields: fields)?.flatField
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
+    private static func runSetBaseFrame(
+        runner: CLIRunner,
+        roll: URL,
+        frame: URL
     ) async -> SetBaseFrameResult {
         var result = SetBaseFrameResult()
         var succeeded = false
         do {
             let session = runner.session(
-                for: .rollSetBaseFrame(roll: roll, frame: frame, flatfield: flatfield)
+                for: .rollSetBaseFrame(roll: roll, frame: frame)
             )
             for await output in try await session.start() {
                 switch output {

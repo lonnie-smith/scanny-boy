@@ -22,7 +22,7 @@ import UniformTypeIdentifiers
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
-    let flatField: FlatFieldModel
+    let rig: RigModel
     let grid: GridModel
     @Bindable var model: ConfigurationModel
     @Bindable var capture: CaptureSessionModel
@@ -179,7 +179,7 @@ struct ContentView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: .scannyBoyRequestFlatFieldProfiles)
         ) { _ in
-            flatField.refresh()
+            rig.refresh()
             isPresentingFlatFieldProfiles = true
         }
         .onReceive(
@@ -201,7 +201,7 @@ struct ContentView: View {
             RestitchSheet(
                 run: run,
                 activity: activity,
-                flatField: flatField,
+                rig: rig,
                 onStarted: handleRestitchStarted,
                 initialWorkDirectory: restitchWorkDirectory,
                 initialOutputFolder: restitchOutputFolder
@@ -243,7 +243,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
-            FlatFieldProfilesSheet(flatField: flatField)
+            FlatFieldProfilesSheet(rig: rig)
         }
         .sheet(isPresented: $isPresentingGridProfiles) {
             GridProfilesSheet(grid: grid)
@@ -280,7 +280,7 @@ struct ContentView: View {
                 CaptureStageView(
                     capture: capture,
                     stitchQueue: stitchQueue,
-                    flatField: flatField,
+                    rig: rig,
                     grid: grid,
                     activity: activity
                 )
@@ -366,6 +366,11 @@ struct ContentView: View {
                 stitchQueue.endSession()
             }
         }
+        if capture.onFlatFieldReferenceAttached == nil {
+            capture.onFlatFieldReferenceAttached = { [model] flatField in
+                model.receiveFlatFieldReference(flatField)
+            }
+        }
     }
 
     private func resolveSelectedRoll() {
@@ -382,7 +387,8 @@ struct ContentView: View {
         capture.rollURL = model.rollURL
         capture.filmKind = model.filmKind
         capture.filmBase = model.filmBase
-        capture.flatFieldProfileID = model.flatFieldProfileID
+        capture.rigProfileID = model.rigProfileID
+        capture.flatField = model.flatField
         if let profileID = capture.gridProfileID,
            let profile = grid.profiles.first(where: { $0.profileID == profileID })
         {
@@ -395,13 +401,12 @@ struct ContentView: View {
         }
         if let rollURL = model.rollURL,
            let captureFolder = capture.captureFolder,
-           let across = capture.across,
-           let flatFieldProfileID = capture.flatFieldProfileID
+           let across = capture.across
         {
             stitchQueue.configure(
                 roll: rollURL,
                 captureFolder: captureFolder,
-                flatFieldProfileID: flatFieldProfileID,
+                rigProfileID: capture.rigProfileID,
                 across: across,
                 down: capture.down
             )
@@ -478,21 +483,33 @@ struct ContentView: View {
             // profile, so different runs into the same roll may each pick
             // a different one. Defaults to the last profile used, across
             // any roll.
-            Picker("Scanning Rig Profile", selection: $model.flatFieldProfileID) {
+            Picker("Scanning Rig Profile", selection: $model.rigProfileID) {
                 Text("None").tag(String?.none)
-                ForEach(flatField.profiles) { profile in
+                ForEach(rig.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
-            if model.flatFieldProfileID == nil {
-                Text("Choose the profile measured for this copy stand; it corrects the lens falloff every scan of the roll.")
+            if model.rigProfileID == nil {
+                Text("Optional: choose the geometric calibration measured for this copy stand.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Button("Manage…") {
-                flatField.refresh()
+                rig.refresh()
                 isPresentingFlatFieldProfiles = true
             }
+            FlatFieldReferenceField(
+                flatField: model.flatField,
+                isBusy: activity.isBusy,
+                isAnalyzing: model.isAttachingFlatFieldReference,
+                error: model.flatFieldReferenceError,
+                onChoose: { chooseFlatFieldReference(replace: false) },
+                onReplace: { chooseFlatFieldReference(replace: true) },
+                onDropFrame: { url in
+                    Task { await model.attachFlatFieldReference(at: url) }
+                },
+                fileURL: model.fileURL(for:)
+            )
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,
@@ -551,7 +568,7 @@ struct ContentView: View {
         } header: {
             HStack {
                 Text("Roll Setup")
-                if model.isValidating || model.isAttachingBaseFrame {
+                if model.isValidating || model.isAttachingBaseFrame || model.isAttachingFlatFieldReference {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -736,6 +753,22 @@ struct ContentView: View {
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.attachBaseFrame(at: url) }
+    }
+
+    private func chooseFlatFieldReference(replace: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = replace ? "Replace" : "Choose"
+        if let nef = UTType(filenameExtension: "nef") {
+            panel.allowedContentTypes = [nef]
+        }
+        if let inputFolder = model.inputFolder {
+            panel.directoryURL = inputFolder
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await model.attachFlatFieldReference(at: url) }
     }
 
     /// Section 3.2's "the last folder the user opened" persists across

@@ -4,8 +4,8 @@ One nullable column on ``rolls``: existing rows read back as NULL and are
 treated as not pending — no data migration, and no bump to the roll
 invariants or ``ROLL_MANIFEST_FORMAT_VERSION``.
 
-Revision ID: 0015
-Revises: 0014
+Revision ID: 0017
+Revises: 0016
 Create Date: 2026-09-11
 
 """
@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0015"
-down_revision = "0014"
+revision = "0017"
+down_revision = "0016"
 branch_labels = None
 depends_on = None
 

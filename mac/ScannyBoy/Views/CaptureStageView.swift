@@ -4,7 +4,7 @@ import SwiftUI
 struct CaptureStageView: View {
     @Bindable var capture: CaptureSessionModel
     @Bindable var stitchQueue: StitchQueueModel
-    let flatField: FlatFieldModel
+    let rig: RigModel
     let grid: GridModel
     let activity: AppActivity
     @FocusState private var captureFocused: Bool
@@ -16,6 +16,9 @@ struct CaptureStageView: View {
             Form {
                 connectionSection
                 setupSection
+                if capture.flatField == nil {
+                    flatFieldReferenceSection
+                }
                 if capture.filmBase == nil {
                     baseFrameSection
                 }
@@ -107,11 +110,16 @@ struct CaptureStageView: View {
     @ViewBuilder
     private var setupSection: some View {
         Section("Setup") {
-            Picker("Scanning Rig Profile", selection: $capture.flatFieldProfileID) {
+            Picker("Scanning Rig Profile", selection: $capture.rigProfileID) {
                 Text("None").tag(String?.none)
-                ForEach(flatField.profiles) { profile in
+                ForEach(rig.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
+            }
+            if let warning = capture.apertureMismatchWarning {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             Picker("Grid", selection: $capture.gridProfileID) {
                 Text("Choose…").tag(String?.none)
@@ -130,6 +138,33 @@ struct CaptureStageView: View {
                 }
             }
             Toggle("Session open", isOn: $capture.sessionOpen)
+        }
+    }
+
+    @ViewBuilder
+    private var flatFieldReferenceSection: some View {
+        Section("Bare-light reference") {
+            Text(
+                "Remove the film and photograph the bare light source alone. "
+                    + "Use the same f-stop as your scans; shutter and ISO may differ "
+                    + "to avoid clipping."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Button("Shoot bare-light reference") {
+                Task { await capture.shootFlatFieldReference() }
+            }
+            .disabled(
+                !capture.sessionOpen
+                    || capture.connectionState != .ready
+                    || capture.isShootingFlatFieldReference
+            )
+            if capture.isShootingFlatFieldReference {
+                ProgressView()
+            }
+            if let error = capture.flatFieldReferenceError {
+                IssueLabel(issue: error, style: .error)
+            }
         }
     }
 

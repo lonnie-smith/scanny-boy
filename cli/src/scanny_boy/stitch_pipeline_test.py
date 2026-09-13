@@ -331,7 +331,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
     geometry to `composite`, so the warp matches the undistorted coordinates
     the solve happened in. (The profile keyword was never passed at the call
     site, so the geometry-aware warp was dead in production.)"""
-    from scanny_boy import flatfield
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
     # Zero distortion: the warp is a no-op, so the synthetic scene still
@@ -348,19 +348,10 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
         "k1": 0.0,
         "k2": 0.0,
     }
-    path, sha256 = flatfield.save_gain_map(
-        "pid-geo", np.full((8, 8, 3), 1.0, dtype=np.float32)
-    )
-    repo.save_flatfield_profile(
-        flatfield.FlatFieldProfile(
+    repo.save_rig_profile(
+        RigProfile(
             profile_id="pid-geo",
             name="Profile Geo",
-            gain_map_path=str(path),
-            gain_map_sha256=sha256,
-            source_path=None,
-            reference_width=frame_width,
-            reference_height=frame_height,
-            params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
             geometry=geometry,
@@ -378,7 +369,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 
     out_dir = make_roll_dir(tmp_path)
 
-    outcome = run_stitch_with_defaults(work_dir, out_dir, flatfield_profile_id="pid-geo")
+    outcome = run_stitch_with_defaults(work_dir, out_dir, rig_profile_id="pid-geo")
 
     assert outcome.status == "complete"
     assert captured
@@ -389,7 +380,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
     """A profile fitted at different decode dimensions must fail before
     stitch starts — width and height are not interchangeable."""
-    from scanny_boy import flatfield
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
     frame_height, frame_width = FRAME_SIZE
@@ -404,19 +395,10 @@ def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
         "k1": 0.0,
         "k2": 0.0,
     }
-    path, sha256 = flatfield.save_gain_map(
-        "pid-mismatch", np.full((8, 8, 3), 1.0, dtype=np.float32)
-    )
-    repo.save_flatfield_profile(
-        flatfield.FlatFieldProfile(
+    repo.save_rig_profile(
+        RigProfile(
             profile_id="pid-mismatch",
             name="Swapped",
-            gain_map_path=str(path),
-            gain_map_sha256=sha256,
-            source_path=None,
-            reference_width=frame_height,
-            reference_height=frame_width,
-            params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
             geometry=geometry,
@@ -427,7 +409,7 @@ def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
 
     with pytest.raises(StitchError) as exc_info:
         run_stitch_with_defaults(
-            work_dir, out_dir, flatfield_profile_id="pid-mismatch"
+            work_dir, out_dir, rig_profile_id="pid-mismatch"
         )
     assert exc_info.value.code is Code.GEOMETRY_FRAME_SIZE_MISMATCH
 
@@ -962,47 +944,6 @@ def test_a_run_that_fails_before_publishing_leaves_the_roll_attached(tmp_path):
     roll = load_roll_manifest(out_dir)
     assert roll.film_base is not None
     assert roll.film_base["locked_at"] is None
-
-
-def test_a_differing_flatfield_profile_warns(work_dir, tmp_path):
-    """§3.3: the run's flat-field profile differs from the one the base
-    frame was measured with — a warning, not an error."""
-    out_dir = make_roll_dir(tmp_path)
-    roll = load_roll_manifest(out_dir)
-    attach_base_frame(roll, flat_field_profile_id="pid-elsewhere")
-    write_roll_manifest(out_dir, roll)
-    events: list = []
-
-    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
-
-    warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code
-        not in (
-            Code.NORMALIZE_HEADROOM_CLIPPED,
-            # The synthetic scene's blurred dark content forms a second dense
-            # mode, so the film-extent pass reports an informational
-            # withhold on it; it is not the warning this test is about.
-            Code.NORMALIZE_FILM_EXTENT_WITHHELD,
-            Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
-        )
-    ]
-    assert [w.code for w in warnings] == [Code.FILM_BASE_FLATFIELD_CONFLICT]
-    assert "pid-elsewhere" in warnings[0].message
-
-
-def test_a_matching_flatfield_profile_does_not_warn(work_dir, tmp_path):
-    out_dir = make_roll_dir(tmp_path)
-    events: list = []
-
-    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
-
-    assert not [
-        e for e in events
-        if isinstance(e, WarningEvent) and e.code is Code.FILM_BASE_FLATFIELD_CONFLICT
-    ]
 
 
 def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp_path):

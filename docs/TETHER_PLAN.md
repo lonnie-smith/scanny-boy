@@ -208,16 +208,21 @@ for `docs/FOCUS_ASSIST_PLAN.md`. Nothing above depends on them.
 ```
 Capture tab, roll selected
   │
-  ├─ setup: film kind (from roll) · flat-field profile · grid preset
+  ├─ setup: film kind (from roll) · rig profile (optional) · grid preset
   │         · interval (default 4 s) · destination (buffer | card, Settings)
   │
   ├─ connect ── TetherCamera: find → open → GetDeviceInfo → required ops present?
   │             → drain CheckEvent → scan the buffer (leftovers? §2.5)
   │             → snapshot exposure (program, shutter, aperture, ISO, WB, focus)
   │
+  ├─ bare-light reference (only if the roll has none attached)
+  │     film out, light only → "Shoot bare-light reference"
+  │     → release → download → roll set-flatfield-reference --frame FILE [--rig ID]
+  │     → same f-stop as the scans; shutter/ISO may differ
+  │
   ├─ base frame (only if the roll has none attached)
   │     user frames a piece of leader → "Shoot base frame"
-  │     → release → download → roll set-base-frame --frame FILE --flatfield ID
+  │     → release → download → roll set-base-frame --frame FILE
   │     → gates pass: attached   |   gates fail: message, shoot again
   │
   ├─ negative loop ──────────────────────────────────────────────────────────┐
@@ -388,7 +393,8 @@ negatives.
 | Roll | Sidebar selection | Locked while a session is open or its queue is non-empty (§4.2) |
 | Film kind | `probe --roll` | Required, as for Add Scans |
 | Base frame | `probe --roll`'s `film_base` | Required before the first negative; shot here if absent (§1) |
-| Flat-field profile | `FlatFieldModel` | Required; defaults to the last used, as on Add Scans |
+| Bare-light reference | `roll info`'s `flat_field` | Required before the first negative; shot here if absent (§1) |
+| Rig profile | `RigModel` | Optional geometry/CA; defaults to the last used, as on Add Scans |
 | Grid | `GridModel` presets or Across/Down | The same controls and clamp as Add Scans |
 | Interval | Dropdown: 2, 3, 4, 5, 6, 8, 10 s | Default 4 s; last used remembered in `UserDefaults` |
 | Destination | Settings: camera buffer or card | Default buffer — nothing is written to the cards |
@@ -475,14 +481,14 @@ writes the roll and runs one at a time.
 ```
 prepare --input <capture folder> --files <the negative's frames>
         --out <capture folder>/.work/<negative stamp>
-        --grid AxD --flatfield <profile id>
+        --grid AxD [--rig <profile id>]
 ```
 
 **Check**, straight after its prepare, in the same slot:
 
 ```
 capture check --work <capture folder>/.work/<negative stamp>
-              --flatfield <profile id>
+              [--rig <profile id>]
 ```
 
 `capture check` runs the stitch's own solve phase — detection, pair matching,
@@ -500,7 +506,7 @@ is the stitch's verdict for every gate the solve decides:
 A negative that fails is flagged on its tile at once, while it is still on the
 stand, and the queue does not stitch it (§4.5).
 
-The solve takes the work folder, the grid and the flat-field profile, and a
+The solve takes the work folder, the grid and the optional rig profile, and a
 first read of `_solve_negative` and `_attempt_solve` found no access to the
 roll. Their `_SolvedNegative` entry does carry a `NegativeRecord`, which
 `run_stitch` builds from the roll; the check builds a throwaway one, and T-5
@@ -523,7 +529,7 @@ never in the roll folder.
 
 ```
 stitch --work <capture folder>/.work/<negative stamp> --roll <roll>
-       --flatfield <profile id> --defer-roll-refresh
+       [--rig <profile id>] --defer-roll-refresh
 ```
 
 A negative's stitch waits for every earlier negative's stitch, even if its own
@@ -797,7 +803,7 @@ check (§4.1) does not stand in for them: it detects on images downsampled about
 ```
 scanny-boy capture analyze --frame FILE [--baseline FILE ...] --log FILE
 scanny-boy capture summary --log FILE
-scanny-boy capture check   --work DIR [--flatfield PROFILE_ID]
+scanny-boy capture check   --work DIR [--rig PROFILE_ID]
 scanny-boy roll refresh    --roll DIR
 scanny-boy run    ... [--defer-roll-refresh]
 scanny-boy stitch ... [--defer-roll-refresh]

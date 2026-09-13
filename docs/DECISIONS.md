@@ -808,19 +808,30 @@ Deliberately **not** changed: the demosaic (AHD), `no_auto_bright`,
 `output_bps=16`, `highlight_mode=Clip`, the stitch and flat-field maths
 (already linear), and the export stage's pixels-only behaviour.
 
+## Rig profile vs flat-field reference (protocol version 22)
+
+The scanning-rig profile and the bare-light gain map are separate persisted
+resources:
+
+- **`rig_profiles`** (was `flatfield_profiles` minus gain-map columns) holds
+  ChArUco geometry and CA — reusable across rolls. CLI: `rig create/list/delete`,
+  `--rig` on run/probe/stitch/prepare.
+- **`rolls.flat_field`** holds the per-roll bare-light reference (gain map
+  `.npz` + provenance), attached via `roll set-flatfield-reference`, locked
+  on first publish like `film_base`. See `docs/FLATFIELD_REFERENCE.md`.
+
+Wire-format break: event kinds `flatfield_*` → `rig_*`, codes
+`FLATFIELD_PROFILE_*` → `RIG_PROFILE_*`, new `flat_field_reference_set`.
+No migration path for old clients.
+
 ## Geometric calibration (protocol version 7)
 
 `docs/GEOMETRIC_PLAN.md` is the plan; the decisions that shape the code it
 produced:
 
-- **A profile is the complete optical description of one rig
-  configuration.** The calibration is folded into the existing
-  `flatfield_profiles` record — one profile, one `--flatfield` flag, one
-  UI — rather than a second table or a second command family. The flag's
-  name is stale (it names a whole calibration profile now) and is left as
-  a cosmetic follow-up, because a rename would reach the contract, the
-  schema, and the app's stored defaults and bury the substance under
-  churn.
+- **A rig profile is the optical calibration of one rig configuration**
+  (distortion + CA). The bare-light gain map moved to the per-roll
+  `flat_field` block in protocol version 22; see above.
 - **The gauge convention is `K_new = K` and an output frame identical in
   size to the source frame.** Plumb-line straightness is scale-invariant,
   so `K` only sets the numeric scale of `k1`; holding it fixed
