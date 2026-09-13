@@ -88,6 +88,9 @@ struct CaptureStageView: View {
             Text(connectionMessage)
                 .foregroundStyle(connectionStateColor)
             connectionButtons
+            if isConnecting {
+                ProgressView()
+            }
             if let exposure = capture.exposure {
                 LabeledContent("Program", value: exposure.programDescription)
                 LabeledContent("Shutter", value: exposure.shutterDescription)
@@ -228,6 +231,13 @@ struct CaptureStageView: View {
             )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var isConnecting: Bool {
+        switch capture.connectionState {
+        case .searching, .preparing: true
+        default: false
         }
     }
 
