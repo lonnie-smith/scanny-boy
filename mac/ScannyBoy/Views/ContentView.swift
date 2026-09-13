@@ -57,9 +57,9 @@ struct ContentView: View {
             RollSidebar(
                 library: library,
                 selection: Self.guardedRollSelection(
-                    $selection, isBusy: activity.isSidebarSelectionLocked
+                    $selection, isBusy: sidebarSelectionLocked
                 ),
-                runIsActive: activity.isSidebarSelectionLocked,
+                runIsActive: sidebarSelectionLocked,
                 isPresentingNewRollSheet: $isPresentingNewRollSheet
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
@@ -318,6 +318,12 @@ struct ContentView: View {
 
     private var selectedRoll: Roll? {
         library.rolls.first { $0.id == selection }
+    }
+
+    /// Read `capture.isSessionOpen` here so sidebar lock state tracks the
+    /// capture model directly, not only through `AppActivity`.
+    private var sidebarSelectionLocked: Bool {
+        capture.isSessionOpen || activity.isBusy
     }
 
     private var addScansStage: some View {

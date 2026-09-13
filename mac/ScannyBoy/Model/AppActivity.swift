@@ -65,9 +65,10 @@ final class AppActivity {
     }
 
     /// Whether the sidebar should refuse roll selection changes.
+    /// §4.2: only a live capture session pins the sidebar; a background stitch
+    /// queue disables roll-writing controls per roll, not roll switching.
     var isSidebarSelectionLocked: Bool {
         if capture.isSessionOpen { return true }
-        if stitchQueue.hasWork { return true }
         return isBusy
     }
 }

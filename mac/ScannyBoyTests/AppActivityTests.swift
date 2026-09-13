@@ -94,7 +94,7 @@ struct AppActivityTests {
 
     private static func makeActivity(
         executable: URL
-    ) -> (AppActivity, ConfigurationModel) {
+    ) -> (AppActivity, ConfigurationModel, StitchQueueModel) {
         let runner = CLIRunner(executable: executable)
         let configuration = ConfigurationModel(
             runner: runner, defaults: isolatedDefaults()
@@ -111,7 +111,7 @@ struct AppActivityTests {
             capture: capture,
             stitchQueue: stitchQueue
         )
-        return (activity, configuration)
+        return (activity, configuration, stitchQueue)
     }
 
     @Test("isBusy is false when no helper is active")
@@ -120,7 +120,7 @@ struct AppActivityTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let executable = try Self.slowConfigurationExecutable(in: directory)
-        let (activity, _) = Self.makeActivity(executable: executable)
+        let (activity, _, _) = Self.makeActivity(executable: executable)
         #expect(activity.isBusy == false)
     }
 
@@ -135,7 +135,7 @@ struct AppActivityTests {
         try Data().write(to: frame)
 
         let executable = try Self.slowConfigurationExecutable(in: directory)
-        let (activity, configuration) = Self.makeActivity(executable: executable)
+        let (activity, configuration, _) = Self.makeActivity(executable: executable)
         configuration.rollURL = rollDir
         await configuration.waitForPendingProbes()
 
@@ -155,7 +155,7 @@ struct AppActivityTests {
         try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let executable = try Self.slowConfigurationExecutable(in: directory)
-        let (activity, configuration) = Self.makeActivity(executable: executable)
+        let (activity, configuration, _) = Self.makeActivity(executable: executable)
         configuration.rollURL = rollDir
         await configuration.waitForPendingProbes()
 
@@ -164,6 +164,33 @@ struct AppActivityTests {
         #expect(activity.isBusy == true)
         await setKindTask.value
         #expect(activity.isBusy == false)
+    }
+
+    @Test("sidebar stays selectable while a stitch queue drains")
+    func sidebarUnlockedWithStitchQueueWork() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = try Self.slowConfigurationExecutable(in: directory)
+        let (activity, _, stitchQueue) = Self.makeActivity(executable: executable)
+        let captureFolder = directory.appending(path: "capture", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: captureFolder, withIntermediateDirectories: true)
+        stitchQueue.configure(
+            roll: directory.appending(path: "roll", directoryHint: .isDirectory),
+            captureFolder: captureFolder,
+            across: 1,
+            down: 1
+        )
+        stitchQueue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: UUID(),
+                stamp: "neg-0",
+                frameURLs: [captureFolder.appending(path: "a.NEF")],
+                startedAt: Date()
+            )
+        )
+        #expect(stitchQueue.hasWork == true)
+        #expect(activity.isSidebarSelectionLocked == false)
     }
 
     @Test("isBusy while validating selection")
@@ -175,7 +202,7 @@ struct AppActivityTests {
         try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
 
         let executable = try Self.slowConfigurationExecutable(in: directory)
-        let (activity, configuration) = Self.makeActivity(executable: executable)
+        let (activity, configuration, _) = Self.makeActivity(executable: executable)
         configuration.inputFolder = directory
         await configuration.waitForPendingProbes()
         configuration.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]

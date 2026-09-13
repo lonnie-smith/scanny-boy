@@ -266,8 +266,16 @@ final class StitchQueueModel {
         guard let data = try? Data(contentsOf: stateFileURL),
               let state = try? JSONDecoder().decode(PersistedState.self, from: data)
         else { return }
-        rollURL = URL(fileURLWithPath: state.rollPath)
-        captureFolder = URL(fileURLWithPath: state.captureFolder)
+        let rollURL = URL(fileURLWithPath: state.rollPath)
+        let captureFolder = URL(fileURLWithPath: state.captureFolder)
+        guard FileManager.default.fileExists(atPath: rollURL.path),
+              FileManager.default.fileExists(atPath: captureFolder.path)
+        else {
+            clearPersistedState()
+            return
+        }
+        self.rollURL = rollURL
+        self.captureFolder = captureFolder
         rigProfileID = state.rigProfileID
         across = state.across
         down = state.down
