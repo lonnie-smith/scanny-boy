@@ -105,6 +105,9 @@ actor TetherCamera: CameraControlling {
 
     func release() async throws {
         guard connectionState == .ready else { throw TetherCaptureError.notConnected }
+        if liveViewActive {
+            await endLiveView()
+        }
         updateState(.busy)
         handlesBeforeRelease = Set(try await scanBufferQuiet())
         pushedHandles = []
@@ -464,14 +467,18 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
             let finish: @Sendable (Data, Data, (any Error)?) -> Void = { [weak self] data, response, error in
                 Task { @MainActor in
                     guard let self else { return }
-                    let key = PTP.responseParameter(response, 0) ?? transaction
+                    let key = PTP.responseParameter(response, 0)
+                        ?? PTP.responseParameter(data, 0)
+                        ?? transaction
                     guard let waiting = self.ptpPairContinuations.removeValue(forKey: key)
                         ?? self.ptpPairContinuations.removeValue(forKey: transaction)
                     else { return }
                     if let error {
                         waiting.resume(throwing: error)
                     } else {
-                        waiting.resume(returning: (data, response))
+                        waiting.resume(returning: PTP.orderedCommandResult(
+                            data: data, response: response
+                        ))
                     }
                 }
             }

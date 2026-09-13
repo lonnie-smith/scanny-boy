@@ -54,9 +54,49 @@ enum PTP {
         return data
     }
 
+    static let containerTypeCommand: UInt16 = 1
+    static let containerTypeData: UInt16 = 2
+    static let containerTypeResponse: UInt16 = 3
+    static let containerTypeEvent: UInt16 = 4
+
     static func responseCode(_ data: Data?) -> UInt16? {
         guard let data, data.count >= 8 else { return nil }
         return UInt16(data[data.startIndex + 6]) | (UInt16(data[data.startIndex + 7]) << 8)
+    }
+
+    static func containerType(_ data: Data?) -> UInt16? {
+        guard let data, data.count >= 6 else { return nil }
+        return UInt16(data[data.startIndex + 4]) | (UInt16(data[data.startIndex + 5]) << 8)
+    }
+
+    /// ImageCaptureCore's completion takes `(inData, response, error)`. For
+    /// commands with no data-in phase it sometimes puts the response
+    /// container in the first `Data` and leaves the second empty — the probe
+    /// confirmed this rather than assuming the labels. Callers always get
+    /// `(dataPhase, responseContainer)`.
+    static func orderedCommandResult(data: Data, response: Data) -> (Data, Data) {
+        if containerType(response) == containerTypeResponse {
+            return (data, response)
+        }
+        if containerType(data) == containerTypeResponse {
+            return (response, data)
+        }
+        return (data, response)
+    }
+
+    static func response(
+        _ code: UInt16, transaction: UInt32 = 0, params: [UInt32] = []
+    ) -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+        }
+        append(UInt32(12 + 4 * params.count))
+        append(containerTypeResponse)
+        append(code)
+        append(transaction)
+        params.forEach(append)
+        return data
     }
 
     static func responseParameter(_ data: Data, _ index: Int = 0) -> UInt32? {

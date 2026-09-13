@@ -69,6 +69,31 @@ struct PTPTests {
         }
     }
 
+    @Test("orderedCommandResult keeps a normal data-then-response pair")
+    func orderedCommandResultKeepsNormalPair() {
+        let data = PTP.command(PTP.getObjectInfo, params: [0x0B00_0001])
+        let response = PTP.response(PTP.responseOK)
+        let ordered = PTP.orderedCommandResult(data: data, response: response)
+        #expect(PTP.responseCode(ordered.1) == PTP.responseOK)
+        #expect(PTP.containerType(ordered.0) == PTP.containerTypeCommand)
+    }
+
+    @Test("orderedCommandResult recovers a response left in the first buffer")
+    func orderedCommandResultRecoversSwappedResponse() {
+        let response = PTP.response(PTP.responseOK)
+        let ordered = PTP.orderedCommandResult(data: response, response: Data())
+        #expect(ordered.0.isEmpty)
+        #expect(PTP.responseCode(ordered.1) == PTP.responseOK)
+        #expect(PTP.containerType(ordered.1) == PTP.containerTypeResponse)
+    }
+
+    @Test("releaseFailed has a readable description")
+    func releaseFailedErrorPresentation() {
+        let error: Error = TetherCaptureError.releaseFailed("0x2019 (Device busy)")
+        #expect(error.localizedDescription.contains("shutter fired"))
+        #expect(error.localizedDescription.contains("0x2019"))
+    }
+
     @Test("rejects truncated and mismatched live view payloads")
     func liveViewHeaderRejections() {
         #expect(PTP.LiveViewHeader.decode(LiveViewFixtures.payload(named: "lv-watch-truncated.bin")) == nil)

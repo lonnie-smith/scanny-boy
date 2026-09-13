@@ -111,6 +111,9 @@ actor FakeTetherCamera: CameraControlling {
 
     func release() async throws {
         guard connectionState == .ready else { throw TetherCaptureError.notConnected }
+        if liveViewActive {
+            await endLiveView()
+        }
         if config.dropOnRelease {
             updateState(.lost)
             throw TetherCaptureError.notConnected

@@ -151,6 +151,66 @@ struct CaptureSessionModelTests {
         #expect(model.referenceAperture != nil)
     }
 
+    @Test("shootFlatFieldReference closes focus assist before the release")
+    func shootFlatFieldReferenceClosesFocusAssist() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: roll, withIntermediateDirectories: true)
+        let jpeg = LiveViewFixtures.texturedJPEG(seed: 19)
+        let frame = LiveViewFixtures.makeFrame(areaWidth: 512, jpeg: jpeg)
+        let camera = FakeTetherCamera(configuration: .init(liveViewFrames: [frame]))
+        let model = CaptureSessionModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false")),
+            camera: camera
+        )
+        model.rollURL = roll
+        model.captureBaseFolder = directory
+        model.sessionOpen = true
+        await model.connect()
+        model.focusAssist.open()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(model.focusAssist.isOpen)
+        await model.shootFlatFieldReference()
+        #expect(model.focusAssist.isOpen == false)
+        let endCount = await camera.endLiveViewCallCount
+        #expect(endCount >= 1)
+    }
+
+    @Test("shootFlatFieldReference discards leftover buffer frames")
+    func shootFlatFieldReferenceDiscardsLeftovers() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: roll, withIntermediateDirectories: true)
+        let leftover = BufferLeftover(
+            handle: TetherTiming.bufferScanFirst,
+            objectInfo: PTP.ObjectInfo(
+                handle: TetherTiming.bufferScanFirst,
+                storageID: 0,
+                objectFormat: 0x3801,
+                size: 4,
+                width: 100,
+                height: 100,
+                filename: "old.NEF",
+                captureDate: "20260911T120000"
+            )
+        )
+        let camera = FakeTetherCamera(configuration: .init(initialLeftovers: [leftover]))
+        let model = CaptureSessionModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false")),
+            camera: camera
+        )
+        model.rollURL = roll
+        model.captureBaseFolder = directory
+        model.sessionOpen = true
+        await model.connect()
+        await model.shootFlatFieldReference()
+        let leftovers = await camera.leftovers
+        #expect(leftovers.isEmpty)
+        #expect(model.flatFieldReferenceError?.message.contains("buffer") != true)
+    }
+
     @Test("interval starts after exposure end")
     func intervalTiming() async throws {
         let clock = TestCaptureClock()

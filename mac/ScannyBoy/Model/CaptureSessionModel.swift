@@ -231,6 +231,7 @@ final class CaptureSessionModel {
         flatFieldReferenceError = nil
         defer { isShootingFlatFieldReference = false }
         do {
+            await focusAssist.close()
             let url = try CaptureNaming.bareLightURL(in: captureFolder, at: clock.now())
             try await captureOneFrame(to: url)
             referenceAperture = exposure?.aperture
@@ -259,6 +260,7 @@ final class CaptureSessionModel {
         baseFrameError = nil
         defer { isShootingBaseFrame = false }
         do {
+            await focusAssist.close()
             let url = try CaptureNaming.exclusiveURL(
                 in: captureFolder, firstRelease: clock.now(), shotNumber: 1
             )
@@ -421,12 +423,26 @@ final class CaptureSessionModel {
 
     private func captureOneFrame(to url: URL) async throws {
         try await camera.drainEvents()
-        _ = try await camera.scanBuffer()
+        let handlesBefore = Set(try await scanBufferClearingLeftovers())
         try await camera.release()
         try await camera.waitForExposureEnd()
-        let handle = try await camera.waitForFrame(after: [])
+        let handle = try await camera.waitForFrame(after: handlesBefore)
         let frame = try await camera.download(handle: handle, to: url)
         try await camera.confirmBufferCleared(handle: frame.handle)
+    }
+
+    /// A leftover from a previous failed release must not block a shot the
+    /// operator just asked for. Sequence cells still refuse leftovers
+    /// (`runSequence`); a single-frame reference or base shot discards them.
+    private func scanBufferClearingLeftovers() async throws -> [UInt32] {
+        do {
+            return try await camera.scanBuffer()
+        } catch TetherCaptureError.leftoverPresent(let leftovers) {
+            for leftover in leftovers {
+                try await camera.discardBufferFrame(handle: leftover.handle)
+            }
+            return try await camera.scanBuffer()
+        }
     }
 
     private func resetCells() {

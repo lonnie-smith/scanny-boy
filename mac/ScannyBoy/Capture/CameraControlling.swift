@@ -47,7 +47,7 @@ enum TetherConnectionState: Sendable, Equatable {
     case lost
 }
 
-enum TetherCaptureError: Error, Sendable {
+enum TetherCaptureError: Error, Sendable, LocalizedError {
     case notConnected
     case exposureTimeout
     case frameArrivalTimeout
@@ -57,6 +57,31 @@ enum TetherCaptureError: Error, Sendable {
     case leftoverPresent([BufferLeftover])
     case liveViewRefused(UInt16)
     case liveViewFrameInvalid
+
+    var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            "The camera is not connected."
+        case .exposureTimeout:
+            "The camera did not finish the exposure in time."
+        case .frameArrivalTimeout:
+            "The shutter fired, but no frame arrived from the camera."
+        case .downloadFailed(let detail):
+            "The frame could not be downloaded (\(detail))."
+        case .bufferNotCleared(let handle):
+            String(format: "The camera kept buffer frame 0x%08x after download.", handle)
+        case .releaseFailed(let detail):
+            "The shutter fired, but the camera refused the release (\(detail))."
+        case .leftoverPresent(let leftovers):
+            leftovers.count == 1
+                ? "A frame is still in the camera buffer. Discard it, then shoot again."
+                : "Frames are still in the camera buffer. Discard them, then shoot again."
+        case .liveViewRefused(let code):
+            String(format: "The camera refused live view (0x%04x).", code)
+        case .liveViewFrameInvalid:
+            "The camera sent an unreadable live view frame."
+        }
+    }
 }
 
 /// One live view frame from `GetLiveViewImage` (`0x9203`).
