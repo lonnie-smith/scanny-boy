@@ -226,7 +226,7 @@ final class CaptureSessionModel {
     }
 
     func shootFlatFieldReference() async {
-        guard flatField == nil, let rollURL, let captureFolder else { return }
+        guard flatField?.lockedAt == nil, let rollURL, let captureFolder else { return }
         isShootingFlatFieldReference = true
         flatFieldReferenceError = nil
         defer { isShootingFlatFieldReference = false }
@@ -255,7 +255,7 @@ final class CaptureSessionModel {
     }
 
     func shootBaseFrame() async {
-        guard filmBase == nil, let rollURL, let captureFolder else { return }
+        guard filmBase?.lockedAt == nil, let rollURL, let captureFolder else { return }
         isShootingBaseFrame = true
         baseFrameError = nil
         defer { isShootingBaseFrame = false }

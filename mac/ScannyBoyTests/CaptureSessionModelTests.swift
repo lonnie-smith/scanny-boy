@@ -151,6 +151,53 @@ struct CaptureSessionModelTests {
         #expect(model.referenceAperture != nil)
     }
 
+    @Test("shootFlatFieldReference can replace an existing reference")
+    func shootFlatFieldReferenceReplace() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: roll, withIntermediateDirectories: true)
+        let callCount = directory.appending(path: ".ff-calls").path
+        let finished = TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#)
+        let script = """
+            if [ "$1" = "roll" ] && [ "$2" = "set-flatfield-reference" ]; then
+              n=0
+              if [ -f '\(callCount)' ]; then
+                n=$(cat '\(callCount)')
+              fi
+              n=$((n + 1))
+              echo "$n" > '\(callCount)'
+              echo '\(TestEvents.line(#"{"event":"started","command":"roll set-flatfield-reference"}"#))'
+              echo '\(TestEvents.line(#"{"event":"flat_field_reference_set","roll_id":"roll-1","source_name":"bare-light-replace.NEF","reference_width":200,"reference_height":150,"rig_profile_id":null,"locked":false}"#))'
+              echo '\(finished)'
+              exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"roll info"}"#))'
+              echo '\(TestEvents.line(#"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":"colour","flat_field":{"source_name":"bare-light-replace.NEF","reference_width":200,"reference_height":150}}}"#))'
+              echo '\(finished)'
+              exit 0
+            fi
+            exit 1
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let runner = CLIRunner(executable: executable)
+        let camera = FakeTetherCamera()
+        let model = CaptureSessionModel(runner: runner, camera: camera)
+        model.rollURL = roll
+        model.captureBaseFolder = directory
+        model.sessionOpen = true
+        model.flatField = FlatFieldReference(fields: [
+            "source_name": .string("bare-light-old.NEF"),
+            "reference_width": .int(100),
+            "reference_height": .int(100),
+        ])
+        await model.connect()
+        await model.shootFlatFieldReference()
+        #expect(model.flatField?.sourceName == "bare-light-replace.NEF")
+        #expect(model.flatField?.referenceWidth == 200)
+    }
+
     @Test("shootFlatFieldReference closes focus assist before the release")
     func shootFlatFieldReferenceClosesFocusAssist() async throws {
         let directory = try Self.makeTemporaryDirectory()
@@ -276,6 +323,46 @@ struct CaptureSessionModelTests {
         await model.shootBaseFrame()
         #expect(model.filmBase != nil)
         #expect(model.baseFrameError == nil)
+    }
+
+    @Test("shootBaseFrame can replace an existing base frame")
+    func shootBaseFrameReplace() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: roll, withIntermediateDirectories: true)
+        let finished = TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#)
+        let script = """
+            if [ "$1" = "roll" ] && [ "$2" = "set-base-frame" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"roll set-base-frame"}"#))'
+              echo '\(TestEvents.line(#"{"event":"base_frame_set","roll_id":"roll-1"}"#))'
+              echo '\(finished)'
+              exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"roll info"}"#))'
+              echo '\(TestEvents.line(#"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":"colour","film_base":{"density":[-0.2,-0.05,-0.5],"source_name":"base-replace.NEF","populations":[]}}}"#))'
+              echo '\(finished)'
+              exit 0
+            fi
+            exit 1
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let runner = CLIRunner(executable: executable)
+        let camera = FakeTetherCamera()
+        let model = CaptureSessionModel(runner: runner, camera: camera)
+        model.rollURL = roll
+        model.captureBaseFolder = directory
+        model.sessionOpen = true
+        model.filmBase = FilmBase(fields: [
+            "density": .array([.double(-0.4), .double(-0.1), .double(-0.9)]),
+            "source_name": .string("base-old.NEF"),
+            "populations": .array([]),
+        ])
+        await model.connect()
+        await model.shootBaseFrame()
+        #expect(model.filmBase?.sourceName == "base-replace.NEF")
+        #expect(model.filmBase?.density == [-0.2, -0.05, -0.5])
     }
 
     @Test("interval starts after exposure end")
