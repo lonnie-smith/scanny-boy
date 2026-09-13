@@ -426,11 +426,11 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
         nextTransaction &+= 1
         return try await withCheckedThrowingContinuation { continuation in
             ptpPairContinuations[transaction] = continuation
-            camera.requestSendPTPCommand(
-                PTP.command(opcode, params: params, transaction: transaction),
-                outData: nil
-            ) { [weak self] data, response, error in
-                DispatchQueue.main.async {
+            // ImageCaptureCore calls this off the main thread. Keep it
+            // @Sendable (not @MainActor) so Swift does not synchronously hop
+            // back to main while `requestSendPTPCommand` is still on the stack.
+            let finish: @Sendable (Data, Data, (any Error)?) -> Void = { [weak self] data, response, error in
+                Task { @MainActor in
                     guard let self else { return }
                     let key = PTP.responseParameter(response, 0) ?? transaction
                     guard let waiting = self.ptpPairContinuations.removeValue(forKey: key)
@@ -443,6 +443,11 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
                     }
                 }
             }
+            camera.requestSendPTPCommand(
+                PTP.command(opcode, params: params, transaction: transaction),
+                outData: nil,
+                completion: finish
+            )
         }
     }
 
