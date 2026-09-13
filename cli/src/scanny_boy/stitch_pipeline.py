@@ -2120,7 +2120,10 @@ def _composite_and_publish(
                     for ch in range(3)
                 )
                 film_extent = record.normalization.get("film_extent")
-                candidates = scratches.detect(result.image, spans, film_extent)
+                analysis_rect = record.normalization.get("analysis_rect")
+                candidates = scratches.detect(
+                    result.image, spans, film_extent, analysis_rect
+                )
                 fits = [scratches.fit(result.image, c) for c in candidates]
                 # Carry forward the previous enabled state when it exists,
                 # defaulting to True for a fresh detection.

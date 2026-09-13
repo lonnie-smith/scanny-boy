@@ -42,6 +42,8 @@ def inject_vertical_scratch(
     depth_g: float = 0.085,
     depth_b: float = 0.020,
     flat: bool = True,
+    tilt_px_per_row: float = 0.0,
+    walk_sigma: float = 0.03,
 ) -> np.ndarray:
     """Inject a vertical scratch with blue-selective chroma (§1 profile)."""
     if flat:
@@ -49,10 +51,12 @@ def inject_vertical_scratch(
     else:
         val = _decode(codes).copy()
     rng = np.random.default_rng(seed)
-    walk = np.cumsum(rng.normal(0, 0.03, val.shape[0])).astype(np.float32)
-    walk = np.clip(walk - walk.mean(), -1.0, 1.0)
+    walk = np.cumsum(rng.normal(0, walk_sigma, val.shape[0])).astype(np.float32)
+    walk = np.clip(walk - walk.mean(), -15.0, 15.0)
+    y_coords = np.arange(val.shape[0], dtype=np.float32)
+    y0 = (val.shape[0] - 1) / 2.0
     for y in range(val.shape[0]):
-        cx = round(x + walk[y])
+        cx = round(x + tilt_px_per_row * (y - y0) + walk[y])
         for dx in range(-20, 21):
             xi = cx + dx
             if not 0 <= xi < val.shape[1]:
@@ -73,6 +77,119 @@ def inject_vertical_scratch(
 
 BG_START = scratches.BG_START
 BG_END = scratches.BG_END
+
+
+def test_matched_kernel_is_zero_sum():
+    kernel = scratches._matched_kernel()
+    assert abs(float(kernel.sum())) < 1e-6
+    assert kernel[scratches.BG_END - 2 : scratches.BG_END + 3].sum() == pytest.approx(
+        1.0
+    )
+
+
+def _broken_matched_kernel() -> np.ndarray:
+    """The pre-fix kernel (DC = −1) for regression tests."""
+    kernel = np.zeros(2 * BG_END + 1, dtype=np.float32)
+    kernel[BG_END - 2 : BG_END + 3] = 1.0 / 5.0
+    for u in range(BG_START, BG_END + 1):
+        kernel[BG_END + u] -= 1.0 / (BG_END - BG_START + 1)
+        kernel[BG_END - u] -= 1.0 / (BG_END - BG_START + 1)
+    return kernel
+
+
+def _band_response_with_kernel(s: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    height, width = s.shape
+    n_bands = height // scratches.BAND_PX
+    response = np.zeros((n_bands, width), dtype=np.float32)
+    pad = kernel.shape[0] // 2
+    for b in range(n_bands):
+        row_start = b * scratches.BAND_PX
+        row_end = min(row_start + scratches.BAND_PX, height)
+        rows = np.arange(row_start, row_end, 2)
+        if len(rows) == 0:
+            continue
+        avg = s[rows].mean(axis=0)
+        response[b] = np.correlate(np.pad(avg, pad, mode="reflect"), kernel, mode="valid")
+    return response
+
+
+def test_zero_sum_kernel_finds_scratch_under_chroma_gradient():
+    """The old DC=−1 kernel drowned scratch z-scores on real film gradients."""
+    height, width = 1280, 1600
+    spans = np.asarray(SPANS, dtype=np.float32)
+    val = np.full((height, width, 3), 0.45, dtype=np.float32)
+    grad = np.linspace(-0.4, 0.4, width, dtype=np.float32)
+    val[..., 2] += grad[np.newaxis, :]
+    val[..., 0] -= grad[np.newaxis, :] * 0.5
+    target_x = int(width * 0.52)
+    for y in range(height):
+        for dx in range(-2, 3):
+            xi = target_x + dx
+            if 0 <= xi < width:
+                val[y, xi, 0] += 0.10
+                val[y, xi, 1] += 0.085
+                val[y, xi, 2] -= 0.020
+    s = (
+        spans[2] * val[..., 2]
+        - (spans[0] * val[..., 0] + spans[1] * val[..., 1]) / 2.0
+    )
+    z_fixed = scratches._normalize_response(
+        _band_response_with_kernel(s, scratches._matched_kernel())
+    )
+    z_broken = scratches._normalize_response(
+        _band_response_with_kernel(s, _broken_matched_kernel())
+    )
+    assert float(z_fixed[:, target_x].mean()) <= -3.0
+    assert float(z_broken[:, target_x].mean()) > -1.5
+
+
+def test_detect_accepts_shallow_tilted_scratch():
+    import math
+
+    height, width = 1280, 1600
+    clean = _flat_encoded(height, width)
+    # ~0.7° tilt over the canvas height plus ±15 px residual wander.
+    tilt = math.tan(math.radians(0.7))
+    target_x = width * 0.5
+    scratched = inject_vertical_scratch(
+        clean,
+        x=target_x,
+        seed=21,
+        tilt_px_per_row=tilt,
+        walk_sigma=0.03,
+    )
+    candidates = scratches.detect(scratched, SPANS)
+    vertical = [c for c in candidates if c.axis == "vertical"]
+    assert vertical
+    cx = vertical[0].centres[len(vertical[0].centres) // 2]
+    assert abs(cx - target_x) <= 25.0
+
+
+def test_detect_rejects_snaking_path():
+    clean = _flat_encoded(H, W)
+    val = np.full((H, W, 3), 0.45, dtype=np.float32)
+    rng = np.random.default_rng(22)
+    x_base = W // 2
+    walk = np.cumsum(rng.normal(0, 4.0, H)).astype(np.float32)
+    walk = np.clip(walk, -80.0, 80.0)
+    for y in range(H):
+        cx = round(x_base + walk[y])
+        for dx in range(-2, 3):
+            xi = cx + dx
+            if 0 <= xi < W:
+                val[y, xi, 0] += 0.10
+                val[y, xi, 1] += 0.085
+                val[y, xi, 2] -= 0.020
+    scratched = normalization.encode_normalized(
+        np.clip(
+            val,
+            -normalization.NORMALIZED_HEADROOM_LOW,
+            1.0 + normalization.NORMALIZED_HEADROOM_HIGH,
+        )
+    ).astype(np.uint16)
+    candidates = scratches.detect(scratched, SPANS)
+    vertical = [c for c in candidates if c.axis == "vertical"]
+    assert not vertical
 
 
 def test_detect_finds_injected_vertical_scratch():

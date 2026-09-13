@@ -15,12 +15,12 @@ spans from the negative's normalisation record convert ``val`` to log10
 units, which is what makes the chroma signal physically comparable across
 channels.
 
-**Gate constants (provisional).**  Seeded from four negatives on the
-``Recalibrate-Geometry`` roll; pending confirmation by
-``cli/tools/measure_scratches.py`` (§6.3).  Observed true scratches:
-mean path z −4.6 … −7.9, agreement 0.89 … 1.00, drift 14–30 px / 12 k.
-Observed false positives (frame edges before step gate): mean z −4.3 … −4.8,
-agreement 0.74 … 0.77, drift 50–100 px / 12 k.
+**Gate constants.**  Seeded from ``Recalibrate-Geometry`` and confirmed on
+``Gold---scratch-test`` (``_DSC5207``, ``_DSC5215``) via
+``cli/tools/measure_scratches.py``.  True scratches: mean path z −5.6 …
+−7.9, agreement 0.79 … 1.00, residual drift ≤ 0.004 (≤ ~20 px wander
+after detrending a shallow tilt).  False positives (frame edges, before
+step gate): mean z −4.1 … −4.8, agreement 0.65 … 0.86.
 """
 
 from __future__ import annotations
@@ -50,12 +50,16 @@ BG_END = 20
 DP_MOVE_COST = 1.5
 PATH_SUPPRESS_PX = 40
 FILM_EXTENT_MARGIN_PX = 64
+STEP_EDGE_BORDER_PX = 400
+ANALYSIS_RECT_INSET_PX = 20
+RAIL_FRACTION = 0.5
 
-# --- gates (provisional — see module docstring) ----------------------------
+# --- gates (see module docstring) ------------------------------------------
 
 GATE_MEAN_PATH_Z = -3.0
-GATE_AGREEMENT = 0.85
+GATE_AGREEMENT = 0.75
 GATE_MAX_DRIFT = 0.004
+GATE_MAX_SLOPE_PX_PER_BAND = 3.0
 
 # --- fit -------------------------------------------------------------------
 
@@ -144,29 +148,6 @@ def _film_extent_px(
     )
 
 
-def _near_film_extent(
-    centres: np.ndarray,
-    axis: str,
-    margins: tuple[int, int, int, int],
-    height: int,
-    width: int,
-) -> bool:
-    top, bottom, left, right = margins
-    for cx in centres:
-        pos = float(cx)
-        if axis == "vertical":
-            if pos < left + FILM_EXTENT_MARGIN_PX:
-                return True
-            if pos >= width - right - FILM_EXTENT_MARGIN_PX:
-                return True
-        else:
-            if pos < top + FILM_EXTENT_MARGIN_PX:
-                return True
-            if pos >= height - bottom - FILM_EXTENT_MARGIN_PX:
-                return True
-    return False
-
-
 def _chroma_signal(val: np.ndarray, spans: np.ndarray) -> np.ndarray:
     return (
         spans[2] * val[..., 2]
@@ -174,15 +155,23 @@ def _chroma_signal(val: np.ndarray, spans: np.ndarray) -> np.ndarray:
     )
 
 
+def _matched_kernel() -> np.ndarray:
+    """``+mean(core) − mean(bg)`` matched filter; zero-sum (§3.1)."""
+    kernel = np.zeros(2 * BG_END + 1, dtype=np.float32)
+    kernel[BG_END - 2 : BG_END + 3] = 1.0 / 5.0
+    n_bg_taps = 2 * (BG_END - BG_START + 1)
+    bg_weight = 1.0 / n_bg_taps
+    for u in range(BG_START, BG_END + 1):
+        kernel[BG_END + u] -= bg_weight
+        kernel[BG_END - u] -= bg_weight
+    return kernel
+
+
 def _band_response(s: np.ndarray, n_bands: int) -> np.ndarray:
     height, width = s.shape
     band_h = BAND_PX
     response = np.zeros((n_bands, width), dtype=np.float32)
-    kernel = np.zeros(2 * BG_END + 1, dtype=np.float32)
-    kernel[BG_END - 2 : BG_END + 3] = 1.0 / 5.0
-    for u in range(BG_START, BG_END + 1):
-        kernel[BG_END + u] -= 1.0 / (BG_END - BG_START + 1)
-        kernel[BG_END - u] -= 1.0 / (BG_END - BG_START + 1)
+    kernel = _matched_kernel()
 
     for b in range(n_bands):
         row_start = b * band_h
@@ -265,6 +254,96 @@ def _backtrack(
     return results
 
 
+def _parse_analysis_rect(
+    analysis_rect: tuple[int, int, int, int] | list[int] | None,
+) -> tuple[int, int, int, int] | None:
+    if analysis_rect is None or len(analysis_rect) != 4:
+        return None
+    x, y, w, h = (int(v) for v in analysis_rect)
+    if w <= 0 or h <= 0:
+        return None
+    return x, y, w, h
+
+
+def _centre_bounds(
+    axis: str,
+    analysis_rect: tuple[int, int, int, int] | None,
+    extent_margins: tuple[int, int, int, int] | None,
+    height: int,
+    width: int,
+) -> tuple[float, float]:
+    """Allowed range for path centre coordinates along the scratch axis."""
+    if axis == "vertical":
+        lo, hi = 0.0, float(width)
+        if analysis_rect is not None:
+            lo = max(lo, analysis_rect[0] + ANALYSIS_RECT_INSET_PX)
+            hi = min(hi, analysis_rect[0] + analysis_rect[2] - ANALYSIS_RECT_INSET_PX)
+        if extent_margins is not None:
+            _top, _bottom, left, right = extent_margins
+            lo = max(lo, left + FILM_EXTENT_MARGIN_PX)
+            hi = min(hi, width - right - FILM_EXTENT_MARGIN_PX)
+        return lo, hi
+    lo, hi = 0.0, float(height)
+    if analysis_rect is not None:
+        lo = max(lo, analysis_rect[1] + ANALYSIS_RECT_INSET_PX)
+        hi = min(hi, analysis_rect[1] + analysis_rect[3] - ANALYSIS_RECT_INSET_PX)
+    if extent_margins is not None:
+        top, bottom, _left, _right = extent_margins
+        lo = max(lo, top + FILM_EXTENT_MARGIN_PX)
+        hi = min(hi, height - bottom - FILM_EXTENT_MARGIN_PX)
+    return lo, hi
+
+
+def _path_leaves_bounds(centres: np.ndarray, lo: float, hi: float) -> bool:
+    return bool(np.any(centres < lo) or np.any(centres > hi))
+
+
+def _path_near_border(
+    centres: np.ndarray,
+    lo: float,
+    hi: float,
+    border_px: int = STEP_EDGE_BORDER_PX,
+) -> bool:
+    mid = float(centres[len(centres) // 2])
+    return mid < lo + border_px or mid > hi - border_px
+
+
+def _path_residual_drift(centres: np.ndarray, height: int) -> float:
+    """Max deviation from a least-squares line, normalised by canvas length."""
+    n_bands = len(centres)
+    if n_bands < 2:
+        return 0.0
+    bands = np.arange(n_bands, dtype=np.float64)
+    slope, intercept = np.polyfit(bands, centres.astype(np.float64), 1)
+    fitted = slope * bands + intercept
+    return float(np.max(np.abs(centres - fitted))) / max(height, 1)
+
+
+def _path_slope_px_per_band(centres: np.ndarray) -> float:
+    n_bands = len(centres)
+    if n_bands < 2:
+        return 0.0
+    bands = np.arange(n_bands, dtype=np.float64)
+    slope, _intercept = np.polyfit(bands, centres.astype(np.float64), 1)
+    return float(abs(slope))
+
+
+def _sits_on_encode_rail(val: np.ndarray, centres: np.ndarray, n_bands: int) -> bool:
+    """Reject paths whose samples mostly sit at the encode headroom rails."""
+    height, width = val.shape[:2]
+    rail_lo = -normalization.NORMALIZED_HEADROOM_LOW + 0.01
+    rail_hi = 1.0 + normalization.NORMALIZED_HEADROOM_HIGH - 0.01
+    rail_count = 0
+    for b in range(n_bands):
+        row = min(b * BAND_PX + BAND_PX // 2, height - 1)
+        cx = int(round(centres[b]))
+        cx = min(max(cx, 0), width - 1)
+        sample = val[row, cx]
+        if float(sample.min()) <= rail_lo or float(sample.max()) >= rail_hi:
+            rail_count += 1
+    return rail_count > n_bands * RAIL_FRACTION
+
+
 def _is_step_edge(val: np.ndarray, centres: np.ndarray, n_bands: int) -> bool:
     height, width = val.shape[:2]
     step_count = 0
@@ -284,6 +363,31 @@ def _is_step_edge(val: np.ndarray, centres: np.ndarray, n_bands: int) -> bool:
         if depth > 0 and step > depth:
             step_count += 1
     return total > 0 and step_count > total / 2
+
+
+def _core_depths(
+    val: np.ndarray, centres: np.ndarray, n_bands: int
+) -> np.ndarray:
+    height, width = val.shape[:2]
+    depths = np.zeros(3, dtype=np.float64)
+    for b in range(n_bands):
+        row_start = b * BAND_PX
+        row_end = min(row_start + BAND_PX, height)
+        cx = round(centres[b])
+        if cx < BG_END or cx >= width - BG_END:
+            continue
+        for ch in range(3):
+            core = val[row_start:row_end, cx - 2 : cx + 3, ch].mean()
+            bg = (
+                val[row_start:row_end, cx - BG_END : cx - BG_START, ch].mean()
+                + val[row_start:row_end, cx + BG_START : cx + BG_END, ch].mean()
+            ) / 2.0
+            depths[ch] += bg - core
+    return depths
+
+
+def _passes_chroma_sign(depths: np.ndarray) -> bool:
+    return depths[2] > 0 and depths[1] <= depths[2] and depths[0] <= depths[1]
 
 
 def _refine_centres(s: np.ndarray, centres: np.ndarray, n_bands: int) -> np.ndarray:
@@ -311,10 +415,120 @@ def _refine_centres(s: np.ndarray, centres: np.ndarray, n_bands: int) -> np.ndar
     return gaussian_filter1d(smoothed, sigma=2.0, mode="nearest")
 
 
+def _evaluate_path(
+    path_z: float,
+    raw_centres: np.ndarray,
+    *,
+    z: np.ndarray,
+    work_val: np.ndarray,
+    s: np.ndarray,
+    n_bands: int,
+    axis: str,
+    height: int,
+    width: int,
+    centre_lo: float,
+    centre_hi: float,
+) -> tuple[bool, dict[str, Any]]:
+    """Return (accepted, metrics) for one DP path."""
+    band_z = np.array([z[b, int(raw_centres[b])] for b in range(n_bands)])
+    agree = float(np.mean(band_z < -1.0))
+    drift = _path_residual_drift(raw_centres, height)
+    slope = _path_slope_px_per_band(raw_centres)
+    depths = _core_depths(work_val, raw_centres, n_bands)
+    mid = float(raw_centres[len(raw_centres) // 2])
+    reasons: list[str] = []
+
+    if path_z > GATE_MEAN_PATH_Z:
+        reasons.append(f"z>{GATE_MEAN_PATH_Z}")
+    if agree < GATE_AGREEMENT:
+        reasons.append(f"agree={agree:.2f}")
+    if drift > GATE_MAX_DRIFT:
+        reasons.append(f"drift={drift:.5f}")
+    if slope > GATE_MAX_SLOPE_PX_PER_BAND:
+        reasons.append(f"slope={slope:.2f}")
+    if _path_leaves_bounds(raw_centres, centre_lo, centre_hi):
+        reasons.append("out_of_bounds")
+    if _path_near_border(raw_centres, centre_lo, centre_hi) and _is_step_edge(
+        work_val, raw_centres, n_bands
+    ):
+        reasons.append("step_edge")
+    if _sits_on_encode_rail(work_val, raw_centres, n_bands):
+        reasons.append("encode_rail")
+    if not _passes_chroma_sign(depths):
+        reasons.append("chroma_sign")
+
+    metrics = {
+        "axis": axis,
+        "mid": round(mid, 1),
+        "score": round(path_z, 4),
+        "agreement": round(agree, 4),
+        "drift": round(drift, 6),
+        "slope": round(slope, 4),
+        "depths": [round(float(v), 2) for v in depths],
+        "accepted": not reasons,
+        "reject": ",".join(reasons) if reasons else "",
+    }
+    return not reasons, metrics
+
+
+def inspect_paths(
+    image_codes: np.ndarray,
+    spans: tuple[float, ...],
+    film_extent: Any = None,
+    analysis_rect: tuple[int, int, int, int] | list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Evaluate every DP path with gate metrics (§6.3 calibration tool)."""
+    image_codes = np.asarray(image_codes)
+    if image_codes.ndim != 3 or image_codes.shape[2] != 3:
+        return []
+    if image_codes.dtype != np.uint16:
+        return []
+
+    val = _decode_val(image_codes)
+    span_arr = _span_array(spans)
+    rect = _parse_analysis_rect(analysis_rect)
+    extent_margins = _film_extent_px(film_extent, val.shape[0], val.shape[1])
+    rows: list[dict[str, Any]] = []
+
+    for axis in ("vertical", "horizontal"):
+        work_val = np.swapaxes(val, 0, 1) if axis == "horizontal" else val
+        height, width = work_val.shape[:2]
+        n_bands = height // BAND_PX
+        if n_bands < 3:
+            continue
+
+        centre_lo, centre_hi = _centre_bounds(
+            axis, rect, extent_margins, val.shape[0], val.shape[1]
+        )
+        s = _chroma_signal(work_val, span_arr)
+        z = _normalize_response(_band_response(s, n_bands))
+        end_scores, parent = _dp_track(z)
+        paths = _backtrack(parent, end_scores, z)
+
+        for path_z, raw_centres in paths:
+            _accepted, metrics = _evaluate_path(
+                path_z,
+                raw_centres,
+                z=z,
+                work_val=work_val,
+                s=s,
+                n_bands=n_bands,
+                axis=axis,
+                height=height,
+                width=width,
+                centre_lo=centre_lo,
+                centre_hi=centre_hi,
+            )
+            rows.append(metrics)
+    rows.sort(key=lambda row: row["score"])
+    return rows
+
+
 def detect(
     image_codes: np.ndarray,
     spans: tuple[float, ...],
     film_extent: Any = None,
+    analysis_rect: tuple[int, int, int, int] | list[int] | None = None,
 ) -> list[Candidate]:
     """Detect long, thin scratches on a published TIFF's uint16 codes."""
     image_codes = np.asarray(image_codes)
@@ -325,6 +539,7 @@ def detect(
 
     val = _decode_val(image_codes)
     span_arr = _span_array(spans)
+    rect = _parse_analysis_rect(analysis_rect)
     extent_margins = _film_extent_px(film_extent, val.shape[0], val.shape[1])
 
     candidates: list[Candidate] = []
@@ -335,47 +550,29 @@ def detect(
         if n_bands < 3:
             continue
 
+        centre_lo, centre_hi = _centre_bounds(
+            axis, rect, extent_margins, val.shape[0], val.shape[1]
+        )
         s = _chroma_signal(work_val, span_arr)
         z = _normalize_response(_band_response(s, n_bands))
         end_scores, parent = _dp_track(z)
         paths = _backtrack(parent, end_scores, z)
 
         for path_z, raw_centres in paths:
-            if path_z > GATE_MEAN_PATH_Z:
-                continue
-            band_z = np.array([z[b, int(raw_centres[b])] for b in range(n_bands)])
-            agree = float(np.mean(band_z < -1.0))
-            if agree < GATE_AGREEMENT:
-                continue
-            drift = (raw_centres.max() - raw_centres.min()) / max(height, 1)
-            if drift > GATE_MAX_DRIFT:
-                continue
-            if _is_step_edge(work_val, raw_centres, n_bands):
-                continue
-            if extent_margins is not None and _near_film_extent(
-                raw_centres, axis, extent_margins, height, width
-            ):
-                continue
-
-            core_depths = np.zeros(3, dtype=np.float64)
-            for b in range(n_bands):
-                row_start = b * BAND_PX
-                row_end = min(row_start + BAND_PX, height)
-                cx = round(raw_centres[b])
-                if cx < BG_END or cx >= width - BG_END:
-                    continue
-                for ch in range(3):
-                    core = work_val[row_start:row_end, cx - 2 : cx + 3, ch].mean()
-                    bg = (
-                        work_val[row_start:row_end, cx - BG_END : cx - BG_START, ch].mean()
-                        + work_val[row_start:row_end, cx + BG_START : cx + BG_END, ch].mean()
-                    ) / 2.0
-                    core_depths[ch] += bg - core
-            if core_depths[2] <= 0:
-                continue
-            if core_depths[1] > core_depths[2]:
-                continue
-            if core_depths[0] > core_depths[1]:
+            accepted, metrics = _evaluate_path(
+                path_z,
+                raw_centres,
+                z=z,
+                work_val=work_val,
+                s=s,
+                n_bands=n_bands,
+                axis=axis,
+                height=height,
+                width=width,
+                centre_lo=centre_lo,
+                centre_hi=centre_hi,
+            )
+            if not accepted:
                 continue
 
             refined = _refine_centres(s, raw_centres, n_bands)
@@ -383,9 +580,9 @@ def detect(
                 Candidate(
                     axis=axis,
                     centres=refined,
-                    score=round(path_z, 4),
-                    agreement=round(agree, 4),
-                    drift=round(drift, 6),
+                    score=metrics["score"],
+                    agreement=metrics["agreement"],
+                    drift=metrics["drift"],
                 )
             )
 
