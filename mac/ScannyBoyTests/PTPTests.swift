@@ -87,6 +87,38 @@ struct PTPTests {
         #expect(PTP.containerType(ordered.1) == PTP.containerTypeResponse)
     }
 
+    @Test("orderedCommandResult keeps a large data buffer even when bytes 4-5 look like type 3")
+    func orderedCommandResultKeepsLargeDataBuffer() {
+        let payload = Array(repeating: UInt8(0xAB), count: 1024)
+        let dataPhase = Self.dataContainer(payload: payload, tiffLikeHeader: true)
+        let ordered = PTP.orderedCommandResult(data: dataPhase, response: Data())
+        #expect(ordered.0.count == dataPhase.count)
+        #expect(ordered.1.isEmpty)
+        #expect(!PTP.isPlausibleResponseContainer(dataPhase))
+    }
+
+    @Test("orderedCommandResult swaps a short response ahead of a large data buffer")
+    func orderedCommandResultSwapsShortResponseBeforeLargeData() {
+        let payload = Array(repeating: UInt8(0xCD), count: 512)
+        let dataPhase = Self.dataContainer(payload: payload)
+        let response = PTP.response(PTP.responseOK)
+        let ordered = PTP.orderedCommandResult(data: response, response: dataPhase)
+        #expect(PTP.responseCode(ordered.1) == PTP.responseOK)
+        #expect(PTP.payload(ordered.0).count == payload.count)
+    }
+
+    @Test("objectPayload picks the buffer whose length matches ObjectInfo")
+    func objectPayloadMatchesExpectedSize() {
+        let payload = Array(0..<128).map(UInt8.init)
+        let dataPhase = Self.dataContainer(payload: payload)
+        let response = PTP.response(PTP.responseOK)
+        let bytes = PTP.objectPayload(
+            dataPhase: dataPhase, response: response, expectedSize: UInt32(payload.count)
+        )
+        #expect(bytes.count == payload.count)
+        #expect(bytes == payload)
+    }
+
     @Test("releaseFailed has a readable description")
     func releaseFailedErrorPresentation() {
         let error: Error = TetherCaptureError.releaseFailed("0x2019 (Device busy)")
@@ -98,6 +130,23 @@ struct PTPTests {
     func liveViewHeaderRejections() {
         #expect(PTP.LiveViewHeader.decode(LiveViewFixtures.payload(named: "lv-watch-truncated.bin")) == nil)
         #expect(PTP.LiveViewHeader.decode(LiveViewFixtures.payload(named: "lv-watch-bad-length.bin")) == nil)
+    }
+
+    private static func dataContainer(payload: [UInt8], tiffLikeHeader: Bool = false) -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+        }
+        append(UInt32(12 + payload.count))
+        if tiffLikeHeader {
+            append(UInt16(0x0003))
+        } else {
+            append(PTP.containerTypeData)
+        }
+        append(PTP.getObject)
+        append(UInt32(0))
+        data.append(contentsOf: payload)
+        return data
     }
 
     private static func sampleDeviceInfoPayload() -> [UInt8] {

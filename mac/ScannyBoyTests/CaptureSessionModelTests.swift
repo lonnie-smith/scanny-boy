@@ -211,6 +211,73 @@ struct CaptureSessionModelTests {
         #expect(model.flatFieldReferenceError?.message.contains("buffer") != true)
     }
 
+    @Test("waitForExposureEnd failure returns the fake camera to ready")
+    func waitForExposureEndReturnsToReady() async throws {
+        let camera = FakeTetherCamera(configuration: .init(failDeviceReady: true))
+        let model = CaptureSessionModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false")),
+            camera: camera
+        )
+        await model.connect()
+        try await camera.release()
+        var caughtExposureTimeout = false
+        do {
+            try await camera.waitForExposureEnd()
+        } catch is TetherCaptureError {
+            caughtExposureTimeout = true
+        }
+        #expect(caughtExposureTimeout)
+        let state = await camera.connectionState
+        #expect(state == .ready)
+    }
+
+    @Test("shootBaseFrame can retry after a failed download")
+    func shootBaseFrameRetriesAfterFailedDownload() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: roll, withIntermediateDirectories: true)
+        let marker = directory.appending(path: ".base-attached").path
+        let finished = TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#)
+        let script = """
+            if [ "$1" = "roll" ] && [ "$2" = "set-base-frame" ]; then
+              touch '\(marker)'
+              echo '\(TestEvents.line(#"{"event":"started","command":"roll set-base-frame"}"#))'
+              echo '\(TestEvents.line(#"{"event":"base_frame_set","roll_id":"roll-1"}"#))'
+              echo '\(finished)'
+              exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              if [ -f '\(marker)' ]; then
+                echo '\(TestEvents.line(#"{"event":"started","command":"roll info"}"#))'
+                echo '\(TestEvents.line(#"{"event":"roll_info","manifest":{"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":"colour","film_base":{"density":[-0.4,-0.1,-0.9],"source_name":"base.NEF","populations":[]}}}"#))'
+                echo '\(finished)'
+              fi
+              exit 0
+            fi
+            exit 1
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let runner = CLIRunner(executable: executable)
+        var config = FakeTetherCamera.Configuration()
+        config.failDownload = true
+        let camera = FakeTetherCamera(configuration: config)
+        let model = CaptureSessionModel(runner: runner, camera: camera)
+        model.rollURL = roll
+        model.captureBaseFolder = directory
+        model.sessionOpen = true
+        await model.connect()
+        await model.shootBaseFrame()
+        #expect(model.filmBase == nil)
+        #expect(model.baseFrameError != nil)
+        let stateAfterFailure = await camera.connectionState
+        #expect(stateAfterFailure == .ready)
+        await camera.setFailDownload(false)
+        await model.shootBaseFrame()
+        #expect(model.filmBase != nil)
+        #expect(model.baseFrameError == nil)
+    }
+
     @Test("interval starts after exposure end")
     func intervalTiming() async throws {
         let clock = TestCaptureClock()

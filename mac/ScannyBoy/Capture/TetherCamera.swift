@@ -16,6 +16,7 @@ actor TetherCamera: CameraControlling {
     private var ignoredHandles: Set<UInt32> = []
     private var lowestStorageID: UInt32?
     private var liveViewActive = false
+    private var releaseInFlight = false
     private var connectionHandler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
 
     init() {}
@@ -107,6 +108,7 @@ actor TetherCamera: CameraControlling {
         guard connectionState == .ready else { throw TetherCaptureError.notConnected }
         if liveViewActive {
             await endLiveView()
+            try await waitForDeviceReady(deadline: .seconds(10))
         }
         updateState(.busy)
         handlesBeforeRelease = Set(try await scanBufferQuiet())
@@ -122,17 +124,30 @@ actor TetherCamera: CameraControlling {
             opcode = PTP.nikonInitiateCaptureRecInMedia
             params = [0xFFFF_FFFF, 0]
         }
-        let response = try await sendPTP(opcode, params: params)
-        guard PTP.responseCode(response) == PTP.responseOK else {
+        do {
+            let response = try await sendPTP(opcode, params: params)
+            guard PTP.responseCode(response) == PTP.responseOK else {
+                updateState(.ready)
+                throw TetherCaptureError.releaseFailed(
+                    PTP.describeResponse(PTP.responseCode(response))
+                )
+            }
+            releaseInFlight = true
+            await setBridgeReleaseInFlight(true)
+        } catch {
             updateState(.ready)
-            throw TetherCaptureError.releaseFailed(PTP.describeResponse(PTP.responseCode(response)))
+            throw error
         }
     }
 
     func waitForExposureEnd() async throws {
+        defer {
+            releaseInFlight = false
+            updateState(.ready)
+            Task { await setBridgeReleaseInFlight(false) }
+        }
         guard let shutter = exposure?.shutter else {
             try await sleep(TetherTiming.readyPollInterval)
-            updateState(.ready)
             return
         }
         let deadline = ContinuousClock.now + TetherTiming.exposureTimeout(shutterPTP: shutter)
@@ -141,13 +156,9 @@ actor TetherCamera: CameraControlling {
             let response = try await sendPTP(PTP.nikonDeviceReady)
             let code = PTP.responseCode(response)
             if code == PTP.responseDeviceBusy { sawBusy = true }
-            if sawBusy, code == PTP.responseOK {
-                updateState(.ready)
-                return
-            }
+            if sawBusy, code == PTP.responseOK { return }
             try await sleep(TetherTiming.readyPollInterval)
         }
-        updateState(.ready)
         throw TetherCaptureError.exposureTimeout
     }
 
@@ -180,8 +191,15 @@ actor TetherCamera: CameraControlling {
             throw TetherCaptureError.downloadFailed("object \(handle) not found")
         }
         let partial = url.deletingPathExtension().appendingPathExtension("NEF.partial")
-        let objectData = try await getObject(handle: handle)
-        let bytes = PTP.payload(objectData)
+        let (dataPhase, response) = try await sendPTPPair(PTP.getObject, params: [handle])
+        guard PTP.responseCode(response) == PTP.responseOK else {
+            throw TetherCaptureError.downloadFailed(
+                PTP.describeResponse(PTP.responseCode(response))
+            )
+        }
+        let bytes = PTP.objectPayload(
+            dataPhase: dataPhase, response: response, expectedSize: info.size
+        )
         guard bytes.count == Int(info.size) else {
             throw TetherCaptureError.downloadFailed(
                 "size mismatch: expected \(info.size), got \(bytes.count)"
@@ -305,9 +323,19 @@ actor TetherCamera: CameraControlling {
         return try await bridge.sendPTPPair(opcode, params: params)
     }
 
-    private func getObject(handle: UInt32) async throws -> Data {
+    private func waitForDeviceReady(deadline: Duration) async throws {
+        let end = ContinuousClock.now + deadline
+        while ContinuousClock.now < end {
+            let response = try await sendPTP(PTP.nikonDeviceReady)
+            if PTP.responseCode(response) == PTP.responseOK { return }
+            try await sleep(TetherTiming.readyPollInterval)
+        }
+        throw TetherCaptureError.liveViewRefused(PTP.responseDeviceBusy)
+    }
+
+    private func setBridgeReleaseInFlight(_ inFlight: Bool) async {
         let bridge = await mainBridge()
-        return try await bridge.sendPTP(PTP.getObject, params: [handle], expectData: true)
+        await MainActor.run { bridge.releaseInFlight = inFlight }
     }
 
     private func objectInfo(handle: UInt32) async throws -> PTP.ObjectInfo? {
@@ -421,6 +449,7 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
     private var camera: ICCameraDevice?
     private var ptpPairContinuations: [UInt32: CheckedContinuation<(Data, Data), Error>] = [:]
     private var nextTransaction: UInt32 = 1
+    var releaseInFlight = false
 
     override init() {
         super.init()
@@ -456,7 +485,12 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
 
     @MainActor
     func sendPTPPair(_ opcode: UInt16, params: [UInt32] = []) async throws -> (Data, Data) {
-        guard let camera else { throw TetherCaptureError.notConnected }
+        guard let camera else {
+            if releaseInFlight {
+                throw TetherCaptureError.sessionDroppedAfterShutter
+            }
+            throw TetherCaptureError.notConnected
+        }
         let transaction = nextTransaction
         nextTransaction &+= 1
         return try await withCheckedThrowingContinuation { continuation in
@@ -464,21 +498,24 @@ final class TetherCameraBridge: NSObject, @unchecked Sendable {
             // ImageCaptureCore calls this off the main thread. Keep it
             // @Sendable (not @MainActor) so Swift does not synchronously hop
             // back to main while `requestSendPTPCommand` is still on the stack.
+            // Copy the buffers here — a deferred MainActor hop can arrive after
+            // IC has released a multi-megabyte GetObject wrapper.
             let finish: @Sendable (Data, Data, (any Error)?) -> Void = { [weak self] data, response, error in
+                let copiedData = Data(data)
+                let copiedResponse = Data(response)
                 Task { @MainActor in
                     guard let self else { return }
-                    let key = PTP.responseParameter(response, 0)
-                        ?? PTP.responseParameter(data, 0)
-                        ?? transaction
+                    let ordered = PTP.orderedCommandResult(
+                        data: copiedData, response: copiedResponse
+                    )
+                    let key = PTP.responseParameter(ordered.1, 0) ?? transaction
                     guard let waiting = self.ptpPairContinuations.removeValue(forKey: key)
                         ?? self.ptpPairContinuations.removeValue(forKey: transaction)
                     else { return }
                     if let error {
                         waiting.resume(throwing: error)
                     } else {
-                        waiting.resume(returning: PTP.orderedCommandResult(
-                            data: data, response: response
-                        ))
+                        waiting.resume(returning: ordered)
                     }
                 }
             }

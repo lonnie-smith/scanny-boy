@@ -69,19 +69,41 @@ enum PTP {
         return UInt16(data[data.startIndex + 4]) | (UInt16(data[data.startIndex + 5]) << 8)
     }
 
+    /// A PTP response container is short and carries a response code in the
+    /// 0x2000 range. A multi-megabyte GetObject buffer can have bytes 4–5 that
+    /// look like type 3; never treat that as a swapped response.
+    static func isPlausibleResponseContainer(_ data: Data) -> Bool {
+        guard data.count >= 8, data.count <= 64 else { return false }
+        guard containerType(data) == containerTypeResponse else { return false }
+        guard let code = responseCode(data) else { return false }
+        return (0x2000...0x2FFF).contains(code)
+    }
+
     /// ImageCaptureCore's completion takes `(inData, response, error)`. For
     /// commands with no data-in phase it sometimes puts the response
     /// container in the first `Data` and leaves the second empty — the probe
     /// confirmed this rather than assuming the labels. Callers always get
     /// `(dataPhase, responseContainer)`.
     static func orderedCommandResult(data: Data, response: Data) -> (Data, Data) {
-        if containerType(response) == containerTypeResponse {
+        if isPlausibleResponseContainer(response) {
             return (data, response)
         }
-        if containerType(data) == containerTypeResponse {
+        if isPlausibleResponseContainer(data) {
             return (response, data)
         }
         return (data, response)
+    }
+
+    /// Picks the GetObject payload whose byte count matches ObjectInfo.size,
+    /// or the larger non-response side when ImageCaptureCore's labels lie.
+    static func objectPayload(dataPhase: Data, response: Data, expectedSize: UInt32) -> [UInt8] {
+        let ordered = orderedCommandResult(data: dataPhase, response: response)
+        let stripped = [payload(ordered.0), payload(ordered.1)]
+        let expected = Int(expectedSize)
+        if let exact = stripped.first(where: { $0.count == expected }) {
+            return exact
+        }
+        return stripped.max(by: { $0.count < $1.count }) ?? []
     }
 
     static func response(

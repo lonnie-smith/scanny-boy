@@ -54,6 +54,7 @@ enum TetherCaptureError: Error, Sendable, LocalizedError {
     case downloadFailed(String)
     case bufferNotCleared(UInt32)
     case releaseFailed(String)
+    case sessionDroppedAfterShutter
     case leftoverPresent([BufferLeftover])
     case liveViewRefused(UInt16)
     case liveViewFrameInvalid
@@ -66,6 +67,8 @@ enum TetherCaptureError: Error, Sendable, LocalizedError {
             "The camera did not finish the exposure in time."
         case .frameArrivalTimeout:
             "The shutter fired, but no frame arrived from the camera."
+        case .sessionDroppedAfterShutter:
+            "The camera dropped the USB session after the shutter fired. Reconnect and try again."
         case .downloadFailed(let detail):
             "The frame could not be downloaded (\(detail))."
         case .bufferNotCleared(let handle):

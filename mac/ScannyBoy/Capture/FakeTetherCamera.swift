@@ -22,6 +22,8 @@ actor FakeTetherCamera: CameraControlling {
         var liveViewFrames: [LiveViewFrame] = []
         var liveViewFrameDelay: Duration = .zero
         var connectDelay: Duration = .zero
+        var failDeviceReady = false
+        var failDownload = false
     }
 
     private(set) var connectionState: TetherConnectionState
@@ -56,6 +58,10 @@ actor FakeTetherCamera: CameraControlling {
 
     func applyDestination(_ destination: CaptureDestination) async {
         self.destination = destination
+    }
+
+    func setFailDownload(_ fail: Bool) {
+        config.failDownload = fail
     }
 
     func startBrowsing() async {
@@ -114,20 +120,28 @@ actor FakeTetherCamera: CameraControlling {
         if liveViewActive {
             await endLiveView()
         }
+        updateState(.busy)
         if config.dropOnRelease {
             updateState(.lost)
-            throw TetherCaptureError.notConnected
+            throw TetherCaptureError.sessionDroppedAfterShutter
         }
-        updateState(.busy)
         handlesBeforeLastRelease = bufferHandles
         released = false
-        try await Task.sleep(for: config.releaseDelay)
-        released = true
+        do {
+            try await Task.sleep(for: config.releaseDelay)
+            released = true
+        } catch {
+            updateState(.ready)
+            throw error
+        }
     }
 
     func waitForExposureEnd() async throws {
+        defer { updateState(.ready) }
+        if config.failDeviceReady {
+            throw TetherCaptureError.exposureTimeout
+        }
         try await Task.sleep(for: config.exposureEndDelay)
-        updateState(.ready)
     }
 
     func waitForFrame(after handlesBefore: Set<UInt32>) async throws -> UInt32 {
@@ -143,6 +157,9 @@ actor FakeTetherCamera: CameraControlling {
     }
 
     func download(handle: UInt32, to url: URL) async throws -> TetherCapturedFrame {
+        if config.failDownload {
+            throw TetherCaptureError.downloadFailed("test failure")
+        }
         try await Task.sleep(for: config.downloadDelay)
         let info = PTP.ObjectInfo(
             handle: handle,
