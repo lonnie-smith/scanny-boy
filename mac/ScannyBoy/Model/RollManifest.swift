@@ -255,9 +255,9 @@ struct RollManifest: Sendable, Hashable {
         }
 
         /// The ops log's net preview tone adjustment (protocol 10's `tone`
-        /// op): an ISO-R paper grade and a midtone snap composed into the
+        /// op): grade, contrast, and density composed into the
         /// CLI's preview display encode. `nil` = no adjustment recorded —
-        /// the flat linear look. The published TIFF never carries it.
+        /// the default scan-start curve. The published TIFF never carries it.
         let toneGradeR: Double?
         let toneSnapGamma: Double?
         /// Absent before protocol 11's density control existed.

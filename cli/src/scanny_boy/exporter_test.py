@@ -388,7 +388,7 @@ def test_the_tone_op_changes_the_exported_pixels_and_matches_the_curve(
     rendered = _decode(destination)
 
     flat, _ = render.render_export(_ORIGINAL, None, None)
-    toned, _ = render.render_export(_ORIGINAL, None, {"grade_r": 70.0, "snap_gamma": 0.4})
+    toned, _ = render.render_export(_ORIGINAL, None, _tone_params(70.0, 0.4))
     assert not np.array_equal(rendered, flat)
     np.testing.assert_array_equal(rendered, toned)
 
@@ -1052,7 +1052,7 @@ def test_the_export_downsamples_inside_the_render_with_a_tone_op(
     run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
 
     expected, _ = render.render_export(
-        _ORIGINAL, None, {"grade_r": 70.0, "snap_gamma": 0.4}, long_edge=2
+        _ORIGINAL, None, _tone_params(70.0, 0.4), long_edge=2
     )
     np.testing.assert_array_equal(_decode(output_dir / "_DSC0001.jxl"), expected)
 

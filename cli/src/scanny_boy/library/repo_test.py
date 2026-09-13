@@ -4,6 +4,7 @@ profile records."""
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -355,17 +356,9 @@ def _tone_params(
 ) -> dict[str, float]:
     from scanny_boy import tone
 
-    params = {
-        "grade_r": grade_r,
-        "snap_gamma": snap_gamma,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
-    }
+    params = dataclasses.asdict(tone.NEUTRAL)
+    params["grade_r"] = grade_r
+    params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
 
@@ -444,8 +437,8 @@ def test_append_tone_edit_validates_its_params(roll_dir):
     for params in [
         _tone_params(49.0, 0.0),
         _tone_params(181.0, 0.0),
-        _tone_params(115.0, -0.6),
-        _tone_params(115.0, 0.6),
+        _tone_params(115.0, -0.9),
+        _tone_params(115.0, 2.0),
         _tone_params(density=3.0),
         _tone_params(shadow_density=1.0),
         _tone_params(115.0, 0.0) | {"density": None},

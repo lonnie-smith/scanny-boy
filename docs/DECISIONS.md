@@ -1643,19 +1643,19 @@ an unused flag is a maintenance cost plus a second set of tests.
 
 ## The preview's tone adjustment: the `tone` op (protocol version 10)
 
-The Edit tab's positive preview applies the default print curve
-(`tone.NEUTRAL`, grade R115) even when no `tone` op is recorded — the
-sliders already sit on that curve, and the image must match. The flat
-identity ramp (`curve_values(None)`) is reserved for the negative-view
-toggle and tests, not for the positive display. On top of that baseline
-the tab offers a nondestructive tone adjustment: an ISO-R paper grade
-(50–180; lower is harder, matching
-NegPy's print-module vocabulary) plus a midtone snap trim (−0.5…0.5,
-NegPy's variable midtone gamma). It is recorded as a `tone` op in the
-negative's ops log (`repo.TONE_OP`) and composed into the preview's
-display LUT (`tone.py`) — a simplified port of NegPy's H&D print curve:
-a straight slope about the midtone pivot with softplus toe/shoulder
-knees, endpoints pinned to display black and white.
+The Edit tab's positive preview applies the default scan-start curve
+(`tone.NEUTRAL`: grade R180, snap +0.15, open toe/shoulder) even when no
+`tone` op is recorded — the sliders already sit on that curve, and the
+image must match. The flat identity ramp (`curve_values(None)`) is
+reserved for the negative-view toggle and tests, not for the positive
+display. On top of that baseline the tab offers a nondestructive tone
+adjustment: stored grade (50–180; lower is punchier in the ends), midtone
+contrast/snap (−0.8…1.5), brightness/density (0.0–2.0), zone trims, and
+toe/shoulder knees. It is recorded as a `tone` op in the negative's ops
+log (`repo.TONE_OP`) and composed into the preview's display LUT
+(`tone.py`): a straight slope about the midtone pivot, input-referred
+toe/shoulder knees (before the grade step so contrast does not tighten
+the highlight shoulder), endpoints pinned to display black and white.
 
 Three deliberate boundaries:
 
@@ -1677,9 +1677,9 @@ Three deliberate boundaries:
 - **The grade's reference slope is not NegPy's.** NegPy's R115 is a real
   paper grade against a paper-white baseline; our baseline is already the
   flat linear mapping of the normalized density, so the slope reference
-  (`GRADE_SLOPE_REF`, at R115) is chosen to land the default grade at a
-  print-like midtone contrast with the softest end of the range near the
-  flat look. The numbers are a judgement aid, not a calibrated paper.
+  (`GRADE_SLOPE_REF`, at R115) is a judgement aid for stored grade values,
+  not a calibrated paper. The scan-start default keeps grade at R180
+  (slope ≈ 1) and puts contrast in snap instead.
 
 ### Protocol version 11: density, zone density, toe/shoulder, auto metering
 
@@ -1701,9 +1701,9 @@ centres are placed by position on our own curve (quarter and
 three-quarter tones) rather than by NegPy's absolute density anchors.
 
 Endpoint rescale reads its anchors with every shaping control at rest
-(grade and snap only). Without that rule, print density would be nearly
-inert and toe/shoulder would be completely inert, because moving the
-endpoints is precisely what they do.
+(grade only; snap is excluded so Contrast is not self-cancelled). Without
+that rule, print density would be nearly inert and toe/shoulder would be
+completely inert, because moving the endpoints is precisely what they do.
 
 **Auto Density** and **Auto Grade** are buttons, not modes: the display LUT
 has no image, so a persistent auto mode is not representable. Each press
@@ -1716,6 +1716,17 @@ NegPy a negative shoulder is inert because `d_min_eff` clamps at the
 paper's physical Dmin; our ceiling is display white with no paper model,
 so the same sharpening branch used for negative toe is applied to the
 shoulder too.
+
+### Scan-start default (post–protocol 11)
+
+The original default (R115, closed knees) looked over-contrasty and crushed
+highlights because grade overshoot was eaten by post-grade shoulder
+rolloff. The scan-start default uses R180 (slope ≈ 1), snap +0.15, and
+open knees; toe/shoulder are applied in input display space before the
+grade step. The app labels density as Brightness (reversed), zone density
+as Shadows/Highlights (reversed the same way), and snap as Contrast;
+grade is exposed under Curve as End contrast. Auto Grade
+targets the scan-start grade (R180), not R115.
 
 ## The preview's colour adjustment: the `color` op (protocol version 12)
 
@@ -1747,7 +1758,12 @@ What is not obvious from the code:
    `dye_separation != 1.0` (or damping is non-zero), the preview path
    applies per-pixel spread after the LUT; otherwise three 1-D tables
    suffice.
-6. **Cast removal ports the shadow-tie branch only.** We do not measure
+6. **Separation damping is not NegPy's exponent verbatim.** The
+   crossover law ports, but display-space chroma runs smaller than NegPy's
+   density spread, so full damping also carries a muted-side gain
+   (`SEPARATION_DAMPING_GAIN = 2.0`) when `dye_separation > 1` — otherwise
+   the slider barely moves on real frames.
+7. **Cast removal ports the shadow-tie branch only.** We do not measure
    the neutral-axis refs NegPy's other branch needs.
 
 # The spotting feature (protocol version 13)

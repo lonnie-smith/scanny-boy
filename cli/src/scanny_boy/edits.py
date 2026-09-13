@@ -263,8 +263,9 @@ def run_edit_tone(
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview tone adjustment — the full
-    nine-key tone state, or all `None` for the reset to the flat linear
-    look (see `tone.py`). Auto flags solve density and/or grade from each
+    nine-key tone state, or all `None` for the reset to the default
+    scan-start curve (see `tone.py`). Auto flags solve density and/or grade
+    from each
     negative's recorded normalization before validation.
 
     The op is a state, not a transform: the latest one wins and a trailing
@@ -1209,8 +1210,10 @@ def run_edit_detect_scratches(
         previous = repo.net_edit_state(roll_dir, negative.negative_id).scratches
         enabled = bool(previous["enabled"]) if previous else True
         spans = _scratch_spans(negative)
-        film_extent = (negative.normalization or {}).get("film_extent")
-        candidates = scratches.detect(image, spans, film_extent)
+        norm = negative.normalization or {}
+        film_extent = norm.get("film_extent")
+        analysis_rect = norm.get("analysis_rect")
+        candidates = scratches.detect(image, spans, film_extent, analysis_rect)
         fits = [scratches.fit(image, c) for c in candidates]
         params = scratches.scratches_params(
             canvas=(image.shape[1], image.shape[0]),

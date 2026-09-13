@@ -17,9 +17,9 @@ from scanny_boy import normalization, tone
 _NEUTRAL_LUT_SAMPLES = {
     0: 255,
     1: 255,
-    16384: 243,
-    32768: 138,
-    49152: 14,
+    16384: 229,
+    32768: 135,
+    49152: 40,
     65534: 0,
     65535: 0,
 }
@@ -131,17 +131,18 @@ def test_toe_lifts_the_black_and_shoulder_holds_the_white():
 
 def test_negative_toe_and_shoulder_approach_the_unrolled_ramp():
     values = np.linspace(0.0, tone.DISPLAY_CEILING, 101)
-    neutral = tone.curve_values(values, tone.NEUTRAL)
+    heavy = dataclasses.replace(tone.NEUTRAL, toe=1.0, shoulder=1.0)
     sharp_toe = tone.curve_values(
-        values, dataclasses.replace(tone.NEUTRAL, toe=-1.0)
+        values, dataclasses.replace(heavy, toe=-1.0)
     )
     sharp_shoulder = tone.curve_values(
-        values, dataclasses.replace(tone.NEUTRAL, shoulder=-1.0)
+        values, dataclasses.replace(heavy, shoulder=-1.0)
     )
+    heavy_out = tone.curve_values(values, heavy)
     assert sharp_toe[0] == pytest.approx(0.0, abs=1e-6)
     assert sharp_shoulder[-1] == pytest.approx(1.0, abs=1e-6)
-    assert sharp_toe[10] < neutral[10]
-    assert sharp_shoulder[90] > neutral[90]
+    assert sharp_toe[0] < heavy_out[0]
+    assert sharp_shoulder[-1] > heavy_out[-1]
 
 
 def test_toe_width_widens_the_knee():
@@ -162,7 +163,7 @@ def test_toe_width_widens_the_knee():
 # them cost 13 seconds, about a twentieth of the whole fast tier.
 _TONE_AXES = {
     "grade_r": (50.0, 85.0, 115.0, 150.0, 180.0),
-    "snap_gamma": (-0.5, -0.2, 0.0, 0.2, 0.5),
+    "snap_gamma": (-0.8, -0.2, 0.0, 0.2, 1.5),
     "density": (0.0, 1.0, 2.0),
     "shadow_density": (-0.9, 0.0, 0.9),
     "highlight_density": (-0.5, 0.0, 0.5),
@@ -246,15 +247,30 @@ def test_zone_constants_satisfy_monotonicity_bound():
 
 def test_curve_pins_endpoints_at_neutral_shaping():
     for grade_r in (50.0, 115.0, 180.0):
-        for snap in (-0.5, 0.5):
-            params = dataclasses.replace(
-                tone.NEUTRAL, grade_r=grade_r, snap_gamma=snap
-            )
-            out = tone.curve_values(
-                np.array([0.0, tone.DISPLAY_CEILING]), params
-            )
-            assert out[0] == pytest.approx(0.0, abs=1e-6)
-            assert out[1] == pytest.approx(1.0, abs=1e-6)
+        params = dataclasses.replace(
+            tone.NEUTRAL, grade_r=grade_r, snap_gamma=0.0
+        )
+        out = tone.curve_values(
+            np.array([0.0, tone.DISPLAY_CEILING]), params
+        )
+        assert out[0] == pytest.approx(0.0, abs=1e-6)
+        assert out[1] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_contrast_may_clip_endpoints_when_snap_is_nonzero():
+    """Snap is excluded from endpoint anchors, so extremes can depart from 0/1."""
+    lifted = tone.curve_values(
+        np.array([0.0, tone.DISPLAY_CEILING]),
+        dataclasses.replace(tone.NEUTRAL, snap_gamma=-0.5),
+    )
+    assert lifted[0] > 0.0
+    assert lifted[1] < 1.0
+    punchy = tone.curve_values(
+        np.array([0.0, tone.DISPLAY_CEILING]),
+        dataclasses.replace(tone.NEUTRAL, snap_gamma=tone.SNAP_MAX),
+    )
+    assert punchy[0] == pytest.approx(0.0, abs=1e-6)
+    assert punchy[1] == pytest.approx(1.0, abs=1e-6)
 
 
 def test_curve_keeps_the_pivot_fixed_at_neutral_shaping():
@@ -270,19 +286,34 @@ def test_curve_keeps_the_pivot_fixed_at_neutral_shaping():
 
 def test_harder_grade_steepens_the_midtones():
     values = np.array([0.35, 0.65])
-    soft = tone.curve_values(values, dataclasses.replace(tone.NEUTRAL, grade_r=180.0))
-    hard = tone.curve_values(values, dataclasses.replace(tone.NEUTRAL, grade_r=50.0))
+    base = dataclasses.replace(tone.NEUTRAL, snap_gamma=0.0)
+    soft = tone.curve_values(values, dataclasses.replace(base, grade_r=180.0))
+    hard = tone.curve_values(values, dataclasses.replace(base, grade_r=50.0))
     assert hard[1] - hard[0] > soft[1] - soft[0]
 
 
 def test_snap_steepens_without_moving_the_pivot():
     values = np.array([0.35, 0.5, 0.65])
-    flat = tone.curve_values(values, tone.NEUTRAL)
+    base = dataclasses.replace(tone.NEUTRAL, snap_gamma=0.0)
+    flat = tone.curve_values(values, base)
     snapped = tone.curve_values(
-        values, dataclasses.replace(tone.NEUTRAL, snap_gamma=0.4)
+        values, dataclasses.replace(base, snap_gamma=0.4)
     )
     assert snapped[2] - snapped[0] > flat[2] - flat[0]
     assert snapped[1] == pytest.approx(0.5, abs=2e-3)
+
+
+def test_contrast_travel_is_clearly_visible_at_the_new_max():
+    """Contrast is not self-cancelled by endpoint rescale."""
+    values = np.array([0.35, 0.5, 0.65])
+    default = tone.curve_values(values, tone.NEUTRAL)
+    punchy = tone.curve_values(
+        values, dataclasses.replace(tone.NEUTRAL, snap_gamma=tone.SNAP_MAX)
+    )
+    default_span = default[2] - default[0]
+    punchy_span = punchy[2] - punchy[0]
+    assert punchy_span - default_span > 0.12
+    assert punchy[1] == pytest.approx(0.5, abs=2e-3)
 
 
 def test_display_lut_composes_the_curve_over_the_flat_encode():
@@ -325,10 +356,11 @@ def test_shoulder_heavy_keeps_highlights_ordered():
 
 def test_shoulder_off_is_the_unrolled_ramp():
     values = np.linspace(0.85, tone.DISPLAY_CEILING, 101)
+    mild = dataclasses.replace(tone.NEUTRAL, shoulder=0.0)
     off = tone.curve_values(
-        values, dataclasses.replace(tone.NEUTRAL, shoulder=-1.0)
+        values, dataclasses.replace(mild, shoulder=-1.0)
     )
-    default = tone.curve_values(values, tone.NEUTRAL)
+    default = tone.curve_values(values, mild)
     assert off[-1] == pytest.approx(1.0, abs=1e-4)
     assert np.all(off >= default - 1e-6)
 
@@ -342,6 +374,21 @@ def test_roll_high_is_c1_continuous_at_the_knee():
     deriv_right = (out[2] - out[1]) / eps
     assert deriv_left == pytest.approx(deriv_right, abs=1e-5)
     assert deriv_left == pytest.approx(1.0, abs=1e-5)
+
+
+def test_hard_grade_does_not_early_crush_highlights():
+    """Input-referred shoulder knee stays at 0.85 regardless of grade."""
+    values = np.array([0.80, 0.92])
+    open_shoulder = dataclasses.replace(
+        tone.NEUTRAL, grade_r=50.0, shoulder=-1.0, snap_gamma=0.0
+    )
+    mild_shoulder = dataclasses.replace(
+        tone.NEUTRAL, grade_r=50.0, shoulder=0.0, snap_gamma=0.0
+    )
+    open_out = tone.curve_values(values, open_shoulder)
+    mild_out = tone.curve_values(values, mild_shoulder)
+    assert mild_out[0] == pytest.approx(open_out[0], abs=1e-3)
+    assert mild_out[1] < open_out[1]
 
 
 def test_roll_low_is_c1_continuous_at_the_knee():

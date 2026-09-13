@@ -3,9 +3,10 @@
 
 Given a roll folder and negative ids, for each negative this:
 
-- runs ``scratches.detect`` and records every accepted scratch's score,
-  agreement, and drift;
-- fits and applies correction, then writes held-out residual metrics;
+- runs ``scratches.inspect_paths`` and records every DP path's score,
+  agreement, residual drift, and accept/reject reasons;
+- runs ``scratches.detect`` for the accepted set, fits and applies
+  correction, then writes held-out residual metrics;
 - writes a contact sheet of before / after / 5×-difference crops at fixed
   rows for each accepted scratch.
 
@@ -75,7 +76,8 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict[str, object]] = []
+    path_rows: list[dict[str, object]] = []
+    accepted_rows: list[dict[str, object]] = []
     for negative_id in args.negative:
         negative = manifest.negative(negative_id)
         if negative.output is None:
@@ -84,7 +86,15 @@ def main() -> None:
         norm = negative.normalization
         spans = tuple(norm["ceils"][ch] - norm["floors"][ch] for ch in range(3))
         film_extent = norm.get("film_extent")
-        candidates = scratches.detect(image, spans, film_extent)
+        analysis_rect = norm.get("analysis_rect")
+
+        inspected = scratches.inspect_paths(
+            image, spans, film_extent, analysis_rect
+        )
+        for row in inspected:
+            path_rows.append({"negative_id": negative_id, **row})
+
+        candidates = scratches.detect(image, spans, film_extent, analysis_rect)
         print(f"{negative_id}: {len(candidates)} accepted scratch(es)")
 
         sheet_tiles: list[np.ndarray] = []
@@ -101,7 +111,7 @@ def main() -> None:
             before = _display_rgb(_scratch_crop(image, cx, row))
             after = _display_rgb(_scratch_crop(healed, cx, row))
             sheet_tiles.append(_contact_row(before, after))
-            rows.append(
+            accepted_rows.append(
                 {
                     "negative_id": negative_id,
                     "scratch_index": index,
@@ -116,13 +126,21 @@ def main() -> None:
             sheet = np.vstack(sheet_tiles)
             cv2.imwrite(str(out_dir / f"{negative_id}-scratches.png"), sheet)
 
-    csv_path = out_dir / "measurements.csv"
-    if rows:
-        with csv_path.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+    paths_csv = out_dir / "paths.csv"
+    if path_rows:
+        with paths_csv.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(path_rows[0].keys()))
             writer.writeheader()
-            writer.writerows(rows)
-    print(f"wrote {csv_path}")
+            writer.writerows(path_rows)
+    print(f"wrote {paths_csv}")
+
+    accepted_csv = out_dir / "measurements.csv"
+    if accepted_rows:
+        with accepted_csv.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(accepted_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(accepted_rows)
+    print(f"wrote {accepted_csv}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-"""The preview's tone adjustment: a paper-grade contrast curve plus
-midtone-snap and density/zone/toe-shoulder trims, applied where the
-display encode happens.
+"""The preview's tone adjustment: a scan-start contrast curve plus
+midtone contrast, brightness, and zone/toe-shoulder trims, applied where
+the display encode happens.
 
 The published TIFF holds normalized log density; its preview display is a
 deliberately flat, contrast-free inversion (`previews.py`). That is honest
@@ -23,14 +23,18 @@ The math is a simplified port of NegPy's print curve
 v ∈ [0, DISPLAY_CEILING] after `1 - val` when a tone curve is active
 (`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW`):
 
-- **Grade** — an ISO-R paper "range" value (`grade_r`, 50–180; lower is
-  harder) turned into a straight-line slope about the midtone pivot.
-- **Density** — an input-pivot offset before the grade rotation.
-- **Snap** — NegPy's anchor-preserving variable midtone gamma.
+- **Grade** — stored as an ISO-R paper "range" value (`grade_r`, 50–180)
+  turned into a straight-line slope about the midtone pivot. The default
+  scan-start curve keeps this near unity so contrast lives in snap.
+- **Density** — an input-pivot offset before the grade rotation (the
+  Brightness slider in the app, reversed so higher is brighter).
+- **Snap** — anchor-preserving variable midtone contrast (the Contrast
+  slider).
 - **Zone density** — mid-sparing sigmoid offsets on the quarter and
   three-quarter tones, read on the post-Snap value.
-- **Knees** — toe and shoulder knee-point controls with exponential rolloff
-  toward 0.0 and 1.0.
+- **Knees** — toe and shoulder controls with exponential rolloff toward
+  0.0 and 1.0, applied in *input* display space before the grade step so
+  contrast does not tighten the highlight shoulder.
 
 Three uint16 → float tables (one per channel when colour is active)
 compose steps 1–7; the endpoint rescale is shared across channels so
@@ -54,8 +58,8 @@ SLOPE_MIN = 0.5
 SLOPE_MAX = 4.0
 
 # Snap (midtone gamma trim).
-SNAP_MIN = -0.5
-SNAP_MAX = 0.5
+SNAP_MIN = -0.8
+SNAP_MAX = 1.5
 SNAP_WIDTH = 0.6
 
 # Print density — NegPy's range, higher is denser (darker).
@@ -86,10 +90,17 @@ SHOULDER_WIDTH_MAX = 5.0
 WIDTH_REFERENCE = 2.5
 # Same derivation as render.DISPLAY_CEILING.
 DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
+# Input-referred knees (pre-grade display space).
 # shoulder: -1 = no rolloff, 0 = mild default, +1 = heavy highlight compression
 SHOULDER_KNEE = (DISPLAY_CEILING, 0.85, 0.50)
 # toe: -1 = no rolloff, 0 = mild default, +1 = heavy shadow compression
 TOE_KNEE = (0.0, 0.06, 0.35)
+
+# Scan-start default: slope ~1, open knees, mild midtone contrast.
+NEUTRAL_GRADE_R = GRADE_MAX
+NEUTRAL_SNAP_GAMMA = 0.15
+NEUTRAL_TOE = -1.0
+NEUTRAL_SHOULDER = -1.0
 
 MAX_CODE = 65535
 
@@ -108,14 +119,14 @@ TONE_PARAM_KEYS = (
 
 @dataclasses.dataclass(frozen=True)
 class ToneParams:
-    grade_r: float = GRADE_REFERENCE
-    snap_gamma: float = 0.0
+    grade_r: float = NEUTRAL_GRADE_R
+    snap_gamma: float = NEUTRAL_SNAP_GAMMA
     density: float = DENSITY_REFERENCE
     shadow_density: float = 0.0
     highlight_density: float = 0.0
-    toe: float = 0.0
+    toe: float = NEUTRAL_TOE
     toe_width: float = WIDTH_REFERENCE
-    shoulder: float = 0.0
+    shoulder: float = NEUTRAL_SHOULDER
     shoulder_width: float = WIDTH_REFERENCE
 
 
@@ -127,9 +138,10 @@ def resolved_positive_tone(
 ) -> ToneParams:
     """The tone curve the positive display applies.
 
-    A missing tone op (``None``, or ``--reset``) means the default print
-    curve — ``NEUTRAL`` — not the flat identity ramp. ``curve_values(None)``
-    remains the explicit identity primitive for the negative view and tests."""
+    A missing tone op (``None``, or ``--reset``) means the default
+    scan-start curve — ``NEUTRAL`` — not the flat identity ramp.
+    ``curve_values(None)`` remains the explicit identity primitive for the
+    negative view and tests."""
     if tone_params is None:
         return NEUTRAL
     return ToneParams(**tone_params)
@@ -158,6 +170,7 @@ def _expit(x: np.ndarray | float) -> np.ndarray | float:
 def _neutral_shaping(tone_params: ToneParams) -> ToneParams:
     return dataclasses.replace(
         tone_params,
+        snap_gamma=0.0,
         density=DENSITY_REFERENCE,
         shadow_density=0.0,
         highlight_density=0.0,
@@ -247,6 +260,14 @@ def _curve_raw(
         )[channel]
     else:
         slope = base_slope
+
+    if not flat_tone:
+        assert tone_params is not None
+        toe_knee = _knee_from_slider(tone_params.toe, *TOE_KNEE)
+        shoulder_knee = _knee_from_slider(tone_params.shoulder, *SHOULDER_KNEE)
+        v = _roll_low(v, toe_knee, tone_params.toe_width)
+        v = _roll_high(v, shoulder_knee, tone_params.shoulder_width)
+
     v = pivot_out + slope * (v - pivot_in)
     if not flat_tone:
         assert tone_params is not None
@@ -268,10 +289,6 @@ def _curve_raw(
             tone_params.shadow_density * w_sh
             + tone_params.highlight_density * w_hi
         )
-        toe_knee = _knee_from_slider(tone_params.toe, *TOE_KNEE)
-        shoulder_knee = _knee_from_slider(tone_params.shoulder, *SHOULDER_KNEE)
-        v = _roll_low(v, toe_knee, tone_params.toe_width)
-        v = _roll_high(v, shoulder_knee, tone_params.shoulder_width)
     return v
 
 
@@ -286,8 +303,8 @@ def curve_values(
     flat_tone: bool | None = None,
 ) -> np.ndarray:
     """Maps positive display values through the tone+colour curve. Monotone;
-    endpoints pinned using grade/snap-only anchors read on the achromatic
-    curve with every colour control at rest.
+    endpoints pinned using grade-only anchors read on the achromatic curve
+    with every colour and snap control at rest.
 
     `tone_params is None` selects the flat identity ramp — colour shaping
     only, no paper grade. Positive display uses `resolved_positive_tone`

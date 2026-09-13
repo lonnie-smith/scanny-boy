@@ -13,14 +13,14 @@ public struct ToneAdjustment: Equatable, Sendable, Hashable {
     public var shoulderWidth: Double
 
     public static let neutral = ToneAdjustment(
-        gradeR: 115,
-        snapGamma: 0,
+        gradeR: 180,
+        snapGamma: 0.15,
         density: 1,
         shadowDensity: 0,
         highlightDensity: 0,
-        toe: 0,
+        toe: -1,
         toeWidth: 2.5,
-        shoulder: 0,
+        shoulder: -1,
         shoulderWidth: 2.5
     )
     public init(
