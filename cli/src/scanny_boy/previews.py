@@ -1366,6 +1366,7 @@ def render_region(
             crop,
             scratches_params,
             region=(inner_x, inner_y, tx1 - tx0, ty1 - ty0),
+            origin=(tx0_exp, ty0_exp),
         )
     else:
         crop = _read_tiff_region(tiff_path, (tx0, ty0, tx1 - tx0, ty1 - ty0))

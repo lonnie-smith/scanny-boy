@@ -270,6 +270,20 @@ def test_heal_reduces_error_inside_window():
                 mask[y, x] = True
     rms = float(np.sqrt(np.mean((healed_val[mask] - clean_val[mask]) ** 2)))
     assert rms < 0.025
+    # The core itself must move: a zeroed / row-count-divided table used
+    # to pass the window RMS (most of ±24 px is untouched background).
+    core = np.zeros((H, W), dtype=bool)
+    for y in range(H):
+        for dx in range(-2, 3):
+            x = cx + dx
+            if 0 <= x < W:
+                core[y, x] = True
+    scratched_val = _decode(scratched)
+    before = float(np.sqrt(np.mean((scratched_val[core] - clean_val[core]) ** 2)))
+    after = float(np.sqrt(np.mean((healed_val[core] - clean_val[core]) ** 2)))
+    assert before > 0.02
+    assert after < before * 0.4
+    assert float(np.abs(fits[0].table).max()) > 0.01
 
 
 def test_heal_leaves_outside_window_unchanged():
@@ -320,7 +334,10 @@ def test_region_apply_matches_full_apply_slice():
     inner_x = x - max(0, x - col_m)
     inner_y = y - max(0, y - row_m)
     region = scratches.apply(
-        padded.copy(), params, region=(inner_x, inner_y, w, h)
+        padded.copy(),
+        params,
+        region=(inner_x, inner_y, w, h),
+        origin=(max(0, x - col_m), max(0, y - row_m)),
     )
     np.testing.assert_array_equal(region, full[y : y + h, x : x + w])
 

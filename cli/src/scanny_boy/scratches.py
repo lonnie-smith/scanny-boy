@@ -651,41 +651,34 @@ def _fit_scratch(val: np.ndarray, candidate: Candidate) -> ScratchFit:
     dev = all_strips - bgline
     row_levels = row_levels[: all_strips.shape[0]]
 
-    table = np.zeros((N_BINS, strip_w, 3), dtype=np.float32)
-    bin_centres = np.zeros((N_BINS, 3), dtype=np.float32)
-    bin_counts = np.zeros(N_BINS, dtype=np.int32)
-
     channel_levels = row_levels[:, 1]
     valid = np.isfinite(channel_levels)
+    bin_masks: list[np.ndarray] = []
     if valid.sum() >= N_BINS:
         edges = np.percentile(channel_levels[valid], np.linspace(0, 100, N_BINS + 1))
         for bi in range(N_BINS):
             mask = (channel_levels >= edges[bi]) & (channel_levels < edges[bi + 1])
             if bi == N_BINS - 1:
                 mask = mask | (channel_levels == edges[bi + 1])
-            count = int(mask.sum())
-            bin_counts[bi] = count
-            if count >= MIN_ROWS_PER_BIN:
-                table[bi] = np.median(dev[mask], axis=0)
-                bin_centres[bi] = row_levels[mask].mean(axis=0)
-            else:
-                bin_centres[bi] = np.full(3, edges[bi], dtype=np.float32)
+            bin_masks.append(mask)
+    else:
+        bin_masks = [valid]
 
+    # Sparse bins merge with their neighbours, then the combined rows are
+    # re-medianed.  The table is already a median profile — never divide
+    # it by the row count (that shrinks a real correction to ~1e-5).
     merged_table: list[np.ndarray] = []
     merged_centres: list[np.ndarray] = []
     i = 0
-    while i < N_BINS:
-        accum = table[i].copy()
-        accum_count = int(bin_counts[i])
-        accum_centre = bin_centres[i].copy()
-        while accum_count < MIN_ROWS_PER_BIN and i + 1 < N_BINS:
+    while i < len(bin_masks):
+        combined = bin_masks[i].copy()
+        while int(combined.sum()) < MIN_ROWS_PER_BIN and i + 1 < len(bin_masks):
             i += 1
-            accum += table[i]
-            accum_count += int(bin_counts[i])
-            accum_centre = (accum_centre + bin_centres[i]) / 2.0
-        if accum_count > 0:
-            merged_table.append(accum / max(accum_count, 1))
-            merged_centres.append(accum_centre)
+            combined |= bin_masks[i]
+        count = int(combined.sum())
+        if count > 0:
+            merged_table.append(np.median(dev[combined], axis=0).astype(np.float32))
+            merged_centres.append(row_levels[combined].mean(axis=0))
         i += 1
 
     if not merged_table:
@@ -711,17 +704,7 @@ def _fit_scratch(val: np.ndarray, candidate: Candidate) -> ScratchFit:
     u0 = STRIP_HALF_WIDTH - HALF_WIDTH_PX
     u1 = STRIP_HALF_WIDTH + HALF_WIDTH_PX + 1
     merged_table_arr = merged_table_arr[:, u0:u1, :]
-    store_w = merged_table_arr.shape[1]
-
-    if merged_table_arr.shape[0] < N_BINS:
-        pad = N_BINS - merged_table_arr.shape[0]
-        merged_table_arr = np.concatenate(
-            [merged_table_arr, np.zeros((pad, store_w, 3), dtype=np.float32)], axis=0
-        )
-        merged_centres_arr = np.concatenate(
-            [merged_centres_arr, np.zeros((pad, 3), dtype=np.float32)], axis=0
-        )
-    elif merged_table_arr.shape[0] > N_BINS:
+    if merged_table_arr.shape[0] > N_BINS:
         merged_table_arr = merged_table_arr[:N_BINS]
         merged_centres_arr = merged_centres_arr[:N_BINS]
 
@@ -788,9 +771,11 @@ def is_live(params: dict | None, shape: tuple[int, int]) -> bool:
     return isinstance(scratch_list, list) and len(scratch_list) > 0
 
 
-def _centre_path(centres: np.ndarray, band_px: int, height: int) -> np.ndarray:
+def _centre_path(
+    centres: np.ndarray, band_px: int, height: int, row_origin: int = 0
+) -> np.ndarray:
     n_bands = len(centres)
-    ys = np.arange(height, dtype=np.float32)
+    ys = np.arange(height, dtype=np.float32) + row_origin
     band_idx = ys / band_px
     b0 = np.clip(np.floor(band_idx).astype(int), 0, n_bands - 1)
     b1 = np.clip(b0 + 1, 0, n_bands - 1)
@@ -848,12 +833,16 @@ def _lookup_correction(
     for ch in range(3):
         lev = level[:, ch]
         centres = bin_levels[:, ch]
-        valid = centres != 0
-        if not np.any(valid):
+        valid = np.where(np.isfinite(centres) & (np.abs(centres) > 1e-12))[0]
+        if valid.size == 0:
             continue
-        idx = np.searchsorted(centres, lev) - 1
-        b0 = np.clip(idx, 0, n_bins - 1)
-        b1 = np.clip(b0 + 1, 0, n_bins - 1)
+        order = valid[np.argsort(centres[valid])]
+        centres_v = centres[order]
+        idx = np.searchsorted(centres_v, lev) - 1
+        i0 = np.clip(idx, 0, len(order) - 1)
+        i1 = np.clip(i0 + 1, 0, len(order) - 1)
+        b0 = order[i0]
+        b1 = order[i1]
         lev0 = centres[b0]
         lev1 = centres[b1]
         same = b0 == b1
@@ -868,7 +857,14 @@ def _lookup_correction(
     return corrections
 
 
-def _apply_one_scratch(val: np.ndarray, image: np.ndarray, scratch: dict) -> None:
+def _apply_one_scratch(
+    val: np.ndarray,
+    image: np.ndarray,
+    scratch: dict,
+    *,
+    row_origin: int = 0,
+    col_origin: int = 0,
+) -> None:
     """Apply one scratch in place on val and image (uint16)."""
     centres = np.asarray(scratch["centres"], dtype=np.float32)
     n_bins = len(scratch["levels"])
@@ -878,7 +874,9 @@ def _apply_one_scratch(val: np.ndarray, image: np.ndarray, scratch: dict) -> Non
     table = _decode_table(scratch["table"], n_bins, half_w)
 
     height, width = val.shape[:2]
-    centre_path = _centre_path(centres, band_px, height)
+    centre_path = (
+        _centre_path(centres, band_px, height, row_origin=row_origin) - col_origin
+    )
     row_levels = _recompute_row_levels(val, centre_path, half_w)
 
     for y in range(height):
@@ -917,9 +915,12 @@ def apply(
     params: dict | None,
     *,
     region: tuple[int, int, int, int] | None = None,
+    origin: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """Apply scratch corrections. With ``region=(x,y,w,h)`` the caller has
-    read the margin; this returns the healed unpadded rect."""
+    read the margin; this returns the healed unpadded rect. ``origin`` is
+    the top-left of ``image_codes`` in TIFF space so stored centres map
+    onto a crop."""
     image_codes = np.asarray(image_codes)
     if image_codes.ndim != 3 or image_codes.shape[2] != 3:
         return image_codes
@@ -930,17 +931,18 @@ def apply(
 
     image = image_codes.copy()
     val = _decode_val(image)
+    ox, oy = (0, 0) if origin is None else (int(origin[0]), int(origin[1]))
 
     for scratch in params.get("scratches", []):
         axis = scratch.get("axis", "vertical")
         if axis == "horizontal":
             val_t = np.swapaxes(val, 0, 1)
             image_t = np.swapaxes(image, 0, 1)
-            _apply_one_scratch(val_t, image_t, scratch)
+            _apply_one_scratch(val_t, image_t, scratch, row_origin=ox, col_origin=oy)
             val = np.swapaxes(val_t, 0, 1)
             image = np.swapaxes(image_t, 0, 1)
         else:
-            _apply_one_scratch(val, image, scratch)
+            _apply_one_scratch(val, image, scratch, row_origin=oy, col_origin=ox)
 
     if region is not None:
         x, y, w, h = region
