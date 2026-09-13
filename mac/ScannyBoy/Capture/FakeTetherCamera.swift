@@ -18,6 +18,9 @@ actor FakeTetherCamera: CameraControlling {
         var failFrameArrival = false
         var bufferSurvivesDownload = false
         var destination: CaptureDestination = .buffer
+        var liveViewStartRefused: UInt16?
+        var liveViewFrames: [LiveViewFrame] = []
+        var liveViewFrameDelay: Duration = .zero
     }
 
     private(set) var connectionState: TetherConnectionState
@@ -29,6 +32,9 @@ actor FakeTetherCamera: CameraControlling {
     private var bufferHandles: Set<UInt32> = []
     private var handlesBeforeLastRelease: Set<UInt32> = []
     private var released = false
+    private(set) var liveViewActive = false
+    private(set) var endLiveViewCallCount = 0
+    private var liveViewFrameIndex = 0
 
     init(configuration: Configuration = Configuration()) {
         config = configuration
@@ -47,6 +53,9 @@ actor FakeTetherCamera: CameraControlling {
     }
 
     func stopBrowsing() async {
+        if liveViewActive {
+            await endLiveView()
+        }
         connectionState = .absent
         exposure = nil
     }
@@ -120,6 +129,33 @@ actor FakeTetherCamera: CameraControlling {
     func discardBufferFrame(handle: UInt32) async throws {
         bufferHandles.remove(handle)
         leftovers.removeAll { $0.handle == handle }
+    }
+
+    func startLiveView() async throws {
+        guard connectionState == .ready else { throw TetherCaptureError.notConnected }
+        if let code = config.liveViewStartRefused {
+            throw TetherCaptureError.liveViewRefused(code)
+        }
+        liveViewActive = true
+        liveViewFrameIndex = 0
+    }
+
+    func endLiveView() async {
+        liveViewActive = false
+        endLiveViewCallCount += 1
+    }
+
+    func liveViewFrame() async throws -> LiveViewFrame {
+        guard liveViewActive else { throw TetherCaptureError.notConnected }
+        if config.liveViewFrameDelay > .zero {
+            try await Task.sleep(for: config.liveViewFrameDelay)
+        }
+        guard !config.liveViewFrames.isEmpty else {
+            throw TetherCaptureError.liveViewFrameInvalid
+        }
+        let frame = config.liveViewFrames[liveViewFrameIndex % config.liveViewFrames.count]
+        liveViewFrameIndex += 1
+        return frame
     }
 }
 

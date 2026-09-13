@@ -54,6 +54,14 @@ enum TetherCaptureError: Error, Sendable {
     case bufferNotCleared(UInt32)
     case releaseFailed(String)
     case leftoverPresent([BufferLeftover])
+    case liveViewRefused(UInt16)
+    case liveViewFrameInvalid
+}
+
+/// One live view frame from `GetLiveViewImage` (`0x9203`).
+struct LiveViewFrame: Sendable, Hashable {
+    let header: PTP.LiveViewHeader
+    let jpegData: Data
 }
 
 /// Result of one cell's release → download cycle.
@@ -80,4 +88,7 @@ protocol CameraControlling: Actor {
     func download(handle: UInt32, to url: URL) async throws -> TetherCapturedFrame
     func confirmBufferCleared(handle: UInt32) async throws
     func discardBufferFrame(handle: UInt32) async throws
+    func startLiveView() async throws
+    func endLiveView() async
+    func liveViewFrame() async throws -> LiveViewFrame
 }

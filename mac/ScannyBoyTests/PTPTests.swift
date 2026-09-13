@@ -50,6 +50,31 @@ struct PTPTests {
         #expect(info?.size == 25_000_000)
     }
 
+    @Test("decodes live view headers at each zoom step")
+    func liveViewHeaderZoomSteps() {
+        let expectedWidths = [6048, 2048, 1024, 512, 256]
+        let names = [
+            "lv-watch-t00.bin", "lv-watch-t05.bin", "lv-watch-t09.bin",
+            "lv-watch-t13.bin", "lv-watch-t17.bin",
+        ]
+        for (name, expectedWidth) in zip(names, expectedWidths) {
+            let payload = LiveViewFixtures.payload(named: name)
+            let decoded = PTP.LiveViewHeader.decode(payload)
+            #expect(decoded != nil)
+            guard let header = decoded?.header else { continue }
+            #expect(header.areaSize.width == expectedWidth)
+            #expect(header.frameSize.width == 640)
+            #expect(header.frameSize.height == 424)
+            #expect(header.sensorSize.width == 6048)
+        }
+    }
+
+    @Test("rejects truncated and mismatched live view payloads")
+    func liveViewHeaderRejections() {
+        #expect(PTP.LiveViewHeader.decode(LiveViewFixtures.payload(named: "lv-watch-truncated.bin")) == nil)
+        #expect(PTP.LiveViewHeader.decode(LiveViewFixtures.payload(named: "lv-watch-bad-length.bin")) == nil)
+    }
+
     private static func sampleDeviceInfoPayload() -> [UInt8] {
         var bytes: [UInt8] = []
         func appendU16(_ value: UInt16) {

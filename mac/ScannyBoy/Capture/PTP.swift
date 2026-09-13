@@ -17,6 +17,9 @@ enum PTP {
     static let nikonInitiateCaptureRecInSdram: UInt16 = 0x90C0
     static let nikonInitiateCaptureRecInMedia: UInt16 = 0x9207
     static let nikonDelImageSDRAM: UInt16 = 0x90C3
+    static let nikonStartLiveView: UInt16 = 0x9201
+    static let nikonEndLiveView: UInt16 = 0x9202
+    static let nikonGetLiveViewImage: UInt16 = 0x9203
 
     static let responseOK: UInt16 = 0x2001
     static let responseDeviceBusy: UInt16 = 0x2019
@@ -239,6 +242,72 @@ enum PTP {
             default: "unknown"
             }
         return String(format: "0x%04x (%@)", code, name)
+    }
+
+    // MARK: - Live view
+
+    /// Decodes the 384-byte header before a live view JPEG (TETHER_PLAN §0.9).
+    struct LiveViewHeader: Sendable, Hashable {
+        let jpegLength: UInt32
+        let frameSize: SizePair
+        let sensorSize: SizePair
+        let areaSize: SizePair
+        let areaCentre: PointPair
+
+        struct SizePair: Sendable, Hashable {
+            let width: UInt16
+            let height: UInt16
+        }
+
+        struct PointPair: Sendable, Hashable {
+            let x: UInt16
+            let y: UInt16
+        }
+
+        /// Parses `payload` and returns the JPEG bytes when the header length
+        /// and `jpegLength` agree with the payload size.
+        static func decode(_ payload: [UInt8]) -> (header: LiveViewHeader, jpeg: Data)? {
+            guard payload.count >= FocusAssistTuning.liveViewHeaderLength else { return nil }
+            let jpegLength = readUInt32BE(payload, offset: 4)
+            let expectedSize = FocusAssistTuning.liveViewHeaderLength + Int(jpegLength)
+            guard expectedSize == payload.count else { return nil }
+            let header = LiveViewHeader(
+                jpegLength: jpegLength,
+                frameSize: readSizePair(payload, offset: 8),
+                sensorSize: readSizePair(payload, offset: 12),
+                areaSize: readSizePair(payload, offset: 16),
+                areaCentre: readPointPair(payload, offset: 20)
+            )
+            let jpegStart = FocusAssistTuning.liveViewHeaderLength
+            let jpegEnd = jpegStart + Int(jpegLength)
+            return (header, Data(payload[jpegStart..<jpegEnd]))
+        }
+
+        private static func readUInt32BE(_ bytes: [UInt8], offset: Int) -> UInt32 {
+            guard offset + 4 <= bytes.count else { return 0 }
+            return (0..<4).reduce(UInt32(0)) {
+                $0 | UInt32(bytes[offset + $1]) << (24 - 8 * $1)
+            }
+        }
+
+        private static func readUInt16BE(_ bytes: [UInt8], offset: Int) -> UInt16 {
+            guard offset + 2 <= bytes.count else { return 0 }
+            return UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1])
+        }
+
+        private static func readSizePair(_ bytes: [UInt8], offset: Int) -> SizePair {
+            SizePair(
+                width: readUInt16BE(bytes, offset: offset),
+                height: readUInt16BE(bytes, offset: offset + 2)
+            )
+        }
+
+        private static func readPointPair(_ bytes: [UInt8], offset: Int) -> PointPair {
+            PointPair(
+                x: readUInt16BE(bytes, offset: offset),
+                y: readUInt16BE(bytes, offset: offset + 2)
+            )
+        }
     }
 
     // MARK: - Reader

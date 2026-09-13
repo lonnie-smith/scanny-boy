@@ -36,6 +36,30 @@ struct CaptureStageView: View {
             capture.handleSpace()
             return .handled
         }
+        .onKeyPress("f") {
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
+            guard capture.isSessionOpen, capture.connectionState == .ready else { return .ignored }
+            if capture.focusAssist.isOpen {
+                Task { await capture.focusAssist.close() }
+            } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused {
+                capture.focusAssist.open()
+            }
+            return .handled
+        }
+        .onKeyPress("r") {
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                  capture.focusAssist.isOpen
+            else { return .ignored }
+            capture.focusAssist.resetPeak()
+            return .handled
+        }
+        .onKeyPress("c") {
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                  capture.focusAssist.isOpen, !capture.focusAssist.isCheckShotBusy
+            else { return .ignored }
+            Task { await capture.focusAssist.takeCheckShot(captureFolder: capture.captureFolder) }
+            return .handled
+        }
         .onKeyPress(.delete) {
             guard captureFocused else { return .ignored }
             capture.handleDelete()
@@ -43,6 +67,10 @@ struct CaptureStageView: View {
         }
         .onKeyPress(.escape) {
             guard captureFocused else { return .ignored }
+            if capture.focusAssist.isOpen {
+                Task { await capture.focusAssist.close() }
+                return .handled
+            }
             capture.handleEscape()
             return .handled
         }
@@ -124,6 +152,9 @@ struct CaptureStageView: View {
     @ViewBuilder
     private var sequenceSection: some View {
         Section("Capture") {
+            if capture.focusAssist.isOpen {
+                FocusAssistPanel(focusAssist: capture.focusAssist)
+            }
             if let across = capture.across, capture.down > 0, !capture.cellStates.isEmpty {
                 CaptureMiniView(
                     across: across,
@@ -137,7 +168,11 @@ struct CaptureStageView: View {
                     .font(.largeTitle.monospacedDigit())
                     .frame(maxWidth: .infinity)
             }
-            Text("Space starts or pauses a negative · Delete retakes · Esc stops")
+            Text(
+                capture.focusAssist.isOpen
+                    ? "F or Esc closes focus assist · R resets peak · C check shot"
+                    : "F focus assist · Space starts or pauses · Delete retakes · Esc stops"
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

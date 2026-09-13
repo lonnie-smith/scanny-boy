@@ -15,6 +15,7 @@ actor TetherCamera: CameraControlling {
     private var captureCompleted = false
     private var ignoredHandles: Set<UInt32> = []
     private var lowestStorageID: UInt32?
+    private var liveViewActive = false
 
     init() {}
 
@@ -25,6 +26,9 @@ actor TetherCamera: CameraControlling {
     }
 
     func stopBrowsing() async {
+        if liveViewActive {
+            await endLiveView()
+        }
         let activeBridge = bridge
         await MainActor.run { activeBridge?.stop() }
         bridge = nil
@@ -173,6 +177,52 @@ actor TetherCamera: CameraControlling {
         leftovers.removeAll { $0.handle == handle }
     }
 
+    func startLiveView() async throws {
+        guard connectionState == .ready else { throw TetherCaptureError.notConnected }
+        let response = try await sendPTP(PTP.nikonStartLiveView)
+        let code = PTP.responseCode(response)
+        guard code == PTP.responseOK else {
+            throw TetherCaptureError.liveViewRefused(code ?? 0)
+        }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            let ready = try await sendPTP(PTP.nikonDeviceReady)
+            if PTP.responseCode(ready) == PTP.responseOK {
+                liveViewActive = true
+                return
+            }
+            try await sleep(TetherTiming.readyPollInterval)
+        }
+        throw TetherCaptureError.liveViewRefused(PTP.responseDeviceBusy)
+    }
+
+    func endLiveView() async {
+        guard liveViewActive else { return }
+        liveViewActive = false
+        _ = try? await sendPTP(PTP.nikonEndLiveView)
+    }
+
+    func liveViewFrame() async throws -> LiveViewFrame {
+        guard liveViewActive else { throw TetherCaptureError.notConnected }
+        for attempt in 0..<FocusAssistTuning.liveViewBusyRetries {
+            let (data, response) = try await sendPTPPair(PTP.nikonGetLiveViewImage)
+            let code = PTP.responseCode(response)
+            if code == PTP.responseDeviceBusy, attempt + 1 < FocusAssistTuning.liveViewBusyRetries {
+                try await sleep(TetherTiming.readyPollInterval)
+                continue
+            }
+            guard code == PTP.responseOK else {
+                throw TetherCaptureError.liveViewRefused(code ?? 0)
+            }
+            let bytes = PTP.payload(data)
+            guard let decoded = PTP.LiveViewHeader.decode(bytes) else {
+                throw TetherCaptureError.liveViewFrameInvalid
+            }
+            return LiveViewFrame(header: decoded.header, jpegData: decoded.jpeg)
+        }
+        throw TetherCaptureError.liveViewRefused(PTP.responseDeviceBusy)
+    }
+
     // MARK: - Bridge callbacks
 
     func bridgeDidUpdate(state: TetherConnectionState) {
@@ -202,6 +252,9 @@ actor TetherCamera: CameraControlling {
     }
 
     func bridgeDeviceLost() {
+        if liveViewActive {
+            liveViewActive = false
+        }
         connectionState = .lost
     }
 
@@ -210,6 +263,11 @@ actor TetherCamera: CameraControlling {
     private func sendPTP(_ opcode: UInt16, params: [UInt32] = []) async throws -> Data {
         let bridge = await mainBridge()
         return try await bridge.sendPTP(opcode, params: params)
+    }
+
+    private func sendPTPPair(_ opcode: UInt16, params: [UInt32] = []) async throws -> (Data, Data) {
+        let bridge = await mainBridge()
+        return try await bridge.sendPTPPair(opcode, params: params)
     }
 
     private func getObject(handle: UInt32) async throws -> Data {

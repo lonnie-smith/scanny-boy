@@ -12,6 +12,30 @@ enum CaptureNaming {
         return formatter
     }()
 
+    /// Creates a unique check-shot file URL (`focus-check-<timestamp>.NEF`).
+    static func focusCheckURL(in directory: URL, at date: Date = Date()) throws -> URL {
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        let stamp = stampFormatter.string(from: date)
+        var suffix = 0
+        while true {
+            let adjustedStamp = suffix == 0 ? stamp : "\(stamp)-\(suffix + 1)"
+            let name = "focus-check-\(adjustedStamp).NEF"
+            let url = directory.appending(path: name, directoryHint: .notDirectory)
+            let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+            if fd >= 0 {
+                close(fd)
+                try? FileManager.default.removeItem(at: url)
+                return url
+            }
+            if errno != EEXIST {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            suffix += 1
+        }
+    }
+
     /// Returns `<yyyyMMdd-HHmmss>_<cc>.NEF` for the negative's first release
     /// time and the shot number within the negative (`01` upward).
     static func filename(firstRelease: Date, shotNumber: Int) -> String {

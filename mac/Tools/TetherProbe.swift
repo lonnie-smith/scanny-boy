@@ -14,6 +14,16 @@
 //                        nikon-media        InitiateCaptureRecInMedia (0x9207), to card
 //                        nikon-sdram        InitiateCaptureRecInSdram (0x90C0), buffer only
 //                        nikon-media-sdram  0x9207 with media 1 (not run on the Z f)
+//   --liveview         Starts Nikon live view (0x9201), reads and logs the zoom
+//                      property's allowed range (GetDevicePropDesc 0xD1A3) and the
+//                      live view status/prohibit-condition properties (0xD1A2,
+//                      0xD1A4), then for each allowed zoom value: sets it
+//                      (SetDevicePropValue), waits ~500ms, and pulls --lv-frames
+//                      frames back-to-back over GetLiveViewImage (0x9203). Writes
+//                      the first frame's JPEG and raw payload per zoom level into
+//                      --out, decodes JPEG dimensions with ImageIO, and logs
+//                      latency/fps and a per-zoom summary table. Always sends
+//                      EndLiveView (0x9202) on exit, including on error.
 //   --shots N, or interactive (Return)
 //                      requestTakePicture(), which does nothing on the Z f. Kept
 //                      because that negative result is part of the record.
@@ -21,8 +31,9 @@
 //
 // Build and run:
 //   swiftc -O -o /tmp/tether-probe mac/Tools/TetherProbe.swift \
-//       -framework Foundation -framework ImageCaptureCore
+//       -framework Foundation -framework ImageCaptureCore -framework ImageIO
 //   /tmp/tether-probe --info
+//   /tmp/tether-probe --liveview --lv-frames 30
 //
 // Before running: the camera on and connected in its PTP mode (in mass storage
 // mode it mounts under /Volumes and cannot be driven), Photos and Image Capture
@@ -30,6 +41,7 @@
 
 import Foundation
 import ImageCaptureCore
+import ImageIO
 
 // MARK: - Logging
 
@@ -74,6 +86,23 @@ enum PTP {
         return data
     }
 
+    /// Frames a data-OUT phase the same way `command` frames the command
+    /// phase: length | type 2 (data) | opcode | transaction | payload.
+    /// Unverified against the camera — SetDevicePropValue is the first
+    /// opcode in this file that needs an outData phase at all.
+    static func dataOut(_ opcode: UInt16, transaction: UInt32 = 0, payload: [UInt8]) -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+        }
+        append(UInt32(12 + payload.count))
+        append(UInt16(2))
+        append(opcode)
+        append(transaction)
+        data.append(contentsOf: payload)
+        return data
+    }
+
     /// The response code sits at offset 6 of a response container.
     static func responseCode(_ data: Data?) -> UInt16? {
         guard let data, data.count >= 8 else { return nil }
@@ -81,12 +110,26 @@ enum PTP {
     }
 
     static let getDevicePropValue: UInt16 = 0x1015
+    static let setDevicePropValue: UInt16 = 0x1016
     static let getNumObjects: UInt16 = 0x1006
     static let getObjectInfo: UInt16 = 0x1008
     static let getObject: UInt16 = 0x1009
     static let getObjectHandles: UInt16 = 0x1007
     static let getStorageIDs: UInt16 = 0x1004
     static let getStorageInfo: UInt16 = 0x1005
+
+    // Nikon live view (libgphoto2 ptp.h naming; unverified against this body
+    // until the mode actually runs).
+    static let nikonStartLiveView: UInt16 = 0x9201
+    static let nikonEndLiveView: UInt16 = 0x9202
+    static let nikonGetLiveViewImage: UInt16 = 0x9203
+    static let nikonChangeAfArea: UInt16 = 0x9205
+    static let responseNotInLiveView: UInt16 = 0xA00B
+    static let responseDeviceBusy: UInt16 = 0x2019
+
+    static let propLiveViewStatus: UInt16 = 0xD1A2
+    static let propLiveViewImageZoomRatio: UInt16 = 0xD1A3
+    static let propLiveViewProhibitCondition: UInt16 = 0xD1A4
 
     /// The classic Nikon buffer handle, used only when ObjectAddedInSdram carries
     /// none. The Z f names its own (0x0B000001 observed) — never assume this one.
@@ -191,7 +234,9 @@ enum PTP {
         (0x90C7, "Nikon CheckEvent (polled events)"),
         (0x90C8, "Nikon DeviceReady"),
         (0x9201, "Nikon StartLiveView"),
+        (0x9202, "Nikon EndLiveView"),
         (0x9203, "Nikon GetLiveViewImage"),
+        (0x9205, "Nikon ChangeAfArea"),
     ]
 
     static let interestingEvents: [(UInt16, String)] = [
@@ -252,7 +297,10 @@ enum PTP {
             case 0x2006: "Parameter not supported"
             case 0x2009: "Invalid object handle"
             case 0x2019: "Device busy"
+            case 0x200A: "Device prop not supported"
             case 0x201E: "Invalid parameter"
+            case 0xA004: "Nikon Invalid status"
+            case 0xA00B: "Nikon Not in live view"
             default: "unknown"
             }
         return String(format: "0x%04x (%@)", code, name)
@@ -314,6 +362,9 @@ struct Options {
     var nameFilter: String?
     var infoOnly = false
     var releaseMethods: [ReleaseMethod] = []
+    var liveView = false
+    var lvFrames = 30
+    var lvPoint: (x: UInt32, y: UInt32)?
 
     static func parse(_ arguments: [String]) -> Options {
         var options = Options()
@@ -358,6 +409,22 @@ struct Options {
                     return method
                 }
                 index += 1
+            case "--liveview":
+                options.liveView = true
+            case "--lv-frames":
+                guard let value, let count = Int(value), count > 0 else {
+                    fail("--lv-frames needs a positive number")
+                }
+                options.lvFrames = count
+                index += 1
+            case "--lv-point":
+                guard let value else { fail("--lv-point needs X,Y") }
+                let parts = value.split(separator: ",")
+                guard parts.count == 2, let x = UInt32(parts[0]), let y = UInt32(parts[1]) else {
+                    fail("--lv-point needs X,Y as two integers, e.g. --lv-point 3024,2016")
+                }
+                options.lvPoint = (x, y)
+                index += 1
             case "--help", "-h":
                 usage()
                 exit(0)
@@ -373,6 +440,7 @@ struct Options {
         print("""
         tether-probe [--out DIR] [--shots N] [--name SUBSTRING]
                      [--discovery-timeout SECS] [--arrival-timeout SECS]
+                     [--liveview [--lv-frames N] [--lv-point X,Y]]
 
           --out                Where downloaded files land.
                                Default: $TMPDIR/tether-shots
@@ -388,6 +456,15 @@ struct Options {
                                nikon-media, nikon-sdram,
                                nikon-media-sdram), proving each shot by the card's object
                                count and DeviceReady rather than by eye, then quit.
+          --liveview           Start Nikon live view, sweep every zoom ratio the
+                               camera allows, and measure frame size, header
+                               length, and fps at each — for judging a manual-
+                               focus loupe. Always ends live view on exit.
+          --lv-frames N        Frames to pull per zoom level in --liveview.
+                               Default: 30
+          --lv-point X,Y       Move the live view zoom point (ChangeAfArea,
+                               sensor coordinates) before sweeping zoom.
+                               Default: leave it centred.
 
         Interactive keys (press then Return):
           <Return>  fire via requestTakePicture()
@@ -421,6 +498,9 @@ final class Probe: NSObject {
     private var arrivalTimer: Timer?
     private var discoveryTimer: Timer?
     private var catalogComplete = false
+    /// Recording media (0xD10B) as found, when --liveview changed it to retry
+    /// StartLiveView; `endLiveView` puts it back.
+    private var liveViewRestoreRecordingMedia: UInt8?
     private var catalogItemsSeen = 0
     private var advertisesTakePicture = false
     private var advertisesPTP = false
@@ -619,6 +699,11 @@ final class Probe: NSObject {
             return
         }
 
+        if options.liveView {
+            Task { await self.runLiveView() }
+            return
+        }
+
         if advertisesPTP {
             sendPTP(PTP.getDeviceInfo, label: "GetDeviceInfo")
         }
@@ -711,10 +796,12 @@ final class Probe: NSObject {
 
     // MARK: Info mode
 
-    private func ptp(_ opcode: UInt16, params: [UInt32] = []) async -> (Data, Data, Error?) {
+    private func ptp(
+        _ opcode: UInt16, params: [UInt32] = [], outData: Data? = nil
+    ) async -> (Data, Data, Error?) {
         guard let camera else { return (Data(), Data(), nil) }
         return await withCheckedContinuation { continuation in
-            camera.requestSendPTPCommand(PTP.command(opcode, params: params), outData: nil) {
+            camera.requestSendPTPCommand(PTP.command(opcode, params: params), outData: outData) {
                 data, response, error in
                 DispatchQueue.main.async { self.ptpRepliesReceived += 1 }
                 continuation.resume(returning: (data, response, error))
@@ -868,6 +955,526 @@ final class Probe: NSObject {
             }
         }
 
+        DispatchQueue.main.async { self.finish(code: 0) }
+    }
+
+    // MARK: Live view mode
+
+    private struct ZoomResult {
+        let zoom: UInt32
+        let ok: Bool
+        let width: Int
+        let height: Int
+        let jpegBytes: Int
+        let headerLength: Int
+        let minMs: Double
+        let medianMs: Double
+        let maxMs: Double
+        let fps: Double
+        let note: String
+    }
+
+    /// The Z f's full sensor, for judging how close max zoom gets to 1:1.
+    private static let sensorWidth = 6048
+    private static let sensorHeight = 4032
+    /// How long the manual-zoom watch pulls frames on bodies without 0xD1A3.
+    private static let liveViewWatchSeconds: TimeInterval = 40
+
+    /// Lists the live view operations and 0xD1A0–0xD1FF properties the body
+    /// advertises, with each property's current value.
+    private func logLiveViewSupport() async {
+        let (data, response, error) = await ptp(PTP.getDeviceInfo)
+        guard error == nil, PTP.responseCode(response) == PTP.responseOK else {
+            note("GetDeviceInfo: " + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+            return
+        }
+        var reader = PTP.Reader(bytes: PTP.payload(data))
+        guard reader.u16() != nil, reader.u32() != nil, reader.u16() != nil, reader.string() != nil,
+              reader.u16() != nil, let operations = reader.u16Array(), reader.u16Array() != nil,
+              let properties = reader.u16Array()
+        else {
+            note("could not decode DeviceInfo")
+            return
+        }
+        func hex(_ codes: [UInt16]) -> String {
+            codes.isEmpty ? "none" : codes.map { String(format: "0x%04x", $0) }.joined(separator: " ")
+        }
+        let liveViewOperations = operations
+            .filter { (0x9200...0x92FF).contains($0) || (0x9400...0x94FF).contains($0) }.sorted()
+        log("advertised operations 0x92xx/0x94xx: " + hex(liveViewOperations))
+        let liveViewProperties = properties.filter { (0xD1A0...0xD1FF).contains($0) }.sorted()
+        log("advertised properties 0xD1A0–0xD1FF: " + hex(liveViewProperties))
+        for code in liveViewProperties { await logPropValue(code, "advertised") }
+    }
+
+    /// Tries Nikon GetLiveViewImageEx (0x9428), which the Z f advertises and
+    /// libgphoto2 uses on newer bodies, to see whether it returns bigger frames.
+    private func probeLiveViewImageEx() async {
+        log("PTP → GetLiveViewImageEx (0x9428), 3 tries:")
+        for attempt in 1...3 {
+            let started = Date()
+            let (data, response, error) = await ptp(0x9428)
+            let elapsedMs = Date().timeIntervalSince(started) * 1000
+            let code = error == nil ? PTP.responseCode(response) : nil
+            guard code == PTP.responseOK else {
+                note("try \(attempt): " + (error?.localizedDescription ?? PTP.describe(code)))
+                continue
+            }
+            let bytes = PTP.payload(data)
+            let headerHex = bytes.prefix(min(64, findJPEGStart(bytes) ?? 64))
+                .map { String(format: "%02x", $0) }.joined(separator: " ")
+            guard let soi = findJPEGStart(bytes), let image = decodeJPEG(Data(bytes[soi...])) else {
+                note("try \(attempt): \(bytes.count) bytes, no decodable JPEG; first bytes: \(headerHex)")
+                continue
+            }
+            note(String(format: "try %d: %.1fms, %d bytes, header %d bytes, JPEG %dx%d; header starts: %@",
+                        attempt, elapsedMs, bytes.count, soi, image.width, image.height, headerHex))
+            if attempt == 1 {
+                try? Data(bytes[soi...]).write(to: options.outputDirectory.appendingPathComponent("lv-ex.jpg"))
+                try? Data(bytes).write(to: options.outputDirectory.appendingPathComponent("lv-ex.bin"))
+            }
+        }
+    }
+
+    private func decodeJPEG(_ jpeg: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    /// Mean squared Laplacian over the centre half of the frame in 8-bit grey.
+    /// Grain drives it, which is what focus is judged on. Only comparable
+    /// between frames at the same zoom.
+    private func sharpness(_ image: CGImage) -> Double {
+        let width = image.width, height = image.height
+        guard width > 4, height > 4 else { return 0 }
+        var grey = [UInt8](repeating: 0, count: width * height)
+        let drawn = grey.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return 0 }
+        var sum = 0.0
+        var count = 0
+        for y in (height / 4)..<(height * 3 / 4) {
+            for x in (width / 4)..<(width * 3 / 4) {
+                let i = y * width + x
+                let laplacian = 4 * Int(grey[i]) - Int(grey[i - 1]) - Int(grey[i + 1])
+                    - Int(grey[i - width]) - Int(grey[i + width])
+                sum += Double(laplacian * laplacian)
+                count += 1
+            }
+        }
+        return count > 0 ? sum / Double(count) : 0
+    }
+
+    /// The focus test. Pulls frames for `liveViewWatchSeconds` while the user
+    /// zooms and focuses on the body; counts frames whose JPEG differs from the
+    /// last (the real refresh rate), reads the zoom from the header (bytes
+    /// 16–17: sensor pixels across), and scores sharpness with a running peak
+    /// that resets whenever the zoom changes.
+    private func watchManualZoom() async {
+        await logLiveViewSupport()
+        await probeLiveViewImageEx()
+        let seconds = Probe.liveViewWatchSeconds
+        log("focus test starts in 5s and runs \(Int(seconds))s. Before it starts:")
+        note("magnify 3 steps on the body (512 sensor px across) and throw focus clearly off.")
+        note("Then turn slowly through sharp focus to clearly off the other side, and back to sharp.")
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+
+        let start = Date()
+        let deadline = start.addingTimeInterval(seconds)
+        var latenciesMs: [Double] = []
+        var failures = 0
+        var distinct = 0
+        var lastJPEG = Data()
+        var areaWidth = 0
+        var peak = 0.0
+        var peakAt = 0.0
+        var nextReport = 0.0
+        var pending: [Double] = []
+        while Date() < deadline {
+            let started = Date()
+            let (data, response, error) = await ptp(PTP.nikonGetLiveViewImage)
+            let code = error == nil ? PTP.responseCode(response) : nil
+            guard code == PTP.responseOK else {
+                failures += 1
+                if failures <= 5 {
+                    note("GetLiveViewImage: " + (error?.localizedDescription ?? PTP.describe(code)))
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continue
+            }
+            latenciesMs.append(Date().timeIntervalSince(started) * 1000)
+
+            let bytes = PTP.payload(data)
+            guard let soi = findJPEGStart(bytes), soi >= 20 else { continue }
+            let jpeg = Data(bytes[soi...])
+            guard jpeg != lastJPEG else { continue }
+            lastJPEG = jpeg
+            distinct += 1
+
+            let elapsed = Date().timeIntervalSince(start)
+            let width = Int(bytes[16]) << 8 | Int(bytes[17])
+            if width != areaWidth {
+                areaWidth = width
+                peak = 0
+                log(String(format: "t%.1fs zoom shows %d sensor px across; peak reset", elapsed, width))
+            }
+            guard let image = decodeJPEG(jpeg) else { continue }
+            let score = sharpness(image)
+            pending.append(score)
+            if score > peak {
+                peak = score
+                peakAt = elapsed
+                try? jpeg.write(to: options.outputDirectory.appendingPathComponent("lv-peak-\(width).jpg"))
+            }
+            if elapsed >= nextReport {
+                let mean = pending.reduce(0, +) / Double(pending.count)
+                let fraction = peak > 0 ? mean / peak : 0
+                note(String(format: "t%5.1fs  sharp %8.1f  peak %8.1f @%5.1fs  %3.0f%%  ",
+                            elapsed, mean, peak, peakAt, fraction * 100)
+                    + String(repeating: "█", count: Int(fraction * 30)))
+                pending.removeAll()
+                nextReport = elapsed + 0.5
+            }
+        }
+
+        let sorted = latenciesMs.sorted()
+        let medianMs = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+        log(String(format: "focus test done: %d fetches, %d distinct frames in %.0fs (real refresh ~%.1f fps), "
+                       + "median fetch %.1fms, %d failed fetches",
+                   latenciesMs.count, distinct, seconds, Double(distinct) / seconds, medianMs, failures))
+        note("sharpest frame per zoom saved as lv-peak-<sensor px across>.jpg in \(options.outputDirectory.path)")
+    }
+
+    private func findJPEGStart(_ bytes: [UInt8]) -> Int? {
+        guard bytes.count >= 3 else { return nil }
+        for index in 0...(bytes.count - 3)
+        where bytes[index] == 0xFF && bytes[index + 1] == 0xD8 && bytes[index + 2] == 0xFF {
+            return index
+        }
+        return nil
+    }
+
+    private func logPropValue(_ code: UInt16, _ name: String) async {
+        let (value, response, error) = await ptp(PTP.getDevicePropValue, params: [UInt32(code)])
+        if let error {
+            note(String(format: "0x%04x %@: error %@", code, name, error.localizedDescription))
+            return
+        }
+        guard PTP.responseCode(response) == PTP.responseOK else {
+            note(String(format: "0x%04x %@: %@", code, name, PTP.describe(PTP.responseCode(response))))
+            return
+        }
+        let bytes = PTP.payload(value)
+        let raw = bytes.prefix(4).enumerated()
+            .reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) }
+        note(String(format: "0x%04x %@: raw 0x%08x (%u), bytes [%@]", code, name, raw, raw,
+                    bytes.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")))
+    }
+
+    /// Mirrors the 0xD10B decode in `runInfo`, generalised to hand back the
+    /// allowed values instead of just logging them — the zoom sweep needs the
+    /// list, not just a description of it.
+    private func readPropDesc(_ code: UInt16) async -> (allowed: [UInt32], description: String) {
+        let (desc, response, error) = await ptp(PTP.getDevicePropDesc, params: [UInt32(code)])
+        guard error == nil, PTP.responseCode(response) == PTP.responseOK else {
+            return ([], "GetDevicePropDesc 0x\(String(format: "%04x", code)): "
+                + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+        }
+        var reader = PTP.Reader(bytes: PTP.payload(desc))
+        let widths: [UInt16: Int] = [1: 1, 2: 1, 3: 2, 4: 2, 5: 4, 6: 4]
+        guard reader.u16() != nil, let type = reader.u16(), let width = widths[type],
+              let getSet = reader.u8()
+        else {
+            return ([], "could not decode the property description")
+        }
+        func value() -> UInt32? {
+            switch width {
+            case 1: reader.u8().map(UInt32.init)
+            case 2: reader.u16().map(UInt32.init)
+            default: reader.u32()
+            }
+        }
+        let factory = value(), current = value()
+        var allowed: [UInt32] = []
+        var form = "no form"
+        switch reader.u8() {
+        case 1:
+            if let low = value(), let high = value(), let step = value(), step > 0 {
+                var next = low
+                while next <= high {
+                    allowed.append(next)
+                    next += step
+                }
+                form = "range \(low)...\(high) step \(step)"
+            }
+        case 2:
+            if let count = reader.u16() {
+                for _ in 0..<count { if let entry = value() { allowed.append(entry) } }
+                form = "allowed values \(allowed)"
+            }
+        default:
+            break
+        }
+        let description = "\(getSet == 1 ? "settable" : "read-only"), factory "
+            + "\(factory.map(String.init) ?? "?"), current \(current.map(String.init) ?? "?"), \(form)"
+        return (allowed, description)
+    }
+
+    private func endLiveView() async {
+        log("PTP → EndLiveView (0x9202)")
+        let (_, response, error) = await ptp(PTP.nikonEndLiveView)
+        log("PTP ← EndLiveView: "
+            + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+        if let original = liveViewRestoreRecordingMedia {
+            let (_, setResponse, setError) = await ptp(
+                PTP.setDevicePropValue, params: [0xD10B],
+                outData: PTP.dataOut(PTP.setDevicePropValue, payload: [original]))
+            log("PTP ← SetDevicePropValue(RecordingMedia=\(original)) restore: "
+                + (setError?.localizedDescription ?? PTP.describe(PTP.responseCode(setResponse))))
+            liveViewRestoreRecordingMedia = nil
+        }
+    }
+
+    private func startLiveView() async -> (code: UInt16?, error: Error?) {
+        log("PTP → StartLiveView (0x9201)")
+        let (_, response, error) = await ptp(PTP.nikonStartLiveView)
+        let code = error == nil ? PTP.responseCode(response) : nil
+        log("PTP ← StartLiveView: " + (error?.localizedDescription ?? PTP.describe(code)))
+        return (code, error)
+    }
+
+    /// LiveViewProhibitCondition (0xD1A4) is a bitfield; the bit meanings are
+    /// Nikon's and not decoded here, so list which bits are set.
+    private func logProhibitBits() async {
+        let (value, response, error) = await ptp(
+            PTP.getDevicePropValue, params: [UInt32(PTP.propLiveViewProhibitCondition)])
+        guard error == nil, PTP.responseCode(response) == PTP.responseOK else {
+            note("LiveViewProhibitCondition: "
+                + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+            return
+        }
+        let raw = PTP.payload(value).prefix(4).enumerated()
+            .reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) }
+        let bits = (0..<32).filter { raw & (1 << $0) != 0 }
+        note(String(format: "LiveViewProhibitCondition: 0x%08x, bits set: ", raw)
+            + (bits.isEmpty ? "none" : bits.map(String.init).joined(separator: ", ")))
+    }
+
+    private func runLiveView() async {
+        log("before StartLiveView (why the camera might refuse):")
+        await logPropValue(PTP.propLiveViewStatus, "LiveViewStatus")
+        await logProhibitBits()
+        await logPropValue(0xD10B, "RecordingMedia")
+
+        var (startCode, startError) = await startLiveView()
+        if startError == nil, startCode == 0xA004 {
+            log("StartLiveView refused with Invalid status; prohibit condition now:")
+            await logProhibitBits()
+            // libgphoto2 points Nikon recording media at the buffer before live
+            // view. Try that once, and put the card choice back on exit.
+            let (media, mediaResponse, _) = await ptp(PTP.getDevicePropValue, params: [0xD10B])
+            if PTP.responseCode(mediaResponse) == PTP.responseOK, let original = PTP.payload(media).first {
+                log("retrying with RecordingMedia = 1 (buffer); was \(original)")
+                let (_, setResponse, setError) = await ptp(
+                    PTP.setDevicePropValue, params: [0xD10B],
+                    outData: PTP.dataOut(PTP.setDevicePropValue, payload: [1]))
+                let setCode = setError == nil ? PTP.responseCode(setResponse) : nil
+                log("PTP ← SetDevicePropValue(RecordingMedia=1): "
+                    + (setError?.localizedDescription ?? PTP.describe(setCode)))
+                if setCode == PTP.responseOK {
+                    if original != 1 { liveViewRestoreRecordingMedia = original }
+                    (startCode, startError) = await startLiveView()
+                }
+            }
+        }
+        guard startError == nil, startCode == PTP.responseOK else {
+            log("FAIL  StartLiveView did not return OK — aborting the sweep")
+            await endLiveView()
+            DispatchQueue.main.async { self.finish(code: 1) }
+            return
+        }
+
+        log("polling DeviceReady until the post-StartLiveView busy period clears:")
+        var lastReady: UInt16?
+        let startupDeadline = Date().addingTimeInterval(10)
+        while Date() < startupDeadline {
+            let (_, ready, readyError) = await ptp(PTP.nikonDeviceReady)
+            let code = readyError == nil ? PTP.responseCode(ready) : nil
+            if code != lastReady || readyError != nil {
+                note("DeviceReady: " + (readyError?.localizedDescription ?? PTP.describe(code)))
+                lastReady = code
+            }
+            if code == PTP.responseOK { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        log("live view status properties (logged raw; a read failure does not abort):")
+        await logPropValue(PTP.propLiveViewStatus, "LiveViewStatus")
+        await logPropValue(PTP.propLiveViewProhibitCondition, "LiveViewProhibitCondition")
+
+        log("zoom property description (GetDevicePropDesc 0xD1A3):")
+        let (allowedFromCamera, zoomDescription) = await readPropDesc(PTP.propLiveViewImageZoomRatio)
+        note(zoomDescription)
+        var zoomLevels = allowedFromCamera.filter { $0 <= 255 }
+        if zoomLevels.isEmpty {
+            log("WARN  no usable zoom values from GetDevicePropDesc — falling back to 0...5")
+            zoomLevels = Array(0...5)
+        }
+
+        if let point = options.lvPoint {
+            log("PTP → ChangeAfArea(\(point.x), \(point.y))")
+            let (_, response, error) = await ptp(PTP.nikonChangeAfArea, params: [point.x, point.y])
+            log("PTP ← ChangeAfArea: "
+                + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+        }
+
+        // The Z f answers 0x200A for 0xD1A3, so zoom can't be driven over PTP.
+        // Watch instead while the user zooms on the body.
+        let (_, zoomRead, _) = await ptp(
+            PTP.getDevicePropValue, params: [UInt32(PTP.propLiveViewImageZoomRatio)])
+        if PTP.responseCode(zoomRead) == 0x200A {
+            await watchManualZoom()
+            await endLiveView()
+            DispatchQueue.main.async { self.finish(code: 0) }
+            return
+        }
+
+        var results: [ZoomResult] = []
+        for zoom in zoomLevels {
+            log("— zoom \(zoom) —")
+            let outData = PTP.dataOut(PTP.setDevicePropValue, payload: [UInt8(zoom)])
+            let (_, setResponse, setError) = await ptp(
+                PTP.setDevicePropValue, params: [UInt32(PTP.propLiveViewImageZoomRatio)],
+                outData: outData)
+            let setCode = setError == nil ? PTP.responseCode(setResponse) : nil
+            log("PTP ← SetDevicePropValue(zoom=\(zoom)): "
+                + (setError?.localizedDescription ?? PTP.describe(setCode)))
+            guard setError == nil, setCode == PTP.responseOK else {
+                results.append(ZoomResult(
+                    zoom: zoom, ok: false, width: 0, height: 0, jpegBytes: 0, headerLength: 0,
+                    minMs: 0, medianMs: 0, maxMs: 0, fps: 0, note: "SetDevicePropValue failed"))
+                continue
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            var latenciesMs: [Double] = []
+            var firstJPEG: Data?
+            var firstRaw: Data?
+            var headerLength = 0
+            var width = 0, height = 0
+            var frameNote = ""
+
+            for frameIndex in 0..<options.lvFrames {
+                var frameData: Data?
+                var attempt = 0
+                while attempt < 5 {
+                    attempt += 1
+                    let started = Date()
+                    let (data, response, error) = await ptp(PTP.nikonGetLiveViewImage)
+                    let elapsedMs = Date().timeIntervalSince(started) * 1000
+                    let code = error == nil ? PTP.responseCode(response) : nil
+                    if let error {
+                        frameNote = "frame \(frameIndex) failed: \(error.localizedDescription)"
+                        break
+                    }
+                    if code == PTP.responseOK {
+                        latenciesMs.append(elapsedMs)
+                        frameData = data
+                        break
+                    }
+                    if code == PTP.responseDeviceBusy || code == PTP.responseNotInLiveView {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        continue
+                    }
+                    frameNote = "frame \(frameIndex): \(PTP.describe(code))"
+                    break
+                }
+                guard let frameData, frameIndex == 0 else { continue }
+
+                let bytes = PTP.payload(frameData)
+                firstRaw = Data(bytes)
+                guard let soi = findJPEGStart(bytes) else {
+                    frameNote = "no JPEG SOI (FF D8 FF) found in \(bytes.count)-byte payload"
+                    continue
+                }
+                headerLength = soi
+                let jpegData = Data(bytes[soi...])
+                firstJPEG = jpegData
+                let headerHexLength = min(64, soi)
+                note("header length \(headerLength) bytes, first \(headerHexLength) hex: "
+                    + bytes.prefix(headerHexLength).map { String(format: "%02x", $0) }
+                        .joined(separator: " "))
+                if let source = CGImageSourceCreateWithData(jpegData as CFData, nil),
+                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                       as? [CFString: Any],
+                   let decodedWidth = properties[kCGImagePropertyPixelWidth] as? Int,
+                   let decodedHeight = properties[kCGImagePropertyPixelHeight] as? Int {
+                    width = decodedWidth
+                    height = decodedHeight
+                } else {
+                    frameNote = "could not decode JPEG dimensions via ImageIO"
+                }
+            }
+
+            if let firstJPEG {
+                let jpegPath = options.outputDirectory
+                    .appendingPathComponent("lv-zoom\(zoom)-frame0.jpg")
+                do {
+                    try firstJPEG.write(to: jpegPath)
+                    note("wrote \(jpegPath.lastPathComponent) (\(firstJPEG.count) bytes)")
+                } catch {
+                    note("writing \(jpegPath.path) failed: \(error.localizedDescription)")
+                }
+            }
+            if let firstRaw {
+                let rawPath = options.outputDirectory
+                    .appendingPathComponent("lv-zoom\(zoom)-frame0.bin")
+                try? firstRaw.write(to: rawPath)
+            }
+
+            let sorted = latenciesMs.sorted()
+            let minMs = sorted.first ?? 0
+            let maxMs = sorted.last ?? 0
+            let medianMs = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+            let totalSeconds = latenciesMs.reduce(0, +) / 1000
+            let fps = totalSeconds > 0 ? Double(latenciesMs.count) / totalSeconds : 0
+            let widthRatio = width > 0 ? Double(width) / Double(Probe.sensorWidth) : 0
+
+            log(String(
+                format: "%d/%d frames; %dx%d, %@ JPEG; latency min/median/max %.1f/%.1f/%.1fms; "
+                    + "~%.1f fps; frame width vs full sensor width %d: %.3f (the header's "
+                    + "displayed-area fraction is unknown — decode the header hex to confirm)",
+                latenciesMs.count, options.lvFrames, width, height,
+                byteCount(off_t(firstJPEG?.count ?? 0)), minMs, medianMs, maxMs, fps,
+                Probe.sensorWidth, widthRatio))
+            if !frameNote.isEmpty { note(frameNote) }
+
+            results.append(ZoomResult(
+                zoom: zoom, ok: !latenciesMs.isEmpty, width: width, height: height,
+                jpegBytes: firstJPEG?.count ?? 0, headerLength: headerLength, minMs: minMs,
+                medianMs: medianMs, maxMs: maxMs, fps: fps, note: frameNote))
+        }
+
+        log(String(format: "summary (sensor is %d×%d):",
+                   Probe.sensorWidth, Probe.sensorHeight))
+        note("  zoom   size          jpegKB  hdrLen  minMs  medMs  maxMs   fps")
+        for result in results {
+            let size = result.ok ? "\(result.width)x\(result.height)" : "-"
+            let line = String(
+                format: "  %4d   %-12@ %7.1f %7d %6.1f %6.1f %6.1f %6.1f",
+                result.zoom, size, Double(result.jpegBytes) / 1000, result.headerLength,
+                result.minMs, result.medianMs, result.maxMs, result.fps)
+            note(line + (result.ok ? "" : "  FAILED: \(result.note)"))
+        }
+
+        await endLiveView()
         DispatchQueue.main.async { self.finish(code: 0) }
     }
 
@@ -1308,7 +1915,7 @@ final class Probe: NSObject {
     // MARK: Driving
 
     private func prompt() {
-        guard !shuttingDown, !options.infoOnly else { return }
+        guard !shuttingDown, !options.infoOnly, !options.liveView else { return }
 
         if !options.releaseMethods.isEmpty {
             guard !releaseSequenceStarted else { return }
@@ -1524,7 +2131,7 @@ interrupt.resume()
 signal(SIGINT, SIG_IGN)
 
 probe.start()
-if options.autoShots == 0, !options.infoOnly, options.releaseMethods.isEmpty {
+if options.autoShots == 0, !options.infoOnly, !options.liveView, options.releaseMethods.isEmpty {
     probe.readStandardInput()
 }
 RunLoop.main.run()

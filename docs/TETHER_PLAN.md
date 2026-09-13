@@ -184,6 +184,23 @@ that one refresh to the end of the session.
   queue)**, because the queue is only safe with both.
 - **T-1 (camera layer) lands before T-4 (the Capture tab).**
 
+### 0.9 Live view, measured
+
+Runs of `TetherProbe.swift --liveview` against the same Z f on 2026-09-13,
+for `docs/FOCUS_ASSIST_PLAN.md`. Nothing above depends on them.
+
+| Question | Measured answer |
+|---|---|
+| Does `StartLiveView` (`0x9201`) work? | Yes: OK in under 0.1 s, `DeviceReady` OK at once, `LiveViewStatus` (`0xD1A2`) 0 → 1, `LiveViewProhibitCondition` (`0xD1A4`) 0. One attempt answered `0xA004` (Invalid status) after waiting 25 s behind the first connection's card catalog; it did not recur in three later runs. |
+| Can the zoom be set? | **No.** `LiveViewImageZoomRatio` (`0xD1A3`) answers `0x200A` (property not supported) to get, set and describe. No property in `0xD1A0`–`0xD1FF` is advertised in DeviceInfo, though `0xD1A2` and `0xD1A4` read fine. |
+| Do the body's controls work while PTP runs live view? | Yes: the magnify button stepped the zoom during a run, and the frames followed. |
+| What does `GetLiveViewImage` (`0x9203`) return? | A 384-byte header, then a **640×424 JPEG at every zoom step**, 49–72 KB. Median fetch 4.8 ms; no failed fetch in about 13,700. |
+| What is in the header? | Big-endian: bytes 4–7 JPEG length, 8–11 frame size (640, 424), 12–15 sensor size (6048, 4032), 16–19 the **sensor area shown**, 20–23 its centre (3024, 2016 unmoved). Bytes 24–31 are non-zero only unmagnified; not decoded. |
+| What does each magnify step show? | 6048, 2048, 1024, 512 and 256 sensor px across: 0.11, 0.31, 0.63, **1.25** and 2.5 frame px per sensor px. Grain is visible at 512 and 256; 256 only enlarges it, and its JPEG shrinks to 49 KB. |
+| How fast does the camera refresh? | **30 fps**: 1,200 distinct frames in 40 s out of 6,631 fetches; the rest were repeats. |
+| Does `GetLiveViewImageEx` (`0x9428`) give more? | No: the same 640×424 JPEG behind a 1024-byte header, with the same fields at other offsets (12–15 JPEG length, 16–19 sensor, 20–23 area, 24–27 centre, 28–31 frame size). |
+| Does a sharpness score find focus? | Yes, at the 512 px step: mean squared Laplacian over the centre half of the grey frame read about 2.4 clearly out of focus, and peaked at 15.5 and 16.1 on two passes through focus. It stays above half its peak for about 1 s of normal turning. The operator's final by-eye setting scored 84% of the peak. |
+
 ---
 
 ## 1. A session, end to end
@@ -1003,3 +1020,6 @@ chunk reviewable; it must land before the feature is called done.
 - **`clamp_bounds` depends on order**: a roll's first negative clamps against
   nothing. That is true of every roll today and is not made worse.
 - **A pending refresh after a crash** is covered by `refresh_pending` (§4.4).
+- **Focusing is left to the operator's eye.** Live view in the app, with a
+  sharpness meter and a check shot for the corners, is planned separately in
+  `docs/FOCUS_ASSIST_PLAN.md` on the measurements in §0.9.

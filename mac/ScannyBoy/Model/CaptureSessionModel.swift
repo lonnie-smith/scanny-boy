@@ -95,6 +95,7 @@ final class CaptureSessionModel {
     private(set) var pausedAfterCell = false
     private(set) var cellWarnings: [Int: [String]] = [:]
     private var baselineFrameURLs: [URL] = []
+    private(set) var focusAssist: FocusAssistModel
 
     var sessionOpen: Bool {
         get { isSessionOpen }
@@ -122,6 +123,7 @@ final class CaptureSessionModel {
         captureBaseFolder = defaults.url(forKey: Self.captureBaseKey)
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Pictures/Scanny Boy Captures", directoryHint: .isDirectory)
+        focusAssist = FocusAssistModel(camera: camera, runner: runner)
         Task { await refreshConnection() }
     }
 
@@ -150,6 +152,7 @@ final class CaptureSessionModel {
         await camera.startBrowsing()
         connectionState = await camera.connectionState
         exposure = await camera.exposure
+        focusAssist.updateConnectionState(connectionState)
     }
 
     func openSession() {
@@ -159,6 +162,7 @@ final class CaptureSessionModel {
     }
 
     func closeSession() {
+        Task { await focusAssist.close() }
         sequenceTask?.cancel()
         sequenceTask = nil
         isSessionOpen = false
@@ -168,6 +172,7 @@ final class CaptureSessionModel {
     }
 
     func handleSpace() {
+        if focusAssist.isOpen { return }
         switch sequencePhase {
         case .idle where runEnabled:
             startNegative()
@@ -220,8 +225,12 @@ final class CaptureSessionModel {
             cellStates[index] = index == 0 ? .next : .empty
         }
         sequencePhase = .running
+        focusAssist.updateSequencePhase(sequencePhase)
         currentNegativeIndex = completedNegatives.count
-        sequenceTask = Task { await runSequence() }
+        sequenceTask = Task {
+            await focusAssist.close()
+            await runSequence()
+        }
     }
 
     private func runSequence() async {
@@ -233,6 +242,7 @@ final class CaptureSessionModel {
             handlesBefore = Set(try await camera.scanBuffer())
         } catch TetherCaptureError.leftoverPresent {
             sequencePhase = .paused
+            focusAssist.updateSequencePhase(sequencePhase)
             return
         } catch {
             markNextFailed(error.localizedDescription)
@@ -269,6 +279,7 @@ final class CaptureSessionModel {
             } catch {
                 cellStates[cellIndex] = .failed(error.localizedDescription)
                 sequencePhase = .paused
+                focusAssist.updateSequencePhase(sequencePhase)
                 return
             }
         }
@@ -289,6 +300,7 @@ final class CaptureSessionModel {
             baselineFrameURLs = frames
         }
         sequencePhase = .idle
+        focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
         onNegativeCompleted?(completedNegatives.last!)
     }
@@ -324,11 +336,13 @@ final class CaptureSessionModel {
     private func pauseAfterCurrentShot() {
         pausedAfterCell = true
         sequencePhase = .paused
+        focusAssist.updateSequencePhase(sequencePhase)
     }
 
     private func resumeSequence() {
         guard sequencePhase == .paused else { return }
         sequencePhase = .running
+        focusAssist.updateSequencePhase(sequencePhase)
         pausedAfterCell = false
         sequenceTask = Task { await runSequence() }
     }
@@ -336,6 +350,7 @@ final class CaptureSessionModel {
     private func stopNegative() {
         sequenceTask?.cancel()
         sequencePhase = .idle
+        focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
     }
 
@@ -401,6 +416,7 @@ final class CaptureSessionModel {
             cellStates[index] = .failed(message)
         }
         sequencePhase = .paused
+        focusAssist.updateSequencePhase(sequencePhase)
     }
 
     func applyGridDimensions(from profile: GridProfile) {

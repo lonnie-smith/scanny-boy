@@ -282,6 +282,13 @@ extension CLIEvent {
 
     // `frame_analyzed`
     public var analyzedFrame: String? { fields["frame"]?.stringValue }
+    public var focusRegions: [Double?]? {
+        guard let elements = fields["focus_regions"]?.arrayValue else { return nil }
+        return elements.map { element in
+            if case .null = element { return nil }
+            return element.doubleValue
+        }
+    }
 
     // `capture_checked`
     public var captureCheckPassed: Bool? { fields["passed"]?.boolValue }
