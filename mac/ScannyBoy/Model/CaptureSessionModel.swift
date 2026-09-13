@@ -54,6 +54,7 @@ final class CaptureSessionModel {
     private let camera: any CameraControlling
     private let clock: any CaptureClock
     private let defaults: UserDefaults
+    private var connectionHandlerInstalled = false
     private var sequenceTask: Task<Void, Never>?
 
     var rollURL: URL?
@@ -75,7 +76,7 @@ final class CaptureSessionModel {
     var destination: CaptureDestination {
         didSet {
             defaults.set(destination.rawValue, forKey: Self.destinationKey)
-            Task { await camera.startBrowsing() }
+            Task { await camera.applyDestination(destination) }
         }
     }
 
@@ -129,7 +130,6 @@ final class CaptureSessionModel {
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Pictures/Scanny Boy Captures", directoryHint: .isDirectory)
         focusAssist = FocusAssistModel(camera: camera, runner: runner)
-        Task { await refreshConnection() }
     }
 
     var perNegative: Int? {
@@ -161,11 +161,28 @@ final class CaptureSessionModel {
         return "Aperture is \(current); bare-light reference was shot at \(expected)."
     }
 
-    func refreshConnection() async {
+    func connect() async {
+        if !connectionHandlerInstalled {
+            await camera.setConnectionHandler { [weak self] state, exposure in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.connectionState = state
+                    self.exposure = exposure
+                    self.focusAssist.updateConnectionState(state)
+                }
+            }
+            connectionHandlerInstalled = true
+        }
+        await camera.applyDestination(destination)
         await camera.startBrowsing()
-        connectionState = await camera.connectionState
-        exposure = await camera.exposure
-        focusAssist.updateConnectionState(connectionState)
+    }
+
+    func disconnect() async {
+        await camera.stopBrowsing()
+    }
+
+    func refreshConnection() async {
+        await connect()
     }
 
     func openSession() {

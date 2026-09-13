@@ -79,7 +79,6 @@ struct CaptureStageView: View {
         }
         .onAppear {
             captureFocused = true
-            Task { await capture.refreshConnection() }
         }
     }
 
@@ -88,6 +87,7 @@ struct CaptureStageView: View {
         Section("Camera") {
             Text(connectionMessage)
                 .foregroundStyle(connectionStateColor)
+            connectionButtons
             if let exposure = capture.exposure {
                 LabeledContent("Program", value: exposure.programDescription)
                 LabeledContent("Shutter", value: exposure.shutterDescription)
@@ -103,6 +103,24 @@ struct CaptureStageView: View {
                 Text("Switch the camera to manual focus before capturing.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var connectionButtons: some View {
+        switch capture.connectionState {
+        case .absent:
+            Button("Connect") {
+                Task { await capture.connect() }
+            }
+        case .massStorage, .unavailable, .unsupported, .lost:
+            Button("Retry") {
+                Task { await capture.connect() }
+            }
+        case .searching, .preparing, .ready, .busy:
+            Button("Disconnect") {
+                Task { await capture.disconnect() }
             }
         }
     }
@@ -216,7 +234,9 @@ struct CaptureStageView: View {
     private var connectionMessage: String {
         switch capture.connectionState {
         case .absent:
-            "Connect the camera over USB and switch it on."
+            "Plug the camera in over USB, switch it on, then click Connect."
+        case .searching:
+            "Waiting for the camera…"
         case .massStorage:
             "The camera is connected as a disk. Set its USB mode to PTP."
         case .unavailable:
@@ -237,7 +257,7 @@ struct CaptureStageView: View {
     private var connectionStateColor: Color {
         switch capture.connectionState {
         case .ready: .primary
-        case .busy, .preparing: .secondary
+        case .busy, .preparing, .searching: .secondary
         default: .orange
         }
     }

@@ -21,6 +21,7 @@ actor FakeTetherCamera: CameraControlling {
         var liveViewStartRefused: UInt16?
         var liveViewFrames: [LiveViewFrame] = []
         var liveViewFrameDelay: Duration = .zero
+        var connectDelay: Duration = .zero
     }
 
     private(set) var connectionState: TetherConnectionState
@@ -29,6 +30,7 @@ actor FakeTetherCamera: CameraControlling {
     var destination: CaptureDestination
 
     private var config: Configuration
+    private var connectionHandler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
     private var bufferHandles: Set<UInt32> = []
     private var handlesBeforeLastRelease: Set<UInt32> = []
     private var released = false
@@ -38,26 +40,63 @@ actor FakeTetherCamera: CameraControlling {
 
     init(configuration: Configuration = Configuration()) {
         config = configuration
-        connectionState = configuration.connectionState
-        exposure = configuration.exposure
+        connectionState = .absent
+        exposure = nil
         leftovers = configuration.initialLeftovers
         destination = configuration.destination
         bufferHandles = Set(configuration.initialLeftovers.map(\.handle))
     }
 
+    func setConnectionHandler(
+        _ handler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
+    ) {
+        connectionHandler = handler
+        publish()
+    }
+
+    func applyDestination(_ destination: CaptureDestination) async {
+        self.destination = destination
+    }
+
     func startBrowsing() async {
-        connectionState = config.connectionState
-        exposure = config.exposure
         leftovers = config.initialLeftovers
         bufferHandles = Set(config.initialLeftovers.map(\.handle))
+        switch connectionState {
+        case .ready, .busy, .preparing:
+            break
+        default:
+            updateState(.searching)
+            if config.connectDelay > .zero {
+                let delay = config.connectDelay
+                let targetState = config.connectionState
+                let targetExposure = config.exposure
+                Task {
+                    try? await Task.sleep(for: delay)
+                    exposure = targetExposure
+                    updateState(targetState)
+                }
+            } else {
+                exposure = config.exposure
+                updateState(config.connectionState)
+            }
+        }
     }
 
     func stopBrowsing() async {
         if liveViewActive {
             await endLiveView()
         }
-        connectionState = .absent
         exposure = nil
+        updateState(.absent)
+    }
+
+    private func updateState(_ state: TetherConnectionState) {
+        connectionState = state
+        publish()
+    }
+
+    private func publish() {
+        connectionHandler?(connectionState, exposure)
     }
 
     func drainEvents() async throws {}
@@ -73,10 +112,10 @@ actor FakeTetherCamera: CameraControlling {
     func release() async throws {
         guard connectionState == .ready else { throw TetherCaptureError.notConnected }
         if config.dropOnRelease {
-            connectionState = .lost
+            updateState(.lost)
             throw TetherCaptureError.notConnected
         }
-        connectionState = .busy
+        updateState(.busy)
         handlesBeforeLastRelease = bufferHandles
         released = false
         try await Task.sleep(for: config.releaseDelay)
@@ -85,7 +124,7 @@ actor FakeTetherCamera: CameraControlling {
 
     func waitForExposureEnd() async throws {
         try await Task.sleep(for: config.exposureEndDelay)
-        connectionState = .ready
+        updateState(.ready)
     }
 
     func waitForFrame(after handlesBefore: Set<UInt32>) async throws -> UInt32 {
@@ -116,7 +155,7 @@ actor FakeTetherCamera: CameraControlling {
         if !config.bufferSurvivesDownload {
             bufferHandles.remove(handle)
         }
-        connectionState = .ready
+        updateState(.ready)
         return TetherCapturedFrame(url: url, handle: handle, objectInfo: info)
     }
 

@@ -37,6 +37,7 @@ struct BufferLeftover: Sendable, Hashable, Identifiable {
 /// Connection states shown in the Capture tab (§2.1).
 enum TetherConnectionState: Sendable, Equatable {
     case absent
+    case searching
     case massStorage
     case unavailable
     case preparing
@@ -78,6 +79,10 @@ protocol CameraControlling: Actor {
     var leftovers: [BufferLeftover] { get }
     var destination: CaptureDestination { get set }
 
+    func setConnectionHandler(
+        _ handler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
+    ) async
+    func applyDestination(_ destination: CaptureDestination) async
     func startBrowsing() async
     func stopBrowsing() async
     func drainEvents() async throws

@@ -16,13 +16,31 @@ actor TetherCamera: CameraControlling {
     private var ignoredHandles: Set<UInt32> = []
     private var lowestStorageID: UInt32?
     private var liveViewActive = false
+    private var connectionHandler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
 
     init() {}
 
+    func setConnectionHandler(
+        _ handler: (@Sendable (TetherConnectionState, TetherExposureSettings?) -> Void)?
+    ) {
+        connectionHandler = handler
+        publish()
+    }
+
+    func applyDestination(_ destination: CaptureDestination) async {
+        self.destination = destination
+    }
+
     func startBrowsing() async {
-        connectionState = .absent
-        let bridge = await mainBridge()
-        await MainActor.run { bridge.start() }
+        switch connectionState {
+        case .ready, .busy, .preparing:
+            let bridge = await mainBridge()
+            await MainActor.run { bridge.start() }
+        default:
+            updateState(.searching)
+            let bridge = await mainBridge()
+            await MainActor.run { bridge.start() }
+        }
     }
 
     func stopBrowsing() async {
@@ -32,9 +50,23 @@ actor TetherCamera: CameraControlling {
         let activeBridge = bridge
         await MainActor.run { activeBridge?.stop() }
         bridge = nil
-        connectionState = .absent
         exposure = nil
         leftovers = []
+        updateState(.absent)
+    }
+
+    private func updateState(_ state: TetherConnectionState) {
+        connectionState = state
+        publish()
+    }
+
+    private func updateExposure(_ settings: TetherExposureSettings?) {
+        exposure = settings
+        publish()
+    }
+
+    private func publish() {
+        connectionHandler?(connectionState, exposure)
     }
 
     private func mainBridge() async -> TetherCameraBridge {
@@ -73,7 +105,7 @@ actor TetherCamera: CameraControlling {
 
     func release() async throws {
         guard connectionState == .ready else { throw TetherCaptureError.notConnected }
-        connectionState = .busy
+        updateState(.busy)
         handlesBeforeRelease = Set(try await scanBufferQuiet())
         pushedHandles = []
         captureCompleted = false
@@ -89,7 +121,7 @@ actor TetherCamera: CameraControlling {
         }
         let response = try await sendPTP(opcode, params: params)
         guard PTP.responseCode(response) == PTP.responseOK else {
-            connectionState = .ready
+            updateState(.ready)
             throw TetherCaptureError.releaseFailed(PTP.describeResponse(PTP.responseCode(response)))
         }
     }
@@ -97,7 +129,7 @@ actor TetherCamera: CameraControlling {
     func waitForExposureEnd() async throws {
         guard let shutter = exposure?.shutter else {
             try await sleep(TetherTiming.readyPollInterval)
-            connectionState = .ready
+            updateState(.ready)
             return
         }
         let deadline = ContinuousClock.now + TetherTiming.exposureTimeout(shutterPTP: shutter)
@@ -107,12 +139,12 @@ actor TetherCamera: CameraControlling {
             let code = PTP.responseCode(response)
             if code == PTP.responseDeviceBusy { sawBusy = true }
             if sawBusy, code == PTP.responseOK {
-                connectionState = .ready
+                updateState(.ready)
                 return
             }
             try await sleep(TetherTiming.readyPollInterval)
         }
-        connectionState = .ready
+        updateState(.ready)
         throw TetherCaptureError.exposureTimeout
     }
 
@@ -139,8 +171,8 @@ actor TetherCamera: CameraControlling {
     }
 
     func download(handle: UInt32, to url: URL) async throws -> TetherCapturedFrame {
-        connectionState = .busy
-        defer { connectionState = .ready }
+        updateState(.busy)
+        defer { updateState(.ready) }
         guard let info = try await objectInfo(handle: handle) else {
             throw TetherCaptureError.downloadFailed("object \(handle) not found")
         }
@@ -226,11 +258,11 @@ actor TetherCamera: CameraControlling {
     // MARK: - Bridge callbacks
 
     func bridgeDidUpdate(state: TetherConnectionState) {
-        connectionState = state
+        updateState(state)
     }
 
     func bridgeDidReadExposure(_ settings: TetherExposureSettings) {
-        exposure = settings
+        updateExposure(settings)
     }
 
     func bridgeDidReceivePushedEvent(code: UInt16, params: [UInt32]) {
@@ -255,7 +287,7 @@ actor TetherCamera: CameraControlling {
         if liveViewActive {
             liveViewActive = false
         }
-        connectionState = .lost
+        updateState(.lost)
     }
 
     // MARK: - PTP helpers
@@ -338,11 +370,11 @@ actor TetherCamera: CameraControlling {
 
     fileprivate func finishConnect(deviceInfo: PTP.DeviceInfo) async throws {
         if destination == .buffer, !deviceInfo.supportsBufferCapture() {
-            connectionState = .unsupported
+            updateState(.unsupported)
             return
         }
         if destination == .card, !deviceInfo.supportsCardCapture() {
-            connectionState = .unsupported
+            updateState(.unsupported)
             return
         }
         _ = try await drainCheckEvent()
@@ -351,7 +383,7 @@ actor TetherCamera: CameraControlling {
             leftovers = try await fetchLeftovers(handles: buffered)
         }
         exposure = try await readExposure()
-        connectionState = .ready
+        updateState(.ready)
     }
 
     private func readExposure() async throws -> TetherExposureSettings {

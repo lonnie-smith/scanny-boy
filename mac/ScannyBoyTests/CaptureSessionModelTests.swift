@@ -41,6 +41,46 @@ struct CaptureSessionModelTests {
         return (model, camera, clock)
     }
 
+    @Test("init stays absent until connect")
+    func initStaysAbsentUntilConnect() async {
+        let (model, _, _) = Self.makeModel()
+        #expect(model.connectionState == .absent)
+        #expect(model.exposure == nil)
+    }
+
+    @Test("connect publishes ready state and exposure")
+    func connectPublishesReady() async {
+        let (model, _, _) = Self.makeModel()
+        await model.connect()
+        #expect(model.connectionState == .ready)
+        #expect(model.exposure != nil)
+    }
+
+    @Test("delayed connect publishes ready without a second snapshot")
+    func delayedConnectPublishesReady() async throws {
+        var config = FakeTetherCamera.Configuration()
+        config.connectDelay = .milliseconds(50)
+        let camera = FakeTetherCamera(configuration: config)
+        let model = CaptureSessionModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false")),
+            camera: camera
+        )
+        await model.connect()
+        #expect(model.connectionState == .searching)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.connectionState == .ready)
+        #expect(model.exposure != nil)
+    }
+
+    @Test("disconnect returns to absent and clears exposure")
+    func disconnectClearsConnection() async {
+        let (model, _, _) = Self.makeModel()
+        await model.connect()
+        await model.disconnect()
+        #expect(model.connectionState == .absent)
+        #expect(model.exposure == nil)
+    }
+
     @Test("runEnabled requires manual exposure and focus")
     func runEnabledGates() async {
         let (model, _, _) = Self.makeModel()
@@ -105,8 +145,7 @@ struct CaptureSessionModelTests {
             "populations": .array([]),
         ])
         model.sessionOpen = true
-        await model.refreshConnection()
-        await camera.startBrowsing()
+        await model.connect()
         await model.shootFlatFieldReference()
         #expect(model.flatField?.sourceName == "bare-light.NEF")
         #expect(model.referenceAperture != nil)
@@ -115,9 +154,8 @@ struct CaptureSessionModelTests {
     @Test("interval starts after exposure end")
     func intervalTiming() async throws {
         let clock = TestCaptureClock()
-        let (model, camera, _) = Self.makeModel(clock: clock, across: 1, down: 1)
-        await model.refreshConnection()
-        await camera.startBrowsing()
+        let (model, _, _) = Self.makeModel(clock: clock, across: 1, down: 1)
+        await model.connect()
         model.handleSpace()
         try await Task.sleep(for: .milliseconds(3500))
         #expect(model.completedNegatives.count == 1)

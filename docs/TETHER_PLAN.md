@@ -250,14 +250,25 @@ Capture tab, roll selected
 
 | State | Meaning | Shown to the user |
 |---|---|---|
-| `absent` | No camera found | "Connect the camera over USB and switch it on." |
+| `absent` | Browsing not started | "Plug the camera in over USB, switch it on, then click Connect." |
+| `searching` | User clicked Connect; browser running, no device yet | "Waiting for the camera…" |
 | `massStorage` | Found as `ICTransportTypeMassStorage` | "The camera is connected as a disk. Set its USB mode to PTP." |
 | `unavailable` | The session would not open | "Another app is using the camera. Quit Photos or Image Capture." |
 | `preparing` | Session open, waiting on the first PTP reply | "Preparing the camera — the first connection after plugging in can take a minute." |
 | `unsupported` | `GetDeviceInfo` lacks an operation this plan needs | "This camera doesn't support tethered capture." (v1 is tested on the Z f only) |
-| `ready` | Idle, able to release | — |
-| `busy` | A release or download is in flight | — |
+| `ready` | Idle, able to release | "Ready." |
+| `busy` | A release or download is in flight | "Busy." |
 | `lost` | The device disappeared mid-session | §2.5 |
+
+Connection is **manual**: the user plugs in and powers on the camera, then
+clicks **Connect** in the Camera section. `ICDeviceBrowser` does not start at
+launch. After Connect, the browser stays running so unplug/replug can recover
+without another click; **Retry** appears on error states, **Disconnect** while
+a session is open.
+
+`CaptureSessionModel` installs a handler on `TetherCamera` so state and exposure
+updates reach the UI as the async connect completes — a one-shot snapshot at
+tab appear is not enough.
 
 `preparing` exists because of §0.1's first-connection figure: the first PTP
 reply waited 24 s behind the card catalog. Space is disabled until
