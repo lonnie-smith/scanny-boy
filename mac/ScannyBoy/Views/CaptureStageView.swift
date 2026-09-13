@@ -14,8 +14,8 @@ struct CaptureStageView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                connectionSection
                 setupSection
+                connectionSection
                 flatFieldReferenceSection
                 baseFrameSection
                 sequenceSection
@@ -37,7 +37,7 @@ struct CaptureStageView: View {
         }
         .onKeyPress("f") {
             guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
-            guard capture.isSessionOpen, capture.connectionState == .ready else { return .ignored }
+            guard capture.isSessionOpen else { return .ignored }
             if capture.focusAssist.isOpen {
                 Task { await capture.focusAssist.close() }
             } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused {
@@ -154,7 +154,6 @@ struct CaptureStageView: View {
                     Text("\(seconds) s").tag(seconds)
                 }
             }
-            Toggle("Session open", isOn: $capture.sessionOpen)
         }
     }
 
@@ -234,8 +233,7 @@ struct CaptureStageView: View {
             Task { await capture.shootFlatFieldReference() }
         }
         .disabled(
-            !capture.sessionOpen
-                || capture.connectionState != .ready
+            capture.connectionState != .ready
                 || capture.isShootingFlatFieldReference
                 || capture.flatField?.lockedAt != nil
         )
@@ -246,8 +244,7 @@ struct CaptureStageView: View {
             Task { await capture.shootBaseFrame() }
         }
         .disabled(
-            !capture.sessionOpen
-                || capture.connectionState != .ready
+            capture.connectionState != .ready
                 || capture.isShootingBaseFrame
                 || capture.filmBase?.lockedAt != nil
         )

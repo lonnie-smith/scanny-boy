@@ -37,7 +37,6 @@ struct CaptureSessionModelTests {
             "populations": .array([]),
         ])
         model.rollURL = URL(fileURLWithPath: "/tmp/roll")
-        model.sessionOpen = true
         return (model, camera, clock)
     }
 
@@ -46,6 +45,44 @@ struct CaptureSessionModelTests {
         let (model, _, _) = Self.makeModel()
         #expect(model.connectionState == .absent)
         #expect(model.exposure == nil)
+        #expect(model.isSessionOpen == false)
+    }
+
+    @Test("connect opens the capture session when ready")
+    func connectOpensSession() async {
+        let (model, _, _) = Self.makeModel()
+        #expect(model.isSessionOpen == false)
+        await model.connect()
+        #expect(model.connectionState == .ready)
+        #expect(model.isSessionOpen == true)
+    }
+
+    @Test("disconnect closes the capture session")
+    func disconnectClosesSession() async {
+        let (model, _, _) = Self.makeModel()
+        await model.connect()
+        #expect(model.isSessionOpen == true)
+        await model.disconnect()
+        #expect(model.connectionState == .absent)
+        #expect(model.isSessionOpen == false)
+    }
+
+    @Test("lost connection closes the capture session")
+    func lostConnectionClosesSession() async throws {
+        let camera = FakeTetherCamera(configuration: .init(dropOnRelease: true))
+        let model = CaptureSessionModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false")),
+            camera: camera
+        )
+        await model.connect()
+        #expect(model.isSessionOpen == true)
+        do {
+            try await camera.release()
+        } catch is TetherCaptureError {
+            // Expected when the fake camera drops the session after shutter.
+        }
+        #expect(model.connectionState == .lost)
+        #expect(model.isSessionOpen == false)
     }
 
     @Test("connect publishes ready state and exposure")
@@ -67,9 +104,11 @@ struct CaptureSessionModelTests {
         )
         await model.connect()
         #expect(model.connectionState == .searching)
+        #expect(model.isSessionOpen == false)
         try await Task.sleep(for: .milliseconds(100))
         #expect(model.connectionState == .ready)
         #expect(model.exposure != nil)
+        #expect(model.isSessionOpen == true)
     }
 
     @Test("disconnect returns to absent and clears exposure")
@@ -144,7 +183,6 @@ struct CaptureSessionModelTests {
             "source_name": .string("base.NEF"),
             "populations": .array([]),
         ])
-        model.sessionOpen = true
         await model.connect()
         await model.shootFlatFieldReference()
         #expect(model.flatField?.sourceName == "bare-light.NEF")
@@ -186,7 +224,6 @@ struct CaptureSessionModelTests {
         let model = CaptureSessionModel(runner: runner, camera: camera)
         model.rollURL = roll
         model.captureBaseFolder = directory
-        model.sessionOpen = true
         model.flatField = FlatFieldReference(fields: [
             "source_name": .string("bare-light-old.NEF"),
             "reference_width": .int(100),
@@ -213,7 +250,6 @@ struct CaptureSessionModelTests {
         )
         model.rollURL = roll
         model.captureBaseFolder = directory
-        model.sessionOpen = true
         await model.connect()
         model.focusAssist.open()
         try await Task.sleep(for: .milliseconds(80))
@@ -250,7 +286,6 @@ struct CaptureSessionModelTests {
         )
         model.rollURL = roll
         model.captureBaseFolder = directory
-        model.sessionOpen = true
         await model.connect()
         await model.shootFlatFieldReference()
         let leftovers = await camera.leftovers
@@ -312,7 +347,6 @@ struct CaptureSessionModelTests {
         let model = CaptureSessionModel(runner: runner, camera: camera)
         model.rollURL = roll
         model.captureBaseFolder = directory
-        model.sessionOpen = true
         await model.connect()
         await model.shootBaseFrame()
         #expect(model.filmBase == nil)
@@ -353,7 +387,6 @@ struct CaptureSessionModelTests {
         let model = CaptureSessionModel(runner: runner, camera: camera)
         model.rollURL = roll
         model.captureBaseFolder = directory
-        model.sessionOpen = true
         model.filmBase = FilmBase(fields: [
             "density": .array([.double(-0.4), .double(-0.1), .double(-0.9)]),
             "source_name": .string("base-old.NEF"),

@@ -103,14 +103,6 @@ final class CaptureSessionModel {
     private var baselineFrameURLs: [URL] = []
     private(set) var focusAssist: FocusAssistModel
 
-    var sessionOpen: Bool {
-        get { isSessionOpen }
-        set {
-            guard newValue != isSessionOpen else { return }
-            if newValue { openSession() } else { closeSession() }
-        }
-    }
-
     init(
         runner: CLIRunner,
         camera: any CameraControlling,
@@ -169,6 +161,11 @@ final class CaptureSessionModel {
                     self.connectionState = state
                     self.exposure = exposure
                     self.focusAssist.updateConnectionState(state)
+                    if state == .ready {
+                        self.openSession()
+                    } else if self.isSessionOpen, state == .lost || state == .absent {
+                        self.closeSession()
+                    }
                 }
             }
             connectionHandlerInstalled = true
@@ -178,6 +175,7 @@ final class CaptureSessionModel {
     }
 
     func disconnect() async {
+        closeSession()
         await camera.stopBrowsing()
     }
 
@@ -192,6 +190,7 @@ final class CaptureSessionModel {
     }
 
     func closeSession() {
+        guard isSessionOpen else { return }
         Task { await focusAssist.close() }
         sequenceTask?.cancel()
         sequenceTask = nil
