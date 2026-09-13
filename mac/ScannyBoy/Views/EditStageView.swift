@@ -361,7 +361,7 @@ private struct PreviewPane: View {
             // The 1:1 crop is sized in physical pixels; a moved window (or
             // display change) resizes it.
             zoom.invalidate()
-            if zoom.mode == .pixels100 { zoom.fetchCrop() }
+            refreshZoomContext(paneSize: paneSize)
         }
     }
 
@@ -740,22 +740,25 @@ private struct PreviewPane: View {
     @ViewBuilder
     private var zoomedCrop: some View {
         Color.black
-            .overlay(alignment: .topLeading) {
-                ForEach(zoom.renderedTiles) { rendered in
-                    let tile = rendered.tile
-                    Image(nsImage: tile.image)
-                        .resizable()
-                        .interpolation(.none)
-                        .frame(
-                            width: CGFloat(tile.rect.width) / tile.displayScale,
-                            height: CGFloat(tile.rect.height) / tile.displayScale
-                        )
-                        .offset(zoom.tileScreenOffset(for: tile.rect))
-                        .allowsHitTesting(false)
+            .overlay {
+                ZStack(alignment: .topLeading) {
+                    ForEach(zoom.renderedTiles) { rendered in
+                        let tile = rendered.tile
+                        Image(nsImage: tile.image)
+                            .resizable()
+                            .interpolation(.none)
+                            .frame(
+                                width: CGFloat(tile.rect.width) / tile.displayScale,
+                                height: CGFloat(tile.rect.height) / tile.displayScale
+                            )
+                            .offset(zoom.tileScreenOffset(for: tile.rect))
+                            .allowsHitTesting(false)
+                    }
+                    if zoom.viewportIsLoading {
+                        PreviewPlaceholder(kind: .loading)
+                    }
                 }
-                if zoom.viewportIsLoading {
-                    PreviewPlaceholder(kind: .loading)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .compositingGroup()
             .clipShape(.rect)
