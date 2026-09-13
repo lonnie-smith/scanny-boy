@@ -170,7 +170,7 @@ struct CLIIntegrationTests {
         let runner = try Self.servingRunner()
         let libraryDirectory = Self.libraryDatabaseURL.deletingLastPathComponent()
         let first = runner.session(for: .rollList(library: libraryDirectory))
-        let second = runner.session(for: .flatfieldList())
+        let second = runner.session(for: .rigList())
         async let firstCollected = TestSupport.drain(try await first.start())
         async let secondCollected = TestSupport.drain(try await second.start())
         let (one, two) = try await (firstCollected, secondCollected)

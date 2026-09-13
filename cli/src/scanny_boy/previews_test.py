@@ -11,8 +11,7 @@ import cv2
 import numpy as np
 import pytest
 
-from scanny_boy import normalization
-from scanny_boy import render
+from scanny_boy import normalization, render
 from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, transform_preview
 
 

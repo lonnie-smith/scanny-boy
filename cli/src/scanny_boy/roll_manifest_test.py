@@ -706,10 +706,9 @@ def test_covered_negatives_do_not_require_completed():
 # --- the flat-field profile is not a roll invariant -------------------------
 
 
-def _flat_field_token(profile_id: str) -> dict:
+def _flat_field_token(suffix: str) -> dict:
     return {
-        "profile_id": profile_id,
-        "gain_map_sha256": "c" * 64 if profile_id == "profile-a" else "d" * 64,
+        "gain_map_sha256": "c" * 64 if suffix == "a" else "d" * 64,
         "params": {"gain_map_max_edge": 256},
     }
 
@@ -722,7 +721,7 @@ def test_check_roll_invariants_allows_a_different_flatfield_profile():
     seeded = _manifest(
         processing_params={
             "gamma": [1.8, 16],
-            "flat_field": _flat_field_token("profile-a"),
+            "flat_field": _flat_field_token("a"),
         }
     )
 
@@ -731,7 +730,7 @@ def test_check_roll_invariants_allows_a_different_flatfield_profile():
         _invariants(
             processing_params={
                 "gamma": [1.8, 16],
-                "flat_field": _flat_field_token("profile-b"),
+                "flat_field": _flat_field_token("b"),
             }
         ),
     )
@@ -741,7 +740,7 @@ def test_check_roll_invariants_allows_a_different_flatfield_profile():
         _invariants(
             processing_params={
                 "gamma": [1.8, 16],
-                "flat_field": _flat_field_token("profile-a"),
+                "flat_field": _flat_field_token("a"),
             }
         ),
     )
@@ -754,7 +753,7 @@ def test_check_roll_invariants_still_rejects_other_processing_param_changes():
     seeded = _manifest(
         processing_params={
             "gamma": [1.8, 16],
-            "flat_field": _flat_field_token("profile-a"),
+            "flat_field": _flat_field_token("a"),
         }
     )
 
@@ -764,7 +763,7 @@ def test_check_roll_invariants_still_rejects_other_processing_param_changes():
             _invariants(
                 processing_params={
                     "gamma": [2.2, 16],
-                    "flat_field": _flat_field_token("profile-a"),
+                    "flat_field": _flat_field_token("a"),
                 }
             ),
         )

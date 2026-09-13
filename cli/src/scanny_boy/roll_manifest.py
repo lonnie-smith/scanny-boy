@@ -448,6 +448,11 @@ class RollManifest:
     # None; frozen for the life of the roll once the first negative has been
     # published against it (§3.2). A roll cannot be stitched without one.
     film_base: dict[str, Any] | None = None
+    # docs/FLATFIELD_REFERENCE.md §3.1: the roll's bare-light flat-field
+    # reference. `None` until `roll set-flatfield-reference` attaches one;
+    # replaceable while `locked_at` is None; frozen once the first negative
+    # publishes.
+    flat_field: dict[str, Any] | None = None
     # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
     # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or
     # `None` on a mono roll, a roll with no locked film base, or a colour
@@ -507,6 +512,7 @@ class RollManifest:
             ),
             "film": self.film,
             "film_base": self.film_base,
+            "flat_field": self.flat_field,
             "highlight_lock": self.highlight_lock,
         }
 

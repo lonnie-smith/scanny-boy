@@ -34,7 +34,7 @@ final class ConfigurationModel {
     }
 
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
-    static let lastFlatFieldProfileKey = "com.lonniesmith.scanny-boy.lastFlatFieldProfile"
+    static let lastRigProfileKey = "com.lonniesmith.scanny-boy.lastRigProfile"
     static let lastGridProfileKey = "com.lonniesmith.scanny-boy.lastGridProfile"
 
     let runner: CLIRunner
@@ -95,6 +95,12 @@ final class ConfigurationModel {
     private(set) var filmBase: FilmBase?
     private(set) var baseFrameError: Issue?
     private(set) var isAttachingBaseFrame = false
+
+    /// The roll's attached flat-field reference, read from `roll info` when
+    /// `rollURL` changes. Required before Convert.
+    private(set) var flatField: FlatFieldReference?
+    private(set) var flatFieldReferenceError: Issue?
+    private(set) var isAttachingFlatFieldReference = false
 
     /// The roll's film kind, read from `roll info` when `rollURL` changes
     /// and set via `roll set-film-kind` from the Add Scans sheet. Required
@@ -159,20 +165,18 @@ final class ConfigurationModel {
 
     static let maxPerNegative = 12
 
-    // MARK: - Flat field
+    // MARK: - Rig profile
 
-    /// The flat-field profile this run applies. Required before Stitch is
-    /// offered. A roll does not lock to one profile — each run into it may
-    /// choose a different one (or none) — so this is purely a per-run
-    /// choice, defaulted from and persisted as the user's last one, the
-    /// same as the input folder.
-    var flatFieldProfileID: String? {
+    /// The rig profile this run applies. Optional — a run may proceed
+    /// without geometric calibration. Defaulted from and persisted as the
+    /// user's last choice, the same as the input folder.
+    var rigProfileID: String? {
         didSet {
-            guard flatFieldProfileID != oldValue else { return }
-            if let flatFieldProfileID {
-                defaults.set(flatFieldProfileID, forKey: Self.lastFlatFieldProfileKey)
+            guard rigProfileID != oldValue else { return }
+            if let rigProfileID {
+                defaults.set(rigProfileID, forKey: Self.lastRigProfileKey)
             } else {
-                defaults.removeObject(forKey: Self.lastFlatFieldProfileKey)
+                defaults.removeObject(forKey: Self.lastRigProfileKey)
             }
             clearValidationState()
         }
@@ -199,7 +203,7 @@ final class ConfigurationModel {
         self.runner = runner
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
-        flatFieldProfileID = defaults.string(forKey: Self.lastFlatFieldProfileKey)
+        rigProfileID = defaults.string(forKey: Self.lastRigProfileKey)
         gridProfileID = defaults.string(forKey: Self.lastGridProfileKey)
         if let inputFolder {
             startCatalogueProbe(inputFolder: inputFolder)
@@ -225,9 +229,9 @@ final class ConfigurationModel {
         perNegative != nil
             && !selectedFiles.isEmpty
             && rollURL != nil
-            && flatFieldProfileID != nil
             && filmKind != nil
             && filmBase != nil
+            && flatField != nil
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -267,9 +271,7 @@ final class ConfigurationModel {
     /// form fields, or `nil` when the form is incomplete. Does not require
     /// prior validation — `ContentView` validates before starting a run.
     func buildRunCommand() -> CLICommand? {
-        guard runEnabled, let inputFolder, let rollURL, let across,
-            let flatFieldProfileID
-        else {
+        guard runEnabled, let inputFolder, let rollURL, let across else {
             return nil
         }
         return .run(
@@ -279,7 +281,7 @@ final class ConfigurationModel {
             across: across,
             down: down,
             skipSources: [],
-            flatfield: flatFieldProfileID
+            rig: rigProfileID
         )
     }
 
@@ -301,6 +303,7 @@ final class ConfigurationModel {
         selectionError = nil
         rollError = nil
         baseFrameError = nil
+        flatFieldReferenceError = nil
         filmKindError = nil
         isValidating = false
     }
@@ -337,8 +340,7 @@ final class ConfigurationModel {
         let result = await Self.runSetBaseFrame(
             runner: runner,
             roll: rollURL,
-            frame: frameURL,
-            flatfield: flatFieldProfileID
+            frame: frameURL
         )
         for warning in result.warnings {
             selectionWarnings.append(warning)
@@ -350,10 +352,36 @@ final class ConfigurationModel {
         filmBase = result.filmBase
     }
 
+    /// Attaches or replaces the roll's flat-field reference immediately —
+    /// gate failures surface inline, not at Convert.
+    func attachFlatFieldReference(at frameURL: URL) async {
+        guard let rollURL else { return }
+        flatFieldReferenceError = nil
+        isAttachingFlatFieldReference = true
+        defer { isAttachingFlatFieldReference = false }
+
+        let result = await Self.runSetFlatFieldReference(
+            runner: runner,
+            roll: rollURL,
+            frame: frameURL,
+            rig: rigProfileID
+        )
+        for warning in result.warnings {
+            selectionWarnings.append(warning)
+        }
+        if let error = result.error {
+            flatFieldReferenceError = error
+            return
+        }
+        flatField = result.flatField
+    }
+
     private func startRollFetch() {
         rollTask?.cancel()
         filmBase = nil
         baseFrameError = nil
+        flatField = nil
+        flatFieldReferenceError = nil
         filmKind = nil
         filmKindLocked = false
         filmKindError = nil
@@ -362,6 +390,7 @@ final class ConfigurationModel {
             let setup = await Self.fetchRollSetup(runner: runner, roll: rollURL)
             guard let self, !Task.isCancelled else { return }
             self.filmBase = setup.filmBase
+            self.flatField = setup.flatField
             self.filmKind = setup.filmKind
             self.filmKindLocked = setup.filmKindLocked
         }
@@ -380,7 +409,7 @@ final class ConfigurationModel {
 
         let rollURL = rollURL
         let files = selectedFilesInCanonicalOrder
-        let flatFieldProfileID = flatFieldProfileID
+        let rigProfileID = rigProfileID
         let down = down
 
         isValidating = true
@@ -393,7 +422,7 @@ final class ConfigurationModel {
                     roll: rollURL,
                     across: across,
                     down: down,
-                    flatfield: flatFieldProfileID
+                    rig: rigProfileID
                 )
             )
         }
@@ -504,6 +533,7 @@ final class ConfigurationModel {
 
     private struct RollSetup: Sendable {
         var filmBase: FilmBase?
+        var flatField: FlatFieldReference?
         var filmKind: String?
         var filmKindLocked: Bool
     }
@@ -518,10 +548,11 @@ final class ConfigurationModel {
                 manifest = RollManifest(fields: fields)
             }
         } catch {
-            return RollSetup(filmBase: nil, filmKind: nil, filmKindLocked: false)
+            return RollSetup(filmBase: nil, flatField: nil, filmKind: nil, filmKindLocked: false)
         }
         return RollSetup(
             filmBase: manifest?.filmBase,
+            flatField: manifest?.flatField,
             filmKind: manifest?.filmKind,
             filmKindLocked: !(manifest?.runs.isEmpty ?? true)
         )
@@ -531,17 +562,20 @@ final class ConfigurationModel {
         await fetchRollSetup(runner: runner, roll: roll).filmBase
     }
 
+    private static func fetchFlatField(runner: CLIRunner, roll: URL) async -> FlatFieldReference? {
+        await fetchRollSetup(runner: runner, roll: roll).flatField
+    }
+
     private static func runSetBaseFrame(
         runner: CLIRunner,
         roll: URL,
-        frame: URL,
-        flatfield: String?
+        frame: URL
     ) async -> SetBaseFrameResult {
         var result = SetBaseFrameResult()
         var succeeded = false
         do {
             let session = runner.session(
-                for: .rollSetBaseFrame(roll: roll, frame: frame, flatfield: flatfield)
+                for: .rollSetBaseFrame(roll: roll, frame: frame)
             )
             for await output in try await session.start() {
                 switch output {
@@ -569,6 +603,54 @@ final class ConfigurationModel {
         }
         if succeeded, result.error == nil {
             result.filmBase = await fetchFilmBase(runner: runner, roll: roll)
+        }
+        return result
+    }
+
+    private struct SetFlatFieldReferenceResult: Sendable {
+        var flatField: FlatFieldReference?
+        var warnings: [Issue] = []
+        var error: Issue?
+    }
+
+    private static func runSetFlatFieldReference(
+        runner: CLIRunner,
+        roll: URL,
+        frame: URL,
+        rig: String?
+    ) async -> SetFlatFieldReferenceResult {
+        var result = SetFlatFieldReferenceResult()
+        var succeeded = false
+        do {
+            let session = runner.session(
+                for: .rollSetFlatFieldReference(roll: roll, frame: frame, rig: rig)
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    switch event.kind {
+                    case .flatFieldReferenceSet:
+                        succeeded = true
+                    case .warning:
+                        if let code = event.code, let message = event.message {
+                            result.warnings.append(Issue(code: code, message: message))
+                        }
+                    case .error:
+                        if let code = event.code, let message = event.message {
+                            result.error = Issue(code: code, message: message)
+                        }
+                    default:
+                        break
+                    }
+                case .log, .failure, .completed:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        if succeeded, result.error == nil {
+            result.flatField = await fetchFlatField(runner: runner, roll: roll)
         }
         return result
     }

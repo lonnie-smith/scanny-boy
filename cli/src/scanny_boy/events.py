@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 21
+PROTOCOL_VERSION = 22
 
 
 class EventType(enum.StrEnum):
@@ -40,10 +40,11 @@ class EventType(enum.StrEnum):
     REGION_RENDERED = "region_rendered"
     PREVIEW_RENDERED = "preview_rendered"
     EXPORT_DONE = "export_done"
-    FLATFIELD_CREATED = "flatfield_created"
-    FLATFIELD_LIST = "flatfield_list"
-    FLATFIELD_DELETED = "flatfield_deleted"
-    FLATFIELD_PROGRESS = "flatfield_progress"
+    RIG_CREATED = "rig_created"
+    RIG_LIST = "rig_list"
+    RIG_DELETED = "rig_deleted"
+    RIG_PROGRESS = "rig_progress"
+    FLAT_FIELD_REFERENCE_SET = "flat_field_reference_set"
     GRID_CREATED = "grid_created"
     GRID_LIST = "grid_list"
     GRID_DELETED = "grid_deleted"
@@ -134,9 +135,11 @@ class Code(enum.StrEnum):
     CAMERA_MATRIX_MISSING = "CAMERA_MATRIX_MISSING"
     CAMERA_MATRIX_CONFLICT = "CAMERA_MATRIX_CONFLICT"
     PREVIEW_FAILED = "PREVIEW_FAILED"
-    FLATFIELD_PROFILE_NOT_FOUND = "FLATFIELD_PROFILE_NOT_FOUND"
-    FLATFIELD_PROFILE_EXISTS = "FLATFIELD_PROFILE_EXISTS"
-    FLATFIELD_PROFILE_IN_USE = "FLATFIELD_PROFILE_IN_USE"
+    RIG_PROFILE_NOT_FOUND = "RIG_PROFILE_NOT_FOUND"
+    RIG_PROFILE_EXISTS = "RIG_PROFILE_EXISTS"
+    RIG_PROFILE_IN_USE = "RIG_PROFILE_IN_USE"
+    FLATFIELD_REFERENCE_LOCKED = "FLATFIELD_REFERENCE_LOCKED"
+    FLATFIELD_REFERENCE_RIG_CONFLICT = "FLATFIELD_REFERENCE_RIG_CONFLICT"
     FLATFIELD_GAIN_MAP_MISSING = "FLATFIELD_GAIN_MAP_MISSING"
     FLATFIELD_ASPECT_MISMATCH = "FLATFIELD_ASPECT_MISMATCH"
     FLATFIELD_HIGHLIGHT_CLIPPED = "FLATFIELD_HIGHLIGHT_CLIPPED"
@@ -175,7 +178,6 @@ class Code(enum.StrEnum):
     FILM_BASE_AMBIGUOUS = "FILM_BASE_AMBIGUOUS"
     ROLL_PREDATES_FILM_BASE = "ROLL_PREDATES_FILM_BASE"
     FILM_BASE_CAMERA_CONFLICT = "FILM_BASE_CAMERA_CONFLICT"
-    FILM_BASE_FLATFIELD_CONFLICT = "FILM_BASE_FLATFIELD_CONFLICT"
     # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame is now shot at the
     # roll's own exposure so its absolute density level can be used; a
     # scan whose EXIF shutter/aperture/ISO differs from the base frame's
@@ -605,18 +607,11 @@ class ScratchesReported(Event):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class FlatFieldProfileSummary:
-    """The profile fields a `flatfield` event carries. The gain map's path
-    and SHA-256 are deliberately absent: the path is app-private storage the
-    UI has no use for, and the hash is roll-invariant bookkeeping the CLI
-    owns. The calibration fields are a straight decode of what the profile
-    record holds — no computation in Swift."""
+class RigProfileSummary:
+    """The profile fields a `rig` event carries."""
 
     profile_id: str
     name: str
-    reference_width: int
-    reference_height: int
-    source_path: str | None
     created_at: str
     board_key: str | None = None
     has_geometry: bool = False
@@ -625,37 +620,51 @@ class FlatFieldProfileSummary:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class FlatFieldCreated(Event):
-    event_type: ClassVar[EventType] = EventType.FLATFIELD_CREATED
+class RigCreated(Event):
+    event_type: ClassVar[EventType] = EventType.RIG_CREATED
 
-    profile: FlatFieldProfileSummary
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class FlatFieldList(Event):
-    event_type: ClassVar[EventType] = EventType.FLATFIELD_LIST
-
-    profiles: list[FlatFieldProfileSummary]
+    profile: RigProfileSummary
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class FlatFieldDeleted(Event):
-    event_type: ClassVar[EventType] = EventType.FLATFIELD_DELETED
+class RigList(Event):
+    event_type: ClassVar[EventType] = EventType.RIG_LIST
+
+    profiles: list[RigProfileSummary]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class RigDeleted(Event):
+    event_type: ClassVar[EventType] = EventType.RIG_DELETED
 
     profile_id: str
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class FlatFieldProgress(Event):
-    """Progress of a long `flatfield create`. Deliberately carries no
-    `run_id`: the `flatfield` family is not a pipeline run, and this keeps
+class RigProgress(Event):
+    """Progress of a long `rig create`. Deliberately carries no
+    `run_id`: the `rig` family is not a pipeline run, and this keeps
     that rule."""
 
-    event_type: ClassVar[EventType] = EventType.FLATFIELD_PROGRESS
+    event_type: ClassVar[EventType] = EventType.RIG_PROGRESS
 
-    phase: str  # "detect" | "fit" | "chromatic" | "reference"
+    phase: str  # "detect" | "fit" | "chromatic"
     completed: int
     total: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FlatFieldReferenceSet(Event):
+    """`roll set-flatfield-reference`'s confirmation."""
+
+    event_type: ClassVar[EventType] = EventType.FLAT_FIELD_REFERENCE_SET
+
+    roll_id: str
+    source_name: str
+    reference_width: int
+    reference_height: int
+    rig_profile_id: str | None
+    locked: bool
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

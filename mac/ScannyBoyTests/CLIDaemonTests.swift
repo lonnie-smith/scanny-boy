@@ -125,7 +125,7 @@ struct CLIDaemonTests {
             "metadata", "values", "--field", "city",
         ])))
         #expect(CLIRunner.routesThroughDaemon(CLICommand(arguments: [
-            "flatfield", "list",
+            "rig", "list",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
             "run", "--input", "/i", "--files", "a.NEF", "--roll", "/r",
@@ -138,7 +138,7 @@ struct CLIDaemonTests {
             "export", "--roll", "/r", "--output", "/o",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
-            "flatfield", "create", "--reference", "/f", "--name", "n",
+            "rig", "create", "--name", "n", "--calibration", "/f",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
             "probe", "--input", "/i",

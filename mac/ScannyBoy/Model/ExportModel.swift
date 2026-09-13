@@ -196,7 +196,7 @@ final class ExportModel {
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
             .rollInfo, .rollRenamed, .rollDeleted, .metadataApplied, .metadataSkipped,
             .metadataUpdated, .metadataValues,
-            .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+            .rigCreated, .rigList, .rigDeleted, .rigProgress, .flatFieldReferenceSet,
             .gridCreated, .gridList, .gridDeleted,
             .spotsReported, .scratchesReported, .baseFrameSet,
             .unknown:

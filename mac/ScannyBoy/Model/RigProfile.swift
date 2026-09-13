@@ -1,24 +1,14 @@
 import Foundation
 
-/// One flat-field profile, as `flatfield list` and `flatfield_created`
-/// report it — the library's storage is the CLI's,
-/// and Swift only reads back what an event handed it.
-///
-/// The gain map's path and SHA-256 are deliberately absent: the path is
-/// app-private storage the UI has no use for, and the hash is roll-invariant
-/// bookkeeping the CLI owns.
-struct FlatFieldProfile: Identifiable, Sendable, Hashable {
+/// One rig profile, as `rig list` and `rig_created` report it — the
+/// library's storage is the CLI's, and Swift only reads back what an event
+/// handed it.
+struct RigProfile: Identifiable, Sendable, Hashable {
     let profileID: String
     let name: String
-    /// The reference's full-resolution dimensions, for display only; `nil`
-    /// when the event did not carry them.
-    let referenceWidth: Int?
-    let referenceHeight: Int?
-    /// Provenance only — the CLI never reads the reference again.
-    let sourcePath: String?
     let createdAt: String?
-    /// The ChArUco board the calibration was fitted with ("2mm"),
-    /// or nil for a flat-field-only profile (protocol version 7).
+    /// The ChArUco board the calibration was fitted with ("2mm"), or nil
+    /// when the event did not carry it.
     let boardKey: String?
     /// Whether the profile carries a distortion fit.
     let hasGeometry: Bool
@@ -30,8 +20,8 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
 
     var id: String { profileID }
 
-    /// Decodes one entry of `flatfield_list`'s `profiles` array or
-    /// `flatfield_created`'s `profile` object (CONTRACT.md). `nil` for a
+    /// Decodes one entry of `rig_list`'s `profiles` array or
+    /// `rig_created`'s `profile` object (CONTRACT.md). `nil` for a
     /// malformed entry — a CLI this version understands never sends one,
     /// but a stream is still read line by line rather than trusted blindly.
     init?(fields: [String: JSONValue]) {
@@ -42,9 +32,6 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
 
         self.profileID = profileID
         self.name = name
-        referenceWidth = fields["reference_width"]?.intValue
-        referenceHeight = fields["reference_height"]?.intValue
-        sourcePath = fields["source_path"]?.stringValue
         createdAt = fields["created_at"]?.stringValue
         boardKey = fields["board_key"]?.stringValue
         hasGeometry = fields["has_geometry"]?.boolValue ?? false
@@ -58,7 +45,7 @@ struct FlatFieldProfile: Identifiable, Sendable, Hashable {
     var calibrationSummary: String {
         switch (hasGeometry, chromaticAberrationMode) {
         case (false, nil):
-            "Flat-field only"
+            "No geometry fit"
         case (true, nil):
             "Distortion \(summaryOfDistortion)"
         case (true, .some):

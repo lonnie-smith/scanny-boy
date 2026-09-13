@@ -26,9 +26,7 @@ from scanny_boy.events import (
     Event,
     EventWriter,
     Finished,
-    FlatFieldCreated,
-    FlatFieldDeleted,
-    FlatFieldList,
+    FlatFieldReferenceSet,
     GridCreated,
     GridDeleted,
     GridList,
@@ -38,6 +36,9 @@ from scanny_boy.events import (
     PreviewRendered,
     ProbeResult,
     RegionRendered,
+    RigCreated,
+    RigDeleted,
+    RigList,
     RollCreated,
     RollDeleted,
     RollInfo,
@@ -132,7 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     roll_set_base.add_argument("--roll", required=True, metavar="DIR")
     roll_set_base.add_argument("--frame", required=True, metavar="FILE")
-    roll_set_base.add_argument("--flatfield", metavar="PROFILE_ID")
+
+    roll_set_flatfield = roll_subparsers.add_parser(
+        "set-flatfield-reference",
+        help="Attach or replace the roll's bare-light flat-field reference.",
+    )
+    roll_set_flatfield.add_argument("--roll", required=True, metavar="DIR")
+    roll_set_flatfield.add_argument("--frame", required=True, metavar="FILE")
+    roll_set_flatfield.add_argument("--rig", metavar="PROFILE_ID")
 
     roll_set_film_kind = roll_subparsers.add_parser(
         "set-film-kind",
@@ -171,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
             "mutually exclusive with --per-negative"
         ),
     )
-    probe.add_argument("--flatfield", metavar="PROFILE_ID")
+    probe.add_argument("--rig", metavar="PROFILE_ID")
 
     prepare = subparsers.add_parser(
         "prepare",
@@ -192,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare.add_argument("--jobs", type=int, metavar="N")
     prepare.add_argument("--overwrite", action="store_true")
-    prepare.add_argument("--flatfield", metavar="PROFILE_ID")
+    prepare.add_argument("--rig", metavar="PROFILE_ID")
 
     stitch = subparsers.add_parser(
         "stitch",
@@ -204,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--overwrite", action="store_true")
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
     stitch.add_argument("--negatives", nargs="+", metavar="ID")
-    stitch.add_argument("--flatfield", metavar="PROFILE_ID")
+    stitch.add_argument("--rig", metavar="PROFILE_ID")
     stitch.add_argument(
         "--no-auto-rotate",
         action="store_false",
@@ -232,38 +240,35 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
-    run.add_argument("--flatfield", metavar="PROFILE_ID")
+    run.add_argument("--rig", metavar="PROFILE_ID")
     run.add_argument(
         "--no-auto-rotate",
         action="store_false",
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
-    flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
-    flatfield_subparsers = flatfield.add_subparsers(
-        dest="flatfield_command", required=True
-    )
+    rig = subparsers.add_parser("rig", help="Manage scanning-rig calibration profiles.")
+    rig_subparsers = rig.add_subparsers(dest="rig_command", required=True)
 
-    flatfield_create = flatfield_subparsers.add_parser(
+    rig_create = rig_subparsers.add_parser(
         "create",
-        help="Build a gain map, optionally with geometric calibration from ChArUco frames.",
+        help="Fit geometric calibration from ChArUco frames.",
     )
-    flatfield_create.add_argument("--reference", required=True, metavar="FILE")
-    flatfield_create.add_argument("--name", required=True, metavar="NAME")
-    flatfield_create.add_argument(
+    rig_create.add_argument("--name", required=True, metavar="NAME")
+    rig_create.add_argument(
         "--calibration",
-        nargs="*",
+        nargs="+",
         metavar="FILE",
-        default=[],
-        help="ChArUco calibration frames (absolute paths); omit for a flat-field-only profile",
+        required=True,
+        help="ChArUco calibration frames (absolute paths)",
     )
 
-    flatfield_subparsers.add_parser("list", help="List the flat-field profiles.")
+    rig_subparsers.add_parser("list", help="List the rig profiles.")
 
-    flatfield_delete = flatfield_subparsers.add_parser(
-        "delete", help="Delete one flat-field profile."
+    rig_delete = rig_subparsers.add_parser(
+        "delete", help="Delete one rig profile."
     )
-    flatfield_delete.add_argument("--profile", required=True, metavar="ID")
+    rig_delete.add_argument("--profile", required=True, metavar="ID")
 
     grid = subparsers.add_parser(
         "grid", help="Manage named grid configuration presets."
@@ -897,7 +902,7 @@ def _run_stitch_command(
                 cancel=scope,
                 emit=writer.write,
                 negatives=args.negatives,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
             )
     except StitchError as exc:
@@ -1040,6 +1045,9 @@ def _run_roll_command(args, writer: EventWriter) -> int:
 
     if args.roll_command == "set-base-frame":
         return _run_roll_set_base_frame(args, writer)
+
+    if args.roll_command == "set-flatfield-reference":
+        return _run_roll_set_flatfield_reference(args, writer)
 
     if args.roll_command == "set-film-kind":
         return _run_roll_set_film_kind(args, writer)
@@ -1224,8 +1232,7 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     the roll's film-base reference. A gate failure emits the error and
     changes nothing on disk; a locked roll refuses outright. Emits one
     `base_frame_set` event on success."""
-    from scanny_boy import film_base
-    from scanny_boy.flatfield import FlatFieldError, load_gain_map
+    from scanny_boy import film_base, flatfield
     from scanny_boy.hashing import sha256_file
     from scanny_boy.library import repo
     from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
@@ -1291,11 +1298,10 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
 
     frame = Path(args.frame)
     gain_map = None
-    if args.flatfield is not None:
+    if manifest.flat_field is not None:
         try:
-            profile = repo.load_flatfield_profile(args.flatfield)
-            gain_map = load_gain_map(profile)
-        except FlatFieldError as exc:
+            gain_map = flatfield.load_gain_map_from_block(manifest.flat_field)
+        except flatfield.FlatFieldError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
@@ -1362,7 +1368,6 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         "attached_at": _now_iso(),
         "source_name": frame.name,
         "source_sha256": sha256_file(frame),
-        "flat_field_profile_id": args.flatfield,
         "camera_model": camera_model,
         "chosen_index": measurement.chosen_index,
         "populations": [
@@ -1641,84 +1646,187 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     return 0
 
 
-def _run_flatfield_command(args, writer: EventWriter) -> int:
-    """The `flatfield create` / `flatfield list` / `flatfield delete`
-    subcommands: each mirrors `roll init`/`roll list`'s started/finished
-    bracketing and carries no `run_id`, since none is a pipeline run."""
-    from scanny_boy.calibration import create_profile
-    from scanny_boy.flatfield import (
-        FlatFieldError,
-        flatfield_profile_summary,
-    )
+def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
+    """The `roll set-flatfield-reference` subcommand."""
+    from scanny_boy import calibration, flatfield
+    from scanny_boy.hashing import sha256_file
     from scanny_boy.library import repo
     from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_manifest import (
+        ROLL_MANIFEST_FORMAT_VERSION,
+        _now_iso,
+        load_roll_manifest,
+        write_roll_manifest,
+    )
 
-    if args.flatfield_command == "create":
-        writer.write(Started(command="flatfield create"))
-        try:
-            profile = create_profile(
-                Path(args.reference),
-                args.name,
-                [Path(p) for p in args.calibration],
-                emit=writer.write,
-            )
-        except FlatFieldError as exc:
-            writer.write(ErrorEvent(code=exc.code, message=exc.message))
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        except UnsupportedRawError:
-            writer.write(
-                ErrorEvent(
-                    code=Code.UNSUPPORTED_RAW,
-                    message=f"{args.reference} cannot be read by LibRaw; a flat-field "
-                    "reference must be a NEF",
-                )
-            )
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        except UnreadableRawError:
-            writer.write(
-                ErrorEvent(
-                    code=Code.UNREADABLE_RAW,
-                    message=f"{args.reference} could not be decoded",
-                )
-            )
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        writer.write(FlatFieldCreated(profile=flatfield_profile_summary(profile)))
-        writer.write(Finished(status="success", exit_status=0))
-        return 0
-
-    if args.flatfield_command == "list":
-        writer.write(Started(command="flatfield list"))
-        profiles = repo.list_flatfield_profiles()
+    writer.write(Started(command="roll set-flatfield-reference"))
+    roll_dir = Path(args.roll)
+    if not repo.roll_registered(roll_dir):
         writer.write(
-            FlatFieldList(profiles=[flatfield_profile_summary(p) for p in profiles])
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} is not a registered roll",
+            )
         )
-        writer.write(Finished(status="success", exit_status=0))
-        return 0
-
-    # delete
-    writer.write(Started(command="flatfield delete"))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
     try:
-        profile = repo.load_flatfield_profile(args.profile)
-    except FlatFieldError as exc:
+        manifest = load_roll_manifest(roll_dir)
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    users = sorted(
-        set(repo.rolls_using_flatfield(args.profile))
-        | set(repo.rolls_using_profile_geometry(args.profile))
-    )
-    if users:
-        # The gain map is the only thing that could reproduce those rolls.
+    if manifest.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
         writer.write(
             ErrorEvent(
-                code=Code.FLATFIELD_PROFILE_IN_USE,
+                code=Code.ROLL_PREDATES_FILM_BASE,
+                message=(
+                    "this roll was stitched before film-base anchoring; "
+                    "create a new roll and re-stitch its scans to add more "
+                    "negatives"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    if manifest.flat_field is not None and manifest.flat_field.get("locked_at"):
+        writer.write(
+            ErrorEvent(
+                code=Code.FLATFIELD_REFERENCE_LOCKED,
+                message=(
+                    "this roll's flat-field reference was locked on "
+                    f"{str(manifest.flat_field['locked_at'])[:10]} when its "
+                    "first negative was published and cannot be changed; "
+                    "create a new roll to use a different reference"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    rig_profile = None
+    ca_scales = None
+    if args.rig is not None:
+        try:
+            rig_profile = repo.load_rig_profile(args.rig)
+            ca_scales = calibration.chromatic_aberration_scales(rig_profile)
+        except calibration.RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+
+    frame = Path(args.frame)
+    try:
+        gain_map, ref_width, ref_height = flatfield.build_gain_map(
+            frame, chromatic_aberration=ca_scales
+        )
+    except UnsupportedRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNSUPPORTED_RAW,
+                message=f"{frame.name} cannot be read by LibRaw; a flat-field "
+                "reference must be a NEF",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except UnreadableRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNREADABLE_RAW,
+                message=f"{frame.name} could not be decoded",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    if (
+        manifest.flat_field is not None
+        and manifest.flat_field.get("locked_at") is None
+    ):
+        old_path = Path(manifest.flat_field["gain_map_path"])
+        if old_path.exists():
+            old_path.unlink()
+
+    gain_map_path = flatfield.roll_gain_map_path(manifest.roll_id)
+    path, sha256 = flatfield.save_gain_map(gain_map_path, gain_map)
+
+    manifest.flat_field = {
+        "gain_map_path": str(path),
+        "gain_map_sha256": sha256,
+        "source_name": frame.name,
+        "source_sha256": sha256_file(frame),
+        "reference_width": ref_width,
+        "reference_height": ref_height,
+        "rig_profile_id": args.rig,
+        "params": flatfield.build_params(chromatic_aberration_scales=ca_scales),
+        "locked_at": None,
+        "attached_at": _now_iso(),
+    }
+    write_roll_manifest(roll_dir, manifest)
+
+    writer.write(
+        FlatFieldReferenceSet(
+            roll_id=manifest.roll_id,
+            source_name=frame.name,
+            reference_width=ref_width,
+            reference_height=ref_height,
+            rig_profile_id=args.rig,
+            locked=False,
+        )
+    )
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
+def _run_rig_command(args, writer: EventWriter) -> int:
+    """The `rig create` / `rig list` / `rig delete` subcommands."""
+    from scanny_boy.calibration import RigError, create_profile, rig_profile_summary
+    from scanny_boy.library import repo
+
+    if args.rig_command == "create":
+        writer.write(Started(command="rig create"))
+        try:
+            profile = create_profile(
+                args.name,
+                [Path(p) for p in args.calibration],
+                emit=writer.write,
+            )
+        except RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(RigCreated(profile=rig_profile_summary(profile)))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.rig_command == "list":
+        writer.write(Started(command="rig list"))
+        profiles = repo.list_rig_profiles()
+        writer.write(
+            RigList(profiles=[rig_profile_summary(p) for p in profiles])
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    writer.write(Started(command="rig delete"))
+    try:
+        profile = repo.load_rig_profile(args.profile)
+    except RigError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    users = repo.rolls_using_rig_profile(args.profile)
+    if users:
+        writer.write(
+            ErrorEvent(
+                code=Code.RIG_PROFILE_IN_USE,
                 message=(
                     f"profile {profile.name!r} is locked into "
-                    f"{len(users)} roll(s) by their processing invariants "
+                    f"{len(users)} roll(s) by their stitch invariants "
                     "and cannot be deleted"
                 ),
             )
@@ -1726,11 +1834,8 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    repo.delete_flatfield_profile(args.profile)
-    gain_map_path = Path(profile.gain_map_path)
-    if gain_map_path.exists():
-        gain_map_path.unlink()
-    writer.write(FlatFieldDeleted(profile_id=args.profile))
+    repo.delete_rig_profile(args.profile)
+    writer.write(RigDeleted(profile_id=args.profile))
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
@@ -1898,7 +2003,7 @@ def _run_run_command(
                 jobs=jobs,
                 cancel=scope,
                 emit=writer.write,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
                 grid=spec,
             )
@@ -2087,8 +2192,8 @@ def _dispatch_command(
     if args.command == "metadata":
         return _run_metadata_command(args, writer)
 
-    if args.command == "flatfield":
-        return _run_flatfield_command(args, writer)
+    if args.command == "rig":
+        return _run_rig_command(args, writer)
 
     if args.command == "grid":
         return _run_grid_command(args, writer)
@@ -2132,7 +2237,7 @@ def _dispatch_command(
                 spec.count if spec is not None else None,
                 out_dir=Path(args.out) if args.out else None,
                 roll_dir=Path(args.roll) if args.roll else None,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 on_warning=on_warning,
                 grid=spec,
             )
@@ -2163,7 +2268,18 @@ def _dispatch_command(
 
     # prepare — stage 1 of the pipeline. "Convert" is reserved,
     # unambiguously, for the whole `run`.
+    from scanny_boy import calibration
+    from scanny_boy.library import repo
     from scanny_boy.pipeline import ConvertFailure, run_convert
+
+    rig_profile = None
+    if args.rig is not None:
+        try:
+            rig_profile = repo.load_rig_profile(args.rig)
+        except calibration.RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="prepare", run_id=run_id))
@@ -2184,7 +2300,9 @@ def _dispatch_command(
                 jobs=jobs,
                 cancel=scope,
                 emit=writer.write,
-                flatfield_profile_id=args.flatfield,
+                gain_map=None,
+                rig_profile=rig_profile,
+                flat_field_block=None,
                 grid=spec,
             )
     except ConvertFailure as exc:

@@ -29,19 +29,19 @@ import tifffile
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import composite as composite_module
 from scanny_boy import (
+    auto_neutral,
     concurrency,
     disk_check,
     film_base,
-    flatfield,
     hashing,
+    highlight_lock,
     previews,
     registration,
     scratches,
     tiff_exif,
 )
-from scanny_boy import auto_neutral, highlight_lock
+from scanny_boy import composite as composite_module
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
@@ -1047,7 +1047,7 @@ def run_stitch(
     cancel: CancellationToken,
     emit: EmitFn,
     negatives: list[str] | None = None,
-    flatfield_profile_id: str | None = None,
+    rig_profile_id: str | None = None,
     auto_rotate: bool = True,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
@@ -1068,10 +1068,10 @@ def run_stitch(
     match adopts the existing negative in place — same `negative_id`, same
     output name — per the replacement rule.
 
-    `flatfield_profile_id` names the calibration profile whose geometry
-    (and, in "maps" mode, CA maps) reach the stitch warp. Omitting it on a
-    roll whose `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH`
-    through the existing check, with no new code.
+    `rig_profile_id` names the rig profile whose geometry (and, in "maps"
+    mode, CA maps) reach the stitch warp. Omitting it on a roll whose
+    `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH` through
+    the existing check, with no new code.
 
     `auto_rotate` (default on, `--no-auto-rotate` to turn it off) seeds each
     *newly published* negative with the rebate-squaring rotation
@@ -1148,19 +1148,21 @@ def run_stitch(
     # The calibration profile, if any: its geometry reaches the stitch
     # warp. Loaded before the invariants are built, because the geometry
     # bucket is part of them.
+    from scanny_boy import calibration
+
     profile = None
-    if flatfield_profile_id is not None:
+    if rig_profile_id is not None:
         try:
-            profile = repo.load_flatfield_profile(flatfield_profile_id)
-        except flatfield.FlatFieldError as exc:
+            profile = repo.load_rig_profile(rig_profile_id)
+        except calibration.RigError as exc:
             raise StitchError(exc.code, exc.message) from exc
         if profile.geometry is not None:
             height, width = _read_intermediate_size(
                 _intermediate_paths(work_dir, groups[0])[0]
             )
             try:
-                flatfield.check_geometry_frame_size(profile, width, height)
-            except flatfield.FlatFieldError as exc:
+                calibration.check_geometry_frame_size(profile, width, height)
+            except calibration.RigError as exc:
                 raise StitchError(exc.code, exc.message) from exc
 
     invariants = RollInvariants(
@@ -1218,20 +1220,6 @@ def run_stitch(
             "this roll has no film-base reference; add one with the "
             "base-frame field before converting scans "
             "(docs/REBATE_ANCHORING.md)",
-        )
-
-    # §3.3: warn when this run's flat-field profile differs from the one
-    # the base frame was measured with. A warning, not an error: the gain
-    # map is normalised per channel to mean 1, so its effect on the
-    # measurement's medians is second order (§13 risk 7).
-    recorded_profile_id = roll.film_base.get("flat_field_profile_id")
-    if flatfield_profile_id != recorded_profile_id:
-        on_warning(
-            Code.FILM_BASE_FLATFIELD_CONFLICT,
-            "this run's flat-field profile differs from the one the "
-            f"roll's film-base reference was measured with "
-            f"({recorded_profile_id or 'none'} vs "
-            f"{flatfield_profile_id or 'none'})",
         )
 
     if negatives:
@@ -2177,6 +2165,8 @@ def _composite_and_publish(
         # has published nothing, so `locked_at` stays null.
         if roll.film_base is not None and roll.film_base.get("locked_at") is None:
             roll.film_base["locked_at"] = _now_iso()
+        if roll.flat_field is not None and roll.flat_field.get("locked_at") is None:
+            roll.flat_field["locked_at"] = _now_iso()
         write_roll_manifest(out_dir, roll)
 
         # The seeding happens last: the negative row exists (the earlier

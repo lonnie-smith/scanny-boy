@@ -45,7 +45,8 @@ struct ConfigurationModelTests {
         withFilesAndRoll: [String] = [],
         rollInfoLines: [String]? = nil,
         setBaseFrameLines: [String] = [],
-        setFilmKindLines: [String] = []
+        setFilmKindLines: [String] = [],
+        setFlatFieldReferenceLines: [String] = []
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
@@ -57,19 +58,43 @@ struct ConfigurationModelTests {
         ]
         let resolvedRollInfo = rollInfoLines ?? defaultRollInfo
         let baseMarker = directory.appending(path: ".film-base-attached").path
+        let ffMarker = directory.appending(path: ".flat-field-attached").path
         let kindMarker = directory.appending(path: ".film-kind-set").path
+        let defaultSetFlatFieldReferenceSuccess = [
+            TestEvents.line(#"{"event":"started","command":"roll set-flatfield-reference"}"#),
+            TestEvents.line(
+                #"{"event":"flat_field_reference_set","roll_id":"roll-1","source_name":"bare-light.dng","reference_width":6064,"reference_height":4040,"rig_profile_id":null,"locked":false}"#
+            ),
+            finishedSuccess,
+        ]
         let defaultSetFilmKindSuccess = [
             TestEvents.line(#"{"event":"started","command":"roll set-film-kind"}"#),
             finishedSuccess,
         ]
         let script = """
             BASE_MARKER='\(baseMarker)'
+            FF_MARKER='\(ffMarker)'
             KIND_MARKER='\(kindMarker)'
             if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
-            if [ -f "$BASE_MARKER" ]; then
+            if [ -f "$BASE_MARKER" ] && [ -f "$FF_MARKER" ]; then
             \(echoLines([
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
-                rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON()),
+                rollInfoEvent(
+                    filmBaseJSON: attachedFilmBaseJSON(),
+                    flatFieldJSON: attachedFlatFieldJSON()
+                ),
+                finishedSuccess,
+            ]))
+            elif [ -f "$BASE_MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: attachedFilmBaseJSON(), flatFieldJSON: "null"),
+                finishedSuccess,
+            ]))
+            elif [ -f "$FF_MARKER" ]; then
+            \(echoLines([
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                rollInfoEvent(filmBaseJSON: "null", flatFieldJSON: attachedFlatFieldJSON()),
                 finishedSuccess,
             ]))
             elif [ -f "$KIND_MARKER" ]; then
@@ -93,6 +118,11 @@ struct ConfigurationModelTests {
             \(echoLines(setFilmKindLines.isEmpty ? defaultSetFilmKindSuccess : setFilmKindLines))
                 exit 0
             fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-flatfield-reference" ]; then
+            touch "$FF_MARKER"
+            \(echoLines(setFlatFieldReferenceLines.isEmpty ? defaultSetFlatFieldReferenceSuccess : setFlatFieldReferenceLines))
+                exit 0
+            fi
             case "$*" in
               *--roll*)
             \(echoLines(withFilesAndRoll))
@@ -114,10 +144,21 @@ struct ConfigurationModelTests {
         """
     }
 
-    private static func rollInfoEvent(filmBaseJSON: String, filmKind: String? = "colour") -> String {
+    private static func attachedFlatFieldJSON() -> String {
+        """
+        {"source_name":"bare-light.dng","reference_width":6064,"reference_height":4040,"rig_profile_id":null,"locked_at":null}
+        """
+    }
+
+    private static func rollInfoEvent(
+        filmBaseJSON: String,
+        flatFieldJSON: String? = nil,
+        filmKind: String? = "colour"
+    ) -> String {
         let filmKindJSON = filmKind.map { "\"\($0)\"" } ?? "null"
+        let flatField = flatFieldJSON ?? attachedFlatFieldJSON()
         let manifest = """
-        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON)}
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON),"flat_field":\(flatField)}
         """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
@@ -281,7 +322,6 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.flatFieldProfileID = "pid-1"
 
         #expect(model.runEnabled == true)
         #expect(await model.validateSelection() == false)
@@ -315,19 +355,17 @@ struct ConfigurationModelTests {
 
         model.rollURL = rollDir
 
-        // Four choices remain: film type, the batch's scans-per-negative,
-        // the app-required flat-field profile, and the film-base reference.
+        // Three choices remain: film type, the batch's scans-per-negative,
+        // and the roll's film-base and flat-field references.
         await model.waitForPendingProbes()
         #expect(model.selectionError == nil)
         #expect(model.rollError == nil)
+        #expect(model.filmKind == "colour")
+        #expect(model.filmBase != nil)
+        #expect(model.flatField != nil)
         #expect(model.runEnabled == false)
 
         model.across = 3
-        #expect(model.runEnabled == false)
-
-        model.flatFieldProfileID = "pid-1"
-        #expect(model.filmKind == "colour")
-        #expect(model.filmBase != nil)
         #expect(model.runEnabled == true)
     }
 
@@ -357,7 +395,6 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         await model.waitForPendingProbes()
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
 
         #expect(model.filmKind == nil)
         #expect(model.runEnabled == false)
@@ -365,6 +402,41 @@ struct ConfigurationModelTests {
         await model.setFilmKind("monochrome")
         #expect(model.filmKind == "monochrome")
         #expect(model.runEnabled == true)
+    }
+
+    @Test("runEnabled stays off until a flat-field reference is attached")
+    func runEnabledGatesOnFlatFieldReference() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(
+                    filmBaseJSON: Self.attachedFilmBaseJSON(),
+                    flatFieldJSON: "null",
+                    filmKind: "colour"
+                ),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+
+        model.inputFolder = directory
+        await model.waitForPendingProbes()
+        model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        model.across = 3
+
+        #expect(model.flatField == nil)
+        #expect(model.runEnabled == false)
     }
 
     @Test("runEnabled stays off until a base frame is attached")
@@ -379,7 +451,11 @@ struct ConfigurationModelTests {
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
             rollInfoLines: [
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
-                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
+                Self.rollInfoEvent(
+                    filmBaseJSON: "null",
+                    flatFieldJSON: Self.attachedFlatFieldJSON(),
+                    filmKind: "colour"
+                ),
                 Self.finishedSuccess,
             ]
         )
@@ -393,7 +469,6 @@ struct ConfigurationModelTests {
         model.rollURL = rollDir
         await model.waitForPendingProbes()
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
 
         #expect(model.filmBase == nil)
         #expect(model.runEnabled == false)
@@ -403,13 +478,62 @@ struct ConfigurationModelTests {
     func rollSetBaseFrameCommandShape() throws {
         let roll = URL(filePath: "/tmp/roll")
         let frame = URL(filePath: "/tmp/_DSC5012.NEF")
-        let command = CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1")
+        let command = CLICommand.rollSetBaseFrame(roll: roll, frame: frame)
         #expect(command.arguments == [
             "roll", "set-base-frame",
             "--roll", roll.path,
             "--frame", frame.path,
-            "--flatfield", "pid-1",
         ])
+    }
+
+    @Test("rollSetFlatFieldReference command shape")
+    func rollSetFlatFieldReferenceCommandShape() throws {
+        let roll = URL(filePath: "/tmp/roll")
+        let frame = URL(filePath: "/tmp/bare-light.NEF")
+        let command = CLICommand.rollSetFlatFieldReference(
+            roll: roll, frame: frame, rig: "pid-1"
+        )
+        #expect(command.arguments == [
+            "roll", "set-flatfield-reference",
+            "--roll", roll.path,
+            "--frame", frame.path,
+            "--rig", "pid-1",
+        ])
+    }
+
+    @Test("attachFlatFieldReference refreshes flatField from roll info")
+    func attachFlatFieldReferenceRefreshesFlatField() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let frame = directory.appending(path: "bare-light.NEF")
+        try Data().write(to: frame)
+
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(
+                    filmBaseJSON: Self.attachedFilmBaseJSON(),
+                    flatFieldJSON: "null",
+                    filmKind: "colour"
+                ),
+                Self.finishedSuccess,
+            ]
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        #expect(model.flatField == nil)
+
+        await model.attachFlatFieldReference(at: frame)
+        #expect(model.flatField?.sourceName == "bare-light.dng")
+        #expect(model.flatFieldReferenceError == nil)
     }
 
     @Test("attachBaseFrame refreshes filmBase from roll info")
@@ -427,7 +551,11 @@ struct ConfigurationModelTests {
             catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
             rollInfoLines: [
                 TestEvents.line(#"{"event":"started","command":"roll info"}"#),
-                Self.rollInfoEvent(filmBaseJSON: "null", filmKind: "colour"),
+                Self.rollInfoEvent(
+                    filmBaseJSON: "null",
+                    flatFieldJSON: Self.attachedFlatFieldJSON(),
+                    filmKind: "colour"
+                ),
                 Self.finishedSuccess,
             ]
         )
@@ -504,7 +632,6 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.flatFieldProfileID = "pid-1"
 
         #expect(model.runEnabled == true)
         #expect(await model.validateSelection() == false)
@@ -534,7 +661,6 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.across = 3
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
-        model.flatFieldProfileID = "pid-1"
 
         #expect(await model.validateSelection() == false)
         #expect(model.selectionError != nil)
@@ -569,7 +695,7 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
+        model.rigProfileID = "pid-1"
 
         let command = try #require(model.buildRunCommand())
         #expect(command.arguments.contains("--roll"))
@@ -580,9 +706,8 @@ struct ConfigurationModelTests {
         #expect(command.arguments.contains("--per-negative"))
         let perNegativeIndex = try #require(command.arguments.firstIndex(of: "--per-negative"))
         #expect(command.arguments[perNegativeIndex + 1] == "3")
-        // The chosen profile rides along as --flatfield.
-        let flatfieldIndex = try #require(command.arguments.firstIndex(of: "--flatfield"))
-        #expect(command.arguments[flatfieldIndex + 1] == "pid-1")
+        let rigIndex = try #require(command.arguments.firstIndex(of: "--rig"))
+        #expect(command.arguments[rigIndex + 1] == "pid-1")
     }
 
     @Test("An overlapping selection still runs, and names no --skip-sources")
@@ -608,7 +733,6 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
 
         // Overlapping a negative already in the roll is never a reason to
         // withhold the Run command — every group runs and supersedes
@@ -617,9 +741,9 @@ struct ConfigurationModelTests {
         #expect(!command.arguments.contains("--skip-sources"))
     }
 
-    // MARK: - Flat field (protocol version 6; per-run choice since the roll-lock fix)
+    // MARK: - Rig profile (per-run choice)
 
-    @Test("Selecting a roll leaves the current profile choice alone")
+    @Test("Selecting a roll leaves the current rig profile choice alone")
     func selectingARollDoesNotChangeTheProfile() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -638,14 +762,14 @@ struct ConfigurationModelTests {
 
         model.inputFolder = directory
         await model.waitForPendingProbes()
-        model.flatFieldProfileID = "pid-mine"
+        model.rigProfileID = "pid-mine"
         // A roll never pins the picker to whatever profile its past runs
         // used — the profile is a per-run choice, so selecting a roll must
         // not disturb it.
         model.rollURL = rollDir
         await model.waitForPendingProbes()
 
-        #expect(model.flatFieldProfileID == "pid-mine")
+        #expect(model.rigProfileID == "pid-mine")
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
         #expect(model.runEnabled == true)
@@ -680,15 +804,14 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
         await model.waitForPendingProbes()
 
         let argv = try String(contentsOf: argvPath, encoding: .utf8)
         #expect(!argv.contains("--files"))
     }
 
-    @Test("An explicit profile choice survives a relaunch")
-    func flatFieldProfileIDIsPersisted() async throws {
+    @Test("An explicit rig profile choice survives a relaunch")
+    func rigProfileIDIsPersisted() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -699,16 +822,16 @@ struct ConfigurationModelTests {
         let defaults = Self.isolatedDefaults()
 
         let first = ConfigurationModel(runner: CLIRunner(executable: executable), defaults: defaults)
-        first.flatFieldProfileID = "pid-1"
+        first.rigProfileID = "pid-1"
 
         let second = ConfigurationModel(runner: CLIRunner(executable: executable), defaults: defaults)
         await second.waitForPendingProbes()
 
-        #expect(second.flatFieldProfileID == "pid-1")
+        #expect(second.rigProfileID == "pid-1")
     }
 
-    @Test("validateSelection carries --flatfield when a profile is chosen")
-    func validationProbeCarriesFlatField() async throws {
+    @Test("validateSelection carries --rig when a profile is chosen")
+    func validationProbeCarriesRig() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -733,18 +856,18 @@ struct ConfigurationModelTests {
         await model.waitForPendingProbes()
         model.selectedFiles = ["a.NEF", "b.NEF", "c.NEF"]
         model.across = 3
-        model.flatFieldProfileID = "pid-1"
+        model.rigProfileID = "pid-1"
 
         let argvBefore = try String(contentsOf: argvPath, encoding: .utf8)
-        #expect(!argvBefore.contains("--flatfield"))
+        #expect(!argvBefore.contains("--rig"))
 
         #expect(await model.validateSelection())
 
         let argv = try String(contentsOf: argvPath, encoding: .utf8)
             .split(separator: "\n")
             .map(String.init)
-        #expect(argv.contains("--flatfield"))
-        let index = try #require(argv.firstIndex(of: "--flatfield"))
+        #expect(argv.contains("--rig"))
+        let index = try #require(argv.firstIndex(of: "--rig"))
         #expect(argv[index + 1] == "pid-1")
     }
 

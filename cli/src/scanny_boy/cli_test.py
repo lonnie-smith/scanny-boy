@@ -768,27 +768,6 @@ def test_roll_set_base_frame_warns_on_camera_conflict(capsys, tmp_path, monkeypa
     )
 
 
-def test_roll_set_base_frame_records_the_flatfield_profile_id(
-    capsys, tmp_path, monkeypatch
-):
-    roll_dir = _init_roll(capsys, tmp_path)
-    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
-    captured: dict = {}
-
-    def _fake_load(reference, gain_map):
-        captured["gain_map_given"] = gain_map is not None
-        return _base_measurement()
-
-    monkeypatch.setattr("scanny_boy.film_base.load", _fake_load)
-
-    # An unknown profile id fails before anything is written.
-    status = _set_base_frame(capsys, roll_dir, frame, "--flatfield", "nope")
-    assert status == 1
-    events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "FLATFIELD_PROFILE_NOT_FOUND"
-    assert load_roll_manifest(roll_dir).film_base is None
-
-
 def test_roll_info_reports_the_film_base_block(capsys, tmp_path, monkeypatch):
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
@@ -1411,8 +1390,8 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     roll = load_roll_manifest(roll_dir)
     negative = roll.negatives[0]
     matrix = render.camera_matrix_from_roll(roll)
-    from scanny_boy.edits_test import _tone_params
     from scanny_boy import color
+    from scanny_boy.edits_test import _tone_params
 
     tone_params = _tone_params(160.0, 0.3)
 
@@ -2426,49 +2405,41 @@ def test_forced_termination_leaves_running_state_that_the_next_run_recovers(tmp_
     assert [p for p in out_dir.iterdir() if p.name.endswith(STAGING_SUFFIX)] == []
 
 
-# --- flatfield ------------------------------------------------------------
+# --- rig ------------------------------------------------------------------
 
 
-def _save_flatfield_profile(name: str = "Copy stand") -> None:
-    from scanny_boy import flatfield
+def _save_rig_profile(name: str = "Copy stand") -> None:
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
-    gain_map = np.full((8, 8, 3), 1.5, dtype=np.float32)
-    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
-    repo.save_flatfield_profile(
-        flatfield.FlatFieldProfile(
+    repo.save_rig_profile(
+        RigProfile(
             profile_id=f"pid-{name}",
             name=name,
-            gain_map_path=str(path),
-            gain_map_sha256=sha256,
-            source_path="/refs/bare.NEF",
-            reference_width=12,
-            reference_height=8,
-            params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
         )
     )
 
 
-def test_flatfield_list_reports_an_empty_library(capsys):
-    status = main(["flatfield", "list"])
+def test_rig_list_reports_an_empty_library(capsys):
+    status = main(["rig", "list"])
 
     assert status == 0
     events, _err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == ["started", "flatfield_list", "finished"]
-    assert events[0]["command"] == "flatfield list"
+    assert [e["event"] for e in events] == ["started", "rig_list", "finished"]
+    assert events[0]["command"] == "rig list"
     assert events[1]["profiles"] == []
 
 
-def test_flatfield_create_rejects_a_taken_name_without_decoding(capsys, tmp_path):
-    _save_flatfield_profile("Copy stand")
+def test_rig_create_rejects_a_taken_name_without_decoding(capsys, tmp_path):
+    _save_rig_profile("Copy stand")
 
     status = main(
         [
-            "flatfield",
+            "rig",
             "create",
-            "--reference",
+            "--calibration",
             str(tmp_path / "does-not-matter.NEF"),
             "--name",
             "Copy stand",
@@ -2477,80 +2448,53 @@ def test_flatfield_create_rejects_a_taken_name_without_decoding(capsys, tmp_path
 
     assert status == 1
     events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "FLATFIELD_PROFILE_EXISTS"
+    assert events[1]["code"] == "RIG_PROFILE_EXISTS"
 
 
-def test_flatfield_create_maps_a_non_raw_reference_to_unsupported_raw(capsys, tmp_path):
-    write_fake_nef(tmp_path / "ref.NEF")
-
-    status = main(
-        [
-            "flatfield",
-            "create",
-            "--reference",
-            str(tmp_path / "ref.NEF"),
-            "--name",
-            "Nope",
-        ]
-    )
+def test_rig_delete_unknown_profile_is_not_found(capsys):
+    status = main(["rig", "delete", "--profile", "nope"])
 
     assert status == 1
     events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "UNSUPPORTED_RAW"
+    assert events[1]["code"] == "RIG_PROFILE_NOT_FOUND"
 
 
-def test_flatfield_delete_unknown_profile_is_not_found(capsys):
-    status = main(["flatfield", "delete", "--profile", "nope"])
-
-    assert status == 1
-    events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "FLATFIELD_PROFILE_NOT_FOUND"
-
-
-def test_flatfield_delete_refuses_a_profile_locked_into_a_roll(capsys, tmp_path):
-    _save_flatfield_profile("Copy stand")
-    from scanny_boy import flatfield
+def test_rig_delete_refuses_a_profile_locked_into_a_roll(capsys, tmp_path):
+    _save_rig_profile("Copy stand")
     from scanny_boy.library import repo
     from scanny_boy.roll_manifest import new_roll_manifest, write_roll_manifest
 
     roll_dir = tmp_path / "Roll"
     roll_dir.mkdir()
     manifest = new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour")
-    manifest.processing_params = {
-        "output_bps": 16,
-        "flat_field": flatfield.profile_token(
-            repo.load_flatfield_profile("pid-Copy stand")
-        ),
+    manifest.stitch_params = {
+        "geometry": {"profile_id": "pid-Copy stand", "geometry": {"k1": 0.0}},
     }
     write_roll_manifest(roll_dir, manifest)
 
-    status = main(["flatfield", "delete", "--profile", "pid-Copy stand"])
+    status = main(["rig", "delete", "--profile", "pid-Copy stand"])
 
     assert status == 1
     events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "FLATFIELD_PROFILE_IN_USE"
-    assert repo.load_flatfield_profile("pid-Copy stand") is not None
+    assert events[1]["code"] == "RIG_PROFILE_IN_USE"
+    assert repo.load_rig_profile("pid-Copy stand") is not None
 
 
-def test_flatfield_delete_removes_the_row_and_the_npz(capsys, tmp_path):
-    _save_flatfield_profile("Copy stand")
+def test_rig_delete_removes_the_row(capsys, tmp_path):
+    _save_rig_profile("Copy stand")
     from scanny_boy.library import repo
 
-    profile = repo.load_flatfield_profile("pid-Copy stand")
-    assert Path(profile.gain_map_path).exists()
-
-    status = main(["flatfield", "delete", "--profile", "pid-Copy stand"])
+    status = main(["rig", "delete", "--profile", "pid-Copy stand"])
 
     assert status == 0
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == [
         "started",
-        "flatfield_deleted",
+        "rig_deleted",
         "finished",
     ]
     assert events[1]["profile_id"] == "pid-Copy stand"
-    assert repo.list_flatfield_profiles() == []
-    assert not Path(profile.gain_map_path).exists()
+    assert repo.list_rig_profiles() == []
 
 
 def _save_grid_profile(name: str, *, across: int = 4, down: int = 2) -> str:
@@ -2631,43 +2575,6 @@ def test_grid_delete_removes_the_row(capsys):
     assert [e["event"] for e in events] == ["started", "grid_deleted", "finished"]
     assert events[1]["profile_id"] == profile.profile_id
     assert repo.list_grid_profiles() == []
-
-
-@requires_real_samples
-def test_flatfield_create_list_and_delete_round_trip(capsys):
-    status = main(
-        [
-            "flatfield",
-            "create",
-            "--reference",
-            str(FIXTURES_DIR / "_DSC4638.NEF"),
-            "--name",
-            "Real reference",
-        ]
-    )
-
-    assert status == 0
-    events, _err = _stdout_events(capsys)
-    assert [e["event"] for e in events] == [
-        "started",
-        "flatfield_created",
-        "finished",
-    ]
-    profile = events[1]["profile"]
-    assert profile["name"] == "Real reference"
-    assert profile["reference_width"] == 6064
-    assert profile["reference_height"] == 4040
-    assert profile["source_path"].endswith("_DSC4638.NEF")
-
-    status = main(["flatfield", "list"])
-    assert status == 0
-    events, _err = _stdout_events(capsys)
-    assert [p["profile_id"] for p in events[1]["profiles"]] == [profile["profile_id"]]
-
-    status = main(["flatfield", "delete", "--profile", profile["profile_id"]])
-    assert status == 0
-    events, _err = _stdout_events(capsys)
-    assert events[1]["profile_id"] == profile["profile_id"]
 
 
 # --- --grid ----------------

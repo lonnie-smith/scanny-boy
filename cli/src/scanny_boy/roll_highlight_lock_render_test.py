@@ -15,7 +15,6 @@ negative's own `highlight_refs` sit below the roll's `film_base` density.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from scanny_boy import color, render, tone
 from scanny_boy.highlight_lock import HighlightLock

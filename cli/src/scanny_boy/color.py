@@ -169,7 +169,11 @@ def _corrected_floors_and_delta(
     interchangeable."""
     if highlight_lock is None or len(floors) != 3 or len(ceils) != 3:
         return floors, None
-    from scanny_boy.highlight_lock import HighlightLock, base_offset_for, corrected_floors
+    from scanny_boy.highlight_lock import (
+        HighlightLock,
+        base_offset_for,
+        corrected_floors,
+    )
 
     lock = (
         highlight_lock

@@ -7,13 +7,11 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-import numpy as np
 import pytest
 from sqlalchemy import inspect
 
-from scanny_boy import flatfield
+from scanny_boy.calibration import RigError, RigProfile, rig_profile_summary
 from scanny_boy.events import Code
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library import db, repo
 from scanny_boy.roll_manifest import (
     FrameRecord,
@@ -858,81 +856,48 @@ def test_save_updates_folder_path_after_a_move(roll_dir, tmp_path):
     assert load_roll_manifest(moved).roll_id == "rid-1"
 
 
-# --- flat-field profiles ---------------------------------------------------
+# --- rig profiles ----------------------------------------------------------
 
 
-def _flatfield_profile(name: str = "Copy stand") -> FlatFieldProfile:
-    gain_map = np.full((8, 8, 3), 1.25, dtype=np.float32)
-    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
-    return FlatFieldProfile(
+def _rig_profile(name: str = "Copy stand") -> RigProfile:
+    return RigProfile(
         profile_id=f"pid-{name}",
         name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path="/refs/bare.NEF",
-        reference_width=6064,
-        reference_height=4040,
-        params=flatfield.build_params(),
         scanny_boy_version="0.3.0",
         created_at="2026-09-01T00:00:00Z",
     )
 
 
-def test_flatfield_profiles_round_trip_all_fields():
-    profile = _flatfield_profile()
+def test_rig_profiles_round_trip_all_fields():
+    profile = _rig_profile()
 
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded == profile
-    assert [p.profile_id for p in repo.list_flatfield_profiles()] == [
-        profile.profile_id
-    ]
+    assert [p.profile_id for p in repo.list_rig_profiles()] == [profile.profile_id]
 
 
-def test_load_flatfield_profile_unknown_id_is_typed_not_found():
-    with pytest.raises(FlatFieldError) as excinfo:
-        repo.load_flatfield_profile("nope")
+def test_load_rig_profile_unknown_id_is_typed_not_found():
+    with pytest.raises(RigError) as excinfo:
+        repo.load_rig_profile("nope")
 
-    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
-
-
-def test_delete_flatfield_profile_removes_the_row():
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
-
-    repo.delete_flatfield_profile(profile.profile_id)
-
-    assert repo.list_flatfield_profiles() == []
-    with pytest.raises(FlatFieldError):
-        repo.load_flatfield_profile(profile.profile_id)
+    assert excinfo.value.code == Code.RIG_PROFILE_NOT_FOUND
 
 
-def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
+def test_delete_rig_profile_removes_the_row():
+    profile = _rig_profile()
+    repo.save_rig_profile(profile)
 
-    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked", film_kind="colour")
-    locked.processing_params = {
-        "output_bps": 16,
-        "flat_field": flatfield.profile_token(profile),
-    }
-    write_roll_manifest(tmp_roll_dir("locked"), locked)
+    repo.delete_rig_profile(profile.profile_id)
 
-    other = new_roll_manifest(roll_id="rid-other", roll_name="Other", film_kind="colour")
-    other.processing_params = {"output_bps": 16}
-    write_roll_manifest(tmp_roll_dir("other"), other)
-
-    assert repo.rolls_using_flatfield(profile.profile_id) == ["rid-locked"]
-    assert repo.rolls_using_flatfield("someone-else") == []
+    assert repo.list_rig_profiles() == []
+    with pytest.raises(RigError):
+        repo.load_rig_profile(profile.profile_id)
 
 
-def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
-    """A roll that names the profile only in `stitch_params.geometry`
-    locks the profile exactly as hard as one named in
-    `processing_params.flat_field`."""
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
+def test_rolls_using_rig_profile_matches_the_stitch_side_bucket():
+    profile = _rig_profile()
 
     locked = new_roll_manifest(roll_id="rid-geo", roll_name="Geo", film_kind="colour")
     locked.stitch_params = {
@@ -940,29 +905,25 @@ def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
     }
     write_roll_manifest(tmp_roll_dir("geo"), locked)
 
-    assert repo.rolls_using_profile_geometry(profile.profile_id) == ["rid-geo"]
-    assert repo.rolls_using_profile_geometry("someone-else") == []
-    # The delete path's union sees both buckets.
-    assert set(repo.rolls_using_flatfield(profile.profile_id)) | set(
-        repo.rolls_using_profile_geometry(profile.profile_id)
-    ) == {"rid-geo"}
+    assert repo.rolls_using_rig_profile(profile.profile_id) == ["rid-geo"]
+    assert repo.rolls_using_rig_profile("someone-else") == []
 
 
 def test_calibration_columns_round_trip():
-    profile = _flatfield_profile()
-    profile = FlatFieldProfile(
-        **{
-            **profile.__dict__,
-            "board_key": "2mm",
-            "geometry": {"format_version": 1, "k1": -0.001},
-            "chromatic_aberration": {"mode": "scale", "red_scale": 1.0004},
-            "calibration_report": {"frames_total": 20},
-        }
+    profile = RigProfile(
+        profile_id="pid-cal",
+        name="Calibrated",
+        scanny_boy_version="0.3.0",
+        created_at="2026-09-01T00:00:00Z",
+        board_key="2mm",
+        geometry={"format_version": 1, "k1": -0.001},
+        chromatic_aberration={"mode": "scale", "red_scale": 1.0004},
+        calibration_report={"frames_total": 20},
     )
 
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded.board_key == "2mm"
     assert loaded.geometry == {"format_version": 1, "k1": -0.001}
     assert loaded.chromatic_aberration == {"mode": "scale", "red_scale": 1.0004}
@@ -976,34 +937,30 @@ def tmp_roll_dir(name: str) -> Path:
 
 
 def test_pre_0004_row_reads_back_with_four_nones():
-    """A row written by migration 0003's shape (no calibration columns
-    populated) reads back with four Nones and drives every existing code
-    path unchanged."""
+    """A row with no calibration columns populated reads back with four
+    Nones and drives every existing code path unchanged."""
     import sqlalchemy as sa
 
-    profile = _flatfield_profile("Old build")
-    repo.save_flatfield_profile(profile)
-    # Rewrite the row the way the pre-0004 code would have: no calibration
-    # columns at all.
+    profile = _rig_profile("Old build")
+    repo.save_rig_profile(profile)
     with sa.create_engine(f"sqlite:///{db.library_db_path()}").begin() as conn:
         conn.execute(
             sa.text(
-                "UPDATE flatfield_profiles SET board_key = NULL, geometry = NULL,"
+                "UPDATE rig_profiles SET board_key = NULL, geometry = NULL,"
                 " chromatic_aberration = NULL, calibration_report = NULL"
                 " WHERE profile_id = :pid"
             ),
             {"pid": profile.profile_id},
         )
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded.board_key is None
     assert loaded.geometry is None
     assert loaded.chromatic_aberration is None
     assert loaded.calibration_report is None
-    # The token and summary the existing consumers build are unchanged.
-    assert flatfield.profile_token(loaded) == flatfield.profile_token(profile)
-    assert flatfield.flatfield_profile_summary(loaded).has_geometry is False
-    assert flatfield.flatfield_profile_summary(loaded).chromatic_aberration_mode is None
+    summary = rig_profile_summary(loaded)
+    assert summary.has_geometry is False
+    assert summary.chromatic_aberration_mode is None
 
 
 # --- the thirteenth colour key -------------------------------------------------

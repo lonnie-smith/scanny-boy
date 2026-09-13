@@ -28,18 +28,18 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from scanny_boy.calibration import RigError, RigProfile
 from scanny_boy.events import Code
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.grid_profile import GridProfile, GridProfileError
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
     METADATA_FIELDS,
     ROLL_ONLY_METADATA_FIELDS,
     EditRow,
-    FlatFieldProfileRow,
     GridProfileRow,
     MetadataValueRow,
     NegativeRow,
+    RigProfileRow,
     RollRow,
     RunRow,
     SourceRow,
@@ -206,6 +206,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.film_kind = manifest.film
         roll.film_base = manifest.film_base
         roll.highlight_lock = manifest.highlight_lock
+        roll.flat_field = manifest.flat_field
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -428,6 +429,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             film=roll.film_kind,
             film_base=roll.film_base,
             highlight_lock=roll.highlight_lock,
+            flat_field=roll.flat_field,
             runs=[
                 RunRecord(
                     run_id=r.run_id,
@@ -1227,29 +1229,23 @@ def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
     return net_edit_state(roll_dir, negative_id).quarter_turns
 
 
-# --- flat-field profiles -----------------------------------------------------
+# --- rig profiles ------------------------------------------------------------
 
 
-def _flatfield_profile_row(session: Session, profile_id: str) -> FlatFieldProfileRow:
-    row = session.get(FlatFieldProfileRow, profile_id)
+def _rig_profile_row(session: Session, profile_id: str) -> RigProfileRow:
+    row = session.get(RigProfileRow, profile_id)
     if row is None:
-        raise FlatFieldError(
-            Code.FLATFIELD_PROFILE_NOT_FOUND,
-            f"no flat-field profile with id {profile_id}",
+        raise RigError(
+            Code.RIG_PROFILE_NOT_FOUND,
+            f"no rig profile with id {profile_id}",
         )
     return row
 
 
-def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
-    return FlatFieldProfile(
+def _to_rig_profile(row: RigProfileRow) -> RigProfile:
+    return RigProfile(
         profile_id=row.profile_id,
         name=row.name,
-        gain_map_path=row.gain_map_path,
-        gain_map_sha256=row.gain_map_sha256,
-        source_path=row.source_path,
-        reference_width=row.reference_width,
-        reference_height=row.reference_height,
-        params=dict(row.params),
         scanny_boy_version=row.scanny_boy_version,
         created_at=row.created_at,
         board_key=row.board_key,
@@ -1259,21 +1255,15 @@ def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
     )
 
 
-def save_flatfield_profile(profile: FlatFieldProfile) -> None:
+def save_rig_profile(profile: RigProfile) -> None:
     """Upserts one profile row. Profile records are immutable once created —
     `name` is not in the roll token precisely so renaming stays possible,
     but nothing here needs to rewrite one today."""
     with _session() as session:
         session.merge(
-            FlatFieldProfileRow(
+            RigProfileRow(
                 profile_id=profile.profile_id,
                 name=profile.name,
-                gain_map_path=profile.gain_map_path,
-                gain_map_sha256=profile.gain_map_sha256,
-                source_path=profile.source_path,
-                reference_width=profile.reference_width,
-                reference_height=profile.reference_height,
-                params=profile.params,
                 scanny_boy_version=profile.scanny_boy_version,
                 created_at=profile.created_at,
                 board_key=profile.board_key,
@@ -1284,47 +1274,31 @@ def save_flatfield_profile(profile: FlatFieldProfile) -> None:
         )
 
 
-def list_flatfield_profiles() -> list[FlatFieldProfile]:
+def list_rig_profiles() -> list[RigProfile]:
     with _session() as session:
         rows = session.scalars(
-            select(FlatFieldProfileRow).order_by(
-                FlatFieldProfileRow.created_at, FlatFieldProfileRow.name
+            select(RigProfileRow).order_by(
+                RigProfileRow.created_at, RigProfileRow.name
             )
         ).all()
-        return [_to_flatfield_profile(row) for row in rows]
+        return [_to_rig_profile(row) for row in rows]
 
 
-def load_flatfield_profile(profile_id: str) -> FlatFieldProfile:
+def load_rig_profile(profile_id: str) -> RigProfile:
     with _session() as session:
-        return _to_flatfield_profile(_flatfield_profile_row(session, profile_id))
+        return _to_rig_profile(_rig_profile_row(session, profile_id))
 
 
-def delete_flatfield_profile(profile_id: str) -> None:
+def delete_rig_profile(profile_id: str) -> None:
     with _session() as session:
-        row = _flatfield_profile_row(session, profile_id)
+        row = _rig_profile_row(session, profile_id)
         session.delete(row)
 
 
-def rolls_using_flatfield(profile_id: str) -> list[str]:
-    """Every roll whose `processing_params.flat_field.profile_id` names
-    `profile_id`. `processing_params` is an open JSON object the CLI wrote,
-    so the match is made on the decoded value, not a string pattern."""
-    with _session() as session:
-        rows = session.scalars(select(RollRow)).all()
-        return sorted(
-            roll.roll_id
-            for roll in rows
-            if (roll.processing_params or {}).get("flat_field", {}).get("profile_id")
-            == profile_id
-        )
-
-
-def rolls_using_profile_geometry(profile_id: str) -> list[str]:
+def rolls_using_rig_profile(profile_id: str) -> list[str]:
     """Every roll whose `stitch_params.geometry.profile_id` names
-    `profile_id` — the stitch-side half of the two invariant buckets. A
-    profile whose geometry a roll depends on is exactly as undeletable as
-    one whose gain map it depends
-    on; `flatfield delete` unions this with `rolls_using_flatfield`."""
+    `profile_id`. A rig whose geometry a roll depends on is undeletable
+    until those rolls are gone."""
     with _session() as session:
         rows = session.scalars(select(RollRow)).all()
         return sorted(

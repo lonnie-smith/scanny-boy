@@ -314,19 +314,36 @@ struct CLIEventTests {
         #expect(event.exitStatus == 143)
     }
 
-    @Test("flatfield_progress")
-    func flatfieldProgressDecodes() throws {
+    @Test("rig_progress")
+    func rigProgressDecodes() throws {
         let event = try CLIEvent(
             line: TestEvents.line("""
-                {"event":"flatfield_progress",\
+                {"event":"rig_progress",\
                 "phase":"chromatic","completed":12,"total":20}
                 """)
         )
-        #expect(event.kind == .flatfieldProgress)
-        #expect(event.flatFieldPhase == "chromatic")
+        #expect(event.kind == .rigProgress)
+        #expect(event.rigPhase == "chromatic")
         #expect(event.completed == 12)
         #expect(event.total == 20)
         #expect(event.runID == nil)
+    }
+
+    @Test("flat_field_reference_set")
+    func flatFieldReferenceSetDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"flat_field_reference_set","roll_id":"roll-1",\
+                "source_name":"bare.NEF","reference_width":6064,\
+                "reference_height":4040,"rig_profile_id":"pid-1","locked":false}
+                """)
+        )
+        #expect(event.kind == .flatFieldReferenceSet)
+        #expect(event.flatFieldReferenceSourceName == "bare.NEF")
+        #expect(event.flatFieldReferenceWidth == 6064)
+        #expect(event.flatFieldReferenceHeight == 4040)
+        #expect(event.flatFieldReferenceRigProfileID == "pid-1")
+        #expect(event.flatFieldReferenceLocked == false)
     }
 
     /// Every code in CONTRACT.md maps to a case, and none of them lands in
@@ -354,9 +371,10 @@ struct CLIEventTests {
         "OUTPUT_MODIFIED_EXTERNALLY", "METADATA_WRITE_FAILED",
         "ORPHAN_FILE_NOT_REMOVED",
         "NEGATIVE_NOT_FOUND", "INVALID_EDIT", "EXPORT_FAILED", "PREVIEW_FAILED",
-        // Protocol version 6: flat field.
-        "FLATFIELD_PROFILE_NOT_FOUND", "FLATFIELD_PROFILE_EXISTS",
-        "FLATFIELD_PROFILE_IN_USE", "FLATFIELD_GAIN_MAP_MISSING",
+        // Rig profiles and roll flat-field references.
+        "RIG_PROFILE_NOT_FOUND", "RIG_PROFILE_EXISTS",
+        "RIG_PROFILE_IN_USE", "FLATFIELD_REFERENCE_LOCKED",
+        "FLATFIELD_REFERENCE_RIG_CONFLICT", "FLATFIELD_GAIN_MAP_MISSING",
         "FLATFIELD_ASPECT_MISMATCH", "FLATFIELD_HIGHLIGHT_CLIPPED",
         // Protocol version 7: geometric calibration.
         "GEOMETRY_INSUFFICIENT_FRAMES", "GEOMETRY_BOARD_NOT_DETECTED",

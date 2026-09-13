@@ -10,8 +10,6 @@ import pytest
 
 from scanny_boy import auto_neutral, color, normalization, render, tone
 from scanny_boy.auto_neutral import (
-    AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_HIGH,
-    AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_LOW,
     AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_HIGH,
     AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_LOW,
     measure_auto_neutral_bands,

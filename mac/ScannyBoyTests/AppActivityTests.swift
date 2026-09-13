@@ -103,7 +103,7 @@ struct AppActivityTests {
             run: RunModel(runner: runner),
             edit: EditModel(runner: runner),
             export: ExportModel(runner: runner),
-            flatField: FlatFieldModel(runner: runner),
+            rig: RigModel(runner: runner),
             configuration: configuration
         )
         return (activity, configuration)
