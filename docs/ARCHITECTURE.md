@@ -95,14 +95,19 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **21** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 21 adds the layout solve's joint
-nonlinear refinement (§8 — the linear solution refined against the
-`global_rms` residual itself; `stitch_params` gains `layout_refinement` and
-`layout_refinement_loss`, and `manifest_format_version` bumps 9 → 10
-because every placement, and so every output pixel, moves — rolls stitched
-earlier refuse new runs with `ROLL_INVARIANT_MISMATCH`, no migration; no
-event shape or code changes); 20 narrows the feather to a band around
+`PROTOCOL_VERSION` is **22** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 22 splits the scanning-rig profile from
+the per-roll flat-field reference (`flatfield_*` events → `rig_*`,
+`FLATFIELD_PROFILE_*` → `RIG_PROFILE_*`, new `flat_field_reference_set` and
+`rolls.flat_field`; see `docs/FLATFIELD_REFERENCE.md` and
+`docs/DECISIONS.md` §"Rig profile vs flat-field reference"); 21 adds the
+layout solve's joint nonlinear refinement (§8 — the linear solution refined
+against the `global_rms` residual itself; `stitch_params` gains
+`layout_refinement` and `layout_refinement_loss`, and
+`manifest_format_version` bumps 9 → 10 because every placement, and so
+every output pixel, moves — rolls stitched earlier refuse new runs with
+`ROLL_INVARIANT_MISMATCH`, no migration; no event shape or code changes); 20
+narrows the feather to a band around
 the overlap midline (the separable ramp product raised to `FEATHER_EXPONENT`
 before flooring, §8); 19 adds the `crop` op (`edit crop`); 18 adds `serve`,
 the resident one-process request/response mode the app's Edit tab drives,

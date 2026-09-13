@@ -237,7 +237,7 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_nineteen():
+def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
     assert PROTOCOL_VERSION == 22
