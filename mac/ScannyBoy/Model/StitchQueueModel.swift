@@ -43,6 +43,10 @@ final class StitchQueueModel {
     }
 
     let runner: CLIRunner
+    /// Fired after `rollRefresh` — the roll manifest on disk has just
+    /// gained newly stitched negatives that other tabs (Edit, Library)
+    /// have no other way to learn about.
+    var onRollUpdated: (() -> Void)?
     private(set) var negatives: [QueuedNegative] = []
     private(set) var activePrepareCount = 0
     private(set) var isStitching = false
@@ -63,6 +67,12 @@ final class StitchQueueModel {
 
     var hasWork: Bool {
         negatives.contains { $0.step != .published }
+    }
+
+    var hasUnpublishedEntries: Bool { hasWork }
+
+    var publishedNegativeIDs: Set<UUID> {
+        Set(negatives.filter { $0.step == .published }.map(\.id))
     }
 
     var isQueueBusy: Bool { hasWork || isStitching || isRefreshing }
@@ -107,6 +117,37 @@ final class StitchQueueModel {
         drainTask = Task { await drainAndRefresh(roll: rollURL) }
     }
 
+    /// Marks one queue entry published — for unit tests only.
+    func testingMarkPublished(id: UUID) {
+        guard let index = negatives.firstIndex(where: { $0.id == id }) else { return }
+        negatives[index].step = .published
+    }
+
+    /// Removes every queue entry that has not published and returns paths to
+    /// recycle (frame NEFs and work folders).
+    func discardUnpublished() -> [URL] {
+        drainTask?.cancel()
+        drainTask = nil
+        isStitching = false
+        isRefreshing = false
+        var urls: [URL] = []
+        let remaining = negatives.filter { entry in
+            guard entry.step != .published else { return true }
+            urls.append(contentsOf: entry.framePaths.map { URL(fileURLWithPath: $0) })
+            urls.append(URL(fileURLWithPath: entry.workFolder))
+            return false
+        }
+        negatives = remaining
+        activePrepareCount = 0
+        if negatives.isEmpty {
+            clearPersistedState()
+        } else {
+            persistState()
+        }
+        updateSleepAssertion()
+        return urls
+    }
+
     private func pump() {
         startPreparesIfNeeded()
         startNextStitchIfNeeded()
@@ -127,7 +168,7 @@ final class StitchQueueModel {
                     captureFolder: captureFolder,
                     rigProfileID: rigProfileID
                 )
-                activePrepareCount -= 1
+                activePrepareCount = max(0, activePrepareCount - 1)
                 if let idx = negatives.firstIndex(where: { $0.id == id }) {
                     negatives[idx].step = .waitingCheck
                     pump()
@@ -137,9 +178,11 @@ final class StitchQueueModel {
     }
 
     private func runPrepare(index: Int, captureFolder: URL, rigProfileID: String?) async {
+        guard negatives.indices.contains(index) else { return }
         let entry = negatives[index]
         let files = entry.framePaths.map { URL(fileURLWithPath: $0).lastPathComponent }
         let work = URL(fileURLWithPath: entry.workFolder)
+        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         let command = CLICommand.prepare(
             input: captureFolder,
             files: files,
@@ -169,6 +212,7 @@ final class StitchQueueModel {
     }
 
     private func runCheck(index: Int, rigProfileID: String?) async {
+        guard negatives.indices.contains(index) else { return }
         negatives[index].step = .checking
         let work = URL(fileURLWithPath: negatives[index].workFolder)
         let command = CLICommand.captureCheck(work: work, rig: rigProfileID)
@@ -233,6 +277,7 @@ final class StitchQueueModel {
         defer { isRefreshing = false }
         _ = await runCommand(.rollRefresh(roll: roll))
         clearPersistedState()
+        onRollUpdated?()
     }
 
     // MARK: - Persistence
@@ -281,8 +326,13 @@ final class StitchQueueModel {
         down = state.down
         negatives = state.negatives.map { entry in
             var copy = entry
-            if copy.step == .preparing || copy.step == .checking || copy.step == .stitching {
-                copy.step = copy.step == .stitching ? .waitingStitch : .waitingPrepare
+            switch copy.step {
+            case .stitching:
+                copy.step = .waitingStitch
+            case .preparing, .checking, .waitingCheck:
+                copy.step = .waitingPrepare
+            default:
+                break
             }
             return copy
         }

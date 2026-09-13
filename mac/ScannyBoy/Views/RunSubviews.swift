@@ -192,13 +192,14 @@ enum FilmKindChoice: String, CaseIterable, Identifiable {
     }
 }
 
-/// The Add Scans sheet's film-type picker. Choosing a value calls
-/// `roll set-film-kind` immediately; Convert stays disabled until one is set.
+/// Film-type picker shared by Add Scans and Capture. Choosing a value calls
+/// `roll set-film-kind` immediately.
 struct FilmKindField: View {
     let filmKind: String?
     let isLocked: Bool
     let isBusy: Bool
     let error: ConfigurationModel.Issue?
+    var unsetHint = "Choose the film type before converting scans."
     let onChoose: (FilmKindChoice) -> Void
 
     @State private var selection: FilmKindChoice?
@@ -224,7 +225,7 @@ struct FilmKindField: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if filmKind == nil {
-                Text("Choose the film type before converting scans.")
+                Text(unsetHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

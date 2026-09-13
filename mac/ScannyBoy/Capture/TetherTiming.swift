@@ -30,12 +30,14 @@ enum TetherTiming {
     /// Computes the exposure timeout from a shutter speed in PTP units
     /// (seconds × 10_000; `0xFFFF_FFFF` = bulb).
     static func exposureTimeout(shutterPTP: UInt32) -> Duration {
-        let exposure: TimeInterval
+        exposureDuration(shutterPTP: shutterPTP) + exposureGrace
+    }
+
+    /// The exposure length for a shutter speed in PTP units (bulb counts as 30 s).
+    static func exposureDuration(shutterPTP: UInt32) -> Duration {
         if shutterPTP == 0xFFFF_FFFF {
-            exposure = 30
-        } else {
-            exposure = max(Double(shutterPTP) / 10_000, 0.001)
+            return .seconds(30)
         }
-        return .seconds(exposure) + exposureGrace
+        return .seconds(max(Double(shutterPTP) / 10_000, 0.001))
     }
 }

@@ -14,30 +14,25 @@ enum CaptureNaming {
 
     /// Creates a unique bare-light reference file URL (`bare-light-<timestamp>.NEF`).
     static func bareLightURL(in directory: URL, at date: Date = Date()) throws -> URL {
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        let stamp = stampFormatter.string(from: date)
-        var suffix = 0
-        while true {
-            let adjustedStamp = suffix == 0 ? stamp : "\(stamp)-\(suffix + 1)"
-            let name = "bare-light-\(adjustedStamp).NEF"
-            let url = directory.appending(path: name, directoryHint: .notDirectory)
-            let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
-            if fd >= 0 {
-                close(fd)
-                try? FileManager.default.removeItem(at: url)
-                return url
-            }
-            if errno != EEXIST {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
-            suffix += 1
-        }
+        try prefixedURL("bare-light", in: directory, at: date)
     }
 
     /// Creates a unique check-shot file URL (`focus-check-<timestamp>.NEF`).
     static func focusCheckURL(in directory: URL, at date: Date = Date()) throws -> URL {
+        try prefixedURL("focus-check", in: directory, at: date)
+    }
+
+    /// Creates a unique URL for a buffer leftover in the capture folder's
+    /// `_unclaimed/` (`leftover-<capture time>.NEF`, §2.5).
+    static func unclaimedURL(in captureFolder: URL, capturedAt date: Date) throws -> URL {
+        try prefixedURL(
+            "leftover",
+            in: captureFolder.appending(path: "_unclaimed", directoryHint: .isDirectory),
+            at: date
+        )
+    }
+
+    private static func prefixedURL(_ prefix: String, in directory: URL, at date: Date) throws -> URL {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true
         )
@@ -45,7 +40,7 @@ enum CaptureNaming {
         var suffix = 0
         while true {
             let adjustedStamp = suffix == 0 ? stamp : "\(stamp)-\(suffix + 1)"
-            let name = "focus-check-\(adjustedStamp).NEF"
+            let name = "\(prefix)-\(adjustedStamp).NEF"
             let url = directory.appending(path: name, directoryHint: .notDirectory)
             let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
             if fd >= 0 {

@@ -14,6 +14,7 @@ actor TetherCamera: CameraControlling {
 
     private var bridge: TetherCameraBridge?
     private var handlesBeforeRelease: Set<UInt32> = []
+    private var releasedAt: ContinuousClock.Instant?
     private var pushedHandles: [UInt32] = []
     private var captureCompleted = false
     private var ignoredHandles: Set<UInt32> = []
@@ -131,6 +132,7 @@ actor TetherCamera: CameraControlling {
             params = [0xFFFF_FFFF, 0]
         }
         do {
+            releasedAt = ContinuousClock.now
             let response = try await sendPTP(opcode, params: params)
             guard PTP.responseCode(response) == PTP.responseOK else {
                 updateState(.ready)
@@ -156,13 +158,19 @@ actor TetherCamera: CameraControlling {
             try await sleep(TetherTiming.readyPollInterval)
             return
         }
-        let deadline = ContinuousClock.now + TetherTiming.exposureTimeout(shutterPTP: shutter)
+        let released = releasedAt ?? ContinuousClock.now
+        let deadline = released + TetherTiming.exposureTimeout(shutterPTP: shutter)
+        let exposureEnds = released + TetherTiming.exposureDuration(shutterPTP: shutter)
         var sawBusy = false
         while ContinuousClock.now < deadline {
             let response = try await sendPTP(PTP.nikonDeviceReady)
             let code = PTP.responseCode(response)
             if code == PTP.responseDeviceBusy { sawBusy = true }
-            if sawBusy, code == PTP.responseOK { return }
+            // A short exposure can finish before the first poll, so the camera
+            // never answers busy; OK once the exposure has elapsed counts too.
+            if code == PTP.responseOK, sawBusy || ContinuousClock.now >= exposureEnds {
+                return
+            }
             try await sleep(TetherTiming.readyPollInterval)
         }
         throw TetherCaptureError.exposureTimeout
@@ -217,6 +225,7 @@ actor TetherCamera: CameraControlling {
             try FileManager.default.removeItem(at: url)
         }
         try FileManager.default.moveItem(at: partial, to: url)
+        leftovers.removeAll { $0.handle == handle }
         return TetherCapturedFrame(url: url, handle: handle, objectInfo: info)
     }
 

@@ -13,7 +13,6 @@ actor FakeTetherCamera: CameraControlling {
         var exposureEndDelay: Duration = .milliseconds(550)
         var frameArrivalDelay: Duration = .milliseconds(1100)
         var downloadDelay: Duration = .milliseconds(550)
-        var nextBufferHandle: UInt32 = TetherTiming.bufferScanFirst
         var dropOnRelease = false
         var failFrameArrival = false
         var bufferSurvivesDownload = false
@@ -62,6 +61,12 @@ actor FakeTetherCamera: CameraControlling {
 
     func setFailDownload(_ fail: Bool) {
         config.failDownload = fail
+    }
+
+    /// Puts a frame in the buffer as if a release had been cut off.
+    func addLeftover(_ leftover: BufferLeftover) {
+        leftovers.append(leftover)
+        bufferHandles.insert(leftover.handle)
     }
 
     func startBrowsing() async {
@@ -150,9 +155,17 @@ actor FakeTetherCamera: CameraControlling {
             throw TetherCaptureError.frameArrivalTimeout
         }
         try await Task.sleep(for: config.frameArrivalDelay)
-        let handle = config.nextBufferHandle
-        config.nextBufferHandle &+= 1
+        // Like the Z f, a new frame takes the lowest free buffer handle, so a
+        // handle freed by a download comes straight back.
+        var handle = TetherTiming.bufferScanFirst
+        while bufferHandles.contains(handle) {
+            handle &+= 1
+        }
         bufferHandles.insert(handle)
+        guard !handlesBefore.contains(handle) else {
+            // The real scan ignores handles it was told were already there.
+            throw TetherCaptureError.frameArrivalTimeout
+        }
         return handle
     }
 
@@ -174,6 +187,7 @@ actor FakeTetherCamera: CameraControlling {
         try Data([0, 1, 2, 3]).write(to: url)
         if !config.bufferSurvivesDownload {
             bufferHandles.remove(handle)
+            leftovers.removeAll { $0.handle == handle }
         }
         updateState(.ready)
         return TetherCapturedFrame(url: url, handle: handle, objectInfo: info)

@@ -96,6 +96,9 @@ struct ContentView: View {
             run.clearResults()
             export.clearResults()
         }
+        .onChange(of: captureRollSetupSyncKey) { _, _ in
+            syncCaptureRollSetup()
+        }
         .onChange(of: workspaceTab) { _, tab in
             keyboard.workspaceTab = tab
             switch tab {
@@ -279,6 +282,7 @@ struct ContentView: View {
             case .capture:
                 CaptureStageView(
                     capture: capture,
+                    model: model,
                     stitchQueue: stitchQueue,
                     rig: rig,
                     grid: grid,
@@ -377,6 +381,12 @@ struct ContentView: View {
                 model.receiveFlatFieldReference(flatField)
             }
         }
+        if stitchQueue.onRollUpdated == nil {
+            stitchQueue.onRollUpdated = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
     }
 
     private func resolveSelectedRoll() {
@@ -389,12 +399,27 @@ struct ContentView: View {
         }
     }
 
-    private func wireCaptureToRoll() {
-        capture.rollURL = model.rollURL
+    /// Keeps capture's roll-setup fields aligned with Add Scans / roll info.
+    private var captureRollSetupSyncKey: String {
+        [
+            model.filmKind,
+            model.filmBase?.sourceName,
+            model.flatField?.sourceName,
+        ]
+        .map { $0 ?? "" }
+        .joined(separator: "|")
+    }
+
+    private func syncCaptureRollSetup() {
         capture.filmKind = model.filmKind
         capture.filmBase = model.filmBase
-        capture.rigProfileID = model.rigProfileID
         capture.flatField = model.flatField
+    }
+
+    private func wireCaptureToRoll() {
+        capture.rollURL = model.rollURL
+        syncCaptureRollSetup()
+        capture.rigProfileID = model.rigProfileID
         if let profileID = capture.gridProfileID,
            let profile = grid.profiles.first(where: { $0.profileID == profileID })
         {
@@ -405,18 +430,21 @@ struct ContentView: View {
             capture.across = model.across
             capture.down = model.down
         }
-        if let rollURL = model.rollURL,
-           let captureFolder = capture.captureFolder,
-           let across = capture.across
-        {
-            stitchQueue.configure(
-                roll: rollURL,
-                captureFolder: captureFolder,
-                rigProfileID: capture.rigProfileID,
-                across: across,
-                down: capture.down
-            )
-        }
+        reconfigureStitchQueueIfNeeded()
+    }
+
+    private func reconfigureStitchQueueIfNeeded() {
+        guard let rollURL = capture.rollURL ?? model.rollURL,
+            let captureFolder = capture.captureFolder,
+            let across = capture.across
+        else { return }
+        stitchQueue.configure(
+            roll: rollURL,
+            captureFolder: captureFolder,
+            rigProfileID: capture.rigProfileID,
+            across: across,
+            down: capture.down
+        )
     }
 
     private var catalogueColumn: some View {

@@ -369,6 +369,13 @@ each leftover's embedded preview and capture time and offers:
 - **Discard** — `0x90C3`, removing it from the camera's memory. The user
   chooses this; the app never discards on its own.
 
+As built: the app downloads each leftover into `_unclaimed/` as soon as it
+finds one, at connect or before a release. Downloading is the only proven way
+to read the embedded preview, and it clears the frame from the camera, so the
+frame is safe on disk before the user chooses. **Save** leaves that file
+where it is, **Use for cell *k*** moves it to the cell's name, and **Discard**
+deletes it. Start and Resume stay disabled until every leftover is resolved.
+
 ### 2.6 Files on disk
 
 **Where.** A capture base folder, set in Settings, default
@@ -420,19 +427,24 @@ pass (§2.4), and every required field is set — the same completeness rule as
 With a 1/2 s exposure and the default 4 s interval, from §0.1's measurements:
 
 ```
-t = 0.00  release (cell 1)
-t ≈ 0.55  exposure over (DeviceReady OK) ── move cue, interval clock starts
-t ≈ 1.1   frame found in the buffer
-t ≈ 1.7   file on disk ─────────────────── cell 1 fills
-t ≈ 3.55  hold cue (HOLD_CUE_LEAD = 1.0 s before release)
-t ≈ 4.55  release (cell 2)
+t = 0.00  user starts negative ── initial interval clock starts
+t ≈ 3.00  hold cue (HOLD_CUE_LEAD = 1.0 s before release)
+t ≈ 4.00  release (cell 1)
+t ≈ 4.55  exposure over (DeviceReady OK) ── move cue, interval clock starts
+t ≈ 5.1   frame found in the buffer
+t ≈ 5.7   file on disk ─────────────────── cell 1 fills
+t ≈ 7.55  hold cue
+t ≈ 8.55  release (cell 2)
 …
 last cell's file on disk ── negative complete, enqueued for stitching
 ```
 
 Rules:
 
-- The interval clock starts at the end of the exposure (§0.5).
+- An **initial interval** of the same duration runs before cell 1's release.
+  If the operator pauses during it and cell 1 has not fired yet, the initial
+  interval runs again on resume.
+- Inter-shot intervals start at the end of the exposure (§0.5).
 - **The next release waits for the previous frame's download.** The PTP
   channel runs one transaction at a time and a 25 MB `GetObject` takes 0.55 s;
   a release must never queue behind one. If a slow download pushes past the

@@ -6,7 +6,7 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
-from scanny_boy import repo
+from scanny_boy.library import repo
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.events import Code, Event
 from scanny_boy.manifest import BadManifestError, load_manifest

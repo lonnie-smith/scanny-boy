@@ -57,6 +57,7 @@ private struct CaptureCellView: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(borderColor, lineWidth: state == .next ? 2 : 1)
         }
+        .help(failureMessage ?? "")
         .task(id: fileURL) {
             guard let fileURL else { return }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
@@ -65,6 +66,11 @@ private struct CaptureCellView: View {
                 scale: 2
             )
         }
+    }
+
+    private var failureMessage: String? {
+        if case .failed(let message) = state { return message }
+        return nil
     }
 
     private var fileURL: URL? {

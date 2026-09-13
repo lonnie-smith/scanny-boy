@@ -50,10 +50,10 @@ private struct CaptureQueueTile: View {
     private var iconName: String {
         switch negative.step {
         case .published: "checkmark.circle.fill"
-        case .stitching: "gearshape.fill"
+        case .preparing, .checking, .stitching: "gearshape.fill"
         case .prepareFailed, .checkFailed, .stitchFailed: "xmark.octagon.fill"
         case .waitingForDisk: "externaldrive.badge.exclamationmark"
-        default: "clock.fill"
+        case .waitingPrepare, .waitingCheck, .waitingStitch: "clock.fill"
         }
     }
 }

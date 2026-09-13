@@ -248,6 +248,15 @@ enum PTP {
             self.filename = filename
             self.captureDate = captureDate
         }
+
+        /// `captureDate` (PTP DateTime, `yyyyMMddThhmmss[.s]`) in local time.
+        var capturedAt: Date? {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = "yyyyMMdd'T'HHmmss"
+            return formatter.date(from: String(captureDate.prefix(15)))
+        }
     }
 
     struct StorageInfo: Sendable, Hashable {

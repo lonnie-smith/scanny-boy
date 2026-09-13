@@ -14,13 +14,13 @@ private final class TestCaptureClock: CaptureClock, @unchecked Sendable {
 @Suite("CaptureSessionModel")
 @MainActor
 struct CaptureSessionModelTests {
-    private static func makeModel(
-        clock: TestCaptureClock = TestCaptureClock(),
+    private static func makeModel<C: CaptureClock>(
+        clock: C = TestCaptureClock(),
         across: Int = 2,
-        down: Int = 1
-    ) -> (CaptureSessionModel, FakeTetherCamera, TestCaptureClock) {
+        down: Int = 1,
+        camera: FakeTetherCamera = FakeTetherCamera()
+    ) -> (CaptureSessionModel, FakeTetherCamera, C) {
         let runner = CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false"))
-        let camera = FakeTetherCamera()
         let model = CaptureSessionModel(runner: runner, camera: camera, clock: clock)
         model.across = across
         model.down = down
@@ -133,6 +133,47 @@ struct CaptureSessionModelTests {
         model.flatField = nil
         await model.refreshConnection()
         #expect(model.runEnabled == false)
+    }
+
+    @Test("startBlockedReason names the first missing prerequisite")
+    func startBlockedReasonNamesMissingPrerequisite() async {
+        let (model, _, _) = Self.makeModel()
+        model.flatField = nil
+        await model.refreshConnection()
+        #expect(model.startBlockedReason == "Capture a bare-light reference before capturing.")
+
+        model.flatField = FlatFieldReference(fields: [
+            "source_name": .string("bare-light.NEF"),
+            "reference_width": .int(100),
+            "reference_height": .int(100),
+        ])
+        model.gridProfileID = nil
+        model.across = nil
+        #expect(model.startBlockedReason == "Choose a grid before capturing.")
+    }
+
+    @Test("canToggleSequence is true while running or paused")
+    func canToggleSequenceWhileActive() async {
+        let (model, _, _) = Self.makeModel()
+        await model.refreshConnection()
+        #expect(model.canToggleSequence == true)
+
+        model.handleSpace()
+        #expect(model.sequencePhase == .running)
+        #expect(model.canToggleSequence == true)
+
+        model.handleSpace()
+        #expect(model.sequencePhase == .paused)
+        #expect(model.canToggleSequence == true)
+    }
+
+    @Test("canToggleSequence is false when idle setup is incomplete")
+    func canToggleSequenceBlockedWhenIdle() async {
+        let (model, _, _) = Self.makeModel()
+        model.flatField = nil
+        await model.refreshConnection()
+        #expect(model.canToggleSequence == false)
+        #expect(model.startBlockedReason != nil)
     }
 
     private static func makeTemporaryDirectory() throws -> URL {
@@ -260,8 +301,8 @@ struct CaptureSessionModelTests {
         #expect(endCount >= 1)
     }
 
-    @Test("shootFlatFieldReference discards leftover buffer frames")
-    func shootFlatFieldReferenceDiscardsLeftovers() async throws {
+    @Test("shootFlatFieldReference saves leftover buffer frames to _unclaimed")
+    func shootFlatFieldReferenceSavesLeftovers() async throws {
         let directory = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
@@ -291,6 +332,10 @@ struct CaptureSessionModelTests {
         let leftovers = await camera.leftovers
         #expect(leftovers.isEmpty)
         #expect(model.flatFieldReferenceError?.message.contains("buffer") != true)
+        #expect(model.leftoverFrames.count == 1)
+        let saved = try #require(model.leftoverFrames.first)
+        #expect(saved.url.deletingLastPathComponent().lastPathComponent == "_unclaimed")
+        #expect(FileManager.default.fileExists(atPath: saved.url.path))
     }
 
     @Test("waitForExposureEnd failure returns the fake camera to ready")
@@ -406,5 +451,248 @@ struct CaptureSessionModelTests {
         model.handleSpace()
         try await Task.sleep(for: .milliseconds(3500))
         #expect(model.completedNegatives.count == 1)
+    }
+
+    @Test("initial interval delays first release")
+    func initialIntervalDelaysFirstRelease() async throws {
+        let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)
+        model.intervalSeconds = 10
+        await model.connect()
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.cellStates[0] == .next)
+        #expect(!model.countdownText.isEmpty)
+    }
+
+    @Test("initial interval skipped when resuming after cell 1 fired")
+    func initialIntervalSkippedAfterCell1Fired() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 2, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.intervalSeconds = 10
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+
+        model.handleSpace()
+        try await Self.waitUntil {
+            if case .filled = model.cellStates[0] { true } else { false }
+        }
+        model.handleSpace()
+        #expect(model.sequencePhase == .paused)
+
+        let resumeStart = ContinuousClock.now
+        model.handleSpace()
+        try await Self.waitUntil {
+            if case .exposing = model.cellStates[1] { true } else { false }
+        }
+        let elapsed = ContinuousClock.now - resumeStart
+        #expect(elapsed < .seconds(8))
+    }
+
+    @Test("initial interval replays when resuming before cell 1 fires")
+    func initialIntervalReplaysBeforeCell1Fires() async throws {
+        let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)
+        model.intervalSeconds = 10
+        await model.connect()
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(100))
+        model.handleSpace()
+        #expect(model.sequencePhase == .paused)
+        #expect(model.cellStates[0] == .next)
+
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.cellStates[0] == .next)
+        #expect(!model.countdownText.isEmpty)
+    }
+
+    // MARK: - Grid
+
+    @Test("selectGridProfile updates across, down, and cell count")
+    func selectGridProfileChangesDimensions() {
+        let (model, _, _) = Self.makeModel(across: 2, down: 1)
+        let profile = GridProfile(fields: [
+            "profile_id": .string("grid-4x2"),
+            "name": .string("4×2"),
+            "across": .int(4),
+            "down": .int(2),
+        ])!
+        model.selectGridProfile(profile)
+        #expect(model.gridProfileID == "grid-4x2")
+        #expect(model.across == 4)
+        #expect(model.down == 2)
+        #expect(model.cellStates.count == 8)
+    }
+
+    @Test("gridProfileID persists in UserDefaults")
+    func gridProfileIDPersists() {
+        let defaults = UserDefaults(suiteName: "scanny-boy-tests-\(UUID().uuidString)")!
+        let runner = CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false"))
+        let camera = FakeTetherCamera()
+        let first = CaptureSessionModel(runner: runner, camera: camera, defaults: defaults)
+        first.gridProfileID = "saved-grid"
+        let second = CaptureSessionModel(runner: runner, camera: camera, defaults: defaults)
+        #expect(second.gridProfileID == "saved-grid")
+    }
+
+    @Test("discardUnpublishedCaptures clears completed negatives")
+    func discardUnpublishedCaptures() async throws {
+        let clock = TestCaptureClock()
+        let (model, _, _) = Self.makeModel(clock: clock, across: 1, down: 1)
+        await model.connect()
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(3500))
+        #expect(model.completedNegatives.count == 1)
+        let urls = model.discardUnpublishedCaptures(publishedNegativeIDs: [])
+        #expect(model.completedNegatives.isEmpty)
+        #expect(!urls.isEmpty)
+    }
+
+    // MARK: - Leftovers
+
+    private static func leftover(handle: UInt32 = TetherTiming.bufferScanFirst) -> BufferLeftover {
+        BufferLeftover(
+            handle: handle,
+            objectInfo: PTP.ObjectInfo(
+                handle: handle,
+                storageID: 0,
+                objectFormat: 0x3801,
+                size: 4,
+                width: 100,
+                height: 100,
+                filename: "DSC_0000.NEF",
+                captureDate: "20260913T150938"
+            )
+        )
+    }
+
+    private static func waitUntil(
+        _ condition: @MainActor () -> Bool,
+        timeout: Duration = .seconds(5)
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("condition not met within \(timeout)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    @Test("connect saves a leftover to _unclaimed and blocks capture until resolved")
+    func connectClaimsLeftover() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let camera = FakeTetherCamera(configuration: .init(initialLeftovers: [Self.leftover()]))
+        let (model, _, _) = Self.makeModel(camera: camera)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { !model.leftoverFrames.isEmpty }
+
+        let frame = try #require(model.leftoverFrames.first)
+        #expect(frame.url.lastPathComponent == "leftover-20260913-150938.NEF")
+        #expect(FileManager.default.fileExists(atPath: frame.url.path))
+        #expect(await camera.leftovers.isEmpty)
+        #expect(model.runEnabled == false)
+        #expect(model.startBlockedReason == CaptureSessionModel.leftoverBlockedReason)
+        #expect(model.leftoverTargetCell == nil)
+
+        model.keepLeftover(frame.id)
+        #expect(model.leftoverFrames.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: frame.url.path))
+        #expect(model.runEnabled)
+    }
+
+    @Test("discarding a leftover deletes its file")
+    func discardLeftoverDeletesFile() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let camera = FakeTetherCamera(configuration: .init(initialLeftovers: [Self.leftover()]))
+        let (model, _, _) = Self.makeModel(camera: camera)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { !model.leftoverFrames.isEmpty }
+
+        let frame = try #require(model.leftoverFrames.first)
+        model.discardLeftover(frame.id)
+        #expect(model.leftoverFrames.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: frame.url.path) == false)
+    }
+
+    @Test("a sequence that finds a leftover pauses, and the leftover can fill its one cell")
+    func sequenceLeftoverFillsCell() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, camera, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+        await camera.addLeftover(Self.leftover())
+
+        model.handleSpace()
+        try await Self.waitUntil { !model.leftoverFrames.isEmpty }
+        #expect(model.sequencePhase == .paused)
+        #expect(model.canToggleSequence == false)
+        #expect(model.leftoverTargetCell == 0)
+
+        let frame = try #require(model.leftoverFrames.first)
+        model.useLeftover(frame.id)
+        #expect(model.leftoverFrames.isEmpty)
+        #expect(model.completedNegatives.count == 1)
+        let url = try #require(model.completedNegatives.first?.frameURLs.first)
+        #expect(url.lastPathComponent.hasSuffix("_01.NEF"))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(FileManager.default.fileExists(atPath: frame.url.path) == false)
+    }
+
+    @Test("consecutive cells each download, though the camera reuses the freed buffer handle")
+    func consecutiveCellsReuseBufferHandle() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, camera, _) = Self.makeModel(across: 3, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+
+        model.handleSpace()
+        try await Self.waitUntil({ model.completedNegatives.count == 1 }, timeout: .seconds(20))
+        let frames = try #require(model.completedNegatives.first?.frameURLs)
+        #expect(frames.map(\.lastPathComponent).sorted() == frames.map(\.lastPathComponent))
+        #expect(Set(frames.map(\.lastPathComponent)).count == 3)
+        #expect(try await camera.scanBuffer().isEmpty)
+    }
+
+    @Test("resume shoots only the cells a paused negative still needs")
+    func resumeSkipsFilledCells() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let camera = FakeTetherCamera(configuration: .init(failDownload: true))
+        let (model, _, _) = Self.makeModel(across: 2, down: 1, camera: camera)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+
+        model.handleSpace()
+        try await Self.waitUntil { model.sequencePhase == .paused }
+        #expect(model.cellStates.first.map { if case .failed = $0 { true } else { false } } == true)
+
+        await camera.setFailDownload(false)
+        model.handleSpace()
+        try await Self.waitUntil { model.completedNegatives.count == 1 }
+        let frames = try #require(model.completedNegatives.first?.frameURLs)
+        #expect(frames.count == 2)
+        #expect(Set(frames.map(\.lastPathComponent)).count == 2)
     }
 }
