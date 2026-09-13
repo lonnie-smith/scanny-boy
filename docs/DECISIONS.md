@@ -1758,7 +1758,12 @@ What is not obvious from the code:
    `dye_separation != 1.0` (or damping is non-zero), the preview path
    applies per-pixel spread after the LUT; otherwise three 1-D tables
    suffice.
-6. **Cast removal ports the shadow-tie branch only.** We do not measure
+6. **Separation damping is not NegPy's exponent verbatim.** The
+   crossover law ports, but display-space chroma runs smaller than NegPy's
+   density spread, so full damping also carries a muted-side gain
+   (`SEPARATION_DAMPING_GAIN = 2.0`) when `dye_separation > 1` — otherwise
+   the slider barely moves on real frames.
+7. **Cast removal ports the shadow-tie branch only.** We do not measure
    the neutral-axis refs NegPy's other branch needs.
 
 # The spotting feature (protocol version 13)

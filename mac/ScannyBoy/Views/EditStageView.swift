@@ -1552,7 +1552,10 @@ private struct ColorAdjustmentPanel: View {
                 ) {
                     String(format: "%.2f", values.separationDamping)
                 }
-                .help("Redistributes dye separation; inactive at neutral separation")
+                .help(
+                    "Amplifies muted color and eases already-vivid areas; "
+                        + "inactive at neutral separation"
+                )
 
                 HStack {
                     Button("Region Reset") { resetRegion() }

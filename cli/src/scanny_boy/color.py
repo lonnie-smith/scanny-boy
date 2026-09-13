@@ -39,6 +39,9 @@ SEPARATION_DAMPING_MIN = 0.0
 SEPARATION_DAMPING_MAX = 1.0
 SEPARATION_REF_SPREAD = 0.15
 SEPARATION_K_MAX = 3.0
+# Muted-side vibrance at full damping when dye_separation > 1. G=3 breaks
+# monotonicity near the reference at k=1.5; 2.0 leaves headroom.
+SEPARATION_DAMPING_GAIN = 2.0
 
 # Temperature lever — nominal readout, not colorimetric (NegPy logic.py).
 TEMP_REF_KELVIN = 5500.0
@@ -691,14 +694,30 @@ def cast_slopes(
     return tuple(result)
 
 
-def damping_gain(k: float, damping: float, chroma: float) -> float:
-    """NegPy's separation_damping_gain, verbatim in display space."""
+def damping_gain(
+    k: float, damping: float, chroma: float | np.ndarray
+) -> float | np.ndarray:
+    """Per-pixel effective dye-separation k with muted-side vibrance boost.
+
+    NegPy's exponent law in display space, plus a muted-only gain when
+    ``k > 1`` so full damping lifts near-greys above the frame-wide slider."""
     if k <= 0.0:
+        if isinstance(chroma, np.ndarray):
+            return np.zeros_like(chroma, dtype=np.float32)
         return 0.0
     ref = SEPARATION_REF_SPREAD
     h = (ref - chroma) / (ref + chroma)
-    k_eff = k ** ((1.0 - damping) + damping * h)
-    return float(min(k_eff, SEPARATION_K_MAX))
+    base = k ** ((1.0 - damping) + damping * h)
+    if k > 1.0:
+        boost = 1.0 + damping * (SEPARATION_DAMPING_GAIN - 1.0) * np.maximum(h, 0.0)
+    elif isinstance(chroma, np.ndarray):
+        boost = np.ones_like(chroma, dtype=np.float64)
+    else:
+        boost = 1.0
+    k_eff = np.minimum(base * boost, SEPARATION_K_MAX)
+    if isinstance(chroma, np.ndarray):
+        return k_eff.astype(np.float32)
+    return float(k_eff)
 
 
 def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
@@ -719,11 +738,7 @@ def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
     )
     if damping == 0.0:
         return luma + k * diff
-    h = (SEPARATION_REF_SPREAD - chroma) / (SEPARATION_REF_SPREAD + chroma)
-    k_eff = np.minimum(
-        k ** ((1.0 - damping) + damping * h),
-        SEPARATION_K_MAX,
-    )
+    k_eff = damping_gain(k, damping, chroma)
     return luma + k_eff * diff
 
 

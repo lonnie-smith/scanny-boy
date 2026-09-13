@@ -116,16 +116,64 @@ def test_apply_separation_spreads_and_collapses():
 
 def test_damping_reverses_by_chroma():
     k = 1.4
+    gain = color.SEPARATION_DAMPING_GAIN
     grey_chroma = 0.0
+    muted_chroma = 0.05
     vivid_chroma = float(
         np.sqrt(((0.1 - 0.5) ** 2 + (0.5 - 0.9) ** 2 + (0.1 - 0.9) ** 2) / 3)
     )
-    assert color.damping_gain(k, 1.0, grey_chroma) == pytest.approx(k, abs=1e-6)
+    grey_gain = color.damping_gain(k, 1.0, grey_chroma)
+    muted_gain = color.damping_gain(k, 1.0, muted_chroma)
     ref_gain = color.damping_gain(k, 1.0, color.SEPARATION_REF_SPREAD)
     vivid_gain = color.damping_gain(k, 1.0, vivid_chroma)
-    assert grey_chroma < color.SEPARATION_REF_SPREAD < vivid_chroma
-    assert color.damping_gain(k, 1.0, grey_chroma) > ref_gain > vivid_gain
+    assert grey_chroma < muted_chroma < color.SEPARATION_REF_SPREAD < vivid_chroma
+    assert grey_gain == pytest.approx(k * gain, abs=1e-6)
+    assert muted_gain > k
+    assert grey_gain > muted_gain > ref_gain > vivid_gain
     assert ref_gain == pytest.approx(1.0, abs=1e-6)
+
+
+def test_damping_zero_is_the_flat_k():
+    for k in (0.5, 1.0, 1.4):
+        for chroma in (0.0, 0.3, 0.5):
+            assert color.damping_gain(k, 0.0, chroma) == pytest.approx(k, abs=1e-6)
+
+
+def test_identity_k_is_inert_at_any_chroma():
+    for damping in (0.0, 0.5, 1.0):
+        for chroma in (0.0, 0.2, color.SEPARATION_REF_SPREAD, 0.5):
+            assert color.damping_gain(1.0, damping, chroma) == pytest.approx(
+                1.0, abs=1e-6
+            )
+
+
+def test_damping_chroma_transfer_is_monotone():
+    """Non-monotone chroma means two pixels swap which reads as more saturated."""
+    cs = np.linspace(0.0, 0.5, 2000)
+    for k in (0.5, 1.0, 1.3, 1.5):
+        for damping in (0.5, 1.0):
+            out = np.array([c * color.damping_gain(k, damping, c) for c in cs])
+            assert np.diff(out).min() >= -1e-12, f"non-monotone at k={k}, damping={damping}"
+
+
+def test_apply_separation_damping_matches_gain():
+    muted = np.array([[[0.48, 0.50, 0.52]]], dtype=np.float32)
+    vivid = np.array([[[0.1, 0.5, 0.9]]], dtype=np.float32)
+    params = dataclasses.replace(
+        color.NEUTRAL_COLOR, dye_separation=1.3, separation_damping=1.0
+    )
+    for pixel in (muted, vivid):
+        out = color.apply_separation(pixel, params)
+        luma = (
+            color.LUMA_WEIGHTS[0] * pixel[..., 0]
+            + color.LUMA_WEIGHTS[1] * pixel[..., 1]
+            + color.LUMA_WEIGHTS[2] * pixel[..., 2]
+        )
+        diff = pixel - luma[..., np.newaxis]
+        chroma = float(np.sqrt(np.sum(diff**2) / 3.0))
+        k_eff = color.damping_gain(params.dye_separation, params.separation_damping, chroma)
+        expected = luma[..., np.newaxis] + k_eff * diff
+        np.testing.assert_allclose(out, expected, rtol=1e-6)
 
 
 def test_kelvin_round_trips():
