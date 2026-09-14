@@ -453,6 +453,13 @@ class RollManifest:
     # replaceable while `locked_at` is None; frozen once the first negative
     # publishes.
     flat_field: dict[str, Any] | None = None
+    # Convenience defaults for starting the roll's *next* capture/stitch
+    # run — `{"grid": {"across", "down"} | None, "interval_seconds": int |
+    # None, "format": str | None}`. Pre-fill hints only: nothing in
+    # stitching reads them, and unlike `film`, they stay editable for the
+    # life of the roll (`roll set-setup`). `None` on a roll predating this
+    # feature or one nothing has been set on yet.
+    setup: dict[str, Any] | None = None
     # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
     # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or
     # `None` on a mono roll, a roll with no locked film base, or a colour
@@ -518,6 +525,7 @@ class RollManifest:
             "film_base": self.film_base,
             "flat_field": self.flat_field,
             "highlight_lock": self.highlight_lock,
+            "setup": self.setup,
         }
 
 

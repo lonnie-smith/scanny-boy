@@ -83,6 +83,33 @@ struct FilmBase: Sendable, Hashable {
     }
 }
 
+/// Convenience defaults for the roll's next capture/stitch run, decoded
+/// from `roll info`'s `setup` field. Pre-fill hints only — nothing in
+/// stitching reads them, and unlike `filmKind` these stay editable for the
+/// life of the roll (`roll set-setup`).
+struct RollCaptureSetup: Sendable, Hashable {
+    struct Grid: Sendable, Hashable {
+        let across: Int
+        let down: Int
+    }
+
+    let grid: Grid?
+    let intervalSeconds: Int?
+    let format: FilmFormat?
+
+    init?(fields: [String: JSONValue]) {
+        grid = fields["grid"]?.objectValue.flatMap { object -> Grid? in
+            guard
+                let across = object["across"]?.intValue,
+                let down = object["down"]?.intValue
+            else { return nil }
+            return Grid(across: across, down: down)
+        }
+        intervalSeconds = fields["interval_seconds"]?.intValue
+        format = fields["format"]?.stringValue.flatMap(FilmFormat.init(rawValue:))
+    }
+}
+
 struct RollManifest: Sendable, Hashable {
     /// The roll manifest's optional `highlight_lock` block
     /// (docs/ROLL_HIGHLIGHT_LOCK.md §1): recomputed by the CLI at the end
@@ -413,6 +440,9 @@ struct RollManifest: Sendable, Hashable {
     let cameraColor: CameraColor?
     /// The roll's highlight-colour lock (docs/ROLL_HIGHLIGHT_LOCK.md §1).
     let highlightLock: HighlightLock?
+    /// Convenience defaults for the roll's next capture/stitch run. `nil`
+    /// when nothing has been set yet.
+    let captureSetup: RollCaptureSetup?
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -438,7 +468,8 @@ struct RollManifest: Sendable, Hashable {
             filmBase: filmBase,
             flatField: flatField,
             cameraColor: cameraColor,
-            highlightLock: highlightLock
+            highlightLock: highlightLock,
+            captureSetup: captureSetup
         )
     }
 
@@ -456,7 +487,8 @@ struct RollManifest: Sendable, Hashable {
         filmBase: FilmBase? = nil,
         flatField: FlatFieldReference? = nil,
         cameraColor: CameraColor? = nil,
-        highlightLock: HighlightLock? = nil
+        highlightLock: HighlightLock? = nil,
+        captureSetup: RollCaptureSetup? = nil
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -470,6 +502,7 @@ struct RollManifest: Sendable, Hashable {
         self.flatField = flatField
         self.cameraColor = cameraColor
         self.highlightLock = highlightLock
+        self.captureSetup = captureSetup
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -510,6 +543,7 @@ struct RollManifest: Sendable, Hashable {
         self.flatField = fields["flat_field"]?.objectValue.flatMap(FlatFieldReference.init(fields:))
         self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
         self.highlightLock = fields["highlight_lock"]?.objectValue.flatMap(HighlightLock.init(fields:))
+        self.captureSetup = fields["setup"]?.objectValue.flatMap(RollCaptureSetup.init(fields:))
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {

@@ -122,6 +122,10 @@ class RollRow(Base):
     # `roll refresh`. Nullable throughout — pre-0017 rows read back as NULL
     # (treated as false).
     refresh_pending: Mapped[bool | None] = mapped_column(Integer, nullable=True)
+    # Convenience defaults for the roll's next capture/stitch run —
+    # `{"grid", "interval_seconds", "format"}`, editable at any time.
+    # Nullable throughout — pre-0018 rows read back with NULL.
+    setup: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class RunRow(Base):

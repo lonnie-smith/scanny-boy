@@ -165,6 +165,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="colour (including chromogenic B&W) or silver monochrome",
     )
 
+    roll_set_setup = roll_subparsers.add_parser(
+        "set-setup",
+        help="Set convenience defaults for the roll's next capture/stitch run.",
+    )
+    roll_set_setup.add_argument("--roll", required=True, metavar="DIR")
+    roll_set_setup.add_argument(
+        "--grid",
+        metavar="AxD",
+        default=None,
+        help="the grid to pre-fill on the next run, e.g. 3x2",
+    )
+    roll_set_setup.add_argument(
+        "--interval",
+        type=int,
+        default=None,
+        dest="interval_seconds",
+        metavar="SECONDS",
+        help="the capture interval to pre-fill, in seconds",
+    )
+    roll_set_setup.add_argument(
+        "--format",
+        # Kept as a literal here (matching --film-kind's precedent above)
+        # rather than importing `roll_folder.FORMAT_CHOICES`: cli.py must
+        # not eagerly import anything that pulls in scipy at parser-build
+        # time (see startup_test.py), and `roll_folder` transitively does
+        # via `library.repo` -> `calibration`.
+        choices=(
+            "half-frame", "35mm", "6x3", "645", "6x6", "6x7",
+            "xpan", "6x9", "6x12", "6x17",
+        ),
+        default=None,
+        help="the film format to pre-fill",
+    )
+
     roll_refresh = roll_subparsers.add_parser(
         "refresh",
         help="Recompute the highlight lock and regenerate stale previews.",
@@ -1160,6 +1194,9 @@ def _run_roll_command(args, writer: EventWriter) -> int:
     if args.roll_command == "set-film-kind":
         return _run_roll_set_film_kind(args, writer)
 
+    if args.roll_command == "set-setup":
+        return _run_roll_set_setup(args, writer)
+
     # info
     writer.write(Started(command="roll info"))
     roll_dir = Path(args.roll)
@@ -1508,6 +1545,48 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
             locked=False,
         )
     )
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
+def _run_roll_set_setup(args, writer: EventWriter) -> int:
+    """The `roll set-setup` subcommand: merge-update the roll's grid,
+    interval, and film format pre-fill defaults. Unlike `set-film-kind`,
+    never frozen — editable for the life of the roll."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_folder import set_setup
+
+    writer.write(Started(command="roll set-setup"))
+    roll_dir = Path(args.roll)
+    if not repo.roll_registered(roll_dir):
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} is not a registered roll",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    # `args.grid` is already validated (well-formed "AxD", within
+    # `MAX_PER_NEGATIVE`) by `run_argv`'s shared preprocessing, which every
+    # command with a `--grid` option goes through before dispatch.
+    grid: dict[str, int] | None = None
+    if args.grid is not None:
+        across_text, down_text = str(args.grid).lower().split("x")
+        grid = {"across": int(across_text), "down": int(down_text)}
+
+    try:
+        set_setup(
+            roll_dir,
+            grid=grid,
+            interval_seconds=args.interval_seconds,
+            format=args.format,
+        )
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
