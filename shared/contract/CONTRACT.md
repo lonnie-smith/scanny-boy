@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **22**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **23**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and

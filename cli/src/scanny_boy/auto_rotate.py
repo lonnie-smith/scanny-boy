@@ -129,6 +129,8 @@ def estimate_rotation(image: np.ndarray) -> float | None:
     boundary with the canvas — or `None` when there is nothing trustworthy
     to rotate by (no detectable rebate, too little scene, tilt outside the
     clamps). `image` is the encoded uint16 normalized-density composite."""
+    from scanny_boy.auto_crop import picture_mask
+
     image = np.asarray(image)
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
@@ -148,21 +150,11 @@ def estimate_rotation(image: np.ndarray) -> float | None:
         small = image
     normalized = decode_normalized(small).astype(np.float32)
 
-    # The fill is exactly the sentinel code, all channels; it is canvas,
-    # not film, and never participates.
-    fill = np.all(normalized >= NORMALIZED_FILL - 1e-6, axis=-1)
-    covered = ~fill
+    # Use the shared picture_mask so rotation and crop can never disagree
+    # about what rebate is.
+    covered, rebate = picture_mask(normalized)
     if not covered.any():
         return None
-
-    # Thin in *every* channel is the rebate: base is the thinnest thing on
-    # the film, and a scene shadow dense in one channel is not base. The
-    # anchor is the covered pixels' thin-end percentile — the normalized
-    # space's version of `detect_rebate`'s `REBATE_ANCHOR_PERCENTILE`.
-    thinness = normalized.min(axis=-1)
-    thin_values = thinness[covered]
-    anchor = float(np.percentile(thin_values, 99.5))
-    rebate = covered & (thinness >= anchor - REBATE_SLACK)
     if (
         np.count_nonzero(rebate) < REBATE_MIN_AREA_FRACTION * covered.size
     ):

@@ -184,7 +184,7 @@
       ]
     },
     "rollSetup": {
-      "description": "Convenience defaults for the roll's next capture/stitch run — pre-fill hints only, never consulted by stitching itself. Set via `roll set-setup`, editable at any time (unlike `film`).",
+      "description": "Convenience defaults for the roll's next capture/stitch run — `format` and `auto_crop` are read by stitching; the rest are pre-fill hints only. Set via `roll set-setup`, editable at any time (unlike `film`).",
       "type": "object",
       "required": ["grid", "interval_seconds", "format"],
       "properties": {
@@ -212,6 +212,10 @@
             "6x17",
             null
           ]
+        },
+        "auto_crop": {
+          "type": ["boolean", "null"],
+          "description": "When true, stitching seeds a crop from the detector's picture-boundary estimate. Off by default."
         }
       },
       "additionalProperties": false
@@ -780,6 +784,18 @@
         "color_temperature": {
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."
+        },
+        "auto_crop": {
+          "type": ["object", "null"],
+          "description": "Auto-crop evidence block, present when stitching seeded a crop. The app reads `source` to decide whether a re-stitch may reseed.",
+          "properties": {
+            "source": {
+              "type": "string",
+              "const": "auto",
+              "description": "Fixed string identifying this crop as auto-generated."
+            }
+          },
+          "additionalProperties": false
         }
       }
     },

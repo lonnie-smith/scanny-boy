@@ -112,6 +112,7 @@ public struct CLIEvent: Sendable, Hashable {
         case gridDeleted
         case spotsReported
         case scratchesReported
+        case cropSuggested
         case baseFrameSet
         case frameAnalyzed
         case captureChecked
@@ -158,6 +159,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
             case "scratches_reported": self = .scratchesReported
+            case "crop_suggested": self = .cropSuggested
             case "base_frame_set": self = .baseFrameSet
             case "frame_analyzed": self = .frameAnalyzed
             case "capture_checked": self = .captureChecked
@@ -204,6 +206,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
             case .scratchesReported: "scratches_reported"
+            case .cropSuggested: "crop_suggested"
             case .baseFrameSet: "base_frame_set"
             case .frameAnalyzed: "frame_analyzed"
             case .captureChecked: "capture_checked"
@@ -650,6 +653,8 @@ public enum CLICode: Sendable, Hashable {
     case captureDenseEndLow
     case captureFocusDrift
     case captureFocusTilt
+    case autoCropFailed
+    case autoCropNoFormat
     case internalError
     case unknown(String)
 
@@ -745,6 +750,8 @@ public enum CLICode: Sendable, Hashable {
         case "CAPTURE_DENSE_END_LOW": self = .captureDenseEndLow
         case "CAPTURE_FOCUS_DRIFT": self = .captureFocusDrift
         case "CAPTURE_FOCUS_TILT": self = .captureFocusTilt
+        case "AUTO_CROP_FAILED": self = .autoCropFailed
+        case "AUTO_CROP_NO_FORMAT": self = .autoCropNoFormat
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
@@ -842,6 +849,8 @@ public enum CLICode: Sendable, Hashable {
         case .captureDenseEndLow: "CAPTURE_DENSE_END_LOW"
         case .captureFocusDrift: "CAPTURE_FOCUS_DRIFT"
         case .captureFocusTilt: "CAPTURE_FOCUS_TILT"
+        case .autoCropFailed: "AUTO_CROP_FAILED"
+        case .autoCropNoFormat: "AUTO_CROP_NO_FORMAT"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }

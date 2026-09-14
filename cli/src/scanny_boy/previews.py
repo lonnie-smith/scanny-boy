@@ -762,6 +762,7 @@ def crop_report(
         "y": y,
         "canvas_width": canvas_w,
         "canvas_height": canvas_h,
+        **({"source": crop_params["source"]} if "source" in crop_params else {}),
     }
 
 

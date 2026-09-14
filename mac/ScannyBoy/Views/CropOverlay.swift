@@ -12,22 +12,32 @@ import SwiftUI
 /// (`CropSession.orientedRatio`). Free leaves the rect unconstrained.
 enum CropPreset: String, CaseIterable, Identifiable {
     case free
+    case filmHalfFrame = "half-frame"
     case film35 = "35mm"
+    case film6x3 = "6x3"
     case film645 = "645"
     case film6x6 = "6x6"
     case film6x7 = "6x7"
+    case filmXpan = "xpan"
     case film6x9 = "6x9"
+    case film6x12 = "6x12"
+    case film6x17 = "6x17"
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .free: "Free"
+        case .filmHalfFrame: "Half-frame"
         case .film35: "35mm"
+        case .film6x3: "6×3"
         case .film645: "6×4.5"
         case .film6x6: "6×6"
         case .film6x7: "6×7"
+        case .filmXpan: "XPan"
         case .film6x9: "6×9"
+        case .film6x12: "6×12"
+        case .film6x17: "6×17"
         }
     }
 
@@ -36,11 +46,34 @@ enum CropPreset: String, CaseIterable, Identifiable {
     var ratio: Double? {
         switch self {
         case .free: nil
+        case .filmHalfFrame: 18.0 / 24.0
         case .film35: 36.0 / 24.0
+        case .film6x3: 56.0 / 28.0
         case .film645: 56.0 / 41.5
         case .film6x6: 1.0
         case .film6x7: 56.0 / 69.5
+        case .filmXpan: 65.0 / 24.0
         case .film6x9: 56.0 / 84.0
+        case .film6x12: 112.0 / 56.0
+        case .film6x17: 168.0 / 56.0
+        }
+    }
+
+    /// Creates a `CropPreset` from a `FilmFormat`, returning `nil` if no
+    /// matching preset exists (every `FilmFormat` should map to a non-free
+    /// preset).
+    init(format: FilmFormat) {
+        switch format {
+        case .halfFrame: self = .filmHalfFrame
+        case .f35mm: self = .film35
+        case .sixByThree: self = .film6x3
+        case .f645: self = .film645
+        case .sixBySix: self = .film6x6
+        case .sixBySeven: self = .film6x7
+        case .xpan: self = .filmXpan
+        case .sixByNine: self = .film6x9
+        case .sixByTwelve: self = .film6x12
+        case .sixBySeventeen: self = .film6x17
         }
     }
 }

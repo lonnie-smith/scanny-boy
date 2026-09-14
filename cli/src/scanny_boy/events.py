@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 22
+PROTOCOL_VERSION = 23
 
 
 class EventType(enum.StrEnum):
@@ -55,6 +55,7 @@ class EventType(enum.StrEnum):
     CAPTURE_CHECKED = "capture_checked"
     CAPTURE_SUMMARY = "capture_summary"
     ROLL_REFRESHED = "roll_refreshed"
+    CROP_SUGGESTED = "crop_suggested"
 
 
 class Stage(enum.StrEnum):
@@ -208,6 +209,11 @@ class Code(enum.StrEnum):
     CAPTURE_FOCUS_TILT = "CAPTURE_FOCUS_TILT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    # The auto-crop detector refused or failed. The message carries the
+    # refusal reason or exception.
+    AUTO_CROP_FAILED = "AUTO_CROP_FAILED"
+    # Auto-crop was enabled but the roll has no format set.
+    AUTO_CROP_NO_FORMAT = "AUTO_CROP_NO_FORMAT"
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -750,6 +756,21 @@ class RollRefreshed(Event):
 
     lock_changed: bool
     previews_regenerated: bool
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class CropSuggested(Event):
+    """The result of ``edit suggest-crop``: a rect in display space, or
+    a refusal. The command exits 0 either way — ``refused`` is an answer,
+    not an error."""
+
+    event_type: ClassVar[EventType] = EventType.CROP_SUGGESTED
+    negative_id: str = ""
+    rect: dict[str, int] | None = None
+    canvas_width: int = 0
+    canvas_height: int = 0
+    preset: str | None = None
+    refused: str | None = None
 
 
 class EventWriter:

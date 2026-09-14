@@ -84,9 +84,9 @@ struct FilmBase: Sendable, Hashable {
 }
 
 /// Convenience defaults for the roll's next capture/stitch run, decoded
-/// from `roll info`'s `setup` field. Pre-fill hints only — nothing in
-/// stitching reads them, and unlike `filmKind` these stay editable for the
-/// life of the roll (`roll set-setup`).
+/// from `roll info`'s `setup` field. Stitching reads `format` and
+/// `autoCrop` to seed auto-crop when enabled. Unlike `filmKind` these
+/// stay editable for the life of the roll (`roll set-setup`).
 struct RollCaptureSetup: Sendable, Hashable {
     struct Grid: Sendable, Hashable {
         let across: Int
@@ -96,6 +96,7 @@ struct RollCaptureSetup: Sendable, Hashable {
     let grid: Grid?
     let intervalSeconds: Int?
     let format: FilmFormat?
+    let autoCrop: Bool
 
     init?(fields: [String: JSONValue]) {
         grid = fields["grid"]?.objectValue.flatMap { object -> Grid? in
@@ -107,6 +108,7 @@ struct RollCaptureSetup: Sendable, Hashable {
         }
         intervalSeconds = fields["interval_seconds"]?.intValue
         format = fields["format"]?.stringValue.flatMap(FilmFormat.init(rawValue:))
+        autoCrop = fields["auto_crop"]?.boolValue ?? false
     }
 }
 

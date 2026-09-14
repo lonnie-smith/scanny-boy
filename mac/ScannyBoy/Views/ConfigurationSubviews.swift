@@ -235,3 +235,35 @@ struct CatalogueDragPreview: View {
         }
     }
 }
+
+/// The shared Format picker and Auto-crop toggle used by both the capture
+/// setup (Add Scans) and the edit setup (Edit) stages.  Extracted to avoid
+/// duplicating the `Picker` + binding boilerplate in two places.
+struct RollFormatFields: View {
+    @Environment(ConfigurationModel.self) private var model
+
+    var body: some View {
+        Picker("Format", selection: Binding(
+            get: { model.rollFormat },
+            set: { newValue in
+                guard let newValue else { return }
+                Task { await model.setRollFormat(newValue) }
+            }
+        )) {
+            Text("Choose…").tag(FilmFormat?.none)
+            ForEach(FilmFormat.allCases) { format in
+                Text(format.label).tag(FilmFormat?.some(format))
+            }
+        }
+        Toggle("Auto-crop", isOn: Binding(
+            get: { model.rollAutoCrop },
+            set: { newValue in
+                Task { await model.setRollAutoCrop(newValue) }
+            }
+        ))
+        .help(
+            "Automatically detect the picture boundary and fit a "
+            + "cropped window to the roll's film-format ratio."
+        )
+    }
+}
