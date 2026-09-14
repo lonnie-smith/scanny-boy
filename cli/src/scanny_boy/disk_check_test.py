@@ -62,7 +62,11 @@ def test_required_free_bytes_pure_overwrite_has_zero_missing_but_still_requires_
 def test_required_free_bytes_manifest_size_estimate_floor_is_one_mib():
     # D = max(1 MiB, estimated manifest size): a tiny estimate is floored.
     with_tiny_estimate = required_free_bytes(
-        width=WIDTH, height=HEIGHT, missing_output_count=0, largest_group_size=1, manifest_size_estimate=1
+        width=WIDTH,
+        height=HEIGHT,
+        missing_output_count=0,
+        largest_group_size=1,
+        manifest_size_estimate=1,
     )
     with_one_mib = required_free_bytes(
         width=WIDTH,

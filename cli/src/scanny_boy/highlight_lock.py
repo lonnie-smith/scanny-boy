@@ -460,12 +460,7 @@ def corrected_floors(
     common-mode level shift — to get *this negative's* base reference
     (`base_offset_for` derives it: a measured rebate drift, or `0.0` when
     the negative's EXIF exposure matched the base frame's)."""
-    if (
-        lock is None
-        or base_offset is None
-        or len(floors) != 3
-        or len(ceils) != 3
-    ):
+    if lock is None or base_offset is None or len(floors) != 3 or len(ceils) != 3:
         return tuple(floors)
 
     floors_arr = np.asarray(floors, dtype=np.float64)

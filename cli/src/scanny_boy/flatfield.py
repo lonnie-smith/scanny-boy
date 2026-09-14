@@ -84,12 +84,12 @@ def roll_gain_map_path(roll_id: str) -> Path:
 
 
 def _now_iso() -> str:
-    return (
-        datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
-    )
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
 
-def build_params(chromatic_aberration_scales: tuple[float, float] | None = None) -> dict:
+def build_params(
+    chromatic_aberration_scales: tuple[float, float] | None = None,
+) -> dict:
     """How a gain map is built — the constants of this module that produced
     it, recorded on the roll block so a map can be interpreted without
     knowing which build wrote it.
@@ -187,8 +187,7 @@ def load_gain_map(gain_map_path: str, gain_map_sha256: str) -> np.ndarray:
             if gain_map.dtype != np.float32 or gain_map.ndim != 3:
                 raise FlatFieldError(
                     Code.FLATFIELD_GAIN_MAP_MISSING,
-                    f"the gain map {path} is corrupt: expected a float32 "
-                    "rank-3 array",
+                    f"the gain map {path} is corrupt: expected a float32 rank-3 array",
                 )
     except (OSError, ValueError, KeyError, EOFError) as exc:
         raise FlatFieldError(

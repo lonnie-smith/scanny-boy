@@ -132,7 +132,9 @@ def test_probe_with_files_six_sample_files_groups_by_three(tmp_path):
     # The staged directory holds only the six sample files, so the selection
     # is contiguous in its catalogue and the assertions are plain equality.
     input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
-    outcome, warnings = _run_probe_collecting_warnings(input_dir, list(REAL_SAMPLE_FILES), 3)
+    outcome, warnings = _run_probe_collecting_warnings(
+        input_dir, list(REAL_SAMPLE_FILES), 3
+    )
 
     assert outcome.catalogue == list(REAL_SAMPLE_FILES)
     assert outcome.groups == [
@@ -572,7 +574,10 @@ def test_probe_with_unknown_rig_profile_fails_before_the_roll(tmp_path):
 
     input_dir = _catalogue_dir(tmp_path)
     roll_dir = tmp_path / "Roll"
-    write_roll_manifest(roll_dir, new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour"))
+    write_roll_manifest(
+        roll_dir,
+        new_roll_manifest(roll_id="rid-1", roll_name="Roll", film_kind="colour"),
+    )
 
     with pytest.raises(ProbeFailure) as excinfo:
         run_probe(input_dir, None, 2, roll_dir=roll_dir, rig_profile_id="nope")
@@ -655,6 +660,4 @@ def test_probe_with_roll_accepts_a_geometry_profile_roll(tmp_path):
     manifest.stitch_params = _stitch_params(profile)
     write_roll_manifest(roll_dir, manifest)
 
-    run_probe(
-        input_dir, None, 2, roll_dir=roll_dir, rig_profile_id=profile.profile_id
-    )
+    run_probe(input_dir, None, 2, roll_dir=roll_dir, rig_profile_id=profile.profile_id)

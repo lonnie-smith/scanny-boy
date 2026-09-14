@@ -191,9 +191,7 @@ def test_trc_tags_share_one_offset(kind):
     grey = kind in GREY_KINDS
     signatures = (b"kTRC",) if grey else TRC_SIGNATURES
     trc_entries = [
-        (sig, off, size)
-        for sig, off, size in _tag_entries(data)
-        if sig in signatures
+        (sig, off, size) for sig, off, size in _tag_entries(data) if sig in signatures
     ]
     assert len(trc_entries) == (1 if grey else 3)
     offsets = {entry[1] for entry in trc_entries}
@@ -203,14 +201,14 @@ def test_trc_tags_share_one_offset(kind):
 
 
 @pytest.mark.parametrize("kind", WORKING_KINDS)
-def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source(kind):
+def test_wide_container_colorants_white_point_and_chad_are_unchanged_from_the_vendored_source(
+    kind,
+):
     data = load_icc_profile(kind)
     # The grey profile is a gray-class profile: it carries no RGB matrix,
     # by construction.
     matrix_tags = (
-        ()
-        if kind is ProfileKind.DENSITY_GREY
-        else (b"rXYZ", b"gXYZ", b"bXYZ")
+        () if kind is ProfileKind.DENSITY_GREY else (b"rXYZ", b"gXYZ", b"bXYZ")
     )
     for tag_name in (b"wtpt", b"chad", *matrix_tags):
         src = next(
@@ -241,7 +239,9 @@ def _profile_description(data: bytes, tag_signature: bytes = b"desc") -> str:
         string_length = struct.unpack(">I", data[base + 4 : base + 8])[0]
         string_offset = struct.unpack(">I", data[base + 8 : base + 12])[0]
         return (
-            data[tag_offset + string_offset : tag_offset + string_offset + string_length]
+            data[
+                tag_offset + string_offset : tag_offset + string_offset + string_length
+            ]
             .decode("utf-16-be")
             .rstrip("\x00")
         )
@@ -372,9 +372,15 @@ ADOBE_RGB_EXPORT_TAGS = {
     b"bXYZ": (9777, 4143, 48795),
 }
 ADOBE_RGB_EXPORT_CHAD = (
-    68674, 1502, -3291,
-    1939, 64912, -1119,
-    -606, 988, 49262,
+    68674,
+    1502,
+    -3291,
+    1939,
+    64912,
+    -1119,
+    -606,
+    988,
+    49262,
 )
 
 
@@ -424,8 +430,17 @@ def test_export_rgb_profile_is_an_rgb_monitor_profile():
     # hand-assembled v1; `chrm` is lcms2 recording the chromaticities it
     # built the colorants from.
     assert signatures == {
-        b"desc", b"cprt", b"chrm", b"wtpt", b"chad", b"rXYZ", b"gXYZ", b"bXYZ",
-        b"rTRC", b"gTRC", b"bTRC",
+        b"desc",
+        b"cprt",
+        b"chrm",
+        b"wtpt",
+        b"chad",
+        b"rXYZ",
+        b"gXYZ",
+        b"bXYZ",
+        b"rTRC",
+        b"gTRC",
+        b"bTRC",
     }
 
 

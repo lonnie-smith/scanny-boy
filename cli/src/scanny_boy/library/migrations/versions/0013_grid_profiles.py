@@ -9,6 +9,7 @@ Revises: 0012
 Create Date: 2026-09-06
 
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa

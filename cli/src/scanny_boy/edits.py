@@ -111,8 +111,13 @@ def _validated_negatives(
 
 
 def _refresh_preview(
-    roll_dir: Path, roll: RollManifest, negative: NegativeRecord, op: str, *,
-    what: str, emit: EmitFn,
+    roll_dir: Path,
+    roll: RollManifest,
+    negative: NegativeRecord,
+    op: str,
+    *,
+    what: str,
+    emit: EmitFn,
 ) -> None:
     """Refreshes the negative's cached preview after one appended op, and
     records the path on the manifest. A preview failure must not lose the
@@ -136,9 +141,7 @@ def _refresh_preview(
         write_roll_manifest(roll_dir, roll)
 
 
-def _crop_report_fields(
-    roll_dir: Path, negative: NegativeRecord
-) -> dict | None:
+def _crop_report_fields(roll_dir: Path, negative: NegativeRecord) -> dict | None:
     """The net crop as `edit_recorded` carries it — a full state report
     (null when there is no live crop), exactly what `roll info` reports,
     so Swift can overwrite without caring which op was recorded. A stale
@@ -148,11 +151,7 @@ def _crop_report_fields(
     if width is None or height is None:
         return None
     state = repo.net_edit_state(roll_dir, negative.negative_id)
-    crop = (
-        state.crop
-        if previews.crop_is_live(state.crop, (height, width))
-        else None
-    )
+    crop = state.crop if previews.crop_is_live(state.crop, (height, width)) else None
     return previews.crop_report(
         crop,
         (height, width),
@@ -162,9 +161,7 @@ def _crop_report_fields(
     )
 
 
-def _result_fields(
-    roll_dir: Path, negative: NegativeRecord, edit: dict
-) -> dict:
+def _result_fields(roll_dir: Path, negative: NegativeRecord, edit: dict) -> dict:
     """The `EditRecorded` field set shared by every op that appends one:
     the ops log entry, the net transform after it, the net crop state,
     and the regenerated preview path."""
@@ -354,9 +351,7 @@ def run_edit_crop(
     output = negative.output
     tiff_h, tiff_w = int(output["height"]), int(output["width"])
     existing = (
-        state.crop
-        if previews.crop_is_live(state.crop, (tiff_h, tiff_w))
-        else None
+        state.crop if previews.crop_is_live(state.crop, (tiff_h, tiff_w)) else None
     )
 
     if reset:
@@ -446,7 +441,7 @@ def run_edit_suggest_crop(
         to unconstrained.
     """
     from scanny_boy import auto_crop
-    from scanny_boy.previews import _display_image, display_shape
+    from scanny_boy.previews import _display_image
 
     _roll, negative = _validated_negative(roll_dir, negative_id)
     state = repo.net_edit_state(roll_dir, negative_id)
@@ -682,7 +677,9 @@ def run_edit_color(
             raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
 
         edit = repo.append_color_edit(roll_dir, negative.negative_id, validated)
-        _refresh_preview(roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit)
+        _refresh_preview(
+            roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit
+        )
         results.append(_result_fields(roll_dir, negative, edit))
     return results
 
@@ -955,9 +952,7 @@ def run_edit_delete(
                         message=f"{path} could not be removed: {exc}",
                     )
                 )
-        results.append(
-            {"negative_id": negative.negative_id, "output": output_name}
-        )
+        results.append({"negative_id": negative.negative_id, "output": output_name})
     return results
 
 
@@ -987,9 +982,7 @@ def _spots_for_report(
     # they stand for is replayed before the crop anyway, so nothing is
     # lost but the overlay (the Heal panel's counts still read from the
     # manifest summary).
-    if previews.crop_is_live(
-        state.crop, (height, width)
-    ):
+    if previews.crop_is_live(state.crop, (height, width)):
         return []
     report: list[dict] = []
     for spot in params.get("spots") or []:
@@ -1194,7 +1187,9 @@ def run_edit_spots(
             params["repair"] = repair
 
     repo.append_spots_edit(roll_dir, negative_id, params)
-    _refresh_preview(roll_dir, _roll, negative, repo.SPOTS_OP, what="spot review", emit=emit)
+    _refresh_preview(
+        roll_dir, _roll, negative, repo.SPOTS_OP, what="spot review", emit=emit
+    )
     if _spots_stale(negative, params):
         emit(
             WarningEvent(
@@ -1217,9 +1212,7 @@ def run_edit_spots(
     }
 
 
-def run_edit_list_spots(
-    roll_dir: Path, negative_id: str, *, emit: EmitFn
-) -> dict:
+def run_edit_list_spots(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
     """The pure query behind the app's marker overlay: the negative's spot
     set as display-space rects, nothing recorded, no pixels touched — in
     the same family as `render-region` and `render-preview`. A stale set
@@ -1244,9 +1237,7 @@ def run_edit_list_spots(
         "detector_version": (
             params["detector_version"] if params else spots.DETECTOR_VERSION
         ),
-        "sensitivity": (
-            params["sensitivity"] if params else spots.DEFAULT_SENSITIVITY
-        ),
+        "sensitivity": (params["sensitivity"] if params else spots.DEFAULT_SENSITIVITY),
         "repair": bool(params["repair"]) if params else False,
         "spots": reported,
         "found": len(params["spots"]) if params else 0,
@@ -1254,9 +1245,7 @@ def run_edit_list_spots(
     }
 
 
-def _scratches_stale(
-    negative: NegativeRecord, params: dict | None
-) -> bool:
+def _scratches_stale(negative: NegativeRecord, params: dict | None) -> bool:
     """The scratch set was recorded against a canvas that a re-stitch
     replaced — it corrects nothing and needs re-detecting."""
     if params is None or not params.get("scratches"):
@@ -1269,9 +1258,7 @@ def _scratches_stale(
 
 def _scratch_spans(negative: NegativeRecord) -> tuple[float, float, float]:
     norm = negative.normalization
-    return tuple(
-        norm["ceils"][ch] - norm["floors"][ch] for ch in range(3)
-    )
+    return tuple(norm["ceils"][ch] - norm["floors"][ch] for ch in range(3))
 
 
 def run_edit_detect_scratches(
@@ -1387,9 +1374,7 @@ def run_edit_scratches(
     return results
 
 
-def run_edit_list_scratches(
-    roll_dir: Path, negative_id: str, *, emit: EmitFn
-) -> dict:
+def run_edit_list_scratches(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
     """The pure query behind the app's scratch overlay: the negative's
     scratch set as display-space rects, nothing recorded, no pixels touched.
     A stale set reports an empty list plus a `SCRATCHES_STALE` warning."""
@@ -1412,7 +1397,9 @@ def run_edit_list_scratches(
         )
     return ScratchesReported(
         negative_id=negative_id,
-        detector_version=params["detector_version"] if params else scratches.DETECTOR_VERSION,
+        detector_version=params["detector_version"]
+        if params
+        else scratches.DETECTOR_VERSION,
         enabled=bool(params["enabled"]) if params else False,
         count=len(params.get("scratches") or []) if params else 0,
         stale=stale,

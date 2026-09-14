@@ -564,7 +564,9 @@ def test_fading_dense_stripe_is_eaten_band_by_band():
     grid = _scene_grid(200, 200)
     fading = np.linspace(-2.6, -2.0, 24, dtype=np.float32)
     for row, value in enumerate(fading):
-        _add_strip(grid, {"rows": slice(row, row + 1), "cols": slice(0, 200)}, float(value))
+        _add_strip(
+            grid, {"rows": slice(row, row + 1), "cols": slice(0, 200)}, float(value)
+        )
     keep = np.ones(grid.shape[:2], dtype=bool)
     new_keep, dense_border = withhold_dense_border(grid, keep)
     assert dense_border.detected
@@ -673,9 +675,9 @@ def _add_ramped_band(
     convergence loop always has ramp left over behind the mask."""
     rng = np.random.default_rng(seed)
     width = grid.shape[1]
-    grid[:band_rows] = rng.normal(
-        band_density, 0.02, (band_rows, width)
-    ).astype(np.float32)
+    grid[:band_rows] = rng.normal(band_density, 0.02, (band_rows, width)).astype(
+        np.float32
+    )
     dense = np.linspace(band_density, dense_end, dense_rows, dtype=np.float32)
     grid[band_rows : band_rows + dense_rows] = dense[:, None] + rng.normal(
         0, 0.02, (dense_rows, width)
@@ -890,7 +892,9 @@ def test_rebate_insets_agreement_records_the_cross_check():
     # No insets: nothing to agree with.
     assert nz.rebate_insets_agreement(rebate, keep, (0, 0, 0, 0)) is None
     # No rebate: nothing to check.
-    assert nz.rebate_insets_agreement(np.zeros_like(rebate), keep, (10, 0, 0, 0)) is None
+    assert (
+        nz.rebate_insets_agreement(np.zeros_like(rebate), keep, (10, 0, 0, 0)) is None
+    )
     # Rebate inside the inset band: the inset ate rebate material --
     # disagrees.
     assert nz.rebate_insets_agreement(rebate, keep, (10, 0, 0, 0)) is False
@@ -912,9 +916,11 @@ def test_film_extent_on_a_mono_collapsed_grid():
     luma = _carrier_grid().copy()
     # Jittered, so the seed threshold below the valley still reaches the
     # band's own cells.
-    luma[:15] = np.random.default_rng(7).normal(
-        -3.2, 0.02, (15, luma.shape[1])
-    ).astype(np.float32)
+    luma[:15] = (
+        np.random.default_rng(7)
+        .normal(-3.2, 0.02, (15, luma.shape[1]))
+        .astype(np.float32)
+    )
     grid = luma[..., np.newaxis]
     keep = np.ones(grid.shape[:2], dtype=bool)
     new_keep, extent = nz.withhold_non_film(grid, keep)
@@ -1183,9 +1189,7 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert params["dense_border_anchor_percentile"] == nz.DENSE_BORDER_ANCHOR_PERCENTILE
     assert params["dense_border_tolerance"] == nz.DENSE_BORDER_TOLERANCE
     assert params["dense_border_min_area_cells"] == nz.DENSE_BORDER_MIN_AREA_CELLS
-    assert (
-        params["dense_border_min_area_fraction"] == nz.DENSE_BORDER_MIN_AREA_FRACTION
-    )
+    assert params["dense_border_min_area_fraction"] == nz.DENSE_BORDER_MIN_AREA_FRACTION
     assert params["dense_border_max_width_cells"] == nz.DENSE_BORDER_MAX_WIDTH_CELLS
     # Retired with the pinned cell: both scaled with the canvas.
     assert "dense_border_max_area_fraction" not in params
@@ -1193,8 +1197,7 @@ def test_build_params_carries_every_constant_and_the_format_version():
     assert "analysis_grid" not in params
     assert params["dense_border_min_separation"] == nz.DENSE_BORDER_MIN_SEPARATION
     assert (
-        params["dense_border_outside_percentile"]
-        == nz.DENSE_BORDER_OUTSIDE_PERCENTILE
+        params["dense_border_outside_percentile"] == nz.DENSE_BORDER_OUTSIDE_PERCENTILE
     )
     assert params["dense_border_max_passes"] == nz.DENSE_BORDER_MAX_PASSES
     assert params["clamp_min_samples"] == nz.CLAMP_MIN_SAMPLES
@@ -1224,7 +1227,9 @@ def test_build_params_carries_every_constant_and_the_format_version():
     )
     assert params["film_extent_convergence_delta"] == nz.FILM_EXTENT_CONVERGENCE_DELTA
     assert params["film_extent_max_steps"] == nz.FILM_EXTENT_MAX_STEPS
-    assert params["film_extent_min_region_fraction"] == nz.FILM_EXTENT_MIN_REGION_FRACTION
+    assert (
+        params["film_extent_min_region_fraction"] == nz.FILM_EXTENT_MIN_REGION_FRACTION
+    )
     # JSON-serialisable, since it folds into processing_params.
     import json
 
@@ -1379,9 +1384,7 @@ def _mono_plane(side: int = 128, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     ys, xs = np.mgrid[0:side, 0:side]
     plane_log = (
-        -1.5
-        + 0.8 * (xs + ys) / (2 * side)
-        + 0.05 * rng.standard_normal((side, side))
+        -1.5 + 0.8 * (xs + ys) / (2 * side) + 0.05 * rng.standard_normal((side, side))
     )
     return np.power(10.0, plane_log.astype(np.float32))
 
@@ -1554,9 +1557,7 @@ def test_clamp_bounds_on_one_channel():
     outlier = Bounds(floors=(-6.0,), ceils=(-0.4,))
     clamped, did = clamp_bounds(outlier, references)
     assert did
-    assert clamped.floors == pytest.approx(
-        (-1.5 - nz.CLAMP_MIN_WINDOW,), abs=1e-6
-    )
+    assert clamped.floors == pytest.approx((-1.5 - nz.CLAMP_MIN_WINDOW,), abs=1e-6)
 
 
 def test_detect_rebate_base_density_on_one_channel():
@@ -1605,7 +1606,9 @@ def _structured_grid(
     u[size // 2 :, size // 2 :] = 0.7
     noise = rng.normal(0.0, 1e-3, (size, size, 1)).astype(np.float32)
     red = np.clip(u + noise[..., 0] + red_offset, 0.0, 1.0)
-    green = np.clip(u + noise[..., 0] * 0.0 + rng.normal(0.0, 1e-3, (size, size)), 0.0, 1.0)
+    green = np.clip(
+        u + noise[..., 0] * 0.0 + rng.normal(0.0, 1e-3, (size, size)), 0.0, 1.0
+    )
     blue = np.clip(u + rng.normal(0.0, 1e-3, (size, size)), 0.0, 1.0)
     grid = np.stack([red, green, blue], axis=-1).astype(np.float32)
     keep = np.ones((size, size), dtype=bool)
@@ -1676,7 +1679,10 @@ def test_the_meters_decline_a_single_channel_grid():
     grid = np.full((32, 32, 1), 0.5, dtype=np.float32)
     keep = np.ones((32, 32), dtype=bool)
 
-    assert nz.measure_neutral_residual(grid, keep, Bounds(floors=(0.0,), ceils=(1.0,))) is None
+    assert (
+        nz.measure_neutral_residual(grid, keep, Bounds(floors=(0.0,), ceils=(1.0,)))
+        is None
+    )
     assert nz.measure_highlight_refs(grid, keep) is None
 
 

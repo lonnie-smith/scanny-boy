@@ -144,7 +144,11 @@ def stitched_roll(tmp_path: Path) -> Path:
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -195,7 +199,11 @@ def colour_roll(tmp_path: Path) -> Path:
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     for index, negative_id in enumerate((_NEGATIVE_ID, _OTHER_ID), start=1):
@@ -224,7 +232,9 @@ def colour_roll(tmp_path: Path) -> Path:
 
 def _export(roll_dir: Path, tmp_path: Path, **kwargs) -> Path:
     output_dir = tmp_path / "export"
-    outcome = run_export(roll_dir, output_dir, [_NEGATIVE_ID], emit=lambda event: None, **kwargs)
+    outcome = run_export(
+        roll_dir, output_dir, [_NEGATIVE_ID], emit=lambda event: None, **kwargs
+    )
     assert outcome.failed == []
     assert outcome.exported == ["_DSC0001.jxl"]
     return output_dir / "_DSC0001.jxl"
@@ -236,7 +246,9 @@ def _export(roll_dir: Path, tmp_path: Path, **kwargs) -> Path:
 def test_apply_edits_matches_clockwise_quarter_turns():
     # Quarter turns count clockwise; np.rot90 is counter-clockwise.
     for k in range(4):
-        np.testing.assert_array_equal(apply_edits(_ORIGINAL, k), np.rot90(_ORIGINAL, k=-k))
+        np.testing.assert_array_equal(
+            apply_edits(_ORIGINAL, k), np.rot90(_ORIGINAL, k=-k)
+        )
 
 
 def test_apply_edits_mirrors_before_rotating_when_flipped():
@@ -336,7 +348,11 @@ def test_a_colour_roll_without_camera_color_fails_before_writing_anything(
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -370,7 +386,9 @@ def test_a_mono_roll_without_camera_color_exports_successfully(stitched_roll, tm
     """The matrix check is conditional on the published TIFF's
     channel count — a mono roll needs no matrix and is never failed for
     its absence."""
-    outcome = run_export(stitched_roll, tmp_path / "export", [], emit=lambda event: None)
+    outcome = run_export(
+        stitched_roll, tmp_path / "export", [], emit=lambda event: None
+    )
     assert outcome.failed == []
     assert outcome.exported == ["_DSC0001.jxl", "_DSC0003.jxl"]
 
@@ -434,7 +452,9 @@ def test_export_applies_the_seeded_fine_rotation(stitched_roll, tmp_path):
 
     destination = _export(stitched_roll, tmp_path)
 
-    expected, _ = render.render_export(apply_edits(_ORIGINAL, 0, False, 45.0), None, None)
+    expected, _ = render.render_export(
+        apply_edits(_ORIGINAL, 0, False, 45.0), None, None
+    )
     np.testing.assert_array_equal(_decode(destination), expected)
 
 
@@ -521,16 +541,14 @@ def test_export_skips_an_unstitched_negative_without_stopping(stitched_roll, tmp
 
     assert outcome.failed == ["stitch-negative-03"]
     assert outcome.exported == ["_DSC0001.jxl", "_DSC0003.jxl"]
-    assert any(
-        e.code is Code.NEGATIVE_NOT_FOUND
-        for e in events
-        if hasattr(e, "code")
-    )
+    assert any(e.code is Code.NEGATIVE_NOT_FOUND for e in events if hasattr(e, "code"))
 
 
 def test_export_of_an_unregistered_roll_fails(tmp_path):
     with pytest.raises(ExportFailure) as exc_info:
-        run_export(tmp_path / "not-a-roll", tmp_path / "export", [], emit=lambda e: None)
+        run_export(
+            tmp_path / "not-a-roll", tmp_path / "export", [], emit=lambda e: None
+        )
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
 
 
@@ -539,6 +557,7 @@ def test_a_failed_write_leaves_no_tmp_file_in_the_output_folder(
 ):
     """A failed encode (disk full, permissions) is a per-negative warning,
     but the partial `.jxl.tmp` must not survive it in the user's folder."""
+
     def failing_encode(*args, **kwargs):
         raise OSError("disk full")
 
@@ -631,7 +650,9 @@ def test_export_writes_roll_metadata(two_negative_roll_with_metadata, tmp_path):
     assert tags[270]["data"] == f"{_NEGATIVE_ID}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
 
 
-def test_export_negative_value_overrides_roll(tmp_path, two_negative_roll_with_metadata):
+def test_export_negative_value_overrides_roll(
+    tmp_path, two_negative_roll_with_metadata
+):
     from scanny_boy.metadata_edit import run_metadata_set
 
     run_metadata_set(
@@ -680,9 +701,7 @@ def test_export_without_metadata_writes_no_exif_box_but_still_the_provenance(
 
 
 def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_path):
-    run_edit_tone(
-        colour_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None
-    )
+    run_edit_tone(colour_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None)
     destination = _export_one(colour_roll, tmp_path)
 
     record = _provenance(destination)
@@ -775,9 +794,7 @@ def test_the_export_applies_the_repair_before_the_geometry(stitched_roll, tmp_pa
 
     planted = _planted_original()
     tifffile.imwrite(stitched_roll / "_DSC0001.tif", planted)
-    repo.append_spots_edit(
-        stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True)
-    )
+    repo.append_spots_edit(stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True))
     repo.append_edit(stitched_roll, _NEGATIVE_ID, repo.ROTATE_OP, {"direction": "cw"})
 
     destination = _export(stitched_roll, tmp_path)
@@ -790,9 +807,7 @@ def test_the_export_applies_the_repair_before_the_geometry(stitched_roll, tmp_pa
 def test_the_provenance_record_names_the_repair_count(stitched_roll, tmp_path):
     from scanny_boy.library import repo
 
-    repo.append_spots_edit(
-        stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True)
-    )
+    repo.append_spots_edit(stitched_roll, _NEGATIVE_ID, _hand_spots_params(repair=True))
     destination = _export(stitched_roll, tmp_path)
 
     record = _provenance(destination)
@@ -829,7 +844,11 @@ def croppable_export_roll(tmp_path: Path) -> Path:
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -869,7 +888,16 @@ def test_apply_edits_applies_the_crop_window():
     tiff_size = (_ORIGINAL.shape[0], _ORIGINAL.shape[1])
     np.testing.assert_array_equal(
         apply_edits(_ORIGINAL, 0, False, 0.0, crop),
-        apply_crop(_ORIGINAL, display_crop_params(crop, tiff_size, quarter_turns=0, flipped_horizontally=False, fine_angle_deg=0.0)),
+        apply_crop(
+            _ORIGINAL,
+            display_crop_params(
+                crop,
+                tiff_size,
+                quarter_turns=0,
+                flipped_horizontally=False,
+                fine_angle_deg=0.0,
+            ),
+        ),
     )
 
 
@@ -991,16 +1019,19 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         "tilt_deg": 2.5,
         "preset": "645",
     }
-    assert provenance_record(
-        load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
-        None,
-        None,
-        None,
-        ProfileKind.EXPORT_GREY,
-        (0.0,),
-        None,
-        None,
-    )["rendered"]["crop"] is None
+    assert (
+        provenance_record(
+            load_roll_manifest(roll_dir).negative(_NEGATIVE_ID),
+            None,
+            None,
+            None,
+            ProfileKind.EXPORT_GREY,
+            (0.0,),
+            None,
+            None,
+        )["rendered"]["crop"]
+        is None
+    )
 
 
 # --- downsampling ------------------------------------------------------------
@@ -1046,21 +1077,25 @@ def test_the_export_downsamples_inside_the_render_with_a_tone_op(
     """The resize is part of the render: the tone op is baked in and the
     downsample runs on the same chain's linear stage, so the exported
     pixels are the toned render's downsample, one computation."""
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None)
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None
+    )
 
     output_dir = tmp_path / "export"
-    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
-
-    expected, _ = render.render_export(
-        _ORIGINAL, None, _tone_params(0.4), long_edge=2
+    run_export(
+        stitched_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None
     )
+
+    expected, _ = render.render_export(_ORIGINAL, None, _tone_params(0.4), long_edge=2)
     np.testing.assert_array_equal(_decode(output_dir / "_DSC0001.jxl"), expected)
 
 
 def test_the_colour_export_downsamples_all_three_channels(colour_roll, tmp_path):
     output_dir = tmp_path / "export"
 
-    run_export(colour_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
+    run_export(
+        colour_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None
+    )
 
     rendered = _decode(output_dir / "_DSC0001.jxl")
     assert rendered.shape == (2, 2, 3)
@@ -1087,7 +1122,9 @@ def test_the_downsample_averages_linear_light_not_display_codes(
     tifffile.imwrite(stitched_roll / "_DSC0001.tif", codes)
 
     output_dir = tmp_path / "export"
-    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=3, emit=lambda event: None)
+    run_export(
+        stitched_roll, output_dir, [_NEGATIVE_ID], downsample=3, emit=lambda event: None
+    )
 
     rendered = _decode(output_dir / "_DSC0001.jxl")
     assert rendered.shape == (3, 2)
@@ -1105,7 +1142,9 @@ def test_a_constant_field_survives_the_downsample_exactly(stitched_roll, tmp_pat
     tifffile.imwrite(stitched_roll / "_DSC0001.tif", codes)
 
     output_dir = tmp_path / "export"
-    run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=4, emit=lambda event: None)
+    run_export(
+        stitched_roll, output_dir, [_NEGATIVE_ID], downsample=4, emit=lambda event: None
+    )
 
     rendered = _decode(output_dir / "_DSC0001.jxl")
     assert rendered.shape == (4, 3)
@@ -1154,6 +1193,7 @@ def test_the_color_op_changes_the_export_and_is_recorded_in_provenance(
 
     assert not np.array_equal(flat, _decode(tinted_dest))
     record = _provenance(tinted_dest)
-    assert record["rendered"]["color"] == repo.net_edit_state(
-        colour_roll, _NEGATIVE_ID
-    ).color
+    assert (
+        record["rendered"]["color"]
+        == repo.net_edit_state(colour_roll, _NEGATIVE_ID).color
+    )

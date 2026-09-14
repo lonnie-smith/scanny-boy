@@ -244,7 +244,9 @@ def make_out_dir(tmp_path: Path, name: str = "out") -> Path:
     return out
 
 
-def make_roll_dir(tmp_path: Path, name: str = "out", *, film_kind: str = "colour") -> Path:
+def make_roll_dir(
+    tmp_path: Path, name: str = "out", *, film_kind: str = "colour"
+) -> Path:
     """A real, empty roll, written through P3-2's own writer.
 
     Section 5.4 decision 1: `stitch` never creates a roll, so every stitch

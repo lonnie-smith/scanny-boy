@@ -68,9 +68,7 @@ DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
 _LINEAR_CEILING = DISPLAY_CEILING**GAMMA_ADOBE
 
 
-def tone_curve(
-    values: np.ndarray, tone_params: dict[str, float] | None
-) -> np.ndarray:
+def tone_curve(values: np.ndarray, tone_params: dict[str, float] | None) -> np.ndarray:
     """The positive display values through the negative's `tone` op, the
     same `tone.curve_values` the preview's LUT is built from — not a
     re-derivation. The preview and the export must agree, and the only way
@@ -117,8 +115,7 @@ def export_matrix(rgb_xyz_matrix) -> np.ndarray:
     raw = np.asarray(rgb_xyz_matrix, dtype=np.float64)
     if raw.shape != (3, 3) or not np.all(np.isfinite(raw)):
         raise ValueError(
-            "export_matrix needs a finite 3x3 rgb_xyz_matrix; got shape "
-            f"{raw.shape}"
+            f"export_matrix needs a finite 3x3 rgb_xyz_matrix; got shape {raw.shape}"
         )
     if np.linalg.matrix_rank(raw) < 3:
         raise ValueError(
@@ -151,9 +148,7 @@ def _resolve_render_params(
     color_obj = (
         color.ColorParams(**color_params) if color_params else color.NEUTRAL_COLOR
     )
-    meter = metering or color.Metering(
-        ranges=(1.0,) * channels, shadow_refs_norm=None
-    )
+    meter = metering or color.Metering(ranges=(1.0,) * channels, shadow_refs_norm=None)
     return tone_obj, color_obj, meter
 
 
@@ -183,12 +178,8 @@ def _is_flat_render(
 
 
 def _needs_separation(color_obj: color.ColorParams, channels: int) -> bool:
-    return (
-        channels > 1
-        and (
-            color_obj.dye_separation != 1.0
-            or color_obj.separation_damping != 0.0
-        )
+    return channels > 1 and (
+        color_obj.dye_separation != 1.0 or color_obj.separation_damping != 0.0
     )
 
 
@@ -265,9 +256,7 @@ def _positive_values(codes: np.ndarray) -> np.ndarray:
     return np.maximum(1.0 - normalization.decode_normalized(codes), 0.0)
 
 
-def _clipped_fractions(
-    linear: np.ndarray, clipped: np.ndarray
-) -> tuple[float, ...]:
+def _clipped_fractions(linear: np.ndarray, clipped: np.ndarray) -> tuple[float, ...]:
     """Per-channel fraction of samples the gamut clip (§4.4) actually
     moved: out-of-gamut on either side. Per-channel clipping shifts hue
     slightly on the most saturated pixels — the ordinary, accepted
@@ -280,9 +269,7 @@ def _clipped_fractions(
     )
 
 
-def _gather_channel_lut(
-    image: np.ndarray, tables: np.ndarray
-) -> np.ndarray:
+def _gather_channel_lut(image: np.ndarray, tables: np.ndarray) -> np.ndarray:
     """Apply per-channel `(C, 65536)` tables to a uint16 `(H, W, C)` image."""
     channels = image.shape[-1]
     gathered = np.empty(image.shape, dtype=np.float32)
@@ -327,8 +314,7 @@ def render_positive_float(
     if image.ndim in (1, 2):
         if matrix is not None:
             raise ValueError(
-                "a mono (single-channel) image takes no colour matrix; "
-                "pass None"
+                "a mono (single-channel) image takes no colour matrix; pass None"
             )
         size = (
             None
@@ -339,9 +325,7 @@ def render_positive_float(
             tone_obj, color_obj, meter = _resolve_render_params(
                 tone_params, color_params, metering, channels=1
             )
-            tables = tone.build_channel_tables(
-                tone_obj, color_obj, meter, channels=1
-            )
+            tables = tone.build_channel_tables(tone_obj, color_obj, meter, channels=1)
             result = tables[0][image]
             return np.clip(result, 0.0, 1.0), (0.0,)
         # The downsampled mono path walks the chain it collapses (§4.1):

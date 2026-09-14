@@ -26,9 +26,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("negatives", sa.Column("grid", sa.Text(), nullable=True))
     op.add_column("negatives", sa.Column("grid_cells", sa.Text(), nullable=True))
-    op.add_column(
-        "negatives", sa.Column("grid_pitch_ratio", sa.Float(), nullable=True)
-    )
+    op.add_column("negatives", sa.Column("grid_pitch_ratio", sa.Float(), nullable=True))
     op.add_column(
         "negatives", sa.Column("grid_alignment_ratio", sa.Float(), nullable=True)
     )

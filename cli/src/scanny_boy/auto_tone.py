@@ -83,7 +83,11 @@ def solve_density(normalization: dict | None, highlight_lock=None) -> float | No
     if not normalization:
         return None
     anchor = normalization.get("anchor")
-    if anchor is None or isinstance(anchor, bool) or not isinstance(anchor, (int, float)):
+    if (
+        anchor is None
+        or isinstance(anchor, bool)
+        or not isinstance(anchor, (int, float))
+    ):
         return None
     bounds = _luma_bounds(normalization, highlight_lock)
     if bounds is None:
@@ -91,9 +95,12 @@ def solve_density(normalization: dict | None, highlight_lock=None) -> float | No
     luma_floor, _, span = bounds
     measured = max(0.0, min(1.0, (float(anchor) - luma_floor) / span))
     # Strength 0.2 and pivot shift 0.2 both 0.2 — coefficient is exactly 1.
-    density = tone.DENSITY_REFERENCE + ANCHOR_METER_STRENGTH * (
-        ANCHOR_ASSUMED - measured
-    ) / tone.DENSITY_PIVOT_SHIFT
+    density = (
+        tone.DENSITY_REFERENCE
+        + ANCHOR_METER_STRENGTH * (ANCHOR_ASSUMED - measured) / tone.DENSITY_PIVOT_SHIFT
+    )
     band = ANCHOR_METER_BAND / tone.DENSITY_PIVOT_SHIFT
-    density = max(tone.DENSITY_REFERENCE - band, min(tone.DENSITY_REFERENCE + band, density))
+    density = max(
+        tone.DENSITY_REFERENCE - band, min(tone.DENSITY_REFERENCE + band, density)
+    )
     return max(tone.DENSITY_MIN, min(tone.DENSITY_MAX, density))

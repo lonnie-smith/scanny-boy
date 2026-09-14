@@ -123,9 +123,14 @@ def _assert_matches_v5_roll_manifest_schema(
 
     if data.get("film") is not None:
         _require_keys(data["film"], defs["filmDecision"]["required"])
-        assert data["film"]["kind"] in defs["filmDecision"]["properties"]["kind"]["enum"]
+        assert (
+            data["film"]["kind"] in defs["filmDecision"]["properties"]["kind"]["enum"]
+        )
         if "source" in data["film"]:
-            assert data["film"]["source"] in defs["filmDecision"]["properties"]["source"]["enum"]
+            assert (
+                data["film"]["source"]
+                in defs["filmDecision"]["properties"]["source"]["enum"]
+            )
 
     if data.get("film_base") is not None:
         # REBATE_ANCHORING §3.1.
@@ -136,16 +141,17 @@ def _assert_matches_v5_roll_manifest_schema(
         assert len(block["clipped_fractions"]) == 3
         assert 0 <= block["chosen_index"] < len(block["populations"])
         for population in block["populations"]:
-            _require_keys(population, defs["filmBase"]["properties"]["populations"]["items"]["required"])
+            _require_keys(
+                population,
+                defs["filmBase"]["properties"]["populations"]["items"]["required"],
+            )
             assert len(population["density"]) == 3
 
     for negative in data["negatives"]:
         normalization = negative.get("normalization")
         if normalization is not None and normalization.get("base_check") is not None:
             # REBATE_ANCHORING §6.
-            _require_keys(
-                normalization["base_check"], defs["baseCheck"]["required"]
-            )
+            _require_keys(normalization["base_check"], defs["baseCheck"]["required"])
             assert normalization["base_check"]["shape_residual"] >= 0.0
 
 

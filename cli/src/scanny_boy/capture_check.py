@@ -6,9 +6,9 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
-from scanny_boy.library import repo
 from scanny_boy.cancellation import CancellationToken
 from scanny_boy.events import Code, Event
+from scanny_boy.library import repo
 from scanny_boy.manifest import BadManifestError, load_manifest
 from scanny_boy.registration import StitchError
 from scanny_boy.roll_manifest import NegativeRecord
@@ -88,7 +88,9 @@ def run_capture_check(
         total=len(group.members) * 2 + 2, emit=emit, run_id=run_id
     )
     try:
-        workers = concurrency.resolve_worker_count(work_manifest.shots_per_negative, None)
+        workers = concurrency.resolve_worker_count(
+            work_manifest.shots_per_negative, None
+        )
     except concurrency.MemoryBudgetError as exc:
         raise CaptureCheckFailure(exc.code, exc.message) from exc
 

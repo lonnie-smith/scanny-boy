@@ -268,9 +268,9 @@ def test_a_scaled_layout_is_recovered_with_geometric_mean_one():
             expected_log_scale, abs=1e-3
         )
 
-    geometric_mean_log = sum(
-        math.log(p.scale) for p in layout.placements
-    ) / len(layout.placements)
+    geometric_mean_log = sum(math.log(p.scale) for p in layout.placements) / len(
+        layout.placements
+    )
     assert geometric_mean_log == pytest.approx(0.0, abs=1e-6)
 
 
@@ -282,7 +282,9 @@ def test_canvas_size_matches_transformed_corners_under_a_scaled_layout():
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
     pairs = [
-        _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+        _ground_truth_pair(
+            "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+        )
     ]
 
     layout = solve_layout(names, _FRAME_SIZE, pairs)
@@ -360,7 +362,9 @@ def test_disconnected_graph_is_rejected():
         "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
     )
     rejected_pair = dataclasses.replace(
-        _ground_truth_pair("f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, seed=2),
+        _ground_truth_pair(
+            "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE, seed=2
+        ),
         accepted=False,
         reject_code=Code.STITCH_INSUFFICIENT_MATCHES,
         reject_message="rejected for this test",
@@ -380,7 +384,9 @@ def test_canvas_bounds_match_hand_computed_corners():
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
-    pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+    pair = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+    )
 
     layout = solve_layout(names, _FRAME_SIZE, [pair])
 
@@ -414,7 +420,9 @@ def test_valid_rect_contains_no_uncovered_pixel():
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
-    pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+    pair = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+    )
 
     layout = solve_layout(names, _FRAME_SIZE, [pair])
     x, y, width, height = largest_valid_rect(layout, _FRAME_SIZE, probe_long_edge=300)
@@ -446,7 +454,9 @@ def test_valid_rect_is_conservative_not_optimistic():
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
-    pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+    pair = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+    )
 
     layout = solve_layout(names, _FRAME_SIZE, [pair])
 
@@ -475,8 +485,12 @@ def test_l_shaped_layout_reports_a_high_spread_ratio():
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1", "f2"]
     pairs = [
-        _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1),
-        _ground_truth_pair("f0", "f2", by_name["f0"], by_name["f2"], _FRAME_SIZE, seed=2),
+        _ground_truth_pair(
+            "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+        ),
+        _ground_truth_pair(
+            "f0", "f2", by_name["f0"], by_name["f2"], _FRAME_SIZE, seed=2
+        ),
     ]
 
     layout = solve_layout(names, _FRAME_SIZE, pairs)
@@ -560,20 +574,38 @@ def test_weighted_rows_favor_strong_pairs_over_a_weak_one(monkeypatch):
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1", "f2"]
     strong_01 = _ground_truth_pair(
-        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE,
-        n_points=200, noise_px=0.05, seed=1,
+        "f0",
+        "f1",
+        by_name["f0"],
+        by_name["f1"],
+        _FRAME_SIZE,
+        n_points=200,
+        noise_px=0.05,
+        seed=1,
     )
     strong_12 = _ground_truth_pair(
-        "f1", "f2", by_name["f1"], by_name["f2"], _FRAME_SIZE,
-        n_points=200, noise_px=0.05, seed=2,
+        "f1",
+        "f2",
+        by_name["f1"],
+        by_name["f2"],
+        _FRAME_SIZE,
+        n_points=200,
+        noise_px=0.05,
+        seed=2,
     )
     # An accepted but weak f0-f2 pair: few inliers, high residual, and built
     # from a placement 200px off the true one, so it pulls the solve away
     # from the strong pairs' consensus if given equal say.
     wrong_f2 = FramePlacement("f2", -2.0, (1000.0, 250.0))
     weak_02 = _ground_truth_pair(
-        "f0", "f2", by_name["f0"], wrong_f2, _FRAME_SIZE,
-        n_points=41, noise_px=5.0, seed=3,
+        "f0",
+        "f2",
+        by_name["f0"],
+        wrong_f2,
+        _FRAME_SIZE,
+        n_points=41,
+        noise_px=5.0,
+        seed=3,
     )
 
     weighted, _ = _solve_linear(names, [strong_01, strong_12, weak_02])
@@ -597,7 +629,9 @@ def test_rejects_an_implausibly_large_pair_rotation():
     ]
     by_name = {p.name: p for p in ground_truth}
     names = ["f0", "f1"]
-    pair = _ground_truth_pair("f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1)
+    pair = _ground_truth_pair(
+        "f0", "f1", by_name["f0"], by_name["f1"], _FRAME_SIZE, seed=1
+    )
 
     with pytest.raises(StitchError) as exc_info:
         solve_layout(names, _FRAME_SIZE, [pair])
@@ -619,8 +653,6 @@ def test_largest_all_covered_rectangle_finds_the_true_maximum():
     x, y, width, height = _largest_all_covered_rectangle(mask)
     assert width * height == 6
     assert np.all(mask[y : y + height, x : x + width] == 1)
-
-
 
 
 # --- 2D grid stitching ------------------------------------------------
@@ -692,9 +724,7 @@ def test_grid_cells_assign_from_geometry_alone(across, down):
     )
 
     assert layout.cells is not None
-    expected = {
-        f"f{i}": (i // across, i % across) for i in range(len(ground_truth))
-    }
+    expected = {f"f{i}": (i // across, i % across) for i in range(len(ground_truth))}
     assert layout.cells == expected
     assert sorted(layout.cells.values()) == sorted(
         (r, c) for r in range(down) for c in range(across)
@@ -793,9 +823,7 @@ def test_grid_frames_at_45_degrees_to_the_declared_grid_fail_assignment():
     for row in range(down):
         for col in range(across):
             t = col * across_step + row * down_step
-            ground_truth.append(
-                FramePlacement(f"f{row * across + col}", 0.0, tuple(t))
-            )
+            ground_truth.append(FramePlacement(f"f{row * across + col}", 0.0, tuple(t)))
     names = [p.name for p in ground_truth]
     layout = solve_layout(
         names,
@@ -878,6 +906,8 @@ def test_solve_layout_grid_defaults_to_none():
     assert layout.grid_axes is None
     assert layout.grid_pitch_ratio is None
     assert layout.grid_alignment_ratio is None
+
+
 # --- rectified-space canvas ---------------------------------------------
 
 
@@ -946,9 +976,7 @@ def test_frame_corners_without_rectification_is_the_plain_affine_map():
 
     matrix = placement.matrix()
     rotation, translation = matrix[:, :2], matrix[:, 2]
-    corners_local = np.array(
-        [[0, 0], [600, 0], [600, 400], [0, 400]], dtype=np.float64
-    )
+    corners_local = np.array([[0, 0], [600, 0], [600, 400], [0, 400]], dtype=np.float64)
     assert np.array_equal(corners, corners_local @ rotation.T + translation)
 
 
@@ -974,9 +1002,7 @@ def test_solve_layout_bounds_cover_the_rectified_quad():
 
     layout = solve_layout(["f0", "f1"], _FRAME_SIZE, [pair], rectification=rect)
 
-    quad = np.vstack(
-        [frame_corners(p, _FRAME_SIZE, rect) for p in layout.placements]
-    )
+    quad = np.vstack([frame_corners(p, _FRAME_SIZE, rect) for p in layout.placements])
     assert layout.canvas_size == (
         math.ceil(quad[:, 0].max() - quad[:, 0].min()),
         math.ceil(quad[:, 1].max() - quad[:, 1].min()),
@@ -994,9 +1020,7 @@ def test_largest_valid_rect_accepts_a_rectification():
     pair = _rectified_translation_pair("f0", "f1", (250.0, 0.0))
     layout = solve_layout(["f0", "f1"], _FRAME_SIZE, [pair], rectification=rect)
 
-    x, y, width, height = largest_valid_rect(
-        layout, _FRAME_SIZE, rectification=rect
-    )
+    x, y, width, height = largest_valid_rect(layout, _FRAME_SIZE, rectification=rect)
 
     assert width > 0 and height > 0
     assert x >= 0 and y >= 0
@@ -1022,7 +1046,9 @@ def _unplaced(placement, points):
     return (points - matrix[:, 2]) @ np.linalg.inv(matrix[:, :2]).T
 
 
-def _patch_pair(placement_a, placement_b, rng, *, patch_px=400, noise_px=1.0, n_points=200):
+def _patch_pair(
+    placement_a, placement_b, rng, *, patch_px=400, noise_px=1.0, n_points=200
+):
     """A pair as register_pair would report it when its inliers cluster in
     one small patch of the overlap (as they do on real scans: a few hundred
     px of texture, thousands of px from the frame origin), with measurement
@@ -1034,7 +1060,10 @@ def _patch_pair(placement_a, placement_b, rng, *, patch_px=400, noise_px=1.0, n_
     candidates = rng.uniform([0, 0], [width, height], size=(50_000, 2))
     in_a = _unplaced(placement_a, _placed(placement_b, candidates))
     overlap = (
-        (in_a[:, 0] > 0) & (in_a[:, 0] < width) & (in_a[:, 1] > 0) & (in_a[:, 1] < height)
+        (in_a[:, 0] > 0)
+        & (in_a[:, 0] < width)
+        & (in_a[:, 1] > 0)
+        & (in_a[:, 1] < height)
     )
     if overlap.sum() < 200:
         return None
@@ -1143,9 +1172,10 @@ def test_refinement_keeps_the_linear_solves_gauge():
     assert sum(math.log(p.scale) for p in refined) == pytest.approx(0.0, abs=1e-9)
     # The refinement genuinely moved the scales (so the anchor is being
     # held, not trivially inherited).
-    assert max(
-        abs(r.scale / l.scale - 1.0) for r, l in zip(refined, linear, strict=True)
-    ) > 1e-5
+    assert (
+        max(abs(r.scale / l.scale - 1.0) for r, l in zip(refined, linear, strict=True))
+        > 1e-5
+    )
 
     layout = solve_layout(names, _REAL_FRAME_SIZE, pairs)
     assert layout.refinement_applied
@@ -1178,7 +1208,9 @@ def test_refinement_falls_back_to_the_linear_solution(monkeypatch, failure):
 
     def sabotaged(*args, **kwargs):
         result = real_least_squares(*args, **kwargs)
-        result.x = result.x + 50.0 if failure == "worse" else np.full_like(result.x, np.nan)
+        result.x = (
+            result.x + 50.0 if failure == "worse" else np.full_like(result.x, np.nan)
+        )
         return result
 
     monkeypatch.setattr("scanny_boy.layout.least_squares", sabotaged)
@@ -1211,7 +1243,8 @@ def test_refined_layout_is_placement_order_invariant():
 
     scrambled_names = ["f0", *reversed(names[1:])]
     scrambled_pairs = [
-        _reversed_pair(pair) if i % 2 else pair for i, pair in enumerate(reversed(pairs))
+        _reversed_pair(pair) if i % 2 else pair
+        for i, pair in enumerate(reversed(pairs))
     ]
     scrambled = solve_layout(scrambled_names, _REAL_FRAME_SIZE, scrambled_pairs)
 

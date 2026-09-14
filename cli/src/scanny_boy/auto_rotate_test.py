@@ -17,9 +17,9 @@ from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 # Beyond the clamps the estimator refuses on principle.
 _OVER_TILT_DEG = AUTO_ROTATE_MAX_DEG + 10.0
 
-_FILL_CODE = encode_normalized(
-    np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32)
-)[0, 0]
+_FILL_CODE = encode_normalized(np.full((1, 1, 3), NORMALIZED_FILL, dtype=np.float32))[
+    0, 0
+]
 
 
 def _encoded_scene(
@@ -87,9 +87,7 @@ def test_rotate_with_fill_positive_angles_turn_clockwise():
     assert marker_col(left) < 100
 
 
-@pytest.mark.parametrize(
-    "tilt_deg", [-2.5, -1.0, 1.0, 3.0], ids=lambda v: f"tilt-{v}"
-)
+@pytest.mark.parametrize("tilt_deg", [-2.5, -1.0, 1.0, 3.0], ids=lambda v: f"tilt-{v}")
 def test_estimate_rotation_recovers_a_known_tilt(tilt_deg):
     """A rebate tilted clockwise by `d` squares up under a clockwise
     rotation of `-d`."""

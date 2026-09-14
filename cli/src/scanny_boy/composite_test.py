@@ -64,7 +64,9 @@ def _rotation_matrix(angle_deg):
     return np.array([[cos_a, -sin_a], [sin_a, cos_a]])
 
 
-def _build_two_frame_scene(*, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7, scene=None):
+def _build_two_frame_scene(
+    *, rotations_deg=(0.0, 5.0), overlap=0.3, seed=7, scene=None
+):
     """A known scene cut into two overlapping frames, plus the ground-truth
     pair and solved layout needed to composite them. Returns (scene, names,
     uint16_frames, layout, cut_placements). `scene`, when given, replaces
@@ -251,9 +253,13 @@ def _hand_built_strip_masks():
     height, width_a, width_b = 200, 300, 300
     b_offset = 200
     mask_a = np.zeros((height, width_a), dtype=np.uint8)
-    mask_a[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_a - MASK_ERODE_PX] = 1
+    mask_a[
+        MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_a - MASK_ERODE_PX
+    ] = 1
     mask_b = np.zeros((height, width_b), dtype=np.uint8)
-    mask_b[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_b - MASK_ERODE_PX] = 1
+    mask_b[
+        MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width_b - MASK_ERODE_PX
+    ] = 1
     return mask_a, mask_b, b_offset, height, 280
 
 
@@ -278,7 +284,10 @@ def test_feather_contribution_is_constant_across_the_strip(monkeypatch, p):
     canvas_a, canvas_b = _place_on_canvas(
         _feather_weight(mask_a, 0, 0, axes),
         _feather_weight(mask_b, b_offset, 0, axes),
-        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+        b_offset,
+        height,
+        mask_a.shape[1],
+        mask_b.shape[1],
     )
 
     row_border = MASK_ERODE_PX  # the frames' own top edge == the strip's long border
@@ -301,7 +310,10 @@ def test_feather_contribution_is_constant_across_the_strip(monkeypatch, p):
     old_canvas_a, old_canvas_b = _place_on_canvas(
         _feather_weight(mask_a, 0, 0, ()),
         _feather_weight(mask_b, b_offset, 0, ()),
-        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+        b_offset,
+        height,
+        mask_a.shape[1],
+        mask_b.shape[1],
     )
     old_border = contribution(old_canvas_a, old_canvas_b, row_border)
     old_mid = contribution(old_canvas_a, old_canvas_b, row_mid)
@@ -317,7 +329,10 @@ def test_transition_band_width_does_not_grow_toward_the_border():
     canvas_a, canvas_b = _place_on_canvas(
         _feather_weight(mask_a, 0, 0, axes),
         _feather_weight(mask_b, b_offset, 0, axes),
-        b_offset, height, mask_a.shape[1], mask_b.shape[1],
+        b_offset,
+        height,
+        mask_a.shape[1],
+        mask_b.shape[1],
     )
 
     total = canvas_a + canvas_b
@@ -441,11 +456,15 @@ def _grid_weight_canvas(masks, offsets, height, width, axes):
     canvas = np.zeros((height, width), dtype=np.float32)
     placed = []
     for (row, col), offset in sorted(offsets.items()):
-        weight = _feather_weight(masks[row * 2 + col], offsets[(row, col)][0], offsets[(row, col)][1], axes)
+        weight = _feather_weight(
+            masks[row * 2 + col], offsets[(row, col)][0], offsets[(row, col)][1], axes
+        )
         placed = np.zeros((height, width), dtype=np.float32)
         placed[weight.shape[0] // 2 :]  # no-op; keep shape obvious
-        canvas[offsets[(row, col)][1] : offsets[(row, col)][1] + weight.shape[0],
-               offsets[(row, col)][0] : offsets[(row, col)][0] + weight.shape[1]] += weight
+        canvas[
+            offsets[(row, col)][1] : offsets[(row, col)][1] + weight.shape[0],
+            offsets[(row, col)][0] : offsets[(row, col)][0] + weight.shape[1],
+        ] += weight
         placed.append((row, col, weight))
     return canvas, placed
 
@@ -526,7 +545,9 @@ def test_p_equals_one_reproduces_the_two_axis_weights_exactly(monkeypatch):
     height = width = 300
     step = 200
     mask = np.zeros((height, width), dtype=np.uint8)
-    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    mask[
+        MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX
+    ] = 1
     axes = ((1.0, 0.0), (0.0, 1.0))
 
     for x, y in ((0, 0), (step, 0), (0, step), (step, step)):
@@ -640,7 +661,9 @@ def test_feather_floored_region_is_invariant_to_the_exponent():
 
     height, width = 300, 300
     mask = np.zeros((height, width), dtype=np.uint8)
-    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    mask[
+        MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX
+    ] = 1
     axes = ((1.0, 0.0), (0.0, 1.0))
 
     # The un-powered predicate, computed independently of `_feather_weight`
@@ -680,9 +703,7 @@ def test_empty_axes_reproduce_the_distance_transform_byte_for_byte():
     mask = np.zeros((90, 140), dtype=np.uint8)
     mask[12:78, 20:120] = 1
     expected = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    assert np.array_equal(
-        _feather_weight(mask, 5, 9, ()), expected.astype(np.float32)
-    )
+    assert np.array_equal(_feather_weight(mask, 5, 9, ()), expected.astype(np.float32))
 
 
 def test_four_way_corner_weights_are_positive_smooth_and_normalized():
@@ -697,13 +718,13 @@ def test_four_way_corner_weights_are_positive_smooth_and_normalized():
     height = width = 300
     step = 200
     mask = np.zeros((height, width), dtype=np.uint8)
-    mask[MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX] = 1
+    mask[
+        MASK_ERODE_PX : height - MASK_ERODE_PX, MASK_ERODE_PX : width - MASK_ERODE_PX
+    ] = 1
     axes = ((1.0, 0.0), (0.0, 1.0))
 
     offsets = [(0, 0), (step, 0), (0, step), (step, step)]
-    weights = [
-        _feather_weight(mask, x, y, axes) for x, y in offsets
-    ]
+    weights = [_feather_weight(mask, x, y, axes) for x, y in offsets]
 
     # The four-way region: where every frame's mask overlaps in canvas
     # space. Frame (x, y) covers canvas [x, x+300) x [y, y+300), eroded by
@@ -1175,14 +1196,23 @@ def test_film_extent_is_recorded_and_pixels_are_unchanged_on_a_clean_scene():
         M[:, 2] -= (x, y)
         warped = np.clip(
             cv2.warpAffine(
-                linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
-                borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+                linear,
+                M,
+                (w, h),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
             ),
-            0.0, None,
+            0.0,
+            None,
         )
         mask = cv2.warpAffine(
-            np.ones((src_h, src_w), np.uint8), M, (w, h),
-            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            np.ones((src_h, src_w), np.uint8),
+            M,
+            (w, h),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
         )
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
@@ -1332,20 +1362,26 @@ def test_no_geometry_produces_pixels_identical_to_the_warp_affine_path():
         M = matrix.copy()
         M[:, 2] -= (x, y)
         warped = cv2.warpAffine(
-            linear, M, (w, h), flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            linear,
+            M,
+            (w, h),
+            flags=cv2.INTER_LANCZOS4,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
         )
         warped = np.clip(warped, 0.0, None)
         mask = cv2.warpAffine(
-            np.ones((src_h, src_w), np.uint8), M, (w, h),
-            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            np.ones((src_h, src_w), np.uint8),
+            M,
+            (w, h),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
         )
         eroded = cv2.erode(
             mask, _EROSION_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0
         )
-        weight = _feather_weight(
-            eroded, x, y, layout.feather_axes()
-        )
+        weight = _feather_weight(eroded, x, y, layout.feather_axes())
         gain = np.asarray(result.gains[placement.name], dtype=np.float32)
         warped_frames.append((x, y, w, h, warped * gain, weight))
 
@@ -1387,9 +1423,11 @@ def test_band_map_round_trips_a_distorted_frame():
 
     distorted = {}
     K = np.array(
-        [[geometry["fx"], 0, geometry["cx"]],
-         [0, geometry["fy"], geometry["cy"]],
-         [0, 0, 1.0]]
+        [
+            [geometry["fx"], 0, geometry["cx"]],
+            [0, geometry["fy"], geometry["cy"]],
+            [0, 0, 1.0],
+        ]
     )
     for name, frame in uint16_frames.items():
         ys, xs = np.mgrid[0:height, 0:width]
@@ -1449,15 +1487,15 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     }
 
     frame = encode_from_linear(
-        np.random.default_rng(0).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+        np.random.default_rng(0)
+        .uniform(0.1, 0.9, (height, width, 3))
+        .astype(np.float32)
     )
     linear = decode_to_linear(frame).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
     bbox_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 
-    warped, mask = _warp_bands(
-        linear, ones, bbox_matrix, width, height, geometry, ca
-    )
+    warped, mask = _warp_bands(linear, ones, bbox_matrix, width, height, geometry, ca)
 
     # Green: the map is the identity, and Lanczos at exact integer
     # coordinates is the delta function.
@@ -1474,8 +1512,12 @@ def test_maps_mode_leaves_green_untouched_and_moves_red_and_blue():
     expected_x = (dx * 1.01 * fx + cx).astype(np.float32)
     expected_y = (dy * 1.01 * fx + cy).astype(np.float32)
     expected_red = cv2.remap(
-        linear[:, :, 0], expected_x, expected_y, cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        linear[:, :, 0],
+        expected_x,
+        expected_y,
+        cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     interior = (r < 0.4) & (r > 0.05)
     assert np.allclose(warped[:, :, 0][interior], expected_red[interior], atol=1e-4)
@@ -1488,7 +1530,9 @@ def test_warp_bands_matches_a_whole_frame_map():
     geometry = _geometry_dict(-0.015, width, height)
     linear = decode_to_linear(
         encode_from_linear(
-            np.random.default_rng(1).uniform(0.1, 0.9, (height, width, 3)).astype(np.float32)
+            np.random.default_rng(1)
+            .uniform(0.1, 0.9, (height, width, 3))
+            .astype(np.float32)
         )
     ).astype(np.float32)
     ones = np.ones((height, width), dtype=np.uint8)
@@ -1506,8 +1550,12 @@ def test_warp_bands_matches_a_whole_frame_map():
     map_x = (x * k * fx + cx).astype(np.float32)
     map_y = (y * k * fy + cy).astype(np.float32)
     expected = cv2.remap(
-        linear, map_x, map_y, cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        linear,
+        map_x,
+        map_y,
+        cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     assert np.allclose(warped, expected, atol=1e-4)
 
@@ -1556,9 +1604,7 @@ def _build_two_by_two_scene(*, overlap=1.0 / 3.0, seed=11):
     frame_height, frame_width = _FRAME_SIZE
     step_x = round(frame_width * (1.0 - overlap))
     step_y = round(frame_height * (1.0 - overlap))
-    scene = synthetic_scene(
-        frame_height + step_y, frame_width + step_x, seed=seed
-    )
+    scene = synthetic_scene(frame_height + step_y, frame_width + step_x, seed=seed)
     names = ["f0", "f1", "f2", "f3"]
     uint16_frames = {
         name: encode_from_linear(np.stack([frame, frame, frame], axis=-1))
@@ -1576,7 +1622,12 @@ def _build_two_by_two_scene(*, overlap=1.0 / 3.0, seed=11):
 
     poses = {
         name: np.hstack(
-            [np.eye(2), np.array([i % 2 * step_x, i // 2 * step_y], dtype=np.float64).reshape(2, 1)]
+            [
+                np.eye(2),
+                np.array([i % 2 * step_x, i // 2 * step_y], dtype=np.float64).reshape(
+                    2, 1
+                ),
+            ]
         )
         for i, name in enumerate(names)
     }
@@ -1585,12 +1636,14 @@ def _build_two_by_two_scene(*, overlap=1.0 / 3.0, seed=11):
         for j in range(i + 1, len(names)):
             pairs.append(
                 _ground_truth_similarity_pair_composite(
-                    names[i], names[j], poses[names[i]], poses[names[j]], seed=i * 10 + j
+                    names[i],
+                    names[j],
+                    poses[names[i]],
+                    poses[names[j]],
+                    seed=i * 10 + j,
                 )
             )
-    layout = solve_layout(
-        names, _FRAME_SIZE, pairs, grid=GridSpec(across=2, down=2)
-    )
+    layout = solve_layout(names, _FRAME_SIZE, pairs, grid=GridSpec(across=2, down=2))
     return scene, names, uint16_frames, layout, poses
 
 
@@ -1656,7 +1709,10 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     matrix_solved = layout.placements[0].matrix()
     rotation_solved_inv = matrix_solved[:, :2].T
     canvas_to_scene = np.hstack(
-        [rotation_solved_inv, (-rotation_solved_inv @ matrix_solved[:, 2]).reshape(2, 1)]
+        [
+            rotation_solved_inv,
+            (-rotation_solved_inv @ matrix_solved[:, 2]).reshape(2, 1),
+        ]
     )
     scene_height, scene_width = _scene.shape
     reconstructed = cv2.warpAffine(
@@ -1675,9 +1731,7 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     mean_absolute_error = float(
         np.mean(
             np.abs(
-                _scene[
-                    margin : frame_height - margin, margin : frame_width - margin
-                ]
+                _scene[margin : frame_height - margin, margin : frame_width - margin]
                 - reconstructed[
                     margin : frame_height - margin, margin : frame_width - margin
                 ]
@@ -1713,8 +1767,7 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     # defect.
     diff = np.mean(
         np.abs(
-            _unnormalize(mis_result.image, result.bounds)
-            - np.asarray(linear_result)
+            _unnormalize(mis_result.image, result.bounds) - np.asarray(linear_result)
         ),
         axis=-1,
     )
@@ -1752,6 +1805,8 @@ def test_two_by_two_scene_reconstructs_and_misregistration_is_bounded():
     # widening this tolerance from the pre-exponent 0.3 to 0.4 of the max.
     assert min(band_widths) > 0
     assert max(band_widths) - min(band_widths) < 0.4 * max(band_widths)
+
+
 # --- rectified-space compositing -----
 
 _RECT_SCENE_SIZE = (1100, 1900)
@@ -1794,9 +1849,7 @@ def _build_rectified_scene():
 
     rect = _rectification()
     rng = np.random.default_rng(5)
-    scene = cv2.GaussianBlur(
-        rng.uniform(0.0, 1.0, size=_RECT_SCENE_SIZE), (0, 0), 12
-    )
+    scene = cv2.GaussianBlur(rng.uniform(0.0, 1.0, size=_RECT_SCENE_SIZE), (0, 0), 12)
     # Blurring uniform noise at sigma 12 leaves everything within a few
     # thousandths of 0.5, which in log density is a featureless sheet the
     # rebate detector reads as clear base and withholds whole — leaving the
@@ -1830,10 +1883,7 @@ def _build_rectified_scene():
         )
 
     quads = np.vstack(
-        [
-            rectified_frame_corners(rect) + np.asarray(_RECT_SHIFT) * k
-            for k in range(2)
-        ]
+        [rectified_frame_corners(rect) + np.asarray(_RECT_SHIFT) * k for k in range(2)]
     )
     min_xy = quads.min(axis=0)
     canvas_size = (
@@ -1968,9 +2018,11 @@ def test_warp_bands_rectification_matches_zero_coefficient_geometry():
 
     height, width = 60, 80
     rect = _rectification()
-    linear = np.random.default_rng(3).uniform(
-        0.0, 1.0, size=(height, width, 3)
-    ).astype(np.float32)
+    linear = (
+        np.random.default_rng(3)
+        .uniform(0.0, 1.0, size=(height, width, 3))
+        .astype(np.float32)
+    )
     ones = np.ones((height, width), dtype=np.uint8)
     identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 
@@ -2000,9 +2052,7 @@ def test_peak_estimate_counts_band_maps_for_rectification_without_geometry():
     bbox = (500, 600)
 
     base = estimate_peak_bytes(canvas, frame, bbox, 30)
-    with_rect = estimate_peak_bytes(
-        canvas, frame, bbox, 30, rectification=True
-    )
+    with_rect = estimate_peak_bytes(canvas, frame, bbox, 30, rectification=True)
     with_geometry = estimate_peak_bytes(canvas, frame, bbox, 30, geometry=True)
     with_both = estimate_peak_bytes(
         canvas, frame, bbox, 30, geometry=True, rectification=True

@@ -759,9 +759,7 @@ def _attempt_solve(
     return layout, frame_size, ca_maps
 
 
-def record_rectification(
-    record: NegativeRecord, rectification: Rectification
-) -> None:
+def record_rectification(record: NegativeRecord, rectification: Rectification) -> None:
     """The per-negative `rectification` manifest block: `l` in 1/px about
     `centre`, with the fit's own before/after diagnostics. Interpretable
     without a focal length, like the gauge rule requires."""
@@ -1182,9 +1180,9 @@ def run_stitch(
         # film-kind-dependent
         # A mono roll seeds DENSITY_GREY, via
         # the roll's film kind set at init.
-        published_icc_profile_sha256=profile_record(
-            published_profile_kind(film_kind)
-        )["sha256"],
+        published_icc_profile_sha256=profile_record(published_profile_kind(film_kind))[
+            "sha256"
+        ],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -1396,15 +1394,11 @@ def run_stitch(
                 else:
                     # Adopted negative: reseed only if its latest crop is
                     # still automatic.
-                    negative_edits = repo.edits_for(
-                        out_dir, entry.record.negative_id
-                    )
+                    negative_edits = repo.edits_for(out_dir, entry.record.negative_id)
                     latest_crop_source = None
                     for edit in reversed(negative_edits):
                         if edit["op"] == repo.CROP_OP:
-                            latest_crop_source = (
-                                edit.get("params", {}).get("source")
-                            )
+                            latest_crop_source = edit.get("params", {}).get("source")
                             break
                     if latest_crop_source == "auto":
                         negative_seed_crop = seed_crop
@@ -2014,10 +2008,7 @@ def _composite_and_publish(
                     ),
                 )
             )
-            if (
-                result.film_extent.region_fraction
-                < FILM_EXTENT_MIN_REGION_FRACTION
-            ):
+            if result.film_extent.region_fraction < FILM_EXTENT_MIN_REGION_FRACTION:
                 emit(
                     WarningEvent(
                         run_id=run_id,
@@ -2090,7 +2081,9 @@ def _composite_and_publish(
                 f"{MAX_OVERLAP_MAD}",
             )
 
-        exposure_matched = _exposure_matched(roll, entry.group.members, sources_by_filename)
+        exposure_matched = _exposure_matched(
+            roll, entry.group.members, sources_by_filename
+        )
         if exposure_matched is False:
             emit(
                 WarningEvent(
@@ -2196,9 +2189,7 @@ def _composite_and_publish(
             # film-kind-dependent — DENSITY_GREY on a mono roll — via
             # this run's decided (or already-frozen) film kind, exactly as
             # the invariant seed above.
-            icc_bytes=load_icc_profile(
-                published_profile_kind(film_kind)
-            ),
+            icc_bytes=load_icc_profile(published_profile_kind(film_kind)),
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -2320,7 +2311,7 @@ def _composite_and_publish(
             )
 
         # Seed the crop op after rotation.
-        if auto_crop_result is not None and hasattr(auto_crop_result, 'rect'):
+        if auto_crop_result is not None and hasattr(auto_crop_result, "rect"):
             x, y, w, h = auto_crop_result.rect
             # Map the display-space rect to TIFF space using the same
             # function the app uses for re-entering crop mode.

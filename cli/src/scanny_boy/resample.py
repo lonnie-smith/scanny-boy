@@ -37,9 +37,7 @@ import numpy as np
 _BAND = 256
 
 
-def target_size(
-    height: int, width: int, long_edge: int
-) -> tuple[int, int] | None:
+def target_size(height: int, width: int, long_edge: int) -> tuple[int, int] | None:
     """The downscaled `(height, width)` for a `long_edge` target, aspect
     preserved — or `None` when there is nothing to do: no target, or an
     image whose long edge is already at or below it (never an upscale;
@@ -108,9 +106,7 @@ def _resize_last_axis(
     return out
 
 
-def resize_lanczos3(
-    image: np.ndarray, out_height: int, out_width: int
-) -> np.ndarray:
+def resize_lanczos3(image: np.ndarray, out_height: int, out_width: int) -> np.ndarray:
     """Resamples `image` to `(out_height, out_width)` with Lanczos3,
     separable: the horizontal pass banded over rows, then the vertical
     pass — on the transposed intermediate — banded over its rows (the

@@ -200,9 +200,7 @@ def _knee_from_slider(
     return at_zero + value * (at_pos1 - at_zero)
 
 
-def _roll_high(
-    v: np.ndarray, knee: float, width: float
-) -> np.ndarray:
+def _roll_high(v: np.ndarray, knee: float, width: float) -> np.ndarray:
     """Compress everything above `knee` toward 1.0. C1-continuous at the
     knee, monotone, and asymptotic — never reaching 1.0."""
     if knee >= 1.0:
@@ -227,7 +225,9 @@ def _roll_low(v: np.ndarray, knee: float, width: float) -> np.ndarray:
     return np.where(v >= knee, v, rolled)
 
 
-def _zone_weights(v: np.ndarray | float) -> tuple[np.ndarray | float, np.ndarray | float]:
+def _zone_weights(
+    v: np.ndarray | float,
+) -> tuple[np.ndarray | float, np.ndarray | float]:
     """Independent shadow and highlight zone weights at 0.25 / 0.75."""
     w_sh = _expit(ZONE_SHARPNESS * (ZONE_SHADOW_CENTRE - v))
     w_hi = _expit(ZONE_SHARPNESS * (v - ZONE_HIGHLIGHT_CENTRE))
@@ -296,8 +296,7 @@ def _curve_raw(
         assert tone_params is not None
         w_sh, w_hi = _zone_weights(v)
         v = v - ZONE_DENSITY_SCALE * (
-            tone_params.shadow_density * w_sh
-            + tone_params.highlight_density * w_hi
+            tone_params.shadow_density * w_sh + tone_params.highlight_density * w_hi
         )
     return v
 
@@ -401,7 +400,9 @@ def build_channel_tables(
     apply_color = channels > 1
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
     norm = normalization.decode_normalized(codes)
-    offsets = color.cmy_offsets(color_params, metering) if apply_color else (0.0,) * channels
+    offsets = (
+        color.cmy_offsets(color_params, metering) if apply_color else (0.0,) * channels
+    )
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float64)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
@@ -409,7 +410,9 @@ def build_channel_tables(
         # correction, identity when none applies — same call `render.py`'s
         # matrix path makes, so the matrix-free preview path and the
         # matrix path agree on what "corrected" means.
-        channel_norm = color.remap_dense_end(norm, ch, metering) if apply_color else norm
+        channel_norm = (
+            color.remap_dense_end(norm, ch, metering) if apply_color else norm
+        )
         if apply_color:
             display = np.maximum(1.0 - (channel_norm + offset), 0.0)
         else:
@@ -434,7 +437,5 @@ def build_display_lut(
 
     Achromatic only — colour is not composed here. When colour is neutral
     all channel tables are identical; any row suffices for the fast path."""
-    tables = build_channel_tables(
-        tone_params, color.NEUTRAL_COLOR, metering, channels
-    )
+    tables = build_channel_tables(tone_params, color.NEUTRAL_COLOR, metering, channels)
     return np.rint(tables[0] * 255).astype(np.uint8)

@@ -193,7 +193,7 @@ def exclusion_hint(
     if analysis_rect is None:
         return None
     ar_y, ar_x = int(analysis_rect[0]), int(analysis_rect[1])
-    ar_h, ar_w = analysis_size
+    _ar_h, _ar_w = analysis_size
     tiff_h, tiff_w = tiff_size
 
     top = int(insets[0]) * ANALYSIS_BLOCK_PX
@@ -212,9 +212,6 @@ def exclusion_hint(
     inv_scale = 1.0 / scale if scale > 0 else 1.0
     analysis_w = analysis_size[1]
     analysis_h = analysis_size[0]
-    full_w = tiff_w
-    full_h = tiff_h
-
     # Convert TIFF rect to full-display space (same as TIFF at scale=1,
     # before any quarter turns — the exclusion hint is measured without
     # display transforms since the carrier is in TIFF space).
@@ -328,8 +325,6 @@ def estimate_crop(
     bbox = cv2.boundingRect(points)
     bbox_x, bbox_y, bbox_w, bbox_h = bbox
 
-    picture_area = float(bbox_w * bbox_h)
-
     if ratio is not None:
         # Orient the ratio to the picture rect's long axis.
         picture_ratio = bbox_w / max(bbox_h, 1)
@@ -374,8 +369,9 @@ def estimate_crop(
                 cy = bbox_y + bbox_h / 2.0
                 best = min(
                     feasible,
-                    key=lambda r: (r[0] + r[2] / 2.0 - cx) ** 2
-                    + (r[1] + r[3] / 2.0 - cy) ** 2,
+                    key=lambda r: (
+                        (r[0] + r[2] / 2.0 - cx) ** 2 + (r[1] + r[3] / 2.0 - cy) ** 2
+                    ),
                 )
                 lo = mid + 1
             else:

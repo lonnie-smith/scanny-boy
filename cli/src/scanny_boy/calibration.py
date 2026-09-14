@@ -83,9 +83,7 @@ def chromatic_aberration_scales(
     )
 
 
-def check_geometry_frame_size(
-    profile: RigProfile, width: int, height: int
-) -> None:
+def check_geometry_frame_size(profile: RigProfile, width: int, height: int) -> None:
     """A profile's geometry is only valid for the frame dimensions it was
     fitted at."""
     geometry = profile.geometry
@@ -118,9 +116,7 @@ def rig_profile_summary(profile: RigProfile) -> RigProfileSummary:
 
 
 def _now_iso() -> str:
-    return (
-        datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
-    )
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
 
 def _current_scanny_boy_version() -> str:
@@ -212,8 +208,12 @@ def _detect_ca_paths(
         luminance = linear @ detection_weights()
         channels = {
             "red": charuco.percentile_stretch(frame.pixels[:, :, 0].astype(np.float64)),
-            "green": charuco.percentile_stretch(frame.pixels[:, :, 1].astype(np.float64)),
-            "blue": charuco.percentile_stretch(frame.pixels[:, :, 2].astype(np.float64)),
+            "green": charuco.percentile_stretch(
+                frame.pixels[:, :, 1].astype(np.float64)
+            ),
+            "blue": charuco.percentile_stretch(
+                frame.pixels[:, :, 2].astype(np.float64)
+            ),
             "luminance": charuco.percentile_stretch(luminance.astype(np.float64)),
         }
         full_corners, full_ids = full_res_detections[path]
@@ -296,8 +296,12 @@ def _undistort_to_normalised(
     return (undistorted - np.array([cx, cy])) / fx
 
 
-def _geometry_dict(result: geometry_fit.GeometryFitResult, board_key: str,
-                   frame_width: int, frame_height: int) -> dict:
+def _geometry_dict(
+    result: geometry_fit.GeometryFitResult,
+    board_key: str,
+    frame_width: int,
+    frame_height: int,
+) -> dict:
     """The profile object. `k1`/`k2` are in the OpenCV forward
     convention, so they drop straight into every consumer with no
     conversion."""
@@ -377,9 +381,7 @@ def _create_calibrated_profile(
     #    spec is reused for every remaining frame — never re-detected.
     first = decode_raw(paths[0])
     try:
-        board = charuco.detect_board(
-            charuco.build_full_resolution_gray(first.pixels)
-        )
+        board = charuco.detect_board(charuco.build_full_resolution_gray(first.pixels))
     except BoardDetectionError as exc:
         # The stable contract code (`GEOMETRY_BOARD_NOT_DETECTED`), not the
         # last-resort internal-error handler.
@@ -469,9 +471,7 @@ def _create_calibrated_profile(
 
     # 4. Decode and detect all calibration frames at half size, per channel.
     full_res_detections = dict(zip(paths, detections, strict=True))
-    ca_frames = _detect_ca_paths(
-        paths, board, full_res_detections, workers, emit
-    )
+    ca_frames = _detect_ca_paths(paths, board, full_res_detections, workers, emit)
 
     half_width = ca_frames[0]["width"]
     half_height = ca_frames[0]["height"]
@@ -484,6 +484,7 @@ def _create_calibrated_profile(
         Returns `(red, green_for_red, blue, green_for_blue)`
         normalised, row-aligned on the common ids — or None when no corner
         survived in all three."""
+
         def normalised(channel: str) -> tuple[np.ndarray, np.ndarray]:
             points, ids = detection[channel]
             points_n = _undistort_to_normalised(
@@ -504,7 +505,9 @@ def _create_calibrated_profile(
         # The green points each pair needs, id-aligned to that pair.
         return red, green_for_red, blue, green_for_blue
 
-    prepared: list[tuple[Path, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]] = []
+    prepared: list[
+        tuple[Path, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    ] = []
     for path, detection in zip(paths, ca_frames, strict=True):
         frame = prepare(detection)
         if frame is not None:
@@ -520,12 +523,8 @@ def _create_calibrated_profile(
     # 5. Fit and gate CA; decide the mode. `fit_ca` takes
     #    `(red, green_for_red, blue, green_for_blue)` per frame — each
     #    channel pair carries its own id-aligned green corners.
-    train_ca = [
-        frame for path, frame in prepared if path.name not in heldout_names
-    ]
-    heldout_ca = [
-        frame for path, frame in prepared if path.name in heldout_names
-    ]
+    train_ca = [frame for path, frame in prepared if path.name not in heldout_names]
+    heldout_ca = [frame for path, frame in prepared if path.name in heldout_names]
 
     try:
         ca = ca_fit_module.fit_ca(
@@ -535,7 +534,6 @@ def _create_calibrated_profile(
         raise _map_ca_error(exc) from exc
 
     chromatic_aberration_dict: dict | None = None
-    ca_scales: tuple[float, float] | None = None
     if ca.accepted:
         chromatic_aberration_dict = {
             "format_version": 1,
@@ -547,7 +545,6 @@ def _create_calibrated_profile(
             assert ca.red_scale is not None and ca.blue_scale is not None
             chromatic_aberration_dict["red_scale"] = ca.red_scale
             chromatic_aberration_dict["blue_scale"] = ca.blue_scale
-            ca_scales = (ca.red_scale, ca.blue_scale)
     else:
         emit(
             WarningEvent(

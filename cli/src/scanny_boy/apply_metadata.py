@@ -157,7 +157,10 @@ def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
 
         actual_size = tiff_path.stat().st_size if tiff_path.exists() else None
         actual_sha256 = hashing.sha256_file(tiff_path) if tiff_path.exists() else None
-        if actual_size != negative.output["size"] or actual_sha256 != negative.output["sha256"]:
+        if (
+            actual_size != negative.output["size"]
+            or actual_sha256 != negative.output["sha256"]
+        ):
             message = f"{tiff_path} no longer matches the roll's recorded size and hash"
             emit(
                 MetadataSkipped(
