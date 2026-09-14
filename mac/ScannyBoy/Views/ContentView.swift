@@ -65,7 +65,12 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             if selection != nil {
+                // Attached here rather than on the split view: its modifier
+                // chain is already at the type checker's limit.
                 workspace
+                    .onChange(of: edit.roll?.refreshPending) { _, _ in
+                        refreshRollIfPending()
+                    }
             } else {
                 ContentUnavailableView {
                     Label("No Roll Selected", systemImage: "photo.stack")
@@ -107,6 +112,7 @@ struct ContentView: View {
             case .edit, .metadata, .export:
                 columnVisibility = .detailOnly
             }
+            refreshRollIfPending()
         }
         .onChange(of: activity.isBusy) { _, isBusy in
             keyboard.isBusy = isBusy
@@ -387,6 +393,23 @@ struct ContentView: View {
                 library.scan()
             }
         }
+        if stitchQueue.onNegativePublished == nil {
+            stitchQueue.onNegativePublished = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
+    }
+
+    /// TETHER_PLAN §4.4: Edit and Export read the highlight lock, so opening
+    /// either on a roll whose refresh was deferred runs it first.
+    private func refreshRollIfPending() {
+        guard workspaceTab == .edit || workspaceTab == .export,
+            let rollURL = edit.rollURL,
+            edit.roll?.refreshPending == true,
+            !activity.isBusy
+        else { return }
+        Task { await stitchQueue.refreshDeferredRoll(rollURL) }
     }
 
     private func resolveSelectedRoll() {

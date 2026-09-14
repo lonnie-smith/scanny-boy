@@ -20,6 +20,15 @@ final class StitchQueueModel {
         case checkFailed
         case stitchFailed
         case waitingForDisk
+
+        /// Published or failed: nothing more will run for this entry until
+        /// the user acts on it.
+        var isTerminal: Bool {
+            switch self {
+            case .published, .prepareFailed, .checkFailed, .stitchFailed: true
+            default: false
+            }
+        }
     }
 
     struct QueuedNegative: Identifiable, Codable, Sendable {
@@ -56,6 +65,9 @@ final class StitchQueueModel {
     /// gained newly stitched negatives that other tabs (Edit, Library)
     /// have no other way to learn about.
     var onRollUpdated: (() -> Void)?
+    /// Fired after each stitch publishes. The negative is already in the roll
+    /// manifest; only the deferred highlight-lock refresh is still to come.
+    var onNegativePublished: (() -> Void)?
     private(set) var negatives: [QueuedNegative] = []
     private(set) var activePrepareCount = 0
     private(set) var isStitching = false
@@ -69,17 +81,26 @@ final class StitchQueueModel {
     private var down: Int = 1
     private var drainTask: Task<Void, Never>?
     private var sleepAssertion: NSObjectProtocol?
+    /// Set when a stitch publishes with its roll refresh deferred; cleared
+    /// when `rollRefresh` runs for this queue's roll.
+    private var needsRollRefresh = false
 
     init(runner: CLIRunner) {
         self.runner = runner
         restoreState()
     }
 
+    /// Entries still moving through prepare, check or stitch. A failed entry
+    /// is not work: it holds no roll lock and must not block the end-of-queue
+    /// roll refresh.
     var hasWork: Bool {
-        negatives.contains { $0.step != .published }
+        negatives.contains { !$0.step.isTerminal }
     }
 
-    var hasUnpublishedEntries: Bool { hasWork }
+    /// Everything not yet published, failures included — what Discard removes.
+    var hasUnpublishedEntries: Bool {
+        negatives.contains { $0.step != .published }
+    }
 
     var publishedNegativeIDs: Set<UUID> {
         Set(negatives.filter { $0.step == .published }.map(\.id))
@@ -123,8 +144,8 @@ final class StitchQueueModel {
     }
 
     func endSession() {
-        guard let rollURL, hasWork else { return }
-        drainTask = Task { await drainAndRefresh(roll: rollURL) }
+        guard hasWork || needsRollRefresh else { return }
+        drainTask = Task { await drainAndRefresh() }
     }
 
     /// Marks one queue entry published — for unit tests only.
@@ -182,11 +203,14 @@ final class StitchQueueModel {
             )
             let id = entry.id
             Task {
+                // `runPrepare` carries the entry through its check and leaves
+                // it at its outcome — nothing here may overwrite `step`.
                 await runPrepare(id: id, captureFolder: captureFolder, rigProfileID: rigProfileID)
                 activePrepareCount = max(0, activePrepareCount - 1)
-                progress.removeValue(forKey: id)
-                mutateEntry(id: id) { $0.step = .waitingCheck }
                 pump()
+                // A failed prepare or check can be the last thing the queue
+                // was waiting on.
+                await finishDrainIfNeeded()
             }
         }
     }
@@ -206,6 +230,7 @@ final class StitchQueueModel {
             rig: rigProfileID
         )
         let result = await runCommand(id: id, command)
+        progress.removeValue(forKey: id)
         guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
         if result.insufficientDisk {
             mutateEntry(id: id) { $0.step = .waitingForDisk }
@@ -252,7 +277,8 @@ final class StitchQueueModel {
     }
 
     private func startNextStitchIfNeeded() {
-        guard !isStitching, let rollURL else { return }
+        // `roll refresh` holds the roll lock; a stitch started now would fail.
+        guard !isStitching, !isRefreshing, let rollURL else { return }
         guard negatives.allSatisfy({ $0.step != .preparing && $0.step != .checking }) else { return }
         guard let entry = negatives.first(where: { $0.step == .waitingStitch }) else { return }
         isStitching = true
@@ -281,37 +307,61 @@ final class StitchQueueModel {
                         $0.publishedAt = Date()
                         $0.outputFilename = result.outputFilename
                     }
+                    needsRollRefresh = true
+                    onNegativePublished?()
                     try? FileManager.default.removeItem(at: work)
                 }
                 persistState()
             }
             isStitching = false
             pump()
-            if !hasWork { await finishDrainIfNeeded() }
+            await finishDrainIfNeeded()
         }
     }
 
-    private func drainAndRefresh(roll: URL) async {
-        while hasWork {
+    private func drainAndRefresh() async {
+        while hasWork || isStitching {
             pump()
             try? await Task.sleep(for: .milliseconds(200))
         }
-        await rollRefresh(roll: roll)
+        await finishDrainIfNeeded()
     }
 
+    /// Once nothing is left in flight, runs the refresh this queue's
+    /// publishes deferred. Failed entries do not hold it back.
     private func finishDrainIfNeeded() async {
         updateSleepAssertion()
-        guard let rollURL, !hasWork else { return }
+        guard let rollURL, !hasWork, !isStitching, needsRollRefresh else { return }
         await rollRefresh(roll: rollURL)
     }
 
+    /// TETHER_PLAN §4.4: brings a roll whose refresh was deferred up to date
+    /// when its Edit or Export tab opens. Skipped while this queue is still
+    /// working on that roll — its own end-of-queue refresh covers it.
+    func refreshDeferredRoll(_ roll: URL) async {
+        if let rollURL, Self.isSameRoll(rollURL, roll), hasWork || isStitching { return }
+        await rollRefresh(roll: roll)
+    }
+
     func rollRefresh(roll: URL) async {
+        guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        let isQueueRoll = rollURL.map { Self.isSameRoll($0, roll) } ?? false
+        if isQueueRoll { needsRollRefresh = false }
         // rollRefresh is not tied to a specific negative; pass a dummy id.
         _ = await runCommand(id: UUID(), .rollRefresh(roll: roll))
-        clearPersistedState()
+        // Only this queue's roll owns `stitch-queue.json`, and failed entries
+        // stay saved until they are discarded.
+        if isQueueRoll {
+            if hasUnpublishedEntries { persistState() } else { clearPersistedState() }
+        }
+        isRefreshing = false
         onRollUpdated?()
+        pump()
+    }
+
+    private static func isSameRoll(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
     }
 
     // MARK: - Persistence

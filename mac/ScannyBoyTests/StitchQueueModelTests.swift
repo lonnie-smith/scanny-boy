@@ -95,6 +95,104 @@ struct StitchQueueModelTests {
         #expect(queue.isStitching == true || queue.negatives.first?.step != .waitingStitch)
     }
 
+    @Test("a checked negative waiting behind a stitch is not reset to waitingCheck")
+    func checkedNegativeKeepsWaitingStitch() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = """
+            if [ "$1" = "capture" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"capture check"}"#))'
+              echo '\(TestEvents.line(#"{"event":"capture_checked","passed":true,"code":null,"message":null,"global_rms_px":1.0,"used_clahe_fallback":false}"#))'
+              echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+              exit 0
+            fi
+            if [ "$1" = "stitch" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"stitch"}"#))'
+              sleep 3
+              echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+              exit 0
+            fi
+            echo '\(TestEvents.line(#"{"event":"started","command":"prepare"}"#))'
+            echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+            """
+        let executable = try Self.makeExecutable(in: directory, script: script)
+        let queue = StitchQueueModel(runner: CLIRunner(executable: executable))
+        let captureFolder = directory.appending(path: "capture", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: captureFolder, withIntermediateDirectories: true)
+        queue.configure(
+            roll: directory.appending(path: "roll", directoryHint: .isDirectory),
+            captureFolder: captureFolder,
+            across: 1,
+            down: 1
+        )
+        for index in 0..<3 {
+            queue.enqueue(
+                CaptureSessionModel.CompletedNegative(
+                    id: UUID(), stamp: "neg-\(index)", frameURLs: [], startedAt: Date()
+                )
+            )
+        }
+        // Long enough for every prepare and check to finish, well short of
+        // the first stitch.
+        try await Task.sleep(for: .milliseconds(1500))
+        let steps = queue.negatives.map(\.step)
+        #expect(steps.filter { $0 == .stitching }.count == 1)
+        #expect(steps.allSatisfy { $0 == .stitching || $0 == .waitingStitch })
+        _ = queue.discardUnpublished()
+    }
+
+    @Test("each publish notifies at once, and a failed check does not block the roll refresh")
+    func publishNotifiesAndFailureDoesNotBlockRefresh() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = """
+            if [ "$1" = "capture" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"capture check"}"#))'
+              case "$*" in
+                *bad*) echo '\(TestEvents.line(#"{"event":"capture_checked","passed":false,"code":"STITCH_UNDERCONSTRAINED","message":"too little overlap","global_rms_px":null,"used_clahe_fallback":false}"#))' ;;
+                *) echo '\(TestEvents.line(#"{"event":"capture_checked","passed":true,"code":null,"message":null,"global_rms_px":1.0,"used_clahe_fallback":false}"#))' ;;
+              esac
+              echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+              exit 0
+            fi
+            if [ "$1" = "stitch" ]; then
+              echo '\(TestEvents.line(#"{"event":"started","command":"stitch"}"#))'
+              sleep 0.3
+              echo '\(TestEvents.line(#"{"event":"negative_done","negative_id":"n1","output":"out.tif","width":1,"height":1,"global_rms_px":1.0,"max_overlap_mad":1.0}"#))'
+              echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+              exit 0
+            fi
+            echo '\(TestEvents.line(#"{"event":"started","command":"prepare"}"#))'
+            echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+            """
+        let executable = try Self.makeExecutable(in: directory, script: script)
+        let queue = StitchQueueModel(runner: CLIRunner(executable: executable))
+        var notifications: [String] = []
+        queue.onNegativePublished = { notifications.append("published") }
+        queue.onRollUpdated = { notifications.append("rollUpdated") }
+        let captureFolder = directory.appending(path: "capture", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: captureFolder, withIntermediateDirectories: true)
+        queue.configure(
+            roll: directory.appending(path: "roll", directoryHint: .isDirectory),
+            captureFolder: captureFolder,
+            across: 1,
+            down: 1
+        )
+        for stamp in ["good-1", "bad", "good-2"] {
+            queue.enqueue(
+                CaptureSessionModel.CompletedNegative(
+                    id: UUID(), stamp: stamp, frameURLs: [], startedAt: Date()
+                )
+            )
+        }
+        try await Task.sleep(for: .milliseconds(2000))
+        #expect(queue.negatives.map(\.step) == [.published, .checkFailed, .published])
+        #expect(notifications == ["published", "published", "rollUpdated"])
+        #expect(!queue.hasWork)
+        #expect(queue.hasUnpublishedEntries)
+        _ = queue.discardUnpublished()
+    }
+
     @Test("discardUnpublished removes queue entries and returns their paths")
     func discardUnpublished() async throws {
         let directory = try Self.makeTemporaryDirectory()

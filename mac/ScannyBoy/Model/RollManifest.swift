@@ -445,6 +445,10 @@ struct RollManifest: Sendable, Hashable {
     /// Convenience defaults for the roll's next capture/stitch run. `nil`
     /// when nothing has been set yet.
     let captureSetup: RollCaptureSetup?
+    /// Set by `stitch --defer-roll-refresh`, cleared by `roll refresh`
+    /// (TETHER_PLAN §4.4): the highlight lock has not yet seen the roll's
+    /// newest negatives.
+    let refreshPending: Bool
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -471,7 +475,8 @@ struct RollManifest: Sendable, Hashable {
             flatField: flatField,
             cameraColor: cameraColor,
             highlightLock: highlightLock,
-            captureSetup: captureSetup
+            captureSetup: captureSetup,
+            refreshPending: refreshPending
         )
     }
 
@@ -490,7 +495,8 @@ struct RollManifest: Sendable, Hashable {
         flatField: FlatFieldReference? = nil,
         cameraColor: CameraColor? = nil,
         highlightLock: HighlightLock? = nil,
-        captureSetup: RollCaptureSetup? = nil
+        captureSetup: RollCaptureSetup? = nil,
+        refreshPending: Bool = false
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -505,6 +511,7 @@ struct RollManifest: Sendable, Hashable {
         self.cameraColor = cameraColor
         self.highlightLock = highlightLock
         self.captureSetup = captureSetup
+        self.refreshPending = refreshPending
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -546,6 +553,7 @@ struct RollManifest: Sendable, Hashable {
         self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
         self.highlightLock = fields["highlight_lock"]?.objectValue.flatMap(HighlightLock.init(fields:))
         self.captureSetup = fields["setup"]?.objectValue.flatMap(RollCaptureSetup.init(fields:))
+        self.refreshPending = fields["refresh_pending"]?.boolValue ?? false
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {
