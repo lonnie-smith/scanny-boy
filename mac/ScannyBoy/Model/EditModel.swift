@@ -930,7 +930,7 @@ final class EditModel {
                 colorCastRemovalHighlights = color.castRemovalHighlights
                 colorDyeSeparation = color.dyeSeparation
                 colorSeparationDamping = color.separationDamping
-                colorTemperature = nil
+                colorTemperature = color.temperature
             } else {
                 colorWbCyan = nil
                 colorWbMagenta = nil

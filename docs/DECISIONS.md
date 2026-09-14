@@ -1741,8 +1741,8 @@ targets the scan-start grade (R180), not R115.
 
 ## The preview's colour adjustment: the `color` op (protocol version 12)
 
-Six controls from NegPy's Colour panel — temperature (a Kelvin lever over
-magenta and yellow, derived never stored), global/shadow/highlight CMY,
+Six controls from NegPy's Colour panel — temperature (a global Kelvin
+layer under the CMY sliders, see 8), global/shadow/highlight CMY,
 cast removal, dye separation, and separation damping — land as a second
 op (`repo.COLOR_OP`), sibling to `tone`. The same boundaries apply as
 tone after the colour-managed export landed: the published TIFF never
@@ -1776,6 +1776,15 @@ What is not obvious from the code:
    the slider barely moves on real frames.
 7. **Cast removal ports the shadow-tie branch only.** We do not measure
    the neutral-axis refs NegPy's other branch needs.
+8. **Temperature is its own stored layer, not a lever over the sliders.**
+   The first cut derived Kelvin from magenta/yellow and wrote the lever's
+   result back into them. With the sliders clamped at ±1, a large warm
+   move pegged both, the projection back to Kelvin then read the clipped
+   pair, and dragging cool could not undo it. Now `temperature` is a key of
+   its own, global only: its mired shift adds a magenta/yellow term to the
+   global sliders inside `cmy_offsets`, before luma removal, so it is
+   lightness-neutral, never clamps a slider, and Auto Cast (which solves
+   the sliders alone) leaves the warmth in place.
 
 # The spotting feature (protocol version 13)
 

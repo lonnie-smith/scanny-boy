@@ -1770,9 +1770,7 @@ def test_edit_color_partial_update_preserves_recorded_values(
     assert params["cast_removal"] == pytest.approx(0.3)
 
 
-def test_edit_color_temperature_is_exclusive_with_region_magenta(
-    work_dir, capsys, tmp_path
-):
+def test_edit_color_temperature_composes_with_magenta(work_dir, capsys, tmp_path):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1788,15 +1786,18 @@ def test_edit_color_temperature_is_exclusive_with_region_magenta(
             "--negative",
             negative_id,
             "--temperature",
-            "3200",
+            "3800",
             "--magenta",
             "0.1",
         ]
     )
 
-    assert status == 1
+    assert status == 0
     events, _err = _stdout_events(capsys)
-    assert events[1]["code"] == "INVALID_EDIT"
+    params = events[1]["edit"]["params"]
+    assert params["temperature"] == pytest.approx(3800.0)
+    assert params["wb_magenta"] == pytest.approx(0.1)
+    assert params["wb_yellow"] == 0.0
 
 
 def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
@@ -1816,6 +1817,7 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
         cast_removal=0.15,
         dye_separation=1.1,
         separation_damping=0.2,
+        temperature=7200.0,
     )
     flag_for_key = {
         "wb_cyan": "--cyan",
@@ -1831,6 +1833,7 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
         "cast_removal_highlights": "--cast-removal-highlights",
         "dye_separation": "--dye-separation",
         "separation_damping": "--separation-damping",
+        "temperature": "--temperature",
     }
     argv = [
         "edit",
@@ -1853,10 +1856,10 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
-    assert negative["color_temperature"] == pytest.approx(
-        color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
-    )
+        assert negative[f"color_{key}"] == pytest.approx(
+            params.get(key, defaults[key])
+        )
+    assert negative["color_temperature"] == pytest.approx(7200.0)
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):

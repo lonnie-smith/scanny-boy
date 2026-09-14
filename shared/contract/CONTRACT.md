@@ -504,13 +504,14 @@ global, shadow, and highlight cyan/magenta/yellow enlarger filtration
 `--reset` to remove the op. Unlike `edit tone`, **unspecified flags take
 the negative's currently recorded value**, not the neutral default — a
 single-slider change need not resend all twelve keys. Validation runs on the
-merged twelve-key state. `--temperature` (3000–12000 K, 5500 K neutral) is
-a Kelvin illuminant lever over the named region's magenta and yellow (higher
-K is warmer, Lightroom convention), resolved before validation via
-`kelvin_to_wb`; it is mutually exclusive with that region's
-`--magenta` (and `--shadow-magenta` / `--highlight-magenta` when
-`--region` is `shadows` / `highlights`). `--region` defaults to `global`
-and only applies with `--temperature`. Cyan is untouched by temperature.
+merged state. `--temperature` (3500–12000 K, 5500 K neutral) records the
+`temperature` key: a global-only, lightness-neutral warm/cool layer
+(higher K is warmer, Lightroom convention) that the global CMY sliders
+sit on top of. It never rewrites or clamps any slider — its magenta/yellow
+contribution (linear in mireds) is added to the global sliders inside the
+render, before the luma removal — so it composes freely with
+`--cyan`/`--magenta`/`--yellow` and survives `--auto-cast`. An op recorded
+before the key existed reads as 5500 K.
 The op is a state, not a transform — the latest `color` op wins and a
 trailing one coalesces in place. The published TIFF and export are
 untouched; previews are regenerated with per-channel display LUTs plus
@@ -526,8 +527,8 @@ reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
 `color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
 `color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
 `color_cast_removal`, `color_cast_removal_highlights`,
-`color_dye_separation`, `color_separation_damping`,
-and derived `color_temperature` (null when no op), plus `film_kind` on the
+`color_dye_separation`, `color_separation_damping`, `color_auto_neutral`,
+and `color_temperature` (all null when no op), plus `film_kind` on the
 roll. The auto cast solve reads a stitch-time meter, so it is unavailable
 on rolls stitched by an older build.
 

@@ -402,19 +402,32 @@ struct CLICommandTests {
 
     // MARK: - Edit color
 
-    @Test("edit color with temperature omits that region's magenta")
+    @Test("edit color sends temperature alongside, not instead of, the sliders")
     func editColorTemperatureArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.temperature = 8000
+        adjustment.wbMagenta = 0.3
         let command = CLICommand.editColor(
             roll: Self.out,
             negatives: ["neg-01"],
-            adjustment: .neutral,
-            region: "global",
-            temperatureKelvin: 3200
+            adjustment: adjustment
         )
-        #expect(command.arguments.contains("--temperature"))
-        #expect(command.arguments.contains("3200.0"))
-        #expect(!command.arguments.contains { $0 == "--magenta" })
-        #expect(command.arguments.contains("--cyan"))
+        let index = command.arguments.firstIndex(of: "--temperature")
+        #expect(index.map { command.arguments[$0 + 1] } == "8000.0")
+        let magenta = command.arguments.firstIndex(of: "--magenta")
+        #expect(magenta.map { command.arguments[$0 + 1] } == "0.3")
+        #expect(!command.arguments.contains("--region"))
+    }
+
+    @Test("temperature slider position round-trips through mireds")
+    func temperatureWarmthRoundTrips() {
+        #expect(ColorTemperature.warmth(kelvin: ColorTemperature.neutralKelvin) == 0)
+        for kelvin in [3500.0, 4200.0, 7000.0, 12000.0] {
+            let back = ColorTemperature.kelvin(warmth: ColorTemperature.warmth(kelvin: kelvin))
+            #expect(abs(back - kelvin) < 1e-6)
+        }
+        #expect(ColorTemperature.warmth(kelvin: 7000) > 0)
+        #expect(ColorTemperature.kelvin(warmth: 1000) == ColorTemperature.maxKelvin)
     }
 
     @Test("edit color with no adjustment is a reset")
