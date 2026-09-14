@@ -3,19 +3,27 @@ import SwiftUI
 /// One row per negative in the capture queue, showing status, progress, and
 /// elapsed time. Replaces the old tile-based strip.
 struct CaptureQueueList: View {
+    static let maxVisibleRows = 5
+
     let stitchQueue: StitchQueueModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(negatives) { negative in
-                CaptureQueueRow(
-                    negative: negative,
-                    progress: stitchQueue.progress[negative.id],
-                    rollURL: stitchQueue.rollURL
-                )
+        // Rows are a fixed height; the list scrolls past `maxVisibleRows`
+        // rather than squeezing rows into a shorter frame, where they overlap.
+        ScrollView(.vertical) {
+            LazyVStack(spacing: 0) {
+                ForEach(negatives) { negative in
+                    CaptureQueueRow(
+                        negative: negative,
+                        progress: stitchQueue.progress[negative.id],
+                        rollURL: stitchQueue.rollURL
+                    )
+                }
             }
         }
-        .frame(maxHeight: 240)
+        .frame(
+            height: CGFloat(min(negatives.count, Self.maxVisibleRows)) * CaptureQueueRow.rowHeight
+        )
     }
 
     /// Newest first — the negative just shot is at the top.
@@ -25,6 +33,9 @@ struct CaptureQueueList: View {
 }
 
 struct CaptureQueueRow: View {
+    static let rowHeight: CGFloat = 38
+    static let thumbnailSize = CGSize(width: 48, height: 32)
+
     let negative: StitchQueueModel.QueuedNegative
     let progress: StitchQueueModel.StepProgress?
     let rollURL: URL?
@@ -34,9 +45,11 @@ struct CaptureQueueRow: View {
     var body: some View {
         HStack(spacing: 8) {
             leadingIcon
+                .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
             Text(negative.stamp)
                 .font(.caption.monospacedDigit())
-                .frame(width: 90, alignment: .leading)
+                .fixedSize()
+                .frame(minWidth: 110, alignment: .leading)
             statusLabel
                 .font(.caption)
                 .lineLimit(1)
@@ -52,7 +65,7 @@ struct CaptureQueueRow: View {
                 .frame(width: 50, alignment: .trailing)
         }
         .padding(.horizontal, 8)
-        .frame(height: 24)
+        .frame(height: Self.rowHeight)
         .opacity(failedRow ? 0.7 : 1.0)
         .help(helpText)
         .task(id: negative.outputFilename) {
@@ -68,16 +81,14 @@ struct CaptureQueueRow: View {
             Image(nsImage: thumbnail.image)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 32, height: 24)
+                .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
         } else if negative.step == .published {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .frame(width: 32, height: 24)
         } else {
             Image(systemName: iconName)
                 .foregroundStyle(iconColor)
-                .frame(width: 32, height: 24)
         }
     }
 
@@ -201,7 +212,7 @@ struct CaptureQueueRow: View {
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         thumbnail = await ThumbnailLoader.shared.thumbnail(
             forStitchedTIFF: tiffURL,
-            pointSize: CGSize(width: 32, height: 24),
+            pointSize: Self.thumbnailSize,
             scale: scale
         )
     }
