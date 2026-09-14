@@ -118,7 +118,9 @@ def _work_manifest(**overrides) -> Manifest:
     return Manifest(**defaults)
 
 
-def _matrix(scale: float = 1.0) -> tuple[
+def _matrix(
+    scale: float = 1.0,
+) -> tuple[
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
@@ -331,7 +333,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
     geometry to `composite`, so the warp matches the undistorted coordinates
     the solve happened in. (The profile keyword was never passed at the call
     site, so the geometry-aware warp was dead in production.)"""
-    from scanny_boy import flatfield
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
     # Zero distortion: the warp is a no-op, so the synthetic scene still
@@ -348,19 +350,10 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
         "k1": 0.0,
         "k2": 0.0,
     }
-    path, sha256 = flatfield.save_gain_map(
-        "pid-geo", np.full((8, 8, 3), 1.0, dtype=np.float32)
-    )
-    repo.save_flatfield_profile(
-        flatfield.FlatFieldProfile(
+    repo.save_rig_profile(
+        RigProfile(
             profile_id="pid-geo",
             name="Profile Geo",
-            gain_map_path=str(path),
-            gain_map_sha256=sha256,
-            source_path=None,
-            reference_width=frame_width,
-            reference_height=frame_height,
-            params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
             geometry=geometry,
@@ -378,7 +371,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 
     out_dir = make_roll_dir(tmp_path)
 
-    outcome = run_stitch_with_defaults(work_dir, out_dir, flatfield_profile_id="pid-geo")
+    outcome = run_stitch_with_defaults(work_dir, out_dir, rig_profile_id="pid-geo")
 
     assert outcome.status == "complete"
     assert captured
@@ -389,7 +382,7 @@ def test_calibrated_profile_geometry_reaches_the_composite_warp(
 def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
     """A profile fitted at different decode dimensions must fail before
     stitch starts — width and height are not interchangeable."""
-    from scanny_boy import flatfield
+    from scanny_boy.calibration import RigProfile
     from scanny_boy.library import repo
 
     frame_height, frame_width = FRAME_SIZE
@@ -404,19 +397,10 @@ def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
         "k1": 0.0,
         "k2": 0.0,
     }
-    path, sha256 = flatfield.save_gain_map(
-        "pid-mismatch", np.full((8, 8, 3), 1.0, dtype=np.float32)
-    )
-    repo.save_flatfield_profile(
-        flatfield.FlatFieldProfile(
+    repo.save_rig_profile(
+        RigProfile(
             profile_id="pid-mismatch",
             name="Swapped",
-            gain_map_path=str(path),
-            gain_map_sha256=sha256,
-            source_path=None,
-            reference_width=frame_height,
-            reference_height=frame_width,
-            params=flatfield.build_params(),
             scanny_boy_version="0.3.0",
             created_at="2026-09-01T00:00:00Z",
             geometry=geometry,
@@ -426,9 +410,7 @@ def test_geometry_frame_size_mismatch_is_rejected(work_dir, tmp_path):
     out_dir = make_roll_dir(tmp_path)
 
     with pytest.raises(StitchError) as exc_info:
-        run_stitch_with_defaults(
-            work_dir, out_dir, flatfield_profile_id="pid-mismatch"
-        )
+        run_stitch_with_defaults(work_dir, out_dir, rig_profile_id="pid-mismatch")
     assert exc_info.value.code is Code.GEOMETRY_FRAME_SIZE_MISMATCH
 
 
@@ -673,7 +655,9 @@ def test_featureless_negative_fails_with_a_retry_eligible_code(tmp_path, monkeyp
     assert failures[0].code in stitch_pipeline._CLAHE_RETRY_CODES
 
 
-def test_clahe_fallback_recovers_an_underconstrained_negative(work_dir, tmp_path, monkeypatch):
+def test_clahe_fallback_recovers_an_underconstrained_negative(
+    work_dir, tmp_path, monkeypatch
+):
     """A negative whose plain-pass registration disconnects the pair graph
     is retried once with CLAHE; a graph that connects on that pass still
     stitches, and the manifest says the fallback was needed."""
@@ -728,7 +712,9 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(work_dir, tmp_path
     assert max(e.completed for e in progress_events) <= total
 
 
-def test_clahe_fallback_is_not_used_for_an_oversized_canvas(work_dir, tmp_path, monkeypatch):
+def test_clahe_fallback_is_not_used_for_an_oversized_canvas(
+    work_dir, tmp_path, monkeypatch
+):
     """`STITCH_OUTPUT_TOO_LARGE` is not in `_CLAHE_RETRY_CODES`: a canvas
     that is already too big to write stays too big under CLAHE too, so the
     negative fails on the first pass with no retry."""
@@ -899,7 +885,8 @@ def _baseless_roll(tmp_path: Path, name: str = "out") -> Path:
 
 
 def test_stitch_without_a_base_frame_is_rejected_before_any_pixel_work(
-    work_dir, tmp_path,
+    work_dir,
+    tmp_path,
 ):
     """§3.2 rule 4: run/stitch on an ABSENT roll fail FILM_BASE_REQUIRED
     after the roll manifest loads and its invariants are checked, and
@@ -964,47 +951,6 @@ def test_a_run_that_fails_before_publishing_leaves_the_roll_attached(tmp_path):
     assert roll.film_base["locked_at"] is None
 
 
-def test_a_differing_flatfield_profile_warns(work_dir, tmp_path):
-    """§3.3: the run's flat-field profile differs from the one the base
-    frame was measured with — a warning, not an error."""
-    out_dir = make_roll_dir(tmp_path)
-    roll = load_roll_manifest(out_dir)
-    attach_base_frame(roll, flat_field_profile_id="pid-elsewhere")
-    write_roll_manifest(out_dir, roll)
-    events: list = []
-
-    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
-
-    warnings = [
-        e
-        for e in events
-        if isinstance(e, WarningEvent)
-        and e.code
-        not in (
-            Code.NORMALIZE_HEADROOM_CLIPPED,
-            # The synthetic scene's blurred dark content forms a second dense
-            # mode, so the film-extent pass reports an informational
-            # withhold on it; it is not the warning this test is about.
-            Code.NORMALIZE_FILM_EXTENT_WITHHELD,
-            Code.NORMALIZE_FILM_EXTENT_EXCESSIVE,
-        )
-    ]
-    assert [w.code for w in warnings] == [Code.FILM_BASE_FLATFIELD_CONFLICT]
-    assert "pid-elsewhere" in warnings[0].message
-
-
-def test_a_matching_flatfield_profile_does_not_warn(work_dir, tmp_path):
-    out_dir = make_roll_dir(tmp_path)
-    events: list = []
-
-    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
-
-    assert not [
-        e for e in events
-        if isinstance(e, WarningEvent) and e.code is Code.FILM_BASE_FLATFIELD_CONFLICT
-    ]
-
-
 def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp_path):
     """§3.3: the camera comparison's second home — `roll set-base-frame`
     found no `camera_color` on the fresh roll, so the first run (which
@@ -1020,7 +966,9 @@ def test_a_differing_base_frame_camera_warns_once_the_roll_has_one(work_dir, tmp
     write_roll_manifest(out_dir, roll)
     events: list = []
 
-    assert run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
+    assert (
+        run_stitch_with_defaults(work_dir, out_dir, events=events).status == "complete"
+    )
 
     warnings = [
         e
@@ -1120,11 +1068,14 @@ def test_base_check_is_absent_when_the_rebate_did_not_fire(work_dir, tmp_path):
     assert "base_check" not in record
 
 
-def test_base_check_is_absent_when_the_rebate_was_clipped(work_dir, tmp_path, monkeypatch):
+def test_base_check_is_absent_when_the_rebate_was_clipped(
+    work_dir, tmp_path, monkeypatch
+):
     """§6: clipped base is worthless base — `base_density` is None and the
     comparison is absent."""
     monkeypatch.setattr(
-        "scanny_boy.composite.detect_rebate", _forced_rebate((0.0, 0.0, 0.0), clipped=True)
+        "scanny_boy.composite.detect_rebate",
+        _forced_rebate((0.0, 0.0, 0.0), clipped=True),
     )
     out_dir = make_roll_dir(tmp_path)
     roll = load_roll_manifest(out_dir)
@@ -1142,7 +1093,9 @@ def test_base_check_is_absent_when_the_rebate_was_clipped(work_dir, tmp_path, mo
 # --- the two new meters -----------------------------------------------------
 
 
-def test_normalization_record_carries_the_highlight_refs_and_residual(work_dir, tmp_path):
+def test_normalization_record_carries_the_highlight_refs_and_residual(
+    work_dir, tmp_path
+):
     """A real stitch writes both keys — `highlight_refs` (3-wide or null)
     and `neutral_residual` (2-wide or null) — and the manifest validates
     against the updated schema."""
@@ -1153,10 +1106,130 @@ def test_normalization_record_carries_the_highlight_refs_and_residual(work_dir, 
     manifest = load_roll_manifest(out_dir)
     record = manifest.negatives[0].normalization
     assert record["highlight_refs"] is None or len(record["highlight_refs"]) == 3
-    assert (
-        record["neutral_residual"] is None or len(record["neutral_residual"]) == 2
-    )
+    assert record["neutral_residual"] is None or len(record["neutral_residual"]) == 2
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+
+
+# --- docs/ROLL_HIGHLIGHT_LOCK.md ---------------------------------------------
+
+
+def test_roll_highlight_lock_is_recomputed_from_the_roll_at_the_end_of_every_run(
+    work_dir, tmp_path, monkeypatch
+):
+    """`run_stitch` must recompute `roll.highlight_lock` from the roll's
+    current negative set on every run — never merge an old value forward —
+    and the value it writes must be exactly what
+    `highlight_lock.compute_roll_highlight_lock` would say about the same
+    roll. Stubbed rather than driven off the synthetic scene's actual
+    chroma content: whether that content happens to qualify for a
+    trustworthy `highlight_refs` measurement is `_same_pixel_color_floor_
+    refs`'s business, not this test's, and a flaky pass/fail on real pixel
+    content would test the wrong thing."""
+    from scanny_boy import highlight_lock
+
+    base = (-0.42, -0.12, -0.99)  # work_dir_support.base_frame_block's density
+    calls: list[int] = []
+    first_lock = highlight_lock.HighlightLock(
+        k=(1.5, 1.0, 0.5), base=base, qualifying_count=1
+    )
+    second_lock = highlight_lock.HighlightLock(
+        k=(2.5, 1.0, -0.5), base=base, qualifying_count=2
+    )
+    stubbed = iter([first_lock, second_lock])
+
+    def _stub(roll):
+        calls.append(len(roll.negatives))
+        return next(stubbed)
+
+    monkeypatch.setattr(
+        stitch_pipeline.highlight_lock, "compute_roll_highlight_lock", _stub
+    )
+
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    assert manifest.highlight_lock == first_lock.to_dict()
+    assert calls == [1]  # the one negative `work_dir` seeds
+
+    # A second run over the same single-negative work dir re-adopts the
+    # existing negative (no new one), but the estimate is still
+    # recomputed wholesale — never left stale, and never merged with the
+    # previous value.
+    assert (
+        run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status
+        == "complete"
+    )
+    manifest = load_roll_manifest(out_dir)
+    assert manifest.highlight_lock == second_lock.to_dict()
+    assert calls == [1, 1]
+
+
+def test_roll_highlight_lock_matches_recomputing_it_fresh(work_dir, tmp_path):
+    """Whatever the synthetic scene's own chroma gate decided this run
+    (`highlight_refs` null or not), the stored `roll.highlight_lock` must
+    agree with calling `compute_roll_highlight_lock` (real, unstubbed)
+    fresh on the same loaded roll — `run_stitch` never writes anything
+    `compute_roll_highlight_lock` itself would not produce."""
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+    manifest = load_roll_manifest(out_dir)
+    from scanny_boy.highlight_lock import compute_roll_highlight_lock
+
+    recomputed = compute_roll_highlight_lock(manifest)
+    expected = None if recomputed is None else recomputed.to_dict()
+    assert manifest.highlight_lock == expected
+
+
+def test_real_stitch_with_a_qualifying_highlight_produces_a_non_none_lock(
+    work_dir, tmp_path, monkeypatch
+):
+    """The unstubbed end-to-end case: a real `run_stitch`, over a roll with
+    a real locked film base, whose negative's `highlight_refs` comes back
+    non-null, must produce a non-`None` `roll.highlight_lock` — with
+    `highlight_lock.compute_roll_highlight_lock` running for real (nothing
+    in this module is stubbed).
+
+    The synthetic scene's own content does not reliably drive this: its
+    gray fill is neutral pixel-by-pixel before `frame_gains`, but the
+    stitched result's own dense-end colour still does not pass
+    `_same_pixel_color_floor_refs`'s gate as built by the ordinary test
+    fixtures (confirmed empirically — a work dir with no hook, and one
+    whose frames were overwritten with a large uniform bright neutral
+    block, both still recorded `highlight_refs: null`). Rather than fight
+    the synthetic-scene generator to manufacture qualifying chroma
+    content — a `_same_pixel_color_floor_refs` calibration problem, not
+    this feature's — the one lower-level measurement
+    (`composite.measure_highlight_refs`) is monkeypatched to return a
+    fixed, realistic reading for the one negative `work_dir` seeds; the
+    stitch run, the manifest write, and `compute_roll_highlight_lock`
+    itself all run unstubbed and for real."""
+    import scanny_boy.composite as composite_module
+
+    fixed_refs = (
+        -2.12,
+        -2.00,
+        -2.88,
+    )  # base (-0.42, -0.12, -0.99) + (-1.7, -1.88, -1.89)
+    monkeypatch.setattr(
+        composite_module,
+        "measure_highlight_refs",
+        lambda grid, keep, base_refs: fixed_refs,
+    )
+
+    out_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+
+    manifest = load_roll_manifest(out_dir)
+    record = manifest.negatives[0].normalization
+    assert record["highlight_refs"] == list(fixed_refs)
+    assert manifest.highlight_lock is not None
+    assert manifest.highlight_lock["qualifying_count"] == 1
+
+    from scanny_boy.highlight_lock import compute_roll_highlight_lock
+
+    recomputed = compute_roll_highlight_lock(manifest)
+    assert recomputed is not None
+    assert manifest.highlight_lock == recomputed.to_dict()
 
 
 @pytest.mark.slow
@@ -1170,7 +1243,10 @@ def test_changed_shots_per_negative_is_accepted(work_dir, tmp_path):
     (tmp_path / "second").mkdir()
     other = make_work_dir(tmp_path / "second", shots_per_negative=2)
 
-    assert run_stitch_with_defaults(other, out_dir, run_id="stitch-run-2").status == "complete"
+    assert (
+        run_stitch_with_defaults(other, out_dir, run_id="stitch-run-2").status
+        == "complete"
+    )
 
     roll = load_roll_manifest(out_dir)
     assert [r.run_id for r in roll.runs] == ["stitch-run", "stitch-run-2"]
@@ -1213,9 +1289,7 @@ def test_reference_bounds_collects_completed_negatives_blocks():
             "neg-02", "run-1", (-1.6, -1.5, -1.8), (-0.35, -0.32, -0.48)
         )
     )
-    roll.negatives.append(
-        _negative_with_normalization("neg-03", "run-1", None, None)
-    )
+    roll.negatives.append(_negative_with_normalization("neg-03", "run-1", None, None))
     references = stitch_pipeline._reference_bounds(roll)
     assert len(references) == 2
     assert references[0].floors == (-1.5, -1.6, -1.7)
@@ -1388,7 +1462,9 @@ def test_restitch_reapplies_metadata(work_dir, tmp_path):
     _apply_manually(out_dir, old_id)
 
     events: list = []
-    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(
+        work_dir, out_dir, run_id="stitch-run-2", events=events
+    )
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
@@ -1419,7 +1495,9 @@ def test_restitch_of_never_applied_negative_does_not_apply(work_dir, tmp_path):
     old_id = load_roll_manifest(out_dir).negatives[0].negative_id
 
     events: list = []
-    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(
+        work_dir, out_dir, run_id="stitch-run-2", events=events
+    )
     assert second.status == "complete"
 
     roll = load_roll_manifest(out_dir)
@@ -1430,7 +1508,9 @@ def test_restitch_of_never_applied_negative_does_not_apply(work_dir, tmp_path):
     assert not [e for e in events if isinstance(e, (MetadataApplied, MetadataSkipped))]
 
 
-def test_failed_reapply_leaves_negative_dirty_not_failed(work_dir, tmp_path, monkeypatch):
+def test_failed_reapply_leaves_negative_dirty_not_failed(
+    work_dir, tmp_path, monkeypatch
+):
     out_dir = make_roll_dir(tmp_path)
 
     first = run_stitch_with_defaults(work_dir, out_dir)
@@ -1448,7 +1528,9 @@ def test_failed_reapply_leaves_negative_dirty_not_failed(work_dir, tmp_path, mon
     )
 
     events: list = []
-    second = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    second = run_stitch_with_defaults(
+        work_dir, out_dir, run_id="stitch-run-2", events=events
+    )
 
     # A stitch is never failed by a metadata problem.
     assert second.status == "complete"
@@ -1639,7 +1721,9 @@ def _make_grid_work_dir(tmp_path: Path, *, across: int, down: int) -> Path:
         path = work_dir / output_name
         outputs.append(
             OutputRecord(
-                name=output_name, size=path.stat().st_size, sha256=hashing.sha256_file(path)
+                name=output_name,
+                size=path.stat().st_size,
+                sha256=hashing.sha256_file(path),
             )
         )
         members.append(source_name)
@@ -1707,9 +1791,7 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     # Ground-truth 5x2 geometry: 2/3 step on both axes (1/3 overlap), no
     # rotation, so the solve recovers it exactly and every frame bbox is
     # exactly one frame.
-    fake_detect_all, fake_register_pair = _grid_registration_fixtures(
-        across, down
-    )
+    fake_detect_all, fake_register_pair = _grid_registration_fixtures(across, down)
 
     monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
     monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
@@ -1737,7 +1819,9 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     assert bbox_size[0] <= f_size[0] + 2 and bbox_size[1] <= f_size[1] + 2
     assert canvas_size[0] > f_size[1] * 2 and canvas_size[1] > f_size[0]
 
-    old_peak = real_estimate(canvas_size, f_size, (canvas_size[1], canvas_size[0]), f_count)
+    old_peak = real_estimate(
+        canvas_size, f_size, (canvas_size[1], canvas_size[0]), f_count
+    )
     new_peak = real_estimate(canvas_size, f_size, bbox_size, f_count)
     assert old_peak > new_peak * 3  # the bug is worth a large factor here
 
@@ -1749,11 +1833,14 @@ def test_peak_estimate_scales_with_the_frame_box_not_the_canvas(tmp_path, monkey
     monkeypatch.setattr(stitch_pipeline, "estimate_peak_bytes", real_estimate)
 
     events = []
-    outcome = run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2", events=events)
+    outcome = run_stitch_with_defaults(
+        work_dir, out_dir, run_id="stitch-run-2", events=events
+    )
 
     memory_failures = [
-        e for e in events if isinstance(e, NegativeFailed)
-        and e.code is Code.INSUFFICIENT_MEMORY
+        e
+        for e in events
+        if isinstance(e, NegativeFailed) and e.code is Code.INSUFFICIENT_MEMORY
     ]
     assert memory_failures == []
     # The negative reaches compositing and publishes: the gate let it through.
@@ -1798,14 +1885,18 @@ def test_peak_estimate_5x2_target_workload_matches_the_formula():
 
     required_gb = 2 * actual / 1024**3
     assert 40 < required_gb < 56  # §1a.3: 47.5 GB required, 26% headroom on 64 GB
-    inflated = estimate_peak_bytes(canvas_size, frame_size, (canvas_height, canvas_width), 10)
+    inflated = estimate_peak_bytes(
+        canvas_size, frame_size, (canvas_height, canvas_width), 10
+    )
     assert inflated > 3 * actual  # the pre-G-0 bug charged the canvas per frame
 
 
 # --- auto-rotation seeding -------------------------------------------------
 
 
-def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(work_dir, tmp_path, monkeypatch):
+def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(
+    work_dir, tmp_path, monkeypatch
+):
     """A newly published negative gets the estimated rebate tilt seeded as
     one `rotate_fine` ops-log entry — emitted as `edit_recorded`, preview
     regenerated through the net transform that already carries it — while
@@ -1823,9 +1914,18 @@ def test_auto_rotation_seeds_one_fine_op_on_a_new_negative(work_dir, tmp_path, m
     assert edit["op"] == repo.ROTATE_FINE_OP
     assert edit["params"] == {"angle_deg": 1.5, "source": "auto"}
     assert repo.net_edit_state(out_dir, "stitch-negative-01") == repo.EditState(
-        quarter_turns=0, flipped=False, fine_angle_deg=1.5, tone=None, color=None,
-        scratches={"detector_version": 1, "source": "auto", "enabled": True,
-                   "canvas": [2080, 730], "scratches": []},
+        quarter_turns=0,
+        flipped=False,
+        fine_angle_deg=1.5,
+        tone=None,
+        color=None,
+        scratches={
+            "detector_version": 1,
+            "source": "auto",
+            "enabled": True,
+            "canvas": [2080, 730],
+            "scratches": [],
+        },
     )
     (recorded,) = [e for e in events if isinstance(e, EditRecorded)]
     assert recorded.negative_id == "stitch-negative-01"
@@ -1951,11 +2051,15 @@ def test_legacy_roll_with_runs_but_no_film_block_is_treated_as_colour(tmp_path):
     roll.film = None
     write_roll_manifest(out_dir, roll)
 
-    assert run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status == "complete"
+    assert (
+        run_stitch_with_defaults(work_dir, out_dir, run_id="stitch-run-2").status
+        == "complete"
+    )
     roll_after = load_roll_manifest(out_dir)
-    assert roll_after.published_icc_profile["sha256"] == profile_record(
-        ProfileKind.DENSITY
-    )["sha256"]
+    assert (
+        roll_after.published_icc_profile["sha256"]
+        == profile_record(ProfileKind.DENSITY)["sha256"]
+    )
 
 
 # --- the camera_color block -------------------------------------------
@@ -2010,7 +2114,9 @@ def test_seed_camera_color_tolerates_an_identical_matrix_silently():
     events: list[WarningEvent] = []
 
     _seed_camera_color(
-        roll, _work_manifest(curated_metadata=_curated_with_matrix()), emit=events.append
+        roll,
+        _work_manifest(curated_metadata=_curated_with_matrix()),
+        emit=events.append,
     )
 
     assert events == []
@@ -2019,6 +2125,8 @@ def test_seed_camera_color_tolerates_an_identical_matrix_silently():
 def test_seed_camera_color_no_ops_without_a_matrix():
     roll = new_roll_manifest(roll_id="r", roll_name="roll", film_kind="colour")
     _seed_camera_color(
-        roll, _work_manifest(), emit=lambda event: None  # type: ignore[arg-type]
+        roll,
+        _work_manifest(),
+        emit=lambda event: None,  # type: ignore[arg-type]
     )
     assert roll.camera_color is None

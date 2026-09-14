@@ -6,6 +6,7 @@ before anything is recorded."""
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -32,20 +33,13 @@ from scanny_boy.work_dir_support import make_roll_dir
 _NEGATIVE_ID = "stitch-negative-01"
 
 
-def _tone_params(grade_r: float = 115.0, snap_gamma: float = 0.0, **overrides: float):
+def _tone_params(snap_gamma: float = 0.0, **overrides: float):
     from scanny_boy import tone
 
     params = {
-        "grade_r": grade_r,
-        "snap_gamma": snap_gamma,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
+        key: dataclasses.asdict(tone.NEUTRAL)[key] for key in tone.TONE_PARAM_KEYS
     }
+    params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
 
@@ -66,7 +60,11 @@ def stitched_roll(tmp_path: Path) -> Path:
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     negative = _negative(
@@ -84,11 +82,15 @@ def stitched_roll(tmp_path: Path) -> Path:
     )
     manifest.negatives.append(negative)
     write_roll_manifest(roll_dir, manifest)
-    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.arange(12, dtype=np.uint16).reshape(3, 4))
+    tifffile.imwrite(
+        roll_dir / "_DSC0001.tif", np.arange(12, dtype=np.uint16).reshape(3, 4)
+    )
     return roll_dir
 
 
-def _append_stitched_negative(roll_dir: Path, negative_id: str, output_name: str) -> None:
+def _append_stitched_negative(
+    roll_dir: Path, negative_id: str, output_name: str
+) -> None:
     """A second completed negative, so selection-level tests have something
     to select."""
     from scanny_boy.roll_manifest import CaptureTime
@@ -111,7 +113,9 @@ def _append_stitched_negative(roll_dir: Path, negative_id: str, output_name: str
         )
     )
     write_roll_manifest(roll_dir, manifest)
-    tifffile.imwrite(roll_dir / output_name, np.arange(12, dtype=np.uint16).reshape(3, 4))
+    tifffile.imwrite(
+        roll_dir / output_name, np.arange(12, dtype=np.uint16).reshape(3, 4)
+    )
 
 
 def _tiff_bytes(roll_dir: Path) -> bytes:
@@ -121,9 +125,7 @@ def _tiff_bytes(roll_dir: Path) -> bytes:
 def test_rotate_records_the_edit_and_reports_net_turns(stitched_roll):
     events: list = []
 
-    (fields,) = run_edit_rotate(
-        stitched_roll, _NEGATIVE_ID, "cw", emit=events.append
-    )
+    (fields,) = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=events.append)
 
     assert fields["rotation_quarter_turns"] == 1
     assert fields["flipped_horizontally"] is False
@@ -145,7 +147,9 @@ def test_rotate_never_touches_the_published_tiff(stitched_roll):
 
 def test_two_rotations_compose_and_the_preview_tracks_them(stitched_roll):
     run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
-    (fields,) = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    (fields,) = run_edit_rotate(
+        stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None
+    )
 
     assert fields["rotation_quarter_turns"] == 2
     assert fields["flipped_horizontally"] is False
@@ -173,8 +177,8 @@ def test_flip_never_touches_the_published_tiff(stitched_roll):
 
 def test_flip_and_rotate_do_not_commute(stitched_roll):
     """A flip applies to the pixels as they currently render, so flip-then-
-   -rotate and rotate-then-flip are different images — the reason the ops
-    log reduces to a (turns, flipped) pair rather than a single number."""
+    -rotate and rotate-then-flip are different images — the reason the ops
+     log reduces to a (turns, flipped) pair rather than a single number."""
     from scanny_boy.library import repo
 
     _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
@@ -286,14 +290,14 @@ def test_rotate_rejects_another_rolls_negative_id(tmp_path):
         (roll_b, "rid-b", "bbb-negative-01"),
     ):
         roll_dir.mkdir()
-        manifest = new_roll_manifest(roll_id=roll_id, roll_name=roll_dir.name, film_kind="colour")
+        manifest = new_roll_manifest(
+            roll_id=roll_id, roll_name=roll_dir.name, film_kind="colour"
+        )
         manifest.negatives.append(_negative(negative_id=negative_id, run_id="run-1"))
         write_roll_manifest(roll_dir, manifest)
 
     with pytest.raises(repo.RollNotRegisteredError):
-        repo.append_edit(
-            roll_b, "aaa-negative-01", repo.ROTATE_OP, {"direction": "cw"}
-        )
+        repo.append_edit(roll_b, "aaa-negative-01", repo.ROTATE_OP, {"direction": "cw"})
 
     with pytest.raises(EditFailure):
         run_edit_rotate(roll_b, "aaa-negative-01", "cw", emit=lambda event: None)
@@ -310,7 +314,9 @@ def test_rotate_an_unstitched_negative_fails(stitched_roll):
     write_roll_manifest(stitched_roll, manifest)
 
     with pytest.raises(EditFailure) as exc_info:
-        run_edit_rotate(stitched_roll, "stitch-negative-02", "cw", emit=lambda event: None)
+        run_edit_rotate(
+            stitched_roll, "stitch-negative-02", "cw", emit=lambda event: None
+        )
     assert exc_info.value.code is Code.NEGATIVE_NOT_FOUND
 
 
@@ -320,9 +326,7 @@ def test_roll_info_reports_the_net_rotation(stitched_roll):
     run_edit_rotate(stitched_roll, _NEGATIVE_ID, "ccw", emit=lambda event: None)
 
     manifest = load_roll_manifest(stitched_roll)
-    assert (
-        repo.net_rotation_quarter_turns(stitched_roll, _NEGATIVE_ID) == 3
-    )
+    assert repo.net_rotation_quarter_turns(stitched_roll, _NEGATIVE_ID) == 3
     assert manifest.negative(_NEGATIVE_ID).preview_path is not None
 
 
@@ -344,17 +348,17 @@ def test_tone_records_the_state_and_changes_the_preview(stitched_roll):
     _ramp_tiff(stitched_roll)
 
     (fields,) = run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(90.0, 0.2), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None
     )
 
     assert fields["edit"]["op"] == "tone"
-    assert fields["edit"]["params"] == _tone_params(90.0, 0.2)
+    assert fields["edit"]["params"] == _tone_params(0.2)
     assert fields["preview_path"] is not None and Path(fields["preview_path"]).exists()
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == repo.EditState(
         quarter_turns=0,
         flipped=False,
         fine_angle_deg=0.0,
-        tone=_tone_params(90.0, 0.2),
+        tone=_tone_params(0.2),
         color=None,
     )
 
@@ -376,23 +380,23 @@ def test_tone_coalesces_repeated_commits(stitched_roll):
     from scanny_boy.library import repo
 
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(115.0, 0.0), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.0), emit=lambda event: None
     )
     (fields,) = run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(80.0, 0.3), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.3), emit=lambda event: None
     )
 
     edits = repo.edits_for(stitched_roll, _NEGATIVE_ID)
     assert len(edits) == 1
     assert edits[0]["id"] == fields["edit"]["id"]
-    assert edits[0]["params"] == _tone_params(80.0, 0.3)
+    assert edits[0]["params"] == _tone_params(0.3)
 
 
-def test_tone_reset_returns_to_the_flat_look(stitched_roll):
+def test_tone_reset_returns_to_the_default_print_curve(stitched_roll):
     from scanny_boy import previews
 
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(90.0, 0.2), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None
     )
 
     (fields,) = run_edit_tone(
@@ -403,21 +407,133 @@ def test_tone_reset_returns_to_the_flat_look(stitched_roll):
     manifest = load_roll_manifest(stitched_roll)
     negative = manifest.negative(_NEGATIVE_ID)
     reset_preview = Path(negative.preview_path).read_bytes()
-    flat = previews.generate_preview(
+    default = previews.generate_preview(
         stitched_roll,
         manifest.roll_id,
         negative,
         tone_params=None,
     )
-    assert reset_preview == flat.read_bytes()
+    assert reset_preview == default.read_bytes()
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).tone is None
+
+
+def test_tone_reset_under_colour_matches_neutral_plus_colour(stitched_roll):
+    from scanny_boy import previews
+
+    run_edit_color(
+        stitched_roll,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None
+    )
+    run_edit_tone(
+        stitched_roll, _NEGATIVE_ID, _reset_tone_params(), emit=lambda event: None
+    )
+
+    manifest = load_roll_manifest(stitched_roll)
+    negative = manifest.negative(_NEGATIVE_ID)
+    state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID)
+    assert state.tone is None
+    assert state.color is not None
+
+    reset_preview = Path(negative.preview_path).read_bytes()
+    expected = previews.generate_preview(
+        stitched_roll,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+        color_params=state.color,
+    )
+    assert reset_preview == expected.read_bytes()
+
+
+def test_snap_only_tone_commit_is_incremental_on_neutral(tmp_path):
+    """The first tone nudge records a trim on the default print curve."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    negative = _negative(
+        negative_id=_NEGATIVE_ID,
+        run_id="stitch-run",
+        status="completed",
+        sequence=1,
+        output={
+            "name": "_DSC0001.tif",
+            "size": 0,
+            "sha256": "0" * 64,
+            "width": 64,
+            "height": 40,
+        },
+    )
+    manifest.negatives.append(negative)
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", image)
+
+    run_edit_color(
+        roll_dir,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.1, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    manifest = load_roll_manifest(roll_dir)
+    negative = manifest.negative(_NEGATIVE_ID)
+    state = repo.net_edit_state(roll_dir, _NEGATIVE_ID)
+    before = previews.generate_preview(
+        roll_dir,
+        manifest.roll_id,
+        negative,
+        tone_params=None,
+        color_params=state.color,
+    ).read_bytes()
+
+    snap_only = _tone_params(0.05)
+    assert (
+        before
+        != previews.generate_preview(
+            roll_dir,
+            manifest.roll_id,
+            negative,
+            tone_params=snap_only,
+            color_params=state.color,
+        ).read_bytes()
+    )
+
+    run_edit_tone(roll_dir, _NEGATIVE_ID, snap_only, emit=lambda event: None)
+    manifest = load_roll_manifest(roll_dir)
+    negative = manifest.negative(_NEGATIVE_ID)
+    after = Path(negative.preview_path).read_bytes()
+    expected = previews.generate_preview(
+        roll_dir,
+        manifest.roll_id,
+        negative,
+        tone_params=snap_only,
+        color_params=state.color,
+    ).read_bytes()
+    assert after == expected
+
+
+def test_colour_commit_does_not_create_a_tone_op(stitched_roll):
+    run_edit_color(
+        stitched_roll,
+        _NEGATIVE_ID,
+        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        emit=lambda event: None,
+    )
+    assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).tone is None
+    edits = repo.edits_for(stitched_roll, _NEGATIVE_ID)
+    assert all(edit["op"] != repo.TONE_OP for edit in edits)
 
 
 def test_tone_never_touches_the_published_tiff(stitched_roll):
     before = _tiff_bytes(stitched_roll)
 
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None
     )
     run_edit_tone(
         stitched_roll, _NEGATIVE_ID, _reset_tone_params(), emit=lambda event: None
@@ -431,14 +547,14 @@ def test_tone_composes_with_the_geometric_ops(stitched_roll):
 
     run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None
     )
 
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID) == repo.EditState(
         quarter_turns=1,
         flipped=False,
         fine_angle_deg=0.0,
-        tone=_tone_params(70.0, 0.4),
+        tone=_tone_params(0.4),
         color=None,
     )
 
@@ -446,11 +562,14 @@ def test_tone_composes_with_the_geometric_ops(stitched_roll):
 def test_tone_rejects_bad_params_without_recording(stitched_roll):
     with pytest.raises(EditFailure) as exc_info:
         run_edit_tone(
-            stitched_roll, _NEGATIVE_ID, _tone_params(900.0, 0.0), emit=lambda event: None
+            stitched_roll,
+            _NEGATIVE_ID,
+            _tone_params(snap_gamma=2.0),
+            emit=lambda event: None,
         )
     assert exc_info.value.code is Code.INVALID_EDIT
 
-    partial = _tone_params(115.0, 0.0)
+    partial = _tone_params(0.0)
     partial["snap_gamma"] = None
     with pytest.raises(EditFailure):
         run_edit_tone(stitched_roll, _NEGATIVE_ID, partial, emit=lambda event: None)
@@ -461,7 +580,7 @@ def test_tone_rejects_bad_params_without_recording(stitched_roll):
 def test_render_region_applies_the_recorded_tone(stitched_roll, tmp_path):
     _ramp_tiff(stitched_roll)
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.3), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.3), emit=lambda event: None
     )
 
     toned = tmp_path / "toned.png"
@@ -476,9 +595,7 @@ def test_render_region_applies_the_recorded_tone(stitched_roll, tmp_path):
         toned,
         emit=lambda event: None,
     )
-    previews.render_region(
-        stitched_roll / "_DSC0001.tif", 0, 0, 4, 3, destination=flat
-    )
+    previews.render_region(stitched_roll / "_DSC0001.tif", 0, 0, 4, 3, destination=flat)
 
     assert toned.read_bytes() != flat.read_bytes()
 
@@ -693,7 +810,7 @@ def test_color_composes_with_tone(stitched_roll):
     from scanny_boy.library import repo
 
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None
     )
     run_edit_color(
         stitched_roll,
@@ -703,7 +820,7 @@ def test_color_composes_with_tone(stitched_roll):
     )
 
     state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID)
-    assert state.tone == _tone_params(70.0, 0.4)
+    assert state.tone == _tone_params(0.4)
     assert state.color == _color_params(wb_yellow=0.2)
 
 
@@ -713,7 +830,9 @@ def test_color_composes_with_tone(stitched_roll):
 def test_delete_removes_the_record_the_tiff_and_the_preview(stitched_roll):
     events: list = []
     # A rotation first, so a preview PNG exists to be removed too.
-    rotated = run_edit_rotate(stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None)
+    rotated = run_edit_rotate(
+        stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None
+    )
     preview_path = Path(rotated[0]["preview_path"])
     assert preview_path.exists()
     tiff_path = stitched_roll / "_DSC0001.tif"
@@ -828,7 +947,9 @@ def test_delete_an_unknown_negative_fails(stitched_roll):
 
 def test_delete_an_unregistered_roll_fails(tmp_path: Path):
     with pytest.raises(EditFailure) as exc_info:
-        run_edit_delete(tmp_path / "no-such-roll", "any-negative", emit=lambda event: None)
+        run_edit_delete(
+            tmp_path / "no-such-roll", "any-negative", emit=lambda event: None
+        )
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
 
 
@@ -895,7 +1016,11 @@ def spotty_roll(tmp_path: Path, monkeypatch):
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -1184,7 +1309,11 @@ def croppable_roll(tmp_path: Path) -> Path:
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -1210,7 +1339,8 @@ def croppable_roll(tmp_path: Path) -> Path:
 def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
     import cv2
 
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT, _display_image
+    from scanny_boy import render
+    from scanny_boy.previews import _display_image
 
     events: list = []
     tiff_before = (croppable_roll / "_DSC0001.tif").read_bytes()
@@ -1250,7 +1380,7 @@ def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
     )
     stored = cv2.imread(str(fields["preview_path"]), cv2.IMREAD_UNCHANGED)
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR
+        render.encode_positive_uint8(display, None, None), cv2.COLOR_RGB2BGR
     )
     np.testing.assert_array_equal(stored, expected)
 
@@ -1267,6 +1397,36 @@ def test_crop_records_the_tilt_in_tiff_space(croppable_roll):
     )
 
     assert abs(fields["crop"]["tilt_deg"] - 5.0) < 0.51
+
+
+def test_crop_report_carries_display_tilt_when_fine_rotation_is_present(
+    croppable_roll,
+):
+    """`edit_recorded`'s crop report names the slider tilt, not the
+    composed TIFF angle, so re-entering crop mode reseeds correctly."""
+    from scanny_boy.library import repo
+
+    fine_angle_deg = -0.1
+    display_tilt = 0.3
+    repo.append_edit(
+        croppable_roll,
+        _NEGATIVE_ID,
+        repo.ROTATE_FINE_OP,
+        {"angle_deg": fine_angle_deg, "source": "auto"},
+    )
+
+    fields = run_edit_crop(
+        croppable_roll,
+        _NEGATIVE_ID,
+        rect=(10, 8, 50, 24),
+        tilt_deg=display_tilt,
+        full_frame=True,
+        emit=lambda event: None,
+    )
+
+    assert abs(fields["crop"]["tilt_deg"] - display_tilt) < 0.05
+    state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
+    assert abs(state.crop["tilt_deg"] - (display_tilt + fine_angle_deg)) < 0.05
     state = repo.net_edit_state(croppable_roll, _NEGATIVE_ID)
     assert state.crop["w"] == 50
     assert state.crop["h"] == 24
@@ -1283,9 +1443,7 @@ def test_crop_reset_clears_the_state(croppable_roll):
     )
     events: list = []
 
-    fields = run_edit_crop(
-        croppable_roll, _NEGATIVE_ID, reset=True, emit=events.append
-    )
+    fields = run_edit_crop(croppable_roll, _NEGATIVE_ID, reset=True, emit=events.append)
 
     assert fields["crop"] is None
     assert repo.net_edit_state(croppable_roll, _NEGATIVE_ID).crop is None

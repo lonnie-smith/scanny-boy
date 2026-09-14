@@ -22,9 +22,11 @@ import UniformTypeIdentifiers
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
     let library: RollLibrary
-    let flatField: FlatFieldModel
+    let rig: RigModel
     let grid: GridModel
     @Bindable var model: ConfigurationModel
+    @Bindable var capture: CaptureSessionModel
+    @Bindable var stitchQueue: StitchQueueModel
     let edit: EditModel
     let run: RunModel
     let export: ExportModel
@@ -35,7 +37,7 @@ struct ContentView: View {
     @Bindable var keyboard: AppKeyboardState
 
     @State private var selection: Roll.ID?
-    @State private var workspaceTab: AppWorkspaceTab = .addScans
+    @State private var workspaceTab: AppWorkspaceTab = .capture
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
@@ -54,14 +56,21 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             RollSidebar(
                 library: library,
-                selection: Self.guardedRollSelection($selection, isBusy: activity.isBusy),
-                runIsActive: activity.isBusy,
+                selection: Self.guardedRollSelection(
+                    $selection, isBusy: sidebarSelectionLocked
+                ),
+                runIsActive: sidebarSelectionLocked,
                 isPresentingNewRollSheet: $isPresentingNewRollSheet
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
             if selection != nil {
+                // Attached here rather than on the split view: its modifier
+                // chain is already at the type checker's limit.
                 workspace
+                    .onChange(of: edit.roll?.refreshPending) { _, _ in
+                        refreshRollIfPending()
+                    }
             } else {
                 ContentUnavailableView {
                     Label("No Roll Selected", systemImage: "photo.stack")
@@ -92,25 +101,28 @@ struct ContentView: View {
             run.clearResults()
             export.clearResults()
         }
+        .onChange(of: captureRollSetupSyncKey) { _, _ in
+            syncCaptureRollSetup()
+        }
         .onChange(of: workspaceTab) { _, tab in
             keyboard.workspaceTab = tab
             switch tab {
-            case .addScans:
+            case .capture, .addScans:
                 columnVisibility = .all
             case .edit, .metadata, .export:
                 columnVisibility = .detailOnly
             }
+            refreshRollIfPending()
         }
         .onChange(of: activity.isBusy) { _, isBusy in
             keyboard.isBusy = isBusy
         }
-        .onAppear {
-            keyboard.workspaceTab = workspaceTab
-            keyboard.isBusy = activity.isBusy
-        }
+        .onAppear(perform: installKeyboardState)
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectAll)) { _ in
             guard keyboard.canSelectAll else { return }
             switch workspaceTab {
+            case .capture:
+                break
             case .addScans:
                 model.selectAll()
             case .edit, .metadata:
@@ -122,6 +134,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyDeselectAll)) { _ in
             guard keyboard.canDeselectAll else { return }
             switch workspaceTab {
+            case .capture:
+                break
             case .addScans:
                 model.deselectAll()
             case .edit, .metadata:
@@ -174,7 +188,7 @@ struct ContentView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: .scannyBoyRequestFlatFieldProfiles)
         ) { _ in
-            flatField.refresh()
+            rig.refresh()
             isPresentingFlatFieldProfiles = true
         }
         .onReceive(
@@ -196,7 +210,7 @@ struct ContentView: View {
             RestitchSheet(
                 run: run,
                 activity: activity,
-                flatField: flatField,
+                rig: rig,
                 onStarted: handleRestitchStarted,
                 initialWorkDirectory: restitchWorkDirectory,
                 initialOutputFolder: restitchOutputFolder
@@ -238,7 +252,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
-            FlatFieldProfilesSheet(flatField: flatField)
+            FlatFieldProfilesSheet(rig: rig)
         }
         .sheet(isPresented: $isPresentingGridProfiles) {
             GridProfilesSheet(grid: grid)
@@ -258,6 +272,7 @@ struct ContentView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             Picker("Stage", selection: $workspaceTab) {
+                Text("Capture").tag(AppWorkspaceTab.capture)
                 Text("Add Scans").tag(AppWorkspaceTab.addScans)
                 Text("Edit").tag(AppWorkspaceTab.edit)
                 Text("Metadata").tag(AppWorkspaceTab.metadata)
@@ -266,10 +281,19 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Stage")
-            .disabled(activity.isBusy)
+            .disabled(activity.isBusy && workspaceTab != .capture)
             .padding()
 
             switch workspaceTab {
+            case .capture:
+                CaptureStageView(
+                    capture: capture,
+                    model: model,
+                    stitchQueue: stitchQueue,
+                    rig: rig,
+                    grid: grid,
+                    activity: activity
+                )
             case .addScans:
                 addScansStage
             case .edit:
@@ -306,6 +330,12 @@ struct ContentView: View {
         library.rolls.first { $0.id == selection }
     }
 
+    /// Read `capture.isSessionOpen` here so sidebar lock state tracks the
+    /// capture model directly, not only through `AppActivity`.
+    private var sidebarSelectionLocked: Bool {
+        capture.isSessionOpen || activity.isBusy
+    }
+
     private var addScansStage: some View {
         HSplitView {
             catalogueColumn
@@ -334,13 +364,131 @@ struct ContentView: View {
     /// `NewRollSheet` is legitimately selected before the rescan that will
     /// include it lands, and that transient window must not be mistaken for
     /// a vanished roll.
+    private func installKeyboardState() {
+        keyboard.workspaceTab = workspaceTab
+        keyboard.isBusy = activity.isBusy
+        installCaptureHandlers()
+        wireCaptureToRoll()
+    }
+
+    private func installCaptureHandlers() {
+        if capture.onNegativeCompleted == nil {
+            capture.onNegativeCompleted = { [stitchQueue] negative in
+                stitchQueue.enqueue(negative)
+            }
+        }
+        if capture.onSessionClosed == nil {
+            capture.onSessionClosed = { [stitchQueue] in
+                stitchQueue.endSession()
+            }
+        }
+        if capture.onFlatFieldReferenceAttached == nil {
+            capture.onFlatFieldReferenceAttached = { [model] flatField in
+                model.receiveFlatFieldReference(flatField)
+            }
+        }
+        if stitchQueue.onRollUpdated == nil {
+            stitchQueue.onRollUpdated = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
+        if stitchQueue.onNegativePublished == nil {
+            stitchQueue.onNegativePublished = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
+    }
+
+    /// TETHER_PLAN §4.4: Edit and Export read the highlight lock, so opening
+    /// either on a roll whose refresh was deferred runs it first.
+    private func refreshRollIfPending() {
+        guard workspaceTab == .edit || workspaceTab == .export,
+            let rollURL = edit.rollURL,
+            edit.roll?.refreshPending == true,
+            !activity.isBusy
+        else { return }
+        Task { await stitchQueue.refreshDeferredRoll(rollURL) }
+    }
+
     private func resolveSelectedRoll() {
         let rollURL = library.rolls.first { $0.id == selection }?.path
         model.rollURL = rollURL
         edit.rollURL = rollURL
+        wireCaptureToRoll()
         if selection != nil, rollURL == nil, !library.isScanning {
             selection = nil
         }
+    }
+
+    /// Keeps capture's roll-setup fields aligned with Add Scans / roll info.
+    /// `rollGrid`/`rollIntervalSeconds` are included because `roll info` is
+    /// fetched asynchronously — `wireCaptureToRoll` runs immediately on
+    /// selection with whatever `model` last held, and this key's
+    /// `onChange` catches the pickers up once the fetch actually lands.
+    private var captureRollSetupSyncKey: String {
+        [
+            model.filmKind,
+            model.filmBase?.sourceName,
+            model.flatField?.sourceName,
+            model.rollGrid.map { "\($0.across)x\($0.down)" },
+            model.rollIntervalSeconds.map(String.init),
+        ]
+        .map { $0 ?? "" }
+        .joined(separator: "|")
+    }
+
+    private func syncCaptureRollSetup() {
+        capture.filmKind = model.filmKind
+        capture.filmBase = model.filmBase
+        capture.flatField = model.flatField
+        // The roll's own saved grid (§ roll set-setup) takes priority over
+        // whatever grid was left selected from a previously-open roll —
+        // reopening a roll should bring back what was used for it, not
+        // carry over a different roll's pick. Dimensions alone can't drive
+        // `gridProfileID` (it needs a profile id), so this only applies
+        // when a profile with matching dimensions still exists.
+        if let rollGrid = model.rollGrid,
+           let profile = grid.profiles.first(where: {
+               $0.across == rollGrid.across && $0.down == rollGrid.down
+           })
+        {
+            capture.gridProfileID = profile.profileID
+            capture.applyGridDimensions(from: profile)
+        } else if let profileID = capture.gridProfileID,
+           let profile = grid.profiles.first(where: { $0.profileID == profileID })
+        {
+            capture.applyGridDimensions(from: profile)
+        } else if capture.gridProfileID == nil {
+            capture.gridProfileID = model.gridProfileID
+            capture.across = model.across
+            capture.down = model.down
+        }
+        if let rollIntervalSeconds = model.rollIntervalSeconds {
+            capture.intervalSeconds = rollIntervalSeconds
+        }
+    }
+
+    private func wireCaptureToRoll() {
+        capture.rollURL = model.rollURL
+        syncCaptureRollSetup()
+        capture.rigProfileID = model.rigProfileID
+        reconfigureStitchQueueIfNeeded()
+    }
+
+    private func reconfigureStitchQueueIfNeeded() {
+        guard let rollURL = capture.rollURL ?? model.rollURL,
+            let captureFolder = capture.captureFolder,
+            let across = capture.across
+        else { return }
+        stitchQueue.configure(
+            roll: rollURL,
+            captureFolder: captureFolder,
+            rigProfileID: capture.rigProfileID,
+            across: across,
+            down: capture.down
+        )
     }
 
     private var catalogueColumn: some View {
@@ -413,21 +561,33 @@ struct ContentView: View {
             // profile, so different runs into the same roll may each pick
             // a different one. Defaults to the last profile used, across
             // any roll.
-            Picker("Scanning Rig Profile", selection: $model.flatFieldProfileID) {
+            Picker("Scanning Rig Profile", selection: $model.rigProfileID) {
                 Text("None").tag(String?.none)
-                ForEach(flatField.profiles) { profile in
+                ForEach(rig.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
-            if model.flatFieldProfileID == nil {
-                Text("Choose the profile measured for this copy stand; it corrects the lens falloff every scan of the roll.")
+            if model.rigProfileID == nil {
+                Text("Optional: choose the geometric calibration measured for this copy stand.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Button("Manage…") {
-                flatField.refresh()
+                rig.refresh()
                 isPresentingFlatFieldProfiles = true
             }
+            FlatFieldReferenceField(
+                flatField: model.flatField,
+                isBusy: activity.isBusy,
+                isAnalyzing: model.isAttachingFlatFieldReference,
+                error: model.flatFieldReferenceError,
+                onChoose: { chooseFlatFieldReference(replace: false) },
+                onReplace: { chooseFlatFieldReference(replace: true) },
+                onDropFrame: { url in
+                    Task { await model.attachFlatFieldReference(at: url) }
+                },
+                fileURL: model.fileURL(for:)
+            )
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,
@@ -486,7 +646,7 @@ struct ContentView: View {
         } header: {
             HStack {
                 Text("Roll Setup")
-                if model.isValidating || model.isAttachingBaseFrame {
+                if model.isValidating || model.isAttachingBaseFrame || model.isAttachingFlatFieldReference {
                     Spacer()
                     ProgressView()
                         .controlSize(.small)
@@ -671,6 +831,22 @@ struct ContentView: View {
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.attachBaseFrame(at: url) }
+    }
+
+    private func chooseFlatFieldReference(replace: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = replace ? "Replace" : "Choose"
+        if let nef = UTType(filenameExtension: "nef") {
+            panel.allowedContentTypes = [nef]
+        }
+        if let inputFolder = model.inputFolder {
+            panel.directoryURL = inputFolder
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await model.attachFlatFieldReference(at: url) }
     }
 
     /// Section 3.2's "the last folder the user opened" persists across

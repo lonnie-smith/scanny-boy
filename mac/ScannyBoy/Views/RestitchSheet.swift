@@ -25,10 +25,8 @@ struct RestitchSheet: View {
     /// while a rotate, delete, export, or flat-field calibration has its own
     /// helper busy (P4) — this menu-triggered sheet has no other gate on it.
     let activity: AppActivity
-    /// The profile list, for the optional `--flatfield` picker: the roll
-    /// does not lock to whichever profile its first stitch used, so this
-    /// re-stitch is free to choose a different one, or none.
-    let flatField: FlatFieldModel
+    /// The profile list, for the optional `--rig` picker.
+    let rig: RigModel
     /// Called immediately after `run.start(...)`, so the caller can wait for
     /// completion and refresh whatever else depends on the output folder —
     /// the same thing `ContentView` does after a normal Run.
@@ -49,7 +47,7 @@ struct RestitchSheet: View {
     @State private var workDirectory: URL?
     @State private var outputFolder: URL?
     @State private var overwriteAcknowledged = false
-    @State private var flatFieldProfileID: String?
+    @State private var rigProfileID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -69,9 +67,9 @@ struct RestitchSheet: View {
                 canCreateDirectories: true
             ) { outputFolder = $0 }
 
-            Picker("Calibration profile", selection: $flatFieldProfileID) {
+            Picker("Scanning rig profile", selection: $rigProfileID) {
                 Text("None").tag(String?.none)
-                ForEach(flatField.profiles) { profile in
+                ForEach(rig.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
                 }
             }
@@ -97,8 +95,8 @@ struct RestitchSheet: View {
             // Suggests the last profile used anywhere in the app, the same
             // default Add Scans seeds itself from — not persisted back, so
             // choosing differently here does not change that default.
-            flatFieldProfileID = UserDefaults.standard.string(
-                forKey: ConfigurationModel.lastFlatFieldProfileKey
+            rigProfileID = UserDefaults.standard.string(
+                forKey: ConfigurationModel.lastRigProfileKey
             )
         }
     }
@@ -142,7 +140,7 @@ struct RestitchSheet: View {
 
     private func startRestitch() {
         guard let workDirectory, let outputFolder else { return }
-        let flatFieldProfileID = flatFieldProfileID
+        let rigProfileID = rigProfileID
         // Resolved off-main (M7) before `run.start`, exactly as
         // `RunModel.readManifest` reads its own manifest off-main: it is
         // small file I/O, but still file I/O on the path that starts a run.
@@ -151,7 +149,7 @@ struct RestitchSheet: View {
             run.start(
                 command: .stitch(
                     work: workDirectory, roll: outputFolder, overwrite: true,
-                    flatfield: flatFieldProfileID
+                    rig: rigProfileID
                 ),
                 files: [],
                 outputFolder: outputFolder,

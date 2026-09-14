@@ -2,6 +2,30 @@ import Foundation
 
 /// The roll's film-base reference block, decoded
 /// from `roll info`'s `film_base` field.
+/// The roll's bare-light flat-field reference block, decoded from
+/// `roll info`'s `flat_field` field.
+struct FlatFieldReference: Sendable, Hashable {
+    let sourceName: String
+    let referenceWidth: Int
+    let referenceHeight: Int
+    let rigProfileID: String?
+    let lockedAt: String?
+
+    init?(fields: [String: JSONValue]) {
+        guard
+            let sourceName = fields["source_name"]?.stringValue,
+            let referenceWidth = fields["reference_width"]?.intValue,
+            let referenceHeight = fields["reference_height"]?.intValue
+        else { return nil }
+
+        self.sourceName = sourceName
+        self.referenceWidth = referenceWidth
+        self.referenceHeight = referenceHeight
+        rigProfileID = fields["rig_profile_id"]?.stringValue
+        lockedAt = fields["locked_at"]?.stringValue
+    }
+}
+
 struct FilmBase: Sendable, Hashable {
     struct Population: Sendable, Hashable {
         let density: [Double]
@@ -59,7 +83,66 @@ struct FilmBase: Sendable, Hashable {
     }
 }
 
+/// Convenience defaults for the roll's next capture/stitch run, decoded
+/// from `roll info`'s `setup` field. Stitching reads `format` and
+/// `autoCrop` to seed auto-crop when enabled. Unlike `filmKind` these
+/// stay editable for the life of the roll (`roll set-setup`).
+struct RollCaptureSetup: Sendable, Hashable {
+    struct Grid: Sendable, Hashable {
+        let across: Int
+        let down: Int
+    }
+
+    let grid: Grid?
+    let intervalSeconds: Int?
+    let format: FilmFormat?
+    let autoCrop: Bool
+
+    init?(fields: [String: JSONValue]) {
+        grid = fields["grid"]?.objectValue.flatMap { object -> Grid? in
+            guard
+                let across = object["across"]?.intValue,
+                let down = object["down"]?.intValue
+            else { return nil }
+            return Grid(across: across, down: down)
+        }
+        intervalSeconds = fields["interval_seconds"]?.intValue
+        format = fields["format"]?.stringValue.flatMap(FilmFormat.init(rawValue:))
+        autoCrop = fields["auto_crop"]?.boolValue ?? false
+    }
+}
+
 struct RollManifest: Sendable, Hashable {
+    /// The roll manifest's optional `highlight_lock` block
+    /// (docs/ROLL_HIGHLIGHT_LOCK.md §1): recomputed by the CLI at the end
+    /// of every stitch run and every negative removal, `nil` on a mono
+    /// roll, a roll with no locked film base, or a roll with no
+    /// qualifying negative yet. The app never computes or applies this
+    /// itself — it only needs the value as a cache-generation term, so a
+    /// changed lock invalidates the full-resolution region/preview
+    /// renders `edit render-region` and `edit render-preview` produce
+    /// (`EditModel.renderGeneration`), exactly as a changed `cameraColor`
+    /// does.
+    struct HighlightLock: Sendable, Hashable {
+        let k: [Double]
+        let qualifyingCount: Int
+
+        /// A stable cache-generation token for preview invalidation.
+        var cacheTerm: String {
+            "\(k.map { String($0) }.joined(separator: ","))#\(qualifyingCount)"
+        }
+
+        init?(fields: [String: JSONValue]) {
+            guard
+                let k = fields["k"]?.arrayValue?.compactMap(\.doubleValue),
+                k.count == 3,
+                let qualifyingCount = fields["qualifying_count"]?.intValue
+            else { return nil }
+            self.k = k
+            self.qualifyingCount = qualifyingCount
+        }
+    }
+
     /// The roll manifest's optional `camera_color` block:
     /// frozen after the first stitch; preview encode and export both read it.
     struct CameraColor: Sendable, Hashable {
@@ -225,19 +308,14 @@ struct RollManifest: Sendable, Hashable {
         }
 
         /// The ops log's net preview tone adjustment (protocol 10's `tone`
-        /// op): an ISO-R paper grade and a midtone snap composed into the
-        /// CLI's preview display encode. `nil` = no adjustment recorded —
-        /// the flat linear look. The published TIFF never carries it.
-        let toneGradeR: Double?
+        /// op): contrast and density composed into the CLI's preview display
+        /// encode. `nil` = no adjustment recorded — the default scan-start
+        /// curve. The published TIFF never carries it.
         let toneSnapGamma: Double?
         /// Absent before protocol 11's density control existed.
         let toneDensity: Double?
         let toneShadowDensity: Double?
         let toneHighlightDensity: Double?
-        let toneToe: Double?
-        let toneToeWidth: Double?
-        let toneShoulder: Double?
-        let toneShoulderWidth: Double?
         /// Protocol 12's net preview colour adjustment. `nil` = no op recorded.
         let colorWbCyan: Double?
         let colorWbMagenta: Double?
@@ -352,8 +430,20 @@ struct RollManifest: Sendable, Hashable {
     /// The roll's film-base reference. `nil` when
     /// the roll has none attached yet.
     let filmBase: FilmBase?
+    /// The roll's bare-light flat-field reference. `nil` when the roll
+    /// has none attached yet.
+    let flatField: FlatFieldReference?
     /// The roll's frozen camera colour matrix.
     let cameraColor: CameraColor?
+    /// The roll's highlight-colour lock (docs/ROLL_HIGHLIGHT_LOCK.md §1).
+    let highlightLock: HighlightLock?
+    /// Convenience defaults for the roll's next capture/stitch run. `nil`
+    /// when nothing has been set yet.
+    let captureSetup: RollCaptureSetup?
+    /// Set by `stitch --defer-roll-refresh`, cleared by `roll refresh`
+    /// (TETHER_PLAN §4.4): the highlight lock has not yet seen the roll's
+    /// newest negatives.
+    let refreshPending: Bool
 
     /// Every stitched TIFF the manifest records as published, in negative
     /// order — the `RunManifest.publishedOutputs` counterpart.
@@ -377,7 +467,11 @@ struct RollManifest: Sendable, Hashable {
             metadata: metadata,
             filmKind: filmKind,
             filmBase: filmBase,
-            cameraColor: cameraColor
+            flatField: flatField,
+            cameraColor: cameraColor,
+            highlightLock: highlightLock,
+            captureSetup: captureSetup,
+            refreshPending: refreshPending
         )
     }
 
@@ -393,7 +487,11 @@ struct RollManifest: Sendable, Hashable {
         metadata: Metadata,
         filmKind: String? = nil,
         filmBase: FilmBase? = nil,
-        cameraColor: CameraColor? = nil
+        flatField: FlatFieldReference? = nil,
+        cameraColor: CameraColor? = nil,
+        highlightLock: HighlightLock? = nil,
+        captureSetup: RollCaptureSetup? = nil,
+        refreshPending: Bool = false
     ) {
         self.rollID = rollID
         self.rollName = rollName
@@ -404,7 +502,11 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = filmKind
         self.filmBase = filmBase
+        self.flatField = flatField
         self.cameraColor = cameraColor
+        self.highlightLock = highlightLock
+        self.captureSetup = captureSetup
+        self.refreshPending = refreshPending
     }
 
     /// Decodes the `manifest` field of a `roll_info` event.
@@ -442,7 +544,11 @@ struct RollManifest: Sendable, Hashable {
         self.metadata = metadata
         self.filmKind = fields["film_kind"]?.stringValue
         self.filmBase = fields["film_base"]?.objectValue.flatMap(FilmBase.init(fields:))
+        self.flatField = fields["flat_field"]?.objectValue.flatMap(FlatFieldReference.init(fields:))
         self.cameraColor = fields["camera_color"]?.objectValue.flatMap(CameraColor.init(fields:))
+        self.highlightLock = fields["highlight_lock"]?.objectValue.flatMap(HighlightLock.init(fields:))
+        self.captureSetup = fields["setup"]?.objectValue.flatMap(RollCaptureSetup.init(fields:))
+        self.refreshPending = fields["refresh_pending"]?.boolValue ?? false
     }
 
     private static func decodeRun(_ fields: [String: JSONValue]) -> Run? {
@@ -523,15 +629,10 @@ struct RollManifest: Sendable, Hashable {
                 .flatMap(Self.decodeRectification),
             // Absent before the tone op existed (or an explicit null from
             // a reset): no adjustment, the flat look.
-            toneGradeR: fields["tone_grade_r"]?.doubleValue,
             toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue,
             toneDensity: fields["tone_density"]?.doubleValue,
             toneShadowDensity: fields["tone_shadow_density"]?.doubleValue,
             toneHighlightDensity: fields["tone_highlight_density"]?.doubleValue,
-            toneToe: fields["tone_toe"]?.doubleValue,
-            toneToeWidth: fields["tone_toe_width"]?.doubleValue,
-            toneShoulder: fields["tone_shoulder"]?.doubleValue,
-            toneShoulderWidth: fields["tone_shoulder_width"]?.doubleValue,
             colorWbCyan: fields["color_wb_cyan"]?.doubleValue,
             colorWbMagenta: fields["color_wb_magenta"]?.doubleValue,
             colorWbYellow: fields["color_wb_yellow"]?.doubleValue,

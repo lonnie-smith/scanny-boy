@@ -6,6 +6,7 @@ import SwiftUI
 /// Which workspace tab is active — mirrored from `ContentView`'s picker so
 /// menu commands can enable and disable themselves.
 enum AppWorkspaceTab: Equatable {
+    case capture
     case addScans
     case edit
     case metadata
@@ -18,7 +19,7 @@ enum AppWorkspaceTab: Equatable {
 @MainActor
 @Observable
 final class AppKeyboardState {
-    var workspaceTab: AppWorkspaceTab = .addScans
+    var workspaceTab: AppWorkspaceTab = .capture
     var isBusy = false
 
     /// Set by the Edit tab's preview pane while it is mounted.

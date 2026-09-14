@@ -26,6 +26,7 @@ from scanny_boy.jxl_writer import (
 
 # --- container parsing helpers --------------------------------------------
 
+
 def _boxes(blob: bytes) -> list[tuple[bytes, bytes]]:
     """The container-format boxes of a JXL file: (type, contents) pairs.
 
@@ -132,6 +133,7 @@ def read_icc_profile(blob: bytes) -> bytes:
 
 # --- the ABI tripwire ------------------------------------------------------
 
+
 def test_basic_info_layout_and_documented_defaults():
     """`JxlEncoderInitBasicInfo` on a zeroed instance must yield the
     documented defaults and the struct must be the 0.12 ABI's 204 bytes.
@@ -207,6 +209,7 @@ def test_encoder_is_available():
 
 # --- ICC and metadata boxes ------------------------------------------------
 
+
 def test_embedded_icc_profile_is_recoverable_and_equal():
     """The ICC profile must come back out of the file byte-identical."""
     encoded = encode_jxl(_gradient_image(1), icc_profile=ICC_GREY)
@@ -214,11 +217,11 @@ def test_embedded_icc_profile_is_recoverable_and_equal():
 
 
 def test_exif_and_xmp_boxes_carry_the_payloads():
-    exif = b"II*\x00" + b"\x00" * 20  # TIFF-shaped bytes; the test parses boxes, not tags
+    exif = (
+        b"II*\x00" + b"\x00" * 20
+    )  # TIFF-shaped bytes; the test parses boxes, not tags
     xmp = b"<x:xmpmeta>captured</x:xmpmeta>"
-    encoded = encode_jxl(
-        _gradient_image(3), icc_profile=ICC, exif=exif, xmp=xmp
-    )
+    encoded = encode_jxl(_gradient_image(3), icc_profile=ICC, exif=exif, xmp=xmp)
     boxes = _boxes(encoded)
     # libjxl prefixes the Exif payload with the 4-byte big-endian offset
     # to the TIFF header; 0 puts it at the start.
@@ -235,6 +238,7 @@ def test_no_metadata_boxes_without_exif_or_xmp():
 
 
 # --- guards ----------------------------------------------------------------
+
 
 def test_empty_icc_profile_raises():
     with pytest.raises(ValueError, match="ICC"):

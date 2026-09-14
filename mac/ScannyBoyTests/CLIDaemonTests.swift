@@ -27,7 +27,7 @@ struct CLIDaemonTests {
     cancelled = {}
 
     def emit(event, request_id, **fields):
-        obj = {"protocol_version": 21, "event": event, "request_id": request_id}
+        obj = {"protocol_version": 23, "event": event, "request_id": request_id}
         obj.update(fields)
         sys.stdout.write(json.dumps(obj, sort_keys=True) + "\n")
         sys.stdout.flush()
@@ -125,7 +125,7 @@ struct CLIDaemonTests {
             "metadata", "values", "--field", "city",
         ])))
         #expect(CLIRunner.routesThroughDaemon(CLICommand(arguments: [
-            "flatfield", "list",
+            "rig", "list",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
             "run", "--input", "/i", "--files", "a.NEF", "--roll", "/r",
@@ -138,7 +138,7 @@ struct CLIDaemonTests {
             "export", "--roll", "/r", "--output", "/o",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
-            "flatfield", "create", "--reference", "/f", "--name", "n",
+            "rig", "create", "--name", "n", "--calibration", "/f",
         ])))
         #expect(!CLIRunner.routesThroughDaemon(CLICommand(arguments: [
             "probe", "--input", "/i",

@@ -81,6 +81,7 @@ SCENE_CLEAN_FRACTION = 0.01
 # The seeded angle is rounded to this many degrees.
 ANGLE_PRECISION_DEG = 0.01
 
+
 def fill_border_value(channel_count: int) -> int | tuple[int, ...]:
     """The warp border value for pixels the transform uncovers: the
     stitching fill sentinel's code, one per channel. Shared by
@@ -110,9 +111,7 @@ def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
     height, width = image.shape[0], image.shape[1]
     # cv2's positive angles turn counter-clockwise; this module's angles
     # count clockwise, matching the quarter-turn ops' convention.
-    matrix = cv2.getRotationMatrix2D(
-        (width / 2.0, height / 2.0), -angle_deg, 1.0
-    )
+    matrix = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), -angle_deg, 1.0)
     channel_count = 1 if image.ndim == 2 else image.shape[-1]
     return cv2.warpAffine(
         image,
@@ -129,6 +128,8 @@ def estimate_rotation(image: np.ndarray) -> float | None:
     boundary with the canvas — or `None` when there is nothing trustworthy
     to rotate by (no detectable rebate, too little scene, tilt outside the
     clamps). `image` is the encoded uint16 normalized-density composite."""
+    from scanny_boy.auto_crop import picture_mask
+
     image = np.asarray(image)
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
@@ -148,30 +149,16 @@ def estimate_rotation(image: np.ndarray) -> float | None:
         small = image
     normalized = decode_normalized(small).astype(np.float32)
 
-    # The fill is exactly the sentinel code, all channels; it is canvas,
-    # not film, and never participates.
-    fill = np.all(normalized >= NORMALIZED_FILL - 1e-6, axis=-1)
-    covered = ~fill
+    # Use the shared picture_mask so rotation and crop can never disagree
+    # about what rebate is.
+    covered, rebate = picture_mask(normalized)
     if not covered.any():
         return None
-
-    # Thin in *every* channel is the rebate: base is the thinnest thing on
-    # the film, and a scene shadow dense in one channel is not base. The
-    # anchor is the covered pixels' thin-end percentile — the normalized
-    # space's version of `detect_rebate`'s `REBATE_ANCHOR_PERCENTILE`.
-    thinness = normalized.min(axis=-1)
-    thin_values = thinness[covered]
-    anchor = float(np.percentile(thin_values, 99.5))
-    rebate = covered & (thinness >= anchor - REBATE_SLACK)
-    if (
-        np.count_nonzero(rebate) < REBATE_MIN_AREA_FRACTION * covered.size
-    ):
+    if np.count_nonzero(rebate) < REBATE_MIN_AREA_FRACTION * covered.size:
         return None
 
     scene = (covered & ~rebate).astype(np.uint8)
-    kernel_side = max(
-        3, round(SCENE_CLEAN_FRACTION * min(normalized.shape[:2]))
-    )
+    kernel_side = max(3, round(SCENE_CLEAN_FRACTION * min(normalized.shape[:2])))
     if kernel_side % 2 == 0:
         kernel_side += 1
     kernel = np.ones((kernel_side, kernel_side), np.uint8)

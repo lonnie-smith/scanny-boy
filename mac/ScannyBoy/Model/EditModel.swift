@@ -94,6 +94,16 @@ final class EditModel {
     /// `isRotating`.
     private(set) var isCropping = false
 
+    struct CropSuggestion: Sendable {
+        let rect: CGRect
+        let tiltDegrees: Double
+        let preset: String?
+    }
+
+    /// Set by `suggestCrop`, consumed by `PreviewPane.beginCrop()` on the
+    /// next appearance of crop mode.
+    var pendingCropSuggestion: CropSuggestion?
+
     /// Set while one `edit detect-spots` round trip is in flight —
     /// detection decodes a full published TIFF, so it can take a moment.
     private(set) var isDetectingSpots = false
@@ -363,7 +373,7 @@ final class EditModel {
     }
 
     /// Records the selected negatives' preview tone adjustment through the
-    /// CLI, or `nil` for the reset to the flat look.
+    /// CLI, or `nil` for the reset to the default scan-start curve.
     func setTone(
         _ targets: [RollManifest.Negative],
         adjustment: ToneAdjustment?,
@@ -523,6 +533,39 @@ final class EditModel {
                 preset: preset,
                 fullFrame: fullFrame
             )
+        }
+    }
+
+    /// Runs `edit suggest-crop` for the anchor negative, then enters crop
+    /// mode with the returned window — the Auto button's action.
+    func suggestCrop(_ negative: RollManifest.Negative) async {
+        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
+        isCropping = true
+        defer { isCropping = false }
+        do {
+            let session = runner.session(
+                for: .editSuggestCrop(roll: rollURL, negative: negative.negativeID)
+            )
+            for await output in try await session.start() {
+                if case .event(let event) = output,
+                    event.kind == .cropSuggested,
+                    let x = event.fields["x"]?.intValue,
+                    let y = event.fields["y"]?.intValue,
+                    let w = event.fields["width"]?.intValue,
+                    let h = event.fields["height"]?.intValue
+                {
+                    let rect = CGRect(x: x, y: y, width: w, height: h)
+                    let tilt = event.fields["tilt_deg"]?.doubleValue ?? 0
+                    let preset = event.fields["preset"]?.stringValue
+                    self.pendingCropSuggestion = CropSuggestion(
+                        rect: rect,
+                        tiltDegrees: tilt,
+                        preset: preset
+                    )
+                }
+            }
+        } catch {
+            return
         }
     }
 
@@ -841,15 +884,10 @@ final class EditModel {
             let turns = event.rotationQuarterTurns
         else { return }
         let negative = manifest.negatives[index]
-        var toneGradeR = negative.toneGradeR
         var toneSnapGamma = negative.toneSnapGamma
         var toneDensity = negative.toneDensity
         var toneShadowDensity = negative.toneShadowDensity
         var toneHighlightDensity = negative.toneHighlightDensity
-        var toneToe = negative.toneToe
-        var toneToeWidth = negative.toneToeWidth
-        var toneShoulder = negative.toneShoulder
-        var toneShoulderWidth = negative.toneShoulderWidth
         var colorWbCyan = negative.colorWbCyan
         var colorWbMagenta = negative.colorWbMagenta
         var colorWbYellow = negative.colorWbYellow
@@ -866,25 +904,15 @@ final class EditModel {
         var colorTemperature = negative.colorTemperature
         if let recorded = event.recordedTone {
             if let tone = recorded {
-                toneGradeR = tone.gradeR
                 toneSnapGamma = tone.snapGamma
                 toneDensity = tone.density
                 toneShadowDensity = tone.shadowDensity
                 toneHighlightDensity = tone.highlightDensity
-                toneToe = tone.toe
-                toneToeWidth = tone.toeWidth
-                toneShoulder = tone.shoulder
-                toneShoulderWidth = tone.shoulderWidth
             } else {
-                toneGradeR = nil
                 toneSnapGamma = nil
                 toneDensity = nil
                 toneShadowDensity = nil
                 toneHighlightDensity = nil
-                toneToe = nil
-                toneToeWidth = nil
-                toneShoulder = nil
-                toneShoulderWidth = nil
             }
         }
         if let recorded = event.recordedColor {
@@ -938,15 +966,10 @@ final class EditModel {
                 flippedHorizontally: event.flippedHorizontally
                     ?? negative.flippedHorizontally,
                 rectification: negative.rectification,
-                toneGradeR: toneGradeR,
                 toneSnapGamma: toneSnapGamma,
                 toneDensity: toneDensity,
                 toneShadowDensity: toneShadowDensity,
                 toneHighlightDensity: toneHighlightDensity,
-                toneToe: toneToe,
-                toneToeWidth: toneToeWidth,
-                toneShoulder: toneShoulder,
-                toneShoulderWidth: toneShoulderWidth,
                 colorWbCyan: colorWbCyan,
                 colorWbMagenta: colorWbMagenta,
                 colorWbYellow: colorWbYellow,
@@ -999,7 +1022,9 @@ final class EditModel {
         let output = previewCache.regionURL(
             rollID: rollID,
             negativeID: negative.negativeID,
-            generation: Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor),
+            generation: Self.renderGeneration(
+                of: negative, cameraColor: roll?.cameraColor, highlightLock: roll?.highlightLock
+            ),
             mode: mode,
             rect: rect
         )
@@ -1064,7 +1089,9 @@ final class EditModel {
         guard let rollURL, let rollID = roll?.rollID else { return nil }
         var generation = mode == .negative
             ? Self.negativeViewGeneration(of: negative)
-            : Self.renderGeneration(of: negative, cameraColor: roll?.cameraColor)
+            : Self.renderGeneration(
+                of: negative, cameraColor: roll?.cameraColor, highlightLock: roll?.highlightLock
+            )
         if fullFrame { generation += "#fullFrame" }
         let output = previewCache.previewURL(
             rollID: rollID,
@@ -1115,13 +1142,16 @@ final class EditModel {
     /// nothing that comes after.
     static func renderGeneration(
         of negative: RollManifest.Negative,
-        cameraColor: RollManifest.CameraColor? = nil
+        cameraColor: RollManifest.CameraColor? = nil,
+        highlightLock: RollManifest.HighlightLock? = nil
     ) -> String {
         let tone: String
         if let adjustment = negative.toneAdjustment {
             tone = String(adjustment.hashValue)
         } else {
-            tone = "flat"
+            // No tone op: the positive preview uses the default scan-start curve
+            // (ToneAdjustment.neutral), not the flat identity ramp.
+            tone = String(ToneAdjustment.neutral.hashValue)
         }
         let colour: String
         if let adjustment = negative.colorAdjustment {
@@ -1130,7 +1160,13 @@ final class EditModel {
             colour = "neutral"
         }
         let matrix = cameraColor?.cacheTerm ?? "none"
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(matrix)"
+        // docs/ROLL_HIGHLIGHT_LOCK.md §5: the roll's highlight-colour lock
+        // changes a negative's rendered colour even when nothing about the
+        // negative itself changed, so it must be its own term — folding it
+        // into `matrix` would conflate "the camera body changed" with "the
+        // roll's estimate was recomputed".
+        let lock = highlightLock?.cacheTerm ?? "none"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(matrix)#\(lock)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the

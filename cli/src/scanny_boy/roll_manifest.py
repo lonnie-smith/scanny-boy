@@ -405,9 +405,7 @@ class CameraColor:
     def from_dict(cls, data: dict[str, Any]) -> CameraColor:
         matrix = data["rgb_xyz_matrix"]
         return cls(
-            rgb_xyz_matrix=tuple(
-                (row[0], row[1], row[2]) for row in matrix
-            ),
+            rgb_xyz_matrix=tuple((row[0], row[1], row[2]) for row in matrix),
             source=data["source"],
             camera_model=data.get("camera_model"),
             matrix_version=data.get("matrix_version", MATRIX_VERSION),
@@ -448,6 +446,34 @@ class RollManifest:
     # None; frozen for the life of the roll once the first negative has been
     # published against it (§3.2). A roll cannot be stitched without one.
     film_base: dict[str, Any] | None = None
+    # docs/FLATFIELD_REFERENCE.md §3.1: the roll's bare-light flat-field
+    # reference. `None` until `roll set-flatfield-reference` attaches one;
+    # replaceable while `locked_at` is None; frozen once the first negative
+    # publishes.
+    flat_field: dict[str, Any] | None = None
+    # Convenience defaults for starting the roll's *next* capture/stitch
+    # run — `{"grid": {"across", "down"} | None, "interval_seconds": int |
+    # None, "format": str | None, "auto_crop": bool}`. Pre-fill hints
+    # for the next capture/stitch run; stitching reads `format` and
+    # `auto_crop` to seed auto-crop when enabled. Unlike `film`, they
+    # stay editable for the life of the roll (`roll set-setup`). `None`
+    # on a roll predating this feature or one nothing has been set on yet.
+    setup: dict[str, Any] | None = None
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
+    # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or
+    # `None` on a mono roll, a roll with no locked film base, or a colour
+    # roll with no qualifying negative yet. Recomputed wholesale (never
+    # merged) at the end of every stitch run and every negative removal —
+    # `highlight_lock.compute_roll_highlight_lock` is the only writer.
+    # Additive and NOT a roll invariant (§3.3, same posture as
+    # `camera_color`): it shapes no published pixel, only the render path,
+    # so an old roll benefits immediately without re-stitching and without
+    # tripping the `ROLL_PREDATES_FILM_BASE` gate.
+    highlight_lock: dict[str, Any] | None = None
+    # Library metadata only — not part of the on-disk manifest schema. Set
+    # when a stitch runs with ``--defer-roll-refresh``; cleared by
+    # ``roll refresh``. Loaded from the database on every read.
+    refresh_pending: bool = False
     manifest_format_version: int = ROLL_MANIFEST_FORMAT_VERSION
     manifest_kind: str = ROLL_MANIFEST_KIND
 
@@ -496,6 +522,9 @@ class RollManifest:
             ),
             "film": self.film,
             "film_base": self.film_base,
+            "flat_field": self.flat_field,
+            "highlight_lock": self.highlight_lock,
+            "setup": self.setup,
         }
 
 

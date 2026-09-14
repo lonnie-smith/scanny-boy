@@ -12,14 +12,13 @@ which need controlled inputs the six real sample NEFs cannot provide
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from scanny_boy import calibration, charuco, flatfield, geometry_fit
+from scanny_boy import calibration, charuco, geometry_fit
 from scanny_boy.raw_decode import DecodedFrame
 
 BOARD = charuco.BOARD
@@ -55,7 +54,9 @@ def _render_ideal_board() -> np.ndarray:
     return np.repeat(image[:, :, np.newaxis], 3, axis=2).astype(np.uint16) * 257
 
 
-def _distortion_maps(size: tuple[int, int], scale: float) -> tuple[np.ndarray, np.ndarray]:
+def _distortion_maps(
+    size: tuple[int, int], scale: float
+) -> tuple[np.ndarray, np.ndarray]:
     """The inverse map the synthetic observation is sampled through:
     `observed(q) = ideal(map(q))`. The green channel samples
     `map = d^-1`; a CA channel's scale lives in *undistorted* space — the
@@ -164,13 +165,13 @@ def calibrated_profile(tmp_path, monkeypatch):
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
 
-    reference = tmp_path / REFERENCE_NAME
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
 
     events: list = []
     try:
         profile = calibration.create_profile(
-            reference,
             "Calibrated",
             paths,
             emit=events.append,
@@ -178,63 +179,6 @@ def calibrated_profile(tmp_path, monkeypatch):
         yield decoder, profile, events
     finally:
         library_db.reset_engine_cache()
-
-
-def test_no_calibration_frames_produces_todays_profile(tmp_path, monkeypatch):
-    """A profile with a reference and no calibration frames is exactly
-    today's flat-field profile: four Nones, today's build_params, and a
-    reference decode with no CA scales (section 6)."""
-    monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "library.db"))
-    from scanny_boy.library import db as library_db
-
-    library_db.reset_engine_cache()
-    decoder = FakeDecoder()
-    monkeypatch.setattr(calibration, "decode_raw", decoder)
-    monkeypatch.setattr(flatfield, "decode_raw", decoder)
-    reference = tmp_path / REFERENCE_NAME
-    try:
-        profile = calibration.create_profile(reference, "Plain")
-        plain = calibration._create_gain_only_profile(reference, "Plain 2")
-
-        assert profile.geometry is None
-        assert profile.chromatic_aberration is None
-        assert profile.calibration_report is None
-        assert profile.board_key is None
-        assert profile.params == flatfield.build_params()
-        # Structurally identical to the historical code path.
-        def strip(profile):
-            return dataclasses.replace(
-                profile,
-                profile_id="",
-                name="",
-                created_at="",
-                gain_map_path="",
-                gain_map_sha256="",
-            )
-
-        assert strip(profile) == strip(plain)
-        assert all(call[1] is None for call in decoder.calls)
-    finally:
-        library_db.reset_engine_cache()
-
-
-def test_scale_mode_decodes_the_reference_with_the_ca_scales(calibrated_profile):
-    """The load-bearing ordering constraint: in "scale" mode
-    the flat-field reference is decoded with the same CA scales production
-    will use — asserted on the recorded provenance, not on pixels."""
-    decoder, profile, _ = calibrated_profile
-
-    assert profile.chromatic_aberration is not None
-    assert profile.chromatic_aberration["mode"] == "scale"
-    red_scale = profile.chromatic_aberration["red_scale"]
-    blue_scale = profile.chromatic_aberration["blue_scale"]
-    assert profile.params["chromatic_aberration_scales"] == [red_scale, blue_scale]
-
-    reference_calls = [
-        call for call in decoder.calls if call[0] == REFERENCE_NAME and not call[2]
-    ]
-    assert len(reference_calls) == 1
-    assert reference_calls[0][1] == (red_scale, blue_scale)
 
 
 def test_scales_are_reciprocals_of_c0(calibrated_profile):
@@ -284,11 +228,12 @@ def test_heldout_split_is_deterministic_across_runs(tmp_path, monkeypatch):
     library_db.reset_engine_cache()
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
-    reference = tmp_path / REFERENCE_NAME
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
     try:
-        first = calibration.create_profile(reference, "One", paths)
-        second = calibration.create_profile(reference, "Two", paths)
+        first = calibration.create_profile("One", paths)
+        second = calibration.create_profile("Two", paths)
         assert (
             first.calibration_report["heldout_frame_names"]
             == second.calibration_report["heldout_frame_names"]
@@ -301,27 +246,27 @@ def test_heldout_split_is_deterministic_across_runs(tmp_path, monkeypatch):
 
 def test_progress_events_carry_every_phase(calibrated_profile):
     _, _, events = calibrated_profile
-    from scanny_boy.events import FlatFieldProgress
+    from scanny_boy.events import RigProgress
 
-    phases = [e.phase for e in events if isinstance(e, FlatFieldProgress)]
-    assert set(phases) == {"detect", "fit", "chromatic", "reference"}
-    assert all(e.run_id is None for e in events if isinstance(e, FlatFieldProgress))
+    phases = [e.phase for e in events if isinstance(e, RigProgress)]
+    assert set(phases) == {"detect", "fit", "chromatic"}
+    assert all(e.run_id is None for e in events if isinstance(e, RigProgress))
 
 
 def test_too_few_calibration_frames_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "library.db"))
     from scanny_boy.events import Code
-    from scanny_boy.flatfield import FlatFieldError
     from scanny_boy.library import db as library_db
 
     library_db.reset_engine_cache()
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
-    reference = tmp_path / REFERENCE_NAME
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES - 1)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES - 1)
+    ]
     try:
-        with pytest.raises(FlatFieldError) as excinfo:
-            calibration.create_profile(reference, "Few", paths)
+        with pytest.raises(calibration.RigError) as excinfo:
+            calibration.create_profile("Few", paths)
         assert excinfo.value.code == Code.GEOMETRY_INSUFFICIENT_FRAMES
     finally:
         library_db.reset_engine_cache()
@@ -334,7 +279,6 @@ def test_undetectable_board_raises_the_contract_code(tmp_path, monkeypatch):
     last-resort handler as `internal_error`."""
     monkeypatch.setenv("SCANNY_BOY_LIBRARY_DB", str(tmp_path / "library.db"))
     from scanny_boy.events import Code
-    from scanny_boy.flatfield import FlatFieldError
     from scanny_boy.library import db as library_db
 
     library_db.reset_engine_cache()
@@ -344,11 +288,12 @@ def test_undetectable_board_raises_the_contract_code(tmp_path, monkeypatch):
         return DecodedFrame(pixels=blank, width=FULL_W, height=FULL_H)
 
     monkeypatch.setattr(calibration, "decode_raw", fake_decode)
-    reference = tmp_path / REFERENCE_NAME
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
     try:
-        with pytest.raises(FlatFieldError) as excinfo:
-            calibration.create_profile(reference, "Blank", paths)
+        with pytest.raises(calibration.RigError) as excinfo:
+            calibration.create_profile("Blank", paths)
         assert excinfo.value.code == Code.GEOMETRY_BOARD_NOT_DETECTED
     finally:
         library_db.reset_engine_cache()

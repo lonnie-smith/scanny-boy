@@ -2,6 +2,8 @@ import json
 
 from scanny_boy.events import (
     PROTOCOL_VERSION,
+    CaptureChecked,
+    CaptureSummary,
     Code,
     EditRecorded,
     ErrorEvent,
@@ -9,11 +11,8 @@ from scanny_boy.events import (
     EventWriter,
     ExportDone,
     Finished,
-    FlatFieldCreated,
-    FlatFieldDeleted,
-    FlatFieldList,
-    FlatFieldProfileSummary,
-    FlatFieldProgress,
+    FlatFieldReferenceSet,
+    FrameAnalyzed,
     GridCreated,
     GridDeleted,
     GridList,
@@ -33,12 +32,18 @@ from scanny_boy.events import (
     ProbeResult,
     Progress,
     RegionRendered,
+    RigCreated,
+    RigDeleted,
+    RigList,
+    RigProfileSummary,
+    RigProgress,
     RollCreated,
     RollInfo,
     RollList,
     RollListingEntry,
     RollListingReason,
     RollOverlapEntry,
+    RollRefreshed,
     RollRenamed,
     SpotsReported,
     Stage,
@@ -166,6 +171,29 @@ ALL_EVENTS: list[Event] = [
             )
         ],
     ),
+    FrameAnalyzed(
+        frame="/tmp/capture/20260911-123325_01.NEF",
+        clip_fractions=[0.0, 0.0, 0.0],
+        dense_end_stops=[4.0, 4.1, 3.9],
+        focus_regions=[1.2, 1.1, None],
+        focus_relative=0.98,
+        focus_spread=0.05,
+        warnings=[],
+    ),
+    CaptureChecked(
+        passed=True,
+        code=None,
+        message=None,
+        global_rms_px=1.2,
+        used_clahe_fallback=False,
+    ),
+    CaptureSummary(
+        frames=6,
+        warning_counts={"CAPTURE_CLIPPED": 1},
+        focus_trend=[0.98, 0.97],
+        exposure_mismatches=[],
+    ),
+    RollRefreshed(lock_changed=True, previews_regenerated=True),
 ]
 
 
@@ -236,10 +264,10 @@ def test_event_writer_line_is_valid_json_per_write():
     assert parsed["step"] == "write_tiff"
 
 
-def test_protocol_version_is_nineteen():
+def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 21
+    assert PROTOCOL_VERSION == 23
 
 
 def test_new_event_kinds_round_trip():
@@ -264,20 +292,25 @@ def test_new_event_kinds_round_trip():
             preview_path=None,
         ),
         ExportDone(negative_id="neg-4", output="out.tif", width=4, height=3),
-        FlatFieldCreated(
-            profile=FlatFieldProfileSummary(
+        RigCreated(
+            profile=RigProfileSummary(
                 profile_id="pid-1",
                 name="Copy stand",
-                reference_width=6064,
-                reference_height=4040,
-                source_path="/refs/bare.NEF",
                 created_at="2026-09-01T00:00:00Z",
             )
         ),
-        FlatFieldList(profiles=[]),
-        FlatFieldDeleted(profile_id="pid-1"),
-        FlatFieldProgress(phase="detect", completed=3, total=12),
-        FlatFieldProgress(phase="chromatic", completed=12, total=12),
+        RigList(profiles=[]),
+        RigDeleted(profile_id="pid-1"),
+        RigProgress(phase="detect", completed=3, total=12),
+        RigProgress(phase="chromatic", completed=12, total=12),
+        FlatFieldReferenceSet(
+            roll_id="roll-1",
+            source_name="bare.NEF",
+            reference_width=6064,
+            reference_height=4040,
+            rig_profile_id="pid-1",
+            locked=False,
+        ),
         GridCreated(
             profile=GridProfileSummary(
                 profile_id="pid-1",

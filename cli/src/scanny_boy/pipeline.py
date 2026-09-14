@@ -53,6 +53,7 @@ from pathlib import Path
 import numpy as np
 
 from scanny_boy import (
+    calibration,
     concurrency,
     disk_check,
     flatfield,
@@ -370,20 +371,26 @@ def _read_settings_and_check_consistency(
     # stream; `prepare`/`run` must emit them too, so the same selection
     # never warns under one command and stays silent under another.
     for warning in result.warnings:
-        emit(
-            WarningEvent(
-                run_id=run_id, code=warning.code, message=warning.message
-            )
-        )
+        emit(WarningEvent(run_id=run_id, code=warning.code, message=warning.message))
 
     return settings_list
 
 
-def hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
+def hash_sources(
+    input_dir: Path,
+    selected: list[str],
+    settings_list: list[SourceSettings] | None = None,
+) -> list[SourceRecord]:
+    """`settings_list`, when given (same order as `selected` —
+    `_read_settings_and_check_consistency`'s already-read EXIF), threads
+    each source's own exposure into its `SourceRecord`
+    (docs/ROLL_HIGHLIGHT_LOCK.md §3's base-frame exposure-match check) —
+    no second EXIF read."""
     records = []
-    for name in selected:
+    for i, name in enumerate(selected):
         path = input_dir / name
         stat = path.stat()
+        settings = settings_list[i] if settings_list is not None else None
         records.append(
             SourceRecord(
                 filename=name,
@@ -391,6 +398,9 @@ def hash_sources(input_dir: Path, selected: list[str]) -> list[SourceRecord]:
                 size=stat.st_size,
                 mtime=stat.st_mtime,
                 sha256=hashing.sha256_file(path),
+                exposure_time=None if settings is None else str(settings.exposure_time),
+                f_number=None if settings is None else str(settings.f_number),
+                iso=None if settings is None else settings.iso,
             )
         )
     return records
@@ -414,9 +424,7 @@ def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetada
     # The camera model is the EXIF make/model joined; a lone one of the two
     # is used alone. Recorded for the roll manifest's `camera_color` block
     # block.
-    camera_model = " ".join(
-        part for part in (first.make, first.model) if part
-    ) or None
+    camera_model = " ".join(part for part in (first.make, first.model) if part) or None
     return CuratedMetadata(
         exposure_time=str(first.exposure_time),
         f_number=str(first.f_number),
@@ -649,32 +657,35 @@ def _publish_group(
         )
 
 
-def build_processing_params(profile) -> dict:
+def build_processing_params(
+    rig_profile=None,
+    flat_field_block: dict | None = None,
+) -> dict:
     """The processing params a run presents as its roll invariant (section
     3.4): the raw decode params, the normalization constants (section 3.8 —
     the key is always present, normalization is not optional), and, when a
-    flat-field profile applies, its token and any CA decode scales (the
-    second invariant bucket).
+    flat-field reference and/or rig profile apply, their tokens (the second
+    invariant bucket).
 
     `run_convert` and `probe --roll` must both present exactly this shape,
     so both go through this one function rather than keeping copies that
     can drift apart."""
     ca_scales = (
-        None if profile is None else flatfield.chromatic_aberration_scales(profile)
+        None
+        if rig_profile is None
+        else calibration.chromatic_aberration_scales(rig_profile)
     )
     processing_params = raw_decode.jsonable_raw_params(chromatic_aberration=ca_scales)
     processing_params["normalize"] = normalization.build_params()
-    if profile is not None:
-        # Absent, not null, when no profile was given, so a no-profile run
-        # still compares equal to a pre-flat-field roll (section 2.4).
-        processing_params["flat_field"] = flatfield.profile_token(profile)
-        if ca_scales is not None:
-            processing_params["chromatic_aberration"] = {
-                "profile_id": profile.profile_id,
-                "mode": "scale",
-                "red_scale": ca_scales[0],
-                "blue_scale": ca_scales[1],
-            }
+    if flat_field_block is not None:
+        processing_params["flat_field"] = flatfield.flat_field_token(flat_field_block)
+    if rig_profile is not None and ca_scales is not None:
+        processing_params["chromatic_aberration"] = {
+            "profile_id": rig_profile.profile_id,
+            "mode": "scale",
+            "red_scale": ca_scales[0],
+            "blue_scale": ca_scales[1],
+        }
     return processing_params
 
 
@@ -691,7 +702,9 @@ def run_convert(
     emit: EmitFn = lambda event: None,
     completed_offset: int = 0,
     total_override: int | None = None,
-    flatfield_profile_id: str | None = None,
+    gain_map: np.ndarray | None = None,
+    rig_profile=None,
+    flat_field_block: dict | None = None,
     grid: GridSpec | None = None,
 ) -> ConvertOutcome:
     """Validate the selection and output folder exactly as `probe` does,
@@ -712,11 +725,10 @@ def run_convert(
     leaves already-published groups alone, records the manifest as
     `cancelled`, and returns an outcome whose status is `"cancelled"`.
 
-    `flatfield_profile_id` applies one flat-field profile to every frame of
-    the run; it is folded into `processing_params` under `flat_field` as the
-    profile token, so a roll locks to one profile with its first run. A
-    missing profile or unreadable gain map fails here, having touched
-    nothing.
+    `gain_map`, when given, applies flat-field correction to every frame.
+    `rig_profile` supplies CA decode scales and geometry-frame validation;
+    `flat_field_block` supplies the roll-invariant flat-field token recorded
+    in `processing_params`.
     """
     cancel = cancel if cancel is not None else CancellationToken()
 
@@ -736,18 +748,11 @@ def run_convert(
     except concurrency.MemoryBudgetError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
-    profile = None
-    gain_map = None
-    ca_scales: tuple[float, float] | None = None
-    if flatfield_profile_id is not None:
-        from scanny_boy.library import repo
-
-        try:
-            profile = repo.load_flatfield_profile(flatfield_profile_id)
-            gain_map = flatfield.load_gain_map(profile)
-            ca_scales = flatfield.chromatic_aberration_scales(profile)
-        except flatfield.FlatFieldError as exc:
-            raise ConvertFailure(exc.code, exc.message) from exc
+    ca_scales: tuple[float, float] | None = (
+        None
+        if rig_profile is None
+        else calibration.chromatic_aberration_scales(rig_profile)
+    )
 
     validated = _validate_selection(input_dir, files, per_negative, emit, run_id)
     selected = validated.names
@@ -761,14 +766,14 @@ def run_convert(
     settings_list = _read_settings_and_check_consistency(
         input_dir, selected, emit=emit, run_id=run_id
     )
-    source_records = hash_sources(input_dir, selected)
+    source_records = hash_sources(input_dir, selected, settings_list)
     width, height = raw_decode.read_active_size(input_dir / selected[0])
-    if profile is not None:
+    if rig_profile is not None:
         # Section 1.2: a profile's geometry is only valid for the frame
         # dimensions it was fitted at; fail before anything is written.
         try:
-            flatfield.check_geometry_frame_size(profile, width, height)
-        except flatfield.FlatFieldError as exc:
+            calibration.check_geometry_frame_size(rig_profile, width, height)
+        except calibration.RigError as exc:
             raise ConvertFailure(exc.code, exc.message) from exc
     real_times = _read_real_times(input_dir, selected)
     digitized_fields = [
@@ -780,11 +785,13 @@ def run_convert(
     except IccProfileError as exc:
         raise ConvertFailure(exc.code, exc.message) from exc
 
-    if profile is not None:
+    if flat_field_block is not None:
         # A portrait reference against landscape scans would stretch the
         # correction silently; past 1% aspect difference, say so and let the
         # user decide.
-        reference_ratio = profile.reference_width / profile.reference_height
+        ref_width = flat_field_block["reference_width"]
+        ref_height = flat_field_block["reference_height"]
+        reference_ratio = ref_width / ref_height
         frame_ratio = width / height
         if abs(reference_ratio - frame_ratio) / reference_ratio > 0.01:
             emit(
@@ -792,15 +799,15 @@ def run_convert(
                     run_id=run_id,
                     code=Code.FLATFIELD_ASPECT_MISMATCH,
                     message=(
-                        f"the reference is {profile.reference_width}x"
-                        f"{profile.reference_height} but the frames decode at "
+                        f"the reference is {ref_width}x"
+                        f"{ref_height} but the frames decode at "
                         f"{width}x{height}; the gain map will be stretched "
                         "to fit"
                     ),
                 )
             )
 
-    processing_params = build_processing_params(profile)
+    processing_params = build_processing_params(rig_profile, flat_field_block)
 
     groups = build_groups(selected, per_negative)
     candidate = Manifest(

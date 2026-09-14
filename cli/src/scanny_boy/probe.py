@@ -300,7 +300,7 @@ def run_probe(
     *,
     out_dir: Path | None = None,
     roll_dir: Path | None = None,
-    flatfield_profile_id: str | None = None,
+    rig_profile_id: str | None = None,
     on_warning: OnWarning = lambda code, message: None,
     grid: GridSpec | None = None,
 ) -> ProbeOutcome:
@@ -317,17 +317,36 @@ def run_probe(
     # present (section 3.4), so an unknown profile id fails here before any
     # roll is touched — the run would fail at its own load having touched
     # nothing either.
-    profile = None
-    if flatfield_profile_id is not None:
-        from scanny_boy import flatfield
-        from scanny_boy.library import repo
+    from scanny_boy import calibration
+    from scanny_boy.library import repo
 
+    rig_profile = None
+    if rig_profile_id is not None:
         try:
-            profile = repo.load_flatfield_profile(flatfield_profile_id)
-        except flatfield.FlatFieldError as exc:
+            rig_profile = repo.load_rig_profile(rig_profile_id)
+        except calibration.RigError as exc:
             raise ProbeFailure(exc.code, exc.message) from exc
 
-    processing_params = build_processing_params(profile)
+    flat_field_block = None
+    if roll_dir is not None and repo.roll_registered(roll_dir):
+        from scanny_boy.roll_manifest import load_roll_manifest
+
+        roll = load_roll_manifest(roll_dir)
+        flat_field_block = roll.flat_field
+        if (
+            flat_field_block is not None
+            and rig_profile_id is not None
+            and flat_field_block.get("rig_profile_id") != rig_profile_id
+        ):
+            on_warning(
+                Code.FLATFIELD_REFERENCE_RIG_CONFLICT,
+                "this run's rig profile differs from the one the roll's "
+                "flat-field reference was decoded with "
+                f"({flat_field_block.get('rig_profile_id') or 'none'} "
+                f"vs {rig_profile_id})",
+            )
+
+    processing_params = build_processing_params(rig_profile, flat_field_block)
 
     if not names:
         raise ProbeFailure(Code.NO_FILES, f"no .nef files found in {input_dir}")
@@ -347,7 +366,7 @@ def run_probe(
         # folder and its invariants; without a selection there is no overlap
         # to report.
         if roll_dir is not None:
-            _preview_roll(input_dir, [], [], roll_dir, processing_params, profile)
+            _preview_roll(input_dir, [], [], roll_dir, processing_params, rig_profile)
         return ProbeOutcome(catalogue=order.order, groups=[])
 
     if not files:
@@ -401,7 +420,7 @@ def run_probe(
     # A calibrated profile is only valid for the frame dimensions it was
     # fitted at — fail here, before
     # conversion starts.
-    if profile is not None and profile.geometry is not None:
+    if rig_profile is not None and rig_profile.geometry is not None:
         try:
             width, height = read_active_size(input_dir / selection.names[0])
         except UnsupportedRawError as exc:
@@ -414,8 +433,8 @@ def run_probe(
                 Code.UNREADABLE_RAW, f"{selection.names[0]} could not be decoded"
             ) from exc
         try:
-            flatfield.check_geometry_frame_size(profile, width, height)
-        except flatfield.FlatFieldError as exc:
+            calibration.check_geometry_frame_size(rig_profile, width, height)
+        except calibration.RigError as exc:
             raise ProbeFailure(exc.code, exc.message) from exc
 
     preview = None
@@ -428,7 +447,7 @@ def run_probe(
     film_base: dict | None = None
     if roll_dir is not None:
         roll_overlap, film_base = _preview_roll(
-            input_dir, selection.names, groups, roll_dir, processing_params, profile
+            input_dir, selection.names, groups, roll_dir, processing_params, rig_profile
         )
 
     return ProbeOutcome(

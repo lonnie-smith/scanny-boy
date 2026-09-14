@@ -101,11 +101,31 @@ class RollRow(Base):
     film_kind: Mapped[dict | None] = mapped_column(JSONText)
     # The roll's film-base reference — a JSON object
     # (`density`, `locked_at`, `attached_at`, `source_name`, `source_sha256`,
-    # `flat_field_profile_id`, `camera_model`, `chosen_index`, `populations`,
-    # `clipped_fractions`, `grid_cells`, `measure_version`) or NULL until
+    # `camera_model`, `chosen_index`, `populations`, `clipped_fractions`,
+    # `grid_cells`, `measure_version`, `exposure`) or NULL until
     # `roll set-base-frame` attaches one. Nullable throughout — pre-0012
     # rows read back with NULL and no block.
     film_base: Mapped[dict | None] = mapped_column(JSONText)
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
+    # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` — or
+    # NULL on a mono roll, a roll with no locked film base, or before this
+    # build. Recomputed wholesale at the end of every stitch run and every
+    # negative removal; nullable throughout, same posture as `film_base`.
+    highlight_lock: Mapped[dict | None] = mapped_column(JSONText)
+    # The roll's bare-light flat-field reference — a JSON object
+    # (`gain_map_path`, `gain_map_sha256`, `source_name`, `source_sha256`,
+    # `reference_width`, `reference_height`, `rig_profile_id`, `params`,
+    # `locked_at`, `attached_at`) or NULL until `roll set-flatfield-reference`
+    # attaches one. Nullable throughout — pre-0016 rows read back with NULL.
+    flat_field: Mapped[dict | None] = mapped_column(JSONText)
+    # docs/TETHER_PLAN.md §4.4: set by a deferred stitch, cleared by
+    # `roll refresh`. Nullable throughout — pre-0017 rows read back as NULL
+    # (treated as false).
+    refresh_pending: Mapped[bool | None] = mapped_column(Integer, nullable=True)
+    # Convenience defaults for the roll's next capture/stitch run —
+    # `{"grid", "interval_seconds", "format"}`, editable at any time.
+    # Nullable throughout — pre-0018 rows read back with NULL.
+    setup: Mapped[dict | None] = mapped_column(JSONText)
 
 
 class RunRow(Base):
@@ -234,25 +254,14 @@ class EditRow(Base):
     created_at: Mapped[str] = mapped_column(Text)
 
 
-class FlatFieldProfileRow(Base):
-    __tablename__ = "flatfield_profiles"
+class RigProfileRow(Base):
+    __tablename__ = "rig_profiles"
 
     profile_id: Mapped[str] = mapped_column(Text, primary_key=True)
     # Unique so the app's profile dropdown is unambiguous.
     name: Mapped[str] = mapped_column(Text, unique=True, index=True)
-    # The `.npz` beside the library database; provenance only.
-    gain_map_path: Mapped[str] = mapped_column(Text)
-    gain_map_sha256: Mapped[str] = mapped_column(Text)
-    source_path: Mapped[str | None] = mapped_column(Text)
-    reference_width: Mapped[int] = mapped_column(Integer)
-    reference_height: Mapped[int] = mapped_column(Integer)
-    # How the map was built (`flatfield.build_params`).
-    params: Mapped[dict] = mapped_column(JSONText)
     scanny_boy_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
-    # Geometric calibration: all four
-    # nullable, and rows from migration 0003 and earlier read back with
-    # four Nones and behave exactly as they did before.
     board_key: Mapped[str | None] = mapped_column(Text)
     geometry: Mapped[dict | None] = mapped_column(JSONText)
     chromatic_aberration: Mapped[dict | None] = mapped_column(JSONText)

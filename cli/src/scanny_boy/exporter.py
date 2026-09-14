@@ -110,24 +110,31 @@ def apply_edits(
     the rotation keeps the canvas dimensions and fills what it uncovers
     with the stitching fill sentinel), then rotates. Quarter turns count
     clockwise, the fine angle counts clockwise too; np.rot90 turns
-    counter-clockwise, so negate. The `crop` op's window sits before all
-    of it — its coordinates are published-TIFF pixels like the spots op's
-    (`previews.apply_crop`: warp about the rect's centre by the stored
-    tilt, then slice the rect) — so everything the crop uncovers from the
-    log's later transforms lands on the cropped frame wholesale, and the
-    exported file's dimensions are the cropped display's.
+    counter-clockwise, so negate. The stored `crop` window (TIFF space in
+    the ops log) is converted to display space and applied last via
+    `previews.apply_crop`, matching crop mode's uncropped display plus
+    slider tilt; the exported file's dimensions are the cropped display's.
     """
-    image = previews.apply_crop(image, crop_params)
+    tiff_size = (image.shape[0], image.shape[1])
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
         image = rotate_with_fill(image, fine_angle_deg)
-    return np.rot90(image, k=(-rotation_quarter_turns) % 4)
+    if rotation_quarter_turns % 4:
+        image = np.ascontiguousarray(np.rot90(image, k=(-rotation_quarter_turns) % 4))
+    return previews.apply_crop(
+        image,
+        previews.display_crop_params(
+            crop_params,
+            tiff_size,
+            quarter_turns=rotation_quarter_turns,
+            flipped_horizontally=flipped_horizontally,
+            fine_angle_deg=fine_angle_deg,
+        ),
+    )
 
 
-def applied_downsample(
-    image: np.ndarray, long_edge: int | None
-) -> int | None:
+def applied_downsample(image: np.ndarray, long_edge: int | None) -> int | None:
     """The long edge a downsample will actually apply to `image` — the
     target when the image exceeds it, `None` otherwise (`resample.
     target_size` is the decision; this is the provenance-facing shape of
@@ -167,6 +174,7 @@ def provenance_record(
     scratches_params: dict | None = None,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
+    highlight_lock: dict | None = None,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload: what makes an exported
     file interpretable without the database. The published TIFF's
@@ -186,7 +194,9 @@ def provenance_record(
             "detector_version": spots_params.get("detector_version"),
             "sensitivity": spots_params.get("sensitivity"),
             "repaired": sum(
-                1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
+                1
+                for spot in spots_params.get("spots") or []
+                if not spot.get("rejected")
             ),
         }
     scratch_record = None
@@ -215,9 +225,7 @@ def provenance_record(
         "rendered": {
             "profile": profile_record(profile_kind),
             "gamma": render.GAMMA_ADOBE,
-            "matrix": (
-                None if matrix is None else np.asarray(matrix).tolist()
-            ),
+            "matrix": (None if matrix is None else np.asarray(matrix).tolist()),
             "tone": None if tone_params is None else dict(tone_params),
             "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
@@ -229,6 +237,11 @@ def provenance_record(
                 if applied_downsample is None
                 else {"long_edge": applied_downsample}
             ),
+            # docs/ROLL_HIGHLIGHT_LOCK.md §6: the roll's highlight-colour
+            # lock in effect for this export, or `None` when none applied —
+            # what makes an exported file's dense-end colour interpretable
+            # without the database, exactly like `tone`/`color` above.
+            "highlight_lock": highlight_lock,
         },
     }
 
@@ -379,7 +392,15 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params, scratches_params = (
+        (
+            quarter_turns,
+            flipped,
+            fine_angle,
+            tone_params,
+            color_params,
+            spots_params,
+            scratches_params,
+        ) = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
@@ -388,23 +409,21 @@ def _export_negative(
             state.spots,
             state.scratches,
         )
-        meter = color.read_metering(negative.normalization)
-        # The crop and spot repair apply before any other geometry: both
-        # ops' coordinates are TIFF space. A stale
+        meter = color.read_metering(
+            negative.normalization, highlight_lock=roll.highlight_lock
+        )
+        # Spot repair runs in TIFF space before the net transform replay.
+        # The crop is replayed last on the uncropped display canvas; a stale
         # crop — a re-stitch changed the canvas — applies as nothing, the
         # same degrade `apply_crop` performs for the previews.
         crop_params = (
             state.crop
-            if previews.crop_is_live(
-                state.crop, (image.shape[0], image.shape[1])
-            )
+            if previews.crop_is_live(state.crop, (image.shape[0], image.shape[1]))
             else None
         )
         image = scratches.apply(image, scratches_params)
         image = spots.apply_repair(image, spots_params)
-        rotated = apply_edits(
-            image, quarter_turns, flipped, fine_angle, crop_params
-        )
+        rotated = apply_edits(image, quarter_turns, flipped, fine_angle, crop_params)
         # The matrix follows the channel count — `None` for a mono roll's
         # 2-D published TIFF, the recorded camera matrix for a colour one.
         matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)
@@ -496,6 +515,7 @@ def _write_export(
         scratches_params,
         crop_params,
         applied_downsample,
+        roll.highlight_lock,
     )
     jxl_writer.write_jxl(
         destination,

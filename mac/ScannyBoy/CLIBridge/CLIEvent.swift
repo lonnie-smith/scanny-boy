@@ -19,7 +19,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
     /// the `INVALID_GRID` error code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
-    /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// `tone_snap_gamma` fields in the roll manifest).
     /// Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
     /// required on `roll init` only; `run`/`stitch` read `film.kind` from
@@ -65,7 +65,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 21
+    public static let supportedProtocolVersion = 23
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -102,16 +102,22 @@ public struct CLIEvent: Sendable, Hashable {
         case regionRendered
         case previewRendered
         case exportDone
-        case flatfieldCreated
-        case flatfieldList
-        case flatfieldDeleted
-        case flatfieldProgress
+        case rigCreated
+        case rigList
+        case rigDeleted
+        case rigProgress
+        case flatFieldReferenceSet
         case gridCreated
         case gridList
         case gridDeleted
         case spotsReported
         case scratchesReported
+        case cropSuggested
         case baseFrameSet
+        case frameAnalyzed
+        case captureChecked
+        case captureSummary
+        case rollRefreshed
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -143,16 +149,22 @@ public struct CLIEvent: Sendable, Hashable {
             case "region_rendered": self = .regionRendered
             case "preview_rendered": self = .previewRendered
             case "export_done": self = .exportDone
-            case "flatfield_created": self = .flatfieldCreated
-            case "flatfield_list": self = .flatfieldList
-            case "flatfield_deleted": self = .flatfieldDeleted
-            case "flatfield_progress": self = .flatfieldProgress
+            case "rig_created": self = .rigCreated
+            case "rig_list": self = .rigList
+            case "rig_deleted": self = .rigDeleted
+            case "rig_progress": self = .rigProgress
+            case "flat_field_reference_set": self = .flatFieldReferenceSet
             case "grid_created": self = .gridCreated
             case "grid_list": self = .gridList
             case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
             case "scratches_reported": self = .scratchesReported
+            case "crop_suggested": self = .cropSuggested
             case "base_frame_set": self = .baseFrameSet
+            case "frame_analyzed": self = .frameAnalyzed
+            case "capture_checked": self = .captureChecked
+            case "capture_summary": self = .captureSummary
+            case "roll_refreshed": self = .rollRefreshed
             default: self = .unknown(name)
             }
         }
@@ -184,16 +196,22 @@ public struct CLIEvent: Sendable, Hashable {
             case .regionRendered: "region_rendered"
             case .previewRendered: "preview_rendered"
             case .exportDone: "export_done"
-            case .flatfieldCreated: "flatfield_created"
-            case .flatfieldList: "flatfield_list"
-            case .flatfieldDeleted: "flatfield_deleted"
-            case .flatfieldProgress: "flatfield_progress"
+            case .rigCreated: "rig_created"
+            case .rigList: "rig_list"
+            case .rigDeleted: "rig_deleted"
+            case .rigProgress: "rig_progress"
+            case .flatFieldReferenceSet: "flat_field_reference_set"
             case .gridCreated: "grid_created"
             case .gridList: "grid_list"
             case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
             case .scratchesReported: "scratches_reported"
+            case .cropSuggested: "crop_suggested"
             case .baseFrameSet: "base_frame_set"
+            case .frameAnalyzed: "frame_analyzed"
+            case .captureChecked: "capture_checked"
+            case .captureSummary: "capture_summary"
+            case .rollRefreshed: "roll_refreshed"
             case .unknown(let name): name
             }
         }
@@ -266,6 +284,28 @@ extension CLIEvent {
 
     // `roll_info`
     public var manifest: [String: JSONValue]? { fields["manifest"]?.objectValue }
+    public var refreshPending: Bool? { fields["refresh_pending"]?.boolValue }
+
+    // `frame_analyzed`
+    public var analyzedFrame: String? { fields["frame"]?.stringValue }
+    public var focusRegions: [Double?]? {
+        guard let elements = fields["focus_regions"]?.arrayValue else { return nil }
+        return elements.map { element in
+            if case .null = element { return nil }
+            return element.doubleValue
+        }
+    }
+
+    // `capture_checked`
+    public var captureCheckPassed: Bool? { fields["passed"]?.boolValue }
+    public var usedCLAHEFallback: Bool? { fields["used_clahe_fallback"]?.boolValue }
+
+    // `capture_summary`
+    public var captureSummaryFrames: Int? { fields["frames"]?.intValue }
+
+    // `roll_refreshed`
+    public var lockChanged: Bool? { fields["lock_changed"]?.boolValue }
+    public var previewsRegenerated: Bool? { fields["previews_regenerated"]?.boolValue }
 
     // `metadata_values`
     public var metadataField: String? { fields["field"]?.stringValue }
@@ -335,28 +375,20 @@ extension CLIEvent {
     }
 
     /// The recorded op's tone params, when it is a `tone` op: its `params`
-    /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
-    /// reset to the flat look). The geometric ops carry no tone keys, so
+    /// always name all four user keys (explicit nulls for the reset to the
+    /// default scan-start curve). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
     public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
-            case .some = params["grade_r"]
+            case .some = params["snap_gamma"]
         else { return nil }
-        guard let gradeR = params["grade_r"]?.doubleValue,
-            let snapGamma = params["snap_gamma"]?.doubleValue
-        else { return .some(nil) }
+        guard let snapGamma = params["snap_gamma"]?.doubleValue else { return .some(nil) }
         return .some(
             ToneAdjustment(
-                gradeR: gradeR,
                 snapGamma: snapGamma,
                 density: params["density"]?.doubleValue ?? ToneAdjustment.neutral.density,
                 shadowDensity: params["shadow_density"]?.doubleValue ?? 0,
-                highlightDensity: params["highlight_density"]?.doubleValue ?? 0,
-                toe: params["toe"]?.doubleValue ?? 0,
-                toeWidth: params["toe_width"]?.doubleValue ?? ToneAdjustment.neutral.toeWidth,
-                shoulder: params["shoulder"]?.doubleValue ?? 0,
-                shoulderWidth: params["shoulder_width"]?.doubleValue
-                    ?? ToneAdjustment.neutral.shoulderWidth
+                highlightDensity: params["highlight_density"]?.doubleValue ?? 0
             )
         )
     }
@@ -401,18 +433,25 @@ extension CLIEvent {
     // `width`/`height` accessors above.
     public var previewRenderedPath: String? { fields["path"]?.stringValue }
 
-    // `flatfield_created` and `flatfield_list`
-    public var flatFieldProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
-    public var flatFieldProfiles: [[String: JSONValue]]? {
+    // `rig_created` and `rig_list`
+    public var rigProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
+    public var rigProfiles: [[String: JSONValue]]? {
         fields["profiles"]?.arrayValue?.compactMap { entry in
             entry.objectValue
         }
     }
-    // `flatfield_deleted`
-    public var flatFieldProfileID: String? { fields["profile_id"]?.stringValue }
+    // `rig_deleted`
+    public var rigProfileID: String? { fields["profile_id"]?.stringValue }
 
-    // `flatfield_progress`
-    public var flatFieldPhase: String? { fields["phase"]?.stringValue }
+    // `rig_progress`
+    public var rigPhase: String? { fields["phase"]?.stringValue }
+
+    // `flat_field_reference_set`
+    public var flatFieldReferenceSourceName: String? { fields["source_name"]?.stringValue }
+    public var flatFieldReferenceWidth: Int? { fields["reference_width"]?.intValue }
+    public var flatFieldReferenceHeight: Int? { fields["reference_height"]?.intValue }
+    public var flatFieldReferenceRigProfileID: String? { fields["rig_profile_id"]?.stringValue }
+    public var flatFieldReferenceLocked: Bool? { fields["locked"]?.boolValue }
 
     // `grid_created` and `grid_list`
     public var gridProfile: [String: JSONValue]? { fields["profile"]?.objectValue }
@@ -561,10 +600,12 @@ public enum CLICode: Sendable, Hashable {
     case invalidMetadata
     case exportFailed
     case previewFailed
-    // Protocol version 6: flat-field profiles.
-    case flatFieldProfileNotFound
-    case flatFieldProfileExists
-    case flatFieldProfileInUse
+    // Rig profiles and roll flat-field references.
+    case rigProfileNotFound
+    case rigProfileExists
+    case rigProfileInUse
+    case flatFieldReferenceLocked
+    case flatFieldReferenceRigConflict
     case flatFieldGainMapMissing
     case flatFieldAspectMismatch
     case flatFieldHighlightClipped
@@ -597,8 +638,15 @@ public enum CLICode: Sendable, Hashable {
     case filmBaseAmbiguous
     case rollPredatesFilmBase
     case filmBaseCameraConflict
-    case filmBaseFlatfieldConflict
     case libraryDBUnsupported
+    case rollBusy
+    case rollRefreshPending
+    case captureClipped
+    case captureDenseEndLow
+    case captureFocusDrift
+    case captureFocusTilt
+    case autoCropFailed
+    case autoCropNoFormat
     case internalError
     case unknown(String)
 
@@ -652,9 +700,11 @@ public enum CLICode: Sendable, Hashable {
         case "INVALID_METADATA": self = .invalidMetadata
         case "EXPORT_FAILED": self = .exportFailed
         case "PREVIEW_FAILED": self = .previewFailed
-        case "FLATFIELD_PROFILE_NOT_FOUND": self = .flatFieldProfileNotFound
-        case "FLATFIELD_PROFILE_EXISTS": self = .flatFieldProfileExists
-        case "FLATFIELD_PROFILE_IN_USE": self = .flatFieldProfileInUse
+        case "RIG_PROFILE_NOT_FOUND": self = .rigProfileNotFound
+        case "RIG_PROFILE_EXISTS": self = .rigProfileExists
+        case "RIG_PROFILE_IN_USE": self = .rigProfileInUse
+        case "FLATFIELD_REFERENCE_LOCKED": self = .flatFieldReferenceLocked
+        case "FLATFIELD_REFERENCE_RIG_CONFLICT": self = .flatFieldReferenceRigConflict
         case "FLATFIELD_GAIN_MAP_MISSING": self = .flatFieldGainMapMissing
         case "FLATFIELD_ASPECT_MISMATCH": self = .flatFieldAspectMismatch
         case "FLATFIELD_HIGHLIGHT_CLIPPED": self = .flatFieldHighlightClipped
@@ -685,8 +735,15 @@ public enum CLICode: Sendable, Hashable {
         case "FILM_BASE_AMBIGUOUS": self = .filmBaseAmbiguous
         case "ROLL_PREDATES_FILM_BASE": self = .rollPredatesFilmBase
         case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
-        case "FILM_BASE_FLATFIELD_CONFLICT": self = .filmBaseFlatfieldConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
+        case "ROLL_BUSY": self = .rollBusy
+        case "ROLL_REFRESH_PENDING": self = .rollRefreshPending
+        case "CAPTURE_CLIPPED": self = .captureClipped
+        case "CAPTURE_DENSE_END_LOW": self = .captureDenseEndLow
+        case "CAPTURE_FOCUS_DRIFT": self = .captureFocusDrift
+        case "CAPTURE_FOCUS_TILT": self = .captureFocusTilt
+        case "AUTO_CROP_FAILED": self = .autoCropFailed
+        case "AUTO_CROP_NO_FORMAT": self = .autoCropNoFormat
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
@@ -742,9 +799,11 @@ public enum CLICode: Sendable, Hashable {
         case .invalidMetadata: "INVALID_METADATA"
         case .exportFailed: "EXPORT_FAILED"
         case .previewFailed: "PREVIEW_FAILED"
-        case .flatFieldProfileNotFound: "FLATFIELD_PROFILE_NOT_FOUND"
-        case .flatFieldProfileExists: "FLATFIELD_PROFILE_EXISTS"
-        case .flatFieldProfileInUse: "FLATFIELD_PROFILE_IN_USE"
+        case .rigProfileNotFound: "RIG_PROFILE_NOT_FOUND"
+        case .rigProfileExists: "RIG_PROFILE_EXISTS"
+        case .rigProfileInUse: "RIG_PROFILE_IN_USE"
+        case .flatFieldReferenceLocked: "FLATFIELD_REFERENCE_LOCKED"
+        case .flatFieldReferenceRigConflict: "FLATFIELD_REFERENCE_RIG_CONFLICT"
         case .flatFieldGainMapMissing: "FLATFIELD_GAIN_MAP_MISSING"
         case .flatFieldAspectMismatch: "FLATFIELD_ASPECT_MISMATCH"
         case .flatFieldHighlightClipped: "FLATFIELD_HIGHLIGHT_CLIPPED"
@@ -775,8 +834,15 @@ public enum CLICode: Sendable, Hashable {
         case .filmBaseAmbiguous: "FILM_BASE_AMBIGUOUS"
         case .rollPredatesFilmBase: "ROLL_PREDATES_FILM_BASE"
         case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
-        case .filmBaseFlatfieldConflict: "FILM_BASE_FLATFIELD_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
+        case .rollBusy: "ROLL_BUSY"
+        case .rollRefreshPending: "ROLL_REFRESH_PENDING"
+        case .captureClipped: "CAPTURE_CLIPPED"
+        case .captureDenseEndLow: "CAPTURE_DENSE_END_LOW"
+        case .captureFocusDrift: "CAPTURE_FOCUS_DRIFT"
+        case .captureFocusTilt: "CAPTURE_FOCUS_TILT"
+        case .autoCropFailed: "AUTO_CROP_FAILED"
+        case .autoCropNoFormat: "AUTO_CROP_NO_FORMAT"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }

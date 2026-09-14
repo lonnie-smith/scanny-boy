@@ -88,7 +88,9 @@ def test_image_description_and_software_written_exactly_once(tmp_path):
         assert codes.count(270) == 1  # ImageDescription
         assert codes.count(305) == 1  # Software
         page = tf.pages[0]
-        assert page.tags["ImageDescription"].value == "_DSC4640.NEF: unstitched scan frame"
+        assert (
+            page.tags["ImageDescription"].value == "_DSC4640.NEF: unstitched scan frame"
+        )
         assert page.tags["Software"].value == tags.software
 
 
@@ -156,9 +158,9 @@ def _grey_pixels(height: int = 8, width: int = 12) -> np.ndarray:
     rng = np.random.default_rng(1)
     y = np.linspace(0, 65535, height)[:, None]
     x = np.linspace(0, 65535, width)[None, :]
-    return np.clip((y + x) / 2 + rng.normal(scale=200, size=(height, width)), 0, 65535).astype(
-        np.uint16
-    )
+    return np.clip(
+        (y + x) / 2 + rng.normal(scale=200, size=(height, width)), 0, 65535
+    ).astype(np.uint16)
 
 
 def test_mono_pixels_write_minisblack_and_round_trip(tmp_path):
@@ -167,7 +169,9 @@ def test_mono_pixels_write_minisblack_and_round_trip(tmp_path):
     pixels = _grey_pixels()
     path = tmp_path / "mono.tif"
 
-    write_base_tiff(path, pixels, _tags(icc_profile=load_icc_profile(ProfileKind.DENSITY_GREY)))
+    write_base_tiff(
+        path, pixels, _tags(icc_profile=load_icc_profile(ProfileKind.DENSITY_GREY))
+    )
 
     with tifffile.TiffFile(path) as tf:
         page = tf.pages[0]

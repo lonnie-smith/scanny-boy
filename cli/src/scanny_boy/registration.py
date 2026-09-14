@@ -184,9 +184,7 @@ def similarity_from_correspondences(
     return np.hstack([rotation, translation.reshape(2, 1)]), scale
 
 
-def _rms_residual(
-    transform: np.ndarray, src: np.ndarray, dst: np.ndarray
-) -> float:
+def _rms_residual(transform: np.ndarray, src: np.ndarray, dst: np.ndarray) -> float:
     rotation = transform[:, :2]
     translation = transform[:, 2]
     projected = src @ rotation.T + translation
@@ -194,9 +192,7 @@ def _rms_residual(
     return float(np.sqrt(np.mean(np.sum(residuals**2, axis=1))))
 
 
-def register_pair(
-    a: FrameFeatures, b: FrameFeatures, undistorter=None
-) -> PairResult:
+def register_pair(a: FrameFeatures, b: FrameFeatures, undistorter=None) -> PairResult:
     """1. BFMatcher — NORM_HAMMING for uint8 descriptors, NORM_L2 otherwise.
     2. knnMatch(k=2) plus Lowe ratio test at RATIO_TEST.
     3. Convert both point sets to full resolution with
@@ -221,9 +217,7 @@ def register_pair(
     full-resolution pixels, and no threshold's units change. The transform
     used is always re-fitted rigidly; the undistorter never changes that.
     """
-    norm_type = (
-        cv2.NORM_HAMMING if a.descriptors.dtype == np.uint8 else cv2.NORM_L2
-    )
+    norm_type = cv2.NORM_HAMMING if a.descriptors.dtype == np.uint8 else cv2.NORM_L2
     matcher = cv2.BFMatcher(norm_type)
 
     if len(a.descriptors) == 0 or len(b.descriptors) == 0:
@@ -241,9 +235,7 @@ def register_pair(
             scale_drift=float("inf"),
             accepted=False,
             reject_code=Code.STITCH_INSUFFICIENT_MATCHES,
-            reject_message=(
-                f"no features detected in {a.name} or {b.name}"
-            ),
+            reject_message=(f"no features detected in {a.name} or {b.name}"),
             inlier_points_a=_EMPTY_POINTS,
             inlier_points_b=_EMPTY_POINTS,
             overlap_fraction=None,
@@ -403,8 +395,7 @@ def register_pair(
             accepted=False,
             reject_code=Code.STITCH_RESIDUAL_TOO_HIGH,
             reject_message=(
-                f"rms residual {rms_residual_px:.2f}px exceeds "
-                f"{MAX_PAIR_RMS_PX}px"
+                f"rms residual {rms_residual_px:.2f}px exceeds {MAX_PAIR_RMS_PX}px"
             ),
             inlier_points_a=dst_inliers,
             inlier_points_b=src_inliers,

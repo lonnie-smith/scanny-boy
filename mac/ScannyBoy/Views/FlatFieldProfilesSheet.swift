@@ -1,24 +1,22 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The flat-field profile manager: the profile list, each row with a trash
-/// button (confirming — a deleted gain map cannot be recovered, and the
-/// CLI's `FLATFIELD_PROFILE_IN_USE` refusal for profiles locked into a
+/// The rig profile manager: the profile list, each row with a trash
+/// button (confirming — a deleted profile cannot be recovered, and the
+/// CLI's `RIG_PROFILE_IN_USE` refusal for profiles locked into a
 /// roll's invariants arrives here as an alert), plus New Profile… — an
 /// `NSOpenPanel` limited to NEF, a name field, and Create with a spinner,
-/// since building a profile decodes a RAW and takes seconds. Modeled on
-/// `NewRollSheet`.
+/// since fitting a calibration runs for minutes. Modeled on `NewRollSheet`.
 struct FlatFieldProfilesSheet: View {
-    let flatField: FlatFieldModel
+    let rig: RigModel
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var referenceURL: URL?
     @State private var calibrationURLs: [URL] = []
     @State private var name = ""
     @State private var createError: String?
     @State private var deleteError: String?
-    @State private var profilePendingDeletion: FlatFieldProfile?
+    @State private var profilePendingDeletion: RigProfile?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -44,12 +42,12 @@ struct FlatFieldProfilesSheet: View {
                 Spacer()
                 Button("Close") { dismiss() }
                     .keyboardShortcut(hasNewProfileContent ? .cancelAction : .defaultAction)
-                    .disabled(flatField.isCreating)
+                    .disabled(rig.isCreating)
             }
         }
         .padding(20)
         .frame(minWidth: 460, minHeight: 320, maxHeight: 620)
-        .interactiveDismissDisabled(flatField.isCreating)
+        .interactiveDismissDisabled(rig.isCreating)
         .confirmationDialog(
             "Delete “\(profilePendingDeletion?.name ?? "")”?",
             isPresented: Binding(
@@ -72,26 +70,19 @@ struct FlatFieldProfilesSheet: View {
 
     @ViewBuilder
     private var profileList: some View {
-        if flatField.profiles.isEmpty {
+        if rig.profiles.isEmpty {
             Text("No profiles yet.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
             VStack(spacing: 0) {
-                ForEach(flatField.profiles) { profile in
+                ForEach(rig.profiles) { profile in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(profile.name)
                             Text(profile.calibrationSummary)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            if let width = profile.referenceWidth,
-                                let height = profile.referenceHeight
-                            {
-                                Text("Reference \(width) × \(height)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
                             if let rejection = rejectionReason(of: profile) {
                                 Text(rejection)
                                     .font(.caption2)
@@ -119,7 +110,7 @@ struct FlatFieldProfilesSheet: View {
     /// A rejected fit's reason, surfaced so the automatic gates stay
     /// visible: the user has to be able to see that a correction was
     /// dropped and why.
-    private func rejectionReason(of profile: FlatFieldProfile) -> String? {
+    private func rejectionReason(of profile: RigProfile) -> String? {
         guard let distortion = profile.calibrationReport?.objectValue?["distortion"]?
             .objectValue, distortion["accepted"]?.boolValue == false
         else { return nil }
@@ -129,18 +120,6 @@ struct FlatFieldProfilesSheet: View {
     private var newProfile: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("New Profile").font(.headline)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Flat-field reference photo")
-                HStack {
-                    Button("Choose…") { chooseReference() }
-                    Text(referenceURL?.lastPathComponent ?? "No file chosen")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
 
             HStack {
                 Button("Calibration Frames…") { chooseCalibrationFrames() }
@@ -154,7 +133,7 @@ struct FlatFieldProfilesSheet: View {
             }
 
             Text(
-                "Optional: 16–20 shots of the ChArUco board, rotated 0/45/90/135° and translated so the pattern reaches every quadrant and every image corner."
+                "16–20 shots of the ChArUco board, rotated 0/45/90/135° and translated so the pattern reaches every quadrant and every image corner."
             )
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -172,8 +151,8 @@ struct FlatFieldProfilesSheet: View {
             }
 
             HStack {
-                if flatField.isCreating {
-                    if let progress = flatField.creationProgress {
+                if rig.isCreating {
+                    if let progress = rig.creationProgress {
                         VStack(alignment: .leading, spacing: 2) {
                             ProgressView(
                                 value: Double(progress.completed),
@@ -207,8 +186,7 @@ struct FlatFieldProfilesSheet: View {
     }
 
     private var hasNewProfileContent: Bool {
-        referenceURL != nil
-            || !calibrationURLs.isEmpty
+        !calibrationURLs.isEmpty
             || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -223,28 +201,14 @@ struct FlatFieldProfilesSheet: View {
         case "detect": "detecting calibration frames"
         case "fit": "fitting distortion"
         case "chromatic": "measuring chromatic aberration"
-        case "reference": "building the gain map"
         default: phase
         }
     }
 
     private var isReady: Bool {
-        referenceURL != nil
+        !calibrationURLs.isEmpty
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !flatField.isCreating
-    }
-
-    private func chooseReference() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        if let nef = UTType(filenameExtension: "nef") {
-            panel.allowedContentTypes = [nef]
-        }
-        if panel.runModal() == .OK {
-            referenceURL = panel.url
-        }
+            && !rig.isCreating
     }
 
     private func chooseCalibrationFrames() {
@@ -261,17 +225,13 @@ struct FlatFieldProfilesSheet: View {
     }
 
     private func create() {
-        guard let referenceURL else { return }
         createError = nil
         let frames = calibrationURLs
         Task {
-            let result = await flatField.create(
-                reference: referenceURL, name: name, calibrationFrames: frames
-            )
+            let result = await rig.create(name: name, calibrationFrames: frames)
             switch result {
             case .success:
                 name = ""
-                self.referenceURL = nil
                 calibrationURLs = []
             case .failure(_, let message):
                 createError = message
@@ -279,9 +239,9 @@ struct FlatFieldProfilesSheet: View {
         }
     }
 
-    private func delete(_ profile: FlatFieldProfile) async {
+    private func delete(_ profile: RigProfile) async {
         deleteError = nil
-        let result = await flatField.delete(profile)
+        let result = await rig.delete(profile)
         if case .failure(_, let message) = result {
             deleteError = message
         }

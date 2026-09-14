@@ -52,7 +52,8 @@ def new_grid_profile(name: str, across: int, down: int) -> GridProfile:
         name=name,
         across=across,
         down=down,
-        created_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace(
-            "+00:00", "Z"
-        ),
+        created_at=datetime.now(UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
     )

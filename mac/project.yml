@@ -61,6 +61,7 @@ targets:
       # but naming them keeps the app's system dependencies visible here.
       - sdk: QuickLookThumbnailing.framework
       - sdk: ImageIO.framework
+      - sdk: ImageCaptureCore.framework
     info:
       path: ScannyBoy/Info.plist
       properties:

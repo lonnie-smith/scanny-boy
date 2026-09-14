@@ -40,6 +40,35 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    /// `scanny-boy roll set-setup --roll DIR [--grid AxD] [--interval SECONDS] [--format FORMAT]`
+    ///
+    /// Merge-updates the roll's convenience defaults for its next
+    /// capture/stitch run. Unlike `set-film-kind`, editable at any time.
+    /// Each parameter left `nil` keeps whatever the roll already has for
+    /// that field.
+    public static func rollSetSetup(
+        roll: URL,
+        grid: (across: Int, down: Int)? = nil,
+        intervalSeconds: Int? = nil,
+        format: String? = nil,
+        autoCrop: Bool? = nil
+    ) -> CLICommand {
+        var arguments = ["roll", "set-setup", "--roll", roll.path]
+        if let grid {
+            arguments.append(contentsOf: ["--grid", "\(grid.across)x\(grid.down)"])
+        }
+        if let intervalSeconds {
+            arguments.append(contentsOf: ["--interval", String(intervalSeconds)])
+        }
+        if let format {
+            arguments.append(contentsOf: ["--format", format])
+        }
+        if let autoCrop {
+            arguments.append(contentsOf: ["--auto-crop", autoCrop ? "on" : "off"])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy roll list --library DIR`
     public static func rollList(library: URL) -> CLICommand {
         CLICommand(arguments: ["roll", "list", "--library", library.path])
@@ -70,23 +99,39 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
     }
 
-    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--flatfield PROFILE_ID]`
+    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE`
     ///
     /// The only writer of `film_base.density`. The app calls this
     /// immediately when the user chooses a base frame on
     /// the Add Scans sheet — never deferred to Convert.
     public static func rollSetBaseFrame(
         roll: URL,
-        frame: URL,
-        flatfield: String? = nil
+        frame: URL
     ) -> CLICommand {
-        var arguments = [
+        CLICommand(arguments: [
             "roll", "set-base-frame",
             "--roll", roll.path,
             "--frame", frame.path,
+        ])
+    }
+
+    /// `scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]`
+    ///
+    /// Attaches or replaces the roll's bare-light flat-field reference.
+    /// The app calls this immediately when the user chooses a reference
+    /// frame on the Add Scans sheet — never deferred to Convert.
+    public static func rollSetFlatFieldReference(
+        roll: URL,
+        frame: URL,
+        rig: String? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "roll", "set-flatfield-reference",
+            "--roll", roll.path,
+            "--frame", frame.path,
         ]
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -121,7 +166,7 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL? = nil,
         across: Int? = nil,
         down: Int = 1,
-        flatfield: String? = nil
+        rig: String? = nil
     ) -> CLICommand {
         var arguments = ["probe", "--input", input.path]
         if !files.isEmpty {
@@ -135,8 +180,8 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--roll", roll.path])
         }
         arguments.append(contentsOf: groupingArguments(across: across, down: down))
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -155,7 +200,7 @@ public struct CLICommand: Sendable, Hashable {
         down: Int = 1,
         jobs: Int? = nil,
         overwrite: Bool = false,
-        flatfield: String? = nil
+        rig: String? = nil
     ) -> CLICommand {
         var arguments = ["prepare", "--input", input.path]
         arguments.append("--files")
@@ -168,8 +213,8 @@ public struct CLICommand: Sendable, Hashable {
         if overwrite {
             arguments.append("--overwrite")
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         return CLICommand(arguments: arguments)
     }
@@ -193,7 +238,8 @@ public struct CLICommand: Sendable, Hashable {
         jobs: Int? = nil,
         skipSources: [String] = [],
         work: URL? = nil,
-        flatfield: String? = nil
+        rig: String? = nil,
+        deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["run", "--input", input.path]
         arguments.append("--files")
@@ -206,12 +252,15 @@ public struct CLICommand: Sendable, Hashable {
         if let work {
             arguments.append(contentsOf: ["--work", work.path])
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
         }
         if !skipSources.isEmpty {
             arguments.append("--skip-sources")
             arguments.append(contentsOf: skipSources)
+        }
+        if deferRollRefresh {
+            arguments.append("--defer-roll-refresh")
         }
         return CLICommand(arguments: arguments)
     }
@@ -287,14 +336,14 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--grade R --snap G | --reset)`
+    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--snap G ... | --reset)`
     ///
-    /// Records the preview tone adjustment — an ISO-R paper grade plus a
-    /// midtone snap — per selected negative, or resets it to the flat
-    /// linear look with `reset`. The op is a state, not a transform: the
-    /// latest one wins and a trailing `tone` op is coalesced in place.
-    /// Never touches the published TIFFs; the preview is regenerated with
-    /// the tone curve composed into the display encode.
+    /// Records the preview tone adjustment — contrast and density — per
+    /// selected negative, or resets it to the default scan-start curve with
+    /// `reset`. The op is a state, not a transform: the latest one wins and
+    /// a trailing `tone` op is coalesced in place. Never touches the
+    /// published TIFFs; the preview is regenerated with the tone curve
+    /// composed into the display encode.
     public static func editTone(
         roll: URL,
         negatives: [String],
@@ -309,11 +358,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            if auto.contains(.grade) {
-                arguments.append("--auto-grade")
-            } else {
-                arguments.append(contentsOf: ["--grade", String(adjustment.gradeR)])
-            }
             arguments.append(contentsOf: ["--snap", String(adjustment.snapGamma)])
             if auto.contains(.density) {
                 arguments.append("--auto-density")
@@ -323,12 +367,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--shadow-density", String(adjustment.shadowDensity)])
             arguments.append(
                 contentsOf: ["--highlight-density", String(adjustment.highlightDensity)]
-            )
-            arguments.append(contentsOf: ["--toe", String(adjustment.toe)])
-            arguments.append(contentsOf: ["--toe-width", String(adjustment.toeWidth)])
-            arguments.append(contentsOf: ["--shoulder", String(adjustment.shoulder)])
-            arguments.append(
-                contentsOf: ["--shoulder-width", String(adjustment.shoulderWidth)]
             )
         } else {
             arguments.append("--reset")
@@ -456,7 +494,8 @@ public struct CLICommand: Sendable, Hashable {
         rect: CGRect?,
         tiltDegrees: Double = 0,
         preset: String? = nil,
-        fullFrame: Bool = false
+        fullFrame: Bool = false,
+        source: String? = nil
     ) -> CLICommand {
         var arguments = [
             "edit", "crop",
@@ -475,10 +514,24 @@ public struct CLICommand: Sendable, Hashable {
                 arguments.append(contentsOf: ["--preset", preset])
             }
             if fullFrame { arguments.append("--full-frame") }
+            if let source {
+                arguments.append(contentsOf: ["--source", source])
+            }
         } else {
             arguments.append("--reset")
         }
         return CLICommand(arguments: arguments)
+    }
+
+    public static func editSuggestCrop(
+        roll: URL,
+        negative: String
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "suggest-crop",
+            "--roll", roll.path,
+            "--negative", negative,
+        ])
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`
@@ -663,7 +716,7 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--flatfield ID]`
+    /// `scanny-boy stitch --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--rig ID]`
     ///
     /// Chunk P2-10's re-stitch path: reads the Phase 1 manifest already in
     /// `work`, verifies every intermediate, and stitches — without paying for
@@ -673,16 +726,16 @@ public struct CLICommand: Sendable, Hashable {
     /// manifest is already `complete`. `overwrite` is only ever set after the
     /// user has explicitly agreed. `--out` became `--roll`;
     /// a re-stitch's target is a roll folder same as
-    /// everything else now. `flatfield` names the calibration profile whose
-    /// geometry reaches the stitch warp (protocol version 7); a roll locked
-    /// to a profile's geometry refuses a stitch without it.
+    /// everything else now. `rig` names the calibration profile whose
+    /// geometry reaches the stitch warp.
     public static func stitch(
         work: URL,
         roll: URL,
         jobs: Int? = nil,
         overwrite: Bool = false,
         allowPartial: Bool = true,
-        flatfield: String? = nil
+        rig: String? = nil,
+        deferRollRefresh: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
         if let jobs {
@@ -694,47 +747,80 @@ public struct CLICommand: Sendable, Hashable {
         if allowPartial {
             arguments.append("--allow-partial")
         }
-        if let flatfield {
-            arguments.append(contentsOf: ["--flatfield", flatfield])
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
+        }
+        if deferRollRefresh {
+            arguments.append("--defer-roll-refresh")
         }
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy flatfield create --reference FILE --name NAME [--calibration FILE ...]`
-    ///
-    /// Protocol version 7: decodes the bare light source reference, builds
-    /// and stores the gain map, and inserts the profile. With
-    /// `calibrationFrames` (ChArUco board NEFs, absolute paths), the profile
-    /// additionally carries the geometric calibration — and the command runs
-    /// for minutes, driven by `flatfield_progress` events.
-    public static func flatfieldCreate(
-        reference: URL,
-        name: String,
-        calibrationFrames: [URL] = []
+    /// `scanny-boy capture analyze --frame FILE [--baseline FILE ...] --log FILE`
+    public static func captureAnalyze(
+        frame: URL,
+        log: URL,
+        baselines: [URL] = []
     ) -> CLICommand {
         var arguments = [
-            "flatfield", "create",
-            "--reference", reference.path,
-            "--name", name,
+            "capture", "analyze",
+            "--frame", frame.path,
+            "--log", log.path,
         ]
-        if !calibrationFrames.isEmpty {
-            arguments.append("--calibration")
-            arguments.append(contentsOf: calibrationFrames.map(\.path))
+        for baseline in baselines {
+            arguments.append(contentsOf: ["--baseline", baseline.path])
         }
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy flatfield list`
-    public static func flatfieldList() -> CLICommand {
-        CLICommand(arguments: ["flatfield", "list"])
+    /// `scanny-boy capture summary --log FILE`
+    public static func captureSummary(log: URL) -> CLICommand {
+        CLICommand(arguments: ["capture", "summary", "--log", log.path])
     }
 
-    /// `scanny-boy flatfield delete --profile ID`
+    /// `scanny-boy capture check --work DIR [--rig PROFILE_ID]`
+    public static func captureCheck(work: URL, rig: String? = nil) -> CLICommand {
+        var arguments = ["capture", "check", "--work", work.path]
+        if let rig {
+            arguments.append(contentsOf: ["--rig", rig])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy roll refresh --roll DIR`
+    public static func rollRefresh(roll: URL) -> CLICommand {
+        CLICommand(arguments: ["roll", "refresh", "--roll", roll.path])
+    }
+
+    /// `scanny-boy rig create --name NAME --calibration FILE ...`
     ///
-    /// The CLI refuses with `FLATFIELD_PROFILE_IN_USE` when any roll's
+    /// Fits geometric calibration from ChArUco frames and inserts the
+    /// profile. The command runs for minutes, driven by `rig_progress`
+    /// events.
+    public static func rigCreate(
+        name: String,
+        calibrationFrames: [URL]
+    ) -> CLICommand {
+        var arguments = [
+            "rig", "create",
+            "--name", name,
+            "--calibration",
+        ]
+        arguments.append(contentsOf: calibrationFrames.map(\.path))
+        return CLICommand(arguments: arguments)
+    }
+
+    /// `scanny-boy rig list`
+    public static func rigList() -> CLICommand {
+        CLICommand(arguments: ["rig", "list"])
+    }
+
+    /// `scanny-boy rig delete --profile ID`
+    ///
+    /// The CLI refuses with `RIG_PROFILE_IN_USE` when any roll's
     /// invariants name the profile; the app surfaces that as an alert.
-    public static func flatfieldDelete(profile: String) -> CLICommand {
-        CLICommand(arguments: ["flatfield", "delete", "--profile", profile])
+    public static func rigDelete(profile: String) -> CLICommand {
+        CLICommand(arguments: ["rig", "delete", "--profile", profile])
     }
 
     /// `scanny-boy grid create --name NAME --across N --down N`
@@ -807,6 +893,7 @@ public struct CLIRunner: Sendable {
     }
 
     private let sharedDaemon: SharedDaemon
+    private let captureDaemon: SharedDaemon
 
     public init(
         executable: URL,
@@ -817,6 +904,10 @@ public struct CLIRunner: Sendable {
         self.environmentOverrides = environmentOverrides
         self.daemonRoutingEnabled = daemonRouting
         self.sharedDaemon = SharedDaemon(
+            executable: executable,
+            environmentOverrides: environmentOverrides
+        )
+        self.captureDaemon = SharedDaemon(
             executable: executable,
             environmentOverrides: environmentOverrides
         )
@@ -833,10 +924,10 @@ public struct CLIRunner: Sendable {
     /// to the resident helper; long jobs keep their own one-shot process,
     /// with their own cancellation and progress semantics, and a crash in
     /// one cannot take the interactive session down. `probe`, `prepare`,
-    /// `apply-metadata`, `export`, `run`, `stitch` and `flatfield
+    /// `apply-metadata`, `export`, `run`, `stitch` and `rig
     /// create`/`delete` stay one-shot; `roll init`/`rename`/`delete`/
-    /// `set-base-frame`/`set-film-kind` mutate the roll folder and stay
-    /// one-shot with them.
+    /// `set-base-frame`/`set-flatfield-reference`/`set-film-kind` mutate
+    /// the roll folder and stay one-shot with them.
     static func routesThroughDaemon(_ command: CLICommand) -> Bool {
         var parts = command.arguments.makeIterator()
         guard let head = parts.next() else { return false }
@@ -852,11 +943,17 @@ public struct CLIRunner: Sendable {
         case "grid":
             let sub = parts.next()
             return sub == "create" || sub == "list" || sub == "delete"
-        case "flatfield":
+        case "rig":
             return parts.next() == "list"
         default:
             return false
         }
+    }
+
+    static func routesThroughCaptureDaemon(_ command: CLICommand) -> Bool {
+        var parts = command.arguments.makeIterator()
+        guard parts.next() == "capture" else { return false }
+        return parts.next() == "analyze"
     }
 
     public func session(for command: CLICommand) -> CLISession {
@@ -865,13 +962,20 @@ public struct CLIRunner: Sendable {
             environment = ProcessInfo.processInfo.environment
             environment!.merge(environmentOverrides) { _, override in override }
         }
-        let served: CLISession.ServedRequest? =
-            daemonRoutingEnabled && Self.routesThroughDaemon(command)
-            ? CLISession.ServedRequest(
+        let served: CLISession.ServedRequest?
+        if daemonRoutingEnabled && Self.routesThroughCaptureDaemon(command) {
+            served = CLISession.ServedRequest(
+                daemon: captureDaemon.get(),
+                requestID: UUID().uuidString
+            )
+        } else if daemonRoutingEnabled && Self.routesThroughDaemon(command) {
+            served = CLISession.ServedRequest(
                 daemon: sharedDaemon.get(),
                 requestID: UUID().uuidString
             )
-            : nil
+        } else {
+            served = nil
+        }
         return CLISession(
             configuration: CLISession.Configuration(
                 executable: executable,

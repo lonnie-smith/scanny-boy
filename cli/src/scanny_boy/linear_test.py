@@ -33,7 +33,9 @@ def test_round_trip_is_exact_on_a_real_intermediate():
 
 def test_decode_maps_endpoints_and_spans_the_range():
     assert decode_to_linear(np.array([0], dtype=np.uint16))[0] == 0.0
-    assert decode_to_linear(np.array([MAX_CODE], dtype=np.uint16))[0] == pytest.approx(1.0)
+    assert decode_to_linear(np.array([MAX_CODE], dtype=np.uint16))[0] == pytest.approx(
+        1.0
+    )
     codes = np.arange(MAX_CODE + 1, dtype=np.uint16)
     assert np.all(np.diff(decode_to_linear(codes)) > 0)
     assert decode_to_linear(codes).dtype == np.float32

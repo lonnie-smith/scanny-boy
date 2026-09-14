@@ -16,6 +16,10 @@ CMY_MAX_DENSITY = 0.2
 CMY_MIN = -1.0
 CMY_MAX = 1.0
 
+# Per-slider scale applied before luma removal. Magenta starts at 0.5 so
+# equal travel matches cyan/yellow feel; cyan and yellow stay 1.0.
+CMY_SLIDER_GAIN = (1.0, 0.5, 1.0)
+
 # Cast removal — NegPy's cast_removal_max_offset, same normalized units.
 # CAST_MAX_OFFSET bounds BOTH ends' ties.
 CAST_REMOVAL_MIN = 0.0
@@ -35,6 +39,9 @@ SEPARATION_DAMPING_MIN = 0.0
 SEPARATION_DAMPING_MAX = 1.0
 SEPARATION_REF_SPREAD = 0.15
 SEPARATION_K_MAX = 3.0
+# Muted-side vibrance at full damping when dye_separation > 1. G=3 breaks
+# monotonicity near the reference at k=1.5; 2.0 leaves headroom.
+SEPARATION_DAMPING_GAIN = 2.0
 
 # Temperature lever — nominal readout, not colorimetric (NegPy logic.py).
 TEMP_REF_KELVIN = 5500.0
@@ -61,6 +68,7 @@ COLOR_PARAM_KEYS = (
     "cast_removal_highlights",
     "dye_separation",
     "separation_damping",
+    "auto_neutral",
 )
 
 # The original twelve, frozen, in their original order. This exists only so
@@ -98,6 +106,7 @@ class ColorParams:
     cast_removal_highlights: float = 0.0
     dye_separation: float = 1.0
     separation_damping: float = 0.0
+    auto_neutral: float = 1.0
 
 
 NEUTRAL_COLOR = ColorParams()
@@ -111,16 +120,100 @@ class Metering:
     normalized exactly as the shadow one; `None` when the negative's record
     predates it or when the dense-end neutral band
     held no trustworthy set — which is load-bearing information, not an
-    error."""
+    error.
+
+    `highlight_floor_delta` is docs/ROLL_HIGHLIGHT_LOCK.md's render-time
+    correction, `floor_old[ch] - floor_new[ch]` in log10 D — `None` when no
+    roll highlight lock applies (a mono negative, or a roll with no
+    qualifying negative). `ranges` and `highlight_refs_norm` above are
+    already computed against the *corrected* floor when one applies —
+    `read_metering`'s `highlight_lock` argument threads through to every
+    consumer of this object, cast removal and the global CMY sliders
+    included, so what those controls tie against is the same colour the
+    render actually shows (§2.3 of that plan: "one effective-bounds
+    function, not ad hoc patches"). `highlight_floor_delta` itself is what
+    `render.py`/`tone.py` apply to the *decoded pixels*, immediately after
+    `normalization.decode_normalized` and before anything else — see
+    `remap_dense_end`."""
 
     ranges: tuple[float, ...]
     shadow_refs_norm: tuple[float, ...] | None
     highlight_refs_norm: tuple[float, ...] | None = None
+    highlight_floor_delta: tuple[float, ...] | None = None
+    auto_neutral_shadow: tuple[float, float] | None = None
+    auto_neutral_highlight: tuple[float, float] | None = None
 
 
-def read_metering(record: dict | None) -> Metering:
+def _corrected_floors_and_delta(
+    floors: list, ceils: list, highlight_lock, record: dict
+) -> tuple[list, tuple[float, ...] | None]:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §2: the corrected dense-end floor this
+    record's `ranges`/`*_refs_norm` should be measured against, plus the
+    `(floor_old - floor_new)` delta `render.py`/`tone.py` apply to decoded
+    pixels. `floors` unchanged and delta `None` whenever there is nothing
+    to correct — no lock passed in, or a non-3-channel record (mono, or a
+    malformed block `read_metering`'s caller already gave up on).
+
+    `highlight_lock` accepts either a `highlight_lock.HighlightLock`
+    instance or the roll manifest's raw `highlight_lock` dict — every
+    caller of `read_metering` already has one or the other lying around
+    (the manifest dict when it just loaded the roll, the dataclass when it
+    is threading one through from somewhere that already converted), and
+    making this boundary accept both means neither call site has to import
+    `highlight_lock` just to convert a `None`.
+
+    `highlight_refs` is this record's own (possibly `None`) recorded
+    measurement, passed straight through to `corrected_floors` — see that
+    function for why a qualifying negative's real amplitude and a
+    non-qualifying negative's green-only approximation are not
+    interchangeable."""
+    if highlight_lock is None or len(floors) != 3 or len(ceils) != 3:
+        return floors, None
+    from scanny_boy.highlight_lock import (
+        HighlightLock,
+        base_offset_for,
+        corrected_floors,
+    )
+
+    lock = (
+        highlight_lock
+        if isinstance(highlight_lock, HighlightLock)
+        else HighlightLock.from_dict(highlight_lock)
+    )
+    if lock is None:
+        return floors, None
+
+    try:
+        floors_f = tuple(float(v) for v in floors)
+        ceils_f = tuple(float(v) for v in ceils)
+    except (TypeError, ValueError):
+        return floors, None
+    highlight_refs = record.get("highlight_refs")
+    refs_f = None
+    if isinstance(highlight_refs, list) and len(highlight_refs) == 3:
+        try:
+            refs_f = tuple(float(v) for v in highlight_refs)
+        except (TypeError, ValueError):
+            refs_f = None
+    offset = base_offset_for(record)
+    new_floors = corrected_floors(floors_f, ceils_f, lock, refs_f, offset)
+    delta = tuple(old - new for old, new in zip(floors_f, new_floors, strict=True))
+    if all(abs(d) < 1e-12 for d in delta):
+        return list(new_floors), None
+    return list(new_floors), delta
+
+
+def read_metering(record: dict | None, highlight_lock=None) -> Metering:
     """Never raises. Missing or incomplete records yield uncalibrated CMY
-    and inert cast removal."""
+    and inert cast removal.
+
+    `highlight_lock` is the roll's highlight-colour lock — a
+    `highlight_lock.HighlightLock`, the roll manifest's raw dict, or `None`
+    (docs/ROLL_HIGHLIGHT_LOCK.md): when one resolves and this record is a
+    3-channel colour negative, the dense-end `floors` this function reads
+    everything else against are first retargeted to the roll's highlight
+    colour, and `Metering.highlight_floor_delta` records what changed so
+    the render path can apply the same correction to decoded pixels."""
     default_ranges = (1.0, 1.0, 1.0)
     if not record:
         return Metering(ranges=default_ranges, shadow_refs_norm=None)
@@ -131,15 +224,17 @@ def read_metering(record: dict | None) -> Metering:
     if len(floors) != len(ceils) or not floors:
         return Metering(ranges=default_ranges, shadow_refs_norm=None)
     channels = len(floors)
-    ranges: list[float] = []
-    for ch in range(channels):
-        floor = floors[ch]
-        ceil = ceils[ch]
-        if isinstance(floor, bool) or not isinstance(floor, (int, float)):
+    for value in (*floors, *ceils):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return Metering(ranges=default_ranges, shadow_refs_norm=None)
-        if isinstance(ceil, bool) or not isinstance(ceil, (int, float)):
-            return Metering(ranges=default_ranges, shadow_refs_norm=None)
-        ranges.append(max(abs(float(ceil) - float(floor)), 1e-6))
+
+    floors, highlight_floor_delta = _corrected_floors_and_delta(
+        floors, ceils, highlight_lock, record
+    )
+
+    ranges: list[float] = [
+        max(abs(float(ceils[ch]) - float(floors[ch])), 1e-6) for ch in range(channels)
+    ]
     shadow_refs_norm: tuple[float, ...] | None = None
     shadow_refs = record.get("shadow_refs")
     if isinstance(shadow_refs, list) and len(shadow_refs) == channels:
@@ -161,7 +256,12 @@ def read_metering(record: dict | None) -> Metering:
     highlight_refs_norm: tuple[float, ...] | None = None
     highlight_refs = record.get("highlight_refs")
     # Normalized exactly as the shadow refs: same guards, same
-    # (ref - floor)/span, same anything-wrong -> None rule.
+    # (ref - floor)/span, same anything-wrong -> None rule. `floor` here
+    # is already the corrected one when a highlight lock applies, so the
+    # highlight reference's normalized position moves with the same
+    # correction the render shows — it is still *this negative's own* raw
+    # measurement (`highlight_refs` itself is never rewritten), just read
+    # against the corrected floor.
     if isinstance(highlight_refs, list) and len(highlight_refs) == channels:
         normed = []
         for ch in range(channels):
@@ -178,11 +278,52 @@ def read_metering(record: dict | None) -> Metering:
             normed.append((float(ref) - floor) / span)
         if len(normed) == channels:
             highlight_refs_norm = tuple(normed)
+    from scanny_boy import auto_neutral
+
+    bands = auto_neutral.read_auto_neutral(record)
     return Metering(
         ranges=tuple(ranges),
         shadow_refs_norm=shadow_refs_norm,
         highlight_refs_norm=highlight_refs_norm,
+        highlight_floor_delta=highlight_floor_delta,
+        auto_neutral_shadow=None if bands is None else bands.shadow,
+        auto_neutral_highlight=None if bands is None else bands.highlight,
     )
+
+
+def remap_dense_end(norm: np.ndarray, channel: int, metering: Metering) -> np.ndarray:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §2.3: remap `normalization.decode_normalized`'s
+    per-channel output from the published stretch to the roll-corrected one,
+    fixing the thin end (`val = 1`) exactly — applied immediately after the
+    decode and before global CMY / `1 - val` in every render path
+    (`render.py`, `tone.py`), so everything downstream composes unchanged.
+
+    `val` is already `(D - floor_old) / (ceil - floor_old)` by construction
+    (that is what the published encode is), so `floor_old` and `ceil` are
+    implicitly `0` and `1` in `val`'s own units — the only two free
+    quantities are `delta = floor_old - floor_new` (log10 D) and `range =
+    ceil - floor_new` (`Metering.ranges[channel]`, already measured against
+    the corrected floor by `read_metering`):
+
+        D          = floor_old + val * (ceil - floor_old)
+        val_new    = (D - floor_new) / (ceil - floor_new)
+                   = (delta + val * (range - delta)) / range
+
+    Identity (`norm` returned unchanged, not merely equal) when this
+    channel has no correction — `metering.highlight_floor_delta is None`,
+    or the channel is out of range (mono, or a malformed record) — so
+    calling this unconditionally on every channel of every render is safe
+    and costs nothing extra on a roll with no lock."""
+    delta_tuple = metering.highlight_floor_delta
+    if delta_tuple is None or channel >= len(delta_tuple):
+        return norm
+    delta = delta_tuple[channel]
+    if delta == 0.0:
+        return norm
+    span = metering.ranges[channel]
+    if span <= 0.0 or not np.isfinite(span):
+        return norm
+    return (delta + norm * (span - delta)) / span
 
 
 def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
@@ -204,7 +345,7 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
         # malformed record must not index out of range.
         return (0.0,) * len(sliders)
     raw = [
-        slider * CMY_MAX_DENSITY / max(metering.ranges[ch], 1e-6)
+        slider * CMY_MAX_DENSITY * CMY_SLIDER_GAIN[ch] / max(metering.ranges[ch], 1e-6)
         for ch, slider in enumerate(sliders)
     ]
     return _luma_removed(raw)
@@ -215,13 +356,16 @@ def region_cmy(params: ColorParams) -> tuple[tuple[float, ...], ...]:
     removed**: they are added to the display value directly, so a luma-zero
     triple contributes a luma-neutral display shift — the region controls
     are purely chromatic and stop competing with the shadow/highlight
-    density trims. An equal three-slider move is an exact no-op here,
-    because no per-channel range is in the path."""
-    shadow = (params.shadow_cyan, params.shadow_magenta, params.shadow_yellow)
+    density trims."""
+    shadow = (
+        params.shadow_cyan * CMY_SLIDER_GAIN[0],
+        params.shadow_magenta * CMY_SLIDER_GAIN[1],
+        params.shadow_yellow * CMY_SLIDER_GAIN[2],
+    )
     highlight = (
-        params.highlight_cyan,
-        params.highlight_magenta,
-        params.highlight_yellow,
+        params.highlight_cyan * CMY_SLIDER_GAIN[0],
+        params.highlight_magenta * CMY_SLIDER_GAIN[1],
+        params.highlight_yellow * CMY_SLIDER_GAIN[2],
     )
     return _luma_removed(shadow), _luma_removed(highlight)
 
@@ -234,6 +378,173 @@ def _luma_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
     """Subtract the scalar that zeroes the Rec.709 luma-weighted sum."""
     mean = _luma_weighted_sum(triple)
     return tuple(value - mean for value in triple)
+
+
+def _cast_slopes_one_point_targets(
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+    shadow_targets: tuple[float, float] | None,
+    highlight_targets: tuple[float, float] | None,
+) -> tuple[tuple[float, float], ...]:
+    """One-point tie at whichever end has a target; identity otherwise."""
+    achromatic = ((slope, pivot_in),) * 3
+    if shadow_targets is not None:
+        anchor = pivot_in
+        if metering.shadow_refs_norm is None or len(metering.shadow_refs_norm) != 3:
+            return achromatic
+        green_ref = 1.0 - metering.shadow_refs_norm[1]
+        targets = (
+            green_ref + shadow_targets[0],
+            green_ref,
+            green_ref + shadow_targets[1],
+        )
+    elif highlight_targets is not None:
+        anchor = pivot_in
+        if (
+            metering.highlight_refs_norm is None
+            or len(metering.highlight_refs_norm) != 3
+        ):
+            return achromatic
+        green_ref = 1.0 - metering.highlight_refs_norm[1]
+        targets = (
+            green_ref + highlight_targets[0],
+            green_ref,
+            green_ref + highlight_targets[1],
+        )
+    else:
+        return achromatic
+
+    from scanny_boy import tone
+
+    result: list[tuple[float, float]] = []
+    for ch in range(3):
+        if ch == 1:
+            result.append((slope, pivot_in))
+            continue
+        target = targets[ch]
+        denom = anchor - target
+        if abs(denom) < 1e-6:
+            slope_ch = slope
+        else:
+            slope_ch = float(
+                np.clip(
+                    slope * (anchor - green_ref) / denom,
+                    tone.SLOPE_MIN,
+                    tone.SLOPE_MAX,
+                )
+            )
+        if abs(slope_ch) < 1e-6:
+            pivot_ch = pivot_in
+        else:
+            pivot_ch = anchor - (slope / slope_ch) * (anchor - pivot_in)
+        result.append((slope_ch, pivot_ch))
+    return tuple(result)
+
+
+def cast_slopes_from_residuals(
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+    shadow: tuple[float, float] | None,
+    highlight: tuple[float, float] | None,
+) -> tuple[tuple[float, float], ...]:
+    """Per-channel cast slopes that null tone-split `(R-G, B-G)` residuals.
+
+    Residuals are in normalized units, as returned by
+    `normalization.measure_neutral_residual`. Each end is clamped by
+    `CAST_MAX_OFFSET`. One band only selects the one-point branch at that
+    end; neither band is identity."""
+    achromatic = ((slope, pivot_in),) * 3
+    if shadow is None and highlight is None:
+        return achromatic
+
+    def _offsets(residual: tuple[float, float]) -> tuple[float, float]:
+        a, b = residual
+        return (
+            float(np.clip(-a, -CAST_MAX_OFFSET, CAST_MAX_OFFSET)),
+            float(np.clip(-b, -CAST_MAX_OFFSET, CAST_MAX_OFFSET)),
+        )
+
+    if shadow is not None and highlight is None:
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, _offsets(shadow), None
+        )
+    if highlight is not None and shadow is None:
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, None, _offsets(highlight)
+        )
+
+    if (
+        metering.shadow_refs_norm is None
+        or len(metering.shadow_refs_norm) != 3
+        or metering.highlight_refs_norm is None
+        or len(metering.highlight_refs_norm) != 3
+    ):
+        if shadow is not None:
+            return _cast_slopes_one_point_targets(
+                metering, slope, pivot_in, _offsets(shadow), None
+            )
+        return _cast_slopes_one_point_targets(
+            metering, slope, pivot_in, None, _offsets(highlight)
+        )
+
+    from scanny_boy import tone
+
+    shadow_off = _offsets(shadow)
+    highlight_off = _offsets(highlight)
+    g_s = 1.0 - metering.shadow_refs_norm[1]
+    g_h = 1.0 - metering.highlight_refs_norm[1]
+    result: list[tuple[float, float]] = []
+    for ch in range(3):
+        if ch == 1:
+            result.append((slope, pivot_in))
+            continue
+        off_s = shadow_off[0 if ch == 0 else 1]
+        off_h = highlight_off[0 if ch == 0 else 1]
+        t_s = g_s + off_s
+        t_h = g_h + off_h
+        if abs(t_h - t_s) < 1e-6:
+            fallback = _cast_slopes_one_point_targets(
+                metering, slope, pivot_in, shadow_off, None
+            )
+            result.append(fallback[ch])
+            continue
+        slope_ch = float(
+            np.clip(slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX)
+        )
+        if abs(slope_ch) < 1e-6:
+            pivot_ch = pivot_in
+        else:
+            pivot_ch = t_s - (slope / slope_ch) * (g_s - pivot_in)
+        result.append((slope_ch, pivot_ch))
+    return tuple(result)
+
+
+def auto_neutral_active(params: ColorParams, metering: Metering) -> bool:
+    """Whether render-time auto-neutral correction should run."""
+    if params.auto_neutral <= 0.0:
+        return False
+    return (
+        metering.auto_neutral_shadow is not None
+        or metering.auto_neutral_highlight is not None
+    )
+
+
+def auto_neutral_cast_slopes(
+    params: ColorParams,
+    metering: Metering,
+    slope: float,
+    pivot_in: float,
+) -> tuple[tuple[float, float], ...]:
+    """Render-time auto-neutral cast slopes."""
+    return cast_slopes_from_residuals(
+        metering,
+        slope,
+        pivot_in,
+        metering.auto_neutral_shadow,
+        metering.auto_neutral_highlight,
+    )
 
 
 def _one_point_cast_slopes(
@@ -318,7 +629,7 @@ def cast_slopes(
     by design, not by limit (§2.3 guard 3).
 
     The endpoint rescale anchors are
-    read once on the achromatic curve — grade and snap only, every density,
+    read once on the achromatic curve — grade only, every density, snap,
     colour and shaping control at rest — and the same `(low, high)` pair
     rescales all three channels. A per-channel rescale would undo exactly
     the colour difference this solve just created. `pivot_out` stays 0.5
@@ -370,9 +681,7 @@ def cast_slopes(
             result.append(fallback[ch])
             continue
         slope_ch = float(
-            np.clip(
-                slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX
-            )
+            np.clip(slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX)
         )
         # Guard 5: after clamping, re-solve the pivot from the clamped
         # slope through the *shadow* constraint, so the shadow tie still
@@ -386,14 +695,30 @@ def cast_slopes(
     return tuple(result)
 
 
-def damping_gain(k: float, damping: float, chroma: float) -> float:
-    """NegPy's separation_damping_gain, verbatim in display space."""
+def damping_gain(
+    k: float, damping: float, chroma: float | np.ndarray
+) -> float | np.ndarray:
+    """Per-pixel effective dye-separation k with muted-side vibrance boost.
+
+    NegPy's exponent law in display space, plus a muted-only gain when
+    ``k > 1`` so full damping lifts near-greys above the frame-wide slider."""
     if k <= 0.0:
+        if isinstance(chroma, np.ndarray):
+            return np.zeros_like(chroma, dtype=np.float32)
         return 0.0
     ref = SEPARATION_REF_SPREAD
     h = (ref - chroma) / (ref + chroma)
-    k_eff = k ** ((1.0 - damping) + damping * h)
-    return float(min(k_eff, SEPARATION_K_MAX))
+    base = k ** ((1.0 - damping) + damping * h)
+    if k > 1.0:
+        boost = 1.0 + damping * (SEPARATION_DAMPING_GAIN - 1.0) * np.maximum(h, 0.0)
+    elif isinstance(chroma, np.ndarray):
+        boost = np.ones_like(chroma, dtype=np.float64)
+    else:
+        boost = 1.0
+    k_eff = np.minimum(base * boost, SEPARATION_K_MAX)
+    if isinstance(chroma, np.ndarray):
+        return k_eff.astype(np.float32)
+    return float(k_eff)
 
 
 def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
@@ -414,11 +739,7 @@ def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
     )
     if damping == 0.0:
         return luma + k * diff
-    h = (SEPARATION_REF_SPREAD - chroma) / (SEPARATION_REF_SPREAD + chroma)
-    k_eff = np.minimum(
-        k ** ((1.0 - damping) + damping * h),
-        SEPARATION_K_MAX,
-    )
+    k_eff = damping_gain(k, damping, chroma)
     return luma + k_eff * diff
 
 
@@ -435,9 +756,7 @@ def wb_to_kelvin(magenta: float, yellow: float) -> float:
     return float(1e6 / mu)
 
 
-def kelvin_to_wb(
-    kelvin: float, magenta: float, yellow: float
-) -> tuple[float, float]:
+def kelvin_to_wb(kelvin: float, magenta: float, yellow: float) -> tuple[float, float]:
     """Move (M, Y) along the Planckian direction to `kelvin`, preserving
     the off-locus tint component. Higher K warms the image."""
     km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
@@ -469,4 +788,5 @@ def _color_param_bounds() -> tuple[tuple[str, float, float], ...]:
         ),
         ("dye_separation", DYE_SEPARATION_MIN, DYE_SEPARATION_MAX),
         ("separation_damping", SEPARATION_DAMPING_MIN, SEPARATION_DAMPING_MAX),
+        ("auto_neutral", 0.0, 1.0),
     )

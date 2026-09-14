@@ -66,9 +66,7 @@ def _stub_run_convert(
             return ConvertOutcome(
                 run_id=kwargs["run_id"], status="cancelled", manifest=None
             )
-        return ConvertOutcome(
-            run_id=kwargs["run_id"], status="complete", manifest=None
-        )
+        return ConvertOutcome(run_id=kwargs["run_id"], status="complete", manifest=None)
 
     return _run
 

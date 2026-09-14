@@ -55,9 +55,9 @@ struct RunIntegrationTests {
     /// this suite starts. Without this, the real bundled CLI helper falls
     /// back to `SCANNY_BOY_LIBRARY_DB`'s default — the user's actual
     /// `~/Library/Application Support/ScannyBoy/library.db` — and every run
-    /// of this suite would register real rolls and flatfield profiles into
+    /// of this suite would register real rolls and rig profiles into
     /// it, which is how a developer ends up with a library full of
-    /// `"Integration <uuid>"` profiles from nothing but running tests.
+    /// `"Integration <uuid>"` entries from nothing but running tests.
     private static let libraryDatabaseURL: URL = {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
@@ -128,37 +128,10 @@ struct RunIntegrationTests {
         Issue.record("timed out waiting for the run to reach the expected state")
     }
 
-    /// `flatfield create` for real, through the CLI, from the synthetic
-    /// bare-light DNG (`BareLightReference`) — the app requires a profile on
-    /// Add Scans, so every scenario below runs against one that actually
-    /// exists. A real film frame must not stand in: its scene content
-    /// survives the gain map's smoothing and corrupts the correction, which
-    /// is what failed these runs with `STITCH_RESIDUAL_TOO_HIGH`. Nothing
-    /// here asserts on falloff.
-    private static func createFlatFieldProfile() async throws -> String {
-        let runner = try Self.runner()
-        let session = runner.session(
-            for: .flatfieldCreate(
-                reference: BareLightReference.url,
-                name: "Integration \(UUID().uuidString.prefix(8))"
-            )
-        )
-        for await output in try await session.start() {
-            if case .event(let event) = output, event.kind == .flatfieldCreated,
-                let fields = event.flatFieldProfile,
-                let profile = FlatFieldProfile(fields: fields)
-            {
-                return profile.profileID
-            }
-        }
-        Issue.record("flatfield create produced no flatfield_created event")
-        throw CocoaError(.fileNoSuchFile)
-    }
-
     /// A configuration model pointed at a staged sample folder (only the
     /// six sample files, so a selection is contiguous in its catalogue) and
     /// a real roll, with its catalogue probe already applied and a real
-    /// profile chosen.
+    /// flat-field reference attached.
     private static func configuredModel(
         roll: URL,
         select: [String],
@@ -175,8 +148,8 @@ struct RunIntegrationTests {
         // These scenarios test run/stitch behaviour, not the Add Scans
         // grouping picker, so they choose the grouping up front.
         model.across = 3
-        if model.flatFieldProfileID == nil {
-            model.flatFieldProfileID = try await Self.createFlatFieldProfile()
+        if model.flatField == nil {
+            await model.attachFlatFieldReference(at: BareLightReference.url)
         }
         if model.filmKind == nil {
             await model.setFilmKind("colour")

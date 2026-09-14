@@ -100,7 +100,9 @@ def _stem(name: str) -> str:
 
 
 @requires_real_samples
-def test_running_manifest_is_written_before_the_first_output_appears(monkeypatch, tmp_path):
+def test_running_manifest_is_written_before_the_first_output_appears(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -109,7 +111,10 @@ def test_running_manifest_is_written_before_the_first_output_appears(monkeypatch
     real_replace = os.replace
 
     def _checking_replace(src, dst):
-        if str(dst).endswith(".tif") and "manifest_checked" not in seen_before_first_publish:
+        if (
+            str(dst).endswith(".tif")
+            and "manifest_checked" not in seen_before_first_publish
+        ):
             seen_before_first_publish["manifest_checked"] = True
             manifest = load_manifest(out_dir)
             seen_before_first_publish["status"] = manifest.status
@@ -131,7 +136,9 @@ def test_running_manifest_is_written_before_the_first_output_appears(monkeypatch
 
 
 @requires_real_samples
-def test_manifest_validates_against_schema_and_records_correct_hashes(monkeypatch, tmp_path):
+def test_manifest_validates_against_schema_and_records_correct_hashes(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -208,7 +215,9 @@ def test_a_failed_frame_removes_only_its_own_group_staging_and_later_groups_cont
 
 
 @requires_real_samples
-def test_no_staging_directory_survives_success_or_handled_failure(monkeypatch, tmp_path):
+def test_no_staging_directory_survives_success_or_handled_failure(
+    monkeypatch, tmp_path
+):
     bad_file = REAL_SAMPLE_FILES[1]
     _install_fast_decode(monkeypatch, fail_for={bad_file})
     out_dir = tmp_path / "out"
@@ -234,12 +243,16 @@ def test_no_staging_directory_survives_success_or_handled_failure(monkeypatch, t
 @requires_real_samples
 def test_insufficient_disk_space_fails_before_any_decode(monkeypatch, tmp_path):
     decode_calls: list[Path] = []
-    monkeypatch.setattr(raw_decode, "decode_raw", lambda p: decode_calls.append(p) or _fast_frame())
+    monkeypatch.setattr(
+        raw_decode, "decode_raw", lambda p: decode_calls.append(p) or _fast_frame()
+    )
 
     def _always_insufficient(output_dir, required_bytes):
         raise disk_check.DiskCheckError(required_bytes, available_bytes=0)
 
-    monkeypatch.setattr("scanny_boy.pipeline.disk_check.check_disk_space", _always_insufficient)
+    monkeypatch.setattr(
+        "scanny_boy.pipeline.disk_check.check_disk_space", _always_insufficient
+    )
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -257,7 +270,9 @@ def test_insufficient_disk_space_fails_before_any_decode(monkeypatch, tmp_path):
 
 
 @requires_real_samples
-def test_existing_outputs_fail_without_overwrite_and_succeed_with_it(monkeypatch, tmp_path):
+def test_existing_outputs_fail_without_overwrite_and_succeed_with_it(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -308,7 +323,9 @@ def test_unreadable_manifest_is_bad_manifest(monkeypatch, tmp_path):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None)
+    run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
+    )
 
     (out_dir / MANIFEST_FILENAME).write_text("not valid json")
 
@@ -338,7 +355,12 @@ def test_output_folder_equal_to_input_folder_is_rejected(monkeypatch, tmp_path):
     _install_fast_decode(monkeypatch)
     with pytest.raises(ConvertFailure) as excinfo:
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), FIXTURES_DIR, 3, run_id="r1", emit=lambda e: None
+            FIXTURES_DIR,
+            list(NEGATIVE_1),
+            FIXTURES_DIR,
+            3,
+            run_id="r1",
+            emit=lambda e: None,
         )
     assert excinfo.value.code.value == "OUTPUT_SAME_AS_INPUT"
 
@@ -379,7 +401,9 @@ def test_source_changed_after_hashing_stops_its_group(monkeypatch, tmp_path):
 
 
 @requires_real_samples
-def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monkeypatch, tmp_path):
+def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -398,12 +422,19 @@ def test_recovery_after_a_publish_crash_replaces_every_output_in_the_group(monke
 
     with pytest.raises(RuntimeError, match="simulated crash"):
         run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="run-a", emit=lambda e: None
+            FIXTURES_DIR,
+            list(NEGATIVE_1),
+            out_dir,
+            3,
+            run_id="run-a",
+            emit=lambda e: None,
         )
 
     # Exactly one file was published before the crash; the manifest was
     # never updated past its initial "running" write for this group.
-    published = [name for name in NEGATIVE_1 if (out_dir / f"{_stem(name)}.tif").exists()]
+    published = [
+        name for name in NEGATIVE_1 if (out_dir / f"{_stem(name)}.tif").exists()
+    ]
     assert len(published) == 1
     crashed_manifest = load_manifest(out_dir)
     assert crashed_manifest.run_id == "run-a"
@@ -712,7 +743,9 @@ def test_an_explicit_jobs_over_the_memory_budget_fails_before_any_work(
         raw_decode, "decode_raw", lambda p: decode_calls.append(p) or _fast_frame()
     )
     monkeypatch.setattr(
-        concurrency, "physical_memory_bytes", lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES
+        concurrency,
+        "physical_memory_bytes",
+        lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES,
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -736,11 +769,15 @@ def test_an_explicit_jobs_over_the_memory_budget_fails_before_any_work(
 
 
 @requires_real_samples
-def test_the_default_worker_count_is_reduced_rather_than_rejected(monkeypatch, tmp_path):
+def test_the_default_worker_count_is_reduced_rather_than_rejected(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     # A machine whose half-RAM budget holds exactly one worker.
     monkeypatch.setattr(
-        concurrency, "physical_memory_bytes", lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES
+        concurrency,
+        "physical_memory_bytes",
+        lambda: 2 * concurrency.WORKER_MEMORY_BUDGET_BYTES,
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -822,7 +859,9 @@ def test_cancellation_discards_the_current_group_and_keeps_completed_ones(
     """Section 3.6: "Completed groups remain after cancellation. The group
     being processed is not published." Cancellation is requested only once
     the second negative's first frame has demonstrably begun decoding."""
-    started, release, _decoded = _install_gated_decode(monkeypatch, gate_on=NEGATIVE_2[0])
+    started, release, _decoded = _install_gated_decode(
+        monkeypatch, gate_on=NEGATIVE_2[0]
+    )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     input_dir = stage_samples(tmp_path, list(REAL_SAMPLE_FILES))
@@ -1142,49 +1181,63 @@ def test_cancellation_discards_every_group_the_pool_had_already_raced_ahead_on(
 # --- flat-field correction ------------------------------------------------
 
 
-def _save_flatfield_profile(tmp_path, *, name: str, width: int, height: int, value: float = 1.5):
+def _flat_field_reference(tmp_path, *, width: int, height: int, value: float = 1.5):
     from scanny_boy import flatfield
-    from scanny_boy.library import repo
 
     gain_map = np.full((8, 8, 3), value, dtype=np.float32)
-    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
-    profile = flatfield.FlatFieldProfile(
-        profile_id=f"pid-{name}",
-        name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path="/refs/bare.NEF",
-        reference_width=width,
-        reference_height=height,
-        params=flatfield.build_params(),
-        scanny_boy_version="0.3.0",
-        created_at="2026-09-01T00:00:00Z",
-    )
-    repo.save_flatfield_profile(profile)
-    return profile
+    path = flatfield.flatfield_root() / "test.npz"
+    path, sha256 = flatfield.save_gain_map(path, gain_map)
+    block = {
+        "gain_map_path": str(path),
+        "gain_map_sha256": sha256,
+        "source_name": "bare.NEF",
+        "source_sha256": "abc",
+        "reference_width": width,
+        "reference_height": height,
+        "rig_profile_id": None,
+        "params": flatfield.build_params(),
+        "locked_at": None,
+        "attached_at": "2026-09-01T00:00:00Z",
+    }
+    return gain_map, block
 
 
 @requires_real_samples
-def test_convert_with_flatfield_applies_the_gain_and_tokens_the_manifest(monkeypatch, tmp_path):
+def test_convert_with_flatfield_applies_the_gain_and_tokens_the_manifest(
+    monkeypatch, tmp_path
+):
     _install_fast_decode(monkeypatch)
     # The fake decode returns 12x8 frames; the run plans for the size
     # `read_active_size` reports, so keep the two consistent.
     monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
-    profile = _save_flatfield_profile(tmp_path, name="Boost", width=12, height=8)
+    gain_map, block = _flat_field_reference(tmp_path, width=12, height=8)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
-        emit=lambda e: None, flatfield_profile_id=profile.profile_id,
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        3,
+        run_id="r1",
+        emit=lambda e: None,
+        gain_map=gain_map,
+        flat_field_block=block,
     )
     corrected_out = tmp_path / "out-plain"
     corrected_out.mkdir()
-    run_convert(FIXTURES_DIR, list(NEGATIVE_1), corrected_out, 3, run_id="r2", emit=lambda e: None)
+    run_convert(
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        corrected_out,
+        3,
+        run_id="r2",
+        emit=lambda e: None,
+    )
 
     assert outcome.status == "complete"
     manifest = load_manifest(out_dir)
-    assert manifest.processing_params["flat_field"] == flatfield.profile_token(profile)
+    assert manifest.processing_params["flat_field"] == flatfield.flat_field_token(block)
 
     for name in manifest.all_expected_outputs():
         corrected = tifffile.imread(out_dir / name)
@@ -1200,7 +1253,9 @@ def test_convert_without_flatfield_carries_no_flat_field_key(monkeypatch, tmp_pa
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    run_convert(FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None)
+    run_convert(
+        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1", emit=lambda e: None
+    )
 
     manifest = load_manifest(out_dir)
     # Absent, not null (section 2.4): a no-profile run still compares equal
@@ -1209,35 +1264,26 @@ def test_convert_without_flatfield_carries_no_flat_field_key(monkeypatch, tmp_pa
 
 
 @requires_real_samples
-def test_convert_with_an_unknown_profile_fails_before_the_output_is_touched(monkeypatch, tmp_path):
-    _install_fast_decode(monkeypatch)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    with pytest.raises(ConvertFailure) as excinfo:
-        run_convert(
-            FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
-            emit=lambda e: None, flatfield_profile_id="nope",
-        )
-
-    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
-    assert list(out_dir.iterdir()) == []
-
-
-@requires_real_samples
 def test_convert_warns_when_the_reference_aspect_differs(monkeypatch, tmp_path):
     _install_fast_decode(monkeypatch)
     monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
     # 4x3 is 12.5% off 12x8's 1.5 ratio — past the 1% gate.
-    profile = _save_flatfield_profile(tmp_path, name="Portrait", width=4, height=3)
+    gain_map, block = _flat_field_reference(tmp_path, width=4, height=3)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     warnings: list[str] = []
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
-        emit=lambda e: warnings.append(e.code.value) if isinstance(e, WarningEvent) else None,
-        flatfield_profile_id=profile.profile_id,
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        3,
+        run_id="r1",
+        emit=lambda e: (
+            warnings.append(e.code.value) if isinstance(e, WarningEvent) else None
+        ),
+        gain_map=gain_map,
+        flat_field_block=block,
     )
 
     assert outcome.status == "complete"
@@ -1249,15 +1295,22 @@ def test_convert_warns_when_the_correction_clips_highlights(monkeypatch, tmp_pat
     _install_fast_decode(monkeypatch)
     monkeypatch.setattr(raw_decode, "read_active_size", lambda p: (12, 8))
     # _fast_frame's top rows sit near full scale; GAIN_MAX pushes them past it.
-    profile = _save_flatfield_profile(tmp_path, name="Hot", width=12, height=8, value=4.0)
+    gain_map, block = _flat_field_reference(tmp_path, width=12, height=8, value=4.0)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     warnings: list[str] = []
 
     outcome = run_convert(
-        FIXTURES_DIR, list(NEGATIVE_1), out_dir, 3, run_id="r1",
-        emit=lambda e: warnings.append(e.code.value) if isinstance(e, WarningEvent) else None,
-        flatfield_profile_id=profile.profile_id,
+        FIXTURES_DIR,
+        list(NEGATIVE_1),
+        out_dir,
+        3,
+        run_id="r1",
+        emit=lambda e: (
+            warnings.append(e.code.value) if isinstance(e, WarningEvent) else None
+        ),
+        gain_map=gain_map,
+        flat_field_block=block,
     )
 
     assert outcome.status == "complete"

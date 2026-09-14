@@ -187,6 +187,13 @@ def make_work_dir(
                     size=1000 + frame_index,
                     mtime=1.0,
                     sha256=f"{negative_index}{frame_index}".ljust(64, "c"),
+                    # Matches base_frame_block()'s "exposure" and this
+                    # manifest's own curated_metadata below — a work_dir
+                    # fixture negative is exposure-matched to
+                    # attach_base_frame()'s default base frame by default.
+                    exposure_time="1/30",
+                    f_number="8",
+                    iso=100,
                 )
             )
 
@@ -237,7 +244,9 @@ def make_out_dir(tmp_path: Path, name: str = "out") -> Path:
     return out
 
 
-def make_roll_dir(tmp_path: Path, name: str = "out", *, film_kind: str = "colour") -> Path:
+def make_roll_dir(
+    tmp_path: Path, name: str = "out", *, film_kind: str = "colour"
+) -> Path:
     """A real, empty roll, written through P3-2's own writer.
 
     Section 5.4 decision 1: `stitch` never creates a roll, so every stitch
@@ -283,6 +292,7 @@ def base_frame_block(**overrides) -> dict:
         "clipped_fractions": [0.0, 0.0, 0.0],
         "grid_cells": 786432,
         "measure_version": 1,
+        "exposure": {"exposure_time": "1/30", "f_number": "8", "iso": 100},
     }
     block.update(overrides)
     return block

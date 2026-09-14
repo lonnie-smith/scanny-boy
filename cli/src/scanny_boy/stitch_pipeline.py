@@ -29,18 +29,19 @@ import tifffile
 import tifftools
 from tifftools.constants import Tag
 
-from scanny_boy import composite as composite_module
 from scanny_boy import (
+    auto_neutral,
     concurrency,
     disk_check,
     film_base,
-    flatfield,
     hashing,
+    highlight_lock,
     previews,
     registration,
     scratches,
     tiff_exif,
 )
+from scanny_boy import composite as composite_module
 from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
@@ -327,7 +328,7 @@ class _StitchProgress:
                 run_id=self._run_id,
                 source_index=source_index,
                 step=step,
-                completed=self._completed,
+                completed=min(self._completed, self._total),
                 total=self._total,
                 stage=Stage.STITCH,
             )
@@ -758,9 +759,7 @@ def _attempt_solve(
     return layout, frame_size, ca_maps
 
 
-def record_rectification(
-    record: NegativeRecord, rectification: Rectification
-) -> None:
+def record_rectification(record: NegativeRecord, rectification: Rectification) -> None:
     """The per-negative `rectification` manifest block: `l` in 1/px about
     `centre`, with the fit's own before/after diagnostics. Interpretable
     without a focal length, like the gauge rule requires."""
@@ -822,6 +821,36 @@ def _base_check(roll: RollManifest, rebate: Rebate) -> dict[str, float] | None:
             for channel in range(3)
         ),
     }
+
+
+def _exposure_matched(
+    roll: RollManifest, members: list[str], sources_by_filename: dict | None
+) -> bool | None:
+    """docs/ROLL_HIGHLIGHT_LOCK.md §3: whether every one of this negative's
+    frames shares the base frame's EXIF shutter/aperture/ISO. `None` when
+    it cannot be determined (no base exposure recorded, or a member's own
+    EXIF was unreadable) — treated the same as `False` by callers (no
+    correction), but kept distinct so a caller wanting to skip the warning
+    on a plain "unreadable" case can."""
+    if sources_by_filename is None or roll.film_base is None:
+        return None
+    base_exposure = roll.film_base.get("exposure")
+    if not base_exposure:
+        return None
+    base_tuple = (
+        base_exposure.get("exposure_time"),
+        base_exposure.get("f_number"),
+        base_exposure.get("iso"),
+    )
+    if base_tuple == (None, None, None):
+        return None
+    for member in members:
+        source = sources_by_filename.get(member)
+        if source is None:
+            return None
+        if (source.exposure_time, source.f_number, source.iso) != base_tuple:
+            return False
+    return True
 
 
 def _normalization_record(
@@ -1016,8 +1045,10 @@ def run_stitch(
     cancel: CancellationToken,
     emit: EmitFn,
     negatives: list[str] | None = None,
-    flatfield_profile_id: str | None = None,
+    rig_profile_id: str | None = None,
     auto_rotate: bool = True,
+    auto_crop: bool = True,
+    defer_roll_refresh: bool = False,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -1037,16 +1068,22 @@ def run_stitch(
     match adopts the existing negative in place — same `negative_id`, same
     output name — per the replacement rule.
 
-    `flatfield_profile_id` names the calibration profile whose geometry
-    (and, in "maps" mode, CA maps) reach the stitch warp. Omitting it on a
-    roll whose `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH`
-    through the existing check, with no new code.
+    `rig_profile_id` names the rig profile whose geometry (and, in "maps"
+    mode, CA maps) reach the stitch warp. Omitting it on a roll whose
+    `stitch_params` carry geometry fails `ROLL_INVARIANT_MISMATCH` through
+    the existing check, with no new code.
 
     `auto_rotate` (default on, `--no-auto-rotate` to turn it off) seeds each
     *newly published* negative with the rebate-squaring rotation
     `auto_rotate` estimates: one `rotate_fine` ops-log entry per negative,
     emitted as `edit_recorded` — never an adopted negative, whose log (and
     any user edits) already reflects its first publish.
+
+    `auto_crop` (default on, `--no-auto-crop` to turn it off) seeds each
+    *newly published* negative with an automatic crop to the roll's film
+    format ratio, when the roll's ``setup.auto_crop`` is enabled and a
+    format is set. One `crop` ops-log entry per negative, emitted as
+    `edit_recorded`.
 
     Film kind is read from the roll manifest (set at `roll init`), not from
     a CLI flag.
@@ -1117,19 +1154,21 @@ def run_stitch(
     # The calibration profile, if any: its geometry reaches the stitch
     # warp. Loaded before the invariants are built, because the geometry
     # bucket is part of them.
+    from scanny_boy import calibration
+
     profile = None
-    if flatfield_profile_id is not None:
+    if rig_profile_id is not None:
         try:
-            profile = repo.load_flatfield_profile(flatfield_profile_id)
-        except flatfield.FlatFieldError as exc:
+            profile = repo.load_rig_profile(rig_profile_id)
+        except calibration.RigError as exc:
             raise StitchError(exc.code, exc.message) from exc
         if profile.geometry is not None:
             height, width = _read_intermediate_size(
                 _intermediate_paths(work_dir, groups[0])[0]
             )
             try:
-                flatfield.check_geometry_frame_size(profile, width, height)
-            except flatfield.FlatFieldError as exc:
+                calibration.check_geometry_frame_size(profile, width, height)
+            except calibration.RigError as exc:
                 raise StitchError(exc.code, exc.message) from exc
 
     invariants = RollInvariants(
@@ -1141,9 +1180,9 @@ def run_stitch(
         # film-kind-dependent
         # A mono roll seeds DENSITY_GREY, via
         # the roll's film kind set at init.
-        published_icc_profile_sha256=profile_record(
-            published_profile_kind(film_kind)
-        )["sha256"],
+        published_icc_profile_sha256=profile_record(published_profile_kind(film_kind))[
+            "sha256"
+        ],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -1189,20 +1228,6 @@ def run_stitch(
             "(docs/REBATE_ANCHORING.md)",
         )
 
-    # §3.3: warn when this run's flat-field profile differs from the one
-    # the base frame was measured with. A warning, not an error: the gain
-    # map is normalised per channel to mean 1, so its effect on the
-    # measurement's medians is second order (§13 risk 7).
-    recorded_profile_id = roll.film_base.get("flat_field_profile_id")
-    if flatfield_profile_id != recorded_profile_id:
-        on_warning(
-            Code.FILM_BASE_FLATFIELD_CONFLICT,
-            "this run's flat-field profile differs from the one the "
-            f"roll's film-base reference was measured with "
-            f"({recorded_profile_id or 'none'} vs "
-            f"{flatfield_profile_id or 'none'})",
-        )
-
     if negatives:
         wanted_members = {
             frozenset(n.members) for n in roll.negatives if n.negative_id in negatives
@@ -1245,6 +1270,23 @@ def run_stitch(
             "the roll's film-base reference was shot on a "
             f"{base_camera_model}, but this roll's scans were made on a "
             f"{roll_camera_model}; the measurement may still be fine",
+        )
+
+    # Read the roll's setup to decide whether to seed auto-crop.
+    setup = roll.setup or {}
+    roll_format = setup.get("format")
+    crop_enabled = auto_crop and bool(setup.get("auto_crop", False))
+    from scanny_boy.auto_crop import FORMAT_RATIOS
+
+    seed_crop = FORMAT_RATIOS.get(roll_format) if crop_enabled else None
+    if crop_enabled and roll_format is None:
+        emit(
+            WarningEvent(
+                run_id=run_id,
+                code=Code.AUTO_CROP_NO_FORMAT,
+                message="auto-crop is enabled but the roll has no format set; "
+                "set one with `roll set-setup --format`",
+            )
         )
 
     try:
@@ -1325,6 +1367,7 @@ def run_stitch(
     # negative this run publishes.
     reference_bounds = _reference_bounds(roll)
     base_refs = _locked_base_refs(roll)
+    sources_by_filename = {s.filename: s for s in work_manifest.sources}
 
     # 8. Composite and publish, negative by negative, in canonical order.
     # Auto-rotation seeds only the negatives this run created fresh: an
@@ -1343,6 +1386,23 @@ def run_stitch(
             continue
 
         try:
+            # Determine whether to seed auto-crop for this negative.
+            negative_seed_crop = None
+            if seed_crop is not None:
+                if entry.record.negative_id in new_negative_ids:
+                    negative_seed_crop = seed_crop
+                else:
+                    # Adopted negative: reseed only if its latest crop is
+                    # still automatic.
+                    negative_edits = repo.edits_for(out_dir, entry.record.negative_id)
+                    latest_crop_source = None
+                    for edit in reversed(negative_edits):
+                        if edit["op"] == repo.CROP_OP:
+                            latest_crop_source = edit.get("params", {}).get("source")
+                            break
+                    if latest_crop_source == "auto":
+                        negative_seed_crop = seed_crop
+
             auto_edit_fields = _composite_and_publish(
                 work_dir=work_dir,
                 out_dir=out_dir,
@@ -1356,10 +1416,12 @@ def run_stitch(
                 profile=profile,
                 reference_bounds=reference_bounds,
                 base_refs=base_refs,
+                sources_by_filename=sources_by_filename,
                 film_kind=film_kind,
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
                 ),
+                seed_crop=negative_seed_crop,
             )
         except CancelledError:
             cancelled = True
@@ -1388,8 +1450,8 @@ def run_stitch(
                     ceils=tuple(float(v) for v in block["ceils"]),
                 )
             )
-        if auto_edit_fields is not None:
-            auto_edits.append(auto_edit_fields)
+        if auto_edit_fields:
+            auto_edits.extend(auto_edit_fields)
 
     if cancelled:
         status = "cancelled"
@@ -1406,14 +1468,55 @@ def run_stitch(
     run_record.normalization_aggregate = _normalization_aggregate(
         list(records_by_group.values())
     )
+    # docs/ROLL_HIGHLIGHT_LOCK.md §1/§4: recompute the roll's highlight-lock
+    # estimate wholesale — never merged — because this run may have
+    # published negatives whose `highlight_refs` newly qualify (or, on a
+    # partial run, failed to). Every trigger that changes the roll's
+    # negative set must recompute this; the removal path in
+    # `_remove_covered_negatives` and `edits.run_edit_delete` are the
+    # other two. A change here is exactly when older negatives' previews
+    # go stale, hence the forced `sync_previews` below.
+    if defer_roll_refresh:
+        roll.refresh_pending = True
+        lock_changed = False
+        auto_neutral_changed = False
+    else:
+        previous_lock = roll.highlight_lock
+        new_lock = highlight_lock.compute_roll_highlight_lock(roll)
+        roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
+        lock_changed = roll.highlight_lock != previous_lock
+        if lock_changed:
+            auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
+                roll, out_dir
+            )
+        else:
+            published_names = set(published)
+            published_ids = {
+                negative.negative_id
+                for negative in roll.negatives
+                if negative.output is not None
+                and negative.output["name"] in published_names
+            }
+            auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
+                roll, out_dir, negative_ids=published_ids
+            )
     write_roll_manifest(out_dir, roll)
 
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision). The
     # previews regenerate from the net ops-log transform, which — for the
     # negatives just seeded — already carries the auto-rotation.
+    #
+    # docs/ROLL_HIGHLIGHT_LOCK.md §5: when this run changed the roll's
+    # highlight-colour lock, every already-published colour negative's
+    # displayed appearance may have moved, not just the ones this run
+    # touched — `force=True` regenerates every completed negative's cached
+    # preview PNG rather than only the newly published set, so a stale
+    # colour never lingers in the filmstrip.
     try:
-        previews.sync_previews(out_dir, roll, published)
+        previews.sync_previews(
+            out_dir, roll, published, force=lock_changed or auto_neutral_changed
+        )
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
             WarningEvent(
@@ -1772,9 +1875,11 @@ def _composite_and_publish(
     profile=None,
     reference_bounds: list[Bounds] | None = None,
     base_refs: tuple[float, ...] | None = None,
+    sources_by_filename: dict | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
-) -> dict | None:
+    seed_crop: float | None = None,
+) -> list[dict]:
     """Composite one negative, apply the remaining gates, and stage-then-
     publish it atomically, exactly as Phase 1 publishes a group.
 
@@ -1788,9 +1893,16 @@ def _composite_and_publish(
     set to emit (minus the preview path, which `sync_previews` fills in
     later), or None when nothing was seeded.
 
-    The published TIFF itself is never rotated: the rotation is a
-    nondestructive ops-log entry, and its pixels are transformed only at
-    preview generation and export, exactly like a user's quarter turns."""
+    With `seed_crop` set to a format ratio, the composite also gets one
+    pass of `auto_crop.estimate_crop` and — when it finds a trustworthy
+    picture boundary — one `crop` ops-log entry is appended to the
+    negative, seeded as the auto edit.
+
+    The published TIFF itself is never rotated or cropped: the rotation
+    and crop are nondestructive ops-log entries, and their pixels are
+    transformed only at preview generation and export, exactly like a
+    user's quarter turns and crop.
+    """
     layout = entry.layout
     assert layout is not None
     record = entry.record
@@ -1896,10 +2008,7 @@ def _composite_and_publish(
                     ),
                 )
             )
-            if (
-                result.film_extent.region_fraction
-                < FILM_EXTENT_MIN_REGION_FRACTION
-            ):
+            if result.film_extent.region_fraction < FILM_EXTENT_MIN_REGION_FRACTION:
                 emit(
                     WarningEvent(
                         run_id=run_id,
@@ -1972,10 +2081,29 @@ def _composite_and_publish(
                 f"{MAX_OVERLAP_MAD}",
             )
 
+        exposure_matched = _exposure_matched(
+            roll, entry.group.members, sources_by_filename
+        )
+        if exposure_matched is False:
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.FILM_BASE_EXPOSURE_MISMATCH,
+                    message=(
+                        f"{record.negative_id}: EXIF exposure differs from the "
+                        "base frame's; no highlight-lock correction will apply "
+                        "to it"
+                    ),
+                )
+            )
+
         record.valid_rect = valid_rect
         record.normalization = _normalization_record(
             result, valid_rect, _base_check(roll, result.rebate)
         )
+        # docs/ROLL_HIGHLIGHT_LOCK.md §3: recorded so the render path (and a
+        # later `compute_roll_highlight_lock`) never has to re-read EXIF.
+        record.normalization["exposure_matched"] = bool(exposure_matched)
         record.normalized_fill = NORMALIZED_FILL
 
         exif, make, model = _read_curated_exif(paths[0])
@@ -1984,6 +2112,53 @@ def _composite_and_publish(
         # are still in memory — the encoded image is exactly what previews
         # and exports will see, fill sentinel and all.
         auto_rotation_deg = estimate_rotation(result.image) if seed_rotation else None
+
+        # Auto-crop detection, measured on the composite while still in
+        # memory. The fine angle is the rotation that was just seeded (if
+        # any), since the crop is stored in TIFF space and the detector
+        # measures under the rotation it will be displayed under.
+        auto_crop_result = None
+        if seed_crop is not None:
+            try:
+                from scanny_boy import auto_crop as auto_crop_mod
+
+                seed_fine_angle = auto_rotation_deg or 0.0
+                analysis, scale = auto_crop_mod.analysis_display(
+                    result.image,
+                    quarter_turns=0,
+                    flipped=False,
+                    fine_angle_deg=seed_fine_angle,
+                )
+                height, width = result.image.shape[:2]
+                exclude = auto_crop_mod.exclusion_hint(
+                    record.normalization,
+                    (height, width),
+                    {
+                        "quarter_turns": 0,
+                        "flipped": False,
+                        "fine_angle_deg": seed_fine_angle,
+                    },
+                    scale,
+                    (analysis.shape[0], analysis.shape[1]),
+                )
+                auto_crop_result = auto_crop_mod.estimate_crop(
+                    analysis,
+                    full_size=(height, width),
+                    ratio=seed_crop,
+                    exclude=exclude,
+                )
+            except Exception:  # noqa: BLE001
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.AUTO_CROP_FAILED,
+                        message=(
+                            f"{record.negative_id}: auto-crop detection "
+                            "failed; the negative was published without "
+                            "automatic cropping"
+                        ),
+                    )
+                )
 
         # The roll records the capture time the negative's first frame
         # actually carries, which is exactly the value just read.
@@ -2014,9 +2189,7 @@ def _composite_and_publish(
             # film-kind-dependent — DENSITY_GREY on a mono roll — via
             # this run's decided (or already-frozen) film kind, exactly as
             # the invariant seed above.
-            icc_bytes=load_icc_profile(
-                published_profile_kind(film_kind)
-            ),
+            icc_bytes=load_icc_profile(published_profile_kind(film_kind)),
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -2033,7 +2206,10 @@ def _composite_and_publish(
                     for ch in range(3)
                 )
                 film_extent = record.normalization.get("film_extent")
-                candidates = scratches.detect(result.image, spans, film_extent)
+                analysis_rect = record.normalization.get("analysis_rect")
+                candidates = scratches.detect(
+                    result.image, spans, film_extent, analysis_rect
+                )
                 fits = [scratches.fit(result.image, c) for c in candidates]
                 # Carry forward the previous enabled state when it exists,
                 # defaulting to True for a fresh detection.
@@ -2087,13 +2263,15 @@ def _composite_and_publish(
         # has published nothing, so `locked_at` stays null.
         if roll.film_base is not None and roll.film_base.get("locked_at") is None:
             roll.film_base["locked_at"] = _now_iso()
+        if roll.flat_field is not None and roll.flat_field.get("locked_at") is None:
+            roll.flat_field["locked_at"] = _now_iso()
         write_roll_manifest(out_dir, roll)
 
         # The seeding happens last: the negative row exists (the earlier
         # `running` manifest write merged it), the ops log entry lands
         # before `sync_previews` renders the net transform, and the
         # `edit_recorded` event is deferred until the preview path exists.
-        auto_edit_fields: dict | None = None
+        auto_edit_fields_list: list[dict] = []
         if auto_rotation_deg is not None:
             entry.auto_rotation_deg = auto_rotation_deg
             edit = repo.append_edit(
@@ -2108,29 +2286,100 @@ def _composite_and_publish(
                 state.flipped,
                 state.fine_angle_deg,
             )
-            auto_edit_fields = {
-                "negative_id": record.negative_id,
-                "edit": edit,
-                "rotation_quarter_turns": quarter_turns,
-                "flipped_horizontally": flipped,
-                "fine_rotation_deg": fine_angle,
-                # The net crop rides every edit_recorded as a full state
-                # report; a re-stitch whose canvas changed degrades it to
-                # none (`previews.crop_is_live`).
-                "crop": (
-                    previews.crop_report(
-                        state.crop
-                        if previews.crop_is_live(
-                            state.crop, (record.output["height"], record.output["width"])
+            auto_edit_fields_list.append(
+                {
+                    "negative_id": record.negative_id,
+                    "edit": edit,
+                    "rotation_quarter_turns": quarter_turns,
+                    "flipped_horizontally": flipped,
+                    "fine_rotation_deg": fine_angle,
+                    "crop": (
+                        previews.crop_report(
+                            state.crop
+                            if previews.crop_is_live(
+                                state.crop,
+                                (record.output["height"], record.output["width"]),
+                            )
+                            else None,
+                            (record.output["height"], record.output["width"]),
+                            quarter_turns=quarter_turns,
+                            flipped_horizontally=flipped,
+                            fine_angle_deg=fine_angle,
                         )
-                        else None,
-                        (record.output["height"], record.output["width"]),
-                        quarter_turns=quarter_turns,
-                        flipped_horizontally=flipped,
-                        fine_angle_deg=fine_angle,
-                    )
-                ),
-            }
+                    ),
+                }
+            )
+
+        # Seed the crop op after rotation.
+        if auto_crop_result is not None and hasattr(auto_crop_result, "rect"):
+            x, y, w, h = auto_crop_result.rect
+            # Map the display-space rect to TIFF space using the same
+            # function the app uses for re-entering crop mode.
+            state = repo.net_edit_state(out_dir, record.negative_id)
+            tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
+                (x, y, w, h),
+                (height, width),
+                tilt_deg=0.0,
+                quarter_turns=state.quarter_turns,
+                flipped_horizontally=state.flipped,
+                fine_angle_deg=state.fine_angle_deg,
+                crop_params=None,
+                full_frame=True,
+            )
+            tx = min(max(tx, 0), width - 1)
+            ty = min(max(ty, 0), height - 1)
+            tw = min(tw, width - tx)
+            th = min(th, height - ty)
+
+            roll_setup = roll.setup or {}
+            crop_preset = roll_setup.get("format")
+            crop_params = repo.validated_crop_params(
+                {
+                    "canvas": [width, height],
+                    "x": tx,
+                    "y": ty,
+                    "w": tw,
+                    "h": th,
+                    "tilt_deg": tilt,
+                    "preset": crop_preset,
+                    "source": "auto",
+                }
+            )
+            crop_edit = repo.append_edit(
+                out_dir,
+                record.negative_id,
+                repo.CROP_OP,
+                crop_params,
+            )
+            state = repo.net_edit_state(out_dir, record.negative_id)
+            quarter_turns, flipped, fine_angle = (
+                state.quarter_turns,
+                state.flipped,
+                state.fine_angle_deg,
+            )
+            auto_edit_fields_list.append(
+                {
+                    "negative_id": record.negative_id,
+                    "edit": crop_edit,
+                    "rotation_quarter_turns": quarter_turns,
+                    "flipped_horizontally": flipped,
+                    "fine_rotation_deg": fine_angle,
+                    "crop": (
+                        previews.crop_report(
+                            state.crop
+                            if previews.crop_is_live(
+                                state.crop,
+                                (record.output["height"], record.output["width"]),
+                            )
+                            else None,
+                            (record.output["height"], record.output["width"]),
+                            quarter_turns=quarter_turns,
+                            flipped_horizontally=flipped,
+                            fine_angle_deg=fine_angle,
+                        )
+                    ),
+                }
+            )
 
         emit(
             NegativeDone(
@@ -2143,6 +2392,6 @@ def _composite_and_publish(
                 max_overlap_mad=worst,
             )
         )
-        return auto_edit_fields
+        return auto_edit_fields_list
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

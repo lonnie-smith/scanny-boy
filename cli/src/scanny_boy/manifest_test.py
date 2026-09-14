@@ -280,12 +280,21 @@ def test_check_rerun_matches_accepts_an_identical_candidate():
 @pytest.mark.parametrize(
     ("field", "override"),
     [
-        ("source_order", {"source_order": ["_DSC4639.NEF"], "sources": [_source("_DSC4639.NEF")]}),
-        ("sources", {"sources": [SourceRecord("_DSC4638.NEF", "/input/x", 1, 1.0, "b" * 64)]}),
+        (
+            "source_order",
+            {"source_order": ["_DSC4639.NEF"], "sources": [_source("_DSC4639.NEF")]},
+        ),
+        (
+            "sources",
+            {"sources": [SourceRecord("_DSC4638.NEF", "/input/x", 1, 1.0, "b" * 64)]},
+        ),
         ("shots_per_negative", {"shots_per_negative": 4}),
         ("film_date", {"film_date": "2026-08-03"}),
         ("processing_params", {"processing_params": {"output_bps": 8}}),
-        ("icc_profile", {"icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "b" * 64}}),
+        (
+            "icc_profile",
+            {"icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "b" * 64}},
+        ),
     ],
 )
 def test_check_rerun_matches_rejects_each_compared_field(field, override):
@@ -297,9 +306,17 @@ def test_check_rerun_matches_rejects_each_compared_field(field, override):
 
 
 def test_check_rerun_matches_rejects_different_grouping():
-    existing = _manifest(groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"])])
+    existing = _manifest(
+        groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"])]
+    )
     candidate = _manifest(
-        groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"], expected_outputs=["x.tif"])]
+        groups=[
+            _group(
+                group_id="negative-01",
+                members=["_DSC4638.NEF"],
+                expected_outputs=["x.tif"],
+            )
+        ]
     )
     candidate.groups[0].members = ["_DSC4639.NEF"]
 
@@ -308,8 +325,12 @@ def test_check_rerun_matches_rejects_different_grouping():
 
 
 def test_check_rerun_matches_ignores_run_id_status_and_timing():
-    existing = _manifest(run_id="old", status="complete", started_at="t1", finished_at="t2")
-    candidate = _manifest(run_id="new", status="running", started_at="t3", finished_at=None)
+    existing = _manifest(
+        run_id="old", status="complete", started_at="t1", finished_at="t2"
+    )
+    candidate = _manifest(
+        run_id="new", status="running", started_at="t3", finished_at=None
+    )
     check_rerun_matches(existing, candidate)  # must not raise
 
 
@@ -329,16 +350,27 @@ def _known_fields(manifest: Manifest) -> dict:
 
 def test_check_rerun_compatible_accepts_an_identical_candidate():
     existing = _manifest(run_id="old-run")
-    check_rerun_compatible(existing, **_known_fields(_manifest(run_id="new-run")))  # no raise
+    check_rerun_compatible(
+        existing, **_known_fields(_manifest(run_id="new-run"))
+    )  # no raise
 
 
 @pytest.mark.parametrize(
     ("field", "override"),
     [
-        ("source_order", {"source_order": ["_DSC4639.NEF"], "sources": [_source("_DSC4639.NEF")]}),
-        ("sources", {"sources": [SourceRecord("_DSC4638.NEF", "/input/x", 1, 1.0, "b" * 64)]}),
+        (
+            "source_order",
+            {"source_order": ["_DSC4639.NEF"], "sources": [_source("_DSC4639.NEF")]},
+        ),
+        (
+            "sources",
+            {"sources": [SourceRecord("_DSC4638.NEF", "/input/x", 1, 1.0, "b" * 64)]},
+        ),
         ("shots_per_negative", {"shots_per_negative": 4}),
-        ("icc_profile", {"icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "b" * 64}}),
+        (
+            "icc_profile",
+            {"icc_profile": {"name": "ProPhoto-v4.icc", "sha256": "b" * 64}},
+        ),
     ],
 )
 def test_check_rerun_compatible_rejects_each_known_field(field, override):
@@ -350,9 +382,17 @@ def test_check_rerun_compatible_rejects_each_known_field(field, override):
 
 
 def test_check_rerun_compatible_rejects_different_grouping():
-    existing = _manifest(groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"])])
+    existing = _manifest(
+        groups=[_group(group_id="negative-01", members=["_DSC4638.NEF"])]
+    )
     candidate = _manifest(
-        groups=[_group(group_id="negative-01", members=["_DSC4639.NEF"], expected_outputs=["x.tif"])]
+        groups=[
+            _group(
+                group_id="negative-01",
+                members=["_DSC4639.NEF"],
+                expected_outputs=["x.tif"],
+            )
+        ]
     )
 
     with pytest.raises(ManifestMismatchError):
@@ -391,9 +431,7 @@ def test_manifest_grid_defaults_to_none_and_grid_spec_falls_back_to_strip():
 
 
 def test_manifest_grid_round_trips(tmp_path):
-    manifest = _manifest(
-        shots_per_negative=6, grid={"across": 3, "down": 2}
-    )
+    manifest = _manifest(shots_per_negative=6, grid={"across": 3, "down": 2})
     write_manifest(tmp_path, manifest)
     loaded = load_manifest(tmp_path)
     assert loaded.grid == {"across": 3, "down": 2}
@@ -440,6 +478,8 @@ def test_check_rerun_compatible_rejects_a_changed_grid():
     candidate = _manifest(grid={"across": 6, "down": 1}, shots_per_negative=6)
     with pytest.raises(ManifestMismatchError, match="grid"):
         check_rerun_compatible(existing, **_known_fields(candidate))
+
+
 # --- the forward shim at the rerun compare --------------------------------
 
 
@@ -469,7 +509,11 @@ def test_rerun_still_rejects_a_genuinely_different_normalize_block():
     existing = _manifest(
         processing_params={
             "output_bps": 16,
-            "normalize": {**build_params(), "format_version": 1, "base_luma_clip": 0.02},
+            "normalize": {
+                **build_params(),
+                "format_version": 1,
+                "base_luma_clip": 0.02,
+            },
         }
     )
     candidate = _manifest(

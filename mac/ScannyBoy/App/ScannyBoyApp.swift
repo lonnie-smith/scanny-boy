@@ -7,9 +7,11 @@ struct ScannyBoyApp: App {
     /// helper.
     @State private var library: RollLibrary?
     /// Shared with the Add Scans stage's profile picker, same as `library`.
-    @State private var flatField: FlatFieldModel?
+    @State private var rig: RigModel?
     @State private var grid: GridModel?
     @State private var model: ConfigurationModel?
+    @State private var capture: CaptureSessionModel?
+    @State private var stitchQueue: StitchQueueModel?
     @State private var edit: EditModel?
     @State private var run: RunModel?
     @State private var export: ExportModel?
@@ -67,9 +69,11 @@ struct ScannyBoyApp: App {
         WindowGroup {
             RootView(
                 library: library,
-                flatField: flatField,
+                rig: rig,
                 grid: grid,
                 model: model,
+                capture: capture,
+                stitchQueue: stitchQueue,
                 edit: edit,
                 run: run,
                 export: export,
@@ -85,7 +89,7 @@ struct ScannyBoyApp: App {
                     NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Flat-Field Profiles…") {
+                Button("Scanning Rig Profiles…") {
                     NotificationCenter.default.post(
                         name: .scannyBoyRequestFlatFieldProfiles, object: nil
                     )
@@ -102,8 +106,8 @@ struct ScannyBoyApp: App {
         // Section 3.1: the library base is relocatable through a Settings
         // window.
         Settings {
-            if let library {
-                SettingsView(library: library)
+            if let library, let capture {
+                SettingsView(library: library, capture: capture)
             } else {
                 Text("Scanny Boy's CLI helper is unavailable.")
                     .padding(40)
@@ -119,21 +123,26 @@ struct ScannyBoyApp: App {
             // the library.
             let runner = try CLIRunner(locator: .mainBundle())
             library = RollLibrary(runner: runner, libraryBase: Self.debugLibraryBaseOverride())
-            let flatField = FlatFieldModel(runner: runner)
+            let rig = RigModel(runner: runner)
             let grid = GridModel(runner: runner)
             let edit = EditModel(runner: runner)
             let run = RunModel(runner: runner)
             let export = ExportModel(runner: runner)
             let configuration = ConfigurationModel(runner: runner)
-            self.flatField = flatField
+            let camera = TetherCamera()
+            let capture = CaptureSessionModel(runner: runner, camera: camera)
+            let stitchQueue = StitchQueueModel(runner: runner)
+            self.rig = rig
             self.grid = grid
             model = configuration
+            self.capture = capture
+            self.stitchQueue = stitchQueue
             self.edit = edit
             self.run = run
             self.export = export
             activity = AppActivity(
-                run: run, edit: edit, export: export, flatField: flatField,
-                configuration: configuration
+                run: run, edit: edit, export: export, rig: rig,
+                configuration: configuration, capture: capture, stitchQueue: stitchQueue
             )
         } catch let error as CLILocatorError {
             unavailableReason = error.description
@@ -186,9 +195,11 @@ extension Notification.Name {
 /// guaranteed not to multiply if SwiftUI stands up more than one window.
 struct RootView: View {
     let library: RollLibrary?
-    let flatField: FlatFieldModel?
+    let rig: RigModel?
     let grid: GridModel?
     let model: ConfigurationModel?
+    let capture: CaptureSessionModel?
+    let stitchQueue: StitchQueueModel?
     let edit: EditModel?
     let run: RunModel?
     let export: ExportModel?
@@ -197,12 +208,16 @@ struct RootView: View {
     let keyboard: AppKeyboardState
 
     var body: some View {
-        if let library, let flatField, let grid, let model, let edit, let run, let export, let activity {
+        if let library, let rig, let grid, let model, let capture, let stitchQueue,
+           let edit, let run, let export, let activity
+        {
             ContentView(
                 library: library,
-                flatField: flatField,
+                rig: rig,
                 grid: grid,
                 model: model,
+                capture: capture,
+                stitchQueue: stitchQueue,
                 edit: edit,
                 run: run,
                 export: export,

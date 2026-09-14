@@ -105,7 +105,9 @@ def base_camera(frame_width: int, frame_height: int) -> np.ndarray:
     return np.array([[fx, 0.0, cx], [0.0, fx, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
-def forward_distort(points: np.ndarray, k1: float, k2: float, cx: float, cy: float, K: np.ndarray) -> np.ndarray:
+def forward_distort(
+    points: np.ndarray, k1: float, k2: float, cx: float, cy: float, K: np.ndarray
+) -> np.ndarray:
     """The OpenCV forward model applied to `(N, 2)` pixel coordinates — the
     inverse of what `cv2.undistortPoints` computes, in closed form. Used to
     synthesise test data and to measure corner displacement."""
@@ -117,7 +119,9 @@ def forward_distort(points: np.ndarray, k1: float, k2: float, cx: float, cy: flo
     return np.stack([x * k * fx + cx, y * k * fy + cy], axis=-1)
 
 
-def residuals(p: np.ndarray, line_sets: list[np.ndarray], K_base: np.ndarray) -> np.ndarray:
+def residuals(
+    p: np.ndarray, line_sets: list[np.ndarray], K_base: np.ndarray
+) -> np.ndarray:
     """Perpendicular straightness residuals for `p = (k1, k2, cx, cy)`,
     concatenated over every collinear set. `K_base` supplies fx/fy; the
     principal point comes from `p` — it is the fit's unknown, never a
@@ -181,7 +185,13 @@ def _fit_stage(
 
 
 def _corner_displacement(
-    k1: float, k2: float, cx: float, cy: float, K_base: np.ndarray, frame_width: int, frame_height: int
+    k1: float,
+    k2: float,
+    cx: float,
+    cy: float,
+    K_base: np.ndarray,
+    frame_width: int,
+    frame_height: int,
 ) -> tuple[float, float]:
     """Displacement of the image corner under the forward model, in pixels
     and as a percentage of the half-diagonal."""
@@ -292,7 +302,9 @@ def fit_geometry(
 
     chosen, params, stage_rms = _staged_fit(flat_train, flat_heldout, K_base, x0)
     rms_before = _rms(
-        residuals(np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]]), flat_heldout, K_base)
+        residuals(
+            np.array([0.0, 0.0, K_base[0, 2], K_base[1, 2]]), flat_heldout, K_base
+        )
     )
     rms_after = stage_rms[chosen]
 

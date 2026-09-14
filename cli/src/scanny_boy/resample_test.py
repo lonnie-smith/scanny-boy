@@ -43,9 +43,7 @@ def test_target_size_never_returns_zero():
 def test_weights_are_normalized_and_positions_in_range(src, dst):
     positions, weights = resample._weights(src, dst)
     assert weights.shape == positions.shape
-    np.testing.assert_allclose(
-        weights.sum(axis=1), 1.0, rtol=0, atol=1e-6
-    )
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, rtol=0, atol=1e-6)
     assert positions.min() >= 0 and positions.max() <= src - 1
 
 
@@ -118,9 +116,7 @@ def test_colour_channels_resample_independently():
     out = resample.resize_lanczos3(image, 4, 6)
 
     assert out.shape == (4, 6, 3)
-    np.testing.assert_allclose(
-        out[:, :, 1], 0.5, rtol=0, atol=1e-6
-    )
+    np.testing.assert_allclose(out[:, :, 1], 0.5, rtol=0, atol=1e-6)
     np.testing.assert_allclose(out[:, :, 2], 0.125, rtol=0, atol=1e-6)
     np.testing.assert_allclose(
         out[:, :, 0],

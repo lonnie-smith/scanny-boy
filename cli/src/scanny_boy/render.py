@@ -68,18 +68,14 @@ DISPLAY_CEILING = 1.0 + normalization.NORMALIZED_HEADROOM_LOW
 _LINEAR_CEILING = DISPLAY_CEILING**GAMMA_ADOBE
 
 
-def tone_curve(
-    values: np.ndarray, tone_params: dict[str, float] | None
-) -> np.ndarray:
+def tone_curve(values: np.ndarray, tone_params: dict[str, float] | None) -> np.ndarray:
     """The positive display values through the negative's `tone` op, the
     same `tone.curve_values` the preview's LUT is built from — not a
     re-derivation. The preview and the export must agree, and the only way
-    to guarantee that is to share the function. `tone_params is None` (no
-    tone op, or the reset) means the identity ramp — the flat look the
-    preview shows today, and the correct default, not a placeholder."""
-    if tone_params is None:
-        return np.clip(values, 0.0, 1.0)
-    return tone.curve_values(values, tone.ToneParams(**tone_params))
+    to guarantee that is to share the function. A missing tone op applies
+    the default print curve (`tone.NEUTRAL`); ``curve_values(None)`` is
+    the flat identity ramp and is reserved for the negative view."""
+    return tone.curve_values(values, tone.resolved_positive_tone(tone_params))
 
 
 # XYZ (D65) -> Adobe RGB (1998) linear. The published inverse of the
@@ -119,8 +115,7 @@ def export_matrix(rgb_xyz_matrix) -> np.ndarray:
     raw = np.asarray(rgb_xyz_matrix, dtype=np.float64)
     if raw.shape != (3, 3) or not np.all(np.isfinite(raw)):
         raise ValueError(
-            "export_matrix needs a finite 3x3 rgb_xyz_matrix; got shape "
-            f"{raw.shape}"
+            f"export_matrix needs a finite 3x3 rgb_xyz_matrix; got shape {raw.shape}"
         )
     if np.linalg.matrix_rank(raw) < 3:
         raise ValueError(
@@ -148,14 +143,12 @@ def _resolve_render_params(
     color_params: dict[str, float] | None,
     metering: color.Metering | None,
     channels: int,
-) -> tuple[tone.ToneParams | None, color.ColorParams, color.Metering]:
-    tone_obj = tone.ToneParams(**tone_params) if tone_params else None
+) -> tuple[tone.ToneParams, color.ColorParams, color.Metering]:
+    tone_obj = tone.resolved_positive_tone(tone_params)
     color_obj = (
         color.ColorParams(**color_params) if color_params else color.NEUTRAL_COLOR
     )
-    meter = metering or color.Metering(
-        ranges=(1.0,) * channels, shadow_refs_norm=None
-    )
+    meter = metering or color.Metering(ranges=(1.0,) * channels, shadow_refs_norm=None)
     return tone_obj, color_obj, meter
 
 
@@ -172,29 +165,33 @@ def _flat_positive(image: np.ndarray) -> np.ndarray:
 def _is_flat_render(
     tone_params: dict[str, float] | None,
     color_params: dict[str, float] | None,
+    metering: color.Metering | None = None,
     *,
     channels: int,
 ) -> bool:
-    return tone_params is None and (
-        color_params is None or channels == 1
-    )
+    """The bare-inversion fast path (`_flat_positive_lut`/`_flat_positive`).
+
+    Positive display always applies at least the default print curve, so
+    this path is never taken for tone/colour rendering. It remains for
+    callers that need the pre-grade identity ramp explicitly."""
+    return False
 
 
 def _needs_separation(color_obj: color.ColorParams, channels: int) -> bool:
-    return (
-        channels > 1
-        and (
-            color_obj.dye_separation != 1.0
-            or color_obj.separation_damping != 0.0
-        )
+    return channels > 1 and (
+        color_obj.dye_separation != 1.0 or color_obj.separation_damping != 0.0
     )
 
 
 def _has_render_op(
-    tone_obj: tone.ToneParams | None,
+    tone_obj: tone.ToneParams,
     color_obj: color.ColorParams,
 ) -> bool:
-    return tone_obj is not None or color_obj != color.NEUTRAL_COLOR
+    """Whether the positive encode carries display headroom beyond [0, 1].
+
+    The default print curve always applies, so the headroom path is always
+    active — even when neither op is recorded."""
+    return True
 
 
 def _linear_lut_from_codes(
@@ -212,10 +209,14 @@ def _linear_lut_from_codes(
     luts = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0
+        # docs/ROLL_HIGHLIGHT_LOCK.md §2.3: the roll highlight-lock
+        # correction, applied immediately after the decode and before the
+        # CMY offset / `1 - val` inversion — identity when no lock applies.
+        channel_norm = color.remap_dense_end(norm, ch, meter) if apply_color else norm
         if apply_color:
-            positive = np.maximum(1.0 - (norm + offset), 0.0)
+            positive = np.maximum(1.0 - (channel_norm + offset), 0.0)
         else:
-            positive = np.maximum(1.0 - norm, 0.0)
+            positive = np.maximum(1.0 - channel_norm, 0.0)
         if not allow_headroom:
             positive = np.clip(positive, 0.0, 1.0)
         luts[ch] = np.power(positive, GAMMA_ADOBE).astype(np.float32)
@@ -223,7 +224,7 @@ def _linear_lut_from_codes(
 
 
 def _curve_lut_from_display_codes(
-    tone_obj: tone.ToneParams | None,
+    tone_obj: tone.ToneParams,
     color_obj: color.ColorParams,
     meter: color.Metering,
     *,
@@ -231,10 +232,6 @@ def _curve_lut_from_display_codes(
     display_ceiling: float,
 ) -> np.ndarray:
     """Post-matrix display code j -> curved float, shape `(channels, 65536)`."""
-    if tone_obj is None and color_obj == color.NEUTRAL_COLOR:
-        display_codes = np.arange(MAX_CODE + 1, dtype=np.float32) / MAX_CODE
-        return np.broadcast_to(display_codes, (channels, MAX_CODE + 1)).copy()
-
     display_codes = (
         np.arange(MAX_CODE + 1, dtype=np.float64) / MAX_CODE * display_ceiling
     )
@@ -259,9 +256,7 @@ def _positive_values(codes: np.ndarray) -> np.ndarray:
     return np.maximum(1.0 - normalization.decode_normalized(codes), 0.0)
 
 
-def _clipped_fractions(
-    linear: np.ndarray, clipped: np.ndarray
-) -> tuple[float, ...]:
+def _clipped_fractions(linear: np.ndarray, clipped: np.ndarray) -> tuple[float, ...]:
     """Per-channel fraction of samples the gamut clip (§4.4) actually
     moved: out-of-gamut on either side. Per-channel clipping shifts hue
     slightly on the most saturated pixels — the ordinary, accepted
@@ -274,9 +269,7 @@ def _clipped_fractions(
     )
 
 
-def _gather_channel_lut(
-    image: np.ndarray, tables: np.ndarray
-) -> np.ndarray:
+def _gather_channel_lut(image: np.ndarray, tables: np.ndarray) -> np.ndarray:
     """Apply per-channel `(C, 65536)` tables to a uint16 `(H, W, C)` image."""
     channels = image.shape[-1]
     gathered = np.empty(image.shape, dtype=np.float32)
@@ -321,8 +314,7 @@ def render_positive_float(
     if image.ndim in (1, 2):
         if matrix is not None:
             raise ValueError(
-                "a mono (single-channel) image takes no colour matrix; "
-                "pass None"
+                "a mono (single-channel) image takes no colour matrix; pass None"
             )
         size = (
             None
@@ -330,22 +322,16 @@ def render_positive_float(
             else resample.target_size(image.shape[0], image.shape[1], long_edge)
         )
         if size is None:
-            if _is_flat_render(tone_params, color_params, channels=1):
-                return np.clip(_flat_positive(image), 0.0, 1.0), (0.0,)
             tone_obj, color_obj, meter = _resolve_render_params(
                 tone_params, color_params, metering, channels=1
             )
-            tables = tone.build_channel_tables(
-                tone_obj, color.NEUTRAL_COLOR, meter, channels=1
-            )
+            tables = tone.build_channel_tables(tone_obj, color_obj, meter, channels=1)
             result = tables[0][image]
             return np.clip(result, 0.0, 1.0), (0.0,)
         # The downsampled mono path walks the chain it collapses (§4.1):
         # linear light, the resize, back to display encoding, then the
         # same curve the fast path ends in.
         positive = _positive_values(image)
-        if _is_flat_render(tone_params, color_params, channels=1):
-            positive = np.clip(positive, 0.0, 1.0)
         linear = np.power(positive, GAMMA_ADOBE, dtype=np.float32)
         linear = np.clip(
             resample.resize_lanczos3(linear, size[0], size[1]),
@@ -353,8 +339,6 @@ def render_positive_float(
             _LINEAR_CEILING,
         )
         display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
-        if tone_params is None:
-            return np.clip(display, 0.0, 1.0), (0.0,)
         tone_obj, _, meter = _resolve_render_params(
             tone_params, color_params, metering, channels=1
         )
@@ -372,9 +356,6 @@ def render_positive_float(
             f"render_positive_float needs a (H, W, 3) colour image; "
             f"got shape {image.shape}"
         )
-
-    if _is_flat_render(tone_params, color_params, channels=3) and matrix is None:
-        return np.clip(_flat_positive(image), 0.0, 1.0), (0.0, 0.0, 0.0)
 
     tone_obj, color_obj, meter = _resolve_render_params(
         tone_params, color_params, metering, channels=3

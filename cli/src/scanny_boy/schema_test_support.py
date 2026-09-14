@@ -13,7 +13,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "shared" / "contract" / "schema.json"
+_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3] / "shared" / "contract" / "schema.json"
+)
 
 
 def load_schema() -> dict[str, Any]:
@@ -27,7 +29,9 @@ def assert_matches_schema(event: dict[str, Any], schema: dict[str, Any]) -> None
     assert event.keys() >= set(schema["required"]), (
         f"missing required base fields: {set(schema['required']) - event.keys()}"
     )
-    assert event["protocol_version"] == schema["properties"]["protocol_version"]["const"]
+    assert (
+        event["protocol_version"] == schema["properties"]["protocol_version"]["const"]
+    )
     event_types = schema["definitions"]["eventType"]["enum"]
     assert event["event"] in event_types, f"{event['event']!r} not in {event_types}"
     if "run_id" in event:
@@ -42,7 +46,7 @@ def assert_matches_schema(event: dict[str, Any], schema: dict[str, Any]) -> None
             f"event {event['event']!r} missing fields: {required - event.keys()}"
         )
         properties = then.get("properties", {})
-        if "code" in properties:
+        if "code" in properties and event.get("code") is not None:
             codes = schema["definitions"]["code"]["enum"]
             assert event["code"] in codes, f"{event['code']!r} not in {codes}"
         if "step" in properties:
@@ -50,4 +54,6 @@ def assert_matches_schema(event: dict[str, Any], schema: dict[str, Any]) -> None
             assert event["step"] in steps, f"{event['step']!r} not in {steps}"
         if "command" in properties:
             commands = properties["command"]["enum"]
-            assert event["command"] in commands, f"{event['command']!r} not in {commands}"
+            assert event["command"] in commands, (
+                f"{event['command']!r} not in {commands}"
+            )

@@ -373,9 +373,8 @@ struct CLICommandTests {
             roll: Self.out,
             negatives: ["neg-01"],
             adjustment: ToneAdjustment(
-                gradeR: 90, snapGamma: 0.2, density: 1.1, shadowDensity: 0.1,
-                highlightDensity: -0.1, toe: 0.2, toeWidth: 3, shoulder: -0.1,
-                shoulderWidth: 4
+                snapGamma: 0.2, density: 1.1, shadowDensity: 0.1,
+                highlightDensity: -0.1
             )
         )
         #expect(
@@ -383,15 +382,10 @@ struct CLICommandTests {
                 "edit", "tone",
                 "--roll", "/Volumes/Scans/roll-12-tif",
                 "--negative", "neg-01",
-                "--grade", "90.0",
                 "--snap", "0.2",
                 "--density", "1.1",
                 "--shadow-density", "0.1",
                 "--highlight-density", "-0.1",
-                "--toe", "0.2",
-                "--toe-width", "3.0",
-                "--shoulder", "-0.1",
-                "--shoulder-width", "4.0",
             ]
         )
     }
@@ -465,65 +459,88 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--auto-cast"))
     }
 
-    // MARK: - Protocol version 6: flat field
+    // MARK: - Rig profiles
 
-    @Test("run carries --flatfield when a profile is chosen")
-    func runWithFlatField() {
+    @Test("run carries --rig when a profile is chosen")
+    func runWithRig() {
         let command = CLICommand.run(
             input: Self.input,
             files: ["a.NEF"],
             roll: Self.out,
-            flatfield: "pid-1"
+            rig: "pid-1"
         )
         #expect(
             command.arguments == [
                 "run", "--input", "/Volumes/Scans/roll-12",
                 "--files", "a.NEF",
                 "--roll", "/Volumes/Scans/roll-12-tif",
-                "--flatfield", "pid-1",
+                "--rig", "pid-1",
             ]
         )
     }
 
-    @Test("run omits --flatfield when no profile is chosen")
-    func runWithoutFlatField() {
+    @Test("run omits --rig when no profile is chosen")
+    func runWithoutRig() {
         let command = CLICommand.run(input: Self.input, files: ["a.NEF"], roll: Self.out)
-        #expect(!command.arguments.contains("--flatfield"))
+        #expect(!command.arguments.contains("--rig"))
     }
 
-    @Test("probe carries --flatfield when a profile is chosen")
-    func probeWithFlatField() throws {
+    @Test("probe carries --rig when a profile is chosen")
+    func probeWithRig() throws {
         let command = CLICommand.probe(
             input: Self.input,
             files: ["a.NEF"],
             roll: Self.out,
             across: 3,
-            flatfield: "pid-1"
+            rig: "pid-1"
         )
-        #expect(command.arguments.contains("--flatfield"))
-        let index = try #require(command.arguments.firstIndex(of: "--flatfield"))
+        #expect(command.arguments.contains("--rig"))
+        let index = try #require(command.arguments.firstIndex(of: "--rig"))
         #expect(command.arguments[index + 1] == "pid-1")
     }
 
-    @Test("flatfield create names the reference and the profile")
-    func flatfieldCreateArguments() {
-        let reference = URL(filePath: "/Volumes/Refs/bare-light.NEF")
-        let command = CLICommand.flatfieldCreate(reference: reference, name: "Copy stand")
+    @Test("rig create names the profile and calibration frames")
+    func rigCreateArguments() {
+        let frame = URL(filePath: "/Volumes/Refs/board-01.NEF")
+        let command = CLICommand.rigCreate(name: "Copy stand", calibrationFrames: [frame])
         #expect(
             command.arguments == [
-                "flatfield", "create",
-                "--reference", "/Volumes/Refs/bare-light.NEF",
+                "rig", "create",
                 "--name", "Copy stand",
+                "--calibration", "/Volumes/Refs/board-01.NEF",
             ]
         )
     }
 
-    @Test("flatfield list and delete are shaped like CONTRACT.md says")
-    func flatfieldListAndDeleteArguments() {
-        #expect(CLICommand.flatfieldList().arguments == ["flatfield", "list"])
+    @Test("rig list and delete are shaped like CONTRACT.md says")
+    func rigListAndDeleteArguments() {
+        #expect(CLICommand.rigList().arguments == ["rig", "list"])
         #expect(
-            CLICommand.flatfieldDelete(profile: "pid-1").arguments == [
-                "flatfield", "delete", "--profile", "pid-1",
+            CLICommand.rigDelete(profile: "pid-1").arguments == [
+                "rig", "delete", "--profile", "pid-1",
+            ]
+        )
+    }
+
+    @Test("roll set-flatfield-reference passes roll, frame, and optional rig")
+    func rollSetFlatFieldReferenceArguments() {
+        let roll = URL(filePath: "/tmp/roll")
+        let frame = URL(filePath: "/tmp/bare-light.NEF")
+        #expect(
+            CLICommand.rollSetFlatFieldReference(roll: roll, frame: frame).arguments == [
+                "roll", "set-flatfield-reference",
+                "--roll", roll.path,
+                "--frame", frame.path,
+            ]
+        )
+        #expect(
+            CLICommand.rollSetFlatFieldReference(
+                roll: roll, frame: frame, rig: "pid-1"
+            ).arguments == [
+                "roll", "set-flatfield-reference",
+                "--roll", roll.path,
+                "--frame", frame.path,
+                "--rig", "pid-1",
             ]
         )
     }
@@ -682,7 +699,7 @@ struct CLICommandTests {
         )
     }
 
-    @Test("roll set-base-frame passes roll, frame, and optional flatfield")
+    @Test("roll set-base-frame passes roll and frame")
     func rollSetBaseFrameArguments() {
         let roll = URL(filePath: "/Volumes/Scans/roll-12")
         let frame = URL(filePath: "/Volumes/Scans/_DSC5012.NEF")
@@ -692,15 +709,6 @@ struct CLICommandTests {
                     "roll", "set-base-frame",
                     "--roll", "/Volumes/Scans/roll-12",
                     "--frame", "/Volumes/Scans/_DSC5012.NEF",
-                ]
-        )
-        #expect(
-            CLICommand.rollSetBaseFrame(roll: roll, frame: frame, flatfield: "pid-1").arguments
-                == [
-                    "roll", "set-base-frame",
-                    "--roll", "/Volumes/Scans/roll-12",
-                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
-                    "--flatfield", "pid-1",
                 ]
         )
     }

@@ -28,18 +28,18 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from scanny_boy.calibration import RigError, RigProfile
 from scanny_boy.events import Code
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.grid_profile import GridProfile, GridProfileError
 from scanny_boy.library.db import open_engine
 from scanny_boy.library.models import (
     METADATA_FIELDS,
     ROLL_ONLY_METADATA_FIELDS,
     EditRow,
-    FlatFieldProfileRow,
     GridProfileRow,
     MetadataValueRow,
     NegativeRow,
+    RigProfileRow,
     RollRow,
     RunRow,
     SourceRow,
@@ -85,7 +85,7 @@ CROP_TILT_MAX_DEG = 45.0
 # smaller than this is almost certainly a mis-click.
 CROP_MIN_SIZE_PX = 16
 
-# `tone` params are the complete preview tone state — nine keys, all set or
+# `tone` params are the complete preview tone state — four keys, all set or
 # all `None` for the reset (see `tone.py`). Unlike the geometric ops it is a
 # state, not a transform and never a mode: the latest one wins.
 # `append_tone_edit` coalesces a trailing `tone` op in place, the one
@@ -205,6 +205,10 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         )
         roll.film_kind = manifest.film
         roll.film_base = manifest.film_base
+        roll.highlight_lock = manifest.highlight_lock
+        roll.flat_field = manifest.flat_field
+        roll.refresh_pending = 1 if manifest.refresh_pending else None
+        roll.setup = manifest.setup
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -337,6 +341,18 @@ def roll_registered(roll_dir: Path) -> bool:
         )
 
 
+def roll_id_for_folder(roll_dir: Path) -> str:
+    """The library's stable id for the roll registered at ``roll_dir``."""
+    folder = _folder_key(roll_dir)
+    with _session() as session:
+        roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
+        if roll is None:
+            raise RollNotRegisteredError(
+                f"{roll_dir} is not a registered roll; create the roll first"
+            )
+        return roll.roll_id
+
+
 def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
     """Every registered roll whose folder sits directly under `library`:
     `(folder_path, roll_id, roll_name, negative_count)`, sorted by folder
@@ -426,6 +442,10 @@ def load_roll(roll_dir: Path) -> RollManifest:
             stitch_params=roll.stitch_params,
             film=roll.film_kind,
             film_base=roll.film_base,
+            highlight_lock=roll.highlight_lock,
+            flat_field=roll.flat_field,
+            refresh_pending=bool(roll.refresh_pending),
+            setup=roll.setup,
             runs=[
                 RunRecord(
                     run_id=r.run_id,
@@ -600,22 +620,17 @@ def _tone_param_bounds() -> tuple[tuple[str, float, float], ...]:
     from scanny_boy import tone
 
     return (
-        ("grade_r", tone.GRADE_MIN, tone.GRADE_MAX),
         ("snap_gamma", tone.SNAP_MIN, tone.SNAP_MAX),
         ("density", tone.DENSITY_MIN, tone.DENSITY_MAX),
         ("shadow_density", tone.SHADOW_DENSITY_MIN, tone.SHADOW_DENSITY_MAX),
         ("highlight_density", tone.HIGHLIGHT_DENSITY_MIN, tone.HIGHLIGHT_DENSITY_MAX),
-        ("toe", tone.TOE_MIN, tone.TOE_MAX),
-        ("toe_width", tone.TOE_WIDTH_MIN, tone.TOE_WIDTH_MAX),
-        ("shoulder", tone.SHOULDER_MIN, tone.SHOULDER_MAX),
-        ("shoulder_width", tone.SHOULDER_WIDTH_MIN, tone.SHOULDER_WIDTH_MAX),
     )
 
 
 def validated_tone_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
-    """The `tone` op's params: all nine set, or all nine `None` (the reset)."""
+    """The `tone` op's params: all four set, or all four `None` (the reset)."""
     from scanny_boy import tone
 
     if params is None:
@@ -654,9 +669,7 @@ def validated_color_params(
     if missing:
         raise ValueError(f"color params missing keys: {', '.join(missing)}")
     defaults = _color_neutral_defaults()
-    values = {
-        key: params.get(key, defaults[key]) for key in color.COLOR_PARAM_KEYS
-    }
+    values = {key: params.get(key, defaults[key]) for key in color.COLOR_PARAM_KEYS}
     if all(value is None for value in values.values()):
         return {key: None for key in color.COLOR_PARAM_KEYS}
     if any(value is None for value in values.values()):
@@ -781,17 +794,8 @@ def append_scratches_edit(roll_dir: Path, negative_id: str, params: dict) -> dic
 def _tone_neutral_defaults() -> dict[str, float]:
     from scanny_boy import tone
 
-    return {
-        "grade_r": tone.GRADE_REFERENCE,
-        "snap_gamma": 0.0,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
-    }
+    neutral = dataclasses.asdict(tone.NEUTRAL)
+    return {key: neutral[key] for key in tone.TONE_PARAM_KEYS}
 
 
 def _color_neutral_defaults() -> dict[str, float]:
@@ -809,6 +813,7 @@ def _color_neutral_defaults() -> dict[str, float]:
         "cast_removal_highlights": 0.0,
         "dye_separation": 1.0,
         "separation_damping": 0.0,
+        "auto_neutral": 1.0,
     }
 
 
@@ -831,19 +836,15 @@ def _tone_in_range(params: dict[str, float]) -> bool:
 
 
 def _parse_tone_op(params: dict) -> dict[str, float] | None:
-    grade = params.get("grade_r")
     snap = params.get("snap_gamma")
-    if grade is None or snap is None:
-        return None
-    if isinstance(grade, bool) or not isinstance(grade, (int, float)):
+    if snap is None:
         return None
     if isinstance(snap, bool) or not isinstance(snap, (int, float)):
         return None
     merged = _tone_neutral_defaults()
-    merged["grade_r"] = float(grade)
     merged["snap_gamma"] = float(snap)
     for key in merged:
-        if key in ("grade_r", "snap_gamma"):
+        if key == "snap_gamma":
             continue
         value = params.get(key)
         if value is None:
@@ -1128,6 +1129,11 @@ def validated_crop_params(
         if not isinstance(preset, str):
             raise ValueError(f"crop preset must be a string, got {preset!r}")
         validated["preset"] = preset
+    source = params.get("source")
+    if source is not None:
+        if source != "auto":
+            raise ValueError(f"crop source must be 'auto' or omitted, got {source!r}")
+        validated["source"] = "auto"
     return validated
 
 
@@ -1233,29 +1239,23 @@ def net_rotation_quarter_turns(roll_dir: Path, negative_id: str) -> int:
     return net_edit_state(roll_dir, negative_id).quarter_turns
 
 
-# --- flat-field profiles -----------------------------------------------------
+# --- rig profiles ------------------------------------------------------------
 
 
-def _flatfield_profile_row(session: Session, profile_id: str) -> FlatFieldProfileRow:
-    row = session.get(FlatFieldProfileRow, profile_id)
+def _rig_profile_row(session: Session, profile_id: str) -> RigProfileRow:
+    row = session.get(RigProfileRow, profile_id)
     if row is None:
-        raise FlatFieldError(
-            Code.FLATFIELD_PROFILE_NOT_FOUND,
-            f"no flat-field profile with id {profile_id}",
+        raise RigError(
+            Code.RIG_PROFILE_NOT_FOUND,
+            f"no rig profile with id {profile_id}",
         )
     return row
 
 
-def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
-    return FlatFieldProfile(
+def _to_rig_profile(row: RigProfileRow) -> RigProfile:
+    return RigProfile(
         profile_id=row.profile_id,
         name=row.name,
-        gain_map_path=row.gain_map_path,
-        gain_map_sha256=row.gain_map_sha256,
-        source_path=row.source_path,
-        reference_width=row.reference_width,
-        reference_height=row.reference_height,
-        params=dict(row.params),
         scanny_boy_version=row.scanny_boy_version,
         created_at=row.created_at,
         board_key=row.board_key,
@@ -1265,21 +1265,15 @@ def _to_flatfield_profile(row: FlatFieldProfileRow) -> FlatFieldProfile:
     )
 
 
-def save_flatfield_profile(profile: FlatFieldProfile) -> None:
+def save_rig_profile(profile: RigProfile) -> None:
     """Upserts one profile row. Profile records are immutable once created —
     `name` is not in the roll token precisely so renaming stays possible,
     but nothing here needs to rewrite one today."""
     with _session() as session:
         session.merge(
-            FlatFieldProfileRow(
+            RigProfileRow(
                 profile_id=profile.profile_id,
                 name=profile.name,
-                gain_map_path=profile.gain_map_path,
-                gain_map_sha256=profile.gain_map_sha256,
-                source_path=profile.source_path,
-                reference_width=profile.reference_width,
-                reference_height=profile.reference_height,
-                params=profile.params,
                 scanny_boy_version=profile.scanny_boy_version,
                 created_at=profile.created_at,
                 board_key=profile.board_key,
@@ -1290,47 +1284,29 @@ def save_flatfield_profile(profile: FlatFieldProfile) -> None:
         )
 
 
-def list_flatfield_profiles() -> list[FlatFieldProfile]:
+def list_rig_profiles() -> list[RigProfile]:
     with _session() as session:
         rows = session.scalars(
-            select(FlatFieldProfileRow).order_by(
-                FlatFieldProfileRow.created_at, FlatFieldProfileRow.name
-            )
+            select(RigProfileRow).order_by(RigProfileRow.created_at, RigProfileRow.name)
         ).all()
-        return [_to_flatfield_profile(row) for row in rows]
+        return [_to_rig_profile(row) for row in rows]
 
 
-def load_flatfield_profile(profile_id: str) -> FlatFieldProfile:
+def load_rig_profile(profile_id: str) -> RigProfile:
     with _session() as session:
-        return _to_flatfield_profile(_flatfield_profile_row(session, profile_id))
+        return _to_rig_profile(_rig_profile_row(session, profile_id))
 
 
-def delete_flatfield_profile(profile_id: str) -> None:
+def delete_rig_profile(profile_id: str) -> None:
     with _session() as session:
-        row = _flatfield_profile_row(session, profile_id)
+        row = _rig_profile_row(session, profile_id)
         session.delete(row)
 
 
-def rolls_using_flatfield(profile_id: str) -> list[str]:
-    """Every roll whose `processing_params.flat_field.profile_id` names
-    `profile_id`. `processing_params` is an open JSON object the CLI wrote,
-    so the match is made on the decoded value, not a string pattern."""
-    with _session() as session:
-        rows = session.scalars(select(RollRow)).all()
-        return sorted(
-            roll.roll_id
-            for roll in rows
-            if (roll.processing_params or {}).get("flat_field", {}).get("profile_id")
-            == profile_id
-        )
-
-
-def rolls_using_profile_geometry(profile_id: str) -> list[str]:
+def rolls_using_rig_profile(profile_id: str) -> list[str]:
     """Every roll whose `stitch_params.geometry.profile_id` names
-    `profile_id` — the stitch-side half of the two invariant buckets. A
-    profile whose geometry a roll depends on is exactly as undeletable as
-    one whose gain map it depends
-    on; `flatfield delete` unions this with `rolls_using_flatfield`."""
+    `profile_id`. A rig whose geometry a roll depends on is undeletable
+    until those rolls are gone."""
     with _session() as session:
         rows = session.scalars(select(RollRow)).all()
         return sorted(
@@ -1394,9 +1370,7 @@ def load_grid_profile(profile_id: str) -> GridProfile:
 
 def load_grid_profile_by_name(name: str) -> GridProfile:
     with _session() as session:
-        row = session.scalar(
-            select(GridProfileRow).where(GridProfileRow.name == name)
-        )
+        row = session.scalar(select(GridProfileRow).where(GridProfileRow.name == name))
         if row is None:
             raise GridProfileError(
                 Code.GRID_PROFILE_NOT_FOUND,

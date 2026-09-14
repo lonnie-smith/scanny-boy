@@ -4,15 +4,14 @@ profile records."""
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
-import numpy as np
 import pytest
 from sqlalchemy import inspect
 
-from scanny_boy import flatfield
+from scanny_boy.calibration import RigError, RigProfile, rig_profile_summary
 from scanny_boy.events import Code
-from scanny_boy.flatfield import FlatFieldError, FlatFieldProfile
 from scanny_boy.library import db, repo
 from scanny_boy.roll_manifest import (
     FrameRecord,
@@ -120,11 +119,7 @@ def test_load_roll_defaults_a_missing_gain_or_scale_to_unity(roll_dir):
             text("SELECT negative_id, frames, pairs FROM negatives")
         ).one()
         frames = [
-            {
-                key: value
-                for key, value in frame.items()
-                if key not in ("gain", "scale")
-            }
+            {key: value for key, value in frame.items() if key not in ("gain", "scale")}
             for frame in json.loads(row.frames)
         ]
         pairs = [
@@ -153,13 +148,17 @@ def test_migrations_are_idempotent():
 def test_append_edit_assigns_ascending_positions(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    first = repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+    first = repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"}
+    )
     second = repo.append_edit(
         roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "ccw"}
     )
 
     assert (first["position"], second["position"]) == (1, 2)
-    assert [e["params"]["direction"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
+    assert [
+        e["params"]["direction"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")
+    ] == [
         "cw",
         "ccw",
     ]
@@ -193,7 +192,9 @@ def test_net_rotation_composes_quarter_turns(roll_dir):
 def test_net_rotation_ignores_unknown_ops_and_directions(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
-    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "sideways"})
+    repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "sideways"}
+    )
 
     assert repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01") == 0
 
@@ -236,11 +237,13 @@ def test_net_edit_state_tracks_flips_and_rotations(roll_dir):
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "ccw"})
     assert repo.net_edit_state(roll_dir, negative) == _state(2)
 
+
 def test_net_edit_state_ignores_unknown_ops(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state()
+
 
 def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     """The stitch stage's auto-seeded `rotate_fine` op adds to the net fine
@@ -256,7 +259,9 @@ def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     )
     assert repo.net_edit_state(roll_dir, negative) == _state(fine_angle_deg=3.5)
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == _state(flipped=True, fine_angle_deg=-3.5)
+    assert repo.net_edit_state(roll_dir, negative) == _state(
+        flipped=True, fine_angle_deg=-3.5
+    )
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -3.5)
     # Fine rotations applied after a flip still add, whatever the flag is:
@@ -265,6 +270,7 @@ def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -5.0)
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 2.0})
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -3.0)
+
 
 def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
@@ -349,23 +355,15 @@ def test_validated_crop_params_rejects_out_of_range_and_malformed():
 
 
 def _tone_params(
-    grade_r: float = 115.0,
     snap_gamma: float = 0.0,
     **overrides: float,
 ) -> dict[str, float]:
     from scanny_boy import tone
 
     params = {
-        "grade_r": grade_r,
-        "snap_gamma": snap_gamma,
-        "density": tone.DENSITY_REFERENCE,
-        "shadow_density": 0.0,
-        "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
+        key: dataclasses.asdict(tone.NEUTRAL)[key] for key in tone.TONE_PARAM_KEYS
     }
+    params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
 
@@ -373,14 +371,12 @@ def _tone_params(
 def test_append_tone_edit_records_the_state(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    edit = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2)
-    )
+    edit = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
 
     assert edit["op"] == repo.TONE_OP
-    assert edit["params"] == _tone_params(90.0, 0.2)
+    assert edit["params"] == _tone_params(0.2)
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        tone=_tone_params(90.0, 0.2)
+        tone=_tone_params(0.2)
     )
 
 
@@ -390,25 +386,19 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
     rows — the one coalescing exception to the log's append-only rule."""
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    first = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(115.0, 0.0)
-    )
+    first = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.0))
     repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
-    second = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(80.0, 0.3)
-    )
+    second = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.3))
 
     # A rotate landed between the two tone ops, so the second appends
     # after it rather than coalescing into the first.
     assert first["position"] == 1
     assert second["position"] == 3
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        1, tone=_tone_params(80.0, 0.3)
+        1, tone=_tone_params(0.3)
     )
 
-    third = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(60.0, -0.1)
-    )
+    third = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(-0.1))
     # Now the trailing op *is* a tone op: coalesced in place, same row.
     assert third["id"] == second["id"]
     assert third["position"] == second["position"] == 3
@@ -418,7 +408,7 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
         "tone",
     ]
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        1, tone=_tone_params(60.0, -0.1)
+        1, tone=_tone_params(-0.1)
     )
 
 
@@ -426,7 +416,7 @@ def test_append_tone_edit_reset_records_null_params(roll_dir):
     from scanny_boy import tone
 
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
 
     repo.append_tone_edit(
         roll_dir,
@@ -442,14 +432,12 @@ def test_append_tone_edit_validates_its_params(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
     for params in [
-        _tone_params(49.0, 0.0),
-        _tone_params(181.0, 0.0),
-        _tone_params(115.0, -0.6),
-        _tone_params(115.0, 0.6),
+        _tone_params(-0.9),
+        _tone_params(2.0),
         _tone_params(density=3.0),
         _tone_params(shadow_density=1.0),
-        _tone_params(115.0, 0.0) | {"density": None},
-        _tone_params(115.0, 0.0) | {"grade_r": "hard"},
+        _tone_params(0.0) | {"density": None},
+        _tone_params(0.0) | {"snap_gamma": "hard"},
     ]:
         with pytest.raises(ValueError):
             repo.append_tone_edit(roll_dir, "rid-1-negative-01", params)
@@ -457,18 +445,28 @@ def test_append_tone_edit_validates_its_params(roll_dir):
     assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
 
 
-def test_legacy_two_key_tone_row_reads_with_neutral_defaults(roll_dir):
+def test_legacy_nine_key_tone_row_reads_user_keys_and_ignores_curve(roll_dir):
 
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(
         roll_dir,
         "rid-1-negative-01",
         repo.TONE_OP,
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        {
+            "grade_r": 90.0,
+            "snap_gamma": 0.2,
+            "density": 1.1,
+            "shadow_density": 0.0,
+            "highlight_density": 0.0,
+            "toe": 0.5,
+            "toe_width": 3.0,
+            "shoulder": -0.2,
+            "shoulder_width": 4.0,
+        },
     )
 
     tone_params = repo.net_edit_state(roll_dir, "rid-1-negative-01").tone
-    assert tone_params == _tone_params(90.0, 0.2)
+    assert tone_params == _tone_params(0.2, density=1.1)
 
 
 def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
@@ -477,7 +475,7 @@ def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
         roll_dir,
         "rid-1-negative-01",
         repo.TONE_OP,
-        {"grade_r": 90.0, "snap_gamma": 0.2, "density": 99.0},
+        {"snap_gamma": 0.2, "density": 99.0},
     )
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01").tone is None
@@ -485,8 +483,10 @@ def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
 
 def test_net_edit_state_degrades_a_malformed_tone_op_to_no_adjustment(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
-    repo.append_edit(roll_dir, "rid-1-negative-01", repo.TONE_OP, {"grade_r": "hard"})
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
+    repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.TONE_OP, {"snap_gamma": "hard"}
+    )
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state()
 
@@ -543,9 +543,7 @@ def test_append_color_edit_reset_records_null_params(roll_dir):
     from scanny_boy import color
 
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1)
-    )
+    repo.append_color_edit(roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1))
 
     repo.append_color_edit(
         roll_dir,
@@ -619,9 +617,7 @@ def test_append_spots_edit_coalesces_a_trailing_spots_op(roll_dir):
 
     assert second["id"] == first["id"]
     assert second["position"] == first["position"] == 1
-    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
-        "spots"
-    ]
+    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == ["spots"]
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots["repair"] is True
 
 
@@ -865,81 +861,48 @@ def test_save_updates_folder_path_after_a_move(roll_dir, tmp_path):
     assert load_roll_manifest(moved).roll_id == "rid-1"
 
 
-# --- flat-field profiles ---------------------------------------------------
+# --- rig profiles ----------------------------------------------------------
 
 
-def _flatfield_profile(name: str = "Copy stand") -> FlatFieldProfile:
-    gain_map = np.full((8, 8, 3), 1.25, dtype=np.float32)
-    path, sha256 = flatfield.save_gain_map(f"pid-{name}", gain_map)
-    return FlatFieldProfile(
+def _rig_profile(name: str = "Copy stand") -> RigProfile:
+    return RigProfile(
         profile_id=f"pid-{name}",
         name=name,
-        gain_map_path=str(path),
-        gain_map_sha256=sha256,
-        source_path="/refs/bare.NEF",
-        reference_width=6064,
-        reference_height=4040,
-        params=flatfield.build_params(),
         scanny_boy_version="0.3.0",
         created_at="2026-09-01T00:00:00Z",
     )
 
 
-def test_flatfield_profiles_round_trip_all_fields():
-    profile = _flatfield_profile()
+def test_rig_profiles_round_trip_all_fields():
+    profile = _rig_profile()
 
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded == profile
-    assert [p.profile_id for p in repo.list_flatfield_profiles()] == [
-        profile.profile_id
-    ]
+    assert [p.profile_id for p in repo.list_rig_profiles()] == [profile.profile_id]
 
 
-def test_load_flatfield_profile_unknown_id_is_typed_not_found():
-    with pytest.raises(FlatFieldError) as excinfo:
-        repo.load_flatfield_profile("nope")
+def test_load_rig_profile_unknown_id_is_typed_not_found():
+    with pytest.raises(RigError) as excinfo:
+        repo.load_rig_profile("nope")
 
-    assert excinfo.value.code == Code.FLATFIELD_PROFILE_NOT_FOUND
-
-
-def test_delete_flatfield_profile_removes_the_row():
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
-
-    repo.delete_flatfield_profile(profile.profile_id)
-
-    assert repo.list_flatfield_profiles() == []
-    with pytest.raises(FlatFieldError):
-        repo.load_flatfield_profile(profile.profile_id)
+    assert excinfo.value.code == Code.RIG_PROFILE_NOT_FOUND
 
 
-def test_rolls_using_flatfield_matches_the_token_inside_processing_params():
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
+def test_delete_rig_profile_removes_the_row():
+    profile = _rig_profile()
+    repo.save_rig_profile(profile)
 
-    locked = new_roll_manifest(roll_id="rid-locked", roll_name="Locked", film_kind="colour")
-    locked.processing_params = {
-        "output_bps": 16,
-        "flat_field": flatfield.profile_token(profile),
-    }
-    write_roll_manifest(tmp_roll_dir("locked"), locked)
+    repo.delete_rig_profile(profile.profile_id)
 
-    other = new_roll_manifest(roll_id="rid-other", roll_name="Other", film_kind="colour")
-    other.processing_params = {"output_bps": 16}
-    write_roll_manifest(tmp_roll_dir("other"), other)
-
-    assert repo.rolls_using_flatfield(profile.profile_id) == ["rid-locked"]
-    assert repo.rolls_using_flatfield("someone-else") == []
+    assert repo.list_rig_profiles() == []
+    with pytest.raises(RigError):
+        repo.load_rig_profile(profile.profile_id)
 
 
-def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
-    """A roll that names the profile only in `stitch_params.geometry`
-    locks the profile exactly as hard as one named in
-    `processing_params.flat_field`."""
-    profile = _flatfield_profile()
-    repo.save_flatfield_profile(profile)
+def test_rolls_using_rig_profile_matches_the_stitch_side_bucket():
+    profile = _rig_profile()
 
     locked = new_roll_manifest(roll_id="rid-geo", roll_name="Geo", film_kind="colour")
     locked.stitch_params = {
@@ -947,29 +910,25 @@ def test_rolls_using_profile_geometry_matches_the_stitch_side_bucket():
     }
     write_roll_manifest(tmp_roll_dir("geo"), locked)
 
-    assert repo.rolls_using_profile_geometry(profile.profile_id) == ["rid-geo"]
-    assert repo.rolls_using_profile_geometry("someone-else") == []
-    # The delete path's union sees both buckets.
-    assert set(repo.rolls_using_flatfield(profile.profile_id)) | set(
-        repo.rolls_using_profile_geometry(profile.profile_id)
-    ) == {"rid-geo"}
+    assert repo.rolls_using_rig_profile(profile.profile_id) == ["rid-geo"]
+    assert repo.rolls_using_rig_profile("someone-else") == []
 
 
 def test_calibration_columns_round_trip():
-    profile = _flatfield_profile()
-    profile = FlatFieldProfile(
-        **{
-            **profile.__dict__,
-            "board_key": "2mm",
-            "geometry": {"format_version": 1, "k1": -0.001},
-            "chromatic_aberration": {"mode": "scale", "red_scale": 1.0004},
-            "calibration_report": {"frames_total": 20},
-        }
+    profile = RigProfile(
+        profile_id="pid-cal",
+        name="Calibrated",
+        scanny_boy_version="0.3.0",
+        created_at="2026-09-01T00:00:00Z",
+        board_key="2mm",
+        geometry={"format_version": 1, "k1": -0.001},
+        chromatic_aberration={"mode": "scale", "red_scale": 1.0004},
+        calibration_report={"frames_total": 20},
     )
 
-    repo.save_flatfield_profile(profile)
+    repo.save_rig_profile(profile)
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded.board_key == "2mm"
     assert loaded.geometry == {"format_version": 1, "k1": -0.001}
     assert loaded.chromatic_aberration == {"mode": "scale", "red_scale": 1.0004}
@@ -983,34 +942,30 @@ def tmp_roll_dir(name: str) -> Path:
 
 
 def test_pre_0004_row_reads_back_with_four_nones():
-    """A row written by migration 0003's shape (no calibration columns
-    populated) reads back with four Nones and drives every existing code
-    path unchanged."""
+    """A row with no calibration columns populated reads back with four
+    Nones and drives every existing code path unchanged."""
     import sqlalchemy as sa
 
-    profile = _flatfield_profile("Old build")
-    repo.save_flatfield_profile(profile)
-    # Rewrite the row the way the pre-0004 code would have: no calibration
-    # columns at all.
+    profile = _rig_profile("Old build")
+    repo.save_rig_profile(profile)
     with sa.create_engine(f"sqlite:///{db.library_db_path()}").begin() as conn:
         conn.execute(
             sa.text(
-                "UPDATE flatfield_profiles SET board_key = NULL, geometry = NULL,"
+                "UPDATE rig_profiles SET board_key = NULL, geometry = NULL,"
                 " chromatic_aberration = NULL, calibration_report = NULL"
                 " WHERE profile_id = :pid"
             ),
             {"pid": profile.profile_id},
         )
 
-    loaded = repo.load_flatfield_profile(profile.profile_id)
+    loaded = repo.load_rig_profile(profile.profile_id)
     assert loaded.board_key is None
     assert loaded.geometry is None
     assert loaded.chromatic_aberration is None
     assert loaded.calibration_report is None
-    # The token and summary the existing consumers build are unchanged.
-    assert flatfield.profile_token(loaded) == flatfield.profile_token(profile)
-    assert flatfield.flatfield_profile_summary(loaded).has_geometry is False
-    assert flatfield.flatfield_profile_summary(loaded).chromatic_aberration_mode is None
+    summary = rig_profile_summary(loaded)
+    assert summary.has_geometry is False
+    assert summary.chromatic_aberration_mode is None
 
 
 # --- the thirteenth colour key -------------------------------------------------

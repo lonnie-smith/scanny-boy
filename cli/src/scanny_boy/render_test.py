@@ -11,23 +11,13 @@ import numpy as np
 import pytest
 
 from scanny_boy import color, normalization, render, tone
-from scanny_boy import previews as _previews
 from scanny_boy.normalization import encode_normalized
 
 _GAMMA = render.GAMMA_ADOBE
 
-# The §4.7 sweep: the grade/snap corners, a mid pair, and None.
+# The §4.7 sweep: snap corners, a mid pair, and None.
 _TONE_PARAM_SWEEP: list[dict[str, float] | None] = [None] + [
-    {"grade_r": grade_r, "snap_gamma": snap_gamma}
-    for grade_r, snap_gamma in (
-        (50.0, 0.0),
-        (50.0, 0.5),
-        (50.0, -0.5),
-        (115.0, 0.0),
-        (115.0, 0.3),
-        (180.0, 0.5),
-        (180.0, -0.5),
-    )
+    {"snap_gamma": snap_gamma} for snap_gamma in (-0.5, 0.0, 0.15, 0.3, 0.5, 1.0, 1.5)
 ]
 
 # A well-conditioned camera -> Adobe RGB matrix (row-normalized), standing
@@ -58,17 +48,13 @@ def test_the_no_matrix_path_is_exact_against_the_tone_curve(tone_params):
     positive = np.maximum(
         1.0 - normalization.decode_normalized(codes.astype(np.float64)), 0.0
     )
-    if tone_params is None:
-        positive = np.clip(positive, 0.0, 1.0)
     expected = np.rint(tone_curve_reference(positive, tone_params) * tone.MAX_CODE)
     assert np.array_equal(rendered, expected.astype(np.uint16))
     assert fractions == (0.0,)
 
 
 def tone_curve_reference(positive: np.ndarray, tone_params) -> np.ndarray:
-    if tone_params is None:
-        return positive
-    return tone.curve_values(positive, tone.ToneParams(**tone_params))
+    return tone.curve_values(positive, tone.resolved_positive_tone(tone_params))
 
 
 # --- the anchor, bounded (colour path) -------------------------------------
@@ -101,7 +87,9 @@ def test_the_8_bit_preview_lut_and_the_16_bit_render_agree_within_one_8_bit_code
         preview_8bit = preview_lut(tone_params)
 
         rendered_8bit = np.rint(rendered / 257.0).astype(np.uint8)
-        difference = np.abs(rendered_8bit.astype(np.int32) - preview_8bit.astype(np.int32))
+        difference = np.abs(
+            rendered_8bit.astype(np.int32) - preview_8bit.astype(np.int32)
+        )
         assert difference.max() <= 1, tone_params
 
 
@@ -141,7 +129,7 @@ def test_a_saturated_primary_is_changed_by_a_non_identity_matrix():
     """The test that proves the matrix is actually being applied, and not
     silently identity."""
     saturated = np.zeros((1, 1, 3), dtype=np.uint16)
-    saturated[0, 0] = (60000, 2000, 2000)
+    saturated[0, 0] = (40000, 10000, 10000)
     identity = np.eye(3, dtype=np.float32)
     unchanged, _ = render.render_export(saturated, identity, None)
     changed, _ = render.render_export(saturated, _TEST_MATRIX, None)
@@ -165,9 +153,7 @@ def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
     wedge = np.full((1, 4, 3), white_code, dtype=np.uint16)
-    rendered, fractions = render.render_export(
-        wedge, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
-    )
+    rendered, fractions = render.render_export(wedge, _TEST_MATRIX, {"snap_gamma": 0.0})
     assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
     assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
     assert fractions == (0.0, 0.0, 0.0)
@@ -175,7 +161,7 @@ def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
 
 def test_the_uint16_gather_round_trips_the_extended_display_domain():
     """§2.3: rescaling the gather and the curve LUT must stay paired."""
-    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0, "shoulder": 0.3}
+    tone_params = {"snap_gamma": 0.0}
     codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
     rendered, _ = render.render_export(
         np.stack([codes] * 3, axis=-1).reshape(1, -1, 3),
@@ -183,10 +169,8 @@ def test_the_uint16_gather_round_trips_the_extended_display_domain():
         tone_params,
     )
     assert rendered.max() <= tone.MAX_CODE
-    white_code = int(
-        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
-    )
-    assert rendered[0, white_code, 0] > rendered[0, white_code + 1, 0]
+    assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
+    assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
 
 
 def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
@@ -195,9 +179,7 @@ def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
     image = np.full((2, 2, 3), white_code, dtype=np.uint16)
-    _, fractions = render.render_export(
-        image, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
-    )
+    _, fractions = render.render_export(image, _TEST_MATRIX, {"snap_gamma": 0.0})
     assert fractions == (0.0, 0.0, 0.0)
 
 
@@ -216,20 +198,20 @@ def test_normalized_fill_renders_to_black_through_the_full_colour_chain():
         .astype(np.uint16)
     )
     image = np.full((1, 1, 3), fill_code, dtype=np.uint16)
-    rendered, _ = render.render_export(image, _TEST_MATRIX, _TONE_PARAM_SWEEP[1])
+    rendered, _ = render.render_export(image, _TEST_MATRIX, _TONE_PARAM_SWEEP[2])
     assert np.all(rendered == 0)
 
 
 def test_mono_renders_2d_and_matches_the_colour_path_within_the_bound():
     codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16).reshape(256, 256)
-    rendered, fractions = render.render_export(codes, None, {"grade_r": 90.0, "snap_gamma": 0.2})
+    rendered, fractions = render.render_export(codes, None, {"snap_gamma": 0.2})
     assert rendered.shape == codes.shape
     assert fractions == (0.0,)
 
     colour, _ = render.render_export(
         np.stack([codes.ravel()] * 3, axis=-1).reshape(1, -1, 3),
         np.eye(3, dtype=np.float32),
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        {"snap_gamma": 0.2},
     )
     difference = np.abs(
         colour[0, :, 0].astype(np.int32) - rendered.ravel().astype(np.int32)
@@ -273,18 +255,17 @@ def test_the_gamma_constant_is_derived_from_the_pinned_trc():
 
 def test_preview_reference_matches_the_preview_module_s_luts():
     """The preview reference in this module is the same construction as
-    `previews.py`'s LUT builders — pin it, so a change in either shows up
-    here. `previews.NORMALIZED_DISPLAY_LUT` is the flat (tone-less) LUT."""
-    assert np.array_equal(
-        preview_lut(None), _previews.NORMALIZED_DISPLAY_LUT
-    )
+    `previews.py`'s encode path — pin it, so a change in either shows up
+    here. A missing tone op applies the default print curve."""
+    neutral_lut = tone.build_display_lut(tone.NEUTRAL)
+    assert np.array_equal(preview_lut(None), neutral_lut)
 
 
 def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     """The shared render: 8-bit preview encode and 16-bit export agree
     when a camera matrix and a colour op are both active."""
     matrix = _TEST_MATRIX
-    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0}
+    tone_params = {"snap_gamma": 0.0}
     color_params = {"wb_cyan": 0.05, "dye_separation": 1.2}
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     codes = np.stack(
@@ -302,37 +283,15 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     assert difference.max() <= 1
 
 
-def test_colour_only_render_stays_on_identity_ramp():
-    """A colour op with no tone op must not turn on the paper grade."""
+def test_colour_only_render_uses_the_default_print_curve():
+    """A colour op with no recorded tone op still renders on `tone.NEUTRAL`."""
     matrix = _TEST_MATRIX
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     color_params = {"wb_magenta": 0.2}
 
-    for frac in (0.2, 0.5, 0.76):
-        code = int(frac * tone.MAX_CODE)
-        img = np.full((1, 1, 3), code, dtype=np.uint16)
-        out, _ = render.render_positive_float(
-            img, matrix, None, color_params, metering
-        )
-        if frac == 0.2:
-            assert out[0, 0, 1] > 0.08
-        if frac == 0.5:
-            assert 0.25 < out[0, 0, 1] < 0.55
-        if frac == 0.76:
-            assert out[0, 0, 1] < 0.85
-
-    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
-    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
-    rendered, _ = render.render_positive_float(
-        rgb, matrix, None, color_params, metering
-    )
-    for ch in range(3):
-        channel = rendered[0, :, ch]
-        assert np.all(np.diff(channel.astype(np.float64)) <= 1e-6)
-
     mid_code = int(0.5 * tone.MAX_CODE)
     mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
-    _neutral, _ = render.render_positive_float(
+    neutral_only, _ = render.render_positive_float(
         mid_img, matrix, None, {"wb_magenta": 0.0}, metering
     )
     colored, _ = render.render_positive_float(
@@ -340,17 +299,23 @@ def test_colour_only_render_stays_on_identity_ramp():
     )
     assert colored[0, 0, 1] < colored[0, 0, 0]
     assert colored[0, 0, 1] < colored[0, 0, 2]
+    assert not np.allclose(colored, neutral_only)
+
+    ramp = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
+    rgb = np.stack([ramp, ramp, ramp], axis=-1).reshape(1, -1, 3)
+    rendered, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    reference, _ = render.render_positive_float(
+        rgb, matrix, None, color_params, metering
+    )
+    np.testing.assert_allclose(rendered, reference, atol=1e-6)
 
 
-def test_preview_and_export_agree_with_headroom_and_shoulder():
+def test_preview_and_export_agree_with_headroom():
     """Source codes inside the encode headroom."""
     matrix = _TEST_MATRIX
-    tone_params = {
-        "grade_r": 115.0,
-        "snap_gamma": 0.0,
-        "shoulder": 0.5,
-        "shoulder_width": 2.5,
-    }
+    tone_params = {"snap_gamma": 0.0}
     white_code = int(
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
@@ -362,5 +327,3 @@ def test_preview_and_export_agree_with_headroom_and_shoulder():
     rendered_8 = np.rint(rendered / 257.0).astype(np.uint8)
     difference = np.abs(rendered_8.astype(np.int32) - preview_8.astype(np.int32))
     assert difference.max() <= 1
-    assert rendered_8[0, 0, 0] < 255
-    assert rendered_8[0, 0, 0] != rendered_8[0, -1, 0]

@@ -14,7 +14,11 @@ from scanny_boy.fake_nef_support import write_fake_nef
 
 def test_natural_sort_key_orders_dsc9_before_dsc10():
     names = ["DSC_10.NEF", "DSC_9.NEF", "DSC_2.NEF"]
-    assert sorted(names, key=natural_sort_key) == ["DSC_2.NEF", "DSC_9.NEF", "DSC_10.NEF"]
+    assert sorted(names, key=natural_sort_key) == [
+        "DSC_2.NEF",
+        "DSC_9.NEF",
+        "DSC_10.NEF",
+    ]
 
 
 def test_is_catalogue_filename():
@@ -72,8 +76,12 @@ def test_compute_canonical_order_sorts_by_timestamp(tmp_path):
 
 def test_compute_canonical_order_breaks_ties_with_natural_filename_order(tmp_path):
     same_time = "2026:08:02 12:00:00"
-    write_fake_nef(tmp_path / "DSC_10.NEF", date_time_original=same_time, subsec_time_original="00")
-    write_fake_nef(tmp_path / "DSC_9.NEF", date_time_original=same_time, subsec_time_original="00")
+    write_fake_nef(
+        tmp_path / "DSC_10.NEF", date_time_original=same_time, subsec_time_original="00"
+    )
+    write_fake_nef(
+        tmp_path / "DSC_9.NEF", date_time_original=same_time, subsec_time_original="00"
+    )
 
     order = compute_canonical_order(tmp_path, ["DSC_10.NEF", "DSC_9.NEF"])
 
@@ -90,7 +98,9 @@ def test_compute_canonical_order_handles_year_rollover(tmp_path):
     assert not order.used_filename_fallback
 
 
-def test_missing_timestamp_anywhere_falls_back_to_whole_catalogue_filename_order(tmp_path):
+def test_missing_timestamp_anywhere_falls_back_to_whole_catalogue_filename_order(
+    tmp_path,
+):
     write_fake_nef(tmp_path / "DSC_1.NEF", date_time_original="2026:08:02 12:00:00")
     write_fake_nef(tmp_path / "DSC_2.NEF", date_time_original="2026:08:02 12:00:05")
     # The file with no usable timestamp is outside any particular selection;
@@ -100,4 +110,8 @@ def test_missing_timestamp_anywhere_falls_back_to_whole_catalogue_filename_order
     order = compute_canonical_order(tmp_path, ["DSC_1.NEF", "DSC_2.NEF", "DSC_10.NEF"])
 
     assert order.used_filename_fallback
-    assert order.order == ["DSC_1.NEF", "DSC_2.NEF", "DSC_10.NEF"]  # natural filename order
+    assert order.order == [
+        "DSC_1.NEF",
+        "DSC_2.NEF",
+        "DSC_10.NEF",
+    ]  # natural filename order

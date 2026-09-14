@@ -29,14 +29,13 @@ Every constant in this module is defined here and nowhere else.
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from scanny_boy.events import Code, FlatFieldProfileSummary
+from scanny_boy.events import Code
 from scanny_boy.hashing import sha256_file
 from scanny_boy.library.db import library_db_path
 from scanny_boy.linear import decode_to_linear, encode_from_linear
@@ -59,7 +58,7 @@ CLIPPED_PIXEL_WARN_FRACTION = 0.001
 
 
 class FlatFieldError(Exception):
-    """A flat-field profile operation failed with a stable CONTRACT.md code.
+    """A flat-field operation failed with a stable CONTRACT.md code.
 
     A bad reference NEF is not one of these — `decode_raw` propagates
     `UnsupportedRawError` / `UnreadableRawError` unchanged, because a bad
@@ -71,32 +70,6 @@ class FlatFieldError(Exception):
         self.message = message
 
 
-@dataclasses.dataclass(frozen=True)
-class FlatFieldProfile:
-    profile_id: str
-    name: str
-    gain_map_path: str
-    gain_map_sha256: str
-    # Provenance only. Once the profile exists the reference is never read
-    # again — the profile is self-contained.
-    source_path: str | None
-    reference_width: int
-    reference_height: int
-    # How this map was built (`build_params`).
-    params: dict
-    scanny_boy_version: str
-    created_at: str
-    # Geometric calibration: a profile
-    # may carry a distortion fit, a CA fit, and the human-readable report.
-    # All four nullable; every pre-calibration profile reads back with four
-    # Nones and behaves exactly as it does today — that backward
-    # compatibility is a hard requirement.
-    board_key: str | None = None
-    geometry: dict | None = None
-    chromatic_aberration: dict | None = None
-    calibration_report: dict | None = None
-
-
 def flatfield_root() -> Path:
     """Gain maps sit beside the library database and the previews in
     Application Support — exactly mirroring `previews.previews_root()`, so
@@ -105,16 +78,21 @@ def flatfield_root() -> Path:
     return library_db_path().parent / "flatfield"
 
 
+def roll_gain_map_path(roll_id: str) -> Path:
+    """The `.npz` for one roll's attached flat-field reference."""
+    return flatfield_root() / "rolls" / f"{roll_id}.npz"
+
+
 def _now_iso() -> str:
-    return (
-        datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
-    )
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
 
-def build_params(chromatic_aberration_scales: tuple[float, float] | None = None) -> dict:
+def build_params(
+    chromatic_aberration_scales: tuple[float, float] | None = None,
+) -> dict:
     """How a gain map is built — the constants of this module that produced
-    it, recorded on the profile so a map can be interpreted without knowing
-    which build wrote it.
+    it, recorded on the roll block so a map can be interpreted without
+    knowing which build wrote it.
 
     `chromatic_aberration_scales`, when given, is the CA scale pair the
     reference itself was decoded with: in "scale" mode the reference must
@@ -166,30 +144,31 @@ def compute_gain(linear: np.ndarray) -> np.ndarray:
     return np.stack(channels, axis=-1).astype(np.float32)
 
 
-def build_gain_map(reference: Path) -> tuple[np.ndarray, int, int]:
+def build_gain_map(
+    reference: Path,
+    *,
+    chromatic_aberration: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, int, int]:
     """Decode the reference with the locked `RAW_PARAMS` into linear light
     and measure its falloff. Returns `(gain_map, reference_width,
-    reference_height)` — the full-resolution dimensions the profile records
-    for the aspect-ratio check."""
-    frame = decode_raw(reference)
+    reference_height)` — the full-resolution dimensions the roll block
+    records for the aspect-ratio check."""
+    frame = decode_raw(reference, chromatic_aberration=chromatic_aberration)
     gain_map = compute_gain(decode_to_linear(frame.pixels))
     return gain_map, frame.width, frame.height
 
 
-def save_gain_map(profile_id: str, gain_map: np.ndarray) -> tuple[Path, str]:
-    """Write the `.npz` beside the library database. Returns its path and
-    the SHA-256 of the file bytes."""
-    path = flatfield_root() / f"{profile_id}.npz"
+def save_gain_map(path: Path, gain_map: np.ndarray) -> tuple[Path, str]:
+    """Write the `.npz` at `path`. Returns its path and the SHA-256 of the
+    file bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, format_version=GAIN_MAP_FORMAT_VERSION, gain_map=gain_map)
     return path, sha256_file(path)
 
 
-def load_gain_map(profile: FlatFieldProfile) -> np.ndarray:
-    """Read a profile's gain map back. The profile is self-contained: the
-    original reference file is never read again, so a missing or corrupt
-    `.npz` is the one thing that can fail here."""
-    path = Path(profile.gain_map_path)
+def load_gain_map(gain_map_path: str, gain_map_sha256: str) -> np.ndarray:
+    """Read a gain map back and verify its SHA-256."""
+    path = Path(gain_map_path)
     if not path.exists():
         raise FlatFieldError(
             Code.FLATFIELD_GAIN_MAP_MISSING,
@@ -208,19 +187,23 @@ def load_gain_map(profile: FlatFieldProfile) -> np.ndarray:
             if gain_map.dtype != np.float32 or gain_map.ndim != 3:
                 raise FlatFieldError(
                     Code.FLATFIELD_GAIN_MAP_MISSING,
-                    f"the gain map {path} is corrupt: expected a float32 "
-                    "rank-3 array",
+                    f"the gain map {path} is corrupt: expected a float32 rank-3 array",
                 )
     except (OSError, ValueError, KeyError, EOFError) as exc:
         raise FlatFieldError(
             Code.FLATFIELD_GAIN_MAP_MISSING, f"the gain map {path} is corrupt: {exc}"
         ) from exc
-    if sha256_file(path) != profile.gain_map_sha256:
+    if sha256_file(path) != gain_map_sha256:
         raise FlatFieldError(
             Code.FLATFIELD_GAIN_MAP_MISSING,
             f"the gain map {path} no longer matches its recorded SHA-256",
         )
     return gain_map
+
+
+def load_gain_map_from_block(block: dict) -> np.ndarray:
+    """Load the gain map named by a roll's `flat_field` block."""
+    return load_gain_map(block["gain_map_path"], block["gain_map_sha256"])
 
 
 def resize_gain_map(gain_map: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -256,79 +239,9 @@ def apply_in_place(pixels: np.ndarray, full_res_gain: np.ndarray) -> int:
     return clipped
 
 
-def profile_token(profile: FlatFieldProfile) -> dict:
-    """The roll-invariant identity of a profile. `name` is deliberately not
-    in the token: renaming a profile must not invalidate a roll."""
+def flat_field_token(block: dict) -> dict:
+    """The roll-invariant identity of an attached flat-field reference."""
     return {
-        "profile_id": profile.profile_id,
-        "gain_map_sha256": profile.gain_map_sha256,
-        "params": profile.params,
+        "gain_map_sha256": block["gain_map_sha256"],
+        "params": block["params"],
     }
-
-
-def chromatic_aberration_scales(
-    profile: FlatFieldProfile,
-) -> tuple[float, float] | None:
-    """The rawpy decode scales a profile carries, or None: present only in
-    `"scale"` mode — a decode parameter, so it belongs to the convert
-    stage's processing params."""
-    if profile.chromatic_aberration is None:
-        return None
-    if profile.chromatic_aberration.get("mode") != "scale":
-        return None
-    return (
-        profile.chromatic_aberration["red_scale"],
-        profile.chromatic_aberration["blue_scale"],
-    )
-
-
-def check_geometry_frame_size(
-    profile: FlatFieldProfile, width: int, height: int
-) -> None:
-    """A profile's geometry is only valid for the frame dimensions it was
-    fitted at: `k1` is normalised by `fx`, which is derived
-    from the frame dimensions. A dimension change means a different decode,
-    and a silently rescaled calibration is worse than none — fail
-    `GEOMETRY_FRAME_SIZE_MISMATCH` before anything is written."""
-    geometry = profile.geometry
-    if geometry is None:
-        return
-    if geometry["frame_width"] != width or geometry["frame_height"] != height:
-        raise FlatFieldError(
-            Code.GEOMETRY_FRAME_SIZE_MISMATCH,
-            f"profile {profile.name!r} was fitted at "
-            f"{geometry['frame_width']}x{geometry['frame_height']} but these "
-            f"frames decode at {width}x{height}",
-        )
-
-
-def flatfield_profile_summary(profile: FlatFieldProfile) -> FlatFieldProfileSummary:
-    """The fields a `flatfield` event carries: what the app's profile list
-    needs and nothing it does not. The gain map path and SHA stay absent,
-    per the existing rule that Swift never sees the CLI's storage."""
-    return FlatFieldProfileSummary(
-        profile_id=profile.profile_id,
-        name=profile.name,
-        reference_width=profile.reference_width,
-        reference_height=profile.reference_height,
-        source_path=profile.source_path,
-        created_at=profile.created_at,
-        board_key=profile.board_key,
-        has_geometry=profile.geometry is not None,
-        chromatic_aberration_mode=(
-            profile.chromatic_aberration.get("mode")
-            if profile.chromatic_aberration is not None
-            else None
-        ),
-        calibration_report=profile.calibration_report,
-    )
-
-
-def _current_scanny_boy_version() -> str:
-    from scanny_boy.manifest import current_scanny_boy_version
-
-    return current_scanny_boy_version()
-
-
-# `create_profile` lives in `calibration.py`; this module owns only the
-# gain map.

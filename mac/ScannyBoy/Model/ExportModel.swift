@@ -196,9 +196,10 @@ final class ExportModel {
             .finished, .negativeDone, .negativeFailed, .rollCreated, .rollList,
             .rollInfo, .rollRenamed, .rollDeleted, .metadataApplied, .metadataSkipped,
             .metadataUpdated, .metadataValues,
-            .flatfieldCreated, .flatfieldList, .flatfieldDeleted, .flatfieldProgress,
+            .rigCreated, .rigList, .rigDeleted, .rigProgress, .flatFieldReferenceSet,
             .gridCreated, .gridList, .gridDeleted,
-            .spotsReported, .scratchesReported, .baseFrameSet,
+            .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
+             .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
             .unknown:
             break
         }

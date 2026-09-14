@@ -20,15 +20,17 @@ from pathlib import Path
 from scanny_boy.cancellation import CancellationToken, command_cancellation
 from scanny_boy.events import (
     BaseFrameSet,
+    CaptureChecked,
+    CaptureSummary,
     Code,
+    CropSuggested,
     EditRecorded,
     ErrorEvent,
     Event,
     EventWriter,
     Finished,
-    FlatFieldCreated,
-    FlatFieldDeleted,
-    FlatFieldList,
+    FlatFieldReferenceSet,
+    FrameAnalyzed,
     GridCreated,
     GridDeleted,
     GridList,
@@ -38,12 +40,16 @@ from scanny_boy.events import (
     PreviewRendered,
     ProbeResult,
     RegionRendered,
+    RigCreated,
+    RigDeleted,
+    RigList,
     RollCreated,
     RollDeleted,
     RollInfo,
     RollList,
     RollListingEntry,
     RollListingReason,
+    RollRefreshed,
     RollRenamed,
     ScratchesReported,
     SpotsReported,
@@ -65,6 +71,12 @@ MAX_JOBS = 12
 
 # 128 + SIGTERM, per CONTRACT.md's exit-status table.
 CANCELLED_EXIT_STATUS = 143
+
+
+def _fail_roll_busy(writer: EventWriter, exc, *, run_id: str | None = None) -> int:
+    writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+    writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,7 +144,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     roll_set_base.add_argument("--roll", required=True, metavar="DIR")
     roll_set_base.add_argument("--frame", required=True, metavar="FILE")
-    roll_set_base.add_argument("--flatfield", metavar="PROFILE_ID")
+
+    roll_set_flatfield = roll_subparsers.add_parser(
+        "set-flatfield-reference",
+        help="Attach or replace the roll's bare-light flat-field reference.",
+    )
+    roll_set_flatfield.add_argument("--roll", required=True, metavar="DIR")
+    roll_set_flatfield.add_argument("--frame", required=True, metavar="FILE")
+    roll_set_flatfield.add_argument("--rig", metavar="PROFILE_ID")
 
     roll_set_film_kind = roll_subparsers.add_parser(
         "set-film-kind",
@@ -146,6 +165,61 @@ def build_parser() -> argparse.ArgumentParser:
         dest="film_kind",
         help="colour (including chromogenic B&W) or silver monochrome",
     )
+
+    roll_set_setup = roll_subparsers.add_parser(
+        "set-setup",
+        help="Set convenience defaults for the roll's next capture/stitch run.",
+    )
+    roll_set_setup.add_argument("--roll", required=True, metavar="DIR")
+    roll_set_setup.add_argument(
+        "--grid",
+        metavar="AxD",
+        default=None,
+        help="the grid to pre-fill on the next run, e.g. 3x2",
+    )
+    roll_set_setup.add_argument(
+        "--interval",
+        type=int,
+        default=None,
+        dest="interval_seconds",
+        metavar="SECONDS",
+        help="the capture interval to pre-fill, in seconds",
+    )
+    roll_set_setup.add_argument(
+        "--format",
+        # Kept as a literal here (matching --film-kind's precedent above)
+        # rather than importing `roll_folder.FORMAT_CHOICES`: cli.py must
+        # not eagerly import anything that pulls in scipy at parser-build
+        # time (see startup_test.py), and `roll_folder` transitively does
+        # via `library.repo` -> `calibration`.
+        choices=(
+            "half-frame",
+            "35mm",
+            "6x3",
+            "645",
+            "6x6",
+            "6x7",
+            "xpan",
+            "6x9",
+            "6x12",
+            "6x17",
+        ),
+        default=None,
+        help="the film format to pre-fill",
+    )
+    roll_set_setup.add_argument(
+        "--auto-crop",
+        choices=("on", "off"),
+        default=None,
+        dest="auto_crop",
+        help="enable or disable auto-crop for newly stitched negatives",
+    )
+
+    roll_refresh = roll_subparsers.add_parser(
+        "refresh",
+        help="Recompute the highlight lock and regenerate stale previews.",
+    )
+    roll_refresh.add_argument("--roll", required=True, metavar="DIR")
 
     probe = subparsers.add_parser(
         "probe", help="Validate a folder or selection without writing anything."
@@ -171,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
             "mutually exclusive with --per-negative"
         ),
     )
-    probe.add_argument("--flatfield", metavar="PROFILE_ID")
+    probe.add_argument("--rig", metavar="PROFILE_ID")
 
     prepare = subparsers.add_parser(
         "prepare",
@@ -192,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare.add_argument("--jobs", type=int, metavar="N")
     prepare.add_argument("--overwrite", action="store_true")
-    prepare.add_argument("--flatfield", metavar="PROFILE_ID")
+    prepare.add_argument("--rig", metavar="PROFILE_ID")
 
     stitch = subparsers.add_parser(
         "stitch",
@@ -204,12 +278,24 @@ def build_parser() -> argparse.ArgumentParser:
     stitch.add_argument("--overwrite", action="store_true")
     stitch.add_argument("--allow-partial", action="store_true", dest="allow_partial")
     stitch.add_argument("--negatives", nargs="+", metavar="ID")
-    stitch.add_argument("--flatfield", metavar="PROFILE_ID")
+    stitch.add_argument("--rig", metavar="PROFILE_ID")
     stitch.add_argument(
         "--no-auto-rotate",
         action="store_false",
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
+    stitch.add_argument(
+        "--no-auto-crop",
+        action="store_false",
+        dest="auto_crop",
+        help="do not seed an automatic crop on new negatives",
+    )
+    stitch.add_argument(
+        "--defer-roll-refresh",
+        action="store_true",
+        dest="defer_roll_refresh",
+        help="skip the highlight-lock recompute and defer it to roll refresh",
     )
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
@@ -232,38 +318,71 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--skip-sources", nargs="+", metavar="FILE", dest="skip_sources", default=[]
     )
-    run.add_argument("--flatfield", metavar="PROFILE_ID")
+    run.add_argument("--rig", metavar="PROFILE_ID")
     run.add_argument(
         "--no-auto-rotate",
         action="store_false",
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
-    flatfield = subparsers.add_parser("flatfield", help="Manage flat-field profiles.")
-    flatfield_subparsers = flatfield.add_subparsers(
-        dest="flatfield_command", required=True
+    run.add_argument(
+        "--no-auto-crop",
+        action="store_false",
+        dest="auto_crop",
+        help="do not seed an automatic crop on new negatives",
     )
+    run.add_argument(
+        "--defer-roll-refresh",
+        action="store_true",
+        dest="defer_roll_refresh",
+        help="skip the highlight-lock recompute and defer it to roll refresh",
+    )
+    capture = subparsers.add_parser(
+        "capture", help="Tethered capture analysis and checks."
+    )
+    capture_subparsers = capture.add_subparsers(dest="capture_command", required=True)
 
-    flatfield_create = flatfield_subparsers.add_parser(
+    capture_analyze = capture_subparsers.add_parser(
+        "analyze", help="Analyze one captured frame for clipping and focus."
+    )
+    capture_analyze.add_argument("--frame", required=True, metavar="FILE")
+    capture_analyze.add_argument(
+        "--baseline", nargs="*", metavar="FILE", dest="baseline_frames", default=[]
+    )
+    capture_analyze.add_argument("--log", required=True, metavar="FILE")
+
+    capture_summary = capture_subparsers.add_parser(
+        "summary", help="Summarize a capture session log."
+    )
+    capture_summary.add_argument("--log", required=True, metavar="FILE")
+    capture_summary.add_argument("--base-frame", metavar="FILE", dest="base_frame")
+
+    capture_check = capture_subparsers.add_parser(
+        "check", help="Run the stitch solve phase without compositing."
+    )
+    capture_check.add_argument("--work", required=True, metavar="DIR")
+    capture_check.add_argument("--rig", metavar="PROFILE_ID")
+
+    rig = subparsers.add_parser("rig", help="Manage scanning-rig calibration profiles.")
+    rig_subparsers = rig.add_subparsers(dest="rig_command", required=True)
+
+    rig_create = rig_subparsers.add_parser(
         "create",
-        help="Build a gain map, optionally with geometric calibration from ChArUco frames.",
+        help="Fit geometric calibration from ChArUco frames.",
     )
-    flatfield_create.add_argument("--reference", required=True, metavar="FILE")
-    flatfield_create.add_argument("--name", required=True, metavar="NAME")
-    flatfield_create.add_argument(
+    rig_create.add_argument("--name", required=True, metavar="NAME")
+    rig_create.add_argument(
         "--calibration",
-        nargs="*",
+        nargs="+",
         metavar="FILE",
-        default=[],
-        help="ChArUco calibration frames (absolute paths); omit for a flat-field-only profile",
+        required=True,
+        help="ChArUco calibration frames (absolute paths)",
     )
 
-    flatfield_subparsers.add_parser("list", help="List the flat-field profiles.")
+    rig_subparsers.add_parser("list", help="List the rig profiles.")
 
-    flatfield_delete = flatfield_subparsers.add_parser(
-        "delete", help="Delete one flat-field profile."
-    )
-    flatfield_delete.add_argument("--profile", required=True, metavar="ID")
+    rig_delete = rig_subparsers.add_parser("delete", help="Delete one rig profile.")
+    rig_delete.add_argument("--profile", required=True, metavar="ID")
 
     grid = subparsers.add_parser(
         "grid", help="Manage named grid configuration presets."
@@ -420,6 +539,26 @@ def build_parser() -> argparse.ArgumentParser:
             "window superimposed"
         ),
     )
+    edit_crop.add_argument(
+        "--source",
+        metavar="SOURCE",
+        help="tag the crop as auto-suggested (only 'auto' is accepted)",
+    )
+
+    edit_suggest_crop = edit_subparsers.add_parser(
+        "suggest-crop",
+        help=(
+            "Detect the picture-only crop for one negative and report it "
+            "without recording (backs the Auto button in crop mode)."
+        ),
+    )
+    edit_suggest_crop.add_argument("--roll", required=True, metavar="DIR")
+    edit_suggest_crop.add_argument("--negative", required=True, metavar="ID")
+    edit_suggest_crop.add_argument(
+        "--preset",
+        metavar="NAME",
+        help="the ratio preset to constrain the crop (a FORMAT_RATIOS key)",
+    )
 
     edit_render_region = edit_subparsers.add_parser(
         "render-region",
@@ -479,8 +618,8 @@ def build_parser() -> argparse.ArgumentParser:
     edit_tone = edit_subparsers.add_parser(
         "tone",
         help=(
-            "Record a preview tone adjustment (paper grade, density, zone "
-            "density, toe/shoulder) for one or more negatives."
+            "Record a preview tone adjustment (contrast, density, zone density) "
+            "for one or more negatives."
         ),
     )
     edit_tone.add_argument("--roll", required=True, metavar="DIR")
@@ -491,23 +630,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ID",
         help="negative to adjust; repeat for a selection",
     )
-    grade_group = edit_tone.add_mutually_exclusive_group()
-    grade_group.add_argument(
-        "--grade",
-        type=float,
-        metavar="R",
-        help="ISO-R paper grade, 50-180 (lower is harder); with --snap",
-    )
-    grade_group.add_argument(
-        "--auto-grade",
-        action="store_true",
-        help="solve the grade from the negative's recorded metering",
-    )
     edit_tone.add_argument(
         "--snap",
         type=float,
         metavar="G",
-        help="midtone snap, -0.5..0.5; with --grade or --auto-grade",
+        help="midtone contrast, -0.8..1.5",
     )
     density_group = edit_tone.add_mutually_exclusive_group()
     density_group.add_argument(
@@ -534,33 +661,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="highlights density, -0.5..0.5 (positive adds density)",
     )
     edit_tone.add_argument(
-        "--toe",
-        type=float,
-        metavar="T",
-        help="shadow roll-off, -1..1 (positive lifts the black)",
-    )
-    edit_tone.add_argument(
-        "--toe-width",
-        type=float,
-        metavar="W",
-        help="toe extent, 0.1-5.0 (2.5 neutral)",
-    )
-    edit_tone.add_argument(
-        "--shoulder",
-        type=float,
-        metavar="S",
-        help="highlight roll-off, -1..1 (positive holds the white)",
-    )
-    edit_tone.add_argument(
-        "--shoulder-width",
-        type=float,
-        metavar="W",
-        help="shoulder extent, 0.1-5.0 (2.5 neutral)",
-    )
-    edit_tone.add_argument(
         "--reset",
         action="store_true",
-        help="reset to the flat linear preview, removing the adjustment",
+        help="reset to the default scan-start curve, removing the adjustment",
     )
 
     edit_color = edit_subparsers.add_parser(
@@ -585,7 +688,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("--highlight-cyan", "highlights cyan, -1..1"),
         ("--highlight-magenta", "highlights magenta, -1..1"),
         ("--highlight-yellow", "highlights yellow, -1..1"),
-        ("--cast-removal-highlights", "highlight-end cast removal strength, 0..1 (0 neutral)"),
+        (
+            "--cast-removal-highlights",
+            "highlight-end cast removal strength, 0..1 (0 neutral)",
+        ),
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
     edit_color.add_argument(
@@ -723,9 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     edit_scratches = edit_subparsers.add_parser(
         "scratches",
-        help=(
-            "Toggle scratch correction on or off for one or more negatives."
-        ),
+        help=("Toggle scratch correction on or off for one or more negatives."),
     )
     edit_scratches.add_argument("--roll", required=True, metavar="DIR")
     edit_scratches.add_argument(
@@ -790,27 +894,31 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
 
     if args.reset:
         return {key: None for key in tone.TONE_PARAM_KEYS}
+    neutral = dataclasses.asdict(tone.NEUTRAL)
     return {
-        "grade_r": args.grade if args.grade is not None else tone.GRADE_REFERENCE,
-        "snap_gamma": args.snap,
-        "density": args.density if args.density is not None else tone.DENSITY_REFERENCE,
-        "shadow_density": args.shadow_density
-        if args.shadow_density is not None
-        else 0.0,
-        "highlight_density": (
-            args.highlight_density if args.highlight_density is not None else 0.0
+        "snap_gamma": args.snap if args.snap is not None else neutral["snap_gamma"],
+        "density": args.density if args.density is not None else neutral["density"],
+        "shadow_density": (
+            args.shadow_density
+            if args.shadow_density is not None
+            else neutral["shadow_density"]
         ),
-        "toe": args.toe if args.toe is not None else 0.0,
-        "toe_width": args.toe_width
-        if args.toe_width is not None
-        else tone.WIDTH_REFERENCE,
-        "shoulder": args.shoulder if args.shoulder is not None else 0.0,
-        "shoulder_width": (
-            args.shoulder_width
-            if args.shoulder_width is not None
-            else tone.WIDTH_REFERENCE
+        "highlight_density": (
+            args.highlight_density
+            if args.highlight_density is not None
+            else neutral["highlight_density"]
         ),
     }
+
+
+def _tone_args_provided(args) -> bool:
+    return (
+        any(
+            getattr(args, name) is not None
+            for name in ("snap", "density", "shadow_density", "highlight_density")
+        )
+        or args.auto_density
+    )
 
 
 def _color_flag_updates(args) -> dict[str, float | None]:
@@ -861,9 +969,7 @@ def _validate_color_args(args) -> None:
     if region == "shadows" and args.shadow_magenta is not None:
         raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
     if region == "highlights" and args.highlight_magenta is not None:
-        raise ValueError(
-            "--temperature is mutually exclusive with --highlight-magenta"
-        )
+        raise ValueError("--temperature is mutually exclusive with --highlight-magenta")
 
 
 def _run_stitch_command(
@@ -875,13 +981,17 @@ def _run_stitch_command(
     """The `stitch` subcommand: mirrors `convert`'s event and exit-status
     shape exactly, over `run_stitch` instead of `run_convert`."""
     from scanny_boy.registration import StitchError
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.stitch_pipeline import run_stitch
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="stitch", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope:
+        with (
+            command_cancellation(cancel) as scope,
+            exclusive_roll_lock(Path(args.roll)),
+        ):
             outcome = run_stitch(
                 Path(args.work),
                 Path(args.roll),
@@ -892,13 +1002,17 @@ def _run_stitch_command(
                 cancel=scope,
                 emit=writer.write,
                 negatives=args.negatives,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
+                auto_crop=args.auto_crop,
+                defer_roll_refresh=args.defer_roll_refresh,
             )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc, run_id=run_id)
 
     if outcome.status == "cancelled":
         writer.write(
@@ -992,6 +1106,8 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         return 0
 
     if args.roll_command == "rename":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
         writer.write(Started(command="roll rename"))
         roll_dir = Path(args.roll)
         if not repo.roll_registered(roll_dir):
@@ -1004,12 +1120,15 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             writer.write(Finished(status="failed", exit_status=1))
             return 1
         try:
-            new_dir = rename_roll(roll_dir, args.name)
+            with exclusive_roll_lock(roll_dir):
+                new_dir = rename_roll(roll_dir, args.name)
+                manifest = load_roll_manifest(new_dir)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
-        manifest = load_roll_manifest(new_dir)
         writer.write(
             RollRenamed(
                 roll_id=manifest.roll_id,
@@ -1021,10 +1140,24 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         return 0
 
     if args.roll_command == "delete":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
         writer.write(Started(command="roll delete"))
         roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
         try:
-            fields = delete_roll(roll_dir, emit=writer.write)
+            with exclusive_roll_lock(roll_dir):
+                fields = delete_roll(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except RollFolderError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
@@ -1033,11 +1166,50 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
+    if args.roll_command == "refresh":
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+        from scanny_boy.roll_refresh import RollRefreshFailure, run_roll_refresh
+
+        writer.write(Started(command="roll refresh"))
+        roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        try:
+            with exclusive_roll_lock(roll_dir):
+                outcome = run_roll_refresh(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
+        except RollRefreshFailure as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(
+            RollRefreshed(
+                lock_changed=outcome.lock_changed,
+                previews_regenerated=outcome.previews_regenerated,
+            )
+        )
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
     if args.roll_command == "set-base-frame":
         return _run_roll_set_base_frame(args, writer)
 
+    if args.roll_command == "set-flatfield-reference":
+        return _run_roll_set_flatfield_reference(args, writer)
+
     if args.roll_command == "set-film-kind":
         return _run_roll_set_film_kind(args, writer)
+
+    if args.roll_command == "set-setup":
+        return _run_roll_set_setup(args, writer)
 
     # info
     writer.write(Started(command="roll info"))
@@ -1084,9 +1256,6 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             fine_angle_deg=state.fine_angle_deg,
         )
         tone_params = state.tone
-        negative["tone_grade_r"] = (
-            None if tone_params is None else tone_params["grade_r"]
-        )
         negative["tone_snap_gamma"] = (
             None if tone_params is None else tone_params["snap_gamma"]
         )
@@ -1098,16 +1267,6 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         )
         negative["tone_highlight_density"] = (
             None if tone_params is None else tone_params["highlight_density"]
-        )
-        negative["tone_toe"] = None if tone_params is None else tone_params["toe"]
-        negative["tone_toe_width"] = (
-            None if tone_params is None else tone_params["toe_width"]
-        )
-        negative["tone_shoulder"] = (
-            None if tone_params is None else tone_params["shoulder"]
-        )
-        negative["tone_shoulder_width"] = (
-            None if tone_params is None else tone_params["shoulder_width"]
         )
         color_params = state.color
         from scanny_boy import color as color_mod
@@ -1168,6 +1327,7 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         info["film_kind"] = manifest.film.get("kind")
     else:
         info["film_kind"] = None
+    info["refresh_pending"] = manifest.refresh_pending
     writer.write(RollInfo(manifest=info))
     writer.write(Finished(status="success", exit_status=0))
     return 0
@@ -1191,16 +1351,41 @@ def _camera_model_from_source(frame: Path) -> str | None:
     return " ".join(part for part in (settings.make, settings.model) if part) or None
 
 
+def _exposure_from_source(frame: Path) -> dict:
+    """The base frame's own EXIF shutter/aperture/ISO
+    (docs/ROLL_HIGHLIGHT_LOCK.md §3), `str`/`int`-encoded like
+    `CuratedMetadata`. An unreadable EXIF (or file) leaves every field
+    `None` — the exposure-match check then treats every scan as
+    unmatched, not as a crash."""
+    from scanny_boy.metadata import (
+        UnreadableRawError,
+        UnsupportedRawError,
+        read_source_settings,
+    )
+
+    try:
+        settings = read_source_settings(frame)
+    except (UnsupportedRawError, UnreadableRawError):
+        return {"exposure_time": None, "f_number": None, "iso": None}
+    return {
+        "exposure_time": None
+        if settings.exposure_time is None
+        else str(settings.exposure_time),
+        "f_number": None if settings.f_number is None else str(settings.f_number),
+        "iso": settings.iso,
+    }
+
+
 def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     """The `roll set-base-frame` subcommand: decode, measure, gate, and attach (or replace)
     the roll's film-base reference. A gate failure emits the error and
     changes nothing on disk; a locked roll refuses outright. Emits one
     `base_frame_set` event on success."""
-    from scanny_boy import film_base
-    from scanny_boy.flatfield import FlatFieldError, load_gain_map
+    from scanny_boy import film_base, flatfield
     from scanny_boy.hashing import sha256_file
     from scanny_boy.library import repo
     from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.roll_manifest import (
         ROLL_MANIFEST_FORMAT_VERSION,
         _now_iso,
@@ -1263,11 +1448,10 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
 
     frame = Path(args.frame)
     gain_map = None
-    if args.flatfield is not None:
+    if manifest.flat_field is not None:
         try:
-            profile = repo.load_flatfield_profile(args.flatfield)
-            gain_map = load_gain_map(profile)
-        except FlatFieldError as exc:
+            gain_map = flatfield.load_gain_map_from_block(manifest.flat_field)
+        except flatfield.FlatFieldError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
@@ -1301,6 +1485,11 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
+    # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame's own EXIF exposure —
+    # recorded so `run_stitch` can compare each scan's exposure against it
+    # without re-reading this file.
+    base_exposure = _exposure_from_source(frame)
+
     # §3.3: the camera comparison lives here when the roll already has a
     # `camera_color` block (a fresh roll has none until its first run seeds
     # one — `run_stitch` compares then, §3.3).
@@ -1329,7 +1518,6 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         "attached_at": _now_iso(),
         "source_name": frame.name,
         "source_sha256": sha256_file(frame),
-        "flat_field_profile_id": args.flatfield,
         "camera_model": camera_model,
         "chosen_index": measurement.chosen_index,
         "populations": [
@@ -1338,8 +1526,16 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         "clipped_fractions": list(measurement.clipped_fractions),
         "grid_cells": measurement.grid_cells,
         "measure_version": measurement.measure_version,
+        # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame's own EXIF
+        # exposure, or None per field when unreadable — compared against
+        # each scan's at stitch time.
+        "exposure": base_exposure,
     }
-    write_roll_manifest(roll_dir, manifest)
+    try:
+        with exclusive_roll_lock(roll_dir):
+            write_roll_manifest(roll_dir, manifest)
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc)
 
     chosen = measurement.populations[measurement.chosen_index]
     writer.write(
@@ -1352,6 +1548,49 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
             locked=False,
         )
     )
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
+def _run_roll_set_setup(args, writer: EventWriter) -> int:
+    """The `roll set-setup` subcommand: merge-update the roll's grid,
+    interval, and film format pre-fill defaults. Unlike `set-film-kind`,
+    never frozen — editable for the life of the roll."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_folder import set_setup
+
+    writer.write(Started(command="roll set-setup"))
+    roll_dir = Path(args.roll)
+    if not repo.roll_registered(roll_dir):
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} is not a registered roll",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    # `args.grid` is already validated (well-formed "AxD", within
+    # `MAX_PER_NEGATIVE`) by `run_argv`'s shared preprocessing, which every
+    # command with a `--grid` option goes through before dispatch.
+    grid: dict[str, int] | None = None
+    if args.grid is not None:
+        across_text, down_text = str(args.grid).lower().split("x")
+        grid = {"across": int(across_text), "down": int(down_text)}
+
+    try:
+        set_setup(
+            roll_dir,
+            grid=grid,
+            interval_seconds=args.interval_seconds,
+            format=args.format,
+            auto_crop=(args.auto_crop == "on" if args.auto_crop is not None else None),
+        )
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
@@ -1407,6 +1646,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
         run_edit_rotate,
         run_edit_scratches,
         run_edit_spots,
+        run_edit_suggest_crop,
         run_edit_tone,
     )
 
@@ -1429,15 +1669,14 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = EditRecorded
         elif args.edit_command == "tone":
-            if not args.reset and (
-                (not args.auto_grade and args.grade is None) or args.snap is None
-            ):
+            if not args.reset and not _tone_args_provided(args):
                 writer.write(
                     ErrorEvent(
                         code=Code.INVALID_EDIT,
                         message=(
-                            "edit tone needs --grade (or --auto-grade) and "
-                            "--snap together, or --reset"
+                            "edit tone needs at least one tone flag "
+                            "(--snap, --density, --shadow-density, "
+                            "--highlight-density, --auto-density) or --reset"
                         ),
                     )
                 )
@@ -1448,7 +1687,6 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.negative,
                 _tone_params_from_args(args),
                 auto_density=args.auto_density,
-                auto_grade=args.auto_grade,
                 emit=writer.write,
             )
             confirmation = EditRecorded
@@ -1471,6 +1709,16 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = EditRecorded
         elif args.edit_command == "crop":
+            source = getattr(args, "source", None)
+            if source is not None and source != "auto":
+                writer.write(
+                    ErrorEvent(
+                        code=Code.INVALID_EDIT,
+                        message=f"--source must be 'auto' or omitted, got {source!r}",
+                    )
+                )
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
             if args.reset:
                 results = [
                     run_edit_crop(
@@ -1506,10 +1754,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                         tilt_deg=args.tilt,
                         preset=args.preset,
                         full_frame=args.full_frame,
+                        source=source,
                         emit=writer.write,
                     )
                 ]
             confirmation = EditRecorded
+        elif args.edit_command == "suggest-crop":
+            try:
+                results = [
+                    run_edit_suggest_crop(
+                        Path(args.roll),
+                        args.negative,
+                        preset=args.preset,
+                        emit=writer.write,
+                    )
+                ]
+            except EditFailure as exc:
+                writer.write(ErrorEvent(code=exc.code, message=exc.message))
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
+            confirmation = CropSuggested
         elif args.edit_command == "delete":
             results = run_edit_delete(
                 Path(args.roll),
@@ -1553,22 +1817,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = SpotsReported
         elif args.edit_command == "spots":
-            results = [run_edit_spots(
-                Path(args.roll),
-                args.negative,
-                reject=args.reject,
-                accept=args.accept,
-                repair=args.repair,
-                clear=args.clear,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_spots(
+                    Path(args.roll),
+                    args.negative,
+                    reject=args.reject,
+                    accept=args.accept,
+                    repair=args.repair,
+                    clear=args.clear,
+                    emit=writer.write,
+                )
+            ]
             confirmation = SpotsReported
         elif args.edit_command == "list-spots":
-            results = [run_edit_list_spots(
-                Path(args.roll),
-                args.negative,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_list_spots(
+                    Path(args.roll),
+                    args.negative,
+                    emit=writer.write,
+                )
+            ]
             confirmation = SpotsReported
         elif args.edit_command == "detect-scratches":
             results = run_edit_detect_scratches(
@@ -1586,11 +1854,13 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = ScratchesReported
         elif args.edit_command == "list-scratches":
-            results = [run_edit_list_scratches(
-                Path(args.roll),
-                args.negative,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_list_scratches(
+                    Path(args.roll),
+                    args.negative,
+                    emit=writer.write,
+                )
+            ]
             confirmation = ScratchesReported
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
@@ -1604,84 +1874,263 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     return 0
 
 
-def _run_flatfield_command(args, writer: EventWriter) -> int:
-    """The `flatfield create` / `flatfield list` / `flatfield delete`
-    subcommands: each mirrors `roll init`/`roll list`'s started/finished
-    bracketing and carries no `run_id`, since none is a pipeline run."""
-    from scanny_boy.calibration import create_profile
-    from scanny_boy.flatfield import (
-        FlatFieldError,
-        flatfield_profile_summary,
+def _run_capture_command(args, writer: EventWriter) -> int:
+    from scanny_boy.capture_analysis import (
+        CaptureAnalysisError,
+        analyze_frame,
+        append_log_entry,
+        summarize_log,
     )
-    from scanny_boy.library import repo
-    from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.capture_check import CaptureCheckFailure, run_capture_check
 
-    if args.flatfield_command == "create":
-        writer.write(Started(command="flatfield create"))
+    if args.capture_command == "analyze":
+        writer.write(Started(command="capture analyze"))
+        frame = Path(args.frame)
+        log_path = Path(args.log)
+        baseline_ratios: list[float | None] | None = None
+        if args.baseline_frames:
+            baseline_entries = []
+            for baseline_frame in args.baseline_frames:
+                baseline_entries.append(
+                    analyze_frame(Path(baseline_frame), baseline_ratios=None)
+                )
+            region_lists = [entry["focus_regions"] for entry in baseline_entries]
+            baseline_ratios = [
+                float(value)
+                for regions in region_lists
+                for value in regions
+                if value is not None
+            ] or None
         try:
-            profile = create_profile(
-                Path(args.reference),
-                args.name,
-                [Path(p) for p in args.calibration],
-                emit=writer.write,
-            )
-        except FlatFieldError as exc:
+            result = analyze_frame(frame, baseline_ratios=baseline_ratios)
+        except CaptureAnalysisError as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
             return 1
-        except UnsupportedRawError:
-            writer.write(
-                ErrorEvent(
-                    code=Code.UNSUPPORTED_RAW,
-                    message=f"{args.reference} cannot be read by LibRaw; a flat-field "
-                    "reference must be a NEF",
-                )
-            )
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        except UnreadableRawError:
-            writer.write(
-                ErrorEvent(
-                    code=Code.UNREADABLE_RAW,
-                    message=f"{args.reference} could not be decoded",
-                )
-            )
-            writer.write(Finished(status="failed", exit_status=1))
-            return 1
-        writer.write(FlatFieldCreated(profile=flatfield_profile_summary(profile)))
+        append_log_entry(log_path, result)
+        writer.write(FrameAnalyzed(**result))
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
-    if args.flatfield_command == "list":
-        writer.write(Started(command="flatfield list"))
-        profiles = repo.list_flatfield_profiles()
-        writer.write(
-            FlatFieldList(profiles=[flatfield_profile_summary(p) for p in profiles])
+    if args.capture_command == "summary":
+        writer.write(Started(command="capture summary"))
+        summary = summarize_log(
+            Path(args.log),
+            base_frame=Path(args.base_frame) if args.base_frame else None,
         )
+        writer.write(CaptureSummary(**summary))
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
-    # delete
-    writer.write(Started(command="flatfield delete"))
+    run_id = str(uuid.uuid4())
+    writer.write(Started(command="capture check", run_id=run_id))
     try:
-        profile = repo.load_flatfield_profile(args.profile)
-    except FlatFieldError as exc:
+        outcome = run_capture_check(
+            Path(args.work),
+            rig_profile_id=args.rig,
+            emit=writer.write,
+            run_id=run_id,
+        )
+    except CaptureCheckFailure as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
+    writer.write(
+        CaptureChecked(
+            run_id=run_id,
+            passed=outcome.passed,
+            code=outcome.code,
+            message=outcome.message,
+            global_rms_px=outcome.global_rms_px,
+            used_clahe_fallback=outcome.used_clahe_fallback,
+        )
+    )
+    writer.write(
+        Finished(
+            run_id=run_id,
+            status="success" if outcome.passed else "failed",
+            exit_status=0 if outcome.passed else 1,
+        )
+    )
+    return 0 if outcome.passed else 1
+
+
+def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
+    """The `roll set-flatfield-reference` subcommand."""
+    from scanny_boy import calibration, flatfield
+    from scanny_boy.hashing import sha256_file
+    from scanny_boy.library import repo
+    from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_manifest import (
+        ROLL_MANIFEST_FORMAT_VERSION,
+        _now_iso,
+        load_roll_manifest,
+        write_roll_manifest,
+    )
+
+    writer.write(Started(command="roll set-flatfield-reference"))
+    roll_dir = Path(args.roll)
+    if not repo.roll_registered(roll_dir):
+        writer.write(
+            ErrorEvent(
+                code=Code.ROLL_NOT_FOUND,
+                message=f"{roll_dir} is not a registered roll",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    try:
+        manifest = load_roll_manifest(roll_dir)
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    users = sorted(
-        set(repo.rolls_using_flatfield(args.profile))
-        | set(repo.rolls_using_profile_geometry(args.profile))
-    )
-    if users:
-        # The gain map is the only thing that could reproduce those rolls.
+    if manifest.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
         writer.write(
             ErrorEvent(
-                code=Code.FLATFIELD_PROFILE_IN_USE,
+                code=Code.ROLL_PREDATES_FILM_BASE,
+                message=(
+                    "this roll was stitched before film-base anchoring; "
+                    "create a new roll and re-stitch its scans to add more "
+                    "negatives"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    if manifest.flat_field is not None and manifest.flat_field.get("locked_at"):
+        writer.write(
+            ErrorEvent(
+                code=Code.FLATFIELD_REFERENCE_LOCKED,
+                message=(
+                    "this roll's flat-field reference was locked on "
+                    f"{str(manifest.flat_field['locked_at'])[:10]} when its "
+                    "first negative was published and cannot be changed; "
+                    "create a new roll to use a different reference"
+                ),
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    rig_profile = None
+    ca_scales = None
+    if args.rig is not None:
+        try:
+            rig_profile = repo.load_rig_profile(args.rig)
+            ca_scales = calibration.chromatic_aberration_scales(rig_profile)
+        except calibration.RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+
+    frame = Path(args.frame)
+    try:
+        gain_map, ref_width, ref_height = flatfield.build_gain_map(
+            frame, chromatic_aberration=ca_scales
+        )
+    except UnsupportedRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNSUPPORTED_RAW,
+                message=f"{frame.name} cannot be read by LibRaw; a flat-field "
+                "reference must be a NEF",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    except UnreadableRawError:
+        writer.write(
+            ErrorEvent(
+                code=Code.UNREADABLE_RAW,
+                message=f"{frame.name} could not be decoded",
+            )
+        )
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    if manifest.flat_field is not None and manifest.flat_field.get("locked_at") is None:
+        old_path = Path(manifest.flat_field["gain_map_path"])
+        if old_path.exists():
+            old_path.unlink()
+
+    gain_map_path = flatfield.roll_gain_map_path(manifest.roll_id)
+    path, sha256 = flatfield.save_gain_map(gain_map_path, gain_map)
+
+    manifest.flat_field = {
+        "gain_map_path": str(path),
+        "gain_map_sha256": sha256,
+        "source_name": frame.name,
+        "source_sha256": sha256_file(frame),
+        "reference_width": ref_width,
+        "reference_height": ref_height,
+        "rig_profile_id": args.rig,
+        "params": flatfield.build_params(chromatic_aberration_scales=ca_scales),
+        "locked_at": None,
+        "attached_at": _now_iso(),
+    }
+    write_roll_manifest(roll_dir, manifest)
+
+    writer.write(
+        FlatFieldReferenceSet(
+            roll_id=manifest.roll_id,
+            source_name=frame.name,
+            reference_width=ref_width,
+            reference_height=ref_height,
+            rig_profile_id=args.rig,
+            locked=False,
+        )
+    )
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
+def _run_rig_command(args, writer: EventWriter) -> int:
+    """The `rig create` / `rig list` / `rig delete` subcommands."""
+    from scanny_boy.calibration import RigError, create_profile, rig_profile_summary
+    from scanny_boy.library import repo
+
+    if args.rig_command == "create":
+        writer.write(Started(command="rig create"))
+        try:
+            profile = create_profile(
+                args.name,
+                [Path(p) for p in args.calibration],
+                emit=writer.write,
+            )
+        except RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
+        writer.write(RigCreated(profile=rig_profile_summary(profile)))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    if args.rig_command == "list":
+        writer.write(Started(command="rig list"))
+        profiles = repo.list_rig_profiles()
+        writer.write(RigList(profiles=[rig_profile_summary(p) for p in profiles]))
+        writer.write(Finished(status="success", exit_status=0))
+        return 0
+
+    writer.write(Started(command="rig delete"))
+    try:
+        profile = repo.load_rig_profile(args.profile)
+    except RigError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+
+    users = repo.rolls_using_rig_profile(args.profile)
+    if users:
+        writer.write(
+            ErrorEvent(
+                code=Code.RIG_PROFILE_IN_USE,
                 message=(
                     f"profile {profile.name!r} is locked into "
-                    f"{len(users)} roll(s) by their processing invariants "
+                    f"{len(users)} roll(s) by their stitch invariants "
                     "and cannot be deleted"
                 ),
             )
@@ -1689,11 +2138,8 @@ def _run_flatfield_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    repo.delete_flatfield_profile(args.profile)
-    gain_map_path = Path(profile.gain_map_path)
-    if gain_map_path.exists():
-        gain_map_path.unlink()
-    writer.write(FlatFieldDeleted(profile_id=args.profile))
+    repo.delete_rig_profile(args.profile)
+    writer.write(RigDeleted(profile_id=args.profile))
     writer.write(Finished(status="success", exit_status=0))
     return 0
 
@@ -1712,7 +2158,9 @@ def _run_grid_command(args, writer: EventWriter) -> int:
         name = args.name.strip()
         if not name:
             writer.write(
-                ErrorEvent(code=Code.INVALID_GRID, message="profile name must not be empty")
+                ErrorEvent(
+                    code=Code.INVALID_GRID, message="profile name must not be empty"
+                )
             )
             writer.write(Finished(status="failed", exit_status=1))
             return 1
@@ -1808,16 +2256,20 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
 
 def _run_export_command(args, writer: EventWriter) -> int:
     from scanny_boy.exporter import ExportFailure, parse_downsample, run_export
+    from scanny_boy.roll_lock import RollBusyError, shared_roll_lock
 
     writer.write(Started(command="export"))
     try:
-        outcome = run_export(
-            Path(args.roll),
-            Path(args.output),
-            args.negatives,
-            downsample=parse_downsample(args.downsample),
-            emit=writer.write,
-        )
+        with shared_roll_lock(Path(args.roll)):
+            outcome = run_export(
+                Path(args.roll),
+                Path(args.output),
+                args.negatives,
+                downsample=parse_downsample(args.downsample),
+                emit=writer.write,
+            )
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc)
     except ExportFailure as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
@@ -1843,13 +2295,17 @@ def _run_run_command(
     """The `run` subcommand: mirrors `convert`'s and `stitch`'s event and
     exit-status shape exactly, over `run_full` instead of `run_convert` or
     `run_stitch`."""
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.run_pipeline import RunFailure, run_full
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="run", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope:
+        with (
+            command_cancellation(cancel) as scope,
+            exclusive_roll_lock(Path(args.roll)),
+        ):
             outcome = run_full(
                 Path(args.input),
                 files,
@@ -1861,14 +2317,18 @@ def _run_run_command(
                 jobs=jobs,
                 cancel=scope,
                 emit=writer.write,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
+                auto_crop=args.auto_crop,
                 grid=spec,
+                defer_roll_refresh=args.defer_roll_refresh,
             )
     except RunFailure as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
+    except RollBusyError as exc:
+        return _fail_roll_busy(writer, exc, run_id=run_id)
 
     if outcome.status == "cancelled":
         writer.write(
@@ -2045,13 +2505,35 @@ def _dispatch_command(
         return _run_roll_command(args, writer)
 
     if args.command == "edit":
-        return _run_edit_command(args, writer)
+        from scanny_boy.library import repo
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+        read_only_edits = frozenset(
+            {"list-spots", "list-scratches", "render-preview", "render-region"}
+        )
+        if args.edit_command in read_only_edits or not repo.roll_registered(
+            Path(args.roll)
+        ):
+            return _run_edit_command(args, writer)
+        try:
+            with exclusive_roll_lock(Path(args.roll)):
+                return _run_edit_command(args, writer)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
 
     if args.command == "metadata":
+        if args.metadata_command == "set":
+            from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+            try:
+                with exclusive_roll_lock(Path(args.roll)):
+                    return _run_metadata_command(args, writer)
+            except RollBusyError as exc:
+                return _fail_roll_busy(writer, exc)
         return _run_metadata_command(args, writer)
 
-    if args.command == "flatfield":
-        return _run_flatfield_command(args, writer)
+    if args.command == "rig":
+        return _run_rig_command(args, writer)
 
     if args.command == "grid":
         return _run_grid_command(args, writer)
@@ -2059,12 +2541,30 @@ def _dispatch_command(
     if args.command == "export":
         return _run_export_command(args, writer)
 
+    if args.command == "capture":
+        return _run_capture_command(args, writer)
+
     if args.command == "apply-metadata":
         from scanny_boy.apply_metadata import ApplyMetadataFailure, run_apply_metadata
+        from scanny_boy.library import repo
+        from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
 
         writer.write(Started(command="apply-metadata"))
+        roll_dir = Path(args.roll)
+        if not repo.roll_registered(roll_dir):
+            writer.write(
+                ErrorEvent(
+                    code=Code.ROLL_NOT_FOUND,
+                    message=f"{roll_dir} is not a registered roll",
+                )
+            )
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
         try:
-            outcome = run_apply_metadata(Path(args.roll), emit=writer.write)
+            with exclusive_roll_lock(roll_dir):
+                outcome = run_apply_metadata(roll_dir, emit=writer.write)
+        except RollBusyError as exc:
+            return _fail_roll_busy(writer, exc)
         except ApplyMetadataFailure as exc:
             writer.write(ErrorEvent(code=exc.code, message=exc.message))
             writer.write(Finished(status="failed", exit_status=1))
@@ -2095,7 +2595,7 @@ def _dispatch_command(
                 spec.count if spec is not None else None,
                 out_dir=Path(args.out) if args.out else None,
                 roll_dir=Path(args.roll) if args.roll else None,
-                flatfield_profile_id=args.flatfield,
+                rig_profile_id=args.rig,
                 on_warning=on_warning,
                 grid=spec,
             )
@@ -2126,7 +2626,18 @@ def _dispatch_command(
 
     # prepare — stage 1 of the pipeline. "Convert" is reserved,
     # unambiguously, for the whole `run`.
+    from scanny_boy import calibration
+    from scanny_boy.library import repo
     from scanny_boy.pipeline import ConvertFailure, run_convert
+
+    rig_profile = None
+    if args.rig is not None:
+        try:
+            rig_profile = repo.load_rig_profile(args.rig)
+        except calibration.RigError as exc:
+            writer.write(ErrorEvent(code=exc.code, message=exc.message))
+            writer.write(Finished(status="failed", exit_status=1))
+            return 1
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="prepare", run_id=run_id))
@@ -2147,7 +2658,9 @@ def _dispatch_command(
                 jobs=jobs,
                 cancel=scope,
                 emit=writer.write,
-                flatfield_profile_id=args.flatfield,
+                gain_map=None,
+                rig_profile=rig_profile,
+                flat_field_block=None,
                 grid=spec,
             )
     except ConvertFailure as exc:

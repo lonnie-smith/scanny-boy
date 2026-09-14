@@ -192,13 +192,14 @@ enum FilmKindChoice: String, CaseIterable, Identifiable {
     }
 }
 
-/// The Add Scans sheet's film-type picker. Choosing a value calls
-/// `roll set-film-kind` immediately; Convert stays disabled until one is set.
+/// Film-type picker shared by Add Scans and Capture. Choosing a value calls
+/// `roll set-film-kind` immediately.
 struct FilmKindField: View {
     let filmKind: String?
     let isLocked: Bool
     let isBusy: Bool
     let error: ConfigurationModel.Issue?
+    var unsetHint = "Choose the film type before converting scans."
     let onChoose: (FilmKindChoice) -> Void
 
     @State private var selection: FilmKindChoice?
@@ -224,7 +225,7 @@ struct FilmKindField: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if filmKind == nil {
-                Text("Choose the film type before converting scans.")
+                Text(unsetHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -376,8 +377,143 @@ struct BaseFrameField: View {
     private static let captureInstructions = """
         Frame a piece of leader (or any stretch where clear rebate dominates \
         the frame). Keep bare light and sprocket holes out of the frame. \
-        Expose about two stops darker than your scans, so the rebate sits \
-        near the middle of the camera's histogram. Don't go past three stops.
+        Expose at the same shutter, aperture and ISO as your scans, clear \
+        of clipping.
+        """
+
+    private static func formatLockDate(_ iso: String) -> String {
+        String(iso.prefix(10))
+    }
+}
+
+/// The Add Scans sheet's flat-field reference field.
+/// Choosing a file calls `roll set-flatfield-reference` immediately;
+/// Convert stays disabled until a reference is attached.
+struct FlatFieldReferenceField: View {
+    let flatField: FlatFieldReference?
+    let isBusy: Bool
+    let isAnalyzing: Bool
+    let error: ConfigurationModel.Issue?
+    let onChoose: () -> Void
+    let onReplace: () -> Void
+    let onDropFrame: (URL) -> Void
+    let fileURL: (String) -> URL?
+
+    @State private var isDropTarget = false
+
+    private var acceptsDrop: Bool {
+        !isBusy && flatField?.lockedAt == nil
+    }
+
+    var body: some View {
+        LabeledContent("Flat-field reference") {
+            VStack(alignment: .leading, spacing: 8) {
+                dropZone
+                if isAnalyzing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Building gain map…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let error {
+                    IssueLabel(issue: error, style: .error)
+                }
+            }
+        }
+    }
+
+    private var dropZone: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let flatField {
+                attachedSummary(flatField)
+            } else {
+                emptyState
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isDropTarget ? Color.accentColor : Color.secondary.opacity(flatField == nil ? 0.35 : 0),
+                    style: StrokeStyle(
+                        lineWidth: isDropTarget ? 2 : 1,
+                        dash: flatField == nil && !isDropTarget ? [5, 3] : []
+                    )
+                )
+        }
+        .onDrop(of: [.plainText, .fileURL], isTargeted: acceptsDrop ? $isDropTarget : .constant(false)) {
+            providers in
+            handleDrop(providers)
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard acceptsDrop, let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: String.self) {
+            _ = provider.loadObject(ofClass: String.self) { string, _ in
+                Task { @MainActor in
+                    guard let string,
+                        let names = CatalogueDragSupport.decodeDragPayload(string),
+                        let name = names.first,
+                        let url = fileURL(name)
+                    else { return }
+                    onDropFrame(url)
+                }
+            }
+            return true
+        }
+        Task { @MainActor in
+            if let url = await CatalogueDragSupport.loadFileURL(from: provider) {
+                onDropFrame(url)
+            }
+        }
+        return true
+    }
+
+    @ViewBuilder
+    private func attachedSummary(_ flatField: FlatFieldReference) -> some View {
+        Text(flatField.sourceName)
+            .font(.body.monospaced())
+        Text("\(flatField.referenceWidth) × \(flatField.referenceHeight)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        if let lockedAt = flatField.lockedAt {
+            Text("locked when this roll's first negative was converted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Locked \(Self.formatLockDate(lockedAt)).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Button("Replace…") { onReplace() }
+                .disabled(isBusy)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Drag a bare-light frame here, or choose a file.")
+                .font(.subheadline)
+            Button("Choose…") { onChoose() }
+                .disabled(isBusy)
+            Text(Self.captureInstructions)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private static let captureInstructions = """
+        Photograph the bare light source alone — no film, no board. Use the \
+        same f-stop as your scans; shutter and ISO may differ to avoid clipping.
         """
 
     private static func formatLockDate(_ iso: String) -> String {

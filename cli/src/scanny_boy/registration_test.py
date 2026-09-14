@@ -206,7 +206,10 @@ def test_similarity_from_correspondences_recovers_a_known_scale_rotation_and_tra
     true_scale = 1.017
     true_angle_deg = 4.0
     true_translation = np.array([37.0, -12.5])
-    cos_a, sin_a = np.cos(np.radians(true_angle_deg)), np.sin(np.radians(true_angle_deg))
+    cos_a, sin_a = (
+        np.cos(np.radians(true_angle_deg)),
+        np.sin(np.radians(true_angle_deg)),
+    )
     true_rotation = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
 
     dst = true_scale * (src @ true_rotation.T) + true_translation
@@ -302,12 +305,9 @@ def test_real_sample_pairs_meet_their_gates():
         for i, j in info["overlapping"]:
             result = register_pair(features_by_index[i], features_by_index[j])
             assert result.accepted, (
-                f"{negative_name} {i}-{j} should be accepted: "
-                f"{result.reject_message}"
+                f"{negative_name} {i}-{j} should be accepted: {result.reject_message}"
             )
 
         for i, j in info["sharing_no_film"]:
             result = register_pair(features_by_index[i], features_by_index[j])
-            assert not result.accepted, (
-                f"{negative_name} {i}-{j} should be rejected"
-            )
+            assert not result.accepted, f"{negative_name} {i}-{j} should be rejected"

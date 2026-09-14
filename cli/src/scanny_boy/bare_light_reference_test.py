@@ -22,7 +22,11 @@ from scanny_boy.linear import decode_to_linear
 from scanny_boy.raw_decode import decode_raw
 
 BARE_LIGHT_DNG = (
-    Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "flatfield" / "bare-light.dng"
+    Path(__file__).resolve().parents[3]
+    / "tests"
+    / "fixtures"
+    / "flatfield"
+    / "bare-light.dng"
 )
 
 _requires_bare_light_reference = pytest.mark.skipif(

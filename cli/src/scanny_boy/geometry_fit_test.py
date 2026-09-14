@@ -60,14 +60,23 @@ def _frame_sets(
     a fresh draw per frame, the way the board position and printed-target
     error differ frame to frame."""
     ideal = _grid(9, 13) + np.asarray(offset)
-    observed = forward_distort(ideal, k1, k2, cx, cy, base_camera(FRAME_WIDTH, FRAME_HEIGHT))
+    observed = forward_distort(
+        ideal, k1, k2, cx, cy, base_camera(FRAME_WIDTH, FRAME_HEIGHT)
+    )
     if noise_px:
         observed = observed + rng.normal(0.0, noise_px, observed.shape)
     return _line_sets(observed, 9, 13)
 
 
 def _distorted_sets(
-    k1: float, k2: float, cx: float, cy: float, *, frames: int = 4, noise_px: float = 0.0, seed: int = 0
+    k1: float,
+    k2: float,
+    cx: float,
+    cy: float,
+    *,
+    frames: int = 4,
+    noise_px: float = 0.0,
+    seed: int = 0,
 ):
     """Synthetic calibration frames, grouped one inner list per frame and
     split deterministically like the orchestrator's every-4th holdout:
@@ -205,9 +214,7 @@ def test_jackknife_applies_the_n_minus_1_over_n_factor():
     thetas = np.asarray(estimates)
     n = len(thetas)
     mean, se, relative = jackknife_relative_se(estimates)
-    expected_se = float(
-        np.sqrt((n - 1) / n * np.sum((thetas - thetas.mean()) ** 2))
-    )
+    expected_se = float(np.sqrt((n - 1) / n * np.sum((thetas - thetas.mean()) ** 2)))
     assert mean == pytest.approx(float(thetas.mean()))
     assert se == pytest.approx(expected_se)
     assert relative == pytest.approx(expected_se / float(thetas.mean()))
@@ -225,9 +232,7 @@ def test_heldout_rms_falls_for_real_distortion_and_not_for_straight_input():
     straight_train, straight_heldout = _distorted_sets(
         k1=0.0, k2=0.0, cx=3024.0, cy=2012.0
     )
-    straight = fit_geometry(
-        straight_train, straight_heldout, FRAME_WIDTH, FRAME_HEIGHT
-    )
+    straight = fit_geometry(straight_train, straight_heldout, FRAME_WIDTH, FRAME_HEIGHT)
     assert straight.heldout_rms_before == pytest.approx(0.0, abs=1e-3)
     assert not straight.accepted
 

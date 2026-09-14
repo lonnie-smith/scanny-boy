@@ -118,7 +118,9 @@ def _check_white_balance(settings_list: list[SourceSettings]) -> None:
             + ", ".join(missing),
         )
     base_name, base_wb = normalised[0]
-    differing = [name for name, wb in normalised if not _white_balance_close(wb, base_wb)]
+    differing = [
+        name for name, wb in normalised if not _white_balance_close(wb, base_wb)
+    ]
     if differing:
         raise ConsistencyError(
             Code.CAPTURE_SETTINGS_DIFFER,
@@ -136,7 +138,9 @@ def _check_lens_model(settings_list: list[SourceSettings]) -> list[ConsistencyWa
         for s in settings_list
         if s.lens_model is None
     ]
-    present = [(s.filename, s.lens_model) for s in settings_list if s.lens_model is not None]
+    present = [
+        (s.filename, s.lens_model) for s in settings_list if s.lens_model is not None
+    ]
     if present:
         distinct = {value for _, value in present}
         if len(distinct) > 1:

@@ -44,6 +44,7 @@ struct EditStageView: View {
             FilmstripView(
                 negatives: edit.visibleNegatives,
                 cameraColor: edit.roll?.cameraColor,
+                highlightLock: edit.roll?.highlightLock,
                 isSelected: edit.isSelected,
                 warningIDs: warningIDs
             ) { negativeID, additive, extendingRange in
@@ -156,7 +157,7 @@ private struct PreviewPane: View {
     /// from frame to frame.
     @State private var showsNegative = false
     /// Sticky across negative changes, like `showsNegative`.
-    @State private var selectedTab: EditSidebarTab = .tone
+    @State private var selectedTab: EditSidebarTab = .geometry
     /// Tracks the last render path so pixel-only reloads keep the old frame
     /// visible until the new one is decoded.
     @State private var lastPreviewModeIdentity: String?
@@ -339,6 +340,11 @@ private struct PreviewPane: View {
                 )
             } else if showsNegative {
                 next = await edit.renderPreview(negative, mode: .negative)
+            } else if negative.toneAdjustment == nil {
+                // Untoned negatives may still have on-disk preview PNGs from
+                // the old flat encode — render live through the default print
+                // curve until the cached file is regenerated.
+                next = await edit.renderPreview(negative, mode: displayMode)
             } else if let url = previewURL {
                 next = await ThumbnailLoader.shared.thumbnail(
                     forPreview: url,
@@ -355,7 +361,7 @@ private struct PreviewPane: View {
             // The 1:1 crop is sized in physical pixels; a moved window (or
             // display change) resizes it.
             zoom.invalidate()
-            if zoom.mode == .pixels100 { zoom.fetchCrop() }
+            refreshZoomContext(paneSize: paneSize)
         }
     }
 
@@ -492,12 +498,45 @@ private struct PreviewPane: View {
     }
 
     private var previewGeneration: String {
-        EditModel.renderGeneration(of: negative, cameraColor: edit.roll?.cameraColor)
+        EditModel.renderGeneration(
+            of: negative, cameraColor: edit.roll?.cameraColor, highlightLock: edit.roll?.highlightLock
+        )
     }
 
     private var previewURL: URL? {
         guard let previewPath = negative.previewPath else { return nil }
         return URL(filePath: previewPath)
+    }
+
+    /// The fit preview during crop mode: the image rotates about the crop
+    /// centre (matching `apply_crop`'s warp) while the overlay stays
+    /// axis-aligned. Outside crop mode the image aspect-fits the pane.
+    @ViewBuilder
+    private func cropAwarePreviewImage(_ image: NSImage, container: CGSize) -> some View {
+        if cropSession.isActive, displaySize.width > 0, displaySize.height > 0 {
+            let fit = PreviewZoomModel.fitRect(displaySize: displaySize, container: container)
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.medium)
+                        .frame(width: fit.width, height: fit.height)
+                        .rotationEffect(
+                            .degrees(cropSession.tiltDegrees),
+                            anchor: UnitPoint(
+                                x: cropSession.rect.midX / displaySize.width,
+                                y: cropSession.rect.midY / displaySize.height
+                            )
+                        )
+                        .offset(x: fit.minX, y: fit.minY)
+                }
+        } else {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .aspectRatio(contentMode: .fit)
+        }
     }
 
     @ViewBuilder
@@ -508,10 +547,7 @@ private struct PreviewPane: View {
                     if zoom.mode == .pixels100, negative.output != nil {
                         zoomedCrop
                     } else if let thumbnail {
-                        Image(nsImage: thumbnail.image)
-                            .resizable()
-                            .interpolation(.medium)
-                            .aspectRatio(contentMode: .fit)
+                        cropAwarePreviewImage(thumbnail.image, container: geo.size)
                     } else if isLoadingPreview && negative.isCompleted {
                         PreviewPlaceholder(kind: .loading)
                     } else if negative.isCompleted {
@@ -588,9 +624,8 @@ private struct PreviewPane: View {
 
     /// Markers show while a set exists and repair is off; with repair on
     /// they hide unless the Heal tab is selected — the point of turning
-    /// repair on is to look at the result. Crop mode hides them too: over
-    /// a cropped-and-tilted display the axis-aligned rects have no
-    /// faithful drawing.
+    /// repair on is to look at the result. Crop mode hides them too: the
+    /// live tilt preview rotates the image under an axis-aligned crop box.
     private var showsSpotMarkers: Bool {
         guard let spots = edit.spots, !spots.spots.isEmpty, negative.output != nil else {
             return false
@@ -705,22 +740,25 @@ private struct PreviewPane: View {
     @ViewBuilder
     private var zoomedCrop: some View {
         Color.black
-            .overlay(alignment: .topLeading) {
-                ForEach(zoom.renderedTiles) { rendered in
-                    let tile = rendered.tile
-                    Image(nsImage: tile.image)
-                        .resizable()
-                        .interpolation(.none)
-                        .frame(
-                            width: CGFloat(tile.rect.width) / tile.displayScale,
-                            height: CGFloat(tile.rect.height) / tile.displayScale
-                        )
-                        .offset(zoom.tileScreenOffset(for: tile.rect))
-                        .allowsHitTesting(false)
+            .overlay {
+                ZStack(alignment: .topLeading) {
+                    ForEach(zoom.renderedTiles) { rendered in
+                        let tile = rendered.tile
+                        Image(nsImage: tile.image)
+                            .resizable()
+                            .interpolation(.none)
+                            .frame(
+                                width: CGFloat(tile.rect.width) / tile.displayScale,
+                                height: CGFloat(tile.rect.height) / tile.displayScale
+                            )
+                            .offset(zoom.tileScreenOffset(for: tile.rect))
+                            .allowsHitTesting(false)
+                    }
+                    if zoom.viewportIsLoading {
+                        PreviewPlaceholder(kind: .loading)
+                    }
                 }
-                if zoom.viewportIsLoading {
-                    PreviewPlaceholder(kind: .loading)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .compositingGroup()
             .clipShape(.rect)
@@ -762,8 +800,27 @@ private struct PreviewPane: View {
         // belongs to the full uncropped canvas.
         zoom.reset()
         let canvas = uncroppedDisplaySize
-        if let crop = negative.crop {
-            let preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+        // AC-6: a pending suggest-crop result takes priority over the
+        // stored crop — the Auto button sets it.
+        if let suggestion = edit.pendingCropSuggestion {
+            edit.pendingCropSuggestion = nil
+            var preset = suggestion.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+            if preset == .free {
+                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
+            }
+            cropSession.begin(
+                displaySize: canvas,
+                rect: suggestion.rect,
+                tiltDegrees: suggestion.tiltDegrees,
+                preset: preset
+            )
+        } else if let crop = negative.crop {
+            var preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+            // AC-6: resolve auto crop's preset from the roll format when
+            // the ops-log entry did not carry an explicit label.
+            if preset == .free, crop.source == "auto" {
+                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
+            }
             cropSession.begin(
                 displaySize: canvas,
                 rect: crop.editingRect,
@@ -882,8 +939,8 @@ private struct EditSidebar: View {
         case .color:
             ColorAdjustmentPanel(
                 adjustment: negative.colorAdjustment,
-                isBusy: edit.isSettingColor || edit.isRotating || edit.isDeleting
-                    || edit.isCropping,
+                isBusy: edit.isSettingColor || edit.isSettingTone || edit.isRotating
+                    || edit.isDeleting || edit.isCropping,
                 onScheduleCommit: { adjustment in
                     edit.scheduleColor(targets, adjustment: adjustment)
                 },
@@ -1013,7 +1070,7 @@ private struct GeometryAdjustmentPanel: View {
                     onCommitNow: {}
                 )
                 .accessibilityLabel("Crop tilt")
-                Text("Counter-clockwise tilt of the crop window, ±10°")
+                Text("Counter-clockwise rotation of the image under the crop, ±10°")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1039,6 +1096,12 @@ private struct GeometryAdjustmentPanel: View {
             Button("Original") { cropSession.resetToOriginal() }
                 .disabled(edit.isCropping)
                 .help("Reset the crop window to the full image and clear the ratio preset")
+
+            Button("Auto") {
+                Task { await edit.suggestCrop(negative) }
+            }
+            .disabled(edit.isCropping)
+            .help("Detect the picture boundary and fit a crop to the roll's film format")
         } else {
             Button {
                 onBeginCrop()
@@ -1086,122 +1149,80 @@ private struct ToneAdjustmentPanel: View {
     let onCommitNow: (_ adjustment: ToneAdjustment, _ auto: ToneAutoFlags) -> Void
     let onReset: () -> Void
 
-    private static let gradeRange: ClosedRange<Double> = 50...180
-    private static let snapRange: ClosedRange<Double> = -0.5...0.5
+    private static let snapRange: ClosedRange<Double> = -0.8...1.5
     private static let densityRange: ClosedRange<Double> = 0...2
     private static let shadowDensityRange: ClosedRange<Double> = -0.9...0.9
     private static let highlightDensityRange: ClosedRange<Double> = -0.5...0.5
-    private static let toeRange: ClosedRange<Double> = -1...1
-    private static let widthRange: ClosedRange<Double> = 0.1...5
 
     @State private var values = ToneAdjustment.neutral
+    @State private var isDragging = false
+
+    private func inverted(_ value: Double, in range: ClosedRange<Double>) -> Double {
+        range.upperBound + range.lowerBound - value
+    }
+
+    private var brightness: Double {
+        get { inverted(values.density, in: Self.densityRange) }
+        nonmutating set { values.density = inverted(newValue, in: Self.densityRange) }
+    }
+
+    private var shadows: Double {
+        get { inverted(values.shadowDensity, in: Self.shadowDensityRange) }
+        nonmutating set { values.shadowDensity = inverted(newValue, in: Self.shadowDensityRange) }
+    }
+
+    private var highlights: Double {
+        get { inverted(values.highlightDensity, in: Self.highlightDensityRange) }
+        nonmutating set { values.highlightDensity = inverted(newValue, in: Self.highlightDensityRange) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            sectionHeader("Print")
+            sectionHeader("Tone")
                 sliderRow(
-                    title: "Print Density",
-                    valueLabel: String(format: "%.2f", values.density),
-                    value: $values.density,
+                    title: "Brightness",
+                    valueLabel: String(format: "%.2f", brightness),
+                    value: Binding(get: { brightness }, set: { brightness = $0 }),
                     range: Self.densityRange,
                     step: 0.05,
-                    resetValue: ToneAdjustment.neutral.density,
-                    accessibilityLabel: "Print density",
-                    help: "0.0–2.0, higher is denser",
-                    autoHelp: "Solve the density from this negative's own metering",
+                    resetValue: inverted(ToneAdjustment.neutral.density, in: Self.densityRange),
+                    accessibilityLabel: "Brightness",
+                    help: "0.0–2.0, higher is brighter",
+                    autoHelp: "Solve brightness from this negative's own metering",
                     autoFlag: .density
                 )
                 sliderRow(
-                    title: "Paper Grade",
-                    valueLabel: "R\(Int(values.gradeR))",
-                    value: $values.gradeR,
-                    range: Self.gradeRange,
-                    step: 1,
-                    resetValue: ToneAdjustment.neutral.gradeR,
-                    reversed: true,
-                    accessibilityLabel: "Paper grade",
-                    help: "50–180, lower is harder",
-                    autoHelp: "Solve the grade from this negative's own metering",
-                    autoFlag: .grade
-                )
-                sliderRow(
-                    title: "Snap",
+                    title: "Contrast",
                     valueLabel: String(format: "%+.2f", values.snapGamma),
                     value: $values.snapGamma,
                     range: Self.snapRange,
                     step: 0.05,
-                    resetValue: 0,
-                    accessibilityLabel: "Midtone snap",
-                    help: "Midtone contrast trim"
+                    resetValue: ToneAdjustment.neutral.snapGamma,
+                    accessibilityLabel: "Contrast",
+                    help: "−0.8–1.5, midtone contrast"
                 )
 
                 sectionHeader("Zones")
                 sliderRow(
-                    title: "Shadows Density",
-                    valueLabel: String(format: "%+.2f", values.shadowDensity),
-                    value: $values.shadowDensity,
+                    title: "Shadows",
+                    valueLabel: String(format: "%+.2f", shadows),
+                    value: Binding(get: { shadows }, set: { shadows = $0 }),
                     range: Self.shadowDensityRange,
                     step: 0.05,
                     resetValue: 0,
-                    accessibilityLabel: "Shadows density",
-                    help: "±0.9, positive adds density"
+                    accessibilityLabel: "Shadows",
+                    help: "±0.9, positive brightens"
                 )
                 sliderRow(
-                    title: "Highlights Density",
-                    valueLabel: String(format: "%+.2f", values.highlightDensity),
-                    value: $values.highlightDensity,
+                    title: "Highlights",
+                    valueLabel: String(format: "%+.2f", highlights),
+                    value: Binding(get: { highlights }, set: { highlights = $0 }),
                     range: Self.highlightDensityRange,
                     step: 0.05,
                     resetValue: 0,
-                    accessibilityLabel: "Highlights density",
-                    help: "±0.5, positive adds density"
+                    accessibilityLabel: "Highlights",
+                    help: "±0.5, positive brightens"
                 )
-
-                DisclosureGroup("Curve") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        sliderRow(
-                            title: "Toe",
-                            valueLabel: String(format: "%+.2f", values.toe),
-                            value: $values.toe,
-                            range: Self.toeRange,
-                            step: 0.05,
-                            resetValue: 0,
-                            accessibilityLabel: "Toe",
-                            help: "Shadow roll-off"
-                        )
-                        sliderRow(
-                            title: "Toe Width",
-                            valueLabel: String(format: "%.1f", values.toeWidth),
-                            value: $values.toeWidth,
-                            range: Self.widthRange,
-                            step: 0.1,
-                            resetValue: ToneAdjustment.neutral.toeWidth,
-                            accessibilityLabel: "Toe width",
-                            help: "0.1–5.0"
-                        )
-                        sliderRow(
-                            title: "Shoulder",
-                            valueLabel: String(format: "%+.2f", values.shoulder),
-                            value: $values.shoulder,
-                            range: Self.toeRange,
-                            step: 0.05,
-                            resetValue: 0,
-                            accessibilityLabel: "Shoulder",
-                            help: "Highlight roll-off"
-                        )
-                        sliderRow(
-                            title: "Shoulder Width",
-                            valueLabel: String(format: "%.1f", values.shoulderWidth),
-                            value: $values.shoulderWidth,
-                            range: Self.widthRange,
-                            step: 0.1,
-                            resetValue: ToneAdjustment.neutral.shoulderWidth,
-                            accessibilityLabel: "Shoulder width",
-                            help: "0.1–5.0"
-                        )
-                    }
-                    .padding(.top, 8)
-                }
 
                 Divider()
 
@@ -1211,7 +1232,7 @@ private struct ToneAdjustmentPanel: View {
                         onReset()
                     }
                     .disabled(isBusy)
-                    .help("Remove the adjustment and return to the flat linear preview")
+                    .help("Return every control to the default scan-start curve")
                     Spacer()
                     if isBusy {
                         ProgressView()
@@ -1220,7 +1241,10 @@ private struct ToneAdjustmentPanel: View {
                 }
         }
         .onAppear { syncFromModel() }
-        .onChange(of: adjustment) { syncFromModel() }
+        .onChange(of: adjustment) {
+            guard !isDragging else { return }
+            syncFromModel()
+        }
     }
 
     @ViewBuilder
@@ -1250,7 +1274,7 @@ private struct ToneAdjustmentPanel: View {
                 Spacer()
                 if let autoHelp {
                     Button {
-                        onCommitNow(snappedValues, autoFlag)
+                        commitNow(auto: autoFlag)
                     } label: {
                         Image(systemName: "wand.and.stars")
                     }
@@ -1268,8 +1292,9 @@ private struct ToneAdjustmentPanel: View {
                 step: step,
                 resetValue: resetValue,
                 reversed: reversed,
+                onEditingChanged: { isDragging = $0 },
                 onScheduleCommit: scheduleCommit,
-                onCommitNow: { onCommitNow(snappedValues, []) }
+                onCommitNow: { commitNow(auto: []) }
             )
             .accessibilityLabel(accessibilityLabel)
             Text(help)
@@ -1282,9 +1307,16 @@ private struct ToneAdjustmentPanel: View {
         onScheduleCommit(snappedValues)
     }
 
+    private func commitNow(auto: ToneAutoFlags) {
+        if snappedValues == ToneAdjustment.neutral && auto.isEmpty {
+            onReset()
+        } else {
+            onCommitNow(snappedValues, auto)
+        }
+    }
+
     private var snappedValues: ToneAdjustment {
         ToneAdjustment(
-            gradeR: ToneSlider.snap(values.gradeR, step: 1, range: Self.gradeRange),
             snapGamma: ToneSlider.snap(values.snapGamma, step: 0.05, range: Self.snapRange),
             density: ToneSlider.snap(values.density, step: 0.05, range: Self.densityRange),
             shadowDensity: ToneSlider.snap(
@@ -1292,12 +1324,6 @@ private struct ToneAdjustmentPanel: View {
             ),
             highlightDensity: ToneSlider.snap(
                 values.highlightDensity, step: 0.05, range: Self.highlightDensityRange
-            ),
-            toe: ToneSlider.snap(values.toe, step: 0.05, range: Self.toeRange),
-            toeWidth: ToneSlider.snap(values.toeWidth, step: 0.1, range: Self.widthRange),
-            shoulder: ToneSlider.snap(values.shoulder, step: 0.05, range: Self.toeRange),
-            shoulderWidth: ToneSlider.snap(
-                values.shoulderWidth, step: 0.1, range: Self.widthRange
             )
         )
     }
@@ -1314,6 +1340,7 @@ private struct ToneSlider: View {
     let resetValue: Double
     var reversed: Bool = false
     var trackColors: [Color]? = nil
+    var onEditingChanged: ((Bool) -> Void)? = nil
     let onScheduleCommit: () -> Void
     let onCommitNow: () -> Void
 
@@ -1344,6 +1371,7 @@ private struct ToneSlider: View {
 
     var body: some View {
         Slider(value: sliderValue, in: range, step: step) { editing in
+            onEditingChanged?(editing)
             guard !editing else { return }
             onCommitNow()
         }
@@ -1485,7 +1513,10 @@ private struct ColorAdjustmentPanel: View {
                 ) {
                     String(format: "%.2f", values.separationDamping)
                 }
-                .help("Redistributes dye separation; inactive at neutral separation")
+                .help(
+                    "Amplifies muted color and eases already-vivid areas; "
+                        + "inactive at neutral separation"
+                )
 
                 HStack {
                     Button("Region Reset") { resetRegion() }

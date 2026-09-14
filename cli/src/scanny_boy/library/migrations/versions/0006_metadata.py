@@ -41,9 +41,7 @@ def upgrade() -> None:
         sa.Column("last_used_at", sa.Text(), nullable=False),
         sa.UniqueConstraint("field", "value", name="uq_metadata_values_field_value"),
     )
-    op.create_index(
-        "ix_metadata_values_field", "metadata_values", ["field"]
-    )
+    op.create_index("ix_metadata_values_field", "metadata_values", ["field"])
 
 
 def downgrade() -> None:
