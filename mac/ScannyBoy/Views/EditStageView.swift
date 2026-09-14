@@ -1124,13 +1124,10 @@ private struct ToneAdjustmentPanel: View {
     let onCommitNow: (_ adjustment: ToneAdjustment, _ auto: ToneAutoFlags) -> Void
     let onReset: () -> Void
 
-    private static let gradeRange: ClosedRange<Double> = 50...180
     private static let snapRange: ClosedRange<Double> = -0.8...1.5
     private static let densityRange: ClosedRange<Double> = 0...2
     private static let shadowDensityRange: ClosedRange<Double> = -0.9...0.9
     private static let highlightDensityRange: ClosedRange<Double> = -0.5...0.5
-    private static let toeRange: ClosedRange<Double> = -1...1
-    private static let widthRange: ClosedRange<Double> = 0.1...5
 
     @State private var values = ToneAdjustment.neutral
     @State private var isDragging = false
@@ -1201,63 +1198,6 @@ private struct ToneAdjustmentPanel: View {
                     accessibilityLabel: "Highlights",
                     help: "±0.5, positive brightens"
                 )
-
-                DisclosureGroup("Curve") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        sliderRow(
-                            title: "End Contrast",
-                            valueLabel: String(format: "%.0f", values.gradeR),
-                            value: $values.gradeR,
-                            range: Self.gradeRange,
-                            step: 1,
-                            resetValue: ToneAdjustment.neutral.gradeR,
-                            reversed: true,
-                            accessibilityLabel: "End contrast",
-                            help: "50–180, lower is punchier in the ends"
-                        )
-                        sliderRow(
-                            title: "Toe",
-                            valueLabel: String(format: "%+.2f", values.toe),
-                            value: $values.toe,
-                            range: Self.toeRange,
-                            step: 0.05,
-                            resetValue: ToneAdjustment.neutral.toe,
-                            accessibilityLabel: "Toe",
-                            help: "Shadow roll-off"
-                        )
-                        sliderRow(
-                            title: "Toe Width",
-                            valueLabel: String(format: "%.1f", values.toeWidth),
-                            value: $values.toeWidth,
-                            range: Self.widthRange,
-                            step: 0.1,
-                            resetValue: ToneAdjustment.neutral.toeWidth,
-                            accessibilityLabel: "Toe width",
-                            help: "0.1–5.0"
-                        )
-                        sliderRow(
-                            title: "Shoulder",
-                            valueLabel: String(format: "%+.2f", values.shoulder),
-                            value: $values.shoulder,
-                            range: Self.toeRange,
-                            step: 0.05,
-                            resetValue: ToneAdjustment.neutral.shoulder,
-                            accessibilityLabel: "Shoulder",
-                            help: "Highlight roll-off"
-                        )
-                        sliderRow(
-                            title: "Shoulder Width",
-                            valueLabel: String(format: "%.1f", values.shoulderWidth),
-                            value: $values.shoulderWidth,
-                            range: Self.widthRange,
-                            step: 0.1,
-                            resetValue: ToneAdjustment.neutral.shoulderWidth,
-                            accessibilityLabel: "Shoulder width",
-                            help: "0.1–5.0"
-                        )
-                    }
-                    .padding(.top, 8)
-                }
 
                 Divider()
 
@@ -1352,7 +1292,6 @@ private struct ToneAdjustmentPanel: View {
 
     private var snappedValues: ToneAdjustment {
         ToneAdjustment(
-            gradeR: ToneSlider.snap(values.gradeR, step: 1, range: Self.gradeRange),
             snapGamma: ToneSlider.snap(values.snapGamma, step: 0.05, range: Self.snapRange),
             density: ToneSlider.snap(values.density, step: 0.05, range: Self.densityRange),
             shadowDensity: ToneSlider.snap(
@@ -1360,12 +1299,6 @@ private struct ToneAdjustmentPanel: View {
             ),
             highlightDensity: ToneSlider.snap(
                 values.highlightDensity, step: 0.05, range: Self.highlightDensityRange
-            ),
-            toe: ToneSlider.snap(values.toe, step: 0.05, range: Self.toeRange),
-            toeWidth: ToneSlider.snap(values.toeWidth, step: 0.1, range: Self.widthRange),
-            shoulder: ToneSlider.snap(values.shoulder, step: 0.05, range: Self.toeRange),
-            shoulderWidth: ToneSlider.snap(
-                values.shoulderWidth, step: 0.1, range: Self.widthRange
             )
         )
     }

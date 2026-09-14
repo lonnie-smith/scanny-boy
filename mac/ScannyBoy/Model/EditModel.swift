@@ -841,15 +841,10 @@ final class EditModel {
             let turns = event.rotationQuarterTurns
         else { return }
         let negative = manifest.negatives[index]
-        var toneGradeR = negative.toneGradeR
         var toneSnapGamma = negative.toneSnapGamma
         var toneDensity = negative.toneDensity
         var toneShadowDensity = negative.toneShadowDensity
         var toneHighlightDensity = negative.toneHighlightDensity
-        var toneToe = negative.toneToe
-        var toneToeWidth = negative.toneToeWidth
-        var toneShoulder = negative.toneShoulder
-        var toneShoulderWidth = negative.toneShoulderWidth
         var colorWbCyan = negative.colorWbCyan
         var colorWbMagenta = negative.colorWbMagenta
         var colorWbYellow = negative.colorWbYellow
@@ -866,25 +861,15 @@ final class EditModel {
         var colorTemperature = negative.colorTemperature
         if let recorded = event.recordedTone {
             if let tone = recorded {
-                toneGradeR = tone.gradeR
                 toneSnapGamma = tone.snapGamma
                 toneDensity = tone.density
                 toneShadowDensity = tone.shadowDensity
                 toneHighlightDensity = tone.highlightDensity
-                toneToe = tone.toe
-                toneToeWidth = tone.toeWidth
-                toneShoulder = tone.shoulder
-                toneShoulderWidth = tone.shoulderWidth
             } else {
-                toneGradeR = nil
                 toneSnapGamma = nil
                 toneDensity = nil
                 toneShadowDensity = nil
                 toneHighlightDensity = nil
-                toneToe = nil
-                toneToeWidth = nil
-                toneShoulder = nil
-                toneShoulderWidth = nil
             }
         }
         if let recorded = event.recordedColor {
@@ -938,15 +923,10 @@ final class EditModel {
                 flippedHorizontally: event.flippedHorizontally
                     ?? negative.flippedHorizontally,
                 rectification: negative.rectification,
-                toneGradeR: toneGradeR,
                 toneSnapGamma: toneSnapGamma,
                 toneDensity: toneDensity,
                 toneShadowDensity: toneShadowDensity,
                 toneHighlightDensity: toneHighlightDensity,
-                toneToe: toneToe,
-                toneToeWidth: toneToeWidth,
-                toneShoulder: toneShoulder,
-                toneShoulderWidth: toneShoulderWidth,
                 colorWbCyan: colorWbCyan,
                 colorWbMagenta: colorWbMagenta,
                 colorWbYellow: colorWbYellow,

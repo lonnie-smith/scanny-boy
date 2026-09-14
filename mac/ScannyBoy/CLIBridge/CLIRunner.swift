@@ -332,14 +332,14 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--grade R --snap G | --reset)`
+    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--snap G ... | --reset)`
     ///
-    /// Records the preview tone adjustment — grade, contrast, and density —
-    /// per selected negative, or resets it to the default scan-start curve
-    /// with `reset`. The op is a state, not a transform: the
-    /// latest one wins and a trailing `tone` op is coalesced in place.
-    /// Never touches the published TIFFs; the preview is regenerated with
-    /// the tone curve composed into the display encode.
+    /// Records the preview tone adjustment — contrast and density — per
+    /// selected negative, or resets it to the default scan-start curve with
+    /// `reset`. The op is a state, not a transform: the latest one wins and
+    /// a trailing `tone` op is coalesced in place. Never touches the
+    /// published TIFFs; the preview is regenerated with the tone curve
+    /// composed into the display encode.
     public static func editTone(
         roll: URL,
         negatives: [String],
@@ -354,11 +354,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            if auto.contains(.grade) {
-                arguments.append("--auto-grade")
-            } else {
-                arguments.append(contentsOf: ["--grade", String(adjustment.gradeR)])
-            }
             arguments.append(contentsOf: ["--snap", String(adjustment.snapGamma)])
             if auto.contains(.density) {
                 arguments.append("--auto-density")
@@ -368,12 +363,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--shadow-density", String(adjustment.shadowDensity)])
             arguments.append(
                 contentsOf: ["--highlight-density", String(adjustment.highlightDensity)]
-            )
-            arguments.append(contentsOf: ["--toe", String(adjustment.toe)])
-            arguments.append(contentsOf: ["--toe-width", String(adjustment.toeWidth)])
-            arguments.append(contentsOf: ["--shoulder", String(adjustment.shoulder)])
-            arguments.append(
-                contentsOf: ["--shoulder-width", String(adjustment.shoulderWidth)]
             )
         } else {
             arguments.append("--reset")

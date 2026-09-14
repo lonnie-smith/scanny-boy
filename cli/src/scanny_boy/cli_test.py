@@ -35,11 +35,10 @@ from scanny_boy.work_dir_support import (
 SCHEMA = load_schema()
 
 
-def _tone_params(grade_r: float = 90.0, snap_gamma: float = 0.2, **overrides: float):
+def _tone_params(snap_gamma: float = 0.2, **overrides: float):
     from scanny_boy import tone
 
-    params = dataclasses.asdict(tone.NEUTRAL)
-    params["grade_r"] = grade_r
+    params = {key: dataclasses.asdict(tone.NEUTRAL)[key] for key in tone.TONE_PARAM_KEYS}
     params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
@@ -1372,8 +1371,6 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
             str(roll_dir),
             "--negative",
             negative.negative_id,
-            "--grade",
-            "160",
             "--snap",
             "0.3",
         ]
@@ -1393,7 +1390,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     from scanny_boy import color
     from scanny_boy.edits_test import _tone_params
 
-    tone_params = _tone_params(160.0, 0.3)
+    tone_params = _tone_params(0.3)
 
     meter = color.read_metering(
         negative.normalization, highlight_lock=roll.highlight_lock
@@ -1510,8 +1507,6 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, ca
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
             "--snap",
             "0.2",
         ]
@@ -1522,7 +1517,7 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, ca
     assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
     assert events[0]["command"] == "edit tone"
     assert events[1]["edit"]["op"] == "tone"
-    assert events[1]["edit"]["params"] == _tone_params(90.0, 0.2)
+    assert events[1]["edit"]["params"] == _tone_params(0.2)
     assert Path(events[1]["preview_path"]).exists()
     assert events[2]["status"] == "success"
     assert err == ""
@@ -1542,8 +1537,6 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--grade",
-                "90",
                 "--snap",
                 "0.2",
             ]
@@ -1570,7 +1563,7 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
     assert edits[1]["params"] == _reset_tone_params()
 
 
-def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
+def test_edit_tone_needs_at_least_one_flag_or_reset(work_dir, capsys, tmp_path):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1585,8 +1578,6 @@ def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
         ]
     )
 
@@ -1596,7 +1587,7 @@ def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
     assert events[1]["code"] == "INVALID_EDIT"
 
 
-def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys, tmp_path):
+def test_edit_tone_accepts_snap_only(work_dir, capsys, tmp_path):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1611,8 +1602,29 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
+            "--snap",
+            "0.2",
+        ]
+    )
+
+    assert status == 0
+
+
+def test_edit_tone_round_trips_all_four_flags_through_roll_info(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
             "--snap",
             "0.2",
             "--density",
@@ -1621,14 +1633,6 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
             "0.1",
             "--highlight-density",
             "-0.1",
-            "--toe",
-            "0.3",
-            "--toe-width",
-            "3.0",
-            "--shoulder",
-            "-0.2",
-            "--shoulder-width",
-            "4.0",
         ]
     )
     assert status == 0
@@ -1638,15 +1642,12 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
     assert status == 0
     events, _err = _stdout_events(capsys)
     negative = events[1]["manifest"]["negatives"][0]
-    assert negative["tone_grade_r"] == 90.0
     assert negative["tone_snap_gamma"] == 0.2
     assert negative["tone_density"] == 1.2
     assert negative["tone_shadow_density"] == 0.1
     assert negative["tone_highlight_density"] == -0.1
-    assert negative["tone_toe"] == 0.3
-    assert negative["tone_toe_width"] == 3.0
-    assert negative["tone_shoulder"] == -0.2
-    assert negative["tone_shoulder_width"] == 4.0
+    assert "tone_grade_r" not in negative
+    assert "tone_toe" not in negative
 
 
 def _color_params(**overrides: float):
@@ -1852,7 +1853,6 @@ def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_pat
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-grade",
             "--auto-density",
             "--snap",
             "0",
@@ -1861,9 +1861,8 @@ def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_pat
     assert status == 0
     events, _err = _stdout_events(capsys)
     density = events[1]["edit"]["params"]["density"]
-    grade = events[1]["edit"]["params"]["grade_r"]
     assert density != 1.0
-    assert grade != 115.0
+    assert "grade_r" not in events[1]["edit"]["params"]
 
 
 def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_path):
@@ -1885,7 +1884,6 @@ def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_pat
             "--negative",
             negative_id,
             "--auto-density",
-            "--auto-grade",
             "--snap",
             "0",
         ]
@@ -1893,8 +1891,8 @@ def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_pat
     assert status == 0
     events, _err = _stdout_events(capsys)
     warnings = [event for event in events if event["event"] == "warning"]
-    assert len(warnings) == 2
-    assert all(event["code"] == "TONE_METERING_UNAVAILABLE" for event in warnings)
+    assert len(warnings) == 1
+    assert warnings[0]["code"] == "TONE_METERING_UNAVAILABLE"
 
 
 def test_edit_tone_rejects_density_with_auto_density(work_dir, capsys, tmp_path):
@@ -1915,64 +1913,11 @@ def test_edit_tone_rejects_density_with_auto_density(work_dir, capsys, tmp_path)
             "--density",
             "1.2",
             "--auto-density",
-            "--grade",
-            "115",
             "--snap",
             "0",
         ]
     )
     assert status == 2
-
-
-def test_edit_tone_toe_only_change_regenerates_the_preview(work_dir, capsys, tmp_path):
-    roll_dir = make_roll_dir(tmp_path)
-    outcome = run_stitch_with_defaults(work_dir, roll_dir)
-    assert outcome.status == "complete"
-    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    capsys.readouterr()
-
-    assert (
-        main(
-            [
-                "edit",
-                "tone",
-                "--roll",
-                str(roll_dir),
-                "--negative",
-                negative_id,
-                "--grade",
-                "115",
-                "--snap",
-                "0",
-            ]
-        )
-        == 0
-    )
-    events, _ = _stdout_events(capsys)
-    base_preview = Path(events[1]["preview_path"]).read_bytes()
-
-    assert (
-        main(
-            [
-                "edit",
-                "tone",
-                "--roll",
-                str(roll_dir),
-                "--negative",
-                negative_id,
-                "--grade",
-                "115",
-                "--snap",
-                "0",
-                "--toe",
-                "0.5",
-            ]
-        )
-        == 0
-    )
-    events, _ = _stdout_events(capsys)
-    toe_preview = Path(events[1]["preview_path"]).read_bytes()
-    assert toe_preview != base_preview
 
 
 def test_exit_status_one_when_anything_was_skipped(work_dir, capsys, tmp_path):

@@ -990,7 +990,7 @@ def render_preview(
     the net crop window included.
     `mode` is `"positive"` (the inverted look, always what the managed
     on-disk preview holds; `tone_params` — the net `tone` op's
-    `{"grade_r", "snap_gamma"}` — composes into its LUT exactly as it does
+    the four user tone keys — composes into its LUT exactly as it does
     there) or `"negative"` (the un-inverted density view, which no tone
     ever reaches — `tone_params` is ignored in that mode). Returns the
     written PNG's `(width, height)`."""

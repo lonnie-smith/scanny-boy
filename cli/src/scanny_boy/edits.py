@@ -259,13 +259,11 @@ def run_edit_tone(
     params: dict[str, float | None] | None,
     *,
     auto_density: bool = False,
-    auto_grade: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview tone adjustment — the full
-    nine-key tone state, or all `None` for the reset to the default
-    scan-start curve (see `tone.py`). Auto flags solve density and/or grade
-    from each
+    four-key tone state, or all `None` for the reset to the default
+    scan-start curve (see `tone.py`). Auto Density solves density from each
     negative's recorded normalization before validation.
 
     The op is a state, not a transform: the latest one wins and a trailing
@@ -275,7 +273,7 @@ def run_edit_tone(
     from scanny_boy import auto_tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
-    if roll.refresh_pending and (auto_density or auto_grade):
+    if roll.refresh_pending and auto_density:
         emit(
             WarningEvent(
                 code=Code.ROLL_REFRESH_PENDING,
@@ -289,36 +287,21 @@ def run_edit_tone(
     results: list[dict] = []
     for negative in negatives:
         solved = dict(params or {key: None for key in repo.validated_tone_params(None)})
-        if auto_density or auto_grade:
+        if auto_density:
             record = negative.normalization
-            if auto_density:
-                value = auto_tone.solve_density(record, roll.highlight_lock)
-                if value is None:
-                    emit(
-                        WarningEvent(
-                            code=Code.TONE_METERING_UNAVAILABLE,
-                            message=(
-                                f"{negative.negative_id}: normalization metering "
-                                "unavailable; density left unchanged"
-                            ),
-                        )
+            value = auto_tone.solve_density(record, roll.highlight_lock)
+            if value is None:
+                emit(
+                    WarningEvent(
+                        code=Code.TONE_METERING_UNAVAILABLE,
+                        message=(
+                            f"{negative.negative_id}: normalization metering "
+                            "unavailable; density left unchanged"
+                        ),
                     )
-                else:
-                    solved["density"] = value
-            if auto_grade:
-                value = auto_tone.solve_grade(record, roll.highlight_lock)
-                if value is None:
-                    emit(
-                        WarningEvent(
-                            code=Code.TONE_METERING_UNAVAILABLE,
-                            message=(
-                                f"{negative.negative_id}: normalization metering "
-                                "unavailable; grade left unchanged"
-                            ),
-                        )
-                    )
-                else:
-                    solved["grade_r"] = value
+                )
+            else:
+                solved["density"] = value
         try:
             validated = repo.validated_tone_params(solved)
         except ValueError as exc:

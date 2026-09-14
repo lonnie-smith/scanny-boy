@@ -137,7 +137,7 @@ def test_render_region_negative_mode_encodes_without_inversion(tmp_path):
     rect = render_region(
         tiff_path,
         10, 5, 20, 12,
-        tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+        tone_params={"snap_gamma": 0.3},
         destination=destination,
         mode="negative",
     )
@@ -400,15 +400,10 @@ def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
     params = {
-        "grade_r": 70.0,
         "snap_gamma": 0.3,
         "density": tone.DENSITY_REFERENCE,
         "shadow_density": 0.0,
         "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
     }
     repo.append_tone_edit(roll_dir, negative.negative_id, params)
     # The same canonical path is rewritten in place.
@@ -934,7 +929,7 @@ def test_preview_cache_hits_across_tone_changes(tmp_path):
         previews.render_preview(
             tiff_path,
             tmp_path / "graded.png",
-            tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+            tone_params={"snap_gamma": 0.3},
             mode="positive",
         )
     finally:

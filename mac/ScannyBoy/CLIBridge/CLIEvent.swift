@@ -19,7 +19,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
     /// the `INVALID_GRID` error code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
-    /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// `tone_snap_gamma` fields in the roll manifest).
     /// Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
     /// required on `roll init` only; `run`/`stitch` read `film.kind` from
@@ -65,7 +65,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 22
+    public static let supportedProtocolVersion = 23
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -372,28 +372,20 @@ extension CLIEvent {
     }
 
     /// The recorded op's tone params, when it is a `tone` op: its `params`
-    /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
-    /// reset to the default scan-start curve). The geometric ops carry no tone keys, so
+    /// always name all four user keys (explicit nulls for the reset to the
+    /// default scan-start curve). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
     public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
-            case .some = params["grade_r"]
+            case .some = params["snap_gamma"]
         else { return nil }
-        guard let gradeR = params["grade_r"]?.doubleValue,
-            let snapGamma = params["snap_gamma"]?.doubleValue
-        else { return .some(nil) }
+        guard let snapGamma = params["snap_gamma"]?.doubleValue else { return .some(nil) }
         return .some(
             ToneAdjustment(
-                gradeR: gradeR,
                 snapGamma: snapGamma,
                 density: params["density"]?.doubleValue ?? ToneAdjustment.neutral.density,
                 shadowDensity: params["shadow_density"]?.doubleValue ?? 0,
-                highlightDensity: params["highlight_density"]?.doubleValue ?? 0,
-                toe: params["toe"]?.doubleValue ?? 0,
-                toeWidth: params["toe_width"]?.doubleValue ?? ToneAdjustment.neutral.toeWidth,
-                shoulder: params["shoulder"]?.doubleValue ?? 0,
-                shoulderWidth: params["shoulder_width"]?.doubleValue
-                    ?? ToneAdjustment.neutral.shoulderWidth
+                highlightDensity: params["highlight_density"]?.doubleValue ?? 0
             )
         )
     }
