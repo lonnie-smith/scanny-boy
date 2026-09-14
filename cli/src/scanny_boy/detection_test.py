@@ -14,8 +14,10 @@ def _film_like_frame(height: int, width: int, *, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:height, 0:width].astype(np.float64)
 
-    base = 0.5 + 0.3 * np.sin(xx / width * 3 * np.pi) + 0.15 * np.cos(
-        yy / height * 2 * np.pi
+    base = (
+        0.5
+        + 0.3 * np.sin(xx / width * 3 * np.pi)
+        + 0.15 * np.cos(yy / height * 2 * np.pi)
     )
     image = np.stack([base, base, base], axis=-1)
 

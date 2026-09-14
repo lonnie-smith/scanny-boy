@@ -371,17 +371,15 @@ def _read_settings_and_check_consistency(
     # stream; `prepare`/`run` must emit them too, so the same selection
     # never warns under one command and stays silent under another.
     for warning in result.warnings:
-        emit(
-            WarningEvent(
-                run_id=run_id, code=warning.code, message=warning.message
-            )
-        )
+        emit(WarningEvent(run_id=run_id, code=warning.code, message=warning.message))
 
     return settings_list
 
 
 def hash_sources(
-    input_dir: Path, selected: list[str], settings_list: list[SourceSettings] | None = None
+    input_dir: Path,
+    selected: list[str],
+    settings_list: list[SourceSettings] | None = None,
 ) -> list[SourceRecord]:
     """`settings_list`, when given (same order as `selected` —
     `_read_settings_and_check_consistency`'s already-read EXIF), threads
@@ -426,9 +424,7 @@ def build_curated_metadata(settings_list: list[SourceSettings]) -> CuratedMetada
     # The camera model is the EXIF make/model joined; a lone one of the two
     # is used alone. Recorded for the roll manifest's `camera_color` block
     # block.
-    camera_model = " ".join(
-        part for part in (first.make, first.model) if part
-    ) or None
+    camera_model = " ".join(part for part in (first.make, first.model) if part) or None
     return CuratedMetadata(
         exposure_time=str(first.exposure_time),
         f_number=str(first.f_number),

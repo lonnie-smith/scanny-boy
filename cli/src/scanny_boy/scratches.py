@@ -150,8 +150,7 @@ def _film_extent_px(
 
 def _chroma_signal(val: np.ndarray, spans: np.ndarray) -> np.ndarray:
     return (
-        spans[2] * val[..., 2]
-        - (spans[0] * val[..., 0] + spans[1] * val[..., 1]) / 2.0
+        spans[2] * val[..., 2] - (spans[0] * val[..., 0] + spans[1] * val[..., 1]) / 2.0
     )
 
 
@@ -336,7 +335,7 @@ def _sits_on_encode_rail(val: np.ndarray, centres: np.ndarray, n_bands: int) -> 
     rail_count = 0
     for b in range(n_bands):
         row = min(b * BAND_PX + BAND_PX // 2, height - 1)
-        cx = int(round(centres[b]))
+        cx = round(centres[b])
         cx = min(max(cx, 0), width - 1)
         sample = val[row, cx]
         if float(sample.min()) <= rail_lo or float(sample.max()) >= rail_hi:
@@ -365,9 +364,7 @@ def _is_step_edge(val: np.ndarray, centres: np.ndarray, n_bands: int) -> bool:
     return total > 0 and step_count > total / 2
 
 
-def _core_depths(
-    val: np.ndarray, centres: np.ndarray, n_bands: int
-) -> np.ndarray:
+def _core_depths(val: np.ndarray, centres: np.ndarray, n_bands: int) -> np.ndarray:
     height, width = val.shape[:2]
     depths = np.zeros(3, dtype=np.float64)
     for b in range(n_bands):
@@ -596,7 +593,9 @@ def detect(
             min_len = min(len(c.centres), len(k.centres))
             if min_len == 0:
                 continue
-            if np.any(np.abs(c.centres[:min_len] - k.centres[:min_len]) < PATH_SUPPRESS_PX):
+            if np.any(
+                np.abs(c.centres[:min_len] - k.centres[:min_len]) < PATH_SUPPRESS_PX
+            ):
                 overlap = True
                 break
         if not overlap:
@@ -637,9 +636,7 @@ def _fit_scratch(val: np.ndarray, candidate: Candidate) -> ScratchFit:
         x1_c = min(width, x1)
         strip = val[row_start:row_end, x0_c:x1_c]
         if pad_left > 0 or pad_right > 0:
-            strip = np.pad(
-                strip, ((0, 0), (pad_left, pad_right), (0, 0)), mode="edge"
-            )
+            strip = np.pad(strip, ((0, 0), (pad_left, pad_right), (0, 0)), mode="edge")
         strips.append(strip)
         left_bg = strip[:, : STRIP_HALF_WIDTH - BG_MARGIN + 1].mean(axis=1)
         right_bg = strip[:, STRIP_HALF_WIDTH + BG_MARGIN - 1 :].mean(axis=1)
@@ -821,7 +818,6 @@ def _lookup_correction(
     half_w: int,
 ) -> np.ndarray:
     """Bilinear lookup: u and level are (N,) and (N,3). Returns (N,3)."""
-    n_bins = table.shape[0]
     strip_w = table.shape[1]
     u_idx = u + half_w
     u0 = np.floor(u_idx).astype(int)

@@ -142,7 +142,9 @@ def build_exif_tags(fields: NestedExifFields) -> dict[int, dict]:
     return tags
 
 
-def write_nested_exif(base_path: Path, final_path: Path, fields: NestedExifFields) -> None:
+def write_nested_exif(
+    base_path: Path, final_path: Path, fields: NestedExifFields
+) -> None:
     """Read `base_path`, add the nested EXIF IFD, and write `final_path`.
     Leaves `base_path` untouched — callers decide when it is safe to
     remove (see `finalize_tiff`)."""

@@ -803,9 +803,7 @@ def display_crop_window_to_tiff(
     x, y, w, h = rect
     live = crop_is_live(crop_params, (tiff_h, tiff_w)) and not full_frame
     stage_h, stage_w = (
-        (int(crop_params["h"]), int(crop_params["w"]))
-        if live
-        else (tiff_h, tiff_w)
+        (int(crop_params["h"]), int(crop_params["w"])) if live else (tiff_h, tiff_w)
     )
     r = (-int(quarter_turns)) % 4
     centre_x, centre_y = x + (w - 1) / 2.0, y + (h - 1) / 2.0
@@ -1401,7 +1399,13 @@ def render_region(
 # lossless-geometry only. The crop op joins too — its
 # window changes which pixels exist, and a tilted window is a warp.
 PREVIEW_OPS = {"cw", "ccw", "flip"}
-_STATE_PREVIEW_OPS = {repo.TONE_OP, repo.COLOR_OP, repo.SPOTS_OP, repo.SCRATCHES_OP, repo.CROP_OP}
+_STATE_PREVIEW_OPS = {
+    repo.TONE_OP,
+    repo.COLOR_OP,
+    repo.SPOTS_OP,
+    repo.SCRATCHES_OP,
+    repo.CROP_OP,
+}
 
 
 def ensure_preview(
@@ -1557,9 +1561,7 @@ def sync_previews(
         write_roll_manifest(roll_dir, manifest)
 
 
-def transforms_for(
-    manifest, roll_dir: Path
-) -> dict[str, repo.EditState]:
+def transforms_for(manifest, roll_dir: Path) -> dict[str, repo.EditState]:
     """Net state per negative id — for `roll info` augmentation."""
     return {
         negative.negative_id: repo.net_edit_state(roll_dir, negative.negative_id)

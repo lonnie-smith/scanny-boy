@@ -71,6 +71,7 @@ _OUTPUT_CHUNK = 4 * 1024 * 1024
 
 # --- ctypes mirrors of libjxl's ABI ---------------------------------------
 
+
 class JxlPreviewHeader(ctypes.Structure):
     _fields_ = [
         ("xsize", ctypes.c_uint32),
@@ -272,9 +273,7 @@ class _JxlApi:
         self.JxlEncoderCloseBoxes.restype = None
 
         self.JxlEncoderInitBasicInfo = need("JxlEncoderInitBasicInfo")
-        self.JxlEncoderInitBasicInfo.argtypes = [
-            ctypes.POINTER(JxlBasicInfo)
-        ]
+        self.JxlEncoderInitBasicInfo.argtypes = [ctypes.POINTER(JxlBasicInfo)]
         self.JxlEncoderInitBasicInfo.restype = None
 
         self.JxlEncoderSetBasicInfo = need("JxlEncoderSetBasicInfo")
@@ -309,9 +308,7 @@ class _JxlApi:
         ]
         self.JxlEncoderFrameSettingsCreate.restype = ctypes.c_void_p
 
-        self.JxlEncoderFrameSettingsSetOption = need(
-            "JxlEncoderFrameSettingsSetOption"
-        )
+        self.JxlEncoderFrameSettingsSetOption = need("JxlEncoderFrameSettingsSetOption")
         self.JxlEncoderFrameSettingsSetOption.argtypes = [
             ctypes.c_void_p,
             ctypes.c_int,
@@ -446,7 +443,12 @@ def encode_jxl(
         info.num_color_channels = n_channels
         info.num_extra_channels = 0
         info.alpha_bits = 0
-        _check(api, enc, "SetBasicInfo", api.JxlEncoderSetBasicInfo(enc, ctypes.byref(info)))
+        _check(
+            api,
+            enc,
+            "SetBasicInfo",
+            api.JxlEncoderSetBasicInfo(enc, ctypes.byref(info)),
+        )
         _check(
             api,
             enc,
@@ -536,7 +538,9 @@ def encode_jxl(
         while True:
             next_out = ctypes.cast(buf, ctypes.c_char_p)
             avail = ctypes.c_size_t(_OUTPUT_CHUNK)
-            status = api.JxlEncoderProcessOutput(enc, ctypes.byref(next_out), ctypes.byref(avail))
+            status = api.JxlEncoderProcessOutput(
+                enc, ctypes.byref(next_out), ctypes.byref(avail)
+            )
             if status == JXL_ENC_ERROR:
                 raise _EncodeError("ProcessOutput", api.JxlEncoderGetError(enc))
             produced = _OUTPUT_CHUNK - avail.value
@@ -568,9 +572,7 @@ def write_jxl(
     """
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        encoded = encode_jxl(
-            pixels, icc_profile=icc_profile, exif=exif, xmp=xmp
-        )
+        encoded = encode_jxl(pixels, icc_profile=icc_profile, exif=exif, xmp=xmp)
         tmp_path.write_bytes(encoded)
         tmp_path.replace(path)
     except BaseException:

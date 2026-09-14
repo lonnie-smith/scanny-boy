@@ -58,8 +58,10 @@ class BaseTiffTags:
 def write_base_tiff(path: Path, pixels: np.ndarray, tags: BaseTiffTags) -> None:
     """Write `pixels` (`(height, width, 3)` or, on a mono roll, `(height,
     width)` `uint16`) to `path`."""
-    if pixels.dtype != np.uint16 or pixels.ndim not in (2, 3) or (
-        pixels.ndim == 3 and pixels.shape[2] != 3
+    if (
+        pixels.dtype != np.uint16
+        or pixels.ndim not in (2, 3)
+        or (pixels.ndim == 3 and pixels.shape[2] != 3)
     ):
         raise ValueError(
             f"expected (height, width) or (height, width, 3) uint16 pixels, "
@@ -70,12 +72,20 @@ def write_base_tiff(path: Path, pixels: np.ndarray, tags: BaseTiffTags) -> None:
         raise ValueError("refusing to write a TIFF without an embedded ICC profile")
 
     extratags: list[tuple] = [
-        (Tag.Orientation.value, tifffile.DATATYPE.SHORT, 1, (OUTPUT_ORIENTATION,), True),
+        (
+            Tag.Orientation.value,
+            tifffile.DATATYPE.SHORT,
+            1,
+            (OUTPUT_ORIENTATION,),
+            True,
+        ),
     ]
     if tags.make is not None:
         extratags.append((Tag.Make.value, tifffile.DATATYPE.ASCII, 0, tags.make, True))
     if tags.model is not None:
-        extratags.append((Tag.Model.value, tifffile.DATATYPE.ASCII, 0, tags.model, True))
+        extratags.append(
+            (Tag.Model.value, tifffile.DATATYPE.ASCII, 0, tags.model, True)
+        )
 
     # A single-channel (collapsed mono) image is
     # grayscale data and must not be tagged rgb.

@@ -80,12 +80,13 @@ class ExportMetadata:
     @property
     def has_any(self) -> bool:
         return any(
-            getattr(self, field.name) is not None
-            for field in dataclasses.fields(self)
+            getattr(self, field.name) is not None for field in dataclasses.fields(self)
         )
 
 
-def export_metadata_for(manifest: RollManifest, negative: NegativeRecord) -> ExportMetadata:
+def export_metadata_for(
+    manifest: RollManifest, negative: NegativeRecord
+) -> ExportMetadata:
     """Resolves the roll/negative live fallback into one export record."""
     effective = effective_metadata(manifest.metadata, negative.metadata)
     intended_text = negative.capture_time.intended_datetime_original

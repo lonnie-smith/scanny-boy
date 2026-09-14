@@ -134,9 +134,7 @@ def apply_edits(
     )
 
 
-def applied_downsample(
-    image: np.ndarray, long_edge: int | None
-) -> int | None:
+def applied_downsample(image: np.ndarray, long_edge: int | None) -> int | None:
     """The long edge a downsample will actually apply to `image` — the
     target when the image exceeds it, `None` otherwise (`resample.
     target_size` is the decision; this is the provenance-facing shape of
@@ -196,7 +194,9 @@ def provenance_record(
             "detector_version": spots_params.get("detector_version"),
             "sensitivity": spots_params.get("sensitivity"),
             "repaired": sum(
-                1 for spot in spots_params.get("spots") or [] if not spot.get("rejected")
+                1
+                for spot in spots_params.get("spots") or []
+                if not spot.get("rejected")
             ),
         }
     scratch_record = None
@@ -225,9 +225,7 @@ def provenance_record(
         "rendered": {
             "profile": profile_record(profile_kind),
             "gamma": render.GAMMA_ADOBE,
-            "matrix": (
-                None if matrix is None else np.asarray(matrix).tolist()
-            ),
+            "matrix": (None if matrix is None else np.asarray(matrix).tolist()),
             "tone": None if tone_params is None else dict(tone_params),
             "color": None if color_params is None else dict(color_params),
             "clip_fractions": list(clipped_fractions),
@@ -394,7 +392,15 @@ def _export_negative(
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
-        quarter_turns, flipped, fine_angle, tone_params, color_params, spots_params, scratches_params = (
+        (
+            quarter_turns,
+            flipped,
+            fine_angle,
+            tone_params,
+            color_params,
+            spots_params,
+            scratches_params,
+        ) = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
@@ -412,16 +418,12 @@ def _export_negative(
         # same degrade `apply_crop` performs for the previews.
         crop_params = (
             state.crop
-            if previews.crop_is_live(
-                state.crop, (image.shape[0], image.shape[1])
-            )
+            if previews.crop_is_live(state.crop, (image.shape[0], image.shape[1]))
             else None
         )
         image = scratches.apply(image, scratches_params)
         image = spots.apply_repair(image, spots_params)
-        rotated = apply_edits(
-            image, quarter_turns, flipped, fine_angle, crop_params
-        )
+        rotated = apply_edits(image, quarter_turns, flipped, fine_angle, crop_params)
         # The matrix follows the channel count — `None` for a mono roll's
         # 2-D published TIFF, the recorded camera matrix for a colour one.
         matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)

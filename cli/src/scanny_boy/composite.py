@@ -369,9 +369,9 @@ def _feather_weight(
     product = np.ones(mask.shape, dtype=np.float32)
     for axis in axes:
         ax, ay = axis
-        s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[
-            np.newaxis, :
-        ] + ((np.arange(height, dtype=np.float32) + bbox_y) * ay)[:, np.newaxis]
+        s = ((np.arange(width, dtype=np.float32) + bbox_x) * ax)[np.newaxis, :] + (
+            (np.arange(height, dtype=np.float32) + bbox_y) * ay
+        )[:, np.newaxis]
         s_min = float(s[covered].min())
         s_max = float(s[covered].max())
         half_span = (s_max - s_min) / 2.0

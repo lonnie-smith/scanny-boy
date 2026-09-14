@@ -464,7 +464,9 @@ def analyze_bounds(
     # `sorted(...)[1]` (the middle of three) to any channel count.
     mean_cf = float(np.median(c_floors))
     mean_cc = float(np.median(c_ceils))
-    floors = tuple(mean_lf + (c_floors[channel] - mean_cf) for channel in range(channels))
+    floors = tuple(
+        mean_lf + (c_floors[channel] - mean_cf) for channel in range(channels)
+    )
     ceils = tuple(mean_lc + (c_ceils[channel] - mean_cc) for channel in range(channels))
 
     for channel in range(channels):
@@ -483,9 +485,7 @@ def analyze_bounds(
 # --- metering, recorded, never acted on ---------------------------------------
 
 
-def measure_shadow_refs(
-    grid_log: np.ndarray, keep: np.ndarray
-) -> tuple[float, ...]:
+def measure_shadow_refs(grid_log: np.ndarray, keep: np.ndarray) -> tuple[float, ...]:
     """Per-channel shadow references: the `SHADOW_NEUTRAL_PERCENTILE`
     percentile of each channel over the analysis region. Recorded for the
     print stage; nothing here reads them back."""
@@ -587,9 +587,7 @@ def collapse_to_mono(img_log: np.ndarray, covered: np.ndarray) -> np.ndarray:
     `10 ** (floor + val * (ceil - floor))` recovers downstream. Returns an
     `(H, W, 1)` float32 array."""
     weights = np.asarray(MONO_MERGE_WEIGHTS, dtype=np.float64)
-    medians = np.array(
-        [float(np.median(img_log[..., ch][covered])) for ch in range(3)]
-    )
+    medians = np.array([float(np.median(img_log[..., ch][covered])) for ch in range(3)])
     aligned = img_log.astype(np.float64) - medians
     merged = aligned @ weights
     merged += float(np.dot(weights, medians))
@@ -1030,7 +1028,7 @@ class FilmExtent:
     lobe_fraction: float
     mask_fraction: float
     insets: tuple[int, int, int, int]
-    region_fraction: float          # of `keep` surviving
+    region_fraction: float  # of `keep` surviving
     convergence_steps: int
     # The rebate cross-check: None when no rebate component was detected
     # on any inset edge, otherwise whether every such component lies
@@ -1058,10 +1056,13 @@ def _find_valley(lum: np.ndarray, keep: np.ndarray) -> float | None:
     far more robustly reached.
     """
     values = lum[keep]
-    edges = np.arange(values.min(), values.max() + FILM_EXTENT_HISTOGRAM_BIN,
-                      FILM_EXTENT_HISTOGRAM_BIN)
+    edges = np.arange(
+        values.min(),
+        values.max() + FILM_EXTENT_HISTOGRAM_BIN,
+        FILM_EXTENT_HISTOGRAM_BIN,
+    )
     counts, edges = np.histogram(values, bins=edges)
-    mode = int(np.argmax(counts))                 # the film lobe
+    mode = int(np.argmax(counts))  # the film lobe
     # 1. walk denser until the counts collapse relative to the film mode
     first = next(
         (
@@ -1071,7 +1072,10 @@ def _find_valley(lum: np.ndarray, keep: np.ndarray) -> float | None:
         ),
         None,
     )
-    if first is None or counts[:first].sum() < FILM_EXTENT_MIN_LOBE_FRACTION * values.size:
+    if (
+        first is None
+        or counts[:first].sum() < FILM_EXTENT_MIN_LOBE_FRACTION * values.size
+    ):
         return None
     # 2. the contaminant's own mode is the tallest bin below the collapse,
     #    and the valley is the emptiest bin BETWEEN the two modes
@@ -1128,9 +1132,7 @@ def per_edge_insets(keep: np.ndarray, mask: np.ndarray) -> tuple[int, int, int, 
     return tuple(insets)
 
 
-def _inset_rect(
-    keep: np.ndarray, insets: tuple[int, int, int, int]
-) -> np.ndarray:
+def _inset_rect(keep: np.ndarray, insets: tuple[int, int, int, int]) -> np.ndarray:
     """`keep`'s bounding box shrunk by the (top, bottom, left, right)
     insets, intersected with `keep`. The rect restricts the meters only --
     like the analysis region it refines, it never crops output."""
@@ -1515,9 +1517,11 @@ def withhold_dense_border(
             # contamination.
             if not outside.any():
                 continue
-            if _percentile(lum[component], 50.0) >= _percentile(
-                lum[outside], DENSE_BORDER_OUTSIDE_PERCENTILE
-            ) - DENSE_BORDER_MIN_SEPARATION:
+            if (
+                _percentile(lum[component], 50.0)
+                >= _percentile(lum[outside], DENSE_BORDER_OUTSIDE_PERCENTILE)
+                - DENSE_BORDER_MIN_SEPARATION
+            ):
                 continue
             mask |= component
 
@@ -1574,9 +1578,10 @@ def _is_featureless(component: np.ndarray, lum: np.ndarray) -> bool:
             float(np.median(lum[component][cols == col_index]))
             for col_index in range(cols.min(), cols.max() + 1)
         ]
-    return _percentile(np.asarray(vals), 90.0) - _percentile(
-        np.asarray(vals), 10.0
-    ) <= DENSE_BORDER_MAX_SPREAD
+    return (
+        _percentile(np.asarray(vals), 90.0) - _percentile(np.asarray(vals), 10.0)
+        <= DENSE_BORDER_MAX_SPREAD
+    )
 
 
 # --- the highlight reference and the neutral residual meter --------------------
@@ -1757,7 +1762,9 @@ def clamp_bounds(bounds: Bounds, references: list[Bounds]) -> tuple[Bounds, bool
     for channel in range(channels):
         if ceils[channel] <= floors[channel]:
             return bounds, False
-    return Bounds(floors=floors, ceils=ceils), floors != bounds.floors or ceils != bounds.ceils
+    return Bounds(
+        floors=floors, ceils=ceils
+    ), floors != bounds.floors or ceils != bounds.ceils
 
 
 # --- normalize, encode, decode --------------------------------------------------

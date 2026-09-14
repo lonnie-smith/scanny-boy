@@ -17,8 +17,7 @@ _GAMMA = render.GAMMA_ADOBE
 
 # The §4.7 sweep: snap corners, a mid pair, and None.
 _TONE_PARAM_SWEEP: list[dict[str, float] | None] = [None] + [
-    {"snap_gamma": snap_gamma}
-    for snap_gamma in (-0.5, 0.0, 0.15, 0.3, 0.5, 1.0, 1.5)
+    {"snap_gamma": snap_gamma} for snap_gamma in (-0.5, 0.0, 0.15, 0.3, 0.5, 1.0, 1.5)
 ]
 
 # A well-conditioned camera -> Adobe RGB matrix (row-normalized), standing
@@ -88,7 +87,9 @@ def test_the_8_bit_preview_lut_and_the_16_bit_render_agree_within_one_8_bit_code
         preview_8bit = preview_lut(tone_params)
 
         rendered_8bit = np.rint(rendered / 257.0).astype(np.uint8)
-        difference = np.abs(rendered_8bit.astype(np.int32) - preview_8bit.astype(np.int32))
+        difference = np.abs(
+            rendered_8bit.astype(np.int32) - preview_8bit.astype(np.int32)
+        )
         assert difference.max() <= 1, tone_params
 
 
@@ -152,9 +153,7 @@ def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
     wedge = np.full((1, 4, 3), white_code, dtype=np.uint16)
-    rendered, fractions = render.render_export(
-        wedge, _TEST_MATRIX, {"snap_gamma": 0.0}
-    )
+    rendered, fractions = render.render_export(wedge, _TEST_MATRIX, {"snap_gamma": 0.0})
     assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
     assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
     assert fractions == (0.0, 0.0, 0.0)
@@ -180,9 +179,7 @@ def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
     image = np.full((2, 2, 3), white_code, dtype=np.uint16)
-    _, fractions = render.render_export(
-        image, _TEST_MATRIX, {"snap_gamma": 0.0}
-    )
+    _, fractions = render.render_export(image, _TEST_MATRIX, {"snap_gamma": 0.0})
     assert fractions == (0.0, 0.0, 0.0)
 
 

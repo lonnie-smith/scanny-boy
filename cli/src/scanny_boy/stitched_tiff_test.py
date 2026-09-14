@@ -101,8 +101,12 @@ def test_matches_every_phase_one_tiff_rule(tmp_path):
 
 
 def test_image_description_names_source_and_count(tmp_path):
-    assert stitched_image_description("_DSC4638.NEF", 3) == "_DSC4638.NEF+2: stitched scan"
-    assert stitched_image_description("_DSC4644.NEF", 2) == "_DSC4644.NEF+1: stitched scan"
+    assert (
+        stitched_image_description("_DSC4638.NEF", 3) == "_DSC4638.NEF+2: stitched scan"
+    )
+    assert (
+        stitched_image_description("_DSC4644.NEF", 2) == "_DSC4644.NEF+1: stitched scan"
+    )
 
     path = _write(tmp_path, description=stitched_image_description("_DSC4638.NEF", 3))
     with tifffile.TiffFile(path) as tf:

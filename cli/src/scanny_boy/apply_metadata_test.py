@@ -52,7 +52,9 @@ def _ifd0_snapshot(path: Path) -> tuple[dict, bytes]:
     with tifffile.TiffFile(path) as handle:
         page = handle.pages[0]
         snapshot = {
-            name: page.tags[name].value for name in _IFD0_TAGS_TO_CHECK if name in page.tags
+            name: page.tags[name].value
+            for name in _IFD0_TAGS_TO_CHECK
+            if name in page.tags
         }
         icc = page.tags["InterColorProfile"].value
     return snapshot, icc
@@ -95,7 +97,9 @@ def test_applies_intended_time_and_rehashes(tmp_path):
 def test_other_tags_and_icc_profile_are_unchanged(tmp_path):
     roll_dir = _stitched_roll(tmp_path)
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    tiff_path = roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    tiff_path = (
+        roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    )
 
     before_ifd0, before_icc = _ifd0_snapshot(tiff_path)
     before_exif = _exif_tags(tiff_path)
@@ -118,7 +122,9 @@ def test_other_tags_and_icc_profile_are_unchanged(tmp_path):
 def test_pixel_data_is_byte_identical_after_apply(tmp_path):
     roll_dir = _stitched_roll(tmp_path)
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    tiff_path = roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    tiff_path = (
+        roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    )
 
     before = tifffile.imread(tiff_path)
 
@@ -134,7 +140,9 @@ def test_externally_modified_tiff_is_skipped_and_named(tmp_path):
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     _mark_dirty(roll_dir, negative_id)
 
-    tiff_path = roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    tiff_path = (
+        roll_dir / load_roll_manifest(roll_dir).negative(negative_id).output["name"]
+    )
     tiff_path.write_bytes(tiff_path.read_bytes() + b"\x00")
 
     events: list = []
@@ -168,7 +176,12 @@ def test_skip_does_not_block_other_negatives(tmp_path):
 
     assert outcome.applied == [good.negative_id]
     assert outcome.skipped == [bad.negative_id]
-    assert load_roll_manifest(roll_dir).negative(good.negative_id).capture_time.applied_datetime_original == _INTENDED
+    assert (
+        load_roll_manifest(roll_dir)
+        .negative(good.negative_id)
+        .capture_time.applied_datetime_original
+        == _INTENDED
+    )
 
 
 def test_clean_negatives_are_not_rewritten(tmp_path):

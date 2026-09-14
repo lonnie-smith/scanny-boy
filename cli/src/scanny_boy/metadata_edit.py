@@ -46,7 +46,16 @@ CATALOG_FIELDS = ("film", "iso", "city", "state", "camera", "lens")
 
 # The payload's roll-level keys. `capture_date` is the roll_capture_date;
 # the rest are the extended-metadata fallbacks plus roll-only `film`/`iso`.
-ROLL_KEYS = ("capture_date", "film", "iso", "city", "state", "camera", "lens", "caption")
+ROLL_KEYS = (
+    "capture_date",
+    "film",
+    "iso",
+    "city",
+    "state",
+    "camera",
+    "lens",
+    "caption",
+)
 # The payload's per-negative keys, plus `capture_date` (the negative's
 # `date_override`).
 NEGATIVE_KEYS = ("capture_date",) + METADATA_FIELDS
@@ -90,7 +99,9 @@ def _clean_date(value: Any, what: str) -> str | None:
     return cleaned
 
 
-def _validate_field_keys(payload: dict[str, Any], allowed: tuple[str, ...], what: str) -> None:
+def _validate_field_keys(
+    payload: dict[str, Any], allowed: tuple[str, ...], what: str
+) -> None:
     unknown = sorted(set(payload) - set(allowed))
     if unknown:
         raise MetadataEditFailure(

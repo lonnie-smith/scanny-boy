@@ -131,7 +131,10 @@ def open_engine() -> Engine:
         if engine is None:
             engine = create_engine(
                 f"sqlite:///{key}",
-                connect_args={"check_same_thread": False, "timeout": _BUSY_TIMEOUT_MS / 1000},
+                connect_args={
+                    "check_same_thread": False,
+                    "timeout": _BUSY_TIMEOUT_MS / 1000,
+                },
             )
             event.listen(engine, "connect", _set_sqlite_pragmas)
             ENGINES[key] = engine
@@ -202,7 +205,9 @@ def _refuse_unknown_revision(engine: Engine, config: Config, path: Path) -> None
     with engine.connect() as connection:
         if not inspect(connection).has_table("alembic_version"):
             return
-        current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        current = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
     if current is None:
         return
     try:

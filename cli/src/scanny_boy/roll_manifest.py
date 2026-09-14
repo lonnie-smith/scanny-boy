@@ -405,9 +405,7 @@ class CameraColor:
     def from_dict(cls, data: dict[str, Any]) -> CameraColor:
         matrix = data["rgb_xyz_matrix"]
         return cls(
-            rgb_xyz_matrix=tuple(
-                (row[0], row[1], row[2]) for row in matrix
-            ),
+            rgb_xyz_matrix=tuple((row[0], row[1], row[2]) for row in matrix),
             source=data["source"],
             camera_model=data.get("camera_model"),
             matrix_version=data.get("matrix_version", MATRIX_VERSION),

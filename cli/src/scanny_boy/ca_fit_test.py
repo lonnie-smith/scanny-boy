@@ -59,9 +59,7 @@ def test_raw_params_half_size_derives_from_raw_params():
 
 
 def test_pure_scale_fit_recovers_the_scale():
-    frames = [
-        _synthetic_frame(scale=1.0004, seed=seed) for seed in range(6)
-    ]
+    frames = [_synthetic_frame(scale=1.0004, seed=seed) for seed in range(6)]
     train, heldout = frames[:4], frames[4:]
     result = fit_ca(train, heldout, FRAME_WIDTH, FRAME_HEIGHT, geometry=None)
 
@@ -139,9 +137,7 @@ def test_maps_mode_residual_stays_below_the_accept_gate():
 def test_no_improvement_is_rejected():
     """A fit that does not measurably help is dropped rather than carried."""
     # No CA at all: before is ~0, so the improvement gate cannot clear.
-    frames = [
-        _synthetic_frame(scale=1.0, seed=seed) for seed in range(6)
-    ]
+    frames = [_synthetic_frame(scale=1.0, seed=seed) for seed in range(6)]
     result = fit_ca(frames[:4], frames[4:], FRAME_WIDTH, FRAME_HEIGHT, None)
     assert not result.accepted
     assert result.rejection_reason is not None

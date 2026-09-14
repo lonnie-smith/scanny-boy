@@ -105,9 +105,7 @@ def unique_folder_name(library: Path, slug: str) -> str:
     )
 
 
-def create_roll(
-    library: Path, name: str, film_kind: str | None = None
-) -> Path:
+def create_roll(library: Path, name: str, film_kind: str | None = None) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
     write an empty v3 manifest into it via `new_roll_manifest`. Returns the
     roll's directory.

@@ -30,7 +30,9 @@ def _require_keys(data: dict[str, Any], keys: list[str]) -> None:
     assert not missing, f"missing required fields: {missing}"
 
 
-def assert_matches_manifest_schema(data: dict[str, Any], schema: dict[str, Any]) -> None:
+def assert_matches_manifest_schema(
+    data: dict[str, Any], schema: dict[str, Any]
+) -> None:
     defs = schema["definitions"]
     _require_keys(data, schema["required"])
 

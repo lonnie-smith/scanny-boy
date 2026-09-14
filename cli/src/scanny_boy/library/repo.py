@@ -669,9 +669,7 @@ def validated_color_params(
     if missing:
         raise ValueError(f"color params missing keys: {', '.join(missing)}")
     defaults = _color_neutral_defaults()
-    values = {
-        key: params.get(key, defaults[key]) for key in color.COLOR_PARAM_KEYS
-    }
+    values = {key: params.get(key, defaults[key]) for key in color.COLOR_PARAM_KEYS}
     if all(value is None for value in values.values()):
         return {key: None for key in color.COLOR_PARAM_KEYS}
     if any(value is None for value in values.values()):
@@ -1134,9 +1132,7 @@ def validated_crop_params(
     source = params.get("source")
     if source is not None:
         if source != "auto":
-            raise ValueError(
-                f"crop source must be 'auto' or omitted, got {source!r}"
-            )
+            raise ValueError(f"crop source must be 'auto' or omitted, got {source!r}")
         validated["source"] = "auto"
     return validated
 
@@ -1291,9 +1287,7 @@ def save_rig_profile(profile: RigProfile) -> None:
 def list_rig_profiles() -> list[RigProfile]:
     with _session() as session:
         rows = session.scalars(
-            select(RigProfileRow).order_by(
-                RigProfileRow.created_at, RigProfileRow.name
-            )
+            select(RigProfileRow).order_by(RigProfileRow.created_at, RigProfileRow.name)
         ).all()
         return [_to_rig_profile(row) for row in rows]
 
@@ -1376,9 +1370,7 @@ def load_grid_profile(profile_id: str) -> GridProfile:
 
 def load_grid_profile_by_name(name: str) -> GridProfile:
     with _session() as session:
-        row = session.scalar(
-            select(GridProfileRow).where(GridProfileRow.name == name)
-        )
+        row = session.scalar(select(GridProfileRow).where(GridProfileRow.name == name))
         if row is None:
             raise GridProfileError(
                 Code.GRID_PROFILE_NOT_FOUND,

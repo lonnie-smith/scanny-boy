@@ -66,9 +66,12 @@ def test_physical_memory_is_a_plausible_positive_number_on_this_machine():
         (1, 10, 1),  # a one-shot negative is serial
     ],
 )
-def test_default_worker_count_takes_the_minimum_of_shots_cpus_and_four(shots, cpus, expected):
+def test_default_worker_count_takes_the_minimum_of_shots_cpus_and_four(
+    shots, cpus, expected
+):
     assert (
-        default_worker_count(shots, cpu_count=cpus, total_memory=PLENTY_OF_MEMORY) == expected
+        default_worker_count(shots, cpu_count=cpus, total_memory=PLENTY_OF_MEMORY)
+        == expected
     )
 
 
@@ -78,7 +81,9 @@ def test_default_worker_count_is_silently_reduced_to_fit_the_memory_budget():
     # because of the default." The CPU rule alone would give 4 here.
     three_worker_machine = 2 * 3 * WORKER_MEMORY_BUDGET_BYTES
     assert default_worker_count(12, cpu_count=10, total_memory=PLENTY_OF_MEMORY) == 4
-    assert default_worker_count(12, cpu_count=10, total_memory=three_worker_machine) == 3
+    assert (
+        default_worker_count(12, cpu_count=10, total_memory=three_worker_machine) == 3
+    )
 
 
 def test_default_worker_count_never_reaches_zero_on_a_tiny_machine():

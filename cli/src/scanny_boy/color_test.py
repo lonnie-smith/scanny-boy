@@ -21,7 +21,9 @@ def _metering(
 def test_neutral_tables_match_density_plan_lut():
     neutral_lut = tone.build_display_lut(tone.NEUTRAL)
     tables = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, _metering())
-    np.testing.assert_array_equal(neutral_lut, np.rint(tables[0] * 255).astype(np.uint8))
+    np.testing.assert_array_equal(
+        neutral_lut, np.rint(tables[0] * 255).astype(np.uint8)
+    )
     np.testing.assert_array_equal(tables[0], tables[1])
     np.testing.assert_array_equal(tables[1], tables[2])
 
@@ -43,9 +45,7 @@ def test_magenta_slider_is_attenuated():
     assert cyan == color._luma_removed((color.CMY_MAX_DENSITY, 0.0, 0.0))
     assert yellow == color._luma_removed((0.0, 0.0, color.CMY_MAX_DENSITY))
 
-    unscaled_magenta = color._luma_removed(
-        (0.0, color.CMY_MAX_DENSITY, 0.0)
-    )
+    unscaled_magenta = color._luma_removed((0.0, color.CMY_MAX_DENSITY, 0.0))
     assert np.linalg.norm(magenta) < np.linalg.norm(unscaled_magenta)
     assert abs(magenta[0]) < abs(unscaled_magenta[0])
     assert abs(magenta[2]) < abs(unscaled_magenta[2])
@@ -153,7 +153,9 @@ def test_damping_chroma_transfer_is_monotone():
     for k in (0.5, 1.0, 1.3, 1.5):
         for damping in (0.5, 1.0):
             out = np.array([c * color.damping_gain(k, damping, c) for c in cs])
-            assert np.diff(out).min() >= -1e-12, f"non-monotone at k={k}, damping={damping}"
+            assert np.diff(out).min() >= -1e-12, (
+                f"non-monotone at k={k}, damping={damping}"
+            )
 
 
 def test_apply_separation_damping_matches_gain():
@@ -171,7 +173,9 @@ def test_apply_separation_damping_matches_gain():
         )
         diff = pixel - luma[..., np.newaxis]
         chroma = float(np.sqrt(np.sum(diff**2) / 3.0))
-        k_eff = color.damping_gain(params.dye_separation, params.separation_damping, chroma)
+        k_eff = color.damping_gain(
+            params.dye_separation, params.separation_damping, chroma
+        )
         expected = luma[..., np.newaxis] + k_eff * diff
         np.testing.assert_allclose(out, expected, rtol=1e-6)
 
@@ -196,9 +200,7 @@ def _luma_sum(triple: tuple[float, ...]) -> float:
 # --- highlight metering ------------------------------------
 
 
-def _metering_full(
-    shadow_refs_norm, highlight_refs_norm=None
-) -> color.Metering:
+def _metering_full(shadow_refs_norm, highlight_refs_norm=None) -> color.Metering:
     return color.Metering(
         ranges=(1.0, 1.0, 1.0),
         shadow_refs_norm=shadow_refs_norm,
@@ -291,12 +293,8 @@ def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
     )
     assert color.region_cmy(equal_gained)[0] == (0.0, 0.0, 0.0)
 
-    shadow_only = dataclasses.replace(
-        color.NEUTRAL_COLOR, shadow_yellow=1.0
-    )
-    highlight_only = dataclasses.replace(
-        color.NEUTRAL_COLOR, highlight_yellow=1.0
-    )
+    shadow_only = dataclasses.replace(color.NEUTRAL_COLOR, shadow_yellow=1.0)
+    highlight_only = dataclasses.replace(color.NEUTRAL_COLOR, highlight_yellow=1.0)
     quarter = 0.25
     shadow_out = _display_at(2, shadow_only, _metering(), quarter)
     highlight_out = _display_at(2, highlight_only, _metering(), quarter)
@@ -307,9 +305,7 @@ def test_regional_cmy_matches_global_strength_at_zone_centres():
     """Full-travel shadow yellow at the quarter tone is comparable to full-
     travel global yellow at the midtone on the default grade."""
     metering = _metering()
-    neutral = tone.build_channel_tables(
-        tone.NEUTRAL, color.NEUTRAL_COLOR, metering
-    )
+    neutral = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, metering)
     global_tables = tone.build_channel_tables(
         tone.NEUTRAL, color.ColorParams(wb_yellow=1.0), metering
     )
@@ -541,9 +537,9 @@ def test_missing_shadow_reference_is_inert_for_any_strengths():
         color.NEUTRAL_COLOR, cast_removal=1.0, cast_removal_highlights=1.0
     )
     achromatic = ((1.55, 0.5),) * 3
-    assert color.cast_slopes(params, _metering_full(None, (0.9, 0.85, 0.85)), 1.55, 0.5) == (
-        achromatic
-    )
+    assert color.cast_slopes(
+        params, _metering_full(None, (0.9, 0.85, 0.85)), 1.55, 0.5
+    ) == (achromatic)
 
 
 @pytest.mark.parametrize(
@@ -574,9 +570,7 @@ def test_base_slope_and_pivot_reproduce_the_curve_inputs():
     curve still maps the pivot to midtone grey at the neutral shaping."""
     for grade_r in (50.0, 115.0, 180.0):
         for density in (0.0, 0.5, 1.0, 1.5, 2.0):
-            params = dataclasses.replace(
-                tone.NEUTRAL, grade_r=grade_r, density=density
-            )
+            params = dataclasses.replace(tone.NEUTRAL, grade_r=grade_r, density=density)
             slope, pivot_in = tone.base_slope_and_pivot(params)
             assert slope == tone.grade_slope(grade_r)
             assert pivot_in == pytest.approx(0.5 + (density - 1.0) * 0.2)

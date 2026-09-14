@@ -193,8 +193,16 @@ def build_parser() -> argparse.ArgumentParser:
         # time (see startup_test.py), and `roll_folder` transitively does
         # via `library.repo` -> `calibration`.
         choices=(
-            "half-frame", "35mm", "6x3", "645", "6x6", "6x7",
-            "xpan", "6x9", "6x12", "6x17",
+            "half-frame",
+            "35mm",
+            "6x3",
+            "645",
+            "6x6",
+            "6x7",
+            "xpan",
+            "6x9",
+            "6x12",
+            "6x17",
         ),
         default=None,
         help="the film format to pre-fill",
@@ -329,7 +337,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="defer_roll_refresh",
         help="skip the highlight-lock recompute and defer it to roll refresh",
     )
-    capture = subparsers.add_parser("capture", help="Tethered capture analysis and checks.")
+    capture = subparsers.add_parser(
+        "capture", help="Tethered capture analysis and checks."
+    )
     capture_subparsers = capture.add_subparsers(dest="capture_command", required=True)
 
     capture_analyze = capture_subparsers.add_parser(
@@ -371,9 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rig_subparsers.add_parser("list", help="List the rig profiles.")
 
-    rig_delete = rig_subparsers.add_parser(
-        "delete", help="Delete one rig profile."
-    )
+    rig_delete = rig_subparsers.add_parser("delete", help="Delete one rig profile.")
     rig_delete.add_argument("--profile", required=True, metavar="ID")
 
     grid = subparsers.add_parser(
@@ -680,7 +688,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("--highlight-cyan", "highlights cyan, -1..1"),
         ("--highlight-magenta", "highlights magenta, -1..1"),
         ("--highlight-yellow", "highlights yellow, -1..1"),
-        ("--cast-removal-highlights", "highlight-end cast removal strength, 0..1 (0 neutral)"),
+        (
+            "--cast-removal-highlights",
+            "highlight-end cast removal strength, 0..1 (0 neutral)",
+        ),
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
     edit_color.add_argument(
@@ -818,9 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     edit_scratches = edit_subparsers.add_parser(
         "scratches",
-        help=(
-            "Toggle scratch correction on or off for one or more negatives."
-        ),
+        help=("Toggle scratch correction on or off for one or more negatives."),
     )
     edit_scratches.add_argument("--roll", required=True, metavar="DIR")
     edit_scratches.add_argument(
@@ -903,10 +912,13 @@ def _tone_params_from_args(args) -> dict[str, float | None] | None:
 
 
 def _tone_args_provided(args) -> bool:
-    return any(
-        getattr(args, name) is not None
-        for name in ("snap", "density", "shadow_density", "highlight_density")
-    ) or args.auto_density
+    return (
+        any(
+            getattr(args, name) is not None
+            for name in ("snap", "density", "shadow_density", "highlight_density")
+        )
+        or args.auto_density
+    )
 
 
 def _color_flag_updates(args) -> dict[str, float | None]:
@@ -957,9 +969,7 @@ def _validate_color_args(args) -> None:
     if region == "shadows" and args.shadow_magenta is not None:
         raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
     if region == "highlights" and args.highlight_magenta is not None:
-        raise ValueError(
-            "--temperature is mutually exclusive with --highlight-magenta"
-        )
+        raise ValueError("--temperature is mutually exclusive with --highlight-magenta")
 
 
 def _run_stitch_command(
@@ -978,7 +988,10 @@ def _run_stitch_command(
     writer.write(Started(command="stitch", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope, exclusive_roll_lock(Path(args.roll)):
+        with (
+            command_cancellation(cancel) as scope,
+            exclusive_roll_lock(Path(args.roll)),
+        ):
             outcome = run_stitch(
                 Path(args.work),
                 Path(args.roll),
@@ -1355,7 +1368,9 @@ def _exposure_from_source(frame: Path) -> dict:
     except (UnsupportedRawError, UnreadableRawError):
         return {"exposure_time": None, "f_number": None, "iso": None}
     return {
-        "exposure_time": None if settings.exposure_time is None else str(settings.exposure_time),
+        "exposure_time": None
+        if settings.exposure_time is None
+        else str(settings.exposure_time),
         "f_number": None if settings.f_number is None else str(settings.f_number),
         "iso": settings.iso,
     }
@@ -1570,11 +1585,7 @@ def _run_roll_set_setup(args, writer: EventWriter) -> int:
             grid=grid,
             interval_seconds=args.interval_seconds,
             format=args.format,
-            auto_crop=(
-                args.auto_crop == "on"
-                if args.auto_crop is not None
-                else None
-            ),
+            auto_crop=(args.auto_crop == "on" if args.auto_crop is not None else None),
         )
     except (BadManifestError, repo.RollNotRegisteredError) as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
@@ -1806,22 +1817,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = SpotsReported
         elif args.edit_command == "spots":
-            results = [run_edit_spots(
-                Path(args.roll),
-                args.negative,
-                reject=args.reject,
-                accept=args.accept,
-                repair=args.repair,
-                clear=args.clear,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_spots(
+                    Path(args.roll),
+                    args.negative,
+                    reject=args.reject,
+                    accept=args.accept,
+                    repair=args.repair,
+                    clear=args.clear,
+                    emit=writer.write,
+                )
+            ]
             confirmation = SpotsReported
         elif args.edit_command == "list-spots":
-            results = [run_edit_list_spots(
-                Path(args.roll),
-                args.negative,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_list_spots(
+                    Path(args.roll),
+                    args.negative,
+                    emit=writer.write,
+                )
+            ]
             confirmation = SpotsReported
         elif args.edit_command == "detect-scratches":
             results = run_edit_detect_scratches(
@@ -1839,11 +1854,13 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = ScratchesReported
         elif args.edit_command == "list-scratches":
-            results = [run_edit_list_scratches(
-                Path(args.roll),
-                args.negative,
-                emit=writer.write,
-            )]
+            results = [
+                run_edit_list_scratches(
+                    Path(args.roll),
+                    args.negative,
+                    emit=writer.write,
+                )
+            ]
             confirmation = ScratchesReported
         else:
             raise AssertionError(f"unhandled edit command {args.edit_command!r}")
@@ -1928,7 +1945,13 @@ def _run_capture_command(args, writer: EventWriter) -> int:
             used_clahe_fallback=outcome.used_clahe_fallback,
         )
     )
-    writer.write(Finished(run_id=run_id, status="success" if outcome.passed else "failed", exit_status=0 if outcome.passed else 1))
+    writer.write(
+        Finished(
+            run_id=run_id,
+            status="success" if outcome.passed else "failed",
+            exit_status=0 if outcome.passed else 1,
+        )
+    )
     return 0 if outcome.passed else 1
 
 
@@ -2028,10 +2051,7 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    if (
-        manifest.flat_field is not None
-        and manifest.flat_field.get("locked_at") is None
-    ):
+    if manifest.flat_field is not None and manifest.flat_field.get("locked_at") is None:
         old_path = Path(manifest.flat_field["gain_map_path"])
         if old_path.exists():
             old_path.unlink()
@@ -2091,9 +2111,7 @@ def _run_rig_command(args, writer: EventWriter) -> int:
     if args.rig_command == "list":
         writer.write(Started(command="rig list"))
         profiles = repo.list_rig_profiles()
-        writer.write(
-            RigList(profiles=[rig_profile_summary(p) for p in profiles])
-        )
+        writer.write(RigList(profiles=[rig_profile_summary(p) for p in profiles]))
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
@@ -2140,7 +2158,9 @@ def _run_grid_command(args, writer: EventWriter) -> int:
         name = args.name.strip()
         if not name:
             writer.write(
-                ErrorEvent(code=Code.INVALID_GRID, message="profile name must not be empty")
+                ErrorEvent(
+                    code=Code.INVALID_GRID, message="profile name must not be empty"
+                )
             )
             writer.write(Finished(status="failed", exit_status=1))
             return 1
@@ -2282,7 +2302,10 @@ def _run_run_command(
     writer.write(Started(command="run", run_id=run_id))
 
     try:
-        with command_cancellation(cancel) as scope, exclusive_roll_lock(Path(args.roll)):
+        with (
+            command_cancellation(cancel) as scope,
+            exclusive_roll_lock(Path(args.roll)),
+        ):
             outcome = run_full(
                 Path(args.input),
                 files,
@@ -2488,7 +2511,9 @@ def _dispatch_command(
         read_only_edits = frozenset(
             {"list-spots", "list-scratches", "render-preview", "render-region"}
         )
-        if args.edit_command in read_only_edits or not repo.roll_registered(Path(args.roll)):
+        if args.edit_command in read_only_edits or not repo.roll_registered(
+            Path(args.roll)
+        ):
             return _run_edit_command(args, writer)
         try:
             with exclusive_roll_lock(Path(args.roll)):

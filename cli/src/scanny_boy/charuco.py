@@ -181,9 +181,7 @@ def detect_corners(
 
     points = charuco_corners.reshape(-1, 2).astype(np.float32)
     if subpix:
-        window = min(
-            round(median_corner_pitch(points) / 4), CORNER_SUBPIX_MAX_WINDOW
-        )
+        window = min(round(median_corner_pitch(points) / 4), CORNER_SUBPIX_MAX_WINDOW)
         if window >= 2:
             # cornerSubPix wants an odd window and (N, 1, 2) float32.
             window += 1 - (window % 2)
@@ -235,7 +233,11 @@ def seed_and_refine_ca_corners(
     full-resolution detections scaled by one half, then refine each channel
     independently with `cornerSubPix`."""
     seed_corners, seed_ids = detect_corners(channels["luminance"], spec)
-    if len(seed_ids) == 0 and full_res_corners is not None and len(full_res_corners) > 0:
+    if (
+        len(seed_ids) == 0
+        and full_res_corners is not None
+        and len(full_res_corners) > 0
+    ):
         seed_corners = (full_res_corners * 0.5).astype(np.float32)
         seed_ids = full_res_ids
     return {
@@ -263,7 +265,9 @@ def detect_board(gray: np.ndarray) -> BoardSpec:
     return BOARD
 
 
-def collinear_sets(corners: np.ndarray, ids: np.ndarray, spec: BoardSpec) -> list[np.ndarray]:
+def collinear_sets(
+    corners: np.ndarray, ids: np.ndarray, spec: BoardSpec
+) -> list[np.ndarray]:
     """Group detected corners into the straight families their ids name:
     one set per row and per column of the corner grid, plus
     the two diagonal families (`row - col` and `row + col` constant) that
