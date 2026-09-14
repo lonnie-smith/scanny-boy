@@ -389,33 +389,21 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            if auto.contains(.cast) {
-                arguments.append("--auto-cast")
+            if auto.contains(.balance) {
+                arguments.append("--auto-balance")
             } else {
-                arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
-                arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
-                arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
+                arguments.append(contentsOf: ["--warmth", String(adjustment.warmth)])
+                arguments.append(contentsOf: ["--tint", String(adjustment.tint)])
             }
-            arguments.append(contentsOf: ["--temperature", String(adjustment.temperature)])
-
-            arguments.append(contentsOf: ["--shadow-cyan", String(adjustment.shadowCyan)])
-            arguments.append(contentsOf: [
-                "--shadow-magenta", String(adjustment.shadowMagenta),
-            ])
-            arguments.append(contentsOf: [
-                "--shadow-yellow", String(adjustment.shadowYellow),
-            ])
-
-            arguments.append(contentsOf: [
-                "--highlight-cyan", String(adjustment.highlightCyan),
-            ])
-            arguments.append(contentsOf: [
-                "--highlight-magenta", String(adjustment.highlightMagenta),
-            ])
-            arguments.append(contentsOf: [
-                "--highlight-yellow", String(adjustment.highlightYellow),
-            ])
-
+            arguments.append(contentsOf: ["--red-25", String(adjustment.curveRed25)])
+            arguments.append(contentsOf: ["--red-50", String(adjustment.curveRed50)])
+            arguments.append(contentsOf: ["--red-75", String(adjustment.curveRed75)])
+            arguments.append(contentsOf: ["--green-25", String(adjustment.curveGreen25)])
+            arguments.append(contentsOf: ["--green-50", String(adjustment.curveGreen50)])
+            arguments.append(contentsOf: ["--green-75", String(adjustment.curveGreen75)])
+            arguments.append(contentsOf: ["--blue-25", String(adjustment.curveBlue25)])
+            arguments.append(contentsOf: ["--blue-50", String(adjustment.curveBlue50)])
+            arguments.append(contentsOf: ["--blue-75", String(adjustment.curveBlue75)])
             arguments.append(contentsOf: ["--cast-removal", String(adjustment.castRemoval)])
             arguments.append(
                 contentsOf: [

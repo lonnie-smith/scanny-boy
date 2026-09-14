@@ -402,32 +402,30 @@ struct CLICommandTests {
 
     // MARK: - Edit color
 
-    @Test("edit color sends temperature alongside, not instead of, the sliders")
-    func editColorTemperatureArguments() {
+    @Test("edit color sends warmth, tint, and curve offsets")
+    func editColorBalanceArguments() {
         var adjustment = ColorAdjustment.neutral
-        adjustment.temperature = 8000
-        adjustment.wbMagenta = 0.3
+        adjustment.warmth = 0.3
+        adjustment.tint = -0.1
+        adjustment.curveRed25 = 0.05
+        adjustment.curveGreen50 = -0.03
+        adjustment.curveBlue75 = 0.02
         let command = CLICommand.editColor(
             roll: Self.out,
             negatives: ["neg-01"],
             adjustment: adjustment
         )
-        let index = command.arguments.firstIndex(of: "--temperature")
-        #expect(index.map { command.arguments[$0 + 1] } == "8000.0")
-        let magenta = command.arguments.firstIndex(of: "--magenta")
-        #expect(magenta.map { command.arguments[$0 + 1] } == "0.3")
+        let warmth = command.arguments.firstIndex(of: "--warmth")
+        #expect(warmth.map { command.arguments[$0 + 1] } == "0.3")
+        let tint = command.arguments.firstIndex(of: "--tint")
+        #expect(tint.map { command.arguments[$0 + 1] } == "-0.1")
+        let red25 = command.arguments.firstIndex(of: "--red-25")
+        #expect(red25.map { command.arguments[$0 + 1] } == "0.05")
+        let green50 = command.arguments.firstIndex(of: "--green-50")
+        #expect(green50.map { command.arguments[$0 + 1] } == "-0.03")
+        let blue75 = command.arguments.firstIndex(of: "--blue-75")
+        #expect(blue75.map { command.arguments[$0 + 1] } == "0.02")
         #expect(!command.arguments.contains("--region"))
-    }
-
-    @Test("temperature slider position round-trips through mireds")
-    func temperatureWarmthRoundTrips() {
-        #expect(ColorTemperature.warmth(kelvin: ColorTemperature.neutralKelvin) == 0)
-        for kelvin in [3500.0, 4200.0, 7000.0, 12000.0] {
-            let back = ColorTemperature.kelvin(warmth: ColorTemperature.warmth(kelvin: kelvin))
-            #expect(abs(back - kelvin) < 1e-6)
-        }
-        #expect(ColorTemperature.warmth(kelvin: 7000) > 0)
-        #expect(ColorTemperature.kelvin(warmth: 1000) == ColorTemperature.maxKelvin)
     }
 
     @Test("edit color with no adjustment is a reset")
@@ -436,25 +434,23 @@ struct CLICommandTests {
             roll: Self.out, negatives: ["neg-01"], adjustment: nil
         )
         #expect(command.arguments.last == "--reset")
-        #expect(!command.arguments.contains("--cyan"))
+        #expect(!command.arguments.contains("--warmth"))
     }
 
-    @Test("edit color with auto cast omits the global filtration sliders")
-    func editColorAutoCastArguments() {
+    @Test("edit color with auto balance omits warmth and tint")
+    func editColorAutoBalanceArguments() {
         var adjustment = ColorAdjustment.neutral
-        adjustment.wbCyan = 0.2
-        adjustment.wbMagenta = -0.1
-        adjustment.wbYellow = 0.05
+        adjustment.warmth = 0.2
+        adjustment.tint = -0.1
         let command = CLICommand.editColor(
             roll: Self.out,
             negatives: ["neg-01"],
             adjustment: adjustment,
-            auto: .cast
+            auto: .balance
         )
-        #expect(command.arguments.contains("--auto-cast"))
-        #expect(!command.arguments.contains { $0 == "--cyan" })
-        #expect(!command.arguments.contains { $0 == "--magenta" })
-        #expect(!command.arguments.contains { $0 == "--yellow" })
+        #expect(command.arguments.contains("--auto-balance"))
+        #expect(!command.arguments.contains { $0 == "--warmth" })
+        #expect(!command.arguments.contains { $0 == "--tint" })
     }
 
     @Test("edit color emits the highlight cast removal strength")
@@ -469,7 +465,7 @@ struct CLICommandTests {
         #expect(command.arguments.contains("--cast-removal-highlights"))
         let index = command.arguments.firstIndex(of: "--cast-removal-highlights")
         #expect(index.map { command.arguments[$0 + 1] } == "0.4")
-        #expect(!command.arguments.contains("--auto-cast"))
+        #expect(!command.arguments.contains("--auto-balance"))
     }
 
     // MARK: - Rig profiles

@@ -316,21 +316,22 @@ struct RollManifest: Sendable, Hashable {
         let toneDensity: Double?
         let toneShadowDensity: Double?
         let toneHighlightDensity: Double?
-        /// Protocol 12's net preview colour adjustment. `nil` = no op recorded.
-        let colorWbCyan: Double?
-        let colorWbMagenta: Double?
-        let colorWbYellow: Double?
-        let colorShadowCyan: Double?
-        let colorShadowMagenta: Double?
-        let colorShadowYellow: Double?
-        let colorHighlightCyan: Double?
-        let colorHighlightMagenta: Double?
-        let colorHighlightYellow: Double?
+        /// Protocol 23's net preview colour adjustment. `nil` = no op recorded.
+        let colorWarmth: Double?
+        let colorTint: Double?
+        let colorCurveRed25: Double?
+        let colorCurveRed50: Double?
+        let colorCurveRed75: Double?
+        let colorCurveGreen25: Double?
+        let colorCurveGreen50: Double?
+        let colorCurveGreen75: Double?
+        let colorCurveBlue25: Double?
+        let colorCurveBlue50: Double?
+        let colorCurveBlue75: Double?
         let colorCastRemoval: Double?
         let colorCastRemovalHighlights: Double?
         let colorDyeSeparation: Double?
         let colorSeparationDamping: Double?
-        let colorTemperature: Double?
         /// The stitch-stage failure code, when `status` is `failed`.
         let errorCode: String?
         let errorMessage: String?
@@ -633,20 +634,21 @@ struct RollManifest: Sendable, Hashable {
             toneDensity: fields["tone_density"]?.doubleValue,
             toneShadowDensity: fields["tone_shadow_density"]?.doubleValue,
             toneHighlightDensity: fields["tone_highlight_density"]?.doubleValue,
-            colorWbCyan: fields["color_wb_cyan"]?.doubleValue,
-            colorWbMagenta: fields["color_wb_magenta"]?.doubleValue,
-            colorWbYellow: fields["color_wb_yellow"]?.doubleValue,
-            colorShadowCyan: fields["color_shadow_cyan"]?.doubleValue,
-            colorShadowMagenta: fields["color_shadow_magenta"]?.doubleValue,
-            colorShadowYellow: fields["color_shadow_yellow"]?.doubleValue,
-            colorHighlightCyan: fields["color_highlight_cyan"]?.doubleValue,
-            colorHighlightMagenta: fields["color_highlight_magenta"]?.doubleValue,
-            colorHighlightYellow: fields["color_highlight_yellow"]?.doubleValue,
+            colorWarmth: fields["color_warmth"]?.doubleValue,
+            colorTint: fields["color_tint"]?.doubleValue,
+            colorCurveRed25: fields["color_curve_red_25"]?.doubleValue,
+            colorCurveRed50: fields["color_curve_red_50"]?.doubleValue,
+            colorCurveRed75: fields["color_curve_red_75"]?.doubleValue,
+            colorCurveGreen25: fields["color_curve_green_25"]?.doubleValue,
+            colorCurveGreen50: fields["color_curve_green_50"]?.doubleValue,
+            colorCurveGreen75: fields["color_curve_green_75"]?.doubleValue,
+            colorCurveBlue25: fields["color_curve_blue_25"]?.doubleValue,
+            colorCurveBlue50: fields["color_curve_blue_50"]?.doubleValue,
+            colorCurveBlue75: fields["color_curve_blue_75"]?.doubleValue,
             colorCastRemoval: fields["color_cast_removal"]?.doubleValue,
             colorCastRemovalHighlights: fields["color_cast_removal_highlights"]?.doubleValue,
             colorDyeSeparation: fields["color_dye_separation"]?.doubleValue,
             colorSeparationDamping: fields["color_separation_damping"]?.doubleValue,
-            colorTemperature: fields["color_temperature"]?.doubleValue,
             errorCode: fields["error_code"]?.stringValue,
             errorMessage: fields["error_message"]?.stringValue,
             maxOverlapMAD: Self.maxOverlapMAD(from: pairs),

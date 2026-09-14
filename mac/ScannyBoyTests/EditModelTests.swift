@@ -700,7 +700,7 @@ struct EditModelTests {
         "updated_at":"2026-01-01T00:00:00Z","runs":[],"metadata":{},\
         "negatives":[{"negative_id":"n1","run_id":"r","members":["a.NEF"],\
         "expected_output":"n1.tif","status":"completed","capture_time":{},\
-        "color_wb_cyan":0.1,"color_wb_magenta":0.2,"color_wb_yellow":0,\
+        "color_warmth":0.1,"color_tint":0.2,\
         "color_cast_removal":0.3}]}
         """
         let fields = try #require(
@@ -1098,21 +1098,22 @@ struct EditModelTests {
             toneDensity: toneSnapGamma == nil ? nil : 1,
             toneShadowDensity: toneSnapGamma == nil ? nil : 0,
             toneHighlightDensity: toneSnapGamma == nil ? nil : 0,
-            colorWbCyan: colorDyeSeparation == nil ? nil : 0,
-            colorWbMagenta: colorDyeSeparation == nil ? nil : 0,
-            colorWbYellow: colorDyeSeparation == nil ? nil : 0,
-            colorShadowCyan: nil,
-            colorShadowMagenta: nil,
-            colorShadowYellow: nil,
-            colorHighlightCyan: nil,
-            colorHighlightMagenta: nil,
-            colorHighlightYellow: nil,
+            colorWarmth: colorDyeSeparation == nil ? nil : 0,
+            colorTint: colorDyeSeparation == nil ? nil : 0,
+            colorCurveRed25: nil,
+            colorCurveRed50: nil,
+            colorCurveRed75: nil,
+            colorCurveGreen25: nil,
+            colorCurveGreen50: nil,
+            colorCurveGreen75: nil,
+            colorCurveBlue25: nil,
+            colorCurveBlue50: nil,
+            colorCurveBlue75: nil,
             colorCastRemoval: colorDyeSeparation == nil ? nil : 0,
             colorCastRemovalHighlights: colorCastRemovalHighlights
                 ?? (colorDyeSeparation == nil ? nil : 0),
             colorDyeSeparation: colorDyeSeparation,
             colorSeparationDamping: colorDyeSeparation == nil ? nil : 0,
-            colorTemperature: nil,
             errorCode: nil,
             errorMessage: nil,
             maxOverlapMAD: nil,

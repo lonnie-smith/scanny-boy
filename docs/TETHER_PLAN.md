@@ -629,7 +629,7 @@ only at render and edit time (`color.read_metering` from `previews.py` and
   drained, and whenever it opens the Edit or Export tab on a roll with
   `refresh_pending` set — so a crash mid-session never leaves stale colour.
 - **An auto solve on a refresh-pending roll** (`edit tone --auto-grade`,
-  `--auto-density`, `edit color --auto-cast`) warns `ROLL_REFRESH_PENDING`: it
+  `--auto-density`, `edit color --auto-balance`) warns `ROLL_REFRESH_PENDING`: it
   would read a lock the roll's newest negatives have not contributed to yet.
 
 `edits.run_edit_delete` keeps recomputing the lock immediately; a delete is

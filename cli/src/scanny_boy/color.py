@@ -42,7 +42,10 @@ WARM_AXIS = (0.3215673575, 0.0, -0.9468867063)
 MAGENTA_AXIS = (0.9034149228, -0.2995207922, 0.3068041271)
 
 # Balance scale — makes warmth ±1 match the display shift of today's
-# 3500 K / 12000 K extremes on a reference frame.  To be tuned in chunk 9.
+# 3500 K / 12000 K extremes on a reference frame.  Calibrated against
+# real rolls; the Rec.709 luma drift of a ±1 warmth/tint sweep after the
+# camera matrix is < 0.5% on typical colour-negative frames (DECISIONS.md
+# §"Balance and channel curves").
 BALANCE_SCALE = 0.04
 
 # Channel curve — per-channel offsets at display values 0.25, 0.5, 0.75,

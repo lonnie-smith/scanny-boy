@@ -55,7 +55,7 @@ nothing. It also carries `highlight_refs` (the dense end's same-pixel
 neutral reference, or `null` when the band held no trustworthy neutrals)
 and `neutral_residual` (the frame's `(R-G, B-G)` offset in normalized
 units, or `null` when there was no estimate) — both recorded by the stitch
-stage and read only by `--auto-cast`. Rolls stitched before this feature
+stage and read only by `--auto-balance`. Rolls stitched before this feature
 stay readable, editable and exportable, but cannot take new negatives or a
 base frame (`ROLL_PREDATES_FILM_BASE`).
 
@@ -173,7 +173,7 @@ scanny-boy metadata values --field FIELD
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] [--snap G] [--density D | --auto-density] [--shadow-density D] [--highlight-density D] | --reset
-scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--cast-removal-highlights V] [--auto-cast] [--dye-separation V] [--separation-damping V] | --reset
+scanny-boy edit color  --roll DIR --negative ID [ID ...] [--warmth V] [--tint V] [--red-25 V] [--red-50 V] [--red-75 V] [--green-25 V] [--green-50 V] [--green-75 V] [--blue-25 V] [--blue-50 V] [--blue-75 V] [--cast-removal V] [--cast-removal-highlights V] [--auto-balance] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
                               [--mode positive|negative]
@@ -498,39 +498,35 @@ metering is absent, and fails with the same roll/negative codes as
 `tone_highlight_density` (all `null` when no adjustment is recorded).
 
 `edit color` records a preview colour adjustment for one or more negatives:
-global, shadow, and highlight cyan/magenta/yellow enlarger filtration
-(±1.0 each, 0 neutral), cast removal (0.0–1.0, 0 neutral), dye separation
-(0.5–1.5, 1.0 neutral), separation damping (0.0–1.0, 0 neutral), or
-`--reset` to remove the op. Unlike `edit tone`, **unspecified flags take
-the negative's currently recorded value**, not the neutral default — a
-single-slider change need not resend all twelve keys. Validation runs on the
-merged state. `--temperature` (3500–12000 K, 5500 K neutral) records the
-`temperature` key: a global-only, lightness-neutral warm/cool layer
-(higher K is warmer, Lightroom convention) that the global CMY sliders
-sit on top of. It never rewrites or clamps any slider — its magenta/yellow
-contribution (linear in mireds) is added to the global sliders inside the
-render, before the luma removal — so it composes freely with
-`--cyan`/`--magenta`/`--yellow` and survives `--auto-cast`. An op recorded
-before the key existed reads as 5500 K.
+warmth and tint balance sliders (±1.0 each, 0 neutral), channel curves
+(red, green, blue — each with three control points at display values
+0.25, 0.5, 0.75, offset ±0.2, 0 neutral), cast removal (0.0–1.0, 0
+neutral), dye separation (0.5–1.5, 1.0 neutral), separation damping
+(0.0–1.0, 0 neutral), or `--reset` to remove the op. Unlike `edit tone`,
+**unspecified flags take the negative's currently recorded value**, not the
+neutral default — a single-slider change need not resend all keys.
+Validation runs on the merged state. `--warmth` and `--tint` map directly to
+density offsets with no range division, so equal warmth gives an equal
+display shift on every frame. An op recorded before protocol 23 reads as
+neutral colour.
 The op is a state, not a transform — the latest `color` op wins and a
 trailing one coalesces in place. The published TIFF and export are
 untouched; previews are regenerated with per-channel display LUTs plus
 optional per-pixel dye separation. `edit_recorded` is emitted per negative
-with all thirteen keys in `params` (`null` for reset). Refused on a
+with all colour keys in `params` (`null` for reset). Refused on a
 monochrome roll (`INVALID_EDIT`) except `--reset`. Emits
 `TONE_METERING_UNAVAILABLE` per negative when a cast-removal strength is
-non-zero but the metering that end needs is absent, or when `--auto-cast`
+non-zero but the metering that end needs is absent, or when `--auto-balance`
 found no recorded neutral estimate (the op is still recorded; the
-filtration is left unchanged). `--auto-cast` is exclusive with `--reset`
-and with an explicit `--cyan`/`--magenta`/`--yellow`. `roll info`
-reports `color_wb_cyan`, `color_wb_magenta`, `color_wb_yellow`,
-`color_shadow_cyan`, `color_shadow_magenta`, `color_shadow_yellow`,
-`color_highlight_cyan`, `color_highlight_magenta`, `color_highlight_yellow`,
+balance is left unchanged). `--auto-balance` is exclusive with `--reset`
+and with explicit `--warmth`/`--tint`. `roll info`
+reports `color_warmth`, `color_tint`,
+`color_curve_{red,green,blue}_{25,50,75}`,
 `color_cast_removal`, `color_cast_removal_highlights`,
-`color_dye_separation`, `color_separation_damping`, `color_auto_neutral`,
-and `color_temperature` (all null when no op), plus `film_kind` on the
-roll. The auto cast solve reads a stitch-time meter, so it is unavailable
-on rolls stitched by an older build.
+`color_dye_separation`, `color_separation_damping`, and `color_auto_neutral`
+(all null when no op), plus `film_kind` on the roll. The auto balance solve
+reads a stitch-time meter, so it is unavailable on rolls stitched by an
+older build.
 
 **Spotting (protocol 13).** `edit detect-spots` runs the defect detector
 over each selected negative's published TIFF and records one `spots` op per

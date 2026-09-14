@@ -396,30 +396,29 @@ extension CLIEvent {
     /// The recorded op's colour params when it is a `color` op.
     public var recordedColor: ColorAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
-            case .some = params["wb_cyan"]
+            case .some = params["warmth"]
         else { return nil }
-        guard let wbCyan = params["wb_cyan"]?.doubleValue,
-            let wbMagenta = params["wb_magenta"]?.doubleValue,
-            let wbYellow = params["wb_yellow"]?.doubleValue
+        guard let warmth = params["warmth"]?.doubleValue,
+            let tint = params["tint"]?.doubleValue
         else { return .some(nil) }
         return .some(
             ColorAdjustment(
-                wbCyan: wbCyan,
-                wbMagenta: wbMagenta,
-                wbYellow: wbYellow,
-                shadowCyan: params["shadow_cyan"]?.doubleValue ?? 0,
-                shadowMagenta: params["shadow_magenta"]?.doubleValue ?? 0,
-                shadowYellow: params["shadow_yellow"]?.doubleValue ?? 0,
-                highlightCyan: params["highlight_cyan"]?.doubleValue ?? 0,
-                highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
-                highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
+                warmth: warmth,
+                tint: tint,
+                curveRed25: params["curve_red_25"]?.doubleValue ?? 0,
+                curveRed50: params["curve_red_50"]?.doubleValue ?? 0,
+                curveRed75: params["curve_red_75"]?.doubleValue ?? 0,
+                curveGreen25: params["curve_green_25"]?.doubleValue ?? 0,
+                curveGreen50: params["curve_green_50"]?.doubleValue ?? 0,
+                curveGreen75: params["curve_green_75"]?.doubleValue ?? 0,
+                curveBlue25: params["curve_blue_25"]?.doubleValue ?? 0,
+                curveBlue50: params["curve_blue_50"]?.doubleValue ?? 0,
+                curveBlue75: params["curve_blue_75"]?.doubleValue ?? 0,
                 castRemoval: params["cast_removal"]?.doubleValue ?? 0,
                 castRemovalHighlights: params["cast_removal_highlights"]?.doubleValue ?? 0,
                 dyeSeparation: params["dye_separation"]?.doubleValue
                     ?? ColorAdjustment.neutral.dyeSeparation,
-                separationDamping: params["separation_damping"]?.doubleValue ?? 0,
-                temperature: params["temperature"]?.doubleValue
-                    ?? ColorAdjustment.neutral.temperature
+                separationDamping: params["separation_damping"]?.doubleValue ?? 0
             )
         )
     }

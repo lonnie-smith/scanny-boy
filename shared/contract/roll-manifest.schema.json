@@ -709,41 +709,49 @@
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — the net highlights density from the latest `tone` op."
         },
-        "color_wb_cyan": {
+        "color_warmth": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — warmth balance from the latest `color` op."
         },
-        "color_wb_magenta": {
+        "color_tint": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — tint balance from the latest `color` op."
         },
-        "color_wb_yellow": {
+        "color_curve_red_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.25 from the latest `color` op."
         },
-        "color_shadow_cyan": {
+        "color_curve_red_50": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.50 from the latest `color` op."
         },
-        "color_shadow_magenta": {
+        "color_curve_red_75": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.75 from the latest `color` op."
         },
-        "color_shadow_yellow": {
+        "color_curve_green_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.25 from the latest `color` op."
         },
-        "color_highlight_cyan": {
+        "color_curve_green_50": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.50 from the latest `color` op."
         },
-        "color_highlight_magenta": {
+        "color_curve_green_75": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.75 from the latest `color` op."
         },
-        "color_highlight_yellow": {
+        "color_curve_blue_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.25 from the latest `color` op."
+        },
+        "color_curve_blue_50": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.50 from the latest `color` op."
+        },
+        "color_curve_blue_75": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.75 from the latest `color` op."
         },
         "color_cast_removal": {
           "type": ["number", "null"],
@@ -760,10 +768,6 @@
         "color_cast_removal_highlights": {
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op."
-        },
-        "color_temperature": {
-          "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."
         },
         "auto_crop": {
           "type": ["object", "null"],

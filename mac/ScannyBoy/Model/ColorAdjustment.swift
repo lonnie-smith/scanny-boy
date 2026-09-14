@@ -2,74 +2,76 @@ import Foundation
 
 /// The preview's complete colour state — the keys the `color` op records.
 public struct ColorAdjustment: Equatable, Sendable, Hashable {
-    public var wbCyan: Double
-    public var wbMagenta: Double
-    public var wbYellow: Double
-    public var shadowCyan: Double
-    public var shadowMagenta: Double
-    public var shadowYellow: Double
-    public var highlightCyan: Double
-    public var highlightMagenta: Double
-    public var highlightYellow: Double
+    public var warmth: Double
+    public var tint: Double
+    public var curveRed25: Double
+    public var curveRed50: Double
+    public var curveRed75: Double
+    public var curveGreen25: Double
+    public var curveGreen50: Double
+    public var curveGreen75: Double
+    public var curveBlue25: Double
+    public var curveBlue50: Double
+    public var curveBlue75: Double
     public var castRemoval: Double
     public var castRemovalHighlights: Double
     public var dyeSeparation: Double
     public var separationDamping: Double
-    /// Global temperature in Kelvin — a layer under the CMY sliders, never
-    /// written into them.
-    public var temperature: Double
 
     public static let neutral = ColorAdjustment(
-        wbCyan: 0,
-        wbMagenta: 0,
-        wbYellow: 0,
-        shadowCyan: 0,
-        shadowMagenta: 0,
-        shadowYellow: 0,
-        highlightCyan: 0,
-        highlightMagenta: 0,
-        highlightYellow: 0,
+        warmth: 0,
+        tint: 0,
+        curveRed25: 0,
+        curveRed50: 0,
+        curveRed75: 0,
+        curveGreen25: 0,
+        curveGreen50: 0,
+        curveGreen75: 0,
+        curveBlue25: 0,
+        curveBlue50: 0,
+        curveBlue75: 0,
         castRemoval: 0,
         castRemovalHighlights: 0,
         dyeSeparation: 1,
-        separationDamping: 0,
-        temperature: ColorTemperature.neutralKelvin
+        separationDamping: 0
     )
 
     public init(
-        wbCyan: Double,
-        wbMagenta: Double,
-        wbYellow: Double,
-        shadowCyan: Double,
-        shadowMagenta: Double,
-        shadowYellow: Double,
-        highlightCyan: Double,
-        highlightMagenta: Double,
-        highlightYellow: Double,
+        warmth: Double,
+        tint: Double,
+        curveRed25: Double,
+        curveRed50: Double,
+        curveRed75: Double,
+        curveGreen25: Double,
+        curveGreen50: Double,
+        curveGreen75: Double,
+        curveBlue25: Double,
+        curveBlue50: Double,
+        curveBlue75: Double,
         castRemoval: Double,
         castRemovalHighlights: Double,
         dyeSeparation: Double,
-        separationDamping: Double,
-        temperature: Double
+        separationDamping: Double
     ) {
-        self.wbCyan = wbCyan
-        self.wbMagenta = wbMagenta
-        self.wbYellow = wbYellow
-        self.shadowCyan = shadowCyan
-        self.shadowMagenta = shadowMagenta
-        self.shadowYellow = shadowYellow
-        self.highlightCyan = highlightCyan
-        self.highlightMagenta = highlightMagenta
-        self.highlightYellow = highlightYellow
+        self.warmth = warmth
+        self.tint = tint
+        self.curveRed25 = curveRed25
+        self.curveRed50 = curveRed50
+        self.curveRed75 = curveRed75
+        self.curveGreen25 = curveGreen25
+        self.curveGreen50 = curveGreen50
+        self.curveGreen75 = curveGreen75
+        self.curveBlue25 = curveBlue25
+        self.curveBlue50 = curveBlue50
+        self.curveBlue75 = curveBlue75
         self.castRemoval = castRemoval
         self.castRemovalHighlights = castRemovalHighlights
         self.dyeSeparation = dyeSeparation
         self.separationDamping = separationDamping
-        self.temperature = temperature
     }
 }
 
-/// Auto Cast is a momentary commit request, not persisted state.
+/// Auto Balance is a momentary commit request, not persisted state.
 public struct ColorAutoFlags: OptionSet, Sendable {
     public let rawValue: Int
 
@@ -77,49 +79,28 @@ public struct ColorAutoFlags: OptionSet, Sendable {
         self.rawValue = rawValue
     }
 
-    public static let cast = ColorAutoFlags(rawValue: 1 << 0)
+    public static let balance = ColorAutoFlags(rawValue: 1 << 0)
 }
 
 extension RollManifest.Negative {
     var colorAdjustment: ColorAdjustment? {
-        guard colorWbMagenta != nil else { return nil }
+        guard colorWarmth != nil else { return nil }
         return ColorAdjustment(
-            wbCyan: colorWbCyan ?? 0,
-            wbMagenta: colorWbMagenta ?? 0,
-            wbYellow: colorWbYellow ?? 0,
-            shadowCyan: colorShadowCyan ?? 0,
-            shadowMagenta: colorShadowMagenta ?? 0,
-            shadowYellow: colorShadowYellow ?? 0,
-            highlightCyan: colorHighlightCyan ?? 0,
-            highlightMagenta: colorHighlightMagenta ?? 0,
-            highlightYellow: colorHighlightYellow ?? 0,
+            warmth: colorWarmth ?? 0,
+            tint: colorTint ?? 0,
+            curveRed25: colorCurveRed25 ?? 0,
+            curveRed50: colorCurveRed50 ?? 0,
+            curveRed75: colorCurveRed75 ?? 0,
+            curveGreen25: colorCurveGreen25 ?? 0,
+            curveGreen50: colorCurveGreen50 ?? 0,
+            curveGreen75: colorCurveGreen75 ?? 0,
+            curveBlue25: colorCurveBlue25 ?? 0,
+            curveBlue50: colorCurveBlue50 ?? 0,
+            curveBlue75: colorCurveBlue75 ?? 0,
             castRemoval: colorCastRemoval ?? 0,
             castRemovalHighlights: colorCastRemovalHighlights ?? 0,
             dyeSeparation: colorDyeSeparation ?? ColorAdjustment.neutral.dyeSeparation,
-            separationDamping: colorSeparationDamping ?? 0,
-            temperature: colorTemperature ?? ColorTemperature.neutralKelvin
+            separationDamping: colorSeparationDamping ?? 0
         )
-    }
-}
-
-/// The temperature layer's bounds, and the slider's mired-linear position —
-/// mirrors `color.py`. The CLI owns the actual colour math.
-enum ColorTemperature {
-    static let neutralKelvin = 5500.0
-    static let minKelvin = 3500.0
-    static let maxKelvin = 12000.0
-
-    /// Slider position: mired shift from neutral, positive warmer. Equal
-    /// travel is equal warmth, and neutral sits near the middle.
-    static func warmth(kelvin: Double) -> Double {
-        1e6 / neutralKelvin - 1e6 / kelvin
-    }
-
-    static func kelvin(warmth: Double) -> Double {
-        min(max(1e6 / (1e6 / neutralKelvin - warmth), minKelvin), maxKelvin)
-    }
-
-    static var warmthRange: ClosedRange<Double> {
-        warmth(kelvin: minKelvin)...warmth(kelvin: maxKelvin)
     }
 }

@@ -95,8 +95,10 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **22** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 22 splits the scanning-rig profile from
+`PROTOCOL_VERSION` is **23** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 23 replaces the CMY sliders and
+temperature layer with balance (warmth/tint) and channel curves; 22 splits
+the scanning-rig profile from
 the per-roll flat-field reference (`flatfield_*` events → `rig_*`,
 `FLATFIELD_PROFILE_*` → `RIG_PROFILE_*`, new `flat_field_reference_set` and
 `rolls.flat_field`; see `docs/FLATFIELD_REFERENCE.md` and
@@ -164,10 +166,12 @@ edit crop   --roll DIR --negative ID ([--x PX --y PX --width PX --height PX] [--
 edit tone   --roll DIR --negative ID [...] [--grade R | --auto-grade] [--snap G]
             [--density D | --auto-density] [--shadow-density D] [--highlight-density D]
             [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] [--reset]
-edit color  --roll DIR --negative ID [...] [--cyan|--magenta|--yellow V] [--shadow-cyan|...]
-            [--highlight-cyan|...] [--temperature K]
+edit color  --roll DIR --negative ID [...] [--warmth V] [--tint V]
+            [--red-25 V] [--red-50 V] [--red-75 V]
+            [--green-25 V] [--green-50 V] [--green-75 V]
+            [--blue-25 V] [--blue-50 V] [--blue-75 V]
             [--cast-removal V] [--cast-removal-highlights V] [--dye-separation V]
-            [--separation-damping V] [--auto-cast] [--reset]
+            [--separation-damping V] [--auto-balance] [--reset]
 edit detect-spots --roll DIR --negative ID [...] [--sensitivity S]
 edit spots  --roll DIR --negative ID [--accept ID ...] [--reject ID ...]
             [--repair | --no-repair] [--clear]
@@ -282,7 +286,7 @@ to bottom.
 | `edits.py` | The `edit` command family: geometric ops (`rotate`, `flip`, `crop`), the coalesced state ops (`tone`, `color`, `spots`), the destructive `delete`, and the pure-query `render-region` / `render-preview` / `list-spots`. Appends ops and regenerates the preview; never touches a surviving negative's published TIFF. |
 | `metadata_edit.py` | `metadata set` / `metadata values`: the roll- and negative-level extended-metadata editing entry, and the only writer of a capture date (which re-runs `roll_sequence.apply_intended_times`). |
 | `tone.py` | The preview/export paper-grade tone curve (grade, snap, density, zone density, toe/shoulder), a simplified port of NegPy's H&D curve. |
-| `color.py` | The preview/export colour adjustment (CMY, cast removal, dye separation) and the metering the auto solves read. |
+| `color.py` | The preview/export colour adjustment (balance warmth/tint, channel curves, cast removal, dye separation) and the metering the auto solves read. |
 | `spots.py` | The dust/scratch spot detector and the `spots` op's mask arithmetic. |
 | `scratches.py` | Film-length scratch detection, level-binned correction tables, and the `scratches` op (see [SCRATCH_REMOVAL_PLAN.md](SCRATCH_REMOVAL_PLAN.md)). |
 | `auto_rotate.py` | The rebate-squaring angle estimator (stitch-time seeding) and the fine-rotation warp both preview and export replay. |
@@ -507,10 +511,10 @@ pinned gamma.
 - **Previews are display-rendered.** The published TIFF is normalized log
   density, so `previews.py` downscales in code space (averaging density,
   not light) and runs the shared positive render
-  (`render.encode_positive_uint8`): decode through `decode_normalized`,
-  global CMY, `1 − val`, the Adobe RGB gamma sandwich, the roll's recorded
-  camera matrix when it has one, the user's tone and colour ops, and dye
-  separation — to 8-bit. A colour op alone stays on the identity ramp;
+   (`render.encode_positive_uint8`): decode through `decode_normalized`,
+   balance offset, `1 − val`, the Adobe RGB gamma sandwich, the roll's recorded
+   camera matrix when it has one, the user's tone and colour ops, and dye
+   separation — to 8-bit. A colour op alone stays on the identity ramp;
   the tone op is what turns the paper grade on. A second, un-inverted
   **negative** display mode
   serves the app's positive/negative toggle, scaling the normalized density

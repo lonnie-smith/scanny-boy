@@ -1404,32 +1404,267 @@ private struct SliderTrackBackground: View {
     }
 }
 
-private enum CMYSliderTrackColors {
-    static let cyan: [Color] = [
-        Color(red: 0.95, green: 0.35, blue: 0.35),
-        Color(white: 0.55),
-        Color(red: 0.20, green: 0.80, blue: 0.90),
-    ]
-    static let magenta: [Color] = [
-        Color(red: 0.35, green: 0.90, blue: 0.35),
-        Color(white: 0.55),
-        Color(red: 0.95, green: 0.20, blue: 0.85),
-    ]
-    static let yellow: [Color] = [
-        Color(red: 0.35, green: 0.55, blue: 0.95),
-        Color(white: 0.55),
-        Color(red: 1.0, green: 0.90, blue: 0.20),
-    ]
-    static let temperature: [Color] = [
+private enum BalanceTrackColors {
+    static let warmth: [Color] = [
         Color(red: 0.35, green: 0.55, blue: 0.95),
         Color(red: 1.0, green: 0.82, blue: 0.25),
     ]
+    static let tint: [Color] = [
+        Color(red: 0.35, green: 0.90, blue: 0.35),
+        Color(red: 0.95, green: 0.20, blue: 0.85),
+    ]
 }
 
-private enum ColorRegion: String, CaseIterable, Identifiable {
-    case global, shadows, highlights
-    var id: String { rawValue }
-    var label: String { rawValue.capitalized }
+private struct ChannelCurvesEditor: View {
+    @Binding var values: ColorAdjustment
+    let onScheduleCommit: () -> Void
+    let onCommitNow: () -> Void
+
+    enum Channel: String, CaseIterable, Identifiable {
+        case red, green, blue, all
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+    }
+
+    @State private var selectedChannel: Channel = .red
+
+    private var offsets: Binding<(q1: Double, mid: Double, q3: Double)> {
+        Binding(
+            get: {
+                switch selectedChannel {
+                case .red: (values.curveRed25, values.curveRed50, values.curveRed75)
+                case .green: (values.curveGreen25, values.curveGreen50, values.curveGreen75)
+                case .blue: (values.curveBlue25, values.curveBlue50, values.curveBlue75)
+                case .all: (0, 0, 0)
+                }
+            },
+            set: { new in
+                switch selectedChannel {
+                case .red:
+                    values.curveRed25 = new.q1
+                    values.curveRed50 = new.mid
+                    values.curveRed75 = new.q3
+                case .green:
+                    values.curveGreen25 = new.q1
+                    values.curveGreen50 = new.mid
+                    values.curveGreen75 = new.q3
+                case .blue:
+                    values.curveBlue25 = new.q1
+                    values.curveBlue50 = new.mid
+                    values.curveBlue75 = new.q3
+                case .all: break
+                }
+                onScheduleCommit()
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Curves").font(.headline)
+                Spacer()
+                Picker("Channel", selection: $selectedChannel) {
+                    ForEach(Channel.allCases) { item in
+                        Text(item.label).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+            }
+            curveCanvas
+                .frame(height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+            if selectedChannel != .all {
+                curvePointControls
+            }
+            Button("Reset Curves") {
+                resetCurves()
+                onCommitNow()
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private var curveCanvas: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            // Grid lines
+            let gridColor = Color.secondary.opacity(0.15)
+            for i in 1...3 {
+                let x = w * Double(i) / 4.0
+                context.stroke(Path(CGRect(x: x, y: 0, width: 0, height: h)), with: .color(gridColor))
+                let y = h * Double(i) / 4.0
+                context.stroke(Path(CGRect(x: 0, y: y, width: w, height: 0)), with: .color(gridColor))
+            }
+            // Identity line
+            var identity = Path()
+            identity.move(to: CGPoint(x: 0, y: h))
+            identity.addLine(to: CGPoint(x: w, y: 0))
+            context.stroke(identity, with: .color(Color.secondary.opacity(0.25)), lineWidth: 1)
+            // Draw curves
+            let channels: [(Color, (Double, Double, Double))] = selectedChannel == .all
+                ? [
+                    (.red, (values.curveRed25, values.curveRed50, values.curveRed75)),
+                    (.green, (values.curveGreen25, values.curveGreen50, values.curveGreen75)),
+                    (.blue, (values.curveBlue25, values.curveBlue50, values.curveBlue75)),
+                ]
+                : [(
+                    channelColor(selectedChannel),
+                    (offsets.wrappedValue.q1, offsets.wrappedValue.mid, offsets.wrappedValue.q3)
+                )]
+            for (color, off) in channels {
+                var path = Path()
+                let steps = 64
+                for i in 0...steps {
+                    let t = Double(i) / Double(steps)
+                    let x = t
+                    let y = Self.pchipEvaluate(t: t, offsets: off)
+                    let px = x * w
+                    let py = (1.0 - y) * h
+                    if i == 0 {
+                        path.move(to: CGPoint(x: px, y: py))
+                    } else {
+                        path.addLine(to: CGPoint(x: px, y: py))
+                    }
+                }
+                context.stroke(path, with: .color(color), lineWidth: 2)
+            }
+            // Control points
+            if selectedChannel != .all {
+                let off = offsets.wrappedValue
+                let pts = [
+                    (0.25, 0.25 + off.q1),
+                    (0.5, 0.5 + off.mid),
+                    (0.75, 0.75 + off.q3),
+                ]
+                let color = channelColor(selectedChannel)
+                for (px, py) in pts {
+                    let center = CGPoint(x: px * w, y: (1.0 - py) * h)
+                    let rect = CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
+                    context.fill(Path(ellipseIn: rect), with: .color(color))
+                    context.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+                }
+            }
+        }
+    }
+
+    private var curvePointControls: some View {
+        VStack(spacing: 6) {
+            curvePointRow("25%", offset: offsets.wrappedValue.q1) { offsets.wrappedValue.q1 = $0 }
+            curvePointRow("50%", offset: offsets.wrappedValue.mid) { offsets.wrappedValue.mid = $0 }
+            curvePointRow("75%", offset: offsets.wrappedValue.q3) { offsets.wrappedValue.q3 = $0 }
+        }
+    }
+
+    private func curvePointRow(
+        _ label: String,
+        offset: Double,
+        set: @escaping (Double) -> Void
+    ) -> some View {
+        HStack {
+            Text(label)
+                .monospacedDigit()
+                .frame(width: 30)
+            Slider(
+                value: Binding(
+                    get: { offset },
+                    set: { set($0) }
+                ),
+                in: -0.2...0.2,
+                step: 0.01
+            )
+            .onSubmit { onCommitNow() }
+            Text(String(format: "%+.2f", offset))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 45, alignment: .trailing)
+        }
+    }
+
+    private func channelColor(_ channel: Channel) -> Color {
+        switch channel {
+        case .red: .red
+        case .green: .green
+        case .blue: .blue
+        case .all: .white
+        }
+    }
+
+    private func resetCurves() {
+        switch selectedChannel {
+        case .red:
+            values.curveRed25 = 0; values.curveRed50 = 0; values.curveRed75 = 0
+        case .green:
+            values.curveGreen25 = 0; values.curveGreen50 = 0; values.curveGreen75 = 0
+        case .blue:
+            values.curveBlue25 = 0; values.curveBlue50 = 0; values.curveBlue75 = 0
+        case .all:
+            values.curveRed25 = 0; values.curveRed50 = 0; values.curveRed75 = 0
+            values.curveGreen25 = 0; values.curveGreen50 = 0; values.curveGreen75 = 0
+            values.curveBlue25 = 0; values.curveBlue50 = 0; values.curveBlue75 = 0
+        }
+    }
+
+    /// PCHIP evaluation matching the Python `channel_curve` implementation.
+    /// Input `t` in [0, 1]; output is the interpolated display value.
+    static func pchipEvaluate(t: Double, offsets: (q1: Double, mid: Double, q3: Double)) -> Double {
+        if t <= 0 { return 0 }
+        if t >= 1 { return t }
+        let x: [Double] = [0, 0.25, 0.5, 0.75, 1.0]
+        let y: [Double] = [
+            0,
+            0.25 + offsets.q1,
+            0.5 + offsets.mid,
+            0.75 + offsets.q3,
+            1.0,
+        ]
+        // Find the interval
+        var k = 0
+        for i in 0..<4 {
+            if t >= x[i] && t <= x[i + 1] {
+                k = i
+                break
+            }
+        }
+        let h = x[k + 1] - x[k]
+        guard h > 0 else { return y[k] }
+        let s = (t - x[k]) / h
+        // PCHIP slopes via finite differences
+        let dk = pchipSlopes(x: x, y: y)
+        let hk = dk[k]
+        let hkp1 = dk[k + 1]
+        // Hermite basis
+        let h00 = (1 + 2 * s) * (1 - s) * (1 - s)
+        let h10 = s * (1 - s) * (1 - s)
+        let h01 = s * s * (3 - 2 * s)
+        let h11 = s * s * (s - 1)
+        return h00 * y[k] + h10 * h * hk + h01 * y[k + 1] + h11 * h * hkp1
+    }
+
+    private static func pchipSlopes(x: [Double], y: [Double]) -> [Double] {
+        let n = x.count
+        var d = Array(repeating: 0.0, count: n)
+        // Interior points: modified harmonic mean
+        for i in 1..<(n - 1) {
+            let d1 = (y[i] - y[i - 1]) / (x[i] - x[i - 1])
+            let d2 = (y[i + 1] - y[i]) / (x[i + 1] - x[i])
+            if d1 * d2 <= 0 {
+                d[i] = 0
+            } else {
+                d[i] = 2 * (d1 * d2) / (d1 + d2)
+            }
+        }
+        // Endpoints: one-sided
+        d[0] = (y[1] - y[0]) / (x[1] - x[0])
+        d[n - 1] = (y[n - 1] - y[n - 2]) / (x[n - 1] - x[n - 2])
+        return d
+    }
 }
 
 private struct ColorAdjustmentPanel: View {
@@ -1439,136 +1674,95 @@ private struct ColorAdjustmentPanel: View {
     let onCommitNow: (_ adjustment: ColorAdjustment, _ auto: ColorAutoFlags) -> Void
     let onReset: () -> Void
 
-    @State private var region: ColorRegion = .global
     @State private var values = ColorAdjustment.neutral
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Color").font(.headline)
-                Picker("Region", selection: $region) {
-                    ForEach(ColorRegion.allCases) { item in
-                        Text(item.label).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
 
-                if region == .global {
-                    colorSlider(
-                        "Temperature",
-                        value: warmthBinding,
-                        range: ColorTemperature.warmthRange,
-                        step: 1,
-                        trackColors: CMYSliderTrackColors.temperature
-                    ) {
-                        String(format: "%.0fK", values.temperature)
-                    }
-                    .help("A brightness-neutral warm/cool layer; the sliders below adjust on top of it")
-                }
+            colorSlider(
+                "Warmth",
+                value: $values.warmth,
+                range: -1...1,
+                step: 0.02,
+                trackColors: BalanceTrackColors.warmth
+            ) {
+                String(format: "%+.2f", values.warmth)
+            }
+            .help("Blue (−) to yellow (+); lightness-neutral")
 
-                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.cyan) {
-                    String(format: "%+.2f", cyanBinding.wrappedValue)
-                }
-                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.magenta) {
-                    String(format: "%+.2f", magentaBinding.wrappedValue)
-                }
-                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.yellow) {
-                    String(format: "%+.2f", yellowBinding.wrappedValue)
-                }
+            colorSlider(
+                "Tint",
+                value: $values.tint,
+                range: -1...1,
+                step: 0.02,
+                trackColors: BalanceTrackColors.tint
+            ) {
+                String(format: "%+.2f", values.tint)
+            }
+            .help("Green (−) to magenta (+); lightness-neutral")
 
-                Button {
-                    onCommitNow(values, .cast)
-                } label: {
-                    Label("Auto", systemImage: "wand.and.stars")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isBusy)
-                .help("Solve the filtration from this negative's own neutral estimate")
+            Button {
+                onCommitNow(values, .balance)
+            } label: {
+                Label("Auto", systemImage: "wand.and.stars")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+            .help("Solve the balance from this negative's own neutral estimate")
 
-                Text("Correction").font(.headline)
-                colorSlider(
-                    "Cast Removal — Shadows",
-                    value: $values.castRemoval,
-                    range: 0...1,
-                    step: 0.05
-                ) {
-                    String(format: "%.2f", values.castRemoval)
-                }
-                .help("Balances each layer against the frame's own shadow greys.")
-                colorSlider(
-                    "Cast Removal — Highlights",
-                    value: $values.castRemovalHighlights,
-                    range: 0...1,
-                    step: 0.05
-                ) {
-                    String(format: "%.2f", values.castRemovalHighlights)
-                }
-                .help(
-                    "Balances each layer against the frame's own highlight greys. "
-                        + "Needs a highlight reference; inactive on rolls stitched before it was measured."
-                )
+            ChannelCurvesEditor(
+                values: $values,
+                onScheduleCommit: { onScheduleCommit(values) },
+                onCommitNow: { onCommitNow(values, []) }
+            )
 
-                Text("Saturation").font(.headline)
-                colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
-                    String(format: "%.2f", values.dyeSeparation)
-                }
-                colorSlider(
-                    "Separation Damping",
-                    value: $values.separationDamping,
-                    range: 0...1,
-                    step: 0.05,
-                    disabled: values.dyeSeparation == 1
-                ) {
-                    String(format: "%.2f", values.separationDamping)
-                }
-                .help(
-                    "Amplifies muted color and eases already-vivid areas; "
-                        + "inactive at neutral separation"
-                )
+            Text("Correction").font(.headline)
+            colorSlider(
+                "Cast Removal — Shadows",
+                value: $values.castRemoval,
+                range: 0...1,
+                step: 0.05
+            ) {
+                String(format: "%.2f", values.castRemoval)
+            }
+            .help("Balances each layer against the frame's own shadow greys.")
+            colorSlider(
+                "Cast Removal — Highlights",
+                value: $values.castRemovalHighlights,
+                range: 0...1,
+                step: 0.05
+            ) {
+                String(format: "%.2f", values.castRemovalHighlights)
+            }
+            .help(
+                "Balances each layer against the frame's own highlight greys. "
+                    + "Needs a highlight reference; inactive on rolls stitched before it was measured."
+            )
 
-                HStack {
-                    Button("Region Reset") { resetRegion() }
-                    Spacer()
-                    Button("Reset All", role: .destructive) { onReset() }
-                }
+            Text("Saturation").font(.headline)
+            colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
+                String(format: "%.2f", values.dyeSeparation)
+            }
+            colorSlider(
+                "Separation Damping",
+                value: $values.separationDamping,
+                range: 0...1,
+                step: 0.05,
+                disabled: values.dyeSeparation == 1
+            ) {
+                String(format: "%.2f", values.separationDamping)
+            }
+            .help(
+                "Amplifies muted color and eases already-vivid areas; "
+                    + "inactive at neutral separation"
+            )
+
+            Button("Reset All", role: .destructive) { onReset() }
         }
         .disabled(isBusy)
         .onAppear(perform: syncFromModel)
         .onChange(of: adjustment) { syncFromModel() }
-    }
-
-    private var cyanBinding: Binding<Double> {
-        switch region {
-        case .global: Binding(get: { values.wbCyan }, set: { values.wbCyan = $0 })
-        case .shadows: Binding(get: { values.shadowCyan }, set: { values.shadowCyan = $0 })
-        case .highlights:
-            Binding(get: { values.highlightCyan }, set: { values.highlightCyan = $0 })
-        }
-    }
-
-    private var magentaBinding: Binding<Double> {
-        switch region {
-        case .global: Binding(get: { values.wbMagenta }, set: { values.wbMagenta = $0 })
-        case .shadows: Binding(get: { values.shadowMagenta }, set: { values.shadowMagenta = $0 })
-        case .highlights:
-            Binding(get: { values.highlightMagenta }, set: { values.highlightMagenta = $0 })
-        }
-    }
-
-    private var yellowBinding: Binding<Double> {
-        switch region {
-        case .global: Binding(get: { values.wbYellow }, set: { values.wbYellow = $0 })
-        case .shadows: Binding(get: { values.shadowYellow }, set: { values.shadowYellow = $0 })
-        case .highlights:
-            Binding(get: { values.highlightYellow }, set: { values.highlightYellow = $0 })
-        }
-    }
-
-    /// The temperature slider moves in mireds (reset value 0) and stores Kelvin.
-    private var warmthBinding: Binding<Double> {
-        Binding(
-            get: { ColorTemperature.warmth(kelvin: values.temperature) },
-            set: { values.temperature = ColorTemperature.kelvin(warmth: $0) }
-        )
     }
 
     private func colorSlider(
@@ -1592,34 +1786,13 @@ private struct ColorAdjustmentPanel: View {
                 value: value,
                 range: range,
                 step: step,
-                resetValue: resetValue(for: title),
+                resetValue: 0,
                 trackColors: trackColors,
                 onScheduleCommit: { onScheduleCommit(values) },
                 onCommitNow: { onCommitNow(values, []) }
             )
             .disabled(disabled)
         }
-    }
-
-    private func resetValue(for title: String) -> Double {
-        switch title {
-        case "Cast Removal — Shadows", "Cast Removal — Highlights", "Separation Damping": 0
-        case "Dye Separation": 1
-        default: 0
-        }
-    }
-
-    private func resetRegion() {
-        switch region {
-        case .global:
-            values.wbCyan = 0; values.wbMagenta = 0; values.wbYellow = 0
-            values.temperature = ColorTemperature.neutralKelvin
-        case .shadows:
-            values.shadowCyan = 0; values.shadowMagenta = 0; values.shadowYellow = 0
-        case .highlights:
-            values.highlightCyan = 0; values.highlightMagenta = 0; values.highlightYellow = 0
-        }
-        onCommitNow(values, [])
     }
 
     private func syncFromModel() {

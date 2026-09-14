@@ -888,20 +888,21 @@ final class EditModel {
         var toneDensity = negative.toneDensity
         var toneShadowDensity = negative.toneShadowDensity
         var toneHighlightDensity = negative.toneHighlightDensity
-        var colorWbCyan = negative.colorWbCyan
-        var colorWbMagenta = negative.colorWbMagenta
-        var colorWbYellow = negative.colorWbYellow
-        var colorShadowCyan = negative.colorShadowCyan
-        var colorShadowMagenta = negative.colorShadowMagenta
-        var colorShadowYellow = negative.colorShadowYellow
-        var colorHighlightCyan = negative.colorHighlightCyan
-        var colorHighlightMagenta = negative.colorHighlightMagenta
-        var colorHighlightYellow = negative.colorHighlightYellow
+        var colorWarmth = negative.colorWarmth
+        var colorTint = negative.colorTint
+        var colorCurveRed25 = negative.colorCurveRed25
+        var colorCurveRed50 = negative.colorCurveRed50
+        var colorCurveRed75 = negative.colorCurveRed75
+        var colorCurveGreen25 = negative.colorCurveGreen25
+        var colorCurveGreen50 = negative.colorCurveGreen50
+        var colorCurveGreen75 = negative.colorCurveGreen75
+        var colorCurveBlue25 = negative.colorCurveBlue25
+        var colorCurveBlue50 = negative.colorCurveBlue50
+        var colorCurveBlue75 = negative.colorCurveBlue75
         var colorCastRemoval = negative.colorCastRemoval
         var colorCastRemovalHighlights = negative.colorCastRemovalHighlights
         var colorDyeSeparation = negative.colorDyeSeparation
         var colorSeparationDamping = negative.colorSeparationDamping
-        var colorTemperature = negative.colorTemperature
         if let recorded = event.recordedTone {
             if let tone = recorded {
                 toneSnapGamma = tone.snapGamma
@@ -917,35 +918,37 @@ final class EditModel {
         }
         if let recorded = event.recordedColor {
             if let color = recorded {
-                colorWbCyan = color.wbCyan
-                colorWbMagenta = color.wbMagenta
-                colorWbYellow = color.wbYellow
-                colorShadowCyan = color.shadowCyan
-                colorShadowMagenta = color.shadowMagenta
-                colorShadowYellow = color.shadowYellow
-                colorHighlightCyan = color.highlightCyan
-                colorHighlightMagenta = color.highlightMagenta
-                colorHighlightYellow = color.highlightYellow
+                colorWarmth = color.warmth
+                colorTint = color.tint
+                colorCurveRed25 = color.curveRed25
+                colorCurveRed50 = color.curveRed50
+                colorCurveRed75 = color.curveRed75
+                colorCurveGreen25 = color.curveGreen25
+                colorCurveGreen50 = color.curveGreen50
+                colorCurveGreen75 = color.curveGreen75
+                colorCurveBlue25 = color.curveBlue25
+                colorCurveBlue50 = color.curveBlue50
+                colorCurveBlue75 = color.curveBlue75
                 colorCastRemoval = color.castRemoval
                 colorCastRemovalHighlights = color.castRemovalHighlights
                 colorDyeSeparation = color.dyeSeparation
                 colorSeparationDamping = color.separationDamping
-                colorTemperature = color.temperature
             } else {
-                colorWbCyan = nil
-                colorWbMagenta = nil
-                colorWbYellow = nil
-                colorShadowCyan = nil
-                colorShadowMagenta = nil
-                colorShadowYellow = nil
-                colorHighlightCyan = nil
-                colorHighlightMagenta = nil
-                colorHighlightYellow = nil
+                colorWarmth = nil
+                colorTint = nil
+                colorCurveRed25 = nil
+                colorCurveRed50 = nil
+                colorCurveRed75 = nil
+                colorCurveGreen25 = nil
+                colorCurveGreen50 = nil
+                colorCurveGreen75 = nil
+                colorCurveBlue25 = nil
+                colorCurveBlue50 = nil
+                colorCurveBlue75 = nil
                 colorCastRemoval = nil
                 colorCastRemovalHighlights = nil
                 colorDyeSeparation = nil
                 colorSeparationDamping = nil
-                colorTemperature = nil
             }
         }
         roll = manifest.replacingNegative(
@@ -970,20 +973,21 @@ final class EditModel {
                 toneDensity: toneDensity,
                 toneShadowDensity: toneShadowDensity,
                 toneHighlightDensity: toneHighlightDensity,
-                colorWbCyan: colorWbCyan,
-                colorWbMagenta: colorWbMagenta,
-                colorWbYellow: colorWbYellow,
-                colorShadowCyan: colorShadowCyan,
-                colorShadowMagenta: colorShadowMagenta,
-                colorShadowYellow: colorShadowYellow,
-                colorHighlightCyan: colorHighlightCyan,
-                colorHighlightMagenta: colorHighlightMagenta,
-                colorHighlightYellow: colorHighlightYellow,
+                colorWarmth: colorWarmth,
+                colorTint: colorTint,
+                colorCurveRed25: colorCurveRed25,
+                colorCurveRed50: colorCurveRed50,
+                colorCurveRed75: colorCurveRed75,
+                colorCurveGreen25: colorCurveGreen25,
+                colorCurveGreen50: colorCurveGreen50,
+                colorCurveGreen75: colorCurveGreen75,
+                colorCurveBlue25: colorCurveBlue25,
+                colorCurveBlue50: colorCurveBlue50,
+                colorCurveBlue75: colorCurveBlue75,
                 colorCastRemoval: colorCastRemoval,
                 colorCastRemovalHighlights: colorCastRemovalHighlights,
                 colorDyeSeparation: colorDyeSeparation,
                 colorSeparationDamping: colorSeparationDamping,
-                colorTemperature: colorTemperature,
                 errorCode: negative.errorCode,
                 errorMessage: negative.errorMessage,
                 maxOverlapMAD: negative.maxOverlapMAD,

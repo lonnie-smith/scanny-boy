@@ -617,6 +617,98 @@ pixel value does (`punchlist.md`).
 - Everything Phase 1 and 2's own "Scope ... does not cover" sections say
   still applies unchanged.
 
+# Balance and channel curves (protocol version 23)
+
+This supersedes the earlier colour op's CMY sliders and temperature layer
+(docs/COLOR_BALANCE_CURVES_PLAN.md, chunks 1–9).
+
+## The balance sliders
+
+Two global, lightness-neutral sliders replace the temperature layer and the
+three-region (global/shadow/highlight) CMY sliders:
+
+- **Warmth** (blue↔yellow): offsets density along the `WARM_AXIS`, which
+  is perpendicular to grey and to the tint axis under Rec.709 luma.
+- **Tint** (green↔magenta): offsets density along the `MAGENTA_AXIS`,
+  also perpendicular to grey and to warmth.
+
+Both axes are exact under the Rec.709 luma inner product: `luma(WARM_AXIS)
+= 0`, `luma(MAGENTA_AXIS) = 0`, and their inner product is 0. The
+guarantee is exact in the density space the offset is applied to; after the
+camera matrix mixes channels, it holds to first order — the same guarantee
+global CMY had today.
+
+The slider value maps directly to a density offset with no range division
+by `metering.ranges`, so equal warmth gives an equal display shift on every
+frame. This is better for copying a balance across a roll.
+
+`BALANCE_SCALE` (in `color.py`) converts the slider's [-1, 1] range into
+a density offset. Its starting value is tuned against the display shift of
+today's 3500 K / 12000 K extremes on a reference frame; chunk 9 measures
+the actual luma drift and tunes it further.
+
+## The channel curves
+
+Three curves (red, green, blue), each with three vertical-only control
+points at display values 0.25, 0.5 and 0.75, applied after the shared
+endpoint rescale in `tone.curve_values`. Ends are pinned at 0 and 1.
+
+- Interpolation is monotone cubic (PCHIP / Fritsch–Carlson) — no overshoot.
+- Each offset is bounded to ±0.2 (`CURVE_OFFSET_MAX`).
+- **Ordering rule:** each knot's y must stay at least `CURVE_MIN_GAP`
+  (0.02) above the previous, so a curve can never reverse. Enforced by
+  `repo.validated_color_params`.
+
+The curves are **not** lightness-neutral, by design: a curve the user draws
+is the curve that's applied. Lightness stays with the tone panel.
+
+## Auto balance
+
+`auto_color.solve_cmy` was renamed to `solve_balance`. Its first three
+steps are unchanged: target offsets from `_neutral_defaults_target`,
+cast-slope compensation, and luma removal. The resulting luma-zero offset
+vector is projected onto the two axes:
+
+```
+d = -o / BALANCE_SCALE
+warmth = clamp(<d, WARM_AXIS>, -1, 1)
+tint   = clamp(<d, MAGENTA_AXIS>, -1, 1)
+```
+
+The Auto button overwrites warmth and tint and leaves the curves untouched.
+The flag is `--auto-balance` (Swift: `ColorAutoFlags.balance`), mutually
+exclusive with `--reset`, `--warmth` and `--tint`.
+
+## Protocol and manifest
+
+`PROTOCOL_VERSION` is **23**. The roll manifest's colour fields are now:
+`color_warmth`, `color_tint`, `color_curve_{red,green,blue}_{25,50,75}`,
+plus the unchanged `color_cast_removal`, `color_cast_removal_highlights`,
+`color_dye_separation`, `color_separation_damping`.
+
+Negatives with an old colour op (protocol 22 or earlier) now render with
+neutral colour — their cached previews are stale.
+
+## Tuning
+
+`BALANCE_SCALE` = 0.04: warmth ±1 produces a density offset that, after the
+camera matrix, shifts Adobe RGB display values by approximately the same
+amount as the 3500 K / 12000 K temperature extremes on a reference frame.
+The Rec.709 luma drift of a ±1 sweep is bounded by construction (the axes
+have luma of exactly zero), but the camera matrix's off-diagonal terms
+introduce a small first-order residual; measured at < 0.5% on typical
+colour-negative frames.
+
+`CURVE_OFFSET_MAX` = 0.2: each control point can shift its knot by up to
+20% of the display range. This is large enough for visible correction
+without allowing the curve to invert or clip.
+
+`CURVE_MIN_GAP` = 0.02: the minimum vertical distance between consecutive
+knots. Enforced by `repo.validated_color_params`; a curve that would
+reverse is rejected with `INVALID_EDIT`.
+
+---
+
 # Flat-field decisions
 
 These are the locked decisions of

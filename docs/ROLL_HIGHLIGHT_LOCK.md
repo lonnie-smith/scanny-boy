@@ -250,7 +250,7 @@ val_new = (delta + val * (range - delta)) / range
 ```
 
 `color.remap_dense_end` applies this, and it is called immediately after
-`normalization.decode_normalized` and before global CMY / `1 - val` in
+`normalization.decode_normalized` and before balance offset / `1 - val` in
 every render path (`render._linear_lut_from_codes`,
 `tone.build_channel_tables`), so everything downstream — the camera
 matrix, the tone curve, cast removal, dye separation — composes unchanged.
@@ -294,7 +294,7 @@ highlight_lock` returned `None` on every real roll it was tried against.
 an optional `highlight_lock` (a `HighlightLock` instance, the roll
 manifest's raw dict, or `None`); when it resolves, the `floors` every
 other computed field is measured against — `ranges` (feeding
-`cmy_offsets`, the global CMY sliders' per-channel scale) and
+the balance and channel-curve per-channel scale) and
 `highlight_refs_norm` (feeding `cast_slopes`' two-point cast-removal tie)
 — are the *corrected* floors, and `Metering.highlight_floor_delta` records
 what changed for the render path to apply to pixels. One function, one
