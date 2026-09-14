@@ -315,7 +315,7 @@ it is threaded through rather than left stale.
 **`neutral_residual` is left unmodified — documented staleness, not a
 silent gap.** It was measured at stitch time against the *published*
 (uncorrected) bounds and cannot be re-measured without the pixels
-(published pixels are never touched, by design — §1). `auto_color.solve_cmy`
+(published pixels are never touched, by design — §1). `auto_color.solve_balance`
 now takes the roll's `highlight_lock` and threads it into the
 `cast_slopes` compensation its Step 3 already performs (the two-point tie
 compensation, evaluated at one anchor point), but the residual itself is

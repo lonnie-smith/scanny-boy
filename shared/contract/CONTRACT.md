@@ -507,7 +507,7 @@ neutral), dye separation (0.5–1.5, 1.0 neutral), separation damping
 neutral default — a single-slider change need not resend all keys.
 Validation runs on the merged state. `--warmth` and `--tint` map directly to
 density offsets with no range division, so equal warmth gives an equal
-display shift on every frame. An op recorded before protocol 23 reads as
+display shift on every frame. An op recorded before protocol 24 reads as
 neutral colour.
 The op is a state, not a transform — the latest `color` op wins and a
 trailing one coalesces in place. The published TIFF and export are

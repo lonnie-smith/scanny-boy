@@ -9,6 +9,8 @@ rather than the stale stitch-time `neutral_residual`.
 
 from __future__ import annotations
 
+import numpy as np
+
 from scanny_boy import auto_neutral, color
 
 
@@ -26,29 +28,30 @@ def _residual_from_auto_neutral(record: dict) -> tuple[float, float] | None:
     return float(stacked[0]), float(stacked[1])
 
 
-def _residual_to_display_offsets(
+def _neutral_defaults_target(
     residual_a: float, residual_b: float
 ) -> tuple[float, float, float]:
-    """The luma-neutral display-direction offsets that null the residual."""
+    """Step 1: the luma-neutral density offsets that null the residual."""
     w_r, _w_g, w_b = color.LUMA_WEIGHTS
     o_g = w_r * residual_a + w_b * residual_b
     return (o_g - residual_a, o_g, o_g - residual_b)
 
 
-def _project_display_offsets(
-    display_offsets: tuple[float, float, float],
+def _warmth_tint_from_offsets(
+    offsets: tuple[float, float, float],
 ) -> tuple[float, float]:
-    """Project a display-direction offset pair onto the balance axes,
-    returning (warmth, tint) in [-1, 1]."""
-    import numpy as np
+    """§3: project a luma-zero density offset vector onto the balance axes.
 
-    d = np.array(display_offsets)
-    warmth = float(np.clip(
-        np.dot(d, color.WARM_AXIS) / color.BALANCE_SCALE, -1.0, 1.0
-    ))
-    tint = float(np.clip(
-        np.dot(d, color.MAGENTA_AXIS) / color.BALANCE_SCALE, -1.0, 1.0
-    ))
+    ``d = -o / BALANCE_SCALE`` converts the density offset back to the
+    display-direction vector `balance_offsets` would need to reproduce it,
+    and the two dot products (under the W inner product, since WARM_AXIS
+    and MAGENTA_AXIS are W-orthonormal, not Euclidean-orthonormal) read the
+    warmth/tint coordinates straight off — because ``o`` is luma-zero it
+    lies exactly in the plane the two axes span, so this round-trips
+    exactly through `balance_offsets` before clamping."""
+    d = tuple(-value / color.BALANCE_SCALE for value in offsets)
+    warmth = float(np.clip(color._w_inner(d, color.WARM_AXIS), -1.0, 1.0))
+    tint = float(np.clip(color._w_inner(d, color.MAGENTA_AXIS), -1.0, 1.0))
     return warmth, tint
 
 
@@ -60,6 +63,12 @@ def solve_balance(
     highlight_lock=None,
 ) -> tuple[float, float] | None:
     """Warmth/tint values that null the stored auto-neutral residual.
+
+    Steps, unchanged from the pre-balance `solve_cmy` (§3): the target
+    density offsets from the residual, the cast-slope compensation loop
+    (so a two-point cast-removal tie already in effect is accounted for
+    rather than fought), and luma removal — leaving a luma-zero offset
+    vector projected onto the two balance axes.
 
     Returns `None` when `record` is missing or has no usable `auto_neutral`
     estimate. Never raises."""
@@ -74,5 +83,16 @@ def solve_balance(
     if not (math.isfinite(a) and math.isfinite(b)):
         return None
 
-    display_offsets = _residual_to_display_offsets(a, b)
-    return _project_display_offsets(display_offsets)
+    metering = color.read_metering(record, highlight_lock=highlight_lock)
+    offsets = list(_neutral_defaults_target(a, b))
+
+    per_channel = color.cast_slopes(params, metering, slope, pivot_in)
+    for ch, (slope_ch, pivot_ch) in enumerate(per_channel):
+        if ch == 1:
+            continue
+        d_ch = slope_ch * (pivot_in - pivot_ch)
+        offsets[ch] -= -d_ch / slope
+    luma_mean = color._luma_weighted_sum(tuple(offsets))
+    o = tuple(value - luma_mean for value in offsets)
+
+    return _warmth_tint_from_offsets(o)

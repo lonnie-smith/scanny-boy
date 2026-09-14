@@ -267,7 +267,7 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 23
+    assert PROTOCOL_VERSION == 24
 
 
 def test_new_event_kinds_round_trip():

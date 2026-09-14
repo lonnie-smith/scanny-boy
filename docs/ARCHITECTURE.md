@@ -95,9 +95,12 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **23** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 23 replaces the CMY sliders and
-temperature layer with balance (warmth/tint) and channel curves; 22 splits
+`PROTOCOL_VERSION` is **24** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 24 replaces the CMY sliders and
+temperature layer with balance (warmth/tint) and channel curves; 23 adds
+auto-crop detection and seeding — a `crop` op seeded after rotation when
+`setup.auto_crop` is enabled and a film format is set (see
+`docs/AUTO_CROP_PLAN.md`); 22 splits
 the scanning-rig profile from
 the per-roll flat-field reference (`flatfield_*` events → `rig_*`,
 `FLATFIELD_PROFILE_*` → `RIG_PROFILE_*`, new `flat_field_reference_set` and

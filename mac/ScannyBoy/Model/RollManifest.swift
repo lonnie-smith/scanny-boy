@@ -316,7 +316,7 @@ struct RollManifest: Sendable, Hashable {
         let toneDensity: Double?
         let toneShadowDensity: Double?
         let toneHighlightDensity: Double?
-        /// Protocol 23's net preview colour adjustment. `nil` = no op recorded.
+        /// Protocol 24's net preview colour adjustment. `nil` = no op recorded.
         let colorWarmth: Double?
         let colorTint: Double?
         let colorCurveRed25: Double?

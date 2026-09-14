@@ -996,3 +996,92 @@ def test_validated_color_params_still_rejects_a_mixed_dict():
     mixed = _color_params() | {"warmth": None}
     with pytest.raises(ValueError):
         validated_color_params(mixed)
+
+
+def test_validated_color_params_rejects_a_reversing_curve():
+    """The bug this ordering rule exists to catch: curve_red_25=0.2,
+    curve_red_50=-0.2 gives y(0.25)=0.45 then y(0.5)=0.30 — the curve
+    reverses. `validated_color_params` must reject it, not just
+    `channel_curve` (which doesn't enforce ordering by design)."""
+    from scanny_boy.library.repo import validated_color_params
+
+    reversed_curve = _color_params(curve_red_25=0.2, curve_red_50=-0.2)
+    with pytest.raises(ValueError):
+        validated_color_params(reversed_curve)
+
+
+def test_validated_color_params_accepts_a_curve_at_the_min_gap():
+    """o25=0.1, o50=-0.13 puts y(0.25)=0.35 and y(0.5)=0.37 — a gap of
+    exactly CURVE_MIN_GAP (0.02), both offsets within [-0.2, 0.2]."""
+    from scanny_boy.library.repo import validated_color_params
+
+    ok = _color_params(curve_green_25=0.1, curve_green_50=-0.13)
+    validated = validated_color_params(ok)
+    assert validated["curve_green_25"] == pytest.approx(0.1)
+    assert validated["curve_green_50"] == pytest.approx(-0.13)
+
+    just_under = _color_params(curve_green_25=0.1, curve_green_50=-0.131)
+    with pytest.raises(ValueError):
+        validated_color_params(just_under)
+
+
+def test_validated_color_params_rejects_each_channel_independently():
+    from scanny_boy.library.repo import validated_color_params
+
+    for channel in ("red", "green", "blue"):
+        bad = _color_params(**{f"curve_{channel}_50": 0.2, f"curve_{channel}_75": -0.2})
+        with pytest.raises(ValueError):
+            validated_color_params(bad)
+
+
+# --- _parse_color_op (COLOR_BALANCE_CURVES_PLAN.md §4.1) --------------------
+
+
+def test_parse_color_op_none_for_an_old_key_only_op():
+    """An op recorded before the balance/curves keys existed — carrying
+    only e.g. cast_removal/dye_separation — parses as no colour op, not a
+    partial new state."""
+    from scanny_boy.library.repo import _parse_color_op
+
+    old_op = {"cast_removal": 0.4, "dye_separation": 1.2}
+    assert _parse_color_op(old_op) is None
+
+
+def test_parse_color_op_none_when_all_keys_are_none():
+    """The reset shape: every key present and `None`."""
+    from scanny_boy import color
+    from scanny_boy.library.repo import _parse_color_op
+
+    reset = {key: None for key in color.COLOR_PARAM_KEYS}
+    assert _parse_color_op(reset) is None
+
+
+def test_parse_color_op_none_for_a_single_missing_value_among_present_keys():
+    from scanny_boy.library.repo import _parse_color_op
+
+    partial = _color_params(warmth=0.2) | {"tint": None}
+    assert _parse_color_op(partial) is None
+
+
+def test_parse_color_op_returns_the_all_neutral_op_recorded_not_none():
+    """A recorded op whose values happen to equal the neutral defaults is
+    still a *recorded* colour op, distinct from no colour op at all."""
+    from scanny_boy.library.repo import _parse_color_op
+
+    neutral = _color_params()
+    parsed = _parse_color_op(neutral)
+    assert parsed == neutral
+
+
+def test_parse_color_op_none_for_a_reversing_curve():
+    from scanny_boy.library.repo import _parse_color_op
+
+    reversed_curve = _color_params(curve_blue_25=0.2, curve_blue_50=-0.2)
+    assert _parse_color_op(reversed_curve) is None
+
+
+def test_parse_color_op_none_for_an_out_of_range_value():
+    from scanny_boy.library.repo import _parse_color_op
+
+    out_of_range = _color_params(warmth=2.0)
+    assert _parse_color_op(out_of_range) is None

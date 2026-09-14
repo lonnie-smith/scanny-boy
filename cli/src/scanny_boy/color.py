@@ -8,6 +8,7 @@ negative's `normalization` record is read here; curve composition lives in
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 import numpy as np
 
@@ -34,19 +35,28 @@ SEPARATION_DAMPING_GAIN = 2.0
 # separation so a colour move does not change perceived brightness.
 LUMA_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
-# Balance axes — two unit vectors perpendicular to grey (1, 1, 1) and to
-# each other, under the Rec.709 luma inner product.  Both have luma of
-# exactly zero.  Positive warmth = yellow; positive tint = magenta.
+# Balance axes — two vectors perpendicular to grey (1, 1, 1) and to each
+# other, under the Rec.709 luma inner product <u, v> = sum(w_i * u_i * v_i)
+# with w = LUMA_WEIGHTS — *not* the Euclidean dot product, under which
+# these axes are neither unit nor orthogonal.  Both have luma of exactly
+# zero.  Positive warmth = yellow; positive tint = magenta.  Unit under the
+# W inner product (Euclidean norm is about 3.396 for warm, 2.328 for
+# magenta — see color_test.py's derivation, which reconstructs both to
+# full precision from LUMA_WEIGHTS and checks these constants against it).
 # Stored as literal constants and derived in tests, not at import.
-WARM_AXIS = (0.3215673575, 0.0, -0.9468867063)
-MAGENTA_AXIS = (0.9034149228, -0.2995207922, 0.3068041271)
+WARM_AXIS = (1.0919857630, 0.0, -3.2154594629)
+MAGENTA_AXIS = (1.5846879677, -0.6310390565, 1.5846879677)
 
-# Balance scale — makes warmth ±1 match the display shift of today's
-# 3500 K / 12000 K extremes on a reference frame.  Calibrated against
-# real rolls; the Rec.709 luma drift of a ±1 warmth/tint sweep after the
-# camera matrix is < 0.5% on typical colour-negative frames (DECISIONS.md
-# §"Balance and channel curves").
-BALANCE_SCALE = 0.04
+# Balance scale — converts the slider's [-1, 1] range into a density
+# offset.  The axes above are W-unit but not Euclidean-unit (WARM_AXIS's
+# Euclidean norm is ~3.396), so this scale is chosen to keep a ±1 warmth
+# move at roughly the same Euclidean density magnitude as the old
+# Euclidean-unit axis gave (0.04 = 0.04 * |unit vector|): 0.04 /
+# 3.3958227963 (WARM_AXIS's Euclidean norm).  One shared scale for both
+# sliders, as before.  This is a provisional starting value, not measured
+# on real rolls — chunk 9's Adobe-RGB luma-drift measurement is
+# outstanding (DECISIONS.md §"Balance and channel curves" > "Tuning").
+BALANCE_SCALE = 0.0117791777
 
 # Channel curve — per-channel offsets at display values 0.25, 0.5, 0.75,
 # with ends pinned at 0 and 1.  Monotone cubic (PCHIP) interpolation.
@@ -319,6 +329,13 @@ def _luma_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
     return tuple(value - mean for value in triple)
 
 
+def _w_inner(u: tuple[float, ...], v: tuple[float, ...]) -> float:
+    """The luma-weighted inner product <u, v> = sum(w_i * u_i * v_i), with
+    w = LUMA_WEIGHTS — the inner product WARM_AXIS and MAGENTA_AXIS are
+    orthonormal under, not the Euclidean dot product."""
+    return sum(ui * vi * wi for ui, vi, wi in zip(u, v, LUMA_WEIGHTS))
+
+
 def balance_offsets(params: ColorParams) -> tuple[float, float, float]:
     """Per-channel density offset from the warmth/tint balance sliders.
 
@@ -339,6 +356,18 @@ def balance_offsets(params: ColorParams) -> tuple[float, float, float]:
         BALANCE_SCALE * (w * WARM_AXIS[2] + t * MAGENTA_AXIS[2]),
     )
     return (-display[0], -display[1], -display[2])
+
+
+def curve_offsets_in_order(offsets: tuple[float, float, float]) -> bool:
+    """The ordering rule (§2.2): each knot's y must stay at least
+    ``CURVE_MIN_GAP`` above the previous one, so a curve can never reverse.
+    Checked over the full knot list ``(0, 0.25+o25, 0.5+o50, 0.75+o75, 1)``.
+    """
+    y_knots = (0.0, 0.25 + offsets[0], 0.5 + offsets[1], 0.75 + offsets[2], 1.0)
+    # A tiny epsilon absorbs float round-off in the knot sums (e.g.
+    # 0.25 + -0.23 lands a ULP under 0.02) without letting a real
+    # reversal through.
+    return all(b - a >= CURVE_MIN_GAP - 1e-9 for a, b in itertools.pairwise(y_knots))
 
 
 def channel_curve(

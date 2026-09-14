@@ -617,7 +617,7 @@ pixel value does (`punchlist.md`).
 - Everything Phase 1 and 2's own "Scope ... does not cover" sections say
   still applies unchanged.
 
-# Balance and channel curves (protocol version 23)
+# Balance and channel curves (protocol version 24)
 
 This supersedes the earlier colour op's CMY sliders and temperature layer
 (docs/COLOR_BALANCE_CURVES_PLAN.md, chunks 1–9).
@@ -632,20 +632,22 @@ three-region (global/shadow/highlight) CMY sliders:
 - **Tint** (green↔magenta): offsets density along the `MAGENTA_AXIS`,
   also perpendicular to grey and to warmth.
 
-Both axes are exact under the Rec.709 luma inner product: `luma(WARM_AXIS)
-= 0`, `luma(MAGENTA_AXIS) = 0`, and their inner product is 0. The
-guarantee is exact in the density space the offset is applied to; after the
-camera matrix mixes channels, it holds to first order — the same guarantee
-global CMY had today.
+Both axes are exact under the Rec.709 luma-weighted inner product
+`<u, v> = sum(w_i * u_i * v_i)`, `w = LUMA_WEIGHTS` — not the Euclidean dot
+product, under which they are neither unit nor orthogonal: `luma(WARM_AXIS)
+= 0`, `luma(MAGENTA_AXIS) = 0`, `<WARM_AXIS, WARM_AXIS> = 1`,
+`<MAGENTA_AXIS, MAGENTA_AXIS> = 1`, and `<WARM_AXIS, MAGENTA_AXIS> = 0`.
+The guarantee is exact in the density space the offset is applied to; after
+the camera matrix mixes channels, it holds to first order — the same
+guarantee the old global CMY sliders had.
 
 The slider value maps directly to a density offset with no range division
 by `metering.ranges`, so equal warmth gives an equal display shift on every
 frame. This is better for copying a balance across a roll.
 
 `BALANCE_SCALE` (in `color.py`) converts the slider's [-1, 1] range into
-a density offset. Its starting value is tuned against the display shift of
-today's 3500 K / 12000 K extremes on a reference frame; chunk 9 measures
-the actual luma drift and tunes it further.
+a density offset. Its value is provisional and not yet measured on real
+rolls (see Tuning below).
 
 ## The channel curves
 
@@ -662,18 +664,38 @@ endpoint rescale in `tone.curve_values`. Ends are pinned at 0 and 1.
 The curves are **not** lightness-neutral, by design: a curve the user draws
 is the curve that's applied. Lightness stays with the tone panel.
 
+**The editor draws the curve itself, so its PCHIP must match scipy's.** The
+CLI renders pixels with `scipy.interpolate.PchipInterpolator`; the Mac
+editor (`ChannelCurve` in `ColorAdjustment.swift`) reimplements it for
+drawing only. The first Swift cut used one-sided endpoint slopes and drew
+up to 0.015 away from the render; it now ports scipy's three-point
+shape-preserving endpoint formula and weighted-harmonic interior slopes,
+pinned by `ChannelCurveTests` against scipy reference values. The editor
+also clamps every drag and slider move to `CURVE_OFFSET_MAX` and
+`CURVE_MIN_GAP`, so it never sends a curve the CLI would reject. Dragging a
+point sets its offset; double-click resets the point; ⌥ held while dragging
+resets the channel.
+
 ## Auto balance
 
 `auto_color.solve_cmy` was renamed to `solve_balance`. Its first three
-steps are unchanged: target offsets from `_neutral_defaults_target`,
-cast-slope compensation, and luma removal. The resulting luma-zero offset
-vector is projected onto the two axes:
+steps are unchanged from before the rename: the target density offsets
+from `_neutral_defaults_target` (the residual's luma-neutral CMY
+equivalent), the cast-slope compensation loop (`color.cast_slopes` against
+the negative's own metering, so a two-point cast-removal tie already in
+effect is accounted for rather than fought), and luma removal. The
+resulting luma-zero offset vector `o` is projected onto the two axes:
 
 ```
 d = -o / BALANCE_SCALE
-warmth = clamp(<d, WARM_AXIS>, -1, 1)
+warmth = clamp(<d, WARM_AXIS>, -1, 1)   # <.,.> is the W inner product
 tint   = clamp(<d, MAGENTA_AXIS>, -1, 1)
 ```
+
+Because the axes are orthonormal under that inner product and `o` is
+luma-zero (so it lies exactly in the plane the axes span), this round-trips
+exactly back through `balance_offsets` whenever the clamp doesn't bind —
+checked directly in `auto_color_test.py`.
 
 The Auto button overwrites warmth and tint and leaves the curves untouched.
 The flag is `--auto-balance` (Swift: `ColorAutoFlags.balance`), mutually
@@ -681,23 +703,35 @@ exclusive with `--reset`, `--warmth` and `--tint`.
 
 ## Protocol and manifest
 
-`PROTOCOL_VERSION` is **23**. The roll manifest's colour fields are now:
+`PROTOCOL_VERSION` is **24** (23 was taken by auto-crop in the meantime —
+see `docs/AUTO_CROP_PLAN.md`). The roll manifest's colour fields are now:
 `color_warmth`, `color_tint`, `color_curve_{red,green,blue}_{25,50,75}`,
 plus the unchanged `color_cast_removal`, `color_cast_removal_highlights`,
 `color_dye_separation`, `color_separation_damping`.
 
-Negatives with an old colour op (protocol 22 or earlier) now render with
-neutral colour — their cached previews are stale.
+**Old colour ops are not migrated.** No real edits depended on the old
+keys, so `repo._parse_color_op` reads a `color` op as no colour op unless
+it carries every key in `COLOR_PARAM_KEYS` with in-range, correctly
+ordered values. A partial old op does not leak its surviving keys
+(`cast_removal`, `dye_separation`, …) into the new state. An op whose
+values all equal the neutral defaults is still a recorded state, not a
+reset. Negatives with an old colour op (protocol 23 or earlier) render with
+neutral colour, and their cached previews stay stale until each is
+re-rendered — there is no one-time forced refresh.
 
 ## Tuning
 
-`BALANCE_SCALE` = 0.04: warmth ±1 produces a density offset that, after the
-camera matrix, shifts Adobe RGB display values by approximately the same
-amount as the 3500 K / 12000 K temperature extremes on a reference frame.
-The Rec.709 luma drift of a ±1 sweep is bounded by construction (the axes
-have luma of exactly zero), but the camera matrix's off-diagonal terms
-introduce a small first-order residual; measured at < 0.5% on typical
-colour-negative frames.
+`BALANCE_SCALE` = 0.0117791777: WARM_AXIS and MAGENTA_AXIS are unit under
+the W inner product, not Euclidean, so their Euclidean norms are ~3.396 and
+~2.328 respectively rather than 1. This value keeps a ±1 warmth move at
+roughly the old Euclidean density magnitude (0.04, when the old axis was
+Euclidean-unit): `0.04 / 3.3958227963` (WARM_AXIS's Euclidean norm). It is
+a **provisional starting value, not yet measured on real rolls** — chunk
+9's Adobe RGB luma-drift measurement of a warmth/tint sweep after the
+camera matrix is still outstanding. The luma-zero guarantee this section
+opened with is exact by construction in the density space the offset is
+applied to; whether it stays visually negligible after the camera matrix
+is exactly what that measurement would settle.
 
 `CURVE_OFFSET_MAX` = 0.2: each control point can shift its knot by up to
 20% of the display range. This is large enough for visible correction
@@ -1833,6 +1867,12 @@ targets the scan-start grade (R180), not R115.
 
 ## The preview's colour adjustment: the `color` op (protocol version 12)
 
+> **Superseded in part by "Balance and channel curves (protocol version
+> 24)".** Temperature and global/shadow/highlight CMY are gone, replaced by
+> warmth/tint and per-channel curves; items 1 (the CMY parts) and 8 below
+> are historical. Cast removal, dye separation and damping (items 3–7)
+> still apply.
+
 Six controls from NegPy's Colour panel — temperature (a global Kelvin
 layer under the CMY sliders, see 8), global/shadow/highlight CMY,
 cast removal, dye separation, and separation damping — land as a second
@@ -2016,7 +2056,8 @@ still measures larger, this paragraph — not the panel — is wrong.
 **7. `TONE_METERING_UNAVAILABLE` is reused for the colour-only conditions
 rather than renamed.** COLOR_PLAN §7.2 proposed renaming it to
 `METERING_UNAVAILABLE` before it shipped; it has shipped. Renaming a live
-contract code costs more than the wart, so the auto-cast and cast-removal
+contract code costs more than the wart, so the auto-balance (formerly
+auto-cast) and cast-removal
 metering absences warn with the historical name.
 
 # The Edit tab's latency decisions (docs/OPTIMIZATION.md)
@@ -2086,7 +2127,8 @@ the bit") hold exactly rather than approximately.
 **`neutral_residual` stays stale, on purpose.** It was measured at stitch
 time against the *uncorrected* bounds and cannot be re-measured without
 published pixels, which this plan — like every plan before it — does not
-touch. `auto_color.solve_cmy` threads the roll's lock into the cast-removal
+touch. `auto_color.solve_balance` (formerly `solve_cmy`) threads the
+roll's lock into the cast-removal
 tie compensation it already performs, but the residual itself is read back
 unmodified; it was already a first-order approximation before this feature
 existed.

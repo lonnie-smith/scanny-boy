@@ -291,14 +291,16 @@ def test_warmth_and_tint_affect_different_channels():
     )
     code_mid = int(np.argmin(np.abs(neutral[0] - 0.5)))
     warm_delta_r = abs(warm_tables[0, code_mid] - neutral[0, code_mid])
-    warm_delta_g = abs(warm_tables[1, code_mid] - neutral[1, code_mid])
     tint_delta_g = abs(tint_tables[1, code_mid] - neutral[1, code_mid])
     tint_delta_r = abs(tint_tables[0, code_mid] - neutral[0, code_mid])
-    assert warm_delta_r > 0.01
-    assert tint_delta_g > 0.01
+    # Thresholds scale with BALANCE_SCALE (chunk 1's rescale for the
+    # W-orthonormal axes shrank a full-strength move somewhat), not a
+    # magic 0.01 — both must still be clearly nonzero.
+    assert warm_delta_r > 0.005
+    assert tint_delta_g > 0.005
     # Warmth should affect red more than tint affects red, and vice versa
     # for green — but both can be nonzero; the key is that they're different.
-    assert warm_delta_r != pytest.approx(tint_delta_r, abs=0.01)
+    assert warm_delta_r != pytest.approx(tint_delta_r, abs=0.005)
 
 
 def test_one_point_parity_is_byte_for_byte():
@@ -558,6 +560,45 @@ def test_base_slope_and_pivot_reproduce_the_curve_inputs():
 
 
 # --- balance axes (chunk 1) -----------------------------------------------
+#
+# WARM_AXIS and MAGENTA_AXIS are orthonormal under the luma-weighted inner
+# product <u, v> = sum(w_i * u_i * v_i), w = LUMA_WEIGHTS — *not* under the
+# Euclidean dot product, which these vectors' Euclidean norms of ~3.396 and
+# ~2.328 make obvious. The derivation below reconstructs both axes to full
+# precision from LUMA_WEIGHTS alone, independent of the stored constants:
+# for WARM_AXIS (G = 0), luma-zero forces the R:B ratio, so any vector
+# proportional to (w_b, 0, -w_r) is luma-zero; for MAGENTA_AXIS (R = B),
+# luma-zero forces the R:G ratio, so any vector proportional to
+# (w_g, -(w_r + w_b), w_g) is luma-zero. Both directions are then
+# normalized to unit W-norm.
+
+
+def _w_inner(u, v):
+    return color._w_inner(tuple(u), tuple(v))
+
+
+def _derive_warm_axis_unit():
+    w_r, _w_g, w_b = color.LUMA_WEIGHTS
+    direction = (w_b, 0.0, -w_r)
+    norm = np.sqrt(_w_inner(direction, direction))
+    return tuple(x / norm for x in direction)
+
+
+def _derive_magenta_axis_unit():
+    w_r, w_g, w_b = color.LUMA_WEIGHTS
+    direction = (w_g, -(w_r + w_b), w_g)
+    norm = np.sqrt(_w_inner(direction, direction))
+    return tuple(x / norm for x in direction)
+
+
+def test_warm_axis_matches_its_derivation():
+    derived = _derive_warm_axis_unit()
+    np.testing.assert_allclose(color.WARM_AXIS, derived, atol=1e-9)
+
+
+def test_magenta_axis_matches_its_derivation():
+    derived = _derive_magenta_axis_unit()
+    np.testing.assert_allclose(color.MAGENTA_AXIS, derived, atol=1e-9)
 
 
 def test_warm_axis_luma_is_zero():
@@ -568,19 +609,38 @@ def test_magenta_axis_luma_is_zero():
     assert _luma_sum(color.MAGENTA_AXIS) == pytest.approx(0.0, abs=1e-10)
 
 
-def test_warm_axis_unit_norm():
-    norm = np.linalg.norm(color.WARM_AXIS)
-    assert norm == pytest.approx(1.0, abs=1e-6)
+def test_warm_axis_unit_norm_under_w_inner_product():
+    assert _w_inner(color.WARM_AXIS, color.WARM_AXIS) == pytest.approx(1.0, abs=1e-9)
 
 
-def test_magenta_axis_unit_norm():
-    norm = np.linalg.norm(color.MAGENTA_AXIS)
-    assert norm == pytest.approx(1.0, abs=1e-6)
+def test_magenta_axis_unit_norm_under_w_inner_product():
+    assert _w_inner(color.MAGENTA_AXIS, color.MAGENTA_AXIS) == pytest.approx(
+        1.0, abs=1e-9
+    )
 
 
-def test_axes_are_orthogonal():
-    dot = sum(a * b for a, b in zip(color.WARM_AXIS, color.MAGENTA_AXIS))
-    assert dot == pytest.approx(0.0, abs=1e-10)
+def test_axes_euclidean_norm_is_not_one():
+    """The axes are unit under the W inner product, not Euclidean — a
+    regression guard against reintroducing a Euclidean-unit vector that
+    happens to look plausible but is not W-orthonormal."""
+    assert np.linalg.norm(color.WARM_AXIS) == pytest.approx(3.3958227963, abs=1e-6)
+    assert np.linalg.norm(color.MAGENTA_AXIS) == pytest.approx(2.3282358560, abs=1e-6)
+
+
+def test_axes_are_orthogonal_under_w_inner_product():
+    assert _w_inner(color.WARM_AXIS, color.MAGENTA_AXIS) == pytest.approx(
+        0.0, abs=1e-10
+    )
+
+
+def test_tint_moves_red_and_blue_equally():
+    """MAGENTA_AXIS's R and B components are exactly equal, so a tint move
+    shifts red and blue by the same amount (and only warmth tells them
+    apart)."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, tint=0.7)
+    offsets = color.balance_offsets(params)
+    assert offsets[0] == pytest.approx(offsets[2], abs=1e-12)
+    assert offsets[0] != pytest.approx(offsets[1], abs=1e-6)
 
 
 def test_warmth_signs():
@@ -671,6 +731,28 @@ def test_channel_curve_monotone_negative_offsets():
     v = np.linspace(0.0, 1.0, 500)
     result = color.channel_curve(v, offsets)
     assert np.all(np.diff(result) >= -1e-10)
+
+
+def test_curve_offsets_in_order_accepts_a_valid_curve():
+    # Knots: 0, 0.02, 0.5, 0.95, 1 — each at least CURVE_MIN_GAP above the
+    # previous.
+    assert color.curve_offsets_in_order((-0.23, 0.0, 0.2))
+
+
+def test_curve_offsets_in_order_rejects_a_reversal():
+    """The bug this ordering rule exists to catch: curve_red_25=0.2,
+    curve_red_50=-0.2 gives y(0.25)=0.45 then y(0.5)=0.30 — the curve
+    reverses. `curve_offsets_in_order` must say no."""
+    assert not color.curve_offsets_in_order((0.2, -0.2, 0.0))
+
+
+def test_curve_offsets_in_order_rejects_a_gap_exactly_at_the_boundary():
+    # y(0) = 0, y(0.25) = 0.25 + offset25 — a gap of exactly CURVE_MIN_GAP
+    # above y(0) is allowed (modulo float round-off in the knot sum), a
+    # clearly smaller gap is not.
+    just_enough = color.CURVE_MIN_GAP - 0.25
+    assert color.curve_offsets_in_order((just_enough, 0.0, 0.0))
+    assert not color.curve_offsets_in_order((just_enough - 1e-3, 0.0, 0.0))
 
 
 def test_channel_curve_ordering_rule():

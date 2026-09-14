@@ -1427,6 +1427,12 @@ private struct ChannelCurvesEditor: View {
     }
 
     @State private var selectedChannel: Channel = .red
+    /// The point being dragged, set from the nearest point to the mouse
+    /// down location and held until the gesture ends.
+    @State private var draggedPointIndex: Int?
+    /// Set instead of `draggedPointIndex` when the drag started ⌥-held,
+    /// so the whole channel resets on release rather than one point moving.
+    @State private var isResettingChannel = false
 
     private var offsets: Binding<(q1: Double, mid: Double, q3: Double)> {
         Binding(
@@ -1491,108 +1497,201 @@ private struct ChannelCurvesEditor: View {
     }
 
     private var curveCanvas: some View {
-        Canvas { context, size in
-            let w = size.width
-            let h = size.height
-            // Grid lines
-            let gridColor = Color.secondary.opacity(0.15)
-            for i in 1...3 {
-                let x = w * Double(i) / 4.0
-                context.stroke(Path(CGRect(x: x, y: 0, width: 0, height: h)), with: .color(gridColor))
-                let y = h * Double(i) / 4.0
-                context.stroke(Path(CGRect(x: 0, y: y, width: w, height: 0)), with: .color(gridColor))
-            }
-            // Identity line
-            var identity = Path()
-            identity.move(to: CGPoint(x: 0, y: h))
-            identity.addLine(to: CGPoint(x: w, y: 0))
-            context.stroke(identity, with: .color(Color.secondary.opacity(0.25)), lineWidth: 1)
-            // Draw curves
-            let channels: [(Color, (Double, Double, Double))] = selectedChannel == .all
-                ? [
-                    (.red, (values.curveRed25, values.curveRed50, values.curveRed75)),
-                    (.green, (values.curveGreen25, values.curveGreen50, values.curveGreen75)),
-                    (.blue, (values.curveBlue25, values.curveBlue50, values.curveBlue75)),
-                ]
-                : [(
-                    channelColor(selectedChannel),
-                    (offsets.wrappedValue.q1, offsets.wrappedValue.mid, offsets.wrappedValue.q3)
-                )]
-            for (color, off) in channels {
-                var path = Path()
-                let steps = 64
-                for i in 0...steps {
-                    let t = Double(i) / Double(steps)
-                    let x = t
-                    let y = Self.pchipEvaluate(t: t, offsets: off)
-                    let px = x * w
-                    let py = (1.0 - y) * h
-                    if i == 0 {
-                        path.move(to: CGPoint(x: px, y: py))
-                    } else {
-                        path.addLine(to: CGPoint(x: px, y: py))
+        GeometryReader { geometry in
+            Canvas { context, size in
+                let w = size.width
+                let h = size.height
+                // Grid lines
+                let gridColor = Color.secondary.opacity(0.15)
+                for i in 1...3 {
+                    let x = w * Double(i) / 4.0
+                    context.stroke(Path(CGRect(x: x, y: 0, width: 0, height: h)), with: .color(gridColor))
+                    let y = h * Double(i) / 4.0
+                    context.stroke(Path(CGRect(x: 0, y: y, width: w, height: 0)), with: .color(gridColor))
+                }
+                // Identity line
+                var identity = Path()
+                identity.move(to: CGPoint(x: 0, y: h))
+                identity.addLine(to: CGPoint(x: w, y: 0))
+                context.stroke(identity, with: .color(Color.secondary.opacity(0.25)), lineWidth: 1)
+                // Draw curves
+                let channels: [(Color, (Double, Double, Double))] = selectedChannel == .all
+                    ? [
+                        (.red, (values.curveRed25, values.curveRed50, values.curveRed75)),
+                        (.green, (values.curveGreen25, values.curveGreen50, values.curveGreen75)),
+                        (.blue, (values.curveBlue25, values.curveBlue50, values.curveBlue75)),
+                    ]
+                    : [(
+                        channelColor(selectedChannel),
+                        (offsets.wrappedValue.q1, offsets.wrappedValue.mid, offsets.wrappedValue.q3)
+                    )]
+                for (color, off) in channels {
+                    let y = ChannelCurve.yKnots(off)
+                    let slopes = ChannelCurve.slopes(x: ChannelCurve.xKnots, y: y)
+                    var path = Path()
+                    let steps = 64
+                    for i in 0...steps {
+                        let t = Double(i) / Double(steps)
+                        let value = ChannelCurve.evaluate(t: t, x: ChannelCurve.xKnots, y: y, slopes: slopes)
+                        let px = t * w
+                        let py = (1.0 - value) * h
+                        if i == 0 {
+                            path.move(to: CGPoint(x: px, y: py))
+                        } else {
+                            path.addLine(to: CGPoint(x: px, y: py))
+                        }
+                    }
+                    context.stroke(path, with: .color(color), lineWidth: 2)
+                }
+                // Control points
+                if selectedChannel != .all {
+                    let off = offsets.wrappedValue
+                    let pts = [
+                        (0.25, 0.25 + off.q1),
+                        (0.5, 0.5 + off.mid),
+                        (0.75, 0.75 + off.q3),
+                    ]
+                    let color = channelColor(selectedChannel)
+                    for (px, py) in pts {
+                        let center = CGPoint(x: px * w, y: (1.0 - py) * h)
+                        let rect = CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
+                        context.fill(Path(ellipseIn: rect), with: .color(color))
+                        context.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
                     }
                 }
-                context.stroke(path, with: .color(color), lineWidth: 2)
             }
-            // Control points
-            if selectedChannel != .all {
-                let off = offsets.wrappedValue
-                let pts = [
-                    (0.25, 0.25 + off.q1),
-                    (0.5, 0.5 + off.mid),
-                    (0.75, 0.75 + off.q3),
-                ]
-                let color = channelColor(selectedChannel)
-                for (px, py) in pts {
-                    let center = CGPoint(x: px * w, y: (1.0 - py) * h)
-                    let rect = CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
-                    context.fill(Path(ellipseIn: rect), with: .color(color))
-                    context.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+            .contentShape(Rectangle())
+            .gesture(dragGesture(in: geometry.size))
+            .highPriorityGesture(doubleClickGesture(in: geometry.size))
+        }
+    }
+
+    /// Drags the nearest point (by x) vertically. Starting the drag with
+    /// ⌥ held resets the whole channel on release instead of moving a
+    /// point. No-op in "All" mode, where no points are editable.
+    private func dragGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard selectedChannel != .all else { return }
+                if draggedPointIndex == nil, !isResettingChannel {
+                    if NSEvent.modifierFlags.contains(.option) {
+                        isResettingChannel = true
+                        return
+                    }
+                    draggedPointIndex = nearestPointIndex(to: value.startLocation, size: size)
+                }
+                guard !isResettingChannel, let index = draggedPointIndex else { return }
+                setOffset(index, offset(atLocation: value.location, size: size, index: index))
+            }
+            .onEnded { _ in
+                defer {
+                    draggedPointIndex = nil
+                    isResettingChannel = false
+                }
+                if isResettingChannel {
+                    resetCurves()
+                    onCommitNow()
+                } else if draggedPointIndex != nil {
+                    onCommitNow()
                 }
             }
+    }
+
+    /// Double-clicking a point resets it. No-op in "All" mode.
+    private func doubleClickGesture(in size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2)
+            .onEnded { value in
+                guard selectedChannel != .all else { return }
+                setOffset(nearestPointIndex(to: value.location, size: size), 0)
+                onCommitNow()
+            }
+    }
+
+    private func nearestPointIndex(to location: CGPoint, size: CGSize) -> Int {
+        guard size.width > 0 else { return 0 }
+        let t = Double(location.x / size.width)
+        let xs = Array(ChannelCurve.xKnots[1...3])
+        var best = 0
+        var bestDistance = Double.greatestFiniteMagnitude
+        for (index, x) in xs.enumerated() {
+            let distance = abs(x - t)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = index
+            }
+        }
+        return best
+    }
+
+    /// The clamped offset that puts control point `index` at `location`'s
+    /// height.
+    private func offset(atLocation location: CGPoint, size: CGSize, index: Int) -> Double {
+        guard size.height > 0 else { return 0 }
+        let displayValue = 1.0 - Double(location.y / size.height)
+        let base = ChannelCurve.xKnots[index + 1]
+        return ChannelCurve.clampOffset(displayValue - base, at: index, other: offsets.wrappedValue)
+    }
+
+    private func setOffset(_ index: Int, _ value: Double) {
+        switch index {
+        case 0: offsets.wrappedValue.q1 = value
+        case 1: offsets.wrappedValue.mid = value
+        default: offsets.wrappedValue.q3 = value
         }
     }
 
     private var curvePointControls: some View {
         VStack(spacing: 6) {
-            curvePointRow("25%", offset: offsets.wrappedValue.q1) { offsets.wrappedValue.q1 = $0 }
-            curvePointRow("50%", offset: offsets.wrappedValue.mid) { offsets.wrappedValue.mid = $0 }
-            curvePointRow("75%", offset: offsets.wrappedValue.q3) { offsets.wrappedValue.q3 = $0 }
+            curvePointRow("25%", index: 0)
+            curvePointRow("50%", index: 1)
+            curvePointRow("75%", index: 2)
         }
     }
 
-    private func curvePointRow(
-        _ label: String,
-        offset: Double,
-        set: @escaping (Double) -> Void
-    ) -> some View {
+    private func curvePointRow(_ label: String, index: Int) -> some View {
         HStack {
             Text(label)
                 .monospacedDigit()
                 .frame(width: 30)
-            Slider(
-                value: Binding(
-                    get: { offset },
-                    set: { set($0) }
-                ),
-                in: -0.2...0.2,
-                step: 0.01
+            ToneSlider(
+                value: pointOffsetBinding(index),
+                range: -ChannelCurve.offsetMax...ChannelCurve.offsetMax,
+                step: 0.01,
+                resetValue: 0,
+                onScheduleCommit: onScheduleCommit,
+                onCommitNow: onCommitNow
             )
-            .onSubmit { onCommitNow() }
-            Text(String(format: "%+.2f", offset))
+            Text(String(format: "%+.2f", pointOffsetBinding(index).wrappedValue))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 45, alignment: .trailing)
         }
     }
 
+    private func pointOffsetBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                switch index {
+                case 0: offsets.wrappedValue.q1
+                case 1: offsets.wrappedValue.mid
+                default: offsets.wrappedValue.q3
+                }
+            },
+            set: { newValue in
+                let clamped = ChannelCurve.clampOffset(newValue, at: index, other: offsets.wrappedValue)
+                setOffset(index, clamped)
+            }
+        )
+    }
+
+    /// Only ever called for a single selected channel — "All" mode draws
+    /// its three curves with fixed colors and has no editable points.
     private func channelColor(_ channel: Channel) -> Color {
         switch channel {
         case .red: .red
         case .green: .green
         case .blue: .blue
-        case .all: .white
+        case .all: preconditionFailure("channelColor(.all) is unreachable")
         }
     }
 
@@ -1609,61 +1708,6 @@ private struct ChannelCurvesEditor: View {
             values.curveGreen25 = 0; values.curveGreen50 = 0; values.curveGreen75 = 0
             values.curveBlue25 = 0; values.curveBlue50 = 0; values.curveBlue75 = 0
         }
-    }
-
-    /// PCHIP evaluation matching the Python `channel_curve` implementation.
-    /// Input `t` in [0, 1]; output is the interpolated display value.
-    static func pchipEvaluate(t: Double, offsets: (q1: Double, mid: Double, q3: Double)) -> Double {
-        if t <= 0 { return 0 }
-        if t >= 1 { return t }
-        let x: [Double] = [0, 0.25, 0.5, 0.75, 1.0]
-        let y: [Double] = [
-            0,
-            0.25 + offsets.q1,
-            0.5 + offsets.mid,
-            0.75 + offsets.q3,
-            1.0,
-        ]
-        // Find the interval
-        var k = 0
-        for i in 0..<4 {
-            if t >= x[i] && t <= x[i + 1] {
-                k = i
-                break
-            }
-        }
-        let h = x[k + 1] - x[k]
-        guard h > 0 else { return y[k] }
-        let s = (t - x[k]) / h
-        // PCHIP slopes via finite differences
-        let dk = pchipSlopes(x: x, y: y)
-        let hk = dk[k]
-        let hkp1 = dk[k + 1]
-        // Hermite basis
-        let h00 = (1 + 2 * s) * (1 - s) * (1 - s)
-        let h10 = s * (1 - s) * (1 - s)
-        let h01 = s * s * (3 - 2 * s)
-        let h11 = s * s * (s - 1)
-        return h00 * y[k] + h10 * h * hk + h01 * y[k + 1] + h11 * h * hkp1
-    }
-
-    private static func pchipSlopes(x: [Double], y: [Double]) -> [Double] {
-        let n = x.count
-        var d = Array(repeating: 0.0, count: n)
-        // Interior points: modified harmonic mean
-        for i in 1..<(n - 1) {
-            let d1 = (y[i] - y[i - 1]) / (x[i] - x[i - 1])
-            let d2 = (y[i + 1] - y[i]) / (x[i + 1] - x[i])
-            if d1 * d2 <= 0 {
-                d[i] = 0
-            } else {
-                d[i] = 2 * (d1 * d2) / (d1 + d2)
-            }
-        }
-        // Endpoints: one-sided
-        d[0] = (y[1] - y[0]) / (x[1] - x[0])
-        d[n - 1] = (y[n - 1] - y[n - 2]) / (x[n - 1] - x[n - 2])
-        return d
     }
 }
 
@@ -1685,6 +1729,7 @@ private struct ColorAdjustmentPanel: View {
                 value: $values.warmth,
                 range: -1...1,
                 step: 0.02,
+                resetValue: ColorAdjustment.neutral.warmth,
                 trackColors: BalanceTrackColors.warmth
             ) {
                 String(format: "%+.2f", values.warmth)
@@ -1696,6 +1741,7 @@ private struct ColorAdjustmentPanel: View {
                 value: $values.tint,
                 range: -1...1,
                 step: 0.02,
+                resetValue: ColorAdjustment.neutral.tint,
                 trackColors: BalanceTrackColors.tint
             ) {
                 String(format: "%+.2f", values.tint)
@@ -1722,7 +1768,8 @@ private struct ColorAdjustmentPanel: View {
                 "Cast Removal — Shadows",
                 value: $values.castRemoval,
                 range: 0...1,
-                step: 0.05
+                step: 0.05,
+                resetValue: ColorAdjustment.neutral.castRemoval
             ) {
                 String(format: "%.2f", values.castRemoval)
             }
@@ -1731,7 +1778,8 @@ private struct ColorAdjustmentPanel: View {
                 "Cast Removal — Highlights",
                 value: $values.castRemovalHighlights,
                 range: 0...1,
-                step: 0.05
+                step: 0.05,
+                resetValue: ColorAdjustment.neutral.castRemovalHighlights
             ) {
                 String(format: "%.2f", values.castRemovalHighlights)
             }
@@ -1741,7 +1789,13 @@ private struct ColorAdjustmentPanel: View {
             )
 
             Text("Saturation").font(.headline)
-            colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
+            colorSlider(
+                "Dye Separation",
+                value: $values.dyeSeparation,
+                range: 0.5...1.5,
+                step: 0.02,
+                resetValue: ColorAdjustment.neutral.dyeSeparation
+            ) {
                 String(format: "%.2f", values.dyeSeparation)
             }
             colorSlider(
@@ -1749,6 +1803,7 @@ private struct ColorAdjustmentPanel: View {
                 value: $values.separationDamping,
                 range: 0...1,
                 step: 0.05,
+                resetValue: ColorAdjustment.neutral.separationDamping,
                 disabled: values.dyeSeparation == 1
             ) {
                 String(format: "%.2f", values.separationDamping)
@@ -1770,6 +1825,7 @@ private struct ColorAdjustmentPanel: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
+        resetValue: Double,
         disabled: Bool = false,
         trackColors: [Color]? = nil,
         label: @escaping () -> String
@@ -1786,7 +1842,7 @@ private struct ColorAdjustmentPanel: View {
                 value: value,
                 range: range,
                 step: step,
-                resetValue: 0,
+                resetValue: resetValue,
                 trackColors: trackColors,
                 onScheduleCommit: { onScheduleCommit(values) },
                 onCommitNow: { onCommitNow(values, []) }

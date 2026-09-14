@@ -1766,6 +1766,37 @@ def test_edit_color_partial_update_preserves_recorded_values(
     assert params["cast_removal"] == pytest.approx(0.3)
 
 
+def test_edit_color_rejects_a_reversing_curve(work_dir, capsys, tmp_path):
+    """curve_red_25=0.2, curve_red_50=-0.2 reverses the curve (0.45 -> 0.30)
+    — CURVE_MIN_GAP's ordering rule must fail this with INVALID_EDIT, not
+    record it."""
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--red-25",
+            "0.2",
+            "--red-50",
+            "-0.2",
+        ]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "INVALID_EDIT"
+
+
 def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     import dataclasses
 
@@ -3006,12 +3037,12 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
             tint=params["tint"],
         )
     )
-    # The solve projects the nulling display offsets onto the balance axes;
-    # balance_offsets recovers those offsets, so the per-channel differences
-    # should approximately match the residual.  The 2-axis projection is
-    # lossy, so the tolerance is ~15%.
-    assert balance[1] - balance[0] == pytest.approx(-0.03, abs=0.01)
-    assert balance[1] - balance[2] == pytest.approx(0.015, abs=0.01)
+    # The solve projects the nulling density offsets onto the balance axes;
+    # balance_offsets recovers those offsets exactly (the axes are
+    # W-orthonormal and the target is luma-zero, so this round-trips
+    # before clamping — auto_color_test.py checks the general case).
+    assert balance[1] - balance[0] == pytest.approx(0.03, abs=1e-6)
+    assert balance[1] - balance[2] == pytest.approx(-0.015, abs=1e-6)
 
 
 def test_auto_cast_without_a_residual_warns_and_records_unchanged(

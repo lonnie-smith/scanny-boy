@@ -52,7 +52,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `FILM_BASE_*` / `ROLL_PREDATES_FILM_BASE` codes, and the per-negative
     /// `base_check` meters. Protocol 14 extends `edit color` with
     /// `--cast-removal-highlights` and
-    /// `--auto-cast`, adds the derived `color_cast_removal_highlights`
+    /// `--auto-balance`, adds the derived `color_cast_removal_highlights`
     /// field to `roll info`, and records the `highlight_refs` /
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
@@ -64,8 +64,12 @@ public struct CLIEvent: Sendable, Hashable {
     /// one-shot invocation has no daemon to scope an event to. The same
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
-    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 23
+    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes. Protocol 24 replaces
+    /// the regional CMY colour balance with warmth/tint plus per-channel
+    /// curves: `edit color`'s `--warmth`/`--tint`/`--red-*`/`--green-*`/
+    /// `--blue-*` flags and `--auto-balance`, and the matching
+    /// `color_warmth`/`color_tint`/`color_curve_*` roll manifest fields.
+    public static let supportedProtocolVersion = 24
 
     public let protocolVersion: Int
     public let kind: Kind

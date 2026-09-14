@@ -679,6 +679,18 @@ def validated_color_params(
                 f"color {name} must be within [{low}, {high}], got {value}"
             )
         validated[name] = float(value)
+    for channel in ("red", "green", "blue"):
+        offsets = (
+            validated[f"curve_{channel}_25"],
+            validated[f"curve_{channel}_50"],
+            validated[f"curve_{channel}_75"],
+        )
+        if not color.curve_offsets_in_order(offsets):
+            raise ValueError(
+                f"color curve_{channel} knots must each be at least "
+                f"CURVE_MIN_GAP ({color.CURVE_MIN_GAP}) above the previous, "
+                f"got offsets {offsets}"
+            )
     return validated
 
 
@@ -855,20 +867,44 @@ def _parse_tone_op(params: dict) -> dict[str, float] | None:
 
 
 def _parse_color_op(params: dict) -> dict[str, float] | None:
-    defaults = _color_neutral_defaults()
-    merged = dict(defaults)
-    for key, value in params.items():
-        if key not in merged:
-            continue
-        if value is None:
-            continue
+    """The colour op's decision-table parse (COLOR_BALANCE_CURVES_PLAN.md
+    §4.1: "an op without the new keys parses as no colour op"):
+
+    - any of `color.COLOR_PARAM_KEYS` missing -> `None` (an older op, or
+      one carrying only unrelated keys, is no colour op — never a partial
+      state built from defaults).
+    - every present key `None` -> `None` (the reset).
+    - any single key `None` among an otherwise-present set -> `None`
+      (a malformed partial op, same as any other invalid shape).
+    - a non-number, an out-of-range value, or a curve that violates the
+      ordering rule -> `None`.
+    - otherwise the values, unconditionally — including the all-neutral
+      case, which is a *recorded* neutral op, not the absence of one."""
+    from scanny_boy import color
+
+    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
+    if missing:
+        return None
+    values = {key: params[key] for key in color.COLOR_PARAM_KEYS}
+    if all(value is None for value in values.values()):
+        return None
+    if any(value is None for value in values.values()):
+        return None
+    merged: dict[str, float] = {}
+    for key, value in values.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         merged[key] = float(value)
-    if all(v == defaults[k] for k, v in merged.items()):
-        return None
     if not _color_in_range(merged):
         return None
+    for channel in ("red", "green", "blue"):
+        offsets = (
+            merged[f"curve_{channel}_25"],
+            merged[f"curve_{channel}_50"],
+            merged[f"curve_{channel}_75"],
+        )
+        if not color.curve_offsets_in_order(offsets):
+            return None
     return merged
 
 
