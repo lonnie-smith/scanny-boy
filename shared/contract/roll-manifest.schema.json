@@ -183,6 +183,39 @@
         }
       ]
     },
+    "rollSetup": {
+      "description": "Convenience defaults for the roll's next capture/stitch run — pre-fill hints only, never consulted by stitching itself. Set via `roll set-setup`, editable at any time (unlike `film`).",
+      "type": "object",
+      "required": ["grid", "interval_seconds", "format"],
+      "properties": {
+        "grid": {
+          "type": ["object", "null"],
+          "required": ["across", "down"],
+          "properties": {
+            "across": { "type": "integer", "minimum": 1 },
+            "down": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "interval_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "format": {
+          "type": ["string", "null"],
+          "enum": [
+            "half-frame",
+            "35mm",
+            "6x3",
+            "645",
+            "6x6",
+            "6x7",
+            "xpan",
+            "6x9",
+            "6x12",
+            "6x17",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "filmDecision": {
       "description": "The roll's film kind, set at `roll init` and never rewritten. Legacy manifests may carry extra detector-era fields (`source`, `statistic`, `samples`, `detector_version`); they are ignored.",
       "type": "object",
@@ -837,6 +870,10 @@
     "highlight_lock": {
       "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 1. Optional: null on a mono roll, a roll with no locked film base, a roll with no qualifying negative yet, or one predating this feature.",
       "oneOf": [{ "$ref": "#/definitions/highlightLock" }, { "type": "null" }]
+    },
+    "setup": {
+      "description": "Optional: null on a roll predating this feature, or one nothing has been set on yet.",
+      "oneOf": [{ "$ref": "#/definitions/rollSetup" }, { "type": "null" }]
     }
   }
 }

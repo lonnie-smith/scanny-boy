@@ -110,6 +110,16 @@ final class ConfigurationModel {
     private(set) var filmKindError: Issue?
     private(set) var isSettingFilmKind = false
 
+    /// The roll's saved setup defaults — grid, interval, and film format —
+    /// read from `roll info` when `rollURL` changes and set via
+    /// `roll set-setup`. Pre-fill hints only, editable at any time (unlike
+    /// `filmKind`).
+    private(set) var rollGrid: RollCaptureSetup.Grid?
+    private(set) var rollIntervalSeconds: Int?
+    private(set) var rollFormat: FilmFormat?
+    private(set) var rollSetupError: Issue?
+    private(set) var isSettingRollSetup = false
+
     @ObservationIgnored private var rollTask: Task<Void, Never>?
 
     // MARK: - The batch's grouping
@@ -392,6 +402,10 @@ final class ConfigurationModel {
         filmKind = nil
         filmKindLocked = false
         filmKindError = nil
+        rollGrid = nil
+        rollIntervalSeconds = nil
+        rollFormat = nil
+        rollSetupError = nil
         guard let rollURL else { return }
         rollTask = Task { [weak self, runner] in
             let setup = await Self.fetchRollSetup(runner: runner, roll: rollURL)
@@ -400,7 +414,68 @@ final class ConfigurationModel {
             self.flatField = setup.flatField
             self.filmKind = setup.filmKind
             self.filmKindLocked = setup.filmKindLocked
+            self.rollGrid = setup.captureSetup?.grid
+            self.rollIntervalSeconds = setup.captureSetup?.intervalSeconds
+            self.rollFormat = setup.captureSetup?.format
         }
+    }
+
+    /// Sets the roll's saved grid immediately — a pre-fill default for the
+    /// next capture/stitch run, editable at any time.
+    func setRollGrid(across: Int, down: Int) async {
+        guard let rollURL else { return }
+        rollSetupError = nil
+        isSettingRollSetup = true
+        defer { isSettingRollSetup = false }
+
+        let result = await Self.runSetRollSetup(
+            runner: runner,
+            roll: rollURL,
+            grid: (across, down)
+        )
+        if let error = result.error {
+            rollSetupError = error
+            return
+        }
+        rollGrid = RollCaptureSetup.Grid(across: across, down: down)
+    }
+
+    /// Sets the roll's saved capture interval immediately.
+    func setRollIntervalSeconds(_ seconds: Int) async {
+        guard let rollURL else { return }
+        rollSetupError = nil
+        isSettingRollSetup = true
+        defer { isSettingRollSetup = false }
+
+        let result = await Self.runSetRollSetup(
+            runner: runner,
+            roll: rollURL,
+            intervalSeconds: seconds
+        )
+        if let error = result.error {
+            rollSetupError = error
+            return
+        }
+        rollIntervalSeconds = seconds
+    }
+
+    /// Sets the roll's saved film format immediately.
+    func setRollFormat(_ format: FilmFormat) async {
+        guard let rollURL else { return }
+        rollSetupError = nil
+        isSettingRollSetup = true
+        defer { isSettingRollSetup = false }
+
+        let result = await Self.runSetRollSetup(
+            runner: runner,
+            roll: rollURL,
+            format: format.rawValue
+        )
+        if let error = result.error {
+            rollSetupError = error
+            return
+        }
+        rollFormat = format
     }
 
     /// Runs `probe --files` with the current selection, grid, roll, and
@@ -543,6 +618,7 @@ final class ConfigurationModel {
         var flatField: FlatFieldReference?
         var filmKind: String?
         var filmKindLocked: Bool
+        var captureSetup: RollCaptureSetup?
     }
 
     private static func fetchRollSetup(runner: CLIRunner, roll: URL) async -> RollSetup {
@@ -561,8 +637,43 @@ final class ConfigurationModel {
             filmBase: manifest?.filmBase,
             flatField: manifest?.flatField,
             filmKind: manifest?.filmKind,
-            filmKindLocked: !(manifest?.runs.isEmpty ?? true)
+            filmKindLocked: !(manifest?.runs.isEmpty ?? true),
+            captureSetup: manifest?.captureSetup
         )
+    }
+
+    private struct SetRollSetupResult: Sendable {
+        var error: Issue?
+    }
+
+    private static func runSetRollSetup(
+        runner: CLIRunner,
+        roll: URL,
+        grid: (across: Int, down: Int)? = nil,
+        intervalSeconds: Int? = nil,
+        format: String? = nil
+    ) async -> SetRollSetupResult {
+        var result = SetRollSetupResult()
+        do {
+            let session = runner.session(
+                for: .rollSetSetup(
+                    roll: roll, grid: grid, intervalSeconds: intervalSeconds, format: format
+                )
+            )
+            for await output in try await session.start() {
+                switch output {
+                case .event(let event):
+                    if event.kind == .error, let code = event.code, let message = event.message {
+                        result.error = Issue(code: code, message: message)
+                    }
+                case .log, .failure, .completed:
+                    break
+                }
+            }
+        } catch {
+            return result
+        }
+        return result
     }
 
     private static func fetchFilmBase(runner: CLIRunner, roll: URL) async -> FilmBase? {

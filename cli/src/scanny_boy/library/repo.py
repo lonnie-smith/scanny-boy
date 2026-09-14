@@ -208,6 +208,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
         roll.highlight_lock = manifest.highlight_lock
         roll.flat_field = manifest.flat_field
         roll.refresh_pending = 1 if manifest.refresh_pending else None
+        roll.setup = manifest.setup
         roll.roll_capture_date = manifest.metadata.roll_capture_date
         roll.last_applied_at = manifest.metadata.last_applied_at
         for field in METADATA_FIELDS:
@@ -444,6 +445,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
             highlight_lock=roll.highlight_lock,
             flat_field=roll.flat_field,
             refresh_pending=bool(roll.refresh_pending),
+            setup=roll.setup,
             runs=[
                 RunRecord(
                     run_id=r.run_id,

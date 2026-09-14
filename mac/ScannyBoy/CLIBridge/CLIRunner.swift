@@ -40,6 +40,31 @@ public struct CLICommand: Sendable, Hashable {
         ])
     }
 
+    /// `scanny-boy roll set-setup --roll DIR [--grid AxD] [--interval SECONDS] [--format FORMAT]`
+    ///
+    /// Merge-updates the roll's convenience defaults for its next
+    /// capture/stitch run. Unlike `set-film-kind`, editable at any time.
+    /// Each parameter left `nil` keeps whatever the roll already has for
+    /// that field.
+    public static func rollSetSetup(
+        roll: URL,
+        grid: (across: Int, down: Int)? = nil,
+        intervalSeconds: Int? = nil,
+        format: String? = nil
+    ) -> CLICommand {
+        var arguments = ["roll", "set-setup", "--roll", roll.path]
+        if let grid {
+            arguments.append(contentsOf: ["--grid", "\(grid.across)x\(grid.down)"])
+        }
+        if let intervalSeconds {
+            arguments.append(contentsOf: ["--interval", String(intervalSeconds)])
+        }
+        if let format {
+            arguments.append(contentsOf: ["--format", format])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy roll list --library DIR`
     public static func rollList(library: URL) -> CLICommand {
         CLICommand(arguments: ["roll", "list", "--library", library.path])

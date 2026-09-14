@@ -400,11 +400,17 @@ struct ContentView: View {
     }
 
     /// Keeps capture's roll-setup fields aligned with Add Scans / roll info.
+    /// `rollGrid`/`rollIntervalSeconds` are included because `roll info` is
+    /// fetched asynchronously — `wireCaptureToRoll` runs immediately on
+    /// selection with whatever `model` last held, and this key's
+    /// `onChange` catches the pickers up once the fetch actually lands.
     private var captureRollSetupSyncKey: String {
         [
             model.filmKind,
             model.filmBase?.sourceName,
             model.flatField?.sourceName,
+            model.rollGrid.map { "\($0.across)x\($0.down)" },
+            model.rollIntervalSeconds.map(String.init),
         ]
         .map { $0 ?? "" }
         .joined(separator: "|")
@@ -414,22 +420,37 @@ struct ContentView: View {
         capture.filmKind = model.filmKind
         capture.filmBase = model.filmBase
         capture.flatField = model.flatField
+        // The roll's own saved grid (§ roll set-setup) takes priority over
+        // whatever grid was left selected from a previously-open roll —
+        // reopening a roll should bring back what was used for it, not
+        // carry over a different roll's pick. Dimensions alone can't drive
+        // `gridProfileID` (it needs a profile id), so this only applies
+        // when a profile with matching dimensions still exists.
+        if let rollGrid = model.rollGrid,
+           let profile = grid.profiles.first(where: {
+               $0.across == rollGrid.across && $0.down == rollGrid.down
+           })
+        {
+            capture.gridProfileID = profile.profileID
+            capture.applyGridDimensions(from: profile)
+        } else if let profileID = capture.gridProfileID,
+           let profile = grid.profiles.first(where: { $0.profileID == profileID })
+        {
+            capture.applyGridDimensions(from: profile)
+        } else if capture.gridProfileID == nil {
+            capture.gridProfileID = model.gridProfileID
+            capture.across = model.across
+            capture.down = model.down
+        }
+        if let rollIntervalSeconds = model.rollIntervalSeconds {
+            capture.intervalSeconds = rollIntervalSeconds
+        }
     }
 
     private func wireCaptureToRoll() {
         capture.rollURL = model.rollURL
         syncCaptureRollSetup()
         capture.rigProfileID = model.rigProfileID
-        if let profileID = capture.gridProfileID,
-           let profile = grid.profiles.first(where: { $0.profileID == profileID })
-        {
-            capture.applyGridDimensions(from: profile)
-        }
-        if capture.gridProfileID == nil {
-            capture.gridProfileID = model.gridProfileID
-            capture.across = model.across
-            capture.down = model.down
-        }
         reconfigureStitchQueueIfNeeded()
     }
 

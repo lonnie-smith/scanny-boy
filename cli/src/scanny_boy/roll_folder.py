@@ -35,6 +35,21 @@ MAX_SUFFIX_ATTEMPTS = 99
 
 _INVALID_SLUG_RUN = re.compile(r"[^A-Za-z0-9._-]+")
 
+# The film formats `roll set-setup --format` accepts. Stored data only for
+# now — nothing in the pipeline reads it yet.
+FORMAT_CHOICES = (
+    "half-frame",
+    "35mm",
+    "6x3",
+    "645",
+    "6x6",
+    "6x7",
+    "xpan",
+    "6x9",
+    "6x12",
+    "6x17",
+)
+
 
 class RollFolderError(Exception):
     def __init__(self, code: Code, message: str) -> None:
@@ -132,6 +147,34 @@ def set_film_kind(roll_dir: Path, film_kind: str) -> None:
 
     manifest.film = {"kind": film_kind}
     manifest.published_icc_profile = profile_record(published_profile_kind(film_kind))
+    write_roll_manifest(roll_dir, manifest)
+
+
+def set_setup(
+    roll_dir: Path,
+    *,
+    grid: dict[str, int] | None = None,
+    interval_seconds: int | None = None,
+    format: str | None = None,
+) -> None:
+    """Merge-update the roll's setup defaults — grid, interval, and film
+    format are pre-fill hints for the next capture/stitch run only; nothing
+    in stitching reads them. Unlike `set_film_kind`, editable at any time:
+    starting a run does not freeze these.
+
+    Each argument left `None` keeps whatever the roll already has for that
+    key — this is a partial update, not a replace."""
+    manifest = repo.load_roll(roll_dir)
+    current = dict(
+        manifest.setup or {"grid": None, "interval_seconds": None, "format": None}
+    )
+    if grid is not None:
+        current["grid"] = grid
+    if interval_seconds is not None:
+        current["interval_seconds"] = interval_seconds
+    if format is not None:
+        current["format"] = format
+    manifest.setup = current
     write_roll_manifest(roll_dir, manifest)
 
 

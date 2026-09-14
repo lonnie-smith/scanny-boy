@@ -95,6 +95,10 @@ struct CaptureStageView: View {
         .onChange(of: capture.gridProfileID) { _, profileID in
             applyCaptureGridSelection(profileID: profileID)
         }
+        .onChange(of: capture.intervalSeconds) { _, seconds in
+            guard model.rollURL != nil else { return }
+            Task { await model.setRollIntervalSeconds(seconds) }
+        }
         .onChange(of: grid.profiles) { _, profiles in
             resolveCaptureGridProfile(with: profiles)
         }
@@ -187,7 +191,25 @@ struct CaptureStageView: View {
                     Task { await model.setFilmKind(choice.rawValue) }
                 }
             )
+            Picker("Format", selection: formatBinding) {
+                Text("Choose…").tag(FilmFormat?.none)
+                ForEach(FilmFormat.allCases) { format in
+                    Text(format.label).tag(FilmFormat?.some(format))
+                }
+            }
         }
+    }
+
+    /// The roll's saved film format — a stored choice only, nothing reads
+    /// it yet. Choosing a value calls `roll set-setup` immediately.
+    private var formatBinding: Binding<FilmFormat?> {
+        Binding(
+            get: { model.rollFormat },
+            set: { newValue in
+                guard let newValue else { return }
+                Task { await model.setRollFormat(newValue) }
+            }
+        )
     }
 
     @ViewBuilder
@@ -546,6 +568,9 @@ struct CaptureStageView: View {
                 model.gridProfileID = profileID
             }
             model.applyGridDimensions(from: profile)
+            if model.rollURL != nil {
+                Task { await model.setRollGrid(across: profile.across, down: profile.down) }
+            }
         } else {
             capture.clearGridSelection()
             if model.gridProfileID != nil {
