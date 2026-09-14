@@ -40,6 +40,8 @@ def run_capture_check(
     work_dir: Path,
     *,
     rig_profile_id: str | None = None,
+    emit: EmitFn = lambda _event: None,
+    run_id: str = "capture-check",
 ) -> CaptureCheckOutcome:
     """Run detection, matching, and the layout solve for one work folder."""
     from scanny_boy import concurrency
@@ -82,7 +84,9 @@ def run_capture_check(
         fill_color=(0, 0, 0),
     )
     entry = _SolvedNegative(group=group, record=record, pairs=[])
-    progress = _StitchProgress(total=1, emit=lambda _event: None, run_id="capture-check")
+    progress = _StitchProgress(
+        total=len(group.members) * 2 + 2, emit=emit, run_id=run_id
+    )
     try:
         workers = concurrency.resolve_worker_count(work_manifest.shots_per_negative, None)
     except concurrency.MemoryBudgetError as exc:

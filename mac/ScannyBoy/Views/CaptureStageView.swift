@@ -28,7 +28,7 @@ struct CaptureStageView: View {
             .disabled(activity.isRollWriteLocked(for: capture.rollURL) && !capture.isSessionOpen)
 
             if !stitchQueue.negatives.isEmpty {
-                CaptureQueueStrip(negatives: stitchQueue.negatives)
+                CaptureQueueList(stitchQueue: stitchQueue)
                     .padding(.vertical, 8)
             }
 

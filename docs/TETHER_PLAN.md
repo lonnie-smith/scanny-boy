@@ -485,9 +485,10 @@ empty, next, exposing, downloading, filled, failed. A filled cell shows the
 NEF's embedded preview through `ThumbnailLoader`'s ImageIO path (no demosaic),
 and once §6's analysis answers, a clipping and a focus badge.
 
-Below the grid, a strip of this session's negatives, one tile each: queued,
-stitching (with the run's progress), published (the CLI-rendered preview), or
-failed (the CLI's message, and Reshoot, §4.5).
+Below the grid, a list of this session's negatives, one row each: queued
+(with a progress bar and elapsed time for the active step), stitching (with
+the stitch's progress), published (the stitched TIFF thumbnail), or failed
+(the CLI's message, and Reshoot, §4.5).
 
 ---
 
@@ -838,6 +839,8 @@ scanny-boy stitch ... [--defer-roll-refresh]
 |---|---|
 | `frame_analyzed` | `frame`; `clip_fractions` (per channel); `dense_end_stops` (per channel); `focus_regions` (the grid's ratios, `null` where excluded); `focus_relative` (`null` without a baseline); `focus_spread`; `warnings` (codes, §6.5) |
 | `capture_checked` | `passed`; `code` and `message` (`null` when passed); `global_rms_px` (`null` when no layout solved); `used_clahe_fallback` |
+
+`capture check` also emits `progress` events (stage: `stitch`) during the solve phase, the same as the standalone `stitch` command.
 | `capture_summary` | `frames`; per-code counts; `focus_trend` (one value per negative); `exposure_mismatches` |
 | `roll_refreshed` | `lock_changed`; `previews_regenerated` |
 
@@ -887,7 +890,7 @@ none.
 | `Model/StitchQueueModel.swift` | The queue: `prepare` then `capture check` under `MAX_PARALLEL_PREPARES`, serial `stitch` in capture order, waiting for disk, work folders, the sleep assertion, the state file, `roll refresh` at the end |
 | `Views/CaptureStageView.swift` | The tab |
 | `Views/CaptureMiniView.swift` | The grid |
-| `Views/CaptureQueueStrip.swift` | The session's negatives |
+| `Views/CaptureQueueList.swift` | The session's negatives: one row per negative with status, progress bar, elapsed time, and stitched-TIFF thumbnail |
 
 Changes: `AppActivity` (§4.2), `SettingsView` (capture folder, destination,
 cues), `CLIRunner` (the new commands and a second daemon).

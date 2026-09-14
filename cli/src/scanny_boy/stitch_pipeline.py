@@ -328,7 +328,7 @@ class _StitchProgress:
                 run_id=self._run_id,
                 source_index=source_index,
                 step=step,
-                completed=self._completed,
+                completed=min(self._completed, self._total),
                 total=self._total,
                 stage=Stage.STITCH,
             )

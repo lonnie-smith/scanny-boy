@@ -31,6 +31,15 @@ final class StitchQueueModel {
         var failureMessage: String?
         var failureCode: String?
         let enqueuedAt: Date
+        var publishedAt: Date?
+        var outputFilename: String?
+    }
+
+    struct StepProgress: Equatable, Sendable {
+        var completed: Int
+        var total: Int
+        var step: CLIPipelineStep?
+        let startedAt: Date
     }
 
     struct PersistedState: Codable, Sendable {
@@ -51,6 +60,7 @@ final class StitchQueueModel {
     private(set) var activePrepareCount = 0
     private(set) var isStitching = false
     private(set) var isRefreshing = false
+    private(set) var progress: [UUID: StepProgress] = [:]
 
     private(set) var rollURL: URL?
     private var captureFolder: URL?
@@ -135,6 +145,7 @@ final class StitchQueueModel {
             guard entry.step != .published else { return true }
             urls.append(contentsOf: entry.framePaths.map { URL(fileURLWithPath: $0) })
             urls.append(URL(fileURLWithPath: entry.workFolder))
+            progress.removeValue(forKey: entry.id)
             return false
         }
         negatives = remaining
@@ -153,33 +164,36 @@ final class StitchQueueModel {
         startNextStitchIfNeeded()
     }
 
+    private func mutateEntry(id: UUID, _ mutate: (inout QueuedNegative) -> Void) {
+        guard let index = negatives.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&negatives[index])
+    }
+
     private func startPreparesIfNeeded() {
         guard activePrepareCount < Self.maxParallelPrepares else { return }
         guard let captureFolder else { return }
         let waiting = negatives.filter { $0.step == .waitingPrepare || $0.step == .waitingForDisk }
         for entry in waiting.prefix(Self.maxParallelPrepares - activePrepareCount) {
-            guard let index = negatives.firstIndex(where: { $0.id == entry.id }) else { continue }
-            negatives[index].step = .preparing
+            guard negatives.firstIndex(where: { $0.id == entry.id }) != nil else { continue }
+            mutateEntry(id: entry.id) { $0.step = .preparing }
             activePrepareCount += 1
+            progress[entry.id] = StepProgress(
+                completed: 0, total: 0, step: nil, startedAt: .now
+            )
             let id = entry.id
             Task {
-                await runPrepare(
-                    index: index,
-                    captureFolder: captureFolder,
-                    rigProfileID: rigProfileID
-                )
+                await runPrepare(id: id, captureFolder: captureFolder, rigProfileID: rigProfileID)
                 activePrepareCount = max(0, activePrepareCount - 1)
-                if let idx = negatives.firstIndex(where: { $0.id == id }) {
-                    negatives[idx].step = .waitingCheck
-                    pump()
-                }
+                progress.removeValue(forKey: id)
+                mutateEntry(id: id) { $0.step = .waitingCheck }
+                pump()
             }
         }
     }
 
-    private func runPrepare(index: Int, captureFolder: URL, rigProfileID: String?) async {
-        guard negatives.indices.contains(index) else { return }
-        let entry = negatives[index]
+    private func runPrepare(id: UUID, captureFolder: URL, rigProfileID: String?) async {
+        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
+        let entry = negatives.first(where: { $0.id == id })!
         let files = entry.framePaths.map { URL(fileURLWithPath: $0).lastPathComponent }
         let work = URL(fileURLWithPath: entry.workFolder)
         try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -191,39 +205,47 @@ final class StitchQueueModel {
             down: down,
             rig: rigProfileID
         )
-        let result = await runCommand(command)
-        guard negatives.indices.contains(index) else { return }
+        let result = await runCommand(id: id, command)
+        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
         if result.insufficientDisk {
-            negatives[index].step = .waitingForDisk
+            mutateEntry(id: id) { $0.step = .waitingForDisk }
             persistState()
             return
         }
         if result.failed {
-            negatives[index].step = .prepareFailed
-            negatives[index].failureCode = result.code?.name
-            negatives[index].failureMessage = result.message
+            mutateEntry(id: id) {
+                $0.step = .prepareFailed
+                $0.failureCode = result.code?.name
+                $0.failureMessage = result.message
+            }
             persistState()
             return
         }
-        negatives[index].step = .waitingCheck
-        await runCheck(index: index, rigProfileID: rigProfileID)
+        mutateEntry(id: id) { $0.step = .waitingCheck }
+        await runCheck(id: id, rigProfileID: rigProfileID)
         persistState()
         pump()
     }
 
-    private func runCheck(index: Int, rigProfileID: String?) async {
-        guard negatives.indices.contains(index) else { return }
-        negatives[index].step = .checking
-        let work = URL(fileURLWithPath: negatives[index].workFolder)
+    private func runCheck(id: UUID, rigProfileID: String?) async {
+        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
+        mutateEntry(id: id) { $0.step = .checking }
+        progress[id] = StepProgress(
+            completed: 0, total: 0, step: nil, startedAt: .now
+        )
+        let work = URL(fileURLWithPath: negatives.first(where: { $0.id == id })!.workFolder)
         let command = CLICommand.captureCheck(work: work, rig: rigProfileID)
-        let result = await runCaptureCheck(command)
-        guard negatives.indices.contains(index) else { return }
+        let result = await runCaptureCheck(id: id, command)
+        progress.removeValue(forKey: id)
+        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
         if result.passed {
-            negatives[index].step = .waitingStitch
+            mutateEntry(id: id) { $0.step = .waitingStitch }
         } else {
-            negatives[index].step = .checkFailed
-            negatives[index].failureCode = result.code?.name
-            negatives[index].failureMessage = result.message
+            mutateEntry(id: id) {
+                $0.step = .checkFailed
+                $0.failureCode = result.code?.name
+                $0.failureMessage = result.message
+            }
         }
         persistState()
         pump()
@@ -232,22 +254,33 @@ final class StitchQueueModel {
     private func startNextStitchIfNeeded() {
         guard !isStitching, let rollURL else { return }
         guard negatives.allSatisfy({ $0.step != .preparing && $0.step != .checking }) else { return }
-        guard let index = negatives.firstIndex(where: { $0.step == .waitingStitch }) else { return }
+        guard let entry = negatives.first(where: { $0.step == .waitingStitch }) else { return }
         isStitching = true
-        negatives[index].step = .stitching
-        let work = URL(fileURLWithPath: negatives[index].workFolder)
+        let id = entry.id
+        mutateEntry(id: id) { $0.step = .stitching }
+        progress[id] = StepProgress(
+            completed: 0, total: 0, step: nil, startedAt: .now
+        )
+        let work = URL(fileURLWithPath: entry.workFolder)
         Task {
             let command = CLICommand.stitch(
                 work: work, roll: rollURL, rig: rigProfileID, deferRollRefresh: true
             )
-            let result = await runCommand(command)
-            if negatives.indices.contains(index) {
+            let result = await runCommand(id: id, command)
+            progress.removeValue(forKey: id)
+            if negatives.firstIndex(where: { $0.id == id }) != nil {
                 if result.failed {
-                    negatives[index].step = .stitchFailed
-                    negatives[index].failureCode = result.code?.name
-                    negatives[index].failureMessage = result.message
+                    mutateEntry(id: id) {
+                        $0.step = .stitchFailed
+                        $0.failureCode = result.code?.name
+                        $0.failureMessage = result.message
+                    }
                 } else {
-                    negatives[index].step = .published
+                    mutateEntry(id: id) {
+                        $0.step = .published
+                        $0.publishedAt = Date()
+                        $0.outputFilename = result.outputFilename
+                    }
                     try? FileManager.default.removeItem(at: work)
                 }
                 persistState()
@@ -275,7 +308,8 @@ final class StitchQueueModel {
     func rollRefresh(roll: URL) async {
         isRefreshing = true
         defer { isRefreshing = false }
-        _ = await runCommand(.rollRefresh(roll: roll))
+        // rollRefresh is not tied to a specific negative; pass a dummy id.
+        _ = await runCommand(id: UUID(), .rollRefresh(roll: roll))
         clearPersistedState()
         onRollUpdated?()
     }
@@ -363,6 +397,7 @@ final class StitchQueueModel {
         var insufficientDisk = false
         var code: CLICode?
         var message: String?
+        var outputFilename: String?
     }
 
     private struct CheckResult {
@@ -371,7 +406,7 @@ final class StitchQueueModel {
         var message: String?
     }
 
-    private func runCommand(_ command: CLICommand) async -> CommandResult {
+    private func runCommand(id: UUID, _ command: CLICommand) async -> CommandResult {
         var result = CommandResult()
         do {
             for await output in try await runner.session(for: command).start() {
@@ -382,6 +417,19 @@ final class StitchQueueModel {
                         result.code = code
                         result.message = event.message
                         result.insufficientDisk = code == .insufficientDisk
+                    } else if event.kind == .progress,
+                        let completed = event.completed,
+                        let total = event.total
+                    {
+                        let cappedCompleted = min(completed, total)
+                        progress[id] = StepProgress(
+                            completed: cappedCompleted,
+                            total: total,
+                            step: event.step,
+                            startedAt: progress[id]?.startedAt ?? .now
+                        )
+                    } else if event.kind == .negativeDone {
+                        result.outputFilename = event.output
                     }
                 case .completed(let completion):
                     if completion.outcome != .success { result.failed = true }
@@ -396,7 +444,7 @@ final class StitchQueueModel {
         return result
     }
 
-    private func runCaptureCheck(_ command: CLICommand) async -> CheckResult {
+    private func runCaptureCheck(id: UUID, _ command: CLICommand) async -> CheckResult {
         var result = CheckResult()
         do {
             for await output in try await runner.session(for: command).start() {
@@ -405,6 +453,17 @@ final class StitchQueueModel {
                     result.passed = event.captureCheckPassed ?? false
                     result.code = event.code
                     result.message = event.message
+                } else if event.kind == .progress,
+                    let completed = event.completed,
+                    let total = event.total
+                {
+                    let cappedCompleted = min(completed, total)
+                    progress[id] = StepProgress(
+                        completed: cappedCompleted,
+                        total: total,
+                        step: event.step,
+                        startedAt: progress[id]?.startedAt ?? .now
+                    )
                 } else if event.kind == .error, let code = event.code {
                     result.code = code
                     result.message = event.message

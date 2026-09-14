@@ -1808,18 +1808,22 @@ def _run_capture_command(args, writer: EventWriter) -> int:
         writer.write(Finished(status="success", exit_status=0))
         return 0
 
-    writer.write(Started(command="capture check"))
+    run_id = str(uuid.uuid4())
+    writer.write(Started(command="capture check", run_id=run_id))
     try:
         outcome = run_capture_check(
             Path(args.work),
             rig_profile_id=args.rig,
+            emit=writer.write,
+            run_id=run_id,
         )
     except CaptureCheckFailure as exc:
-        writer.write(ErrorEvent(code=exc.code, message=exc.message))
-        writer.write(Finished(status="failed", exit_status=1))
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
     writer.write(
         CaptureChecked(
+            run_id=run_id,
             passed=outcome.passed,
             code=outcome.code,
             message=outcome.message,
@@ -1827,7 +1831,7 @@ def _run_capture_command(args, writer: EventWriter) -> int:
             used_clahe_fallback=outcome.used_clahe_fallback,
         )
     )
-    writer.write(Finished(status="success" if outcome.passed else "failed", exit_status=0 if outcome.passed else 1))
+    writer.write(Finished(run_id=run_id, status="success" if outcome.passed else "failed", exit_status=0 if outcome.passed else 1))
     return 0 if outcome.passed else 1
 
 
