@@ -679,15 +679,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="negative to adjust; repeat for a selection",
     )
     for flag, help_text in (
-        ("--cyan", "global cyan filtration, -1..1"),
-        ("--magenta", "global magenta filtration, -1..1"),
-        ("--yellow", "global yellow filtration, -1..1"),
-        ("--shadow-cyan", "shadows cyan, -1..1"),
-        ("--shadow-magenta", "shadows magenta, -1..1"),
-        ("--shadow-yellow", "shadows yellow, -1..1"),
-        ("--highlight-cyan", "highlights cyan, -1..1"),
-        ("--highlight-magenta", "highlights magenta, -1..1"),
-        ("--highlight-yellow", "highlights yellow, -1..1"),
+        ("--warmth", "warmth, -1..1 (positive = yellow)"),
+        ("--tint", "tint, -1..1 (positive = magenta)"),
+        ("--red-25", "red channel curve at 0.25, -0.2..0.2"),
+        ("--red-50", "red channel curve at 0.5, -0.2..0.2"),
+        ("--red-75", "red channel curve at 0.75, -0.2..0.2"),
+        ("--green-25", "green channel curve at 0.25, -0.2..0.2"),
+        ("--green-50", "green channel curve at 0.5, -0.2..0.2"),
+        ("--green-75", "green channel curve at 0.75, -0.2..0.2"),
+        ("--blue-25", "blue channel curve at 0.25, -0.2..0.2"),
+        ("--blue-50", "blue channel curve at 0.5, -0.2..0.2"),
+        ("--blue-75", "blue channel curve at 0.75, -0.2..0.2"),
         (
             "--cast-removal-highlights",
             "highlight-end cast removal strength, 0..1 (0 neutral)",
@@ -695,9 +697,9 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
     edit_color.add_argument(
-        "--auto-cast",
+        "--auto-balance",
         action="store_true",
-        help="solve global filtration from this negative's recorded neutral estimate",
+        help="solve warmth/tint from this negative's recorded neutral estimate",
     )
     edit_color.add_argument(
         "--cast-removal",
@@ -716,12 +718,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar="V",
         help="separation damping, 0..1 (0 neutral)",
-    )
-    edit_color.add_argument(
-        "--temperature",
-        type=float,
-        metavar="K",
-        help="global temperature, 3500-12000 K (5500 neutral); a layer under the CMY sliders",
     )
     edit_color.add_argument(
         "--reset",
@@ -920,20 +916,21 @@ def _color_flag_updates(args) -> dict[str, float | None]:
 
     updates: dict[str, float | None] = {}
     mapping = {
-        "cyan": "wb_cyan",
-        "magenta": "wb_magenta",
-        "yellow": "wb_yellow",
-        "shadow_cyan": "shadow_cyan",
-        "shadow_magenta": "shadow_magenta",
-        "shadow_yellow": "shadow_yellow",
-        "highlight_cyan": "highlight_cyan",
-        "highlight_magenta": "highlight_magenta",
-        "highlight_yellow": "highlight_yellow",
+        "warmth": "warmth",
+        "tint": "tint",
+        "red_25": "curve_red_25",
+        "red_50": "curve_red_50",
+        "red_75": "curve_red_75",
+        "green_25": "curve_green_25",
+        "green_50": "curve_green_50",
+        "green_75": "curve_green_75",
+        "blue_25": "curve_blue_25",
+        "blue_50": "curve_blue_50",
+        "blue_75": "curve_blue_75",
         "cast_removal": "cast_removal",
         "cast_removal_highlights": "cast_removal_highlights",
         "dye_separation": "dye_separation",
         "separation_damping": "separation_damping",
-        "temperature": "temperature",
     }
     for arg_name, key in mapping.items():
         value = getattr(args, arg_name, None)
@@ -943,18 +940,16 @@ def _color_flag_updates(args) -> dict[str, float | None]:
 
 
 def _validate_color_args(args) -> None:
-    """`--auto-cast` owns all three global
-    CMY sliders outright — it is a usage error with `--reset` (which
-    contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
-    (which it would overwrite). `--temperature` is its own layer and
-    composes with all of them — the auto solve leaves it in place."""
-    if args.auto_cast:
+    """`--auto-balance` owns warmth and tint — it is a usage error with
+    `--reset` (which contradicts it) and with explicit `--warmth`/`--tint`
+    (which it would overwrite)."""
+    if args.auto_balance:
         if args.reset:
-            raise ValueError("--auto-cast is mutually exclusive with --reset")
-        if args.cyan is not None or args.magenta is not None or args.yellow is not None:
+            raise ValueError("--auto-balance is mutually exclusive with --reset")
+        if args.warmth is not None or args.tint is not None:
             raise ValueError(
-                "--auto-cast is mutually exclusive with --cyan, --magenta and "
-                "--yellow; the auto owns all three"
+                "--auto-balance is mutually exclusive with --warmth and "
+                "--tint; the auto owns both"
             )
 
 
@@ -1682,7 +1677,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.negative,
                 _color_flag_updates(args) if not args.reset else None,
                 reset=args.reset,
-                auto_cast=args.auto_cast,
+                auto_balance=args.auto_balance,
                 emit=writer.write,
             )
             confirmation = EditRecorded

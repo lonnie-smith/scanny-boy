@@ -556,15 +556,15 @@ def run_edit_color(
     params: dict[str, float | None] | None,
     *,
     reset: bool = False,
-    auto_cast: bool = False,
+    auto_balance: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview colour adjustment — the full
-    thirteen-key colour state, or all
+    colour state, or all
     `None` for the reset.
 
-    `auto_cast` solves the global CMY
-    from the negative's recorded neutral estimate and writes the three
+    `auto_balance` solves the warmth/tint balance
+    from the negative's recorded neutral estimate and writes the two
     values over whatever the merge produced — composing with explicit
     flags exactly as `--auto-density` does: the auto result wins over a
     recorded value and loses to nothing, because a caller that wants both
@@ -573,13 +573,13 @@ def run_edit_color(
     from scanny_boy import auto_color, color, tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
-    if auto_cast and roll.refresh_pending:
+    if auto_balance and roll.refresh_pending:
         emit(
             WarningEvent(
                 code=Code.ROLL_REFRESH_PENDING,
                 message=(
                     "this roll's highlight lock has not been refreshed since "
-                    "the last tethered capture; auto cast may read stale colour"
+                    "the last tethered capture; auto balance may read stale colour"
                 ),
             )
         )
@@ -621,20 +621,20 @@ def run_edit_color(
                             ),
                         )
                     )
-            if auto_cast:
+            if auto_balance:
                 tone_state = state.tone
                 tone_params = (
                     tone.ToneParams(**tone_state) if tone_state else tone.NEUTRAL
                 )
                 slope, pivot_in = tone.base_slope_and_pivot(tone_params)
-                solved_cmy = auto_color.solve_cmy(
+                balance = auto_color.solve_balance(
                     negative.normalization,
                     color.ColorParams(**solved),
                     slope,
                     pivot_in,
                     highlight_lock=roll.highlight_lock,
                 )
-                if solved_cmy is None:
+                if balance is None:
                     emit(
                         WarningEvent(
                             code=Code.TONE_METERING_UNAVAILABLE,
@@ -645,9 +645,8 @@ def run_edit_color(
                         )
                     )
                 else:
-                    solved["wb_cyan"] = solved_cmy[0]
-                    solved["wb_magenta"] = solved_cmy[1]
-                    solved["wb_yellow"] = solved_cmy[2]
+                    solved["warmth"] = balance[0]
+                    solved["tint"] = balance[1]
         try:
             validated = repo.validated_color_params(solved)
         except ValueError as exc:

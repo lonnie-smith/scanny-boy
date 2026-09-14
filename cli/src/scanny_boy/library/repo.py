@@ -92,12 +92,10 @@ CROP_MIN_SIZE_PX = 16
 # sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
 
-# `color` params are the complete preview colour state — `color.COLOR_PARAM_KEYS`, of
-# which the original twelve are the compatibility floor
-# (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None` for the reset (see
-# `color.py`). A sibling of `tone`: preview-only, independently
-# resettable, coalesced in place. Baked at export through the same render
-# as the preview.
+# `color` params are the complete preview colour state — `color.COLOR_PARAM_KEYS`,
+# all set or all `None` for the reset (see `color.py`). A sibling of `tone`:
+# preview-only, independently resettable, coalesced in place. Baked at export
+# through the same render as the preview.
 COLOR_OP = "color"
 
 # `spots` params are the spot detector's proposals plus the whole-negative
@@ -657,15 +655,12 @@ def validated_tone_params(
 def validated_color_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
-    """The `color` op's params: all twelve compatibility-floor keys set, or
-    all `None`. A newer key absent
-    from `params` is filled from the neutral defaults before validation —
-    that is what "this op predates the control" means."""
+    """The `color` op's params: all keys set, or all `None` for reset."""
     from scanny_boy import color
 
     if params is None:
         return {key: None for key in color.COLOR_PARAM_KEYS}
-    missing = [key for key in color.COLOR_PARAM_KEYS_V1 if key not in params]
+    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
     if missing:
         raise ValueError(f"color params missing keys: {', '.join(missing)}")
     defaults = _color_neutral_defaults()
@@ -800,21 +795,22 @@ def _tone_neutral_defaults() -> dict[str, float]:
 
 def _color_neutral_defaults() -> dict[str, float]:
     return {
-        "wb_cyan": 0.0,
-        "wb_magenta": 0.0,
-        "wb_yellow": 0.0,
-        "shadow_cyan": 0.0,
-        "shadow_magenta": 0.0,
-        "shadow_yellow": 0.0,
-        "highlight_cyan": 0.0,
-        "highlight_magenta": 0.0,
-        "highlight_yellow": 0.0,
+        "warmth": 0.0,
+        "tint": 0.0,
+        "curve_red_25": 0.0,
+        "curve_red_50": 0.0,
+        "curve_red_75": 0.0,
+        "curve_green_25": 0.0,
+        "curve_green_50": 0.0,
+        "curve_green_75": 0.0,
+        "curve_blue_25": 0.0,
+        "curve_blue_50": 0.0,
+        "curve_blue_75": 0.0,
         "cast_removal": 0.0,
         "cast_removal_highlights": 0.0,
         "dye_separation": 1.0,
         "separation_damping": 0.0,
         "auto_neutral": 1.0,
-        "temperature": 5500.0,
     }
 
 
@@ -859,26 +855,18 @@ def _parse_tone_op(params: dict) -> dict[str, float] | None:
 
 
 def _parse_color_op(params: dict) -> dict[str, float] | None:
-    from scanny_boy import color
-
-    # Gate on the ORIGINAL twelve: an op written before the thirteenth key
-    # was added has no thirteenth key and is still a complete colour
-    # state. Newer keys fall back to their neutral defaults, which is what
-    # "this op predates the control" means.
-    if not all(key in params for key in color.COLOR_PARAM_KEYS_V1):
-        return None
-    if all(params.get(key) is None for key in color.COLOR_PARAM_KEYS_V1):
-        return None
-    merged = _color_neutral_defaults()
-    for key in merged:
-        value = params.get(key)
+    defaults = _color_neutral_defaults()
+    merged = dict(defaults)
+    for key, value in params.items():
+        if key not in merged:
+            continue
         if value is None:
-            if key in color.COLOR_PARAM_KEYS_V1:
-                return None  # a null among the twelve is still a reset
-            continue  # a missing newer key keeps its default
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         merged[key] = float(value)
+    if all(v == defaults[k] for k, v in merged.items()):
+        return None
     if not _color_in_range(merged):
         return None
     return merged

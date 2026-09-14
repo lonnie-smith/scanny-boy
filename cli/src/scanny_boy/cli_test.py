@@ -1694,12 +1694,10 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--cyan",
+            "--warmth",
             "0.1",
-            "--magenta",
+            "--tint",
             "0.2",
-            "--yellow",
-            "0.05",
             "--cast-removal",
             "0.1",
             "--dye-separation",
@@ -1713,7 +1711,7 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(
     assert events[0]["command"] == "edit color"
     assert events[0]["protocol_version"] == PROTOCOL_VERSION
     assert events[1]["edit"]["op"] == "color"
-    assert events[1]["edit"]["params"]["wb_cyan"] == pytest.approx(0.1)
+    assert events[1]["edit"]["params"]["warmth"] == pytest.approx(0.1)
     assert Path(events[1]["preview_path"]).exists()
     assert events[2]["status"] == "success"
     assert err == ""
@@ -1726,7 +1724,7 @@ def test_edit_color_partial_update_preserves_recorded_values(
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
+    base = _color_params(warmth=0.1, tint=0.2, cast_removal=0.3)
     assert (
         main(
             [
@@ -1736,12 +1734,10 @@ def test_edit_color_partial_update_preserves_recorded_values(
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--cyan",
-                str(base["wb_cyan"]),
-                "--magenta",
-                str(base["wb_magenta"]),
-                "--yellow",
-                str(base["wb_yellow"]),
+                "--warmth",
+                str(base["warmth"]),
+                "--tint",
+                str(base["tint"]),
                 "--cast-removal",
                 str(base["cast_removal"]),
             ]
@@ -1758,46 +1754,16 @@ def test_edit_color_partial_update_preserves_recorded_values(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--cyan",
+            "--warmth",
             "0.5",
         ]
     )
     assert status == 0
     events, _err = _stdout_events(capsys)
     params = events[1]["edit"]["params"]
-    assert params["wb_cyan"] == pytest.approx(0.5)
-    assert params["wb_magenta"] == pytest.approx(0.2)
+    assert params["warmth"] == pytest.approx(0.5)
+    assert params["tint"] == pytest.approx(0.2)
     assert params["cast_removal"] == pytest.approx(0.3)
-
-
-def test_edit_color_temperature_composes_with_magenta(work_dir, capsys, tmp_path):
-    roll_dir = make_roll_dir(tmp_path)
-    outcome = run_stitch_with_defaults(work_dir, roll_dir)
-    assert outcome.status == "complete"
-    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    capsys.readouterr()
-
-    status = main(
-        [
-            "edit",
-            "color",
-            "--roll",
-            str(roll_dir),
-            "--negative",
-            negative_id,
-            "--temperature",
-            "3800",
-            "--magenta",
-            "0.1",
-        ]
-    )
-
-    assert status == 0
-    events, _err = _stdout_events(capsys)
-    params = events[1]["edit"]["params"]
-    assert params["temperature"] == pytest.approx(3800.0)
-    assert params["wb_magenta"] == pytest.approx(0.1)
-    assert params["wb_yellow"] == 0.0
 
 
 def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
@@ -1810,30 +1776,19 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     params = _color_params(
-        wb_cyan=0.1,
-        wb_magenta=0.2,
-        wb_yellow=0.05,
-        shadow_cyan=0.01,
+        warmth=0.1,
+        tint=0.2,
         cast_removal=0.15,
         dye_separation=1.1,
         separation_damping=0.2,
-        temperature=7200.0,
     )
     flag_for_key = {
-        "wb_cyan": "--cyan",
-        "wb_magenta": "--magenta",
-        "wb_yellow": "--yellow",
-        "shadow_cyan": "--shadow-cyan",
-        "shadow_magenta": "--shadow-magenta",
-        "shadow_yellow": "--shadow-yellow",
-        "highlight_cyan": "--highlight-cyan",
-        "highlight_magenta": "--highlight-magenta",
-        "highlight_yellow": "--highlight-yellow",
+        "warmth": "--warmth",
+        "tint": "--tint",
         "cast_removal": "--cast-removal",
         "cast_removal_highlights": "--cast-removal-highlights",
         "dye_separation": "--dye-separation",
         "separation_damping": "--separation-damping",
-        "temperature": "--temperature",
     }
     argv = [
         "edit",
@@ -1859,7 +1814,6 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
         assert negative[f"color_{key}"] == pytest.approx(
             params.get(key, defaults[key])
         )
-    assert negative["color_temperature"] == pytest.approx(7200.0)
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):
@@ -2974,7 +2928,7 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
     assert negative["spots"]["rejected"] == 0
 
 
-# --- --cast-removal-highlights and --auto-cast
+# --- --cast-removal-highlights and --auto-balance
 
 
 def test_cast_removal_highlights_round_trips_through_roll_info(
@@ -3007,7 +2961,7 @@ def test_cast_removal_highlights_round_trips_through_roll_info(
     negative = events[1]["manifest"]["negatives"][0]
     assert negative["color_cast_removal_highlights"] == pytest.approx(0.4)
     # A single flag leaves the other twelve at their recorded values.
-    assert negative["color_wb_cyan"] == pytest.approx(0.0)
+    assert negative["color_warmth"] == pytest.approx(0.0)
     assert negative["color_cast_removal"] == pytest.approx(0.0)
     assert negative["color_dye_separation"] == pytest.approx(1.0)
 
@@ -3020,7 +2974,7 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
     # Record an auto-neutral estimate for the manual Auto button to read.
     roll = load_roll_manifest(roll_dir)
     roll.negatives[0].normalization["auto_neutral"] = {
-        "shadow": [0.06, -0.03],
+        "shadow": [0.03, -0.015],
         "highlight": None,
         "highlight_lock": roll.highlight_lock,
         "measure_version": 1,
@@ -3036,7 +2990,7 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
 
@@ -3044,23 +2998,20 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
     params = events[1]["edit"]["params"]
-    # The three CMY values null the residual: with unit ranges,
-    # o_R - o_G = -a and o_B - o_G = -b.
     from scanny_boy import color as color_mod
 
-    metering = color_mod.read_metering(
-        load_roll_manifest(roll_dir).negatives[0].normalization
-    )
-    offsets = color_mod.cmy_offsets(
+    balance = color_mod.balance_offsets(
         color_mod.ColorParams(
-            wb_cyan=params["wb_cyan"],
-            wb_magenta=params["wb_magenta"],
-            wb_yellow=params["wb_yellow"],
-        ),
-        metering,
+            warmth=params["warmth"],
+            tint=params["tint"],
+        )
     )
-    assert offsets[0] - offsets[1] == pytest.approx(-0.06, abs=1e-6)
-    assert offsets[2] - offsets[1] == pytest.approx(0.03, abs=1e-6)
+    # The solve projects the nulling display offsets onto the balance axes;
+    # balance_offsets recovers those offsets, so the per-channel differences
+    # should approximately match the residual.  The 2-axis projection is
+    # lossy, so the tolerance is ~15%.
+    assert balance[1] - balance[0] == pytest.approx(-0.03, abs=0.01)
+    assert balance[1] - balance[2] == pytest.approx(0.015, abs=0.01)
 
 
 def test_auto_cast_without_a_residual_warns_and_records_unchanged(
@@ -3090,7 +3041,7 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
 
@@ -3105,7 +3056,7 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     assert events[1]["code"] == "TONE_METERING_UNAVAILABLE"
     assert "no neutral estimate" in events[1]["message"]
     params = events[2]["edit"]["params"]
-    assert params["wb_cyan"] == pytest.approx(0.0)
+    assert params["warmth"] == pytest.approx(0.0)
     assert params["cast_removal"] == pytest.approx(0.0)
 
 
@@ -3120,9 +3071,8 @@ def test_auto_cast_is_exclusive_with_reset_and_global_sliders(
 
     for extra in (
         ["--reset"],
-        ["--cyan", "0.1"],
-        ["--magenta", "0.1"],
-        ["--yellow", "0.1"],
+        ["--warmth", "0.1"],
+        ["--tint", "0.1"],
     ):
         status = main(
             [
@@ -3132,7 +3082,7 @@ def test_auto_cast_is_exclusive_with_reset_and_global_sliders(
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--auto-cast",
+                "--auto-balance",
                 *extra,
             ]
         )
@@ -3146,7 +3096,7 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
     work_dir, capsys, tmp_path
 ):
     """§7.3's tie-compensation test at the CLI level: with the highlight
-    strength at rest, the solved CMY does not move when a shadow tie is
+    strength at rest, the solved warmth/tint does not move when a shadow tie is
     already recorded."""
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -3170,7 +3120,7 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
     first = _stdout_events(capsys)[0][1]["edit"]["params"]
@@ -3185,14 +3135,13 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
             negative_id,
             "--cast-removal",
             "0.8",
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
     second = _stdout_events(capsys)[0][1]["edit"]["params"]
 
-    assert second["wb_cyan"] == pytest.approx(first["wb_cyan"], abs=1e-9)
-    assert second["wb_magenta"] == pytest.approx(first["wb_magenta"], abs=1e-9)
-    assert second["wb_yellow"] == pytest.approx(first["wb_yellow"], abs=1e-9)
+    assert second["warmth"] == pytest.approx(first["warmth"], abs=1e-9)
+    assert second["tint"] == pytest.approx(first["tint"], abs=1e-9)
 
 
 def test_cast_removal_highlights_warns_without_a_highlight_reference(

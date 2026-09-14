@@ -286,12 +286,6 @@ def _curve_raw(
                 (v - pivot_out) / SNAP_WIDTH
             )
 
-    if apply_color and channel is not None:
-        shadow_cmy, highlight_cmy = color.region_cmy(color_params)
-        w_sh, w_hi = _zone_weights(v)
-        regional = shadow_cmy[channel] * w_sh + highlight_cmy[channel] * w_hi
-        v = v - color.REGION_CMY_SCALE * regional
-
     if not flat_tone:
         assert tone_params is not None
         w_sh, w_hi = _zone_weights(v)
@@ -382,6 +376,20 @@ def curve_values(
         )
     if high > low:
         raw = (raw - low) / (high - low)
+    if apply_color and channel is not None:
+        offsets = (
+            color_params.curve_red_25,
+            color_params.curve_red_50,
+            color_params.curve_red_75,
+            color_params.curve_green_25,
+            color_params.curve_green_50,
+            color_params.curve_green_75,
+            color_params.curve_blue_25,
+            color_params.curve_blue_50,
+            color_params.curve_blue_75,
+        )
+        ch_offsets = (offsets[channel * 3], offsets[channel * 3 + 1], offsets[channel * 3 + 2])
+        raw = color.channel_curve(raw, ch_offsets)
     return np.clip(raw, 0.0, 1.0)
 
 
@@ -401,7 +409,7 @@ def build_channel_tables(
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
     norm = normalization.decode_normalized(codes)
     offsets = (
-        color.cmy_offsets(color_params, metering) if apply_color else (0.0,) * channels
+        color.balance_offsets(color_params) if apply_color else (0.0,) * channels
     )
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float64)
     for ch in range(channels):
