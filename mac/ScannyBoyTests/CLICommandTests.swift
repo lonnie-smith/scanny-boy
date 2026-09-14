@@ -373,9 +373,8 @@ struct CLICommandTests {
             roll: Self.out,
             negatives: ["neg-01"],
             adjustment: ToneAdjustment(
-                gradeR: 90, snapGamma: 0.2, density: 1.1, shadowDensity: 0.1,
-                highlightDensity: -0.1, toe: 0.2, toeWidth: 3, shoulder: -0.1,
-                shoulderWidth: 4
+                snapGamma: 0.2, density: 1.1, shadowDensity: 0.1,
+                highlightDensity: -0.1
             )
         )
         #expect(
@@ -383,15 +382,10 @@ struct CLICommandTests {
                 "edit", "tone",
                 "--roll", "/Volumes/Scans/roll-12-tif",
                 "--negative", "neg-01",
-                "--grade", "90.0",
                 "--snap", "0.2",
                 "--density", "1.1",
                 "--shadow-density", "0.1",
                 "--highlight-density", "-0.1",
-                "--toe", "0.2",
-                "--toe-width", "3.0",
-                "--shoulder", "-0.1",
-                "--shoulder-width", "4.0",
             ]
         )
     }

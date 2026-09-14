@@ -50,10 +50,32 @@ def test_neutral_lut_is_unchanged():
 
 def test_resolved_positive_tone_applies_neutral_when_missing():
     assert tone.resolved_positive_tone(None) == tone.NEUTRAL
-    custom = {"grade_r": 90.0, "snap_gamma": 0.2, "density": 1.0,
-              "shadow_density": 0.0, "highlight_density": 0.0,
-              "toe": 0.0, "toe_width": 2.5, "shoulder": 0.0, "shoulder_width": 2.5}
-    assert tone.resolved_positive_tone(custom) == tone.ToneParams(**custom)
+    custom = {
+        "snap_gamma": 0.2,
+        "density": 1.0,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+    }
+    assert tone.resolved_positive_tone(custom) == dataclasses.replace(
+        tone.NEUTRAL,
+        snap_gamma=0.2,
+        density=1.0,
+    )
+
+
+def test_resolved_positive_tone_ignores_legacy_curve_keys():
+    custom = {
+        "snap_gamma": 0.2,
+        "density": 1.0,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "grade_r": 90.0,
+        "toe": 0.5,
+    }
+    resolved = tone.resolved_positive_tone(custom)
+    assert resolved.grade_r == tone.NEUTRAL_GRADE_R
+    assert resolved.toe == tone.NEUTRAL_TOE
+    assert resolved.snap_gamma == 0.2
 
 
 def test_density_darkens_the_midtones():

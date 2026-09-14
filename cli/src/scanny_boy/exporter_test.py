@@ -382,13 +382,13 @@ def test_the_tone_op_changes_the_exported_pixels_and_matches_the_curve(
     stitched_roll, tmp_path
 ):
     run_edit_tone(
-        stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None
+        stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None
     )
     destination = _export(stitched_roll, tmp_path)
     rendered = _decode(destination)
 
     flat, _ = render.render_export(_ORIGINAL, None, None)
-    toned, _ = render.render_export(_ORIGINAL, None, _tone_params(70.0, 0.4))
+    toned, _ = render.render_export(_ORIGINAL, None, _tone_params(0.4))
     assert not np.array_equal(rendered, flat)
     np.testing.assert_array_equal(rendered, toned)
 
@@ -681,7 +681,7 @@ def test_export_without_metadata_writes_no_exif_box_but_still_the_provenance(
 
 def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_path):
     run_edit_tone(
-        colour_roll, _NEGATIVE_ID, _tone_params(115.0, 0.2), emit=lambda event: None
+        colour_roll, _NEGATIVE_ID, _tone_params(0.2), emit=lambda event: None
     )
     destination = _export_one(colour_roll, tmp_path)
 
@@ -692,7 +692,7 @@ def test_the_provenance_round_trips_with_the_matrix_and_tone(colour_roll, tmp_pa
     assert record["rendered"]["profile"]["name"] == "ScannyBoy-Export-AdobeRGB-v1.icc"
     assert record["rendered"]["gamma"] == pytest.approx(render.GAMMA_ADOBE)
     assert record["rendered"]["matrix"] is not None
-    assert record["rendered"]["tone"] == _tone_params(115.0, 0.2)
+    assert record["rendered"]["tone"] == _tone_params(0.2)
     # The synthetic RGB's channels are far from neutral, so the gamut clip
     # does real work here; assert the record's shape, and that it is in
     # [0, 1] per channel (render_test pins the in-gamut zero case).
@@ -1046,13 +1046,13 @@ def test_the_export_downsamples_inside_the_render_with_a_tone_op(
     """The resize is part of the render: the tone op is baked in and the
     downsample runs on the same chain's linear stage, so the exported
     pixels are the toned render's downsample, one computation."""
-    run_edit_tone(stitched_roll, _NEGATIVE_ID, _tone_params(70.0, 0.4), emit=lambda event: None)
+    run_edit_tone(stitched_roll, _NEGATIVE_ID, _tone_params(0.4), emit=lambda event: None)
 
     output_dir = tmp_path / "export"
     run_export(stitched_roll, output_dir, [_NEGATIVE_ID], downsample=2, emit=lambda event: None)
 
     expected, _ = render.render_export(
-        _ORIGINAL, None, _tone_params(70.0, 0.4), long_edge=2
+        _ORIGINAL, None, _tone_params(0.4), long_edge=2
     )
     np.testing.assert_array_equal(_decode(output_dir / "_DSC0001.jxl"), expected)
 

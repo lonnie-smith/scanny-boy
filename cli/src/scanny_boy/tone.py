@@ -23,18 +23,17 @@ The math is a simplified port of NegPy's print curve
 v ∈ [0, DISPLAY_CEILING] after `1 - val` when a tone curve is active
 (`DISPLAY_CEILING = 1 + NORMALIZED_HEADROOM_LOW`):
 
-- **Grade** — stored as an ISO-R paper "range" value (`grade_r`, 50–180)
-  turned into a straight-line slope about the midtone pivot. The default
-  scan-start curve keeps this near unity so contrast lives in snap.
+- **Grade** — fixed at the scan-start default (`NEUTRAL_GRADE_R`); not
+  user-adjustable. Contrast lives in snap.
 - **Density** — an input-pivot offset before the grade rotation (the
   Brightness slider in the app, reversed so higher is brighter).
 - **Snap** — anchor-preserving variable midtone contrast (the Contrast
   slider).
 - **Zone density** — mid-sparing sigmoid offsets on the quarter and
   three-quarter tones, read on the post-Snap value.
-- **Knees** — toe and shoulder controls with exponential rolloff toward
-  0.0 and 1.0, applied in *input* display space before the grade step so
-  contrast does not tighten the highlight shoulder.
+- **Knees** — fixed open toe/shoulder rolloff at the scan-start default,
+  applied in *input* display space before the grade step so contrast does
+  not tighten the highlight shoulder.
 
 Three uint16 → float tables (one per channel when colour is active)
 compose steps 1–7; the endpoint rescale is shared across channels so
@@ -105,11 +104,15 @@ NEUTRAL_SHOULDER = -1.0
 MAX_CODE = 65535
 
 TONE_PARAM_KEYS = (
-    "grade_r",
     "snap_gamma",
     "density",
     "shadow_density",
     "highlight_density",
+)
+
+# Internal curve shape — fixed at scan-start NEUTRAL, not stored in tone ops.
+_CURVE_PARAM_KEYS = (
+    "grade_r",
     "toe",
     "toe_width",
     "shoulder",
@@ -141,10 +144,17 @@ def resolved_positive_tone(
     A missing tone op (``None``, or ``--reset``) means the default
     scan-start curve — ``NEUTRAL`` — not the flat identity ramp.
     ``curve_values(None)`` remains the explicit identity primitive for the
-    negative view and tests."""
+    negative view and tests.
+
+    User tone ops carry only the four ``TONE_PARAM_KEYS``; curve shape
+    fields always come from ``NEUTRAL``."""
     if tone_params is None:
         return NEUTRAL
-    return ToneParams(**tone_params)
+    merged = dataclasses.asdict(NEUTRAL)
+    for key in TONE_PARAM_KEYS:
+        if key in tone_params:
+            merged[key] = tone_params[key]
+    return ToneParams(**merged)
 
 
 def grade_slope(grade_r: float) -> float:

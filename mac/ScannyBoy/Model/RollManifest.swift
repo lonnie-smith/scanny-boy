@@ -84,9 +84,9 @@ struct FilmBase: Sendable, Hashable {
 }
 
 /// Convenience defaults for the roll's next capture/stitch run, decoded
-/// from `roll info`'s `setup` field. Pre-fill hints only — nothing in
-/// stitching reads them, and unlike `filmKind` these stay editable for the
-/// life of the roll (`roll set-setup`).
+/// from `roll info`'s `setup` field. Stitching reads `format` and
+/// `autoCrop` to seed auto-crop when enabled. Unlike `filmKind` these
+/// stay editable for the life of the roll (`roll set-setup`).
 struct RollCaptureSetup: Sendable, Hashable {
     struct Grid: Sendable, Hashable {
         let across: Int
@@ -96,6 +96,7 @@ struct RollCaptureSetup: Sendable, Hashable {
     let grid: Grid?
     let intervalSeconds: Int?
     let format: FilmFormat?
+    let autoCrop: Bool
 
     init?(fields: [String: JSONValue]) {
         grid = fields["grid"]?.objectValue.flatMap { object -> Grid? in
@@ -107,6 +108,7 @@ struct RollCaptureSetup: Sendable, Hashable {
         }
         intervalSeconds = fields["interval_seconds"]?.intValue
         format = fields["format"]?.stringValue.flatMap(FilmFormat.init(rawValue:))
+        autoCrop = fields["auto_crop"]?.boolValue ?? false
     }
 }
 
@@ -306,19 +308,14 @@ struct RollManifest: Sendable, Hashable {
         }
 
         /// The ops log's net preview tone adjustment (protocol 10's `tone`
-        /// op): grade, contrast, and density composed into the
-        /// CLI's preview display encode. `nil` = no adjustment recorded —
-        /// the default scan-start curve. The published TIFF never carries it.
-        let toneGradeR: Double?
+        /// op): contrast and density composed into the CLI's preview display
+        /// encode. `nil` = no adjustment recorded — the default scan-start
+        /// curve. The published TIFF never carries it.
         let toneSnapGamma: Double?
         /// Absent before protocol 11's density control existed.
         let toneDensity: Double?
         let toneShadowDensity: Double?
         let toneHighlightDensity: Double?
-        let toneToe: Double?
-        let toneToeWidth: Double?
-        let toneShoulder: Double?
-        let toneShoulderWidth: Double?
         /// Protocol 12's net preview colour adjustment. `nil` = no op recorded.
         let colorWbCyan: Double?
         let colorWbMagenta: Double?
@@ -632,15 +629,10 @@ struct RollManifest: Sendable, Hashable {
                 .flatMap(Self.decodeRectification),
             // Absent before the tone op existed (or an explicit null from
             // a reset): no adjustment, the flat look.
-            toneGradeR: fields["tone_grade_r"]?.doubleValue,
             toneSnapGamma: fields["tone_snap_gamma"]?.doubleValue,
             toneDensity: fields["tone_density"]?.doubleValue,
             toneShadowDensity: fields["tone_shadow_density"]?.doubleValue,
             toneHighlightDensity: fields["tone_highlight_density"]?.doubleValue,
-            toneToe: fields["tone_toe"]?.doubleValue,
-            toneToeWidth: fields["tone_toe_width"]?.doubleValue,
-            toneShoulder: fields["tone_shoulder"]?.doubleValue,
-            toneShoulderWidth: fields["tone_shoulder_width"]?.doubleValue,
             colorWbCyan: fields["color_wb_cyan"]?.doubleValue,
             colorWbMagenta: fields["color_wb_magenta"]?.doubleValue,
             colorWbYellow: fields["color_wb_yellow"]?.doubleValue,

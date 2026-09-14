@@ -117,6 +117,7 @@ final class ConfigurationModel {
     private(set) var rollGrid: RollCaptureSetup.Grid?
     private(set) var rollIntervalSeconds: Int?
     private(set) var rollFormat: FilmFormat?
+    private(set) var rollAutoCrop = false
     private(set) var rollSetupError: Issue?
     private(set) var isSettingRollSetup = false
 
@@ -417,6 +418,7 @@ final class ConfigurationModel {
             self.rollGrid = setup.captureSetup?.grid
             self.rollIntervalSeconds = setup.captureSetup?.intervalSeconds
             self.rollFormat = setup.captureSetup?.format
+            self.rollAutoCrop = setup.captureSetup?.autoCrop ?? false
         }
     }
 
@@ -476,6 +478,25 @@ final class ConfigurationModel {
             return
         }
         rollFormat = format
+    }
+
+    /// Sets the roll's auto-crop flag immediately.
+    func setRollAutoCrop(_ enabled: Bool) async {
+        guard let rollURL else { return }
+        rollSetupError = nil
+        isSettingRollSetup = true
+        defer { isSettingRollSetup = false }
+
+        let result = await Self.runSetRollSetup(
+            runner: runner,
+            roll: rollURL,
+            autoCrop: enabled
+        )
+        if let error = result.error {
+            rollSetupError = error
+            return
+        }
+        rollAutoCrop = enabled
     }
 
     /// Runs `probe --files` with the current selection, grid, roll, and
@@ -651,13 +672,14 @@ final class ConfigurationModel {
         roll: URL,
         grid: (across: Int, down: Int)? = nil,
         intervalSeconds: Int? = nil,
-        format: String? = nil
+        format: String? = nil,
+        autoCrop: Bool? = nil
     ) async -> SetRollSetupResult {
         var result = SetRollSetupResult()
         do {
             let session = runner.session(
                 for: .rollSetSetup(
-                    roll: roll, grid: grid, intervalSeconds: intervalSeconds, format: format
+                    roll: roll, grid: grid, intervalSeconds: intervalSeconds, format: format, autoCrop: autoCrop
                 )
             )
             for await output in try await session.start() {

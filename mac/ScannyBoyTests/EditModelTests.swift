@@ -33,20 +33,16 @@ struct EditModelTests {
         flipped: Bool = false,
         previewPath: String? = nil,
         metadata: String? = nil,
-        toneGradeR: Double? = nil,
         toneSnapGamma: Double? = nil,
-        toneDensity: Double? = nil,
-        toneToe: Double? = nil
+        toneDensity: Double? = nil
     ) -> String {
         let sequenceJSON = sequence.map { "\($0)" } ?? "null"
         let intendedJSON = intended.map { "\"\($0)\"" } ?? "null"
         let appliedJSON = applied.map { "\"\($0)\"" } ?? "null"
         let previewJSON = previewPath.map { "\"\($0)\"" } ?? "null"
         let metadataJSON = metadata ?? "null"
-        let toneGradeJSON = toneGradeR.map { "\($0)" } ?? "null"
         let toneSnapJSON = toneSnapGamma.map { "\($0)" } ?? "null"
         let toneDensityJSON = toneDensity.map { "\($0)" } ?? "null"
-        let toneToeJSON = toneToe.map { "\($0)" } ?? "null"
         return """
             {"negative_id":"\(negativeID)","run_id":"r","sequence":\(sequenceJSON),\
             "members":["a.NEF"],\
@@ -60,27 +56,23 @@ struct EditModelTests {
             "metadata":\(metadataJSON),\
             "preview_path":\(previewJSON),\
             "rotation_quarter_turns":\(rotation),"flipped_horizontally":\(flipped),\
-            "tone_grade_r":\(toneGradeJSON),"tone_snap_gamma":\(toneSnapJSON),\
+            "tone_snap_gamma":\(toneSnapJSON),\
             "tone_density":\(toneDensityJSON),"tone_shadow_density":null,\
-            "tone_highlight_density":null,"tone_toe":\(toneToeJSON),\
-            "tone_toe_width":null,"tone_shoulder":null,"tone_shoulder_width":null}
+            "tone_highlight_density":null}
             """
     }
 
     private static func toneParamsJSON(from adjustment: ToneAdjustment?) -> String {
         guard let adjustment else {
             return """
-            "grade_r":null,"snap_gamma":null,"density":null,"shadow_density":null,\
-            "highlight_density":null,"toe":null,"toe_width":null,"shoulder":null,\
-            "shoulder_width":null
+            "snap_gamma":null,"density":null,"shadow_density":null,\
+            "highlight_density":null
             """
         }
         return """
-            "grade_r":\(adjustment.gradeR),"snap_gamma":\(adjustment.snapGamma),\
+            "snap_gamma":\(adjustment.snapGamma),\
             "density":\(adjustment.density),"shadow_density":\(adjustment.shadowDensity),\
-            "highlight_density":\(adjustment.highlightDensity),"toe":\(adjustment.toe),\
-            "toe_width":\(adjustment.toeWidth),"shoulder":\(adjustment.shoulder),\
-            "shoulder_width":\(adjustment.shoulderWidth)
+            "highlight_density":\(adjustment.highlightDensity)
             """
     }
 
@@ -255,9 +247,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "delete" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":22,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":23,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -327,9 +319,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":22,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":22,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":23,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":23,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":23,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi
@@ -448,7 +440,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":22,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":23,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -467,11 +459,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -516,7 +508,7 @@ struct EditModelTests {
         let paramsJSON = toneParamsJSON(from: adjustment)
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":22,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":23,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"tone",\
             "params":{\(paramsJSON)},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}
@@ -528,18 +520,18 @@ struct EditModelTests {
         let toned = rollInfoEvent(negatives: negativeIDs.enumerated().map { index, id in
             negativeJSON(
                 negativeID: id, sequence: index + 1, intended: nil, applied: nil,
-                toneGradeR: adjustment?.gradeR, toneSnapGamma: adjustment?.snapGamma,
-                toneDensity: adjustment?.density, toneToe: adjustment?.toe
+                toneSnapGamma: adjustment?.snapGamma,
+                toneDensity: adjustment?.density
             )
         })
         let marker = directory.appending(path: "toned").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(toned)'
@@ -562,21 +554,20 @@ struct EditModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let runner = try Self.editToneRunner(
             directory, negativeIDs: ["n1", "n2"],
-            adjustment: ToneAdjustment(gradeR: 90, snapGamma: 0.2, density: 1,
-                                       shadowDensity: 0, highlightDensity: 0,
-                                       toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+            adjustment: ToneAdjustment(
+                snapGamma: 0.2, density: 1, shadowDensity: 0, highlightDensity: 0
+            )
         )
         let model = try await Self.multiSelectModel(runner)
 
         await model.setTone(
             model.selectionTargets,
-            adjustment: ToneAdjustment(gradeR: 90, snapGamma: 0.2, density: 1,
-                                     shadowDensity: 0, highlightDensity: 0,
-                                     toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+            adjustment: ToneAdjustment(
+                snapGamma: 0.2, density: 1, shadowDensity: 0, highlightDensity: 0
+            )
         )
         await model.waitForPendingFetch()
 
-        #expect(model.visibleNegatives.map(\.toneGradeR) == [90.0, 90.0])
         #expect(model.visibleNegatives.map(\.toneSnapGamma) == [0.2, 0.2])
     }
 
@@ -593,7 +584,6 @@ struct EditModelTests {
         await model.setTone(model.selectionTargets, adjustment: nil)
         await model.waitForPendingFetch()
 
-        #expect(model.visibleNegatives[0].toneGradeR == nil)
         #expect(model.visibleNegatives[0].toneSnapGamma == nil)
         let defaultTone = String(ToneAdjustment.neutral.hashValue)
         #expect(
@@ -609,7 +599,7 @@ struct EditModelTests {
         let initial = Self.rollInfoEvent(negatives: [
             Self.negativeJSON(
                 negativeID: "n1", sequence: 1, intended: nil, applied: nil,
-                toneGradeR: 90, toneSnapGamma: 0.2
+                toneSnapGamma: 0.2
             ),
         ])
         let directory = FileManager.default.temporaryDirectory
@@ -619,7 +609,7 @@ struct EditModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let event =
             """
-            {"protocol_version":22,"event":"edit_recorded","negative_id":"n1",\
+            {"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":2,"negative_id":"n1","position":2,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:01Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -627,15 +617,15 @@ struct EditModelTests {
         let rotated = Self.rollInfoEvent(negatives: [
             Self.negativeJSON(
                 negativeID: "n1", sequence: 1, intended: nil, applied: nil,
-                rotation: 1, toneGradeR: 90, toneSnapGamma: 0.2
+                rotation: 1, toneSnapGamma: 0.2
             ),
         ])
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "rotate" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit rotate"}'
               echo '\(event)'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -652,15 +642,14 @@ struct EditModelTests {
         await model.waitForPendingFetch()
 
         #expect(model.visibleNegatives[0].rotationQuarterTurns == 1)
-        #expect(model.visibleNegatives[0].toneGradeR == 90)
         #expect(model.visibleNegatives[0].toneSnapGamma == 0.2)
     }
 
     @Test("The render generation token carries the tone state")
     func testRenderGenerationCarriesTone() {
-        let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
-        let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
-        let other = Self.multiNegative(id: "n1", toneGradeR: 70, toneSnapGamma: 0.2, toneToe: 0.5)
+        let flat = Self.multiNegative(id: "n1", toneSnapGamma: nil)
+        let toned = Self.multiNegative(id: "n1", toneSnapGamma: 0.2)
+        let other = Self.multiNegative(id: "n1", toneSnapGamma: 0.5)
 
         #expect(EditModel.renderGeneration(of: flat) != EditModel.renderGeneration(of: toned))
         #expect(EditModel.renderGeneration(of: toned) != EditModel.renderGeneration(of: other))
@@ -672,9 +661,9 @@ struct EditModelTests {
 
     @Test("The render generation token carries the colour state")
     func testRenderGenerationCarriesColor() {
-        let neutral = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+        let neutral = Self.multiNegative(id: "n1", toneSnapGamma: nil)
         let separated = Self.multiNegative(
-            id: "n1", toneGradeR: nil, toneSnapGamma: nil, colorDyeSeparation: 1.2
+            id: "n1", toneSnapGamma: nil, colorDyeSeparation: 1.2
         )
 
         #expect(
@@ -687,14 +676,12 @@ struct EditModelTests {
     func testRenderGenerationCarriesCastRemovalHighlights() {
         let shadowOnly = Self.multiNegative(
             id: "n1",
-            toneGradeR: nil,
             toneSnapGamma: nil,
             colorDyeSeparation: 1.0,
             colorCastRemovalHighlights: 0
         )
         let withHighlights = Self.multiNegative(
             id: "n1",
-            toneGradeR: nil,
             toneSnapGamma: nil,
             colorDyeSeparation: 1.0,
             colorCastRemovalHighlights: 0.5
@@ -728,8 +715,8 @@ struct EditModelTests {
 
     @Test("The negative view's cache generation carries the transform but not the tone")
     func testNegativeViewGenerationIgnoresTone() {
-        let flat = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
-        let toned = Self.multiNegative(id: "n1", toneGradeR: 90, toneSnapGamma: 0.2)
+        let flat = Self.multiNegative(id: "n1", toneSnapGamma: nil)
+        let toned = Self.multiNegative(id: "n1", toneSnapGamma: 0.2)
 
         #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none#none")
         #expect(EditModel.negativeViewGeneration(of: flat) == EditModel.negativeViewGeneration(of: toned))
@@ -755,9 +742,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":22,"event":"started","command":"edit render-preview"}'
-              echo '{"protocol_version":22,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"started","command":"edit render-preview"}'
+              echo '{"protocol_version":23,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
             else
@@ -911,9 +898,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":22,"event":"started","command":"edit render-region"}'
-              echo '{"protocol_version":22,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"started","command":"edit render-region"}'
+              echo '{"protocol_version":23,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               legacy="${out%.rgba}.png"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$legacy"
@@ -958,22 +945,22 @@ struct EditModelTests {
 
         model.scheduleTone(
             model.selectionTargets,
-            adjustment: ToneAdjustment(gradeR: 90, snapGamma: 0, density: 1,
-                                       shadowDensity: 0, highlightDensity: 0,
-                                       toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+            adjustment: ToneAdjustment(
+                snapGamma: 0, density: 1, shadowDensity: 0, highlightDensity: 0
+            )
         )
         model.scheduleTone(
             model.selectionTargets,
-            adjustment: ToneAdjustment(gradeR: 100, snapGamma: 0, density: 1,
-                                       shadowDensity: 0, highlightDensity: 0,
-                                       toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+            adjustment: ToneAdjustment(
+                snapGamma: 0.5, density: 1, shadowDensity: 0, highlightDensity: 0
+            )
         )
         try await Task.sleep(for: .milliseconds(250))
         await model.waitForPendingTone()
 
         let count = Int(try String(contentsOf: counter, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         #expect(count == 1)
-        #expect(model.visibleNegatives[0].toneGradeR == 100)
+        #expect(model.visibleNegatives[0].toneSnapGamma == 0.5)
     }
 
     @Test("commitTone supersedes an in-flight tone session")
@@ -990,26 +977,26 @@ struct EditModelTests {
         let first = Task {
             await model.commitTone(
                 model.selectionTargets,
-                adjustment: ToneAdjustment(gradeR: 90, snapGamma: 0, density: 1,
-                                           shadowDensity: 0, highlightDensity: 0,
-                                           toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+                adjustment: ToneAdjustment(
+                    snapGamma: 0, density: 1, shadowDensity: 0, highlightDensity: 0
+                )
             )
         }
         try await Task.sleep(for: .milliseconds(20))
         await model.commitTone(
             model.selectionTargets,
-            adjustment: ToneAdjustment(gradeR: 100, snapGamma: 0, density: 1,
-                                       shadowDensity: 0, highlightDensity: 0,
-                                       toe: 0, toeWidth: 2.5, shoulder: 0, shoulderWidth: 2.5)
+            adjustment: ToneAdjustment(
+                snapGamma: 0.5, density: 1, shadowDensity: 0, highlightDensity: 0
+            )
         )
         await first.value
         await model.waitForPendingTone()
 
-        #expect(model.visibleNegatives[0].toneGradeR == 100)
+        #expect(model.visibleNegatives[0].toneSnapGamma == 0.5)
     }
 
-    /// Parses `--grade` / `--snap` from the fake CLI, increments `counter`
-    /// on each `edit tone`, and emits matching `edit_recorded` events.
+    /// Parses `--snap` from the fake CLI, increments `counter` on each
+    /// `edit tone`, and emits matching `edit_recorded` events.
     private static func countingEditToneRunner(
         _ directory: URL, counter: URL
     ) throws -> CLIRunner {
@@ -1018,25 +1005,23 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "tone" ]; then
-              grade=""
               snap=""
               while [ $# -gt 0 ]; do
                 case "$1" in
-                  --grade) grade="$2"; shift 2 ;;
                   --snap) snap="$2"; shift 2 ;;
                   *) shift ;;
                 esac
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":22,"event":"started","command":"edit tone"}'
-              echo '{"protocol_version":22,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
-            "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
-            "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
+            "params":{"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
+            "highlight_density":0},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1055,26 +1040,24 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "tone" ]; then
-              grade=""
               snap=""
               while [ $# -gt 0 ]; do
                 case "$1" in
-                  --grade) grade="$2"; shift 2 ;;
                   --snap) snap="$2"; shift 2 ;;
                   *) shift ;;
                 esac
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":22,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
               sleep 0.2
-              echo '{"protocol_version":22,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
-            "params":{"grade_r":'"$grade"',"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
-            "highlight_density":0,"toe":0,"toe_width":2.5,"shoulder":0,"shoulder_width":2.5},\
+            "params":{"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
+            "highlight_density":0},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1085,9 +1068,7 @@ struct EditModelTests {
 
     private static func multiNegative(
         id: String,
-        toneGradeR: Double?,
         toneSnapGamma: Double?,
-        toneToe: Double? = nil,
         colorDyeSeparation: Double? = nil,
         colorCastRemovalHighlights: Double? = nil
     ) -> RollManifest.Negative {
@@ -1113,15 +1094,10 @@ struct EditModelTests {
             rotationQuarterTurns: 0,
             flippedHorizontally: false,
             rectification: nil,
-            toneGradeR: toneGradeR,
             toneSnapGamma: toneSnapGamma,
-            toneDensity: toneGradeR == nil ? nil : 1,
-            toneShadowDensity: toneGradeR == nil ? nil : 0,
-            toneHighlightDensity: toneGradeR == nil ? nil : 0,
-            toneToe: toneToe,
-            toneToeWidth: toneGradeR == nil ? nil : 2.5,
-            toneShoulder: toneGradeR == nil ? nil : 0,
-            toneShoulderWidth: toneGradeR == nil ? nil : 2.5,
+            toneDensity: toneSnapGamma == nil ? nil : 1,
+            toneShadowDensity: toneSnapGamma == nil ? nil : 0,
+            toneHighlightDensity: toneSnapGamma == nil ? nil : 0,
             colorWbCyan: colorDyeSeparation == nil ? nil : 0,
             colorWbMagenta: colorDyeSeparation == nil ? nil : 0,
             colorWbYellow: colorDyeSeparation == nil ? nil : 0,
@@ -1159,21 +1135,21 @@ struct EditModelTests {
         ])
         let reviewed = Self.rollInfoEvent(negatives: [
             Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
-                .replacingOccurrences(of: "\"tone_shoulder_width\":null}", with: """
-                    "tone_shoulder_width":null,"spots":\(initialSpots)}
+                .replacingOccurrences(of: "\"tone_highlight_density\":null}", with: """
+                    "tone_highlight_density":null,"spots":\(initialSpots)}
                     """)
         ])
         let marker = directory.appending(path: "reviewed").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "list-spots" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit list-spots"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit list-spots"}'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: nil))'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             elif [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
               : > '\(marker)'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: "/tmp/preview.png"))'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(reviewed)'
@@ -1189,7 +1165,7 @@ struct EditModelTests {
     private static func spotsEvent(spots: String, repair: Bool, preview: String?) -> String {
         let previewJSON = preview.map { "\"\($0)\"" } ?? "null"
         return """
-            {"protocol_version":22,"event":"spots_reported","negative_id":"n1",\
+            {"protocol_version":23,"event":"spots_reported","negative_id":"n1",\
             "detector_version":1,"sensitivity":0.5,"repair":\(repair),\
             "spots":\(spots),"found":2,"preview_path":\(previewJSON)}
             """
@@ -1237,9 +1213,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: rejectedJSON, repair: false, preview: nil))'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1261,7 +1237,7 @@ struct EditModelTests {
     @Test("The render generation changes when repair flips or the rejected count does")
     func testRenderGenerationCarriesSpots() {
         func negative(_ summary: NegativeSpots.Summary?) -> RollManifest.Negative {
-            Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+            Self.multiNegative(id: "n1", toneSnapGamma: nil)
                 .with(spotsSummary: summary)
         }
         let none = negative(nil)
@@ -1304,9 +1280,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: Self.twoSpotsJSON, repair: true, preview: nil))'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1324,8 +1300,8 @@ struct EditModelTests {
 
     @Test("A stale summary keeps the negative-view generation moving")
     func testStaleSummaryAffectsGeneration() {
-        let fresh = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
-        let stale = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+        let fresh = Self.multiNegative(id: "n1", toneSnapGamma: nil)
+        let stale = Self.multiNegative(id: "n1", toneSnapGamma: nil)
             .with(
                 spotsSummary: NegativeSpots.Summary(
                     detectorVersion: 1, sensitivity: 0.5, repair: true,
@@ -1349,21 +1325,21 @@ struct EditModelTests {
         let cropped = Self.rollInfoEvent(negatives: [
             Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
                 .replacingOccurrences(
-                    of: "\"tone_shoulder_width\":null}",
-                    with: "\"tone_shoulder_width\":null,\"crop\":\(cropReport)}"
+                    of: "\"tone_highlight_density\":null}",
+                    with: "\"tone_highlight_density\":null,\"crop\":\(cropReport)}"
                 )
         ])
         let marker = directory.appending(path: "cropped").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "crop" ]; then
-              echo '{"protocol_version":22,"event":"started","command":"edit crop"}'
+              echo '{"protocol_version":23,"event":"started","command":"edit crop"}'
               : > '\(marker)'
-              echo '{"protocol_version":22,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop","params":{"x":10},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,\
             "crop":\(cropReport),"preview_path":"/tmp/preview.png"}'
-              echo '{"protocol_version":22,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(cropped)'
@@ -1430,7 +1406,7 @@ struct EditModelTests {
     @Test("The render generation changes when the crop does")
     func testRenderGenerationCarriesCrop() {
         func negative(_ crop: CropState?) -> RollManifest.Negative {
-            var base = Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+            var base = Self.multiNegative(id: "n1", toneSnapGamma: nil)
             base.crop = crop
             return base
         }
@@ -1448,7 +1424,7 @@ struct EditModelTests {
     @Test("the scratches summary changes the cache-generation token")
     func scratchesSummaryChangesCacheToken() {
         func negative(_ summary: NegativeScratches.Summary?) -> RollManifest.Negative {
-            Self.multiNegative(id: "n1", toneGradeR: nil, toneSnapGamma: nil)
+            Self.multiNegative(id: "n1", toneSnapGamma: nil)
                 .with(scratchesSummary: summary)
         }
         let base = negative(nil)

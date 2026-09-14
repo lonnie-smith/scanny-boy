@@ -15,18 +15,10 @@ from scanny_boy.normalization import encode_normalized
 
 _GAMMA = render.GAMMA_ADOBE
 
-# The §4.7 sweep: the grade/snap corners, a mid pair, and None.
+# The §4.7 sweep: snap corners, a mid pair, and None.
 _TONE_PARAM_SWEEP: list[dict[str, float] | None] = [None] + [
-    {"grade_r": grade_r, "snap_gamma": snap_gamma}
-    for grade_r, snap_gamma in (
-        (50.0, 0.0),
-        (50.0, 0.5),
-        (50.0, -0.5),
-        (115.0, 0.0),
-        (115.0, 0.3),
-        (180.0, 0.5),
-        (180.0, -0.5),
-    )
+    {"snap_gamma": snap_gamma}
+    for snap_gamma in (-0.5, 0.0, 0.15, 0.3, 0.5, 1.0, 1.5)
 ]
 
 # A well-conditioned camera -> Adobe RGB matrix (row-normalized), standing
@@ -161,7 +153,7 @@ def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
     )
     wedge = np.full((1, 4, 3), white_code, dtype=np.uint16)
     rendered, fractions = render.render_export(
-        wedge, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
+        wedge, _TEST_MATRIX, {"snap_gamma": 0.0}
     )
     assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
     assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
@@ -170,7 +162,7 @@ def test_a_neutral_wedge_at_display_white_survives_the_colour_chain():
 
 def test_the_uint16_gather_round_trips_the_extended_display_domain():
     """§2.3: rescaling the gather and the curve LUT must stay paired."""
-    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0, "shoulder": 0.3}
+    tone_params = {"snap_gamma": 0.0}
     codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16)
     rendered, _ = render.render_export(
         np.stack([codes] * 3, axis=-1).reshape(1, -1, 3),
@@ -178,10 +170,8 @@ def test_the_uint16_gather_round_trips_the_extended_display_domain():
         tone_params,
     )
     assert rendered.max() <= tone.MAX_CODE
-    white_code = int(
-        encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
-    )
-    assert rendered[0, white_code, 0] > rendered[0, white_code + 4, 0]
+    assert np.all(rendered[:, :, 0] == rendered[:, :, 1])
+    assert np.all(rendered[:, :, 1] == rendered[:, :, 2])
 
 
 def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
@@ -191,7 +181,7 @@ def test_headroom_in_gamut_does_not_count_as_a_gamut_clip():
     )
     image = np.full((2, 2, 3), white_code, dtype=np.uint16)
     _, fractions = render.render_export(
-        image, _TEST_MATRIX, {"grade_r": 115.0, "snap_gamma": 0.0}
+        image, _TEST_MATRIX, {"snap_gamma": 0.0}
     )
     assert fractions == (0.0, 0.0, 0.0)
 
@@ -211,20 +201,20 @@ def test_normalized_fill_renders_to_black_through_the_full_colour_chain():
         .astype(np.uint16)
     )
     image = np.full((1, 1, 3), fill_code, dtype=np.uint16)
-    rendered, _ = render.render_export(image, _TEST_MATRIX, _TONE_PARAM_SWEEP[1])
+    rendered, _ = render.render_export(image, _TEST_MATRIX, _TONE_PARAM_SWEEP[2])
     assert np.all(rendered == 0)
 
 
 def test_mono_renders_2d_and_matches_the_colour_path_within_the_bound():
     codes = np.arange(tone.MAX_CODE + 1, dtype=np.uint16).reshape(256, 256)
-    rendered, fractions = render.render_export(codes, None, {"grade_r": 90.0, "snap_gamma": 0.2})
+    rendered, fractions = render.render_export(codes, None, {"snap_gamma": 0.2})
     assert rendered.shape == codes.shape
     assert fractions == (0.0,)
 
     colour, _ = render.render_export(
         np.stack([codes.ravel()] * 3, axis=-1).reshape(1, -1, 3),
         np.eye(3, dtype=np.float32),
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        {"snap_gamma": 0.2},
     )
     difference = np.abs(
         colour[0, :, 0].astype(np.int32) - rendered.ravel().astype(np.int32)
@@ -278,7 +268,7 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     """The shared render: 8-bit preview encode and 16-bit export agree
     when a camera matrix and a colour op are both active."""
     matrix = _TEST_MATRIX
-    tone_params = {"grade_r": 115.0, "snap_gamma": 0.0}
+    tone_params = {"snap_gamma": 0.0}
     color_params = {"wb_cyan": 0.05, "dye_separation": 1.2}
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     codes = np.stack(
@@ -325,15 +315,10 @@ def test_colour_only_render_uses_the_default_print_curve():
     np.testing.assert_allclose(rendered, reference, atol=1e-6)
 
 
-def test_preview_and_export_agree_with_headroom_and_shoulder():
+def test_preview_and_export_agree_with_headroom():
     """Source codes inside the encode headroom."""
     matrix = _TEST_MATRIX
-    tone_params = {
-        "grade_r": 115.0,
-        "snap_gamma": 0.0,
-        "shoulder": 0.5,
-        "shoulder_width": 2.5,
-    }
+    tone_params = {"snap_gamma": 0.0}
     white_code = int(
         encode_normalized(np.array([0.0], dtype=np.float32))[0].astype(np.uint16)
     )
@@ -345,5 +330,3 @@ def test_preview_and_export_agree_with_headroom_and_shoulder():
     rendered_8 = np.rint(rendered / 257.0).astype(np.uint8)
     difference = np.abs(rendered_8.astype(np.int32) - preview_8.astype(np.int32))
     assert difference.max() <= 1
-    assert rendered_8[0, 0, 0] < 255
-    assert rendered_8[0, 0, 0] != rendered_8[0, -1, 0]

@@ -191,25 +191,8 @@ struct CaptureStageView: View {
                     Task { await model.setFilmKind(choice.rawValue) }
                 }
             )
-            Picker("Format", selection: formatBinding) {
-                Text("Choose…").tag(FilmFormat?.none)
-                ForEach(FilmFormat.allCases) { format in
-                    Text(format.label).tag(FilmFormat?.some(format))
-                }
-            }
+            RollFormatFields()
         }
-    }
-
-    /// The roll's saved film format — a stored choice only, nothing reads
-    /// it yet. Choosing a value calls `roll set-setup` immediately.
-    private var formatBinding: Binding<FilmFormat?> {
-        Binding(
-            get: { model.rollFormat },
-            set: { newValue in
-                guard let newValue else { return }
-                Task { await model.setRollFormat(newValue) }
-            }
-        )
     }
 
     @ViewBuilder

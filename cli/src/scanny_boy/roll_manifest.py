@@ -455,10 +455,11 @@ class RollManifest:
     flat_field: dict[str, Any] | None = None
     # Convenience defaults for starting the roll's *next* capture/stitch
     # run — `{"grid": {"across", "down"} | None, "interval_seconds": int |
-    # None, "format": str | None}`. Pre-fill hints only: nothing in
-    # stitching reads them, and unlike `film`, they stay editable for the
-    # life of the roll (`roll set-setup`). `None` on a roll predating this
-    # feature or one nothing has been set on yet.
+    # None, "format": str | None, "auto_crop": bool}`. Pre-fill hints
+    # for the next capture/stitch run; stitching reads `format` and
+    # `auto_crop` to seed auto-crop when enabled. Unlike `film`, they
+    # stay editable for the life of the roll (`roll set-setup`). `None`
+    # on a roll predating this feature or one nothing has been set on yet.
     setup: dict[str, Any] | None = None
     # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
     # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or

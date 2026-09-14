@@ -85,7 +85,7 @@ CROP_TILT_MAX_DEG = 45.0
 # smaller than this is almost certainly a mis-click.
 CROP_MIN_SIZE_PX = 16
 
-# `tone` params are the complete preview tone state — nine keys, all set or
+# `tone` params are the complete preview tone state — four keys, all set or
 # all `None` for the reset (see `tone.py`). Unlike the geometric ops it is a
 # state, not a transform and never a mode: the latest one wins.
 # `append_tone_edit` coalesces a trailing `tone` op in place, the one
@@ -620,22 +620,17 @@ def _tone_param_bounds() -> tuple[tuple[str, float, float], ...]:
     from scanny_boy import tone
 
     return (
-        ("grade_r", tone.GRADE_MIN, tone.GRADE_MAX),
         ("snap_gamma", tone.SNAP_MIN, tone.SNAP_MAX),
         ("density", tone.DENSITY_MIN, tone.DENSITY_MAX),
         ("shadow_density", tone.SHADOW_DENSITY_MIN, tone.SHADOW_DENSITY_MAX),
         ("highlight_density", tone.HIGHLIGHT_DENSITY_MIN, tone.HIGHLIGHT_DENSITY_MAX),
-        ("toe", tone.TOE_MIN, tone.TOE_MAX),
-        ("toe_width", tone.TOE_WIDTH_MIN, tone.TOE_WIDTH_MAX),
-        ("shoulder", tone.SHOULDER_MIN, tone.SHOULDER_MAX),
-        ("shoulder_width", tone.SHOULDER_WIDTH_MIN, tone.SHOULDER_WIDTH_MAX),
     )
 
 
 def validated_tone_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
-    """The `tone` op's params: all nine set, or all nine `None` (the reset)."""
+    """The `tone` op's params: all four set, or all four `None` (the reset)."""
     from scanny_boy import tone
 
     if params is None:
@@ -843,19 +838,15 @@ def _tone_in_range(params: dict[str, float]) -> bool:
 
 
 def _parse_tone_op(params: dict) -> dict[str, float] | None:
-    grade = params.get("grade_r")
     snap = params.get("snap_gamma")
-    if grade is None or snap is None:
-        return None
-    if isinstance(grade, bool) or not isinstance(grade, (int, float)):
+    if snap is None:
         return None
     if isinstance(snap, bool) or not isinstance(snap, (int, float)):
         return None
     merged = _tone_neutral_defaults()
-    merged["grade_r"] = float(grade)
     merged["snap_gamma"] = float(snap)
     for key in merged:
-        if key in ("grade_r", "snap_gamma"):
+        if key == "snap_gamma":
             continue
         value = params.get(key)
         if value is None:
@@ -1140,6 +1131,13 @@ def validated_crop_params(
         if not isinstance(preset, str):
             raise ValueError(f"crop preset must be a string, got {preset!r}")
         validated["preset"] = preset
+    source = params.get("source")
+    if source is not None:
+        if source != "auto":
+            raise ValueError(
+                f"crop source must be 'auto' or omitted, got {source!r}"
+            )
+        validated["source"] = "auto"
     return validated
 
 

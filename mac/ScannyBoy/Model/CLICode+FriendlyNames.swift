@@ -54,6 +54,8 @@ extension CLICode {
         case .flatFieldAspectMismatch: "Flat-field reference does not match the frame size"
         case .outputModifiedExternally: "The file was changed outside the app"
         case .outputDimensionsLarge: "The output is very large"
+        case .autoCropFailed: "Auto-crop could not find the picture boundary"
+        case .autoCropNoFormat: "Auto-crop needs a film format to know the ratio"
         case .cancelled: "Cancelled"
         case .internalError: "An unexpected internal error occurred"
         default: nil

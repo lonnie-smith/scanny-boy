@@ -23,6 +23,9 @@ public struct CropState: Sendable, Hashable {
     /// The full uncropped display image's dimensions, quarter turns folded in.
     let canvasWidth: Int?
     let canvasHeight: Int?
+    /// The crop's source: `"auto"` when seeded by auto-crop, `nil` when
+    /// drawn by hand.  Used to decide whether a re-stitch may reseed.
+    let source: String?
 
     init?(fields: [String: JSONValue]) {
         guard
@@ -38,7 +41,8 @@ public struct CropState: Sendable, Hashable {
             x: fields["x"]?.intValue,
             y: fields["y"]?.intValue,
             canvasWidth: fields["canvas_width"]?.intValue,
-            canvasHeight: fields["canvas_height"]?.intValue
+            canvasHeight: fields["canvas_height"]?.intValue,
+            source: fields["source"]?.stringValue
         )
     }
 
@@ -50,7 +54,8 @@ public struct CropState: Sendable, Hashable {
         x: Int? = nil,
         y: Int? = nil,
         canvasWidth: Int? = nil,
-        canvasHeight: Int? = nil
+        canvasHeight: Int? = nil,
+        source: String? = nil
     ) {
         self.width = width
         self.height = height
@@ -60,6 +65,7 @@ public struct CropState: Sendable, Hashable {
         self.y = y
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
+        self.source = source
     }
 
     /// The saved crop window on the full uncropped display, when the

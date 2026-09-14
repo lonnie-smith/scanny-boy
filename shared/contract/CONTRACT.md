@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **22**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **23**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -172,7 +172,7 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
-scanny-boy edit tone   --roll DIR --negative ID [ID ...] (--grade R | --auto-grade) --snap G [--density D | --auto-density] [--shadow-density D] [--highlight-density D] [--toe T] [--toe-width W] [--shoulder S] [--shoulder-width W] | --reset
+scanny-boy edit tone   --roll DIR --negative ID [ID ...] [--snap G] [--density D | --auto-density] [--shadow-density D] [--highlight-density D] | --reset
 scanny-boy edit color  --roll DIR --negative ID [ID ...] [--cyan V] [--magenta V] [--yellow V] [--shadow-cyan V] [--shadow-magenta V] [--shadow-yellow V] [--highlight-cyan V] [--highlight-magenta V] [--highlight-yellow V] [--temperature K [--region {global,shadows,highlights}]] [--cast-removal V] [--cast-removal-highlights V] [--auto-cast] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
 scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH
@@ -470,33 +470,32 @@ a crop whose canvas no longer matches the published TIFF (a re-stitch)
 reports as `null`. While a live crop exists, spot sets report no markers
 (the repair itself is replayed before the crop and still applies).
 
-`edit tone` records a preview tone adjustment for one or more negatives: a
-stored grade (`--grade`, 50–180, or `--auto-grade` to solve from the
-negative's recorded normalization; lower is punchier in the ends), midtone
-contrast (`--snap`, −0.8…1.5), density/brightness (`--density`, 0.0–2.0,
-neutral 1.0, higher is denser/darker, or `--auto-density`), zone density
-offsets (`--shadow-density` ±0.9, `--highlight-density` ±0.5; positive
-adds density/darkens), and toe/shoulder shaping (`--toe` / `--shoulder`
-−1…1, `--toe-width` / `--shoulder-width` 0.1–5.0, neutral 2.5), or
-`--reset` for the default scan-start curve (no recorded adjustment). With
-no `tone` op the positive preview still applies the same default curve.
-`--density` and `--auto-density` are mutually exclusive, as are `--grade`
-and `--auto-grade`. Auto flags solve once per negative and record the
-computed value — they are not a persistent mode.
+`edit tone` records a preview tone adjustment for one or more negatives:
+midtone contrast (`--snap`, −0.8…1.5), density/brightness (`--density`,
+0.0–2.0, neutral 1.0, higher is denser/darker, or `--auto-density`), zone
+density offsets (`--shadow-density` ±0.9, `--highlight-density` ±0.5;
+positive adds density/darkens), or `--reset` for the default scan-start
+curve (no recorded adjustment). With no `tone` op the positive preview
+still applies the same default curve. The print-curve shape (grade,
+toe/shoulder knees) is fixed at the scan-start default and is not
+user-adjustable. `--density` and `--auto-density` are mutually exclusive.
+Auto Density solves once per negative and records the computed value — it
+is not a persistent mode.
 The op is a state, not a transform — the latest `tone` op wins, and a
 trailing `tone` op is updated in place rather than appended behind. The
 published TIFF is never touched (the export's render bakes the curve into
 the exported pixels instead); each preview is regenerated from its TIFF
 with the tone curve composed into the display encode, and `edit_recorded`
 is emitted per negative — the `edit` row's
-`params` carry all nine tone keys (all `null` for a reset). It fails with
+`params` carry all four tone keys (all `null` for a reset). Legacy tone
+ops that still store the former nine keys are read successfully; curve keys
+in those rows are ignored. It fails with
 `INVALID_EDIT` for out-of-range or mismatched parameters, emits
 `TONE_METERING_UNAVAILABLE` per negative when auto is requested but
 metering is absent, and fails with the same roll/negative codes as
 `edit rotate`. `roll info` reports the net tone state per negative as
-`tone_grade_r`, `tone_snap_gamma`, `tone_density`, `tone_shadow_density`,
-`tone_highlight_density`, `tone_toe`, `tone_toe_width`, `tone_shoulder`,
-and `tone_shoulder_width` (all `null` when no adjustment is recorded).
+`tone_snap_gamma`, `tone_density`, `tone_shadow_density`, and
+`tone_highlight_density` (all `null` when no adjustment is recorded).
 
 `edit color` records a preview colour adjustment for one or more negatives:
 global, shadow, and highlight cyan/magenta/yellow enlarger filtration
@@ -867,7 +866,7 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
 | `NORMALIZE_FILM_EXTENT_WITHHELD` | Informational: the film-extent pass withheld a non-film border band (likely the negative carrier) from the metering; the message names the four insets in canvas pixels. The published pixels are never cropped |
 | `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
-| `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` or `--auto-grade` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
+| `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
 | `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |
 | `FILM_BASE_LOCKED` | The roll's film-base reference is locked (its first negative was converted) and cannot be replaced |
