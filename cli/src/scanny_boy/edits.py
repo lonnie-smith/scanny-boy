@@ -322,6 +322,7 @@ def run_edit_crop(
     preset: str | None = None,
     reset: bool = False,
     full_frame: bool = False,
+    source: str | None = None,
     emit: EmitFn,
 ) -> dict:
     """Records one negative's crop — a tilted window over the image as it
@@ -416,6 +417,7 @@ def run_edit_crop(
                     "h": th,
                     "tilt_deg": tilt,
                     "preset": preset,
+                    "source": source,
                 }
             )
         except ValueError as exc:
@@ -424,6 +426,113 @@ def run_edit_crop(
     edit = repo.append_edit(roll_dir, negative_id, repo.CROP_OP, params)
     _refresh_preview(roll_dir, _roll, negative, repo.CROP_OP, what="crop", emit=emit)
     return _result_fields(roll_dir, negative, edit)
+
+
+def run_edit_suggest_crop(
+    roll_dir: Path,
+    negative_id: str,
+    *,
+    preset: str | None = None,
+    emit: EmitFn,
+) -> dict:
+    """Pure query: detect the picture-only crop for the negative's
+    current display image and emit ``crop_suggested``. Records nothing.
+
+    Parameters
+    ----------
+    preset : str | None
+        The crop session's current ratio preset (a ``FORMAT_RATIOS`` key).
+        When ``None``, falls back to the roll's ``setup.format``, then
+        to unconstrained.
+    """
+    from scanny_boy import auto_crop
+    from scanny_boy.previews import _display_image, display_shape
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    output = negative.output
+    tiff_h, tiff_w = int(output["height"]), int(output["width"])
+
+    # Determine the ratio.
+    ratio = None
+    if preset is not None:
+        if preset not in auto_crop.FORMAT_RATIOS:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"unknown crop preset {preset!r}",
+            )
+        ratio = auto_crop.FORMAT_RATIOS[preset]
+    else:
+        roll_setup = _roll.setup or {}
+        roll_format = roll_setup.get("format")
+        if roll_format and roll_format in auto_crop.FORMAT_RATIOS:
+            ratio = auto_crop.FORMAT_RATIOS[roll_format]
+
+    # Build the analysis copy from the published TIFF.
+    # The Auto button uses the negative's full net state with crop ignored.
+    tiff_path = roll_dir / negative.output["name"]
+    if not tiff_path.exists():
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"negative {negative_id} has no published TIFF",
+        )
+
+    display = _display_image(
+        tiff_path,
+        quarter_turns=state.quarter_turns,
+        flipped_horizontally=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
+        crop_params=None,  # crop ignored for Auto button
+    )
+
+    analysis, scale = auto_crop.analysis_display(
+        display,
+        quarter_turns=0,
+        flipped=False,
+        fine_angle_deg=0.0,
+    )
+
+    display_h, display_w = display.shape[:2]
+    exclude = auto_crop.exclusion_hint(
+        negative.normalization,
+        (tiff_h, tiff_w),
+        {
+            "quarter_turns": state.quarter_turns,
+            "flipped": state.flipped,
+            "fine_angle_deg": state.fine_angle_deg,
+        },
+        scale,
+        (analysis.shape[0], analysis.shape[1]),
+    )
+
+    result = auto_crop.estimate_crop(
+        analysis,
+        full_size=(display_h, display_w),
+        ratio=ratio,
+        exclude=exclude,
+    )
+
+    if isinstance(result, auto_crop.Refusal):
+        return {
+            "event_type": "crop_suggested",
+            "negative_id": negative_id,
+            "rect": None,
+            "canvas_width": display_w,
+            "canvas_height": display_h,
+            "preset": preset,
+            "refused": result.reason,
+        }
+
+    x, y, w, h = result.rect
+    return {
+        "event_type": "crop_suggested",
+        "negative_id": negative_id,
+        "rect": {"x": x, "y": y, "width": w, "height": h},
+        "canvas_width": display_w,
+        "canvas_height": display_h,
+        "preset": preset,
+        "refused": None,
+    }
 
 
 def _merge_color_params(

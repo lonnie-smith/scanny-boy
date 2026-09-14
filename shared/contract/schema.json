@@ -43,6 +43,7 @@
         "base_frame_set",
         "spots_reported",
         "scratches_reported",
+        "crop_suggested",
         "frame_analyzed",
         "capture_checked",
         "capture_summary",
@@ -527,7 +528,12 @@
               "x": { "type": "integer", "minimum": 0 },
               "y": { "type": "integer", "minimum": 0 },
               "canvas_width": { "type": "integer", "minimum": 1 },
-              "canvas_height": { "type": "integer", "minimum": 1 }
+              "canvas_height": { "type": "integer", "minimum": 1 },
+              "source": {
+                "type": ["string", "null"],
+                "enum": ["auto", null],
+                "description": "\"auto\" when seeded by auto-crop, null when drawn by hand."
+              }
             }
           },
           "preview_path": { "type": ["string", "null"] }
@@ -777,6 +783,29 @@
           "count": { "type": "integer", "minimum": 0 },
           "stale": { "type": "boolean" },
           "preview_path": { "type": ["string", "null"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "crop_suggested" } } },
+      "then": {
+        "required": [
+          "negative_id",
+          "x",
+          "y",
+          "width",
+          "height",
+          "tilt_deg",
+          "preset"
+        ],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "tilt_deg": { "type": "number" },
+          "preset": { "type": ["string", "null"] }
         }
       }
     },

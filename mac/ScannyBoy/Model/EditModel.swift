@@ -94,6 +94,16 @@ final class EditModel {
     /// `isRotating`.
     private(set) var isCropping = false
 
+    struct CropSuggestion: Sendable {
+        let rect: CGRect
+        let tiltDegrees: Double
+        let preset: String?
+    }
+
+    /// Set by `suggestCrop`, consumed by `PreviewPane.beginCrop()` on the
+    /// next appearance of crop mode.
+    var pendingCropSuggestion: CropSuggestion?
+
     /// Set while one `edit detect-spots` round trip is in flight —
     /// detection decodes a full published TIFF, so it can take a moment.
     private(set) var isDetectingSpots = false
@@ -523,6 +533,39 @@ final class EditModel {
                 preset: preset,
                 fullFrame: fullFrame
             )
+        }
+    }
+
+    /// Runs `edit suggest-crop` for the anchor negative, then enters crop
+    /// mode with the returned window — the Auto button's action.
+    func suggestCrop(_ negative: RollManifest.Negative) async {
+        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
+        isCropping = true
+        defer { isCropping = false }
+        do {
+            let session = runner.session(
+                for: .editSuggestCrop(roll: rollURL, negative: negative.negativeID)
+            )
+            for await output in try await session.start() {
+                if case .event(let event) = output,
+                    event.kind == .cropSuggested,
+                    let x = event.fields["x"]?.intValue,
+                    let y = event.fields["y"]?.intValue,
+                    let w = event.fields["width"]?.intValue,
+                    let h = event.fields["height"]?.intValue
+                {
+                    let rect = CGRect(x: x, y: y, width: w, height: h)
+                    let tilt = event.fields["tilt_deg"]?.doubleValue ?? 0
+                    let preset = event.fields["preset"]?.stringValue
+                    self.pendingCropSuggestion = CropSuggestion(
+                        rect: rect,
+                        tiltDegrees: tilt,
+                        preset: preset
+                    )
+                }
+            }
+        } catch {
+            return
         }
     }
 

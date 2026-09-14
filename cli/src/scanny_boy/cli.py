@@ -23,6 +23,7 @@ from scanny_boy.events import (
     CaptureChecked,
     CaptureSummary,
     Code,
+    CropSuggested,
     EditRecorded,
     ErrorEvent,
     Event,
@@ -198,6 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="the film format to pre-fill",
     )
+    roll_set_setup.add_argument(
+        "--auto-crop",
+        choices=("on", "off"),
+        default=None,
+        dest="auto_crop",
+        help="enable or disable auto-crop for newly stitched negatives",
+    )
 
     roll_refresh = roll_subparsers.add_parser(
         "refresh",
@@ -270,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not seed the rebate-squaring auto-rotation on new negatives",
     )
     stitch.add_argument(
+        "--no-auto-crop",
+        action="store_false",
+        dest="auto_crop",
+        help="do not seed an automatic crop on new negatives",
+    )
+    stitch.add_argument(
         "--defer-roll-refresh",
         action="store_true",
         dest="defer_roll_refresh",
@@ -302,6 +316,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="auto_rotate",
         help="do not seed the rebate-squaring auto-rotation on new negatives",
+    )
+    run.add_argument(
+        "--no-auto-crop",
+        action="store_false",
+        dest="auto_crop",
+        help="do not seed an automatic crop on new negatives",
     )
     run.add_argument(
         "--defer-roll-refresh",
@@ -510,6 +530,26 @@ def build_parser() -> argparse.ArgumentParser:
             "re-entering crop mode on the whole frame with the saved "
             "window superimposed"
         ),
+    )
+    edit_crop.add_argument(
+        "--source",
+        metavar="SOURCE",
+        help="tag the crop as auto-suggested (only 'auto' is accepted)",
+    )
+
+    edit_suggest_crop = edit_subparsers.add_parser(
+        "suggest-crop",
+        help=(
+            "Detect the picture-only crop for one negative and report it "
+            "without recording (backs the Auto button in crop mode)."
+        ),
+    )
+    edit_suggest_crop.add_argument("--roll", required=True, metavar="DIR")
+    edit_suggest_crop.add_argument("--negative", required=True, metavar="ID")
+    edit_suggest_crop.add_argument(
+        "--preset",
+        metavar="NAME",
+        help="the ratio preset to constrain the crop (a FORMAT_RATIOS key)",
     )
 
     edit_render_region = edit_subparsers.add_parser(
@@ -951,6 +991,7 @@ def _run_stitch_command(
                 negatives=args.negatives,
                 rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
+                auto_crop=args.auto_crop,
                 defer_roll_refresh=args.defer_roll_refresh,
             )
     except StitchError as exc:
@@ -1529,6 +1570,11 @@ def _run_roll_set_setup(args, writer: EventWriter) -> int:
             grid=grid,
             interval_seconds=args.interval_seconds,
             format=args.format,
+            auto_crop=(
+                args.auto_crop == "on"
+                if args.auto_crop is not None
+                else None
+            ),
         )
     except (BadManifestError, repo.RollNotRegisteredError) as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
@@ -1589,6 +1635,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
         run_edit_rotate,
         run_edit_scratches,
         run_edit_spots,
+        run_edit_suggest_crop,
         run_edit_tone,
     )
 
@@ -1651,6 +1698,16 @@ def _run_edit_command(args, writer: EventWriter) -> int:
             )
             confirmation = EditRecorded
         elif args.edit_command == "crop":
+            source = getattr(args, "source", None)
+            if source is not None and source != "auto":
+                writer.write(
+                    ErrorEvent(
+                        code=Code.INVALID_EDIT,
+                        message=f"--source must be 'auto' or omitted, got {source!r}",
+                    )
+                )
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
             if args.reset:
                 results = [
                     run_edit_crop(
@@ -1686,10 +1743,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                         tilt_deg=args.tilt,
                         preset=args.preset,
                         full_frame=args.full_frame,
+                        source=source,
                         emit=writer.write,
                     )
                 ]
             confirmation = EditRecorded
+        elif args.edit_command == "suggest-crop":
+            try:
+                results = [
+                    run_edit_suggest_crop(
+                        Path(args.roll),
+                        args.negative,
+                        preset=args.preset,
+                        emit=writer.write,
+                    )
+                ]
+            except EditFailure as exc:
+                writer.write(ErrorEvent(code=exc.code, message=exc.message))
+                writer.write(Finished(status="failed", exit_status=1))
+                return 1
+            confirmation = CropSuggested
         elif args.edit_command == "delete":
             results = run_edit_delete(
                 Path(args.roll),
@@ -2223,6 +2296,7 @@ def _run_run_command(
                 emit=writer.write,
                 rig_profile_id=args.rig,
                 auto_rotate=args.auto_rotate,
+                auto_crop=args.auto_crop,
                 grid=spec,
                 defer_roll_refresh=args.defer_roll_refresh,
             )

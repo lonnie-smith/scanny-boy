@@ -800,8 +800,27 @@ private struct PreviewPane: View {
         // belongs to the full uncropped canvas.
         zoom.reset()
         let canvas = uncroppedDisplaySize
-        if let crop = negative.crop {
-            let preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+        // AC-6: a pending suggest-crop result takes priority over the
+        // stored crop — the Auto button sets it.
+        if let suggestion = edit.pendingCropSuggestion {
+            edit.pendingCropSuggestion = nil
+            var preset = suggestion.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+            if preset == .free {
+                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
+            }
+            cropSession.begin(
+                displaySize: canvas,
+                rect: suggestion.rect,
+                tiltDegrees: suggestion.tiltDegrees,
+                preset: preset
+            )
+        } else if let crop = negative.crop {
+            var preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
+            // AC-6: resolve auto crop's preset from the roll format when
+            // the ops-log entry did not carry an explicit label.
+            if preset == .free, crop.source == "auto" {
+                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
+            }
             cropSession.begin(
                 displaySize: canvas,
                 rect: crop.editingRect,
@@ -1077,6 +1096,12 @@ private struct GeometryAdjustmentPanel: View {
             Button("Original") { cropSession.resetToOriginal() }
                 .disabled(edit.isCropping)
                 .help("Reset the crop window to the full image and clear the ratio preset")
+
+            Button("Auto") {
+                Task { await edit.suggestCrop(negative) }
+            }
+            .disabled(edit.isCropping)
+            .help("Detect the picture boundary and fit a crop to the roll's film format")
         } else {
             Button {
                 onBeginCrop()

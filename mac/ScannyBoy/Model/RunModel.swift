@@ -623,7 +623,7 @@ final class RunModel {
              .metadataUpdated, .metadataValues,
              .rigCreated, .rigList, .rigDeleted, .rigProgress, .flatFieldReferenceSet,
              .gridCreated, .gridList, .gridDeleted,
-             .spotsReported, .scratchesReported, .baseFrameSet,
+             .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
              .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed:
             break
         }

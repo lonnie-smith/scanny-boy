@@ -1131,6 +1131,13 @@ def validated_crop_params(
         if not isinstance(preset, str):
             raise ValueError(f"crop preset must be a string, got {preset!r}")
         validated["preset"] = preset
+    source = params.get("source")
+    if source is not None:
+        if source != "auto":
+            raise ValueError(
+                f"crop source must be 'auto' or omitted, got {source!r}"
+            )
+        validated["source"] = "auto"
     return validated
 
 

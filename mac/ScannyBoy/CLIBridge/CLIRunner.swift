@@ -50,7 +50,8 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         grid: (across: Int, down: Int)? = nil,
         intervalSeconds: Int? = nil,
-        format: String? = nil
+        format: String? = nil,
+        autoCrop: Bool? = nil
     ) -> CLICommand {
         var arguments = ["roll", "set-setup", "--roll", roll.path]
         if let grid {
@@ -61,6 +62,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let format {
             arguments.append(contentsOf: ["--format", format])
+        }
+        if let autoCrop {
+            arguments.append(contentsOf: ["--auto-crop", autoCrop ? "on" : "off"])
         }
         return CLICommand(arguments: arguments)
     }
@@ -490,7 +494,8 @@ public struct CLICommand: Sendable, Hashable {
         rect: CGRect?,
         tiltDegrees: Double = 0,
         preset: String? = nil,
-        fullFrame: Bool = false
+        fullFrame: Bool = false,
+        source: String? = nil
     ) -> CLICommand {
         var arguments = [
             "edit", "crop",
@@ -509,10 +514,24 @@ public struct CLICommand: Sendable, Hashable {
                 arguments.append(contentsOf: ["--preset", preset])
             }
             if fullFrame { arguments.append("--full-frame") }
+            if let source {
+                arguments.append(contentsOf: ["--source", source])
+            }
         } else {
             arguments.append("--reset")
         }
         return CLICommand(arguments: arguments)
+    }
+
+    public static func editSuggestCrop(
+        roll: URL,
+        negative: String
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "suggest-crop",
+            "--roll", roll.path,
+            "--negative", negative,
+        ])
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`
