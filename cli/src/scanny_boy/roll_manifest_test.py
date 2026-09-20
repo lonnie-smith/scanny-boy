@@ -594,6 +594,61 @@ def test_allocate_output_name_suffixes_on_collision():
     )
 
 
+def test_tethered_negatives_are_numbered_in_publish_order():
+    """Every tethered negative's first frame ends `_01`, so the plain stem
+    rule named them all `..._01.tif`. They are numbered through the roll."""
+    manifest = _manifest(negatives=[])
+    published: list[str] = []
+    for index, stamp in enumerate(
+        ["20260920-164837", "20260920-164919", "20260920-165001"], start=1
+    ):
+        negative_id = f"run-negative-{index:02d}"
+        name = allocate_output_name(manifest, f"{stamp}_01.NEF", negative_id)
+        published.append(name)
+        manifest.negatives.append(
+            _negative(negative_id=negative_id, expected_output=name)
+        )
+
+    assert published == [
+        "20260920-164837_01.tif",
+        "20260920-164919_02.tif",
+        "20260920-165001_03.tif",
+    ]
+    # Asking again for an existing negative gives the same name.
+    assert (
+        allocate_output_name(manifest, "20260920-164919_01.NEF", "run-negative-02")
+        == "20260920-164919_02.tif"
+    )
+
+
+def test_tethered_numbering_continues_after_older_same_numbered_names():
+    """Rolls stitched before the numbering existed hold `..._01.tif` names;
+    the next negative carries on from the highest number, not from 01."""
+    manifest = _manifest(
+        negatives=[
+            _negative(
+                negative_id="run-negative-01", expected_output="20260920-164837_01.tif"
+            ),
+            _negative(
+                negative_id="run-negative-02", expected_output="20260920-164919_01.tif"
+            ),
+        ]
+    )
+
+    assert (
+        allocate_output_name(manifest, "20260920-165001_01.NEF", "run-negative-03")
+        == "20260920-165001_02.tif"
+    )
+
+
+def test_camera_named_sources_keep_the_plain_stem_rule():
+    manifest = _manifest(negatives=[])
+
+    assert allocate_output_name(manifest, "_DSC4638.NEF", "run-negative-01") == (
+        "_DSC4638.tif"
+    )
+
+
 def test_allocate_output_name_is_stable_across_reordering():
     """Section 3.4: names are assigned once, at publish, and are never
     changed afterwards by reordering, renaming, or re-stitching. Asking again

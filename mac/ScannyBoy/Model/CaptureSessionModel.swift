@@ -121,6 +121,7 @@ final class CaptureSessionModel {
     private(set) var flatFieldReferenceError: ConfigurationModel.Issue?
     private(set) var referenceAperture: UInt32?
     var onFlatFieldReferenceAttached: ((FlatFieldReference) -> Void)?
+    var onFilmBaseAttached: ((FilmBase) -> Void)?
     private(set) var currentNegativeIndex = 0
     private(set) var pausedAfterCell = false
     private(set) var cellWarnings: [Int: [String]] = [:]
@@ -139,7 +140,7 @@ final class CaptureSessionModel {
         runner: CLIRunner,
         camera: any CameraControlling,
         clock: any CaptureClock = ContinuousCaptureClock(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = AppEnvironment.defaults
     ) {
         self.runner = runner
         self.camera = camera
@@ -357,8 +358,9 @@ final class CaptureSessionModel {
             )
             if let error = result.error {
                 baseFrameError = error
-            } else {
-                filmBase = result.filmBase
+            } else if let filmBase = result.filmBase {
+                self.filmBase = filmBase
+                onFilmBaseAttached?(filmBase)
             }
         } catch {
             baseFrameError = ConfigurationModel.Issue(code: .internalError, message: error.localizedDescription)
@@ -415,20 +417,22 @@ final class CaptureSessionModel {
                     let intervalEnd = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
                     try await waitForInterval(end: intervalEnd)
                     guard sequencePhase == .running else { return }
-                    playHoldCue(at: intervalEnd.addingTimeInterval(-TetherTiming.holdCueLead))
                 }
 
                 cellStates[cellIndex] = .exposing
                 markNext(after: cellIndex)
+                playCaptureCue()
                 try await camera.release()
-                playMoveCue()
                 try await camera.waitForExposureEnd()
+                playMoveCue()
 
-                if position + 1 < pending.count {
-                    let intervalEnd = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
-                    try await waitForInterval(end: intervalEnd)
-                    playHoldCue(at: intervalEnd.addingTimeInterval(-TetherTiming.holdCueLead))
-                }
+                // The interval runs from the end of the exposure and the
+                // download happens inside it (TETHER_PLAN §3.2), so the next
+                // release — and its beep — lands on the interval's end
+                // rather than a download later.
+                let intervalEnd: Date? = position + 1 < pending.count
+                    ? clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
+                    : nil
 
                 cellStates[cellIndex] = .downloading
                 let url = try CaptureNaming.exclusiveURL(
@@ -441,6 +445,10 @@ final class CaptureSessionModel {
                 // Not added to handlesBefore: the download cleared the handle,
                 // and the Z f reuses the lowest free one for the next frame.
                 analyzeFrame(url, cellIndex: cellIndex)
+
+                if let intervalEnd {
+                    try await waitForInterval(end: intervalEnd)
+                }
             } catch {
                 cellStates[cellIndex] = .failed(error.localizedDescription)
                 sequencePhase = .paused
@@ -474,17 +482,32 @@ final class CaptureSessionModel {
     var onNegativeCompleted: ((CompletedNegative) -> Void)?
     var onSessionClosed: (() -> Void)?
 
+    /// Waits until `end`, ticking the countdown beeps at 3, 2 and 1 seconds
+    /// before it. The beep at 0 is `playCaptureCue`, played on the release.
     private func waitForInterval(end: Date) async throws {
+        let total = end.timeIntervalSince(clock.now())
+        var pendingTicks = CaptureCues.countdownSeconds.filter { Double($0) < total }
         while clock.now() < end {
             if sequencePhase == .paused { return }
+            var remaining = end.timeIntervalSince(clock.now())
+            while let seconds = pendingTicks.first, remaining <= Double(seconds) + 0.005 {
+                pendingTicks.removeFirst()
+                playCountdownTick()
+            }
+            remaining = end.timeIntervalSince(clock.now())
             if case .downloading = cellStates.first(where: { if case .downloading = $0 { true } else { false } }) {
                 countdownText = "waiting for download"
                 try await clock.sleep(until: clock.now().addingTimeInterval(0.1))
                 continue
             }
-            let remaining = end.timeIntervalSince(clock.now())
             countdownText = String(format: "%.1f s", max(0, remaining))
-            try await clock.sleep(until: min(end, clock.now().addingTimeInterval(0.1)))
+            // Wake exactly on the next beep so the rhythm doesn't jitter
+            // with the 0.1 s display refresh.
+            var wake = min(end, clock.now().addingTimeInterval(0.1))
+            if let seconds = pendingTicks.first {
+                wake = min(wake, end.addingTimeInterval(-Double(seconds)))
+            }
+            try await clock.sleep(until: wake)
         }
         countdownText = ""
     }
@@ -494,9 +517,14 @@ final class CaptureSessionModel {
         NSSound(named: "Tink")?.play()
     }
 
-    private func playHoldCue(at _: Date) {
+    private func playCountdownTick() {
         guard cuesEnabled else { return }
-        NSSound(named: "Pop")?.play()
+        CaptureCues.playTick()
+    }
+
+    private func playCaptureCue() {
+        guard cuesEnabled else { return }
+        CaptureCues.playCapture()
     }
 
     private func pauseAfterCurrentShot() {
@@ -705,10 +733,18 @@ final class CaptureSessionModel {
         focusAssist.updateSequencePhase(sequencePhase)
     }
 
+    /// Applying a grid must never disturb a negative in progress: roll
+    /// syncs re-apply the same grid whenever the library rescans (each
+    /// background stitch publishing triggers one), and resetting the cells
+    /// mid-sequence dropped the frames already shot from the negative.
     func applyGridDimensions(from profile: GridProfile) {
+        guard sequencePhase == .idle else { return }
+        let changed = across != profile.across || down != profile.down
         down = profile.down
         across = profile.across
-        resetCells()
+        if changed || cellStates.count != perNegative {
+            resetCells()
+        }
     }
 
     /// Applies one saved grid preset when the sequence is idle.

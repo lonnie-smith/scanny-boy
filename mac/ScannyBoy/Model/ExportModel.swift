@@ -65,7 +65,7 @@ final class ExportModel {
     /// The persisted downsampling choice.
     @ObservationIgnored static let downsampleLongEdgeKey = "exportDownsampleLongEdge"
 
-    init(runner: CLIRunner, defaults: UserDefaults = .standard) {
+    init(runner: CLIRunner, defaults: UserDefaults = AppEnvironment.defaults) {
         self.runner = runner
         self.defaults = defaults
         self.downsampleLongEdge = defaults.object(forKey: Self.downsampleLongEdgeKey) == nil
@@ -92,9 +92,9 @@ final class ExportModel {
         }
         switch outcome {
         case .success:
-            return "Exported \(exportedNegatives.count) negative(s) to the chosen folder."
+            return "Exported \(Pluralize.count(exportedNegatives.count, "negative")) to the chosen folder."
         case .failure:
-            return "Exported \(exportedNegatives.count) negative(s) with warnings; check the list above."
+            return "Exported \(Pluralize.count(exportedNegatives.count, "negative")) with warnings; check the list above."
         case .cancelled, .usageError, .terminatedBySignal:
             return "The export did not finish."
         }

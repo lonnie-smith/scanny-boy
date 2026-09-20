@@ -1227,8 +1227,12 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         # TIFF's own dimensions — a re-stitch invalidates the window, and
         # the report degrades to none rather than describing pixels the
         # display no longer shows.
-        output_width = negative.get("output", {}).get("width")
-        output_height = negative.get("output", {}).get("height")
+        # A failed negative carries `output: None` (the key is present), so
+        # `.get("output", {})` would hand back None and crash the whole
+        # `roll info` — hiding every other negative in the roll.
+        published_output = negative.get("output") or {}
+        output_width = published_output.get("width")
+        output_height = published_output.get("height")
         live_crop = (
             state.crop
             if previews.crop_is_live(state.crop, (output_height, output_width))
