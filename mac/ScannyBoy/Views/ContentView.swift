@@ -246,7 +246,7 @@ struct ContentView: View {
         } message: {
             if let count = selectedRoll?.negativeCount {
                 Text(
-                    "This roll already contains \(count) negative(s). "
+                    "This roll already contains \(Pluralize.count(count, "negative")). "
                         + "Add the new scans here, or create a new roll for them."
                 )
             }
@@ -387,6 +387,11 @@ struct ContentView: View {
                 model.receiveFlatFieldReference(flatField)
             }
         }
+        if capture.onFilmBaseAttached == nil {
+            capture.onFilmBaseAttached = { [model] filmBase in
+                model.receiveFilmBase(filmBase)
+            }
+        }
         if stitchQueue.onRollUpdated == nil {
             stitchQueue.onRollUpdated = { [edit, library] in
                 edit.refresh()
@@ -394,9 +399,10 @@ struct ContentView: View {
             }
         }
         if stitchQueue.onNegativePublished == nil {
-            stitchQueue.onNegativePublished = { [edit, library] in
+            stitchQueue.onNegativePublished = { [edit, library, model] in
                 edit.refresh()
                 library.scan()
+                model.refreshRollLocks()
             }
         }
     }
@@ -431,7 +437,9 @@ struct ContentView: View {
         [
             model.filmKind,
             model.filmBase?.sourceName,
+            model.filmBase?.lockedAt,
             model.flatField?.sourceName,
+            model.flatField?.lockedAt,
             model.rollGrid.map { "\($0.across)x\($0.down)" },
             model.rollIntervalSeconds.map(String.init),
         ]
@@ -449,6 +457,9 @@ struct ContentView: View {
         // carry over a different roll's pick. Dimensions alone can't drive
         // `gridProfileID` (it needs a profile id), so this only applies
         // when a profile with matching dimensions still exists.
+        // Not while a negative is being shot: the grid and interval are
+        // fixed for its duration, and this runs on every roll rescan.
+        guard capture.sequencePhase == .idle else { return }
         if let rollGrid = model.rollGrid,
            let profile = grid.profiles.first(where: {
                $0.across == rollGrid.across && $0.down == rollGrid.down

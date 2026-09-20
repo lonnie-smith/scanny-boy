@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -761,6 +762,38 @@ def _claimed_output_names(
     return claimed - (adoptable or set())
 
 
+# A tethered capture's frames are `<yyyymmdd-HHMMSS>_<shot>.NEF`; the `_<shot>`
+# is the frame's place *within* its negative, so every negative's first frame
+# ends `_01` and the plain stem rule would publish them all as `..._01.tif`.
+_TETHERED_MEMBER_STEM = re.compile(r"^(?P<stamp>\d{8}-\d{6}(?:-\d+)?)_\d{2}$")
+_TETHERED_OUTPUT_NAME = re.compile(
+    r"^\d{8}-\d{6}(?:-\d+)?_(?P<number>\d+)(?:-\d+)?\.tif$"
+)
+
+
+def _tethered_output_stem(
+    manifest: RollManifest, first_member: str, negative_id: str
+) -> str | None:
+    """For a tethered capture's group, `<stamp>_<NN>` where `NN` runs through
+    the roll's negatives in the order they are first published (01, 02, …);
+    `None` for any other source name, which keeps the plain stem rule.
+
+    A negative that already holds such a name keeps it, so asking again for
+    the same `negative_id` gives the same answer."""
+    match = _TETHERED_MEMBER_STEM.match(Path(first_member).stem)
+    if match is None:
+        return None
+    numbers: list[int] = []
+    for negative in manifest.negatives:
+        named = _TETHERED_OUTPUT_NAME.match(negative.expected_output)
+        if named is None:
+            continue
+        if negative.negative_id == negative_id:
+            return Path(negative.expected_output).stem
+        numbers.append(int(named.group("number")))
+    return f"{match.group('stamp')}_{max(numbers, default=0) + 1:02d}"
+
+
 def allocate_output_name(
     manifest: RollManifest,
     first_member: str,
@@ -779,7 +812,9 @@ def allocate_output_name(
     rather than re-allocating.
     """
     claimed = _claimed_output_names(manifest, negative_id, adoptable)
-    stem = Path(first_member).stem
+    stem = _tethered_output_stem(manifest, first_member, negative_id) or Path(
+        first_member
+    ).stem
     candidate = f"{stem}.tif"
     suffix = 1
     while candidate in claimed:

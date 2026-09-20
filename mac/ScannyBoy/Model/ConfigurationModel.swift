@@ -209,7 +209,7 @@ final class ConfigurationModel {
     @ObservationIgnored private var catalogueTask: Task<Void, Never>?
     @ObservationIgnored private var validationTask: Task<Void, Never>?
 
-    init(runner: CLIRunner, defaults: UserDefaults = .standard) {
+    init(runner: CLIRunner, defaults: UserDefaults = AppEnvironment.defaults) {
         self.runner = runner
         self.defaults = defaults
         inputFolder = Self.loadURL(forKey: Self.lastInputFolderKey, in: defaults)
@@ -391,6 +391,33 @@ final class ConfigurationModel {
     func receiveFlatFieldReference(_ reference: FlatFieldReference) {
         flatField = reference
         flatFieldReferenceError = nil
+    }
+
+    /// Called when the Capture tab attaches a base frame, for the same
+    /// reason as `receiveFlatFieldReference`: otherwise this model's stale
+    /// (nil) `filmBase` is copied back over Capture's on the next roll sync.
+    func receiveFilmBase(_ filmBase: FilmBase) {
+        self.filmBase = filmBase
+        baseFrameError = nil
+    }
+
+    /// Re-reads the lock state after a stitch publishes: the roll's first
+    /// published negative locks the base frame, bare-light reference and
+    /// film kind on disk, and none of this model's copies would otherwise
+    /// learn of it until the roll is reselected. Unlike `startRollFetch`
+    /// this keeps the current values on screen while it reads, and it leaves
+    /// the editable setup (grid, interval, format) alone.
+    func refreshRollLocks() {
+        Task { await reloadRollLocks() }
+    }
+
+    func reloadRollLocks() async {
+        guard let rollURL else { return }
+        let setup = await Self.fetchRollSetup(runner: runner, roll: rollURL)
+        guard self.rollURL == rollURL else { return }
+        if let filmBase = setup.filmBase { self.filmBase = filmBase }
+        if let flatField = setup.flatField { self.flatField = flatField }
+        if setup.filmKindLocked { filmKindLocked = true }
     }
 
     private func startRollFetch() {

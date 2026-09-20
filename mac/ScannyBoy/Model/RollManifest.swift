@@ -772,7 +772,7 @@ enum RollManifestReport: Sendable, Hashable {
     var summary: String {
         switch self {
         case .final(let manifest):
-            "The roll now holds \(manifest.negatives.count) negative(s)."
+            "The roll now holds \(Pluralize.count(manifest.negatives.count, "negative"))."
         case .cleanupIncomplete:
             """
             Cleanup did not finish: this run is still marked running in the \

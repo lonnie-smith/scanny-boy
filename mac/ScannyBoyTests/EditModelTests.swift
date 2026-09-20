@@ -706,6 +706,30 @@ struct EditModelTests {
         )
     }
 
+    /// A failed stitch is stored with `output: null`. The roll must still
+    /// decode — one failed negative may not hide every other negative.
+    func testRollWithAFailedNegativeStillDecodes() throws {
+        let manifestJSON = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z",\
+        "updated_at":"2026-01-01T00:00:00Z","runs":[],"metadata":{},\
+        "negatives":[\
+        {"negative_id":"ok","run_id":"r","members":["a.NEF"],"sequence":1,\
+        "expected_output":"ok.tif","status":"completed","capture_time":{},\
+        "output":{"name":"ok.tif","size":1,"sha256":"x","width":10,"height":10}},\
+        {"negative_id":"bad","run_id":"r","members":["b.NEF"],"sequence":null,\
+        "expected_output":"bad.tif","status":"failed","capture_time":{},\
+        "output":null,"crop":null,"frames":[],"error_code":"STITCH_FAILED",\
+        "error_message":"boom"}]}
+        """
+        let fields = try #require(
+            try JSONDecoder().decode(JSONValue.self, from: Data(manifestJSON.utf8)).objectValue
+        )
+        let manifest = try #require(RollManifest(fields: fields))
+        #expect(manifest.negatives.map(\.negativeID) == ["ok", "bad"])
+        #expect(manifest.negatives[1].output == nil)
+        #expect(manifest.negatives[1].errorCode == "STITCH_FAILED")
+    }
+
     @Test("A roll info payload without highlight cast removal defaults to zero")
     func testColorAdjustmentDefaultsMissingHighlightCastRemoval() throws {
         let manifestJSON = """

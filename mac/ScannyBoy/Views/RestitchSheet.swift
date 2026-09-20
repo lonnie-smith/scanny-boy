@@ -95,7 +95,7 @@ struct RestitchSheet: View {
             // Suggests the last profile used anywhere in the app, the same
             // default Add Scans seeds itself from — not persisted back, so
             // choosing differently here does not change that default.
-            rigProfileID = UserDefaults.standard.string(
+            rigProfileID = AppEnvironment.defaults.string(
                 forKey: ConfigurationModel.lastRigProfileKey
             )
         }

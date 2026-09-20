@@ -24,9 +24,6 @@ enum TetherTiming {
     /// First buffer handle the Z f uses once numbering restarts.
     static let bufferScanFirst: UInt32 = 0x0B00_0001
 
-    /// Audible hold cue lead time before the next release.
-    static let holdCueLead: TimeInterval = 1.0
-
     /// Computes the exposure timeout from a shutter speed in PTP units
     /// (seconds × 10_000; `0xFFFF_FFFF` = bulb).
     static func exposureTimeout(shutterPTP: UInt32) -> Duration {

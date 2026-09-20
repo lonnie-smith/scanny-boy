@@ -329,6 +329,50 @@ struct ConfigurationModelTests {
         #expect(model.rollError == nil)
     }
 
+    @Test("reloadRollLocks picks up locks written after the roll was selected")
+    func reloadRollLocksPicksUpNewLocks() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let lockedMarker = directory.appending(path: ".locked").path
+        let lockedBase = Self.attachedFilmBaseJSON()
+            .replacingOccurrences(of: #""locked_at":null"#, with: #""locked_at":"2026-09-20T20:00:00Z""#)
+        let lockedFlat = Self.attachedFlatFieldJSON()
+            .replacingOccurrences(of: #""locked_at":null"#, with: #""locked_at":"2026-09-20T20:00:00Z""#)
+        let lockedInfo = Self.rollInfoEvent(filmBaseJSON: lockedBase, flatFieldJSON: lockedFlat)
+            .replacingOccurrences(of: #""runs":[]"#, with: #""runs":[{"run_id":"r1","status":"complete"}]"#)
+        let script = """
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              echo '\(Self.started)'
+              if [ -f '\(lockedMarker)' ]; then
+                echo '\(lockedInfo)'
+              else
+                echo '\(Self.rollInfoEvent(filmBaseJSON: Self.attachedFilmBaseJSON()))'
+              fi
+              echo '\(Self.finishedSuccess)'
+              exit 0
+            fi
+            exit 0
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        await model.reloadRollLocks()
+        #expect(model.filmBase?.lockedAt == nil)
+        #expect(model.flatField?.lockedAt == nil)
+        #expect(model.filmKindLocked == false)
+
+        FileManager.default.createFile(atPath: lockedMarker, contents: nil)
+        await model.reloadRollLocks()
+        #expect(model.filmBase?.lockedAt == "2026-09-20T20:00:00Z")
+        #expect(model.flatField?.lockedAt == "2026-09-20T20:00:00Z")
+        #expect(model.filmKindLocked == true)
+    }
+
     @Test("Run is disabled until a roll is selected, a grouping and a profile are chosen")
     func runDisabledUntilRollSelected() async throws {
         let directory = try Self.makeTemporaryDirectory()

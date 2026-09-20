@@ -785,7 +785,7 @@ struct RunModelTests {
         #expect(negative.height == 7917)
         #expect(abs(negative.globalRMS - 1.57) < 1e-9)
         #expect(abs(negative.maxOverlapMAD - 0.072) < 1e-9)
-        #expect(run.completionSummary == "Converted 1 negative(s).")
+        #expect(run.completionSummary == "Converted 1 negative.")
     }
 
     @Test("negative_failed events populate failedNegatives, not failedGroups")
@@ -816,7 +816,7 @@ struct RunModelTests {
         #expect(negative.groupID == "negative-02")
         #expect(negative.code == .stitchUnderconstrained)
         #expect(negative.message == "frames not reachable from 'a.tif'")
-        #expect(run.completionSummary == "The run finished with 1 failed negative(s).")
+        #expect(run.completionSummary == "The run finished with 1 failed negative.")
     }
 
     @Test("progress carries the stitch stage's name")
@@ -956,7 +956,7 @@ struct RunModelTests {
 
         #expect(run.manifestReport == nil)
         #expect(run.rollManifestReport != nil)
-        #expect(run.completionSummary == "Converted 1 negative(s).")
+        #expect(run.completionSummary == "Converted 1 negative.")
     }
 
     /// A re-stitch has no selection of files to turn a `source_index` back
@@ -1138,7 +1138,7 @@ struct RunModelTests {
         #expect(skipped.groupID == "negative-02")
         #expect(skipped.code == .outputModifiedExternally)
         #expect(skipped.message == "a.tif no longer matches the roll")
-        #expect(run.completionSummary == "Applied 1 negative(s); 1 skipped.")
+        #expect(run.completionSummary == "Applied 1 negative; 1 skipped.")
     }
 
     // MARK: - Result presentation: one row per negative
@@ -1404,7 +1404,7 @@ struct RunModelTests {
         #expect(report.contains("negative-02: failed"))
         #expect(report.contains("[STITCH_UNDERCONSTRAINED] frames not reachable from 'a.tif'"))
         #expect(report.contains("[FILENAME_SORT_USED] a catalogue file has no usable capture timestamp"))
-        #expect(report.contains("The run finished with 1 failed negative(s)."))
+        #expect(report.contains("The run finished with 1 failed negative."))
     }
 
     @Test("Skipped metadata lands as one skipped row with its code")
