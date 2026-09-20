@@ -124,9 +124,15 @@ def write_fake_nef(
     else:
         ifd0["tags"].pop(Tag.Orientation.value, None)
     if make is not None:
-        ifd0["tags"][Tag.Make.value] = {"data": make, "datatype": tifftools.Datatype.ASCII}
+        ifd0["tags"][Tag.Make.value] = {
+            "data": make,
+            "datatype": tifftools.Datatype.ASCII,
+        }
     if model is not None:
-        ifd0["tags"][Tag.Model.value] = {"data": model, "datatype": tifftools.Datatype.ASCII}
+        ifd0["tags"][Tag.Model.value] = {
+            "data": model,
+            "datatype": tifftools.Datatype.ASCII,
+        }
 
     tifftools.write_tiff(info, str(path))
     base.unlink()

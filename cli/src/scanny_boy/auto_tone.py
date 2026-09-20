@@ -1,5 +1,5 @@
-"""Auto Density and Auto Grade: closed-form tone solves from a negative's
-recorded normalization block. No image I/O, no metering pass."""
+"""Auto Density: closed-form tone solve from a negative's recorded
+normalization block. No image I/O, no metering pass."""
 
 from __future__ import annotations
 
@@ -10,28 +10,22 @@ ANCHOR_ASSUMED = 0.5
 ANCHOR_METER_STRENGTH = 0.2
 ANCHOR_METER_BAND = 0.12
 
-AUTO_GRADE_TARGET = 0.6
-AUTO_GRADE_STRENGTH = 0.5
-NOMINAL_RATIO = 2.0
-NOMINAL_RANGE = AUTO_GRADE_TARGET * NOMINAL_RATIO
-DEGENERATE_GRADE_RANGE = 3.5
-
 
 def _luma_bounds(
     normalization: dict, highlight_lock=None
 ) -> tuple[float, float, float] | None:
-    """The luma floor/ceil/span the two solves below measure against.
+    """The luma floor/ceil/span the solve below measures against.
 
     `highlight_lock` (docs/ROLL_HIGHLIGHT_LOCK.md), when it resolves and
     this is a 3-channel colour record, retargets `floors` to the roll's
     corrected dense-end colour before the luma weighting — the same
-    correction `color.read_metering` applies, so Auto Density/Auto Grade
-    solve against the density level the negative actually *displays*, not
-    the one its own (possibly scene-biased) per-negative meter found. The
-    shift is normally tiny: the correction is median-zero across channels
-    by construction, and Rec.709 luma weights are close to (but not
-    exactly) a plain mean, so a real per-channel retarget moves the
-    weighted sum only to the extent the weights are non-uniform."""
+    correction `color.read_metering` applies, so Auto Density solves
+    against the density level the negative actually *displays*, not the one
+    its own (possibly scene-biased) per-negative meter found. The shift is
+    normally tiny: the correction is median-zero across channels by
+    construction, and Rec.709 luma weights are close to (but not exactly) a
+    plain mean, so a real per-channel retarget moves the weighted sum only
+    to the extent the weights are non-uniform."""
     floors = normalization.get("floors")
     ceils = normalization.get("ceils")
     if not isinstance(floors, list) or not isinstance(ceils, list):
@@ -89,7 +83,11 @@ def solve_density(normalization: dict | None, highlight_lock=None) -> float | No
     if not normalization:
         return None
     anchor = normalization.get("anchor")
-    if anchor is None or isinstance(anchor, bool) or not isinstance(anchor, (int, float)):
+    if (
+        anchor is None
+        or isinstance(anchor, bool)
+        or not isinstance(anchor, (int, float))
+    ):
         return None
     bounds = _luma_bounds(normalization, highlight_lock)
     if bounds is None:
@@ -97,37 +95,12 @@ def solve_density(normalization: dict | None, highlight_lock=None) -> float | No
     luma_floor, _, span = bounds
     measured = max(0.0, min(1.0, (float(anchor) - luma_floor) / span))
     # Strength 0.2 and pivot shift 0.2 both 0.2 — coefficient is exactly 1.
-    density = tone.DENSITY_REFERENCE + ANCHOR_METER_STRENGTH * (
-        ANCHOR_ASSUMED - measured
-    ) / tone.DENSITY_PIVOT_SHIFT
+    density = (
+        tone.DENSITY_REFERENCE
+        + ANCHOR_METER_STRENGTH * (ANCHOR_ASSUMED - measured) / tone.DENSITY_PIVOT_SHIFT
+    )
     band = ANCHOR_METER_BAND / tone.DENSITY_PIVOT_SHIFT
-    density = max(tone.DENSITY_REFERENCE - band, min(tone.DENSITY_REFERENCE + band, density))
+    density = max(
+        tone.DENSITY_REFERENCE - band, min(tone.DENSITY_REFERENCE + band, density)
+    )
     return max(tone.DENSITY_MIN, min(tone.DENSITY_MAX, density))
-
-
-def solve_grade(normalization: dict | None, highlight_lock=None) -> float | None:
-    """Solve stored grade from the recorded textural range.
-
-    Targets the scan-start default (``NEUTRAL_GRADE_R``) on a nominal
-    negative, not the legacy R115 print reference."""
-    if not normalization:
-        return None
-    textural = normalization.get("textural_range")
-    if textural is None or isinstance(textural, bool) or not isinstance(
-        textural, (int, float)
-    ):
-        return None
-    bounds = _luma_bounds(normalization, highlight_lock)
-    if bounds is None:
-        return None
-    _, _, span = bounds
-    textural_abs = abs(float(textural))
-    if textural_abs < 1e-6:
-        effective = DEGENERATE_GRADE_RANGE
-    else:
-        ratio = span / textural_abs
-        effective = AUTO_GRADE_TARGET * (
-            NOMINAL_RATIO + AUTO_GRADE_STRENGTH * (ratio - NOMINAL_RATIO)
-        )
-    grade_r = tone.NEUTRAL_GRADE_R * NOMINAL_RANGE / effective
-    return max(tone.GRADE_MIN, min(tone.GRADE_MAX, grade_r))

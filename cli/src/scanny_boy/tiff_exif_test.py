@@ -98,7 +98,9 @@ def _exif_fields(**overrides) -> NestedExifFields:
     return NestedExifFields(**defaults)
 
 
-def _write_base(tmp_path: Path, pixels: np.ndarray | None = None, **tag_overrides) -> Path:
+def _write_base(
+    tmp_path: Path, pixels: np.ndarray | None = None, **tag_overrides
+) -> Path:
     base_path = tmp_path / "a.base.tif"
     if pixels is None:
         pixels = _gradient_pixels()
@@ -112,10 +114,19 @@ def _write_base(tmp_path: Path, pixels: np.ndarray | None = None, **tag_override
 def test_build_exif_tags_required_fields():
     tags = build_exif_tags(_exif_fields())
 
-    assert tags[EXPOSURE_TIME] == {"data": [1, 30], "datatype": tifftools.Datatype.RATIONAL}
+    assert tags[EXPOSURE_TIME] == {
+        "data": [1, 30],
+        "datatype": tifftools.Datatype.RATIONAL,
+    }
     assert tags[F_NUMBER] == {"data": [8, 1], "datatype": tifftools.Datatype.RATIONAL}
-    assert tags[PHOTOGRAPHIC_SENSITIVITY] == {"data": [100], "datatype": tifftools.Datatype.SHORT}
-    assert tags[FOCAL_LENGTH] == {"data": [55, 1], "datatype": tifftools.Datatype.RATIONAL}
+    assert tags[PHOTOGRAPHIC_SENSITIVITY] == {
+        "data": [100],
+        "datatype": tifftools.Datatype.SHORT,
+    }
+    assert tags[FOCAL_LENGTH] == {
+        "data": [55, 1],
+        "datatype": tifftools.Datatype.RATIONAL,
+    }
 
 
 def test_build_exif_tags_color_space_is_always_uncalibrated():
@@ -133,11 +144,16 @@ def test_build_exif_tags_date_time_original_and_subsec():
         "data": "2026:08:02 12:33:41",
         "datatype": tifftools.Datatype.ASCII,
     }
-    assert tags[SUBSEC_TIME_ORIGINAL] == {"data": "45", "datatype": tifftools.Datatype.ASCII}
+    assert tags[SUBSEC_TIME_ORIGINAL] == {
+        "data": "45",
+        "datatype": tifftools.Datatype.ASCII,
+    }
 
 
 def test_build_exif_tags_omits_subsec_on_the_second():
-    tags = build_exif_tags(_exif_fields(date_time_original=SYNTHETIC_TIME_ON_THE_SECOND))
+    tags = build_exif_tags(
+        _exif_fields(date_time_original=SYNTHETIC_TIME_ON_THE_SECOND)
+    )
     assert SUBSEC_TIME_ORIGINAL not in tags
 
 
@@ -157,13 +173,22 @@ def test_build_exif_tags_omits_optional_fields_when_absent(field, code):
 
 def test_build_exif_tags_includes_optional_fields_when_present():
     tags = build_exif_tags(_exif_fields())
-    assert tags[LENS_MODEL] == {"data": "55mm f/2.8", "datatype": tifftools.Datatype.ASCII}
+    assert tags[LENS_MODEL] == {
+        "data": "55mm f/2.8",
+        "datatype": tifftools.Datatype.ASCII,
+    }
     assert tags[DATE_TIME_DIGITIZED] == {
         "data": "2026:08:02 12:33:41",
         "datatype": tifftools.Datatype.ASCII,
     }
-    assert tags[SUBSEC_TIME_DIGITIZED] == {"data": "45", "datatype": tifftools.Datatype.ASCII}
-    assert tags[OFFSET_TIME_DIGITIZED] == {"data": "-05:00", "datatype": tifftools.Datatype.ASCII}
+    assert tags[SUBSEC_TIME_DIGITIZED] == {
+        "data": "45",
+        "datatype": tifftools.Datatype.ASCII,
+    }
+    assert tags[OFFSET_TIME_DIGITIZED] == {
+        "data": "-05:00",
+        "datatype": tifftools.Datatype.ASCII,
+    }
 
 
 # --- write_nested_exif / finalize_tiff: real TIFFs ----------------------
@@ -327,11 +352,17 @@ def test_repeated_runs_are_equal_excluding_conversion_time(tmp_path):
 
     with tifffile.TiffFile(final_1) as tf1, tifffile.TiffFile(final_2) as tf2:
         page_1, page_2 = tf1.pages[0], tf2.pages[0]
-        assert page_1.tags["ImageDescription"].value == page_2.tags["ImageDescription"].value
+        assert (
+            page_1.tags["ImageDescription"].value
+            == page_2.tags["ImageDescription"].value
+        )
         assert page_1.tags["Compression"].value == page_2.tags["Compression"].value
         assert page_1.tags["Predictor"].value == page_2.tags["Predictor"].value
         assert page_1.tags["Orientation"].value == page_2.tags["Orientation"].value
-        assert page_1.tags["InterColorProfile"].value == page_2.tags["InterColorProfile"].value
+        assert (
+            page_1.tags["InterColorProfile"].value
+            == page_2.tags["InterColorProfile"].value
+        )
         # DateTime (306) is the one documented volatile field.
         assert page_1.tags["DateTime"].value != page_2.tags["DateTime"].value
 

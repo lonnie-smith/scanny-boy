@@ -72,14 +72,19 @@ def test_solve_returns_none_for_malformed_input():
     assert auto_color.solve_cmy(None, color.ColorParams(), 1.55, 0.5) is None
     assert auto_color.solve_cmy({}, color.ColorParams(), 1.55, 0.5) is None
     record = _record([0.06, -0.03])
-    assert auto_color.solve_cmy(
-        {key: value for key, value in record.items() if key != "auto_neutral"},
-        color.ColorParams(),
-        1.55,
-        0.5,
-    ) is None
+    assert (
+        auto_color.solve_cmy(
+            {key: value for key, value in record.items() if key != "auto_neutral"},
+            color.ColorParams(),
+            1.55,
+            0.5,
+        )
+        is None
+    )
     for bad in ([0.06], [0.06, -0.03, 0.0], ["0.06", -0.03], [True, -0.03]):
-        assert auto_color.solve_cmy(_record(bad), color.ColorParams(), 1.55, 0.5) is None
+        assert (
+            auto_color.solve_cmy(_record(bad), color.ColorParams(), 1.55, 0.5) is None
+        )
 
 
 def test_solve_returns_none_for_a_non_finite_residual():

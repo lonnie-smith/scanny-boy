@@ -91,7 +91,10 @@ def _region_focus_ratios(green: np.ndarray) -> list[float | None]:
                 + patch[1:-1, 2:]
             )
             high = float(np.mean(lap * lap))
-            mid = float(np.mean(np.abs(np.diff(patch, axis=0))) + np.mean(np.abs(np.diff(patch, axis=1))))
+            mid = float(
+                np.mean(np.abs(np.diff(patch, axis=0)))
+                + np.mean(np.abs(np.diff(patch, axis=1)))
+            )
             mid = max(mid, 1e-8)
             ratios.append(high / mid)
     return ratios
@@ -119,11 +122,7 @@ def analyze_frame(
     green = linear[..., 1]
     focus_regions = _region_focus_ratios(green)
 
-    baseline_values = [
-        value
-        for value in (baseline_ratios or [])
-        if value is not None
-    ]
+    baseline_values = [value for value in (baseline_ratios or []) if value is not None]
     region_values = [value for value in focus_regions if value is not None]
     focus_relative: float | None = None
     focus_spread: float | None = None
@@ -132,7 +131,9 @@ def analyze_frame(
         frame_median = float(np.median(region_values))
         if baseline_median > 0:
             focus_relative = frame_median / baseline_median
-            focus_spread = float(np.max(region_values) - np.min(region_values)) / baseline_median
+            focus_spread = (
+                float(np.max(region_values) - np.min(region_values)) / baseline_median
+            )
 
     warnings: list[str] = []
     if any(fraction > SCAN_CLIP_WARN for fraction in clip_fractions):

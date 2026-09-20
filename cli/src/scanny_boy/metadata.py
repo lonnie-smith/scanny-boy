@@ -63,11 +63,14 @@ class SourceSettings:
     # way). Recorded data for the export path's
     # colour matrix; the decode never uses it. `None` when LibRaw reports
     # no usable matrix (or an all-zero one).
-    rgb_xyz_matrix: tuple[
-        tuple[float, float, float],
-        tuple[float, float, float],
-        tuple[float, float, float],
-    ] | None = None
+    rgb_xyz_matrix: (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ) = None
 
 
 @dataclasses.dataclass(frozen=True)

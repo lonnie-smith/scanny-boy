@@ -19,7 +19,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// stitching (the `--grid AxD` flag on `probe`, `prepare`, and `run`,
     /// the `INVALID_GRID` error code) and the preview's
     /// nondestructive tone adjustment (the `edit tone` command and the
-    /// `tone_grade_r`/`tone_snap_gamma` fields in the roll manifest).
+    /// `tone_snap_gamma` fields in the roll manifest).
     /// Protocol 17 retires `STITCH_GRID_ORDER_UNEXPECTED`.
     /// Protocol 15 retires the film-kind auto-detector: `--film-kind` is
     /// required on `roll init` only; `run`/`stitch` read `film.kind` from
@@ -65,7 +65,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
     /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 22
+    public static let supportedProtocolVersion = 23
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -112,6 +112,7 @@ public struct CLIEvent: Sendable, Hashable {
         case gridDeleted
         case spotsReported
         case scratchesReported
+        case cropSuggested
         case baseFrameSet
         case frameAnalyzed
         case captureChecked
@@ -158,6 +159,7 @@ public struct CLIEvent: Sendable, Hashable {
             case "grid_deleted": self = .gridDeleted
             case "spots_reported": self = .spotsReported
             case "scratches_reported": self = .scratchesReported
+            case "crop_suggested": self = .cropSuggested
             case "base_frame_set": self = .baseFrameSet
             case "frame_analyzed": self = .frameAnalyzed
             case "capture_checked": self = .captureChecked
@@ -204,6 +206,7 @@ public struct CLIEvent: Sendable, Hashable {
             case .gridDeleted: "grid_deleted"
             case .spotsReported: "spots_reported"
             case .scratchesReported: "scratches_reported"
+            case .cropSuggested: "crop_suggested"
             case .baseFrameSet: "base_frame_set"
             case .frameAnalyzed: "frame_analyzed"
             case .captureChecked: "capture_checked"
@@ -372,28 +375,20 @@ extension CLIEvent {
     }
 
     /// The recorded op's tone params, when it is a `tone` op: its `params`
-    /// always name both `grade_r` and `snap_gamma` (explicit nulls for the
-    /// reset to the default scan-start curve). The geometric ops carry no tone keys, so
+    /// always name all four user keys (explicit nulls for the reset to the
+    /// default scan-start curve). The geometric ops carry no tone keys, so
     /// `nil` here means "the negative's tone state is untouched".
     public var recordedTone: ToneAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
-            case .some = params["grade_r"]
+            case .some = params["snap_gamma"]
         else { return nil }
-        guard let gradeR = params["grade_r"]?.doubleValue,
-            let snapGamma = params["snap_gamma"]?.doubleValue
-        else { return .some(nil) }
+        guard let snapGamma = params["snap_gamma"]?.doubleValue else { return .some(nil) }
         return .some(
             ToneAdjustment(
-                gradeR: gradeR,
                 snapGamma: snapGamma,
                 density: params["density"]?.doubleValue ?? ToneAdjustment.neutral.density,
                 shadowDensity: params["shadow_density"]?.doubleValue ?? 0,
-                highlightDensity: params["highlight_density"]?.doubleValue ?? 0,
-                toe: params["toe"]?.doubleValue ?? 0,
-                toeWidth: params["toe_width"]?.doubleValue ?? ToneAdjustment.neutral.toeWidth,
-                shoulder: params["shoulder"]?.doubleValue ?? 0,
-                shoulderWidth: params["shoulder_width"]?.doubleValue
-                    ?? ToneAdjustment.neutral.shoulderWidth
+                highlightDensity: params["highlight_density"]?.doubleValue ?? 0
             )
         )
     }
@@ -650,6 +645,8 @@ public enum CLICode: Sendable, Hashable {
     case captureDenseEndLow
     case captureFocusDrift
     case captureFocusTilt
+    case autoCropFailed
+    case autoCropNoFormat
     case internalError
     case unknown(String)
 
@@ -745,6 +742,8 @@ public enum CLICode: Sendable, Hashable {
         case "CAPTURE_DENSE_END_LOW": self = .captureDenseEndLow
         case "CAPTURE_FOCUS_DRIFT": self = .captureFocusDrift
         case "CAPTURE_FOCUS_TILT": self = .captureFocusTilt
+        case "AUTO_CROP_FAILED": self = .autoCropFailed
+        case "AUTO_CROP_NO_FORMAT": self = .autoCropNoFormat
         case "INTERNAL_ERROR": self = .internalError
         default: self = .unknown(name)
         }
@@ -842,6 +841,8 @@ public enum CLICode: Sendable, Hashable {
         case .captureDenseEndLow: "CAPTURE_DENSE_END_LOW"
         case .captureFocusDrift: "CAPTURE_FOCUS_DRIFT"
         case .captureFocusTilt: "CAPTURE_FOCUS_TILT"
+        case .autoCropFailed: "AUTO_CROP_FAILED"
+        case .autoCropNoFormat: "AUTO_CROP_NO_FORMAT"
         case .internalError: "INTERNAL_ERROR"
         case .unknown(let name): name
         }

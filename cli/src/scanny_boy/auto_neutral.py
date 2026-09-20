@@ -45,7 +45,9 @@ class AutoNeutralBands:
     highlight: tuple[float, float] | None
 
 
-def _bounds_from_metering(metering: color.Metering, record: dict) -> normalization.Bounds:
+def _bounds_from_metering(
+    metering: color.Metering, record: dict
+) -> normalization.Bounds:
     floors = record.get("floors")
     ceils = record.get("ceils")
     if not isinstance(floors, list) or not isinstance(ceils, list):
@@ -127,9 +129,7 @@ def _valid_rect_grid(
     valid_rect: tuple[int, int, int, int] | None, image_shape: tuple[int, int]
 ) -> np.ndarray:
     height, width = image_shape
-    block_rows, block_cols = normalization.analysis_grid_block_sizes(
-        (height, width, 3)
-    )
+    block_rows, block_cols = normalization.analysis_grid_block_sizes((height, width, 3))
     grid_rows = -(-height // block_rows)
     grid_cols = -(-width // block_cols)
     if valid_rect is None:
@@ -206,7 +206,9 @@ def measure_auto_neutral_from_image(
     norm = normalization.decode_normalized(image.astype(np.float64))
     for ch in range(3):
         norm[..., ch] = color.remap_dense_end(norm[..., ch], ch, metering)
-    grid_log = normalization.block_median_grid(_norm_to_log_grid(norm, metering, record))
+    grid_log = normalization.block_median_grid(
+        _norm_to_log_grid(norm, metering, record)
+    )
 
     keep = _valid_rect_grid(valid_rect, (image.shape[0], image.shape[1]))
     keep, _opaque = normalization.withhold_opaque(grid_log, keep)
@@ -283,7 +285,10 @@ def read_auto_neutral(record: dict | None) -> AutoNeutralBands | None:
         value = block.get(key)
         if not isinstance(value, list) or len(value) != 2:
             return None
-        if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        if any(
+            isinstance(item, bool) or not isinstance(item, (int, float))
+            for item in value
+        ):
             return None
         try:
             a, b = (float(value[0]), float(value[1]))
@@ -300,9 +305,7 @@ def read_auto_neutral(record: dict | None) -> AutoNeutralBands | None:
     return AutoNeutralBands(shadow=shadow, highlight=highlight)
 
 
-def auto_neutral_lock_matches(
-    record: dict | None, highlight_lock
-) -> bool:
+def auto_neutral_lock_matches(record: dict | None, highlight_lock) -> bool:
     if not record:
         return False
     block = record.get("auto_neutral")

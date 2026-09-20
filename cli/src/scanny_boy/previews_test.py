@@ -136,8 +136,11 @@ def test_render_region_negative_mode_encodes_without_inversion(tmp_path):
     destination = tmp_path / "region.png"
     rect = render_region(
         tiff_path,
-        10, 5, 20, 12,
-        tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+        10,
+        5,
+        20,
+        12,
+        tone_params={"snap_gamma": 0.3},
         destination=destination,
         mode="negative",
     )
@@ -185,9 +188,7 @@ def test_render_preview_matches_the_display_encode_and_folds_the_transform(tmp_p
         display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
         assert (width, height) == (display.shape[1], display.shape[0])
         stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-        expected = cv2.cvtColor(
-            _default_positive_display(display), cv2.COLOR_RGB2BGR
-        )
+        expected = cv2.cvtColor(_default_positive_display(display), cv2.COLOR_RGB2BGR)
         np.testing.assert_array_equal(stored, expected)
 
     for quarter_turns in range(4):
@@ -201,9 +202,7 @@ def test_render_preview_matches_the_display_encode_and_folds_the_transform(tmp_p
         display = np.ascontiguousarray(np.rot90(image, k=(-quarter_turns) % 4))
         assert (width, height) == (display.shape[1], display.shape[0])
         stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-        expected = cv2.cvtColor(
-            NEGATIVE_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR
-        )
+        expected = cv2.cvtColor(NEGATIVE_DISPLAY_LUT[display], cv2.COLOR_RGB2BGR)
         np.testing.assert_array_equal(stored, expected)
 
 
@@ -219,7 +218,9 @@ def test_render_preview_downscales_to_the_max_edge(tmp_path):
         render_preview,
     )
 
-    image = (np.arange(1400 * 1000 * 3, dtype=np.uint16).reshape(1400, 1000, 3) * 137) % 60000
+    image = (
+        np.arange(1400 * 1000 * 3, dtype=np.uint16).reshape(1400, 1000, 3) * 137
+    ) % 60000
     tiff_path = _write_published_tiff(tmp_path, image)
 
     destination = tmp_path / "preview.png"
@@ -396,19 +397,13 @@ def test_ensure_preview_regenerates_on_a_tone_op(tmp_path):
     image = (image * 3000).astype(np.uint16)
     roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
 
-
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
     params = {
-        "grade_r": 70.0,
         "snap_gamma": 0.3,
         "density": tone.DENSITY_REFERENCE,
         "shadow_density": 0.0,
         "highlight_density": 0.0,
-        "toe": 0.0,
-        "toe_width": tone.WIDTH_REFERENCE,
-        "shoulder": 0.0,
-        "shoulder_width": tone.WIDTH_REFERENCE,
     }
     repo.append_tone_edit(roll_dir, negative.negative_id, params)
     # The same canonical path is rewritten in place.
@@ -436,7 +431,10 @@ def test_ensure_preview_regenerates_on_a_color_op(tmp_path):
 
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
-    params = dataclasses.asdict(color.NEUTRAL_COLOR) | {"wb_cyan": 0.2, "wb_magenta": 0.1}
+    params = dataclasses.asdict(color.NEUTRAL_COLOR) | {
+        "wb_cyan": 0.2,
+        "wb_magenta": 0.1,
+    }
     repo.append_color_edit(roll_dir, negative.negative_id, params)
     coloured = previews.ensure_preview(roll_dir, "rid-1", negative, repo.COLOR_OP)
 
@@ -537,7 +535,12 @@ def test_render_region_matches_full_decode_for_every_quarter_turn(tmp_path):
             destination = tmp_path / "region.png"
             rect = render_region(
                 tiff_path,
-                x, y, w, h, quarter_turns=quarter_turns, destination=destination,
+                x,
+                y,
+                w,
+                h,
+                quarter_turns=quarter_turns,
+                destination=destination,
             )
             rx, ry, rw, rh = rect
             assert (rx, ry, rw, rh) == (x, y, w, h)
@@ -569,7 +572,10 @@ def test_render_region_folds_in_the_fine_rotation(tmp_path):
         destination = tmp_path / "region.png"
         rect = render_region(
             tiff_path,
-            x, y, w, h,
+            x,
+            y,
+            w,
+            h,
             fine_angle_deg=30.0,
             destination=destination,
         )
@@ -793,8 +799,9 @@ def test_generate_preview_with_a_repair_differs_only_near_the_spot(tmp_path):
     image[12:15, 10:14] = image[12:15, 10:14] // 2  # a planted dark blob
     roll_dir, _manifest, negative = _roll_with_published_negative(tmp_path, image)
 
-    plain = cv2.imread(str(generate_preview(roll_dir, "rid-1", negative)),
-                       cv2.IMREAD_UNCHANGED)
+    plain = cv2.imread(
+        str(generate_preview(roll_dir, "rid-1", negative)), cv2.IMREAD_UNCHANGED
+    )
     repaired_path = generate_preview(
         roll_dir,
         "rid-1",
@@ -818,7 +825,9 @@ def test_generate_preview_with_a_repair_differs_only_near_the_spot(tmp_path):
     assert xs.max() <= 14 + pad
 
 
-def test_render_region_takes_the_exact_path_when_a_repair_is_live(tmp_path, monkeypatch):
+def test_render_region_takes_the_exact_path_when_a_repair_is_live(
+    tmp_path, monkeypatch
+):
     """Inpainting a crop uses different surroundings than inpainting the
     whole image, so a live repair must leave the strip-level fast path for
     the exact one — and the pixels must match a full decode + replay +
@@ -864,18 +873,17 @@ def test_ensure_preview_regenerates_on_a_spots_op(tmp_path):
 
     params = _spots_params_for(image, (10, 12, 4, 3), repair=True)
     repo.append_spots_edit(roll_dir, negative.negative_id, params)
-    preview = previews.ensure_preview(
-        roll_dir, "rid-1", negative, repo.SPOTS_OP
-    )
+    preview = previews.ensure_preview(roll_dir, "rid-1", negative, repo.SPOTS_OP)
 
     repaired_pixels = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
     assert not np.array_equal(flat_pixels, repaired_pixels)
     expected_path = previews.generate_preview(
         roll_dir, "rid-1", negative, spots_params=params
     )
-    assert repaired_pixels.tobytes() == cv2.imread(
-        str(expected_path), cv2.IMREAD_UNCHANGED
-    ).tobytes()
+    assert (
+        repaired_pixels.tobytes()
+        == cv2.imread(str(expected_path), cv2.IMREAD_UNCHANGED).tobytes()
+    )
 
     # Rejection is a decision, not a disappearance: with every spot
     # rejected the preview returns to its pre-repair bytes.
@@ -934,7 +942,7 @@ def test_preview_cache_hits_across_tone_changes(tmp_path):
         previews.render_preview(
             tiff_path,
             tmp_path / "graded.png",
-            tone_params={"grade_r": 160.0, "snap_gamma": 0.3},
+            tone_params={"snap_gamma": 0.3},
             mode="positive",
         )
     finally:
@@ -1037,18 +1045,25 @@ def test_preview_cache_is_bounded_by_total_bytes(tmp_path, monkeypatch):
     monkeypatch.setattr(previews, "PREVIEW_CACHE_MAX_BYTES", 1)
     for index in range(4):
         image = (
-            np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * (index + 1) * 137
+            np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3)
+            * (index + 1)
+            * 137
         ) % 60000
         roll = tmp_path / f"roll-{index}"
         roll.mkdir()
         tiff_path = _write_published_tiff(roll, image)
-        previews.render_preview(tiff_path, tmp_path / f"out-{index}.png", mode="negative")
+        previews.render_preview(
+            tiff_path, tmp_path / f"out-{index}.png", mode="negative"
+        )
 
     # Total bytes bound the cache; the newest entry always survives (the
     # eviction never empties it), so the steady state is exactly that one
     # entry and nothing else.
     assert len(previews._DISPLAY_PREVIEW_CACHE) == 1
-    (_, kept,) = previews._DISPLAY_PREVIEW_CACHE.popitem()
+    (
+        _,
+        kept,
+    ) = previews._DISPLAY_PREVIEW_CACHE.popitem()
     assert kept.nbytes == previews._DISPLAY_PREVIEW_CACHE_BYTES
 
 
@@ -1073,7 +1088,13 @@ def test_display_image_cache_hits_on_second_render_region(tmp_path, monkeypatch)
             tiff_path, 0, 0, 10, 10, fine_angle_deg=1.0, destination=tmp_path / "a.rgba"
         )
         previews.render_region(
-            tiff_path, 12, 0, 10, 10, fine_angle_deg=1.0, destination=tmp_path / "b.rgba"
+            tiff_path,
+            12,
+            0,
+            10,
+            10,
+            fine_angle_deg=1.0,
+            destination=tmp_path / "b.rgba",
         )
     finally:
         previews._display_image = real_decode
@@ -1089,9 +1110,7 @@ def test_render_region_raw_cache_matches_png(tmp_path):
     tiff_path = _write_published_tiff(tmp_path, image)
     png_path = tmp_path / "region.png"
     raw_path = tmp_path / "region.rgba"
-    rect = previews.render_region(
-        tiff_path, 10, 5, 20, 12, destination=png_path
-    )
+    rect = previews.render_region(tiff_path, 10, 5, 20, 12, destination=png_path)
     assert rect == (10, 5, 20, 12)
     previews.render_region(tiff_path, 10, 5, 20, 12, destination=raw_path)
 
@@ -1164,9 +1183,7 @@ def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, f
     assert tilt == 0.0
     # Odd net turns swap the sides: the TIFF-space window is the drawn
     # rect mapped back through the rotation.
-    assert (tw, th) == (
-        (rect[3], rect[2]) if quarter_turns % 2 else (rect[2], rect[3])
-    )
+    assert (tw, th) == ((rect[3], rect[2]) if quarter_turns % 2 else (rect[2], rect[3]))
 
     cropped = _display_image(
         tiff_path,
@@ -1178,9 +1195,7 @@ def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, f
     )
     assert cropped.shape[:2] == (rect[3], rect[2])
     uncropped = _display_image(tiff_path, quarter_turns, flipped)
-    expected = uncropped[
-        rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]
-    ]
+    expected = uncropped[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
     np.testing.assert_array_equal(cropped, expected)
 
 
@@ -1289,14 +1304,17 @@ def test_full_frame_crop_round_trips_through_rotation():
     x, y, w, h, tilt = window
     assert tilt == 0.0
 
-    assert previews.tiff_rect_to_display(
-        (x, y, w, h),
-        tiff_size,
-        quarter_turns=1,
-        flipped_horizontally=False,
-        fine_angle_deg=0.0,
-        crop_params=None,
-    ) == rect
+    assert (
+        previews.tiff_rect_to_display(
+            (x, y, w, h),
+            tiff_size,
+            quarter_turns=1,
+            flipped_horizontally=False,
+            fine_angle_deg=0.0,
+            crop_params=None,
+        )
+        == rect
+    )
 
 
 def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
@@ -1390,9 +1408,7 @@ def test_tilted_crop_replay_matches_drawn_tilt_under_a_fine_angle(tmp_path):
         _window_params(window, tiff_size),
     )
     assert cropped.shape[:2] == (rect[3], rect[2])
-    uncropped = _display_image(
-        tiff_path, quarter_turns, False, fine_angle_deg
-    )
+    uncropped = _display_image(tiff_path, quarter_turns, False, fine_angle_deg)
 
     centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
     matrix = cv2.getRotationMatrix2D(centre, -display_tilt, 1.0)
@@ -1570,9 +1586,7 @@ def test_apply_crop_ignores_a_stale_crop(tmp_path):
         "tilt_deg": 0.0,
     }
     assert not previews.crop_is_live(stale, image.shape[:2])
-    np.testing.assert_array_equal(
-        previews.apply_crop(image, stale), image
-    )
+    np.testing.assert_array_equal(previews.apply_crop(image, stale), image)
     np.testing.assert_array_equal(
         _display_image(tiff_path, 0, False, 0.0, None, stale),
         _display_image(tiff_path, 0, False),
@@ -1584,16 +1598,16 @@ def test_display_shape_and_crop_report_follow_the_crop_window():
 
     tiff_size = (200, 300)  # (height, width)
     crop = {"canvas": [300, 200], "x": 10, "y": 20, "w": 100, "h": 60, "tilt_deg": 3.0}
-    assert previews.display_shape(
-        tiff_size, quarter_turns=0, crop_params=crop
-    ) == (60, 100)
+    assert previews.display_shape(tiff_size, quarter_turns=0, crop_params=crop) == (
+        60,
+        100,
+    )
     # Odd net turns swap the cropped display's dimensions.
-    assert previews.display_shape(
-        tiff_size, quarter_turns=1, crop_params=crop
-    ) == (100, 60)
-    assert previews.crop_report(
-        crop, tiff_size, quarter_turns=1
-    ) == {
+    assert previews.display_shape(tiff_size, quarter_turns=1, crop_params=crop) == (
+        100,
+        60,
+    )
+    assert previews.crop_report(crop, tiff_size, quarter_turns=1) == {
         "width": 60,
         "height": 100,
         "tilt_deg": 3.0,
@@ -1603,9 +1617,7 @@ def test_display_shape_and_crop_report_follow_the_crop_window():
         "canvas_width": 200,
         "canvas_height": 300,
     }
-    assert (
-        previews.crop_report(None, tiff_size, quarter_turns=0) is None
-    )
+    assert previews.crop_report(None, tiff_size, quarter_turns=0) is None
 
 
 def test_render_region_works_in_cropped_display_space(tmp_path):

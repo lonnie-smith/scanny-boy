@@ -759,9 +759,7 @@ def _attempt_solve(
     return layout, frame_size, ca_maps
 
 
-def record_rectification(
-    record: NegativeRecord, rectification: Rectification
-) -> None:
+def record_rectification(record: NegativeRecord, rectification: Rectification) -> None:
     """The per-negative `rectification` manifest block: `l` in 1/px about
     `centre`, with the fit's own before/after diagnostics. Interpretable
     without a focal length, like the gauge rule requires."""
@@ -1049,6 +1047,7 @@ def run_stitch(
     negatives: list[str] | None = None,
     rig_profile_id: str | None = None,
     auto_rotate: bool = True,
+    auto_crop: bool = True,
     defer_roll_refresh: bool = False,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
@@ -1079,6 +1078,12 @@ def run_stitch(
     `auto_rotate` estimates: one `rotate_fine` ops-log entry per negative,
     emitted as `edit_recorded` — never an adopted negative, whose log (and
     any user edits) already reflects its first publish.
+
+    `auto_crop` (default on, `--no-auto-crop` to turn it off) seeds each
+    *newly published* negative with an automatic crop to the roll's film
+    format ratio, when the roll's ``setup.auto_crop`` is enabled and a
+    format is set. One `crop` ops-log entry per negative, emitted as
+    `edit_recorded`.
 
     Film kind is read from the roll manifest (set at `roll init`), not from
     a CLI flag.
@@ -1175,9 +1180,9 @@ def run_stitch(
         # film-kind-dependent
         # A mono roll seeds DENSITY_GREY, via
         # the roll's film kind set at init.
-        published_icc_profile_sha256=profile_record(
-            published_profile_kind(film_kind)
-        )["sha256"],
+        published_icc_profile_sha256=profile_record(published_profile_kind(film_kind))[
+            "sha256"
+        ],
         stitch_params=_stitch_params(profile),
     )
     try:
@@ -1265,6 +1270,23 @@ def run_stitch(
             "the roll's film-base reference was shot on a "
             f"{base_camera_model}, but this roll's scans were made on a "
             f"{roll_camera_model}; the measurement may still be fine",
+        )
+
+    # Read the roll's setup to decide whether to seed auto-crop.
+    setup = roll.setup or {}
+    roll_format = setup.get("format")
+    crop_enabled = auto_crop and bool(setup.get("auto_crop", False))
+    from scanny_boy.auto_crop import FORMAT_RATIOS
+
+    seed_crop = FORMAT_RATIOS.get(roll_format) if crop_enabled else None
+    if crop_enabled and roll_format is None:
+        emit(
+            WarningEvent(
+                run_id=run_id,
+                code=Code.AUTO_CROP_NO_FORMAT,
+                message="auto-crop is enabled but the roll has no format set; "
+                "set one with `roll set-setup --format`",
+            )
         )
 
     try:
@@ -1364,6 +1386,23 @@ def run_stitch(
             continue
 
         try:
+            # Determine whether to seed auto-crop for this negative.
+            negative_seed_crop = None
+            if seed_crop is not None:
+                if entry.record.negative_id in new_negative_ids:
+                    negative_seed_crop = seed_crop
+                else:
+                    # Adopted negative: reseed only if its latest crop is
+                    # still automatic.
+                    negative_edits = repo.edits_for(out_dir, entry.record.negative_id)
+                    latest_crop_source = None
+                    for edit in reversed(negative_edits):
+                        if edit["op"] == repo.CROP_OP:
+                            latest_crop_source = edit.get("params", {}).get("source")
+                            break
+                    if latest_crop_source == "auto":
+                        negative_seed_crop = seed_crop
+
             auto_edit_fields = _composite_and_publish(
                 work_dir=work_dir,
                 out_dir=out_dir,
@@ -1382,6 +1421,7 @@ def run_stitch(
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
                 ),
+                seed_crop=negative_seed_crop,
             )
         except CancelledError:
             cancelled = True
@@ -1410,8 +1450,8 @@ def run_stitch(
                     ceils=tuple(float(v) for v in block["ceils"]),
                 )
             )
-        if auto_edit_fields is not None:
-            auto_edits.append(auto_edit_fields)
+        if auto_edit_fields:
+            auto_edits.extend(auto_edit_fields)
 
     if cancelled:
         status = "cancelled"
@@ -1838,7 +1878,8 @@ def _composite_and_publish(
     sources_by_filename: dict | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
-) -> dict | None:
+    seed_crop: float | None = None,
+) -> list[dict]:
     """Composite one negative, apply the remaining gates, and stage-then-
     publish it atomically, exactly as Phase 1 publishes a group.
 
@@ -1852,9 +1893,16 @@ def _composite_and_publish(
     set to emit (minus the preview path, which `sync_previews` fills in
     later), or None when nothing was seeded.
 
-    The published TIFF itself is never rotated: the rotation is a
-    nondestructive ops-log entry, and its pixels are transformed only at
-    preview generation and export, exactly like a user's quarter turns."""
+    With `seed_crop` set to a format ratio, the composite also gets one
+    pass of `auto_crop.estimate_crop` and — when it finds a trustworthy
+    picture boundary — one `crop` ops-log entry is appended to the
+    negative, seeded as the auto edit.
+
+    The published TIFF itself is never rotated or cropped: the rotation
+    and crop are nondestructive ops-log entries, and their pixels are
+    transformed only at preview generation and export, exactly like a
+    user's quarter turns and crop.
+    """
     layout = entry.layout
     assert layout is not None
     record = entry.record
@@ -1960,10 +2008,7 @@ def _composite_and_publish(
                     ),
                 )
             )
-            if (
-                result.film_extent.region_fraction
-                < FILM_EXTENT_MIN_REGION_FRACTION
-            ):
+            if result.film_extent.region_fraction < FILM_EXTENT_MIN_REGION_FRACTION:
                 emit(
                     WarningEvent(
                         run_id=run_id,
@@ -2036,7 +2081,9 @@ def _composite_and_publish(
                 f"{MAX_OVERLAP_MAD}",
             )
 
-        exposure_matched = _exposure_matched(roll, entry.group.members, sources_by_filename)
+        exposure_matched = _exposure_matched(
+            roll, entry.group.members, sources_by_filename
+        )
         if exposure_matched is False:
             emit(
                 WarningEvent(
@@ -2065,6 +2112,53 @@ def _composite_and_publish(
         # are still in memory — the encoded image is exactly what previews
         # and exports will see, fill sentinel and all.
         auto_rotation_deg = estimate_rotation(result.image) if seed_rotation else None
+
+        # Auto-crop detection, measured on the composite while still in
+        # memory. The fine angle is the rotation that was just seeded (if
+        # any), since the crop is stored in TIFF space and the detector
+        # measures under the rotation it will be displayed under.
+        auto_crop_result = None
+        if seed_crop is not None:
+            try:
+                from scanny_boy import auto_crop as auto_crop_mod
+
+                seed_fine_angle = auto_rotation_deg or 0.0
+                analysis, scale = auto_crop_mod.analysis_display(
+                    result.image,
+                    quarter_turns=0,
+                    flipped=False,
+                    fine_angle_deg=seed_fine_angle,
+                )
+                height, width = result.image.shape[:2]
+                exclude = auto_crop_mod.exclusion_hint(
+                    record.normalization,
+                    (height, width),
+                    {
+                        "quarter_turns": 0,
+                        "flipped": False,
+                        "fine_angle_deg": seed_fine_angle,
+                    },
+                    scale,
+                    (analysis.shape[0], analysis.shape[1]),
+                )
+                auto_crop_result = auto_crop_mod.estimate_crop(
+                    analysis,
+                    full_size=(height, width),
+                    ratio=seed_crop,
+                    exclude=exclude,
+                )
+            except Exception:  # noqa: BLE001
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.AUTO_CROP_FAILED,
+                        message=(
+                            f"{record.negative_id}: auto-crop detection "
+                            "failed; the negative was published without "
+                            "automatic cropping"
+                        ),
+                    )
+                )
 
         # The roll records the capture time the negative's first frame
         # actually carries, which is exactly the value just read.
@@ -2095,9 +2189,7 @@ def _composite_and_publish(
             # film-kind-dependent — DENSITY_GREY on a mono roll — via
             # this run's decided (or already-frozen) film kind, exactly as
             # the invariant seed above.
-            icc_bytes=load_icc_profile(
-                published_profile_kind(film_kind)
-            ),
+            icc_bytes=load_icc_profile(published_profile_kind(film_kind)),
         )
         progress.advance(source_index, PipelineStep.WRITE_STITCHED)
 
@@ -2179,7 +2271,7 @@ def _composite_and_publish(
         # `running` manifest write merged it), the ops log entry lands
         # before `sync_previews` renders the net transform, and the
         # `edit_recorded` event is deferred until the preview path exists.
-        auto_edit_fields: dict | None = None
+        auto_edit_fields_list: list[dict] = []
         if auto_rotation_deg is not None:
             entry.auto_rotation_deg = auto_rotation_deg
             edit = repo.append_edit(
@@ -2194,29 +2286,100 @@ def _composite_and_publish(
                 state.flipped,
                 state.fine_angle_deg,
             )
-            auto_edit_fields = {
-                "negative_id": record.negative_id,
-                "edit": edit,
-                "rotation_quarter_turns": quarter_turns,
-                "flipped_horizontally": flipped,
-                "fine_rotation_deg": fine_angle,
-                # The net crop rides every edit_recorded as a full state
-                # report; a re-stitch whose canvas changed degrades it to
-                # none (`previews.crop_is_live`).
-                "crop": (
-                    previews.crop_report(
-                        state.crop
-                        if previews.crop_is_live(
-                            state.crop, (record.output["height"], record.output["width"])
+            auto_edit_fields_list.append(
+                {
+                    "negative_id": record.negative_id,
+                    "edit": edit,
+                    "rotation_quarter_turns": quarter_turns,
+                    "flipped_horizontally": flipped,
+                    "fine_rotation_deg": fine_angle,
+                    "crop": (
+                        previews.crop_report(
+                            state.crop
+                            if previews.crop_is_live(
+                                state.crop,
+                                (record.output["height"], record.output["width"]),
+                            )
+                            else None,
+                            (record.output["height"], record.output["width"]),
+                            quarter_turns=quarter_turns,
+                            flipped_horizontally=flipped,
+                            fine_angle_deg=fine_angle,
                         )
-                        else None,
-                        (record.output["height"], record.output["width"]),
-                        quarter_turns=quarter_turns,
-                        flipped_horizontally=flipped,
-                        fine_angle_deg=fine_angle,
-                    )
-                ),
-            }
+                    ),
+                }
+            )
+
+        # Seed the crop op after rotation.
+        if auto_crop_result is not None and hasattr(auto_crop_result, "rect"):
+            x, y, w, h = auto_crop_result.rect
+            # Map the display-space rect to TIFF space using the same
+            # function the app uses for re-entering crop mode.
+            state = repo.net_edit_state(out_dir, record.negative_id)
+            tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
+                (x, y, w, h),
+                (height, width),
+                tilt_deg=0.0,
+                quarter_turns=state.quarter_turns,
+                flipped_horizontally=state.flipped,
+                fine_angle_deg=state.fine_angle_deg,
+                crop_params=None,
+                full_frame=True,
+            )
+            tx = min(max(tx, 0), width - 1)
+            ty = min(max(ty, 0), height - 1)
+            tw = min(tw, width - tx)
+            th = min(th, height - ty)
+
+            roll_setup = roll.setup or {}
+            crop_preset = roll_setup.get("format")
+            crop_params = repo.validated_crop_params(
+                {
+                    "canvas": [width, height],
+                    "x": tx,
+                    "y": ty,
+                    "w": tw,
+                    "h": th,
+                    "tilt_deg": tilt,
+                    "preset": crop_preset,
+                    "source": "auto",
+                }
+            )
+            crop_edit = repo.append_edit(
+                out_dir,
+                record.negative_id,
+                repo.CROP_OP,
+                crop_params,
+            )
+            state = repo.net_edit_state(out_dir, record.negative_id)
+            quarter_turns, flipped, fine_angle = (
+                state.quarter_turns,
+                state.flipped,
+                state.fine_angle_deg,
+            )
+            auto_edit_fields_list.append(
+                {
+                    "negative_id": record.negative_id,
+                    "edit": crop_edit,
+                    "rotation_quarter_turns": quarter_turns,
+                    "flipped_horizontally": flipped,
+                    "fine_rotation_deg": fine_angle,
+                    "crop": (
+                        previews.crop_report(
+                            state.crop
+                            if previews.crop_is_live(
+                                state.crop,
+                                (record.output["height"], record.output["width"]),
+                            )
+                            else None,
+                            (record.output["height"], record.output["width"]),
+                            quarter_turns=quarter_turns,
+                            flipped_horizontally=flipped,
+                            fine_angle_deg=fine_angle,
+                        )
+                    ),
+                }
+            )
 
         emit(
             NegativeDone(
@@ -2229,6 +2392,6 @@ def _composite_and_publish(
                 max_overlap_mad=worst,
             )
         )
-        return auto_edit_fields
+        return auto_edit_fields_list
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

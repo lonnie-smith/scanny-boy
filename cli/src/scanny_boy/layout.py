@@ -602,7 +602,9 @@ def _refine_placements(
                 continue
             c = column[name]
             jac_rows += [x_rows, x_rows, x_rows, x_rows + 1, x_rows + 1, x_rows + 1]
-            jac_cols += [np.full(count, col) for col in (c, c + 1, c + 2, c, c + 1, c + 3)]
+            jac_cols += [
+                np.full(count, col) for col in (c, c + 1, c + 2, c, c + 1, c + 3)
+            ]
     jac_rows = np.concatenate(jac_rows) if jac_rows else np.zeros(0, dtype=np.intp)
     jac_cols = np.concatenate(jac_cols) if jac_cols else np.zeros(0, dtype=np.intp)
     shape = (n_rows, len(x0))
@@ -763,9 +765,7 @@ def solve_gains(
         rows.append(anchor)
         rhs.append(0.0)
 
-        solution, *_ = np.linalg.lstsq(
-            np.array(rows), np.array(rhs), rcond=None
-        )
+        solution, *_ = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)
         for name in covered:
             gains[name][channel] = float(np.exp(solution[index[name]]))
 
@@ -859,9 +859,7 @@ _SVD_CROSSCHECK_MAX_SPREAD = 0.5
 _SVD_CROSSCHECK_MAX_DEG = 5.0
 
 
-def _snap_to_positions(
-    projections: np.ndarray, n_positions: int
-) -> list[int] | None:
+def _snap_to_positions(projections: np.ndarray, n_positions: int) -> list[int] | None:
     """Snap each projection to the nearest of `n_positions` positions one
     pitch apart, the pitch estimated as the extent over `n_positions - 1`.
     Snap-to-nearest, not gap-cutting, is deliberate: a frame
@@ -878,17 +876,15 @@ def _snap_to_positions(
     return [int(i) for i in indices]
 
 
-def _axes_from_rotations(placements: list[FramePlacement]) -> tuple[
-    tuple[float, float], tuple[float, float]
-]:
+def _axes_from_rotations(
+    placements: list[FramePlacement],
+) -> tuple[tuple[float, float], tuple[float, float]]:
     """The grid's (across, down) axes from the solved frame rotations: the
     frames were stepped along the camera's own sensor axes, so the grid's
     column and row directions *are* the frames' axes. Unconditional at any
     grid shape, pitch, or cell count."""
     angles = np.radians([placement.rotation_deg for placement in placements])
-    mean_angle = math.atan2(
-        float(np.sin(angles).sum()), float(np.cos(angles).sum())
-    )
+    mean_angle = math.atan2(float(np.sin(angles).sum()), float(np.cos(angles).sum()))
     cos_a, sin_a = math.cos(mean_angle), math.sin(mean_angle)
     return (cos_a, sin_a), (-sin_a, cos_a)
 
@@ -946,10 +942,13 @@ def _grid_regularity(
         median_pitch = float(np.median(gaps))
         if median_pitch <= 0:
             return 0.0
-        return max(
-            (max(v) - min(v) for v in per_index.values() if len(v) > 1),
-            default=0.0,
-        ) / median_pitch
+        return (
+            max(
+                (max(v) - min(v) for v in per_index.values() if len(v) > 1),
+                default=0.0,
+            )
+            / median_pitch
+        )
 
     across_alignment = alignment(across_projections, col_of, cols)
     down_alignment = alignment(down_projections, row_of, rows)
@@ -961,12 +960,15 @@ def _assign_grid_cells(
     placements: list[FramePlacement],
     frame_size: tuple[int, int],
     grid: GridSpec,
-) -> tuple[
-    tuple[tuple[float, float], tuple[float, float]],
-    dict[str, tuple[int, int]],
-    float | None,
-    float | None,
-] | None:
+) -> (
+    tuple[
+        tuple[tuple[float, float], tuple[float, float]],
+        dict[str, tuple[int, int]],
+        float | None,
+        float | None,
+    ]
+    | None
+):
     """Assign each frame to its declared grid cell from the solved
     geometry alone. Returns `(grid_axes, cells, grid_pitch_ratio,
     grid_alignment_ratio)`, or None when the assignment fails — a failed
@@ -991,7 +993,10 @@ def _assign_grid_cells(
         if singular_values[0] > 0 and (
             singular_values[1] / singular_values[0] < _SVD_CROSSCHECK_MAX_SPREAD
         ):
-            svd_axes = [(float(vt[0, 0]), float(vt[0, 1])), (float(vt[1, 0]), float(vt[1, 1]))]
+            svd_axes = [
+                (float(vt[0, 0]), float(vt[0, 1])),
+                (float(vt[1, 0]), float(vt[1, 1])),
+            ]
             for candidate in (across_axis_w, down_axis_h):
                 best = max(
                     abs(candidate[0] * svd_axes[0][0] + candidate[1] * svd_axes[0][1]),
@@ -1010,12 +1015,8 @@ def _assign_grid_cells(
         (across_axis_w, down_axis_h),
         (down_axis_h, across_axis_w),
     ):
-        col_indices = _snap_to_positions(
-            centers @ np.asarray(across_axis), grid.across
-        )
-        row_indices = _snap_to_positions(
-            centers @ np.asarray(down_axis), grid.down
-        )
+        col_indices = _snap_to_positions(centers @ np.asarray(across_axis), grid.across)
+        row_indices = _snap_to_positions(centers @ np.asarray(down_axis), grid.down)
         if col_indices is None or row_indices is None:
             continue
         cells = {
@@ -1025,9 +1026,7 @@ def _assign_grid_cells(
             )
         }
         claimed = sorted(cells.values())
-        if claimed != [
-            (r, c) for r in range(grid.down) for c in range(grid.across)
-        ]:
+        if claimed != [(r, c) for r in range(grid.down) for c in range(grid.across)]:
             continue  # not a bijection onto the R x C cells
         pitch_ratio, alignment_ratio = _grid_regularity(
             centers, cells, placements, across_axis, down_axis, grid

@@ -70,7 +70,9 @@ def test_highlight_only_cast_is_corrected_at_highlights_not_shadows():
     norm = normalization.decode_normalized(codes)
     shadow_code = int(np.argmin(np.abs(norm - 0.08)))
     highlight_code = int(np.argmin(np.abs(norm - 0.88)))
-    assert tables[0, highlight_code] == pytest.approx(tables[1, highlight_code], abs=0.10)
+    assert tables[0, highlight_code] == pytest.approx(
+        tables[1, highlight_code], abs=0.10
+    )
     assert tables[0, shadow_code] == pytest.approx(neutral[0, shadow_code], abs=0.01)
 
 
@@ -132,9 +134,7 @@ def test_preview_matches_export_with_auto_neutral_on():
     preview, _ = render.render_positive_float(
         image, matrix, None, None, meter, long_edge=64
     )
-    export, _ = render.render_export(
-        image, matrix, None, None, meter, long_edge=64
-    )
+    export, _ = render.render_export(image, matrix, None, None, meter, long_edge=64)
     np.testing.assert_allclose(preview, export.astype(np.float32) / 65535.0, atol=1e-5)
 
 

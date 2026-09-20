@@ -50,7 +50,8 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         grid: (across: Int, down: Int)? = nil,
         intervalSeconds: Int? = nil,
-        format: String? = nil
+        format: String? = nil,
+        autoCrop: Bool? = nil
     ) -> CLICommand {
         var arguments = ["roll", "set-setup", "--roll", roll.path]
         if let grid {
@@ -61,6 +62,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let format {
             arguments.append(contentsOf: ["--format", format])
+        }
+        if let autoCrop {
+            arguments.append(contentsOf: ["--auto-crop", autoCrop ? "on" : "off"])
         }
         return CLICommand(arguments: arguments)
     }
@@ -332,14 +336,14 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
-    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--grade R --snap G | --reset)`
+    /// `scanny-boy edit tone --roll DIR --negative ID [--negative ID ...] (--snap G ... | --reset)`
     ///
-    /// Records the preview tone adjustment — grade, contrast, and density —
-    /// per selected negative, or resets it to the default scan-start curve
-    /// with `reset`. The op is a state, not a transform: the
-    /// latest one wins and a trailing `tone` op is coalesced in place.
-    /// Never touches the published TIFFs; the preview is regenerated with
-    /// the tone curve composed into the display encode.
+    /// Records the preview tone adjustment — contrast and density — per
+    /// selected negative, or resets it to the default scan-start curve with
+    /// `reset`. The op is a state, not a transform: the latest one wins and
+    /// a trailing `tone` op is coalesced in place. Never touches the
+    /// published TIFFs; the preview is regenerated with the tone curve
+    /// composed into the display encode.
     public static func editTone(
         roll: URL,
         negatives: [String],
@@ -354,11 +358,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            if auto.contains(.grade) {
-                arguments.append("--auto-grade")
-            } else {
-                arguments.append(contentsOf: ["--grade", String(adjustment.gradeR)])
-            }
             arguments.append(contentsOf: ["--snap", String(adjustment.snapGamma)])
             if auto.contains(.density) {
                 arguments.append("--auto-density")
@@ -368,12 +367,6 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--shadow-density", String(adjustment.shadowDensity)])
             arguments.append(
                 contentsOf: ["--highlight-density", String(adjustment.highlightDensity)]
-            )
-            arguments.append(contentsOf: ["--toe", String(adjustment.toe)])
-            arguments.append(contentsOf: ["--toe-width", String(adjustment.toeWidth)])
-            arguments.append(contentsOf: ["--shoulder", String(adjustment.shoulder)])
-            arguments.append(
-                contentsOf: ["--shoulder-width", String(adjustment.shoulderWidth)]
             )
         } else {
             arguments.append("--reset")
@@ -501,7 +494,8 @@ public struct CLICommand: Sendable, Hashable {
         rect: CGRect?,
         tiltDegrees: Double = 0,
         preset: String? = nil,
-        fullFrame: Bool = false
+        fullFrame: Bool = false,
+        source: String? = nil
     ) -> CLICommand {
         var arguments = [
             "edit", "crop",
@@ -520,10 +514,24 @@ public struct CLICommand: Sendable, Hashable {
                 arguments.append(contentsOf: ["--preset", preset])
             }
             if fullFrame { arguments.append("--full-frame") }
+            if let source {
+                arguments.append(contentsOf: ["--source", source])
+            }
         } else {
             arguments.append("--reset")
         }
         return CLICommand(arguments: arguments)
+    }
+
+    public static func editSuggestCrop(
+        roll: URL,
+        negative: String
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "edit", "suggest-crop",
+            "--roll", roll.path,
+            "--negative", negative,
+        ])
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`

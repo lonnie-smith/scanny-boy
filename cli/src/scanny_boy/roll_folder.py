@@ -35,8 +35,8 @@ MAX_SUFFIX_ATTEMPTS = 99
 
 _INVALID_SLUG_RUN = re.compile(r"[^A-Za-z0-9._-]+")
 
-# The film formats `roll set-setup --format` accepts. Stored data only for
-# now — nothing in the pipeline reads it yet.
+# The film formats `roll set-setup --format` accepts. Stored data for
+# stitching (the format ratio seeds auto-crop) and for the UI.
 FORMAT_CHOICES = (
     "half-frame",
     "35mm",
@@ -105,9 +105,7 @@ def unique_folder_name(library: Path, slug: str) -> str:
     )
 
 
-def create_roll(
-    library: Path, name: str, film_kind: str | None = None
-) -> Path:
+def create_roll(library: Path, name: str, film_kind: str | None = None) -> Path:
     """Create a new roll folder under `library` (slug + collision rule) and
     write an empty v3 manifest into it via `new_roll_manifest`. Returns the
     roll's directory.
@@ -156,17 +154,24 @@ def set_setup(
     grid: dict[str, int] | None = None,
     interval_seconds: int | None = None,
     format: str | None = None,
+    auto_crop: bool | None = None,
 ) -> None:
-    """Merge-update the roll's setup defaults — grid, interval, and film
-    format are pre-fill hints for the next capture/stitch run only; nothing
-    in stitching reads them. Unlike `set_film_kind`, editable at any time:
-    starting a run does not freeze these.
+    """Merge-update the roll's setup defaults — grid, interval, film
+    format, and auto-crop are pre-fill hints for the next capture/stitch
+    run. Unlike ``set_film_kind``, editable at any time: starting a run
+    does not freeze these.
 
-    Each argument left `None` keeps whatever the roll already has for that
+    Each argument left ``None`` keeps whatever the roll already has for that
     key — this is a partial update, not a replace."""
     manifest = repo.load_roll(roll_dir)
     current = dict(
-        manifest.setup or {"grid": None, "interval_seconds": None, "format": None}
+        manifest.setup
+        or {
+            "grid": None,
+            "interval_seconds": None,
+            "format": None,
+            "auto_crop": False,
+        }
     )
     if grid is not None:
         current["grid"] = grid
@@ -174,6 +179,8 @@ def set_setup(
         current["interval_seconds"] = interval_seconds
     if format is not None:
         current["format"] = format
+    if auto_crop is not None:
+        current["auto_crop"] = auto_crop
     manifest.setup = current
     write_roll_manifest(roll_dir, manifest)
 

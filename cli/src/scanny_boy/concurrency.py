@@ -57,7 +57,9 @@ class MemoryBudgetError(Exception):
     more memory than the budget allows on this machine. Never
     raised for the computed default, which is silently reduced instead."""
 
-    def __init__(self, requested_workers: int, permitted_workers: int, total_memory: int) -> None:
+    def __init__(
+        self, requested_workers: int, permitted_workers: int, total_memory: int
+    ) -> None:
         message = (
             f"--jobs {requested_workers} needs "
             f"{requested_workers * WORKER_MEMORY_BUDGET_BYTES} bytes at "
@@ -96,7 +98,10 @@ def workers_permitted_by_memory(total_memory: int) -> int:
 
 
 def default_worker_count(
-    shots_per_negative: int, *, cpu_count: int | None = None, total_memory: int | None = None
+    shots_per_negative: int,
+    *,
+    cpu_count: int | None = None,
+    total_memory: int | None = None,
 ) -> int:
     """`min(shots_per_negative, cpus, 4)`, silently reduced to fit the
     memory budget."""

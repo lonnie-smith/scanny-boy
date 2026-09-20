@@ -345,10 +345,7 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
         # malformed record must not index out of range.
         return (0.0,) * len(sliders)
     raw = [
-        slider
-        * CMY_MAX_DENSITY
-        * CMY_SLIDER_GAIN[ch]
-        / max(metering.ranges[ch], 1e-6)
+        slider * CMY_MAX_DENSITY * CMY_SLIDER_GAIN[ch] / max(metering.ranges[ch], 1e-6)
         for ch, slider in enumerate(sliders)
     ]
     return _luma_removed(raw)
@@ -397,7 +394,11 @@ def _cast_slopes_one_point_targets(
         if metering.shadow_refs_norm is None or len(metering.shadow_refs_norm) != 3:
             return achromatic
         green_ref = 1.0 - metering.shadow_refs_norm[1]
-        targets = (green_ref + shadow_targets[0], green_ref, green_ref + shadow_targets[1])
+        targets = (
+            green_ref + shadow_targets[0],
+            green_ref,
+            green_ref + shadow_targets[1],
+        )
     elif highlight_targets is not None:
         anchor = pivot_in
         if (
@@ -510,9 +511,7 @@ def cast_slopes_from_residuals(
             result.append(fallback[ch])
             continue
         slope_ch = float(
-            np.clip(
-                slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX
-            )
+            np.clip(slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX)
         )
         if abs(slope_ch) < 1e-6:
             pivot_ch = pivot_in
@@ -682,9 +681,7 @@ def cast_slopes(
             result.append(fallback[ch])
             continue
         slope_ch = float(
-            np.clip(
-                slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX
-            )
+            np.clip(slope * (g_h - g_s) / (t_h - t_s), tone.SLOPE_MIN, tone.SLOPE_MAX)
         )
         # Guard 5: after clamping, re-solve the pivot from the clamped
         # slope through the *shadow* constraint, so the shadow tie still
@@ -759,9 +756,7 @@ def wb_to_kelvin(magenta: float, yellow: float) -> float:
     return float(1e6 / mu)
 
 
-def kelvin_to_wb(
-    kelvin: float, magenta: float, yellow: float
-) -> tuple[float, float]:
+def kelvin_to_wb(kelvin: float, magenta: float, yellow: float) -> tuple[float, float]:
     """Move (M, Y) along the Planckian direction to `kelvin`, preserving
     the off-locus tint component. Higher K warms the image."""
     km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW

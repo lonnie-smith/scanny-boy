@@ -197,7 +197,9 @@ def _misregistration(
         corrected = fit.inverse(nearest)
         after.extend(np.hypot(*(corrected - near_green).T))
     if not before:
-        raise CAFitError(Code.CHROMATIC_FIT_REJECTED, "no corner correspondences survived")
+        raise CAFitError(
+            Code.CHROMATIC_FIT_REJECTED, "no corner correspondences survived"
+        )
     return float(np.mean(before)) * fx, float(np.mean(after)) * fx
 
 
@@ -269,9 +271,11 @@ def fit_ca(
         residual_ok = after[channel] < CA_RESIDUAL_ACCEPT_PX
         # No aberration measured means nothing was corrected: an
         # unimproved (or unmeasurable) fit is dropped, not carried.
-        improved = before[channel] > 0 and (
-            before[channel] - after[channel]
-        ) / before[channel] >= CA_MIN_IMPROVEMENT_FRACTION
+        improved = (
+            before[channel] > 0
+            and (before[channel] - after[channel]) / before[channel]
+            >= CA_MIN_IMPROVEMENT_FRACTION
+        )
         return residual_ok and improved
 
     accepted = all(clears_gate(channel) for channel in ("red", "blue"))

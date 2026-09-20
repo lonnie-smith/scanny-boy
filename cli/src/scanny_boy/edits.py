@@ -111,8 +111,13 @@ def _validated_negatives(
 
 
 def _refresh_preview(
-    roll_dir: Path, roll: RollManifest, negative: NegativeRecord, op: str, *,
-    what: str, emit: EmitFn,
+    roll_dir: Path,
+    roll: RollManifest,
+    negative: NegativeRecord,
+    op: str,
+    *,
+    what: str,
+    emit: EmitFn,
 ) -> None:
     """Refreshes the negative's cached preview after one appended op, and
     records the path on the manifest. A preview failure must not lose the
@@ -136,9 +141,7 @@ def _refresh_preview(
         write_roll_manifest(roll_dir, roll)
 
 
-def _crop_report_fields(
-    roll_dir: Path, negative: NegativeRecord
-) -> dict | None:
+def _crop_report_fields(roll_dir: Path, negative: NegativeRecord) -> dict | None:
     """The net crop as `edit_recorded` carries it — a full state report
     (null when there is no live crop), exactly what `roll info` reports,
     so Swift can overwrite without caring which op was recorded. A stale
@@ -148,11 +151,7 @@ def _crop_report_fields(
     if width is None or height is None:
         return None
     state = repo.net_edit_state(roll_dir, negative.negative_id)
-    crop = (
-        state.crop
-        if previews.crop_is_live(state.crop, (height, width))
-        else None
-    )
+    crop = state.crop if previews.crop_is_live(state.crop, (height, width)) else None
     return previews.crop_report(
         crop,
         (height, width),
@@ -162,9 +161,7 @@ def _crop_report_fields(
     )
 
 
-def _result_fields(
-    roll_dir: Path, negative: NegativeRecord, edit: dict
-) -> dict:
+def _result_fields(roll_dir: Path, negative: NegativeRecord, edit: dict) -> dict:
     """The `EditRecorded` field set shared by every op that appends one:
     the ops log entry, the net transform after it, the net crop state,
     and the regenerated preview path."""
@@ -259,13 +256,11 @@ def run_edit_tone(
     params: dict[str, float | None] | None,
     *,
     auto_density: bool = False,
-    auto_grade: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview tone adjustment — the full
-    nine-key tone state, or all `None` for the reset to the default
-    scan-start curve (see `tone.py`). Auto flags solve density and/or grade
-    from each
+    four-key tone state, or all `None` for the reset to the default
+    scan-start curve (see `tone.py`). Auto Density solves density from each
     negative's recorded normalization before validation.
 
     The op is a state, not a transform: the latest one wins and a trailing
@@ -275,7 +270,7 @@ def run_edit_tone(
     from scanny_boy import auto_tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
-    if roll.refresh_pending and (auto_density or auto_grade):
+    if roll.refresh_pending and auto_density:
         emit(
             WarningEvent(
                 code=Code.ROLL_REFRESH_PENDING,
@@ -289,36 +284,21 @@ def run_edit_tone(
     results: list[dict] = []
     for negative in negatives:
         solved = dict(params or {key: None for key in repo.validated_tone_params(None)})
-        if auto_density or auto_grade:
+        if auto_density:
             record = negative.normalization
-            if auto_density:
-                value = auto_tone.solve_density(record, roll.highlight_lock)
-                if value is None:
-                    emit(
-                        WarningEvent(
-                            code=Code.TONE_METERING_UNAVAILABLE,
-                            message=(
-                                f"{negative.negative_id}: normalization metering "
-                                "unavailable; density left unchanged"
-                            ),
-                        )
+            value = auto_tone.solve_density(record, roll.highlight_lock)
+            if value is None:
+                emit(
+                    WarningEvent(
+                        code=Code.TONE_METERING_UNAVAILABLE,
+                        message=(
+                            f"{negative.negative_id}: normalization metering "
+                            "unavailable; density left unchanged"
+                        ),
                     )
-                else:
-                    solved["density"] = value
-            if auto_grade:
-                value = auto_tone.solve_grade(record, roll.highlight_lock)
-                if value is None:
-                    emit(
-                        WarningEvent(
-                            code=Code.TONE_METERING_UNAVAILABLE,
-                            message=(
-                                f"{negative.negative_id}: normalization metering "
-                                "unavailable; grade left unchanged"
-                            ),
-                        )
-                    )
-                else:
-                    solved["grade_r"] = value
+                )
+            else:
+                solved["density"] = value
         try:
             validated = repo.validated_tone_params(solved)
         except ValueError as exc:
@@ -339,6 +319,7 @@ def run_edit_crop(
     preset: str | None = None,
     reset: bool = False,
     full_frame: bool = False,
+    source: str | None = None,
     emit: EmitFn,
 ) -> dict:
     """Records one negative's crop — a tilted window over the image as it
@@ -370,9 +351,7 @@ def run_edit_crop(
     output = negative.output
     tiff_h, tiff_w = int(output["height"]), int(output["width"])
     existing = (
-        state.crop
-        if previews.crop_is_live(state.crop, (tiff_h, tiff_w))
-        else None
+        state.crop if previews.crop_is_live(state.crop, (tiff_h, tiff_w)) else None
     )
 
     if reset:
@@ -433,6 +412,7 @@ def run_edit_crop(
                     "h": th,
                     "tilt_deg": tilt,
                     "preset": preset,
+                    "source": source,
                 }
             )
         except ValueError as exc:
@@ -441,6 +421,113 @@ def run_edit_crop(
     edit = repo.append_edit(roll_dir, negative_id, repo.CROP_OP, params)
     _refresh_preview(roll_dir, _roll, negative, repo.CROP_OP, what="crop", emit=emit)
     return _result_fields(roll_dir, negative, edit)
+
+
+def run_edit_suggest_crop(
+    roll_dir: Path,
+    negative_id: str,
+    *,
+    preset: str | None = None,
+    emit: EmitFn,
+) -> dict:
+    """Pure query: detect the picture-only crop for the negative's
+    current display image and emit ``crop_suggested``. Records nothing.
+
+    Parameters
+    ----------
+    preset : str | None
+        The crop session's current ratio preset (a ``FORMAT_RATIOS`` key).
+        When ``None``, falls back to the roll's ``setup.format``, then
+        to unconstrained.
+    """
+    from scanny_boy import auto_crop
+    from scanny_boy.previews import _display_image
+
+    _roll, negative = _validated_negative(roll_dir, negative_id)
+    state = repo.net_edit_state(roll_dir, negative_id)
+    output = negative.output
+    tiff_h, tiff_w = int(output["height"]), int(output["width"])
+
+    # Determine the ratio.
+    ratio = None
+    if preset is not None:
+        if preset not in auto_crop.FORMAT_RATIOS:
+            raise EditFailure(
+                Code.INVALID_EDIT,
+                f"unknown crop preset {preset!r}",
+            )
+        ratio = auto_crop.FORMAT_RATIOS[preset]
+    else:
+        roll_setup = _roll.setup or {}
+        roll_format = roll_setup.get("format")
+        if roll_format and roll_format in auto_crop.FORMAT_RATIOS:
+            ratio = auto_crop.FORMAT_RATIOS[roll_format]
+
+    # Build the analysis copy from the published TIFF.
+    # The Auto button uses the negative's full net state with crop ignored.
+    tiff_path = roll_dir / negative.output["name"]
+    if not tiff_path.exists():
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"negative {negative_id} has no published TIFF",
+        )
+
+    display = _display_image(
+        tiff_path,
+        quarter_turns=state.quarter_turns,
+        flipped_horizontally=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
+        crop_params=None,  # crop ignored for Auto button
+    )
+
+    analysis, scale = auto_crop.analysis_display(
+        display,
+        quarter_turns=0,
+        flipped=False,
+        fine_angle_deg=0.0,
+    )
+
+    display_h, display_w = display.shape[:2]
+    exclude = auto_crop.exclusion_hint(
+        negative.normalization,
+        (tiff_h, tiff_w),
+        {
+            "quarter_turns": state.quarter_turns,
+            "flipped": state.flipped,
+            "fine_angle_deg": state.fine_angle_deg,
+        },
+        scale,
+        (analysis.shape[0], analysis.shape[1]),
+    )
+
+    result = auto_crop.estimate_crop(
+        analysis,
+        full_size=(display_h, display_w),
+        ratio=ratio,
+        exclude=exclude,
+    )
+
+    if isinstance(result, auto_crop.Refusal):
+        return {
+            "event_type": "crop_suggested",
+            "negative_id": negative_id,
+            "rect": None,
+            "canvas_width": display_w,
+            "canvas_height": display_h,
+            "preset": preset,
+            "refused": result.reason,
+        }
+
+    x, y, w, h = result.rect
+    return {
+        "event_type": "crop_suggested",
+        "negative_id": negative_id,
+        "rect": {"x": x, "y": y, "width": w, "height": h},
+        "canvas_width": display_w,
+        "canvas_height": display_h,
+        "preset": preset,
+        "refused": None,
+    }
 
 
 def _merge_color_params(
@@ -590,7 +677,9 @@ def run_edit_color(
             raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
 
         edit = repo.append_color_edit(roll_dir, negative.negative_id, validated)
-        _refresh_preview(roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit)
+        _refresh_preview(
+            roll_dir, roll, negative, repo.COLOR_OP, what="color", emit=emit
+        )
         results.append(_result_fields(roll_dir, negative, edit))
     return results
 
@@ -863,9 +952,7 @@ def run_edit_delete(
                         message=f"{path} could not be removed: {exc}",
                     )
                 )
-        results.append(
-            {"negative_id": negative.negative_id, "output": output_name}
-        )
+        results.append({"negative_id": negative.negative_id, "output": output_name})
     return results
 
 
@@ -895,9 +982,7 @@ def _spots_for_report(
     # they stand for is replayed before the crop anyway, so nothing is
     # lost but the overlay (the Heal panel's counts still read from the
     # manifest summary).
-    if previews.crop_is_live(
-        state.crop, (height, width)
-    ):
+    if previews.crop_is_live(state.crop, (height, width)):
         return []
     report: list[dict] = []
     for spot in params.get("spots") or []:
@@ -1102,7 +1187,9 @@ def run_edit_spots(
             params["repair"] = repair
 
     repo.append_spots_edit(roll_dir, negative_id, params)
-    _refresh_preview(roll_dir, _roll, negative, repo.SPOTS_OP, what="spot review", emit=emit)
+    _refresh_preview(
+        roll_dir, _roll, negative, repo.SPOTS_OP, what="spot review", emit=emit
+    )
     if _spots_stale(negative, params):
         emit(
             WarningEvent(
@@ -1125,9 +1212,7 @@ def run_edit_spots(
     }
 
 
-def run_edit_list_spots(
-    roll_dir: Path, negative_id: str, *, emit: EmitFn
-) -> dict:
+def run_edit_list_spots(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
     """The pure query behind the app's marker overlay: the negative's spot
     set as display-space rects, nothing recorded, no pixels touched — in
     the same family as `render-region` and `render-preview`. A stale set
@@ -1152,9 +1237,7 @@ def run_edit_list_spots(
         "detector_version": (
             params["detector_version"] if params else spots.DETECTOR_VERSION
         ),
-        "sensitivity": (
-            params["sensitivity"] if params else spots.DEFAULT_SENSITIVITY
-        ),
+        "sensitivity": (params["sensitivity"] if params else spots.DEFAULT_SENSITIVITY),
         "repair": bool(params["repair"]) if params else False,
         "spots": reported,
         "found": len(params["spots"]) if params else 0,
@@ -1162,9 +1245,7 @@ def run_edit_list_spots(
     }
 
 
-def _scratches_stale(
-    negative: NegativeRecord, params: dict | None
-) -> bool:
+def _scratches_stale(negative: NegativeRecord, params: dict | None) -> bool:
     """The scratch set was recorded against a canvas that a re-stitch
     replaced — it corrects nothing and needs re-detecting."""
     if params is None or not params.get("scratches"):
@@ -1177,9 +1258,7 @@ def _scratches_stale(
 
 def _scratch_spans(negative: NegativeRecord) -> tuple[float, float, float]:
     norm = negative.normalization
-    return tuple(
-        norm["ceils"][ch] - norm["floors"][ch] for ch in range(3)
-    )
+    return tuple(norm["ceils"][ch] - norm["floors"][ch] for ch in range(3))
 
 
 def run_edit_detect_scratches(
@@ -1295,9 +1374,7 @@ def run_edit_scratches(
     return results
 
 
-def run_edit_list_scratches(
-    roll_dir: Path, negative_id: str, *, emit: EmitFn
-) -> dict:
+def run_edit_list_scratches(roll_dir: Path, negative_id: str, *, emit: EmitFn) -> dict:
     """The pure query behind the app's scratch overlay: the negative's
     scratch set as display-space rects, nothing recorded, no pixels touched.
     A stale set reports an empty list plus a `SCRATCHES_STALE` warning."""
@@ -1320,7 +1397,9 @@ def run_edit_list_scratches(
         )
     return ScratchesReported(
         negative_id=negative_id,
-        detector_version=params["detector_version"] if params else scratches.DETECTOR_VERSION,
+        detector_version=params["detector_version"]
+        if params
+        else scratches.DETECTOR_VERSION,
         enabled=bool(params["enabled"]) if params else False,
         count=len(params.get("scratches") or []) if params else 0,
         stale=stale,

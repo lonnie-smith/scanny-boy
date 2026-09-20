@@ -110,19 +110,13 @@ class _Registry:
             token.cancel()
 
 
-def _answer_cancelled(
-    stream: _LockedStream, request_id: str, why: str
-) -> None:
+def _answer_cancelled(stream: _LockedStream, request_id: str, why: str) -> None:
     """The terminal pair for a request that will not run: the one-shot
     CLI's SIGTERM shape (an `error` with `CANCELLED`, then `finished` at
     exit status 143), carrying the request's id."""
     writer = EventWriter(stream, request_id=request_id)
     writer.write(ErrorEvent(code=Code.CANCELLED, message=why))
-    writer.write(
-        Finished(
-            status="cancelled", exit_status=CANCELLED_EXIT_STATUS
-        )
-    )
+    writer.write(Finished(status="cancelled", exit_status=CANCELLED_EXIT_STATUS))
 
 
 def _run_request(
@@ -256,9 +250,7 @@ def run_serve() -> int:
                         message="the request's `command` was not a usable argv",
                     )
                 )
-                writer.write(
-                    Finished(status="failed", exit_status=2)
-                )
+                writer.write(Finished(status="failed", exit_status=2))
                 continue
             if shutdown.is_set():
                 _answer_cancelled(

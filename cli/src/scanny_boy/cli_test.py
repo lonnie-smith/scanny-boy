@@ -35,11 +35,12 @@ from scanny_boy.work_dir_support import (
 SCHEMA = load_schema()
 
 
-def _tone_params(grade_r: float = 90.0, snap_gamma: float = 0.2, **overrides: float):
+def _tone_params(snap_gamma: float = 0.2, **overrides: float):
     from scanny_boy import tone
 
-    params = dataclasses.asdict(tone.NEUTRAL)
-    params["grade_r"] = grade_r
+    params = {
+        key: dataclasses.asdict(tone.NEUTRAL)[key] for key in tone.TONE_PARAM_KEYS
+    }
     params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
@@ -710,7 +711,9 @@ def test_roll_set_base_frame_refuses_a_version_7_roll(capsys, tmp_path, monkeypa
     roll_dir = _init_roll(capsys, tmp_path)
     v7_manifest = load_roll_manifest(roll_dir)
     v7_manifest.manifest_format_version = 7
-    monkeypatch.setattr("scanny_boy.roll_manifest.load_roll_manifest", lambda _dir: v7_manifest)
+    monkeypatch.setattr(
+        "scanny_boy.roll_manifest.load_roll_manifest", lambda _dir: v7_manifest
+    )
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
 
     status = _set_base_frame(capsys, roll_dir, frame)
@@ -912,8 +915,15 @@ def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
             ["edit", "flip", "--roll", "/tmp/roll"], id="edit-flip-no-negative"
         ),
         pytest.param(
-            ["export", "--roll", "/tmp/roll", "--output", "/tmp/out",
-             "--downsample", "12000"],
+            [
+                "export",
+                "--roll",
+                "/tmp/roll",
+                "--output",
+                "/tmp/out",
+                "--downsample",
+                "12000",
+            ],
             id="export-bad-downsample",
         ),
     ],
@@ -1004,8 +1014,6 @@ def test_edit_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
     assert [e["event"] for e in events] == ["started", "error", "finished"]
     assert events[0]["command"] == "edit delete"
     assert events[1]["code"] == "ROLL_NOT_FOUND"
-
-
 
 
 def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_path):
@@ -1161,7 +1169,9 @@ def test_edit_render_region_rejects_a_bad_region(work_dir, capsys, tmp_path):
     assert not destination.exists()
 
 
-def test_edit_render_region_negative_mode_encodes_without_inversion(work_dir, capsys, tmp_path):
+def test_edit_render_region_negative_mode_encodes_without_inversion(
+    work_dir, capsys, tmp_path
+):
     """`--mode negative` renders the same display-space rect through the
     un-inverted density LUT — the published TIFF's own appearance, which
     the region route also honours."""
@@ -1255,7 +1265,9 @@ def test_edit_render_region_unknown_mode_is_a_usage_error(work_dir, capsys, tmp_
     assert err != ""
 
 
-def test_edit_render_preview_renders_the_underlying_negative(work_dir, capsys, tmp_path):
+def test_edit_render_preview_renders_the_underlying_negative(
+    work_dir, capsys, tmp_path
+):
     """`edit render-preview --mode negative` writes the whole display image
     — net transform folded in — through the un-inverted LUT, and
     `preview_rendered` carries the written PNG's pixel dimensions."""
@@ -1372,8 +1384,6 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
             str(roll_dir),
             "--negative",
             negative.negative_id,
-            "--grade",
-            "160",
             "--snap",
             "0.3",
         ]
@@ -1393,7 +1403,7 @@ def test_edit_render_preview_negative_mode_ignores_the_tone(work_dir, capsys, tm
     from scanny_boy import color
     from scanny_boy.edits_test import _tone_params
 
-    tone_params = _tone_params(160.0, 0.3)
+    tone_params = _tone_params(0.3)
 
     meter = color.read_metering(
         negative.normalization, highlight_lock=roll.highlight_lock
@@ -1436,7 +1446,9 @@ def test_edit_render_preview_missing_roll_reports_roll_not_found(capsys, tmp_pat
     assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
-def test_edit_flip_records_the_flip_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+def test_edit_flip_records_the_flip_and_refreshes_the_preview(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1493,9 +1505,9 @@ def test_edit_rotate_accepts_a_selection(capsys, tmp_path):
     assert err == ""
 
 
-
-
-def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1510,8 +1522,6 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, ca
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
             "--snap",
             "0.2",
         ]
@@ -1522,7 +1532,7 @@ def test_edit_tone_records_the_adjustment_and_refreshes_the_preview(work_dir, ca
     assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
     assert events[0]["command"] == "edit tone"
     assert events[1]["edit"]["op"] == "tone"
-    assert events[1]["edit"]["params"] == _tone_params(90.0, 0.2)
+    assert events[1]["edit"]["params"] == _tone_params(0.2)
     assert Path(events[1]["preview_path"]).exists()
     assert events[2]["status"] == "success"
     assert err == ""
@@ -1542,8 +1552,6 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--grade",
-                "90",
                 "--snap",
                 "0.2",
             ]
@@ -1570,7 +1578,7 @@ def test_edit_tone_reset_records_null_params(work_dir, capsys, tmp_path):
     assert edits[1]["params"] == _reset_tone_params()
 
 
-def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
+def test_edit_tone_needs_at_least_one_flag_or_reset(work_dir, capsys, tmp_path):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1585,8 +1593,6 @@ def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
         ]
     )
 
@@ -1596,7 +1602,7 @@ def test_edit_tone_needs_grade_and_snap_together(work_dir, capsys, tmp_path):
     assert events[1]["code"] == "INVALID_EDIT"
 
 
-def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys, tmp_path):
+def test_edit_tone_accepts_snap_only(work_dir, capsys, tmp_path):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1611,8 +1617,31 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
             str(roll_dir),
             "--negative",
             negative_id,
-            "--grade",
-            "90",
+            "--snap",
+            "0.2",
+        ]
+    )
+
+    assert status == 0
+
+
+def test_edit_tone_round_trips_all_four_flags_through_roll_info(
+    work_dir, capsys, tmp_path
+):
+    roll_dir = make_roll_dir(tmp_path)
+    outcome = run_stitch_with_defaults(work_dir, roll_dir)
+    assert outcome.status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    capsys.readouterr()
+
+    status = main(
+        [
+            "edit",
+            "tone",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
             "--snap",
             "0.2",
             "--density",
@@ -1621,14 +1650,6 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
             "0.1",
             "--highlight-density",
             "-0.1",
-            "--toe",
-            "0.3",
-            "--toe-width",
-            "3.0",
-            "--shoulder",
-            "-0.2",
-            "--shoulder-width",
-            "4.0",
         ]
     )
     assert status == 0
@@ -1638,15 +1659,12 @@ def test_edit_tone_round_trips_all_nine_flags_through_roll_info(work_dir, capsys
     assert status == 0
     events, _err = _stdout_events(capsys)
     negative = events[1]["manifest"]["negatives"][0]
-    assert negative["tone_grade_r"] == 90.0
     assert negative["tone_snap_gamma"] == 0.2
     assert negative["tone_density"] == 1.2
     assert negative["tone_shadow_density"] == 0.1
     assert negative["tone_highlight_density"] == -0.1
-    assert negative["tone_toe"] == 0.3
-    assert negative["tone_toe_width"] == 3.0
-    assert negative["tone_shoulder"] == -0.2
-    assert negative["tone_shoulder_width"] == 4.0
+    assert "tone_grade_r" not in negative
+    assert "tone_toe" not in negative
 
 
 def _color_params(**overrides: float):
@@ -1659,7 +1677,9 @@ def _color_params(**overrides: float):
     return params
 
 
-def test_edit_color_records_the_adjustment_and_refreshes_the_preview(work_dir, capsys, tmp_path):
+def test_edit_color_records_the_adjustment_and_refreshes_the_preview(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1699,7 +1719,9 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(work_dir, c
     assert err == ""
 
 
-def test_edit_color_partial_update_preserves_recorded_values(work_dir, capsys, tmp_path):
+def test_edit_color_partial_update_preserves_recorded_values(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1748,7 +1770,9 @@ def test_edit_color_partial_update_preserves_recorded_values(work_dir, capsys, t
     assert params["cast_removal"] == pytest.approx(0.3)
 
 
-def test_edit_color_temperature_is_exclusive_with_region_magenta(work_dir, capsys, tmp_path):
+def test_edit_color_temperature_is_exclusive_with_region_magenta(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1829,9 +1853,7 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(
-            params.get(key, defaults[key])
-        )
+        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
     assert negative["color_temperature"] == pytest.approx(
         color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
     )
@@ -1852,7 +1874,6 @@ def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_pat
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-grade",
             "--auto-density",
             "--snap",
             "0",
@@ -1861,9 +1882,8 @@ def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_pat
     assert status == 0
     events, _err = _stdout_events(capsys)
     density = events[1]["edit"]["params"]["density"]
-    grade = events[1]["edit"]["params"]["grade_r"]
     assert density != 1.0
-    assert grade != 115.0
+    assert "grade_r" not in events[1]["edit"]["params"]
 
 
 def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_path):
@@ -1885,7 +1905,6 @@ def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_pat
             "--negative",
             negative_id,
             "--auto-density",
-            "--auto-grade",
             "--snap",
             "0",
         ]
@@ -1893,8 +1912,8 @@ def test_edit_tone_auto_on_missing_normalization_warns(work_dir, capsys, tmp_pat
     assert status == 0
     events, _err = _stdout_events(capsys)
     warnings = [event for event in events if event["event"] == "warning"]
-    assert len(warnings) == 2
-    assert all(event["code"] == "TONE_METERING_UNAVAILABLE" for event in warnings)
+    assert len(warnings) == 1
+    assert warnings[0]["code"] == "TONE_METERING_UNAVAILABLE"
 
 
 def test_edit_tone_rejects_density_with_auto_density(work_dir, capsys, tmp_path):
@@ -1915,64 +1934,11 @@ def test_edit_tone_rejects_density_with_auto_density(work_dir, capsys, tmp_path)
             "--density",
             "1.2",
             "--auto-density",
-            "--grade",
-            "115",
             "--snap",
             "0",
         ]
     )
     assert status == 2
-
-
-def test_edit_tone_toe_only_change_regenerates_the_preview(work_dir, capsys, tmp_path):
-    roll_dir = make_roll_dir(tmp_path)
-    outcome = run_stitch_with_defaults(work_dir, roll_dir)
-    assert outcome.status == "complete"
-    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    capsys.readouterr()
-
-    assert (
-        main(
-            [
-                "edit",
-                "tone",
-                "--roll",
-                str(roll_dir),
-                "--negative",
-                negative_id,
-                "--grade",
-                "115",
-                "--snap",
-                "0",
-            ]
-        )
-        == 0
-    )
-    events, _ = _stdout_events(capsys)
-    base_preview = Path(events[1]["preview_path"]).read_bytes()
-
-    assert (
-        main(
-            [
-                "edit",
-                "tone",
-                "--roll",
-                str(roll_dir),
-                "--negative",
-                negative_id,
-                "--grade",
-                "115",
-                "--snap",
-                "0",
-                "--toe",
-                "0.5",
-            ]
-        )
-        == 0
-    )
-    events, _ = _stdout_events(capsys)
-    toe_preview = Path(events[1]["preview_path"]).read_bytes()
-    assert toe_preview != base_preview
 
 
 def test_exit_status_one_when_anything_was_skipped(work_dir, capsys, tmp_path):
@@ -1998,8 +1964,6 @@ def test_exit_status_one_when_anything_was_skipped(work_dir, capsys, tmp_path):
     assert events[1]["code"] == "OUTPUT_MODIFIED_EXTERNALLY"
     assert events[2]["status"] == "failed"
     assert events[2]["exit_status"] == 1
-
-
 
 
 def test_film_date_argument_is_rejected(capsys):
@@ -2517,7 +2481,9 @@ def test_grid_list_reports_an_empty_library(capsys):
 
 
 def test_grid_create_persists_a_preset(capsys):
-    status = main(["grid", "create", "--name", "Hasselblad", "--across", "4", "--down", "2"])
+    status = main(
+        ["grid", "create", "--name", "Hasselblad", "--across", "4", "--down", "2"]
+    )
 
     assert status == 0
     events, _err = _stdout_events(capsys)
@@ -2539,7 +2505,9 @@ def test_grid_create_persists_a_preset(capsys):
 def test_grid_create_rejects_a_taken_name(capsys):
     _save_grid_profile("Hasselblad")
 
-    status = main(["grid", "create", "--name", "Hasselblad", "--across", "3", "--down", "1"])
+    status = main(
+        ["grid", "create", "--name", "Hasselblad", "--across", "3", "--down", "1"]
+    )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
@@ -2547,7 +2515,9 @@ def test_grid_create_rejects_a_taken_name(capsys):
 
 
 def test_grid_create_rejects_an_invalid_shape(capsys):
-    status = main(["grid", "create", "--name", "Too big", "--across", "4", "--down", "4"])
+    status = main(
+        ["grid", "create", "--name", "Too big", "--across", "4", "--down", "4"]
+    )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
@@ -2755,7 +2725,11 @@ def _spots_roll(capsys, tmp_path):
     append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
     merge_sources(
         manifest,
-        [SourceRecord(filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64)],
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
         "stitch-run",
     )
     manifest.negatives.append(
@@ -2775,7 +2749,9 @@ def _spots_roll(capsys, tmp_path):
         )
     )
     write_roll_manifest(roll_dir, manifest)
-    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.full((48, 64, 3), 30000, dtype=np.uint16))
+    tifffile.imwrite(
+        roll_dir / "_DSC0001.tif", np.full((48, 64, 3), 30000, dtype=np.uint16)
+    )
     return roll_dir, "spots-negative-01"
 
 
@@ -2816,10 +2792,14 @@ def test_edit_detect_spots_records_and_reports(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "detect-spots",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--sensitivity", "0.5",
+            "edit",
+            "detect-spots",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--sensitivity",
+            "0.5",
         ]
     )
 
@@ -2849,11 +2829,16 @@ def test_edit_spots_reject_accept_and_repair_flags(capsys, tmp_path):
 
     status = main(
         [
-            "edit", "spots",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--reject", "1",
-            "--reject", "2",
+            "edit",
+            "spots",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--reject",
+            "1",
+            "--reject",
+            "2",
         ]
     )
 
@@ -2867,10 +2852,14 @@ def test_edit_spots_reject_accept_and_repair_flags(capsys, tmp_path):
     capsys.readouterr()
     status = main(
         [
-            "edit", "spots",
-            "--roll", str(roll_dir),
-            "--negative", negative_id,
-            "--accept", "2",
+            "edit",
+            "spots",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--accept",
+            "2",
             "--repair",
         ]
     )
@@ -2936,7 +2925,10 @@ def test_edit_list_spots_on_a_stale_set_warns(capsys, tmp_path):
     assert status == 0
     events, err = _stdout_events(capsys)
     assert [e["event"] for e in events] == [
-        "started", "warning", "spots_reported", "finished"
+        "started",
+        "warning",
+        "spots_reported",
+        "finished",
     ]
     assert events[1]["code"] == "SPOTS_STALE"
     assert events[2]["spots"] == []
@@ -3013,7 +3005,9 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
 # --- --cast-removal-highlights and --auto-cast
 
 
-def test_cast_removal_highlights_round_trips_through_roll_info(work_dir, capsys, tmp_path):
+def test_cast_removal_highlights_round_trips_through_roll_info(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -3143,14 +3137,21 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     assert params["cast_removal"] == pytest.approx(0.0)
 
 
-def test_auto_cast_is_exclusive_with_reset_and_global_sliders(work_dir, capsys, tmp_path):
+def test_auto_cast_is_exclusive_with_reset_and_global_sliders(
+    work_dir, capsys, tmp_path
+):
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     capsys.readouterr()
 
-    for extra in (["--reset"], ["--cyan", "0.1"], ["--magenta", "0.1"], ["--yellow", "0.1"]):
+    for extra in (
+        ["--reset"],
+        ["--cyan", "0.1"],
+        ["--magenta", "0.1"],
+        ["--yellow", "0.1"],
+    ):
         status = main(
             [
                 "edit",
@@ -3190,14 +3191,30 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
     capsys.readouterr()
 
     main(
-        ["edit", "color", "--roll", str(roll_dir), "--negative", negative_id,
-         "--auto-cast"]
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--auto-cast",
+        ]
     )
     first = _stdout_events(capsys)[0][1]["edit"]["params"]
     capsys.readouterr()
     main(
-        ["edit", "color", "--roll", str(roll_dir), "--negative", negative_id,
-         "--cast-removal", "0.8", "--auto-cast"]
+        [
+            "edit",
+            "color",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            "--cast-removal",
+            "0.8",
+            "--auto-cast",
+        ]
     )
     second = _stdout_events(capsys)[0][1]["edit"]["params"]
 
@@ -3245,6 +3262,7 @@ def test_cast_removal_highlights_warns_without_a_highlight_reference(
     params = events[2]["edit"]["params"]
     assert params["cast_removal_highlights"] == pytest.approx(0.5)
 
+
 def test_edit_crop_records_the_window_and_roll_info_reports_it(
     work_dir, capsys, tmp_path
 ):
@@ -3263,13 +3281,24 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
 
     status = main(
         [
-            "edit", "crop",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", "10", "--y", "10",
-            "--width", str(rect_w), "--height", str(rect_h),
-            "--tilt", "2.5",
-            "--preset", "35mm",
+            "edit",
+            "crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "10",
+            "--y",
+            "10",
+            "--width",
+            str(rect_w),
+            "--height",
+            str(rect_h),
+            "--tilt",
+            "2.5",
+            "--preset",
+            "35mm",
         ]
     )
 
@@ -3297,9 +3326,12 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
     capsys.readouterr()
     status = main(
         [
-            "edit", "crop",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
+            "edit",
+            "crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
             "--reset",
         ]
     )
@@ -3325,11 +3357,20 @@ def test_edit_crop_rejects_an_out_of_bounds_rect(work_dir, capsys, tmp_path):
 
     status = main(
         [
-            "edit", "crop",
-            "--roll", str(roll_dir),
-            "--negative", negative.negative_id,
-            "--x", str(tiff_w - 8), "--y", "10",
-            "--width", "60", "--height", "60",
+            "edit",
+            "crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            str(tiff_w - 8),
+            "--y",
+            "10",
+            "--width",
+            "60",
+            "--height",
+            "60",
         ]
     )
 

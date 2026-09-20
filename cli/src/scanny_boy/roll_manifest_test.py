@@ -203,7 +203,9 @@ def test_write_touches_no_files_in_the_roll_folder(tmp_path):
 
 
 def test_new_roll_manifest_is_empty_and_schema_valid(tmp_path):
-    manifest = new_roll_manifest(roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998", film_kind="colour")
+    manifest = new_roll_manifest(
+        roll_id=_ROLL_ID, roll_name="Tri-X, Portland 1998", film_kind="colour"
+    )
     assert manifest.runs == []
     assert manifest.sources == []
     assert manifest.negatives == []

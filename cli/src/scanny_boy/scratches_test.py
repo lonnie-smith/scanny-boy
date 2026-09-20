@@ -53,7 +53,6 @@ def inject_vertical_scratch(
     rng = np.random.default_rng(seed)
     walk = np.cumsum(rng.normal(0, walk_sigma, val.shape[0])).astype(np.float32)
     walk = np.clip(walk - walk.mean(), -15.0, 15.0)
-    y_coords = np.arange(val.shape[0], dtype=np.float32)
     y0 = (val.shape[0] - 1) / 2.0
     for y in range(val.shape[0]):
         cx = round(x + tilt_px_per_row * (y - y0) + walk[y])
@@ -109,7 +108,9 @@ def _band_response_with_kernel(s: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         if len(rows) == 0:
             continue
         avg = s[rows].mean(axis=0)
-        response[b] = np.correlate(np.pad(avg, pad, mode="reflect"), kernel, mode="valid")
+        response[b] = np.correlate(
+            np.pad(avg, pad, mode="reflect"), kernel, mode="valid"
+        )
     return response
 
 
@@ -129,10 +130,7 @@ def test_zero_sum_kernel_finds_scratch_under_chroma_gradient():
                 val[y, xi, 0] += 0.10
                 val[y, xi, 1] += 0.085
                 val[y, xi, 2] -= 0.020
-    s = (
-        spans[2] * val[..., 2]
-        - (spans[0] * val[..., 0] + spans[1] * val[..., 1]) / 2.0
-    )
+    s = spans[2] * val[..., 2] - (spans[0] * val[..., 0] + spans[1] * val[..., 1]) / 2.0
     z_fixed = scratches._normalize_response(
         _band_response_with_kernel(s, scratches._matched_kernel())
     )
@@ -166,7 +164,6 @@ def test_detect_accepts_shallow_tilted_scratch():
 
 
 def test_detect_rejects_snaking_path():
-    clean = _flat_encoded(H, W)
     val = np.full((H, W, 3), 0.45, dtype=np.float32)
     rng = np.random.default_rng(22)
     x_base = W // 2

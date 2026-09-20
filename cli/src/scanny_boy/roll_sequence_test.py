@@ -14,12 +14,16 @@ def test_sequence_orders_by_capture_time_across_runs():
             _completed_negative(
                 negative_id="run-1-negative-01",
                 run_id="run-1",
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T12:00:10"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T12:00:10"
+                ),
             ),
             _completed_negative(
                 negative_id="run-2-negative-01",
                 run_id="run-2",
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:00"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:00"
+                ),
             ),
         ],
     )
@@ -33,13 +37,22 @@ def test_sequence_ties_break_by_run_then_filename():
         runs=[_run(run_id="run-1"), _run(run_id="run-2")],
         negatives=[
             _completed_negative(
-                negative_id="a", run_id="run-1", members=["b.NEF"], capture_time=same_time
+                negative_id="a",
+                run_id="run-1",
+                members=["b.NEF"],
+                capture_time=same_time,
             ),
             _completed_negative(
-                negative_id="b", run_id="run-1", members=["a.NEF"], capture_time=same_time
+                negative_id="b",
+                run_id="run-1",
+                members=["a.NEF"],
+                capture_time=same_time,
             ),
             _completed_negative(
-                negative_id="c", run_id="run-2", members=["a.NEF"], capture_time=same_time
+                negative_id="c",
+                run_id="run-2",
+                members=["a.NEF"],
+                capture_time=same_time,
             ),
         ],
     )
@@ -56,17 +69,23 @@ def test_intended_times_are_one_second_apart():
             _completed_negative(
                 negative_id="a",
                 members=["a.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:00"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:00"
+                ),
             ),
             _completed_negative(
                 negative_id="b",
                 members=["b.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:05"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:05"
+                ),
             ),
             _completed_negative(
                 negative_id="c",
                 members=["c.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:10"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:10"
+                ),
             ),
         ],
     )
@@ -87,7 +106,9 @@ def test_date_override_reranks_within_its_own_date():
             _completed_negative(
                 negative_id="a",
                 members=["a.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:00"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:00"
+                ),
             ),
             _completed_negative(
                 negative_id="b",
@@ -126,7 +147,9 @@ def test_sequence_is_stable_when_nothing_changed():
             _completed_negative(
                 negative_id="b",
                 members=["x.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:05"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:05"
+                ),
             ),
         ],
     )
@@ -141,7 +164,9 @@ def test_pending_and_failed_negatives_are_excluded_from_the_order():
             _completed_negative(
                 negative_id="b",
                 members=["x.NEF"],
-                capture_time=CaptureTime(source_datetime_original="2026-08-02T09:00:05"),
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T09:00:05"
+                ),
             ),
         ]
     )

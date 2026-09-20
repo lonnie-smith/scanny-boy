@@ -155,9 +155,7 @@ def test_date_override_ranks_within_its_own_date(two_negative_roll: Path):
         {"negatives": {_NEGATIVE_B: {"capture_date": "2026-08-03"}}},
     )
     manifest = load_roll_manifest(two_negative_roll)
-    assert (
-        manifest.negative(_NEGATIVE_B).capture_time.date_override == "2026-08-03"
-    )
+    assert manifest.negative(_NEGATIVE_B).capture_time.date_override == "2026-08-03"
     assert (
         manifest.negative(_NEGATIVE_A).capture_time.intended_datetime_original
         == "2026-08-01T12:00:00"
@@ -237,7 +235,9 @@ def test_catalog_remembers_canonical_values_not_caption(two_negative_roll: Path)
             "negatives": {_NEGATIVE_A: {"camera": "Nikon F3"}},
         },
     )
-    run_metadata_set(two_negative_roll, {"negatives": {_NEGATIVE_B: {"city": "Lisbon"}}})
+    run_metadata_set(
+        two_negative_roll, {"negatives": {_NEGATIVE_B: {"city": "Lisbon"}}}
+    )
     run_metadata_set(two_negative_roll, {"negatives": {_NEGATIVE_A: {"city": "Porto"}}})
     assert repo.list_metadata_values("city") == ["Porto", "Lisbon"]
     assert repo.list_metadata_values("camera") == ["Nikon F3"]
@@ -316,9 +316,7 @@ def test_cli_values_emits_metadata_values_matching_schema(two_negative_roll: Pat
 
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
-        exit_status = main(
-            ["metadata", "values", "--field", "state"]
-        )
+        exit_status = main(["metadata", "values", "--field", "state"])
     assert exit_status == 0
     events = [json.loads(line) for line in stdout.getvalue().splitlines()]
     assert [event["event"] for event in events] == [

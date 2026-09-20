@@ -142,7 +142,9 @@ def _matrix_free_lut(record, lock):
     """The preview path when no camera matrix is present — and the
     matrix-free branch `render_positive_float` takes internally."""
     meter = color.read_metering(record, highlight_lock=lock)
-    return tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, meter, channels=3)
+    return tone.build_channel_tables(
+        tone.NEUTRAL, color.NEUTRAL_COLOR, meter, channels=3
+    )
 
 
 def test_correction_changes_the_matrix_free_lut():

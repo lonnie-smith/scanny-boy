@@ -48,7 +48,16 @@ def test_read_exif_settings_reads_expected_values(tmp_path):
 
 @pytest.mark.parametrize(
     "field",
-    ["exposure_time", "f_number", "iso", "focal_length", "orientation", "lens_model", "make", "model"],
+    [
+        "exposure_time",
+        "f_number",
+        "iso",
+        "focal_length",
+        "orientation",
+        "lens_model",
+        "make",
+        "model",
+    ],
 )
 def test_read_exif_settings_returns_none_for_missing_tag(tmp_path, field):
     path = write_fake_nef(tmp_path / "a.NEF", **{field: None})
@@ -148,7 +157,9 @@ def test_read_digitization_fields_reads_all_six_raw_strings(tmp_path):
 
 
 def test_read_digitization_fields_returns_none_for_missing_tags(tmp_path):
-    path = write_fake_nef(tmp_path / "a.NEF", date_time_original=None, subsec_time_original=None)
+    path = write_fake_nef(
+        tmp_path / "a.NEF", date_time_original=None, subsec_time_original=None
+    )
 
     fields = read_digitization_fields(path)
 

@@ -23,12 +23,15 @@ def _sequenceable(manifest: RollManifest) -> list:
     return [
         n
         for n in manifest.negatives
-        if n.status == "completed" and n.capture_time.source_datetime_original is not None
+        if n.status == "completed"
+        and n.capture_time.source_datetime_original is not None
     ]
 
 
 def _rank_key(run_index: dict[str, int], negative) -> tuple:
-    source_time = datetime.datetime.fromisoformat(negative.capture_time.source_datetime_original)
+    source_time = datetime.datetime.fromisoformat(
+        negative.capture_time.source_datetime_original
+    )
     return (source_time, run_index[negative.run_id], negative.members[0])
 
 
@@ -69,8 +72,8 @@ def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
         date = datetime.date.fromisoformat(override) if override else roll_date
         rank_by_date[date] = rank_by_date.get(date, 0) + 1
         rank = rank_by_date[date]
-        times[negative_id] = (
-            datetime.datetime.combine(date, NOON) + datetime.timedelta(seconds=rank - 1)
+        times[negative_id] = datetime.datetime.combine(date, NOON) + datetime.timedelta(
+            seconds=rank - 1
         )
     return times
 

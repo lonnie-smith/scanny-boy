@@ -224,9 +224,9 @@ def test_bundle_carries_scipy_optimize_and_opencv_aruco():
     )
     # `least_squares` reaches MINPACK through these extensions; a hook that
     # collected only the pure-Python half would pass the glob above.
-    assert any("minpack" in path.name.lower() for path in optimize_binaries), (
-        [path.name for path in optimize_binaries]
-    )
+    assert any("minpack" in path.name.lower() for path in optimize_binaries), [
+        path.name for path in optimize_binaries
+    ]
 
     cv2_binaries = list(BUNDLE_PATH.rglob("cv2/cv2.*so"))
     assert cv2_binaries, "the OpenCV native module is missing from the bundle"
@@ -462,8 +462,7 @@ def test_packaged_program_runs_a_real_stitch(tmp_path):
     # The export profile is embedded, and the codestream keeps the
     # original samples (16-bit lossless).
     assert (
-        hashlib.sha256(read_icc_profile(blob)).hexdigest()
-        == EXPORT_RGB_PROFILE_SHA256
+        hashlib.sha256(read_icc_profile(blob)).hexdigest() == EXPORT_RGB_PROFILE_SHA256
     )
 
 

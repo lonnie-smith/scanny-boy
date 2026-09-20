@@ -106,11 +106,14 @@ class CuratedMetadata:
     # deliberately not applied either: the stitch stage's per-channel
     # normalization is the white balance, and layering a second one would
     # double-correct. `None` when LibRaw reported no usable matrix.
-    rgb_xyz_matrix: tuple[
-        tuple[float, float, float],
-        tuple[float, float, float],
-        tuple[float, float, float],
-    ] | None = None
+    rgb_xyz_matrix: (
+        tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ]
+        | None
+    ) = None
     # The capturing body's make/model, as the source files' EXIF spell it —
     # recorded beside the matrix so the roll manifest's `camera_color`
     # block can name the instrument the matrix characterizes.
@@ -410,10 +413,7 @@ def validate_manifest_dict(data: Any) -> None:
             and all(
                 isinstance(row, list)
                 and len(row) == 3
-                and all(
-                isinstance(v, int | float) and math.isfinite(v)
-                for v in row
-            )
+                and all(isinstance(v, int | float) and math.isfinite(v) for v in row)
                 for row in matrix
             ),
             "curated_metadata rgb_xyz_matrix is invalid",
@@ -598,7 +598,7 @@ def check_rerun_compatible(
             "the negative grid changed from "
             f"{existing.grid if existing.grid is not None else 'none (strip)'} "
             "to "
-                f"{grid if grid is not None else 'none (strip)'}"
+            f"{grid if grid is not None else 'none (strip)'}"
             " since the previous run"
         )
 

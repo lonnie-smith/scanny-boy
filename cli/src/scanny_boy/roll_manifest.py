@@ -406,9 +406,7 @@ class CameraColor:
     def from_dict(cls, data: dict[str, Any]) -> CameraColor:
         matrix = data["rgb_xyz_matrix"]
         return cls(
-            rgb_xyz_matrix=tuple(
-                (row[0], row[1], row[2]) for row in matrix
-            ),
+            rgb_xyz_matrix=tuple((row[0], row[1], row[2]) for row in matrix),
             source=data["source"],
             camera_model=data.get("camera_model"),
             matrix_version=data.get("matrix_version", MATRIX_VERSION),
@@ -456,10 +454,11 @@ class RollManifest:
     flat_field: dict[str, Any] | None = None
     # Convenience defaults for starting the roll's *next* capture/stitch
     # run — `{"grid": {"across", "down"} | None, "interval_seconds": int |
-    # None, "format": str | None}`. Pre-fill hints only: nothing in
-    # stitching reads them, and unlike `film`, they stay editable for the
-    # life of the roll (`roll set-setup`). `None` on a roll predating this
-    # feature or one nothing has been set on yet.
+    # None, "format": str | None, "auto_crop": bool}`. Pre-fill hints
+    # for the next capture/stitch run; stitching reads `format` and
+    # `auto_crop` to seed auto-crop when enabled. Unlike `film`, they
+    # stay editable for the life of the roll (`roll set-setup`). `None`
+    # on a roll predating this feature or one nothing has been set on yet.
     setup: dict[str, Any] | None = None
     # docs/ROLL_HIGHLIGHT_LOCK.md §1: the roll's highlight-colour estimate —
     # `{"k": [r, g, b], "qualifying_count": n, "measure_version": v}` or

@@ -50,18 +50,40 @@ def test_neutral_lut_is_unchanged():
 
 def test_resolved_positive_tone_applies_neutral_when_missing():
     assert tone.resolved_positive_tone(None) == tone.NEUTRAL
-    custom = {"grade_r": 90.0, "snap_gamma": 0.2, "density": 1.0,
-              "shadow_density": 0.0, "highlight_density": 0.0,
-              "toe": 0.0, "toe_width": 2.5, "shoulder": 0.0, "shoulder_width": 2.5}
-    assert tone.resolved_positive_tone(custom) == tone.ToneParams(**custom)
+    custom = {
+        "snap_gamma": 0.2,
+        "density": 1.0,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+    }
+    assert tone.resolved_positive_tone(custom) == dataclasses.replace(
+        tone.NEUTRAL,
+        snap_gamma=0.2,
+        density=1.0,
+    )
+
+
+def test_resolved_positive_tone_ignores_legacy_curve_keys():
+    custom = {
+        "snap_gamma": 0.2,
+        "density": 1.0,
+        "shadow_density": 0.0,
+        "highlight_density": 0.0,
+        "grade_r": 90.0,
+        "toe": 0.5,
+    }
+    resolved = tone.resolved_positive_tone(custom)
+    assert resolved.grade_r == tone.NEUTRAL_GRADE_R
+    assert resolved.toe == tone.NEUTRAL_TOE
+    assert resolved.snap_gamma == 0.2
 
 
 def test_density_darkens_the_midtones():
     values = np.array([0.5])
     neutral = tone.curve_values(values, tone.NEUTRAL)[0]
-    darker = tone.curve_values(
-        values, dataclasses.replace(tone.NEUTRAL, density=1.5)
-    )[0]
+    darker = tone.curve_values(values, dataclasses.replace(tone.NEUTRAL, density=1.5))[
+        0
+    ]
     brighter = tone.curve_values(
         values, dataclasses.replace(tone.NEUTRAL, density=0.5)
     )[0]
@@ -132,9 +154,7 @@ def test_toe_lifts_the_black_and_shoulder_holds_the_white():
 def test_negative_toe_and_shoulder_approach_the_unrolled_ramp():
     values = np.linspace(0.0, tone.DISPLAY_CEILING, 101)
     heavy = dataclasses.replace(tone.NEUTRAL, toe=1.0, shoulder=1.0)
-    sharp_toe = tone.curve_values(
-        values, dataclasses.replace(heavy, toe=-1.0)
-    )
+    sharp_toe = tone.curve_values(values, dataclasses.replace(heavy, toe=-1.0))
     sharp_shoulder = tone.curve_values(
         values, dataclasses.replace(heavy, shoulder=-1.0)
     )
@@ -247,12 +267,8 @@ def test_zone_constants_satisfy_monotonicity_bound():
 
 def test_curve_pins_endpoints_at_neutral_shaping():
     for grade_r in (50.0, 115.0, 180.0):
-        params = dataclasses.replace(
-            tone.NEUTRAL, grade_r=grade_r, snap_gamma=0.0
-        )
-        out = tone.curve_values(
-            np.array([0.0, tone.DISPLAY_CEILING]), params
-        )
+        params = dataclasses.replace(tone.NEUTRAL, grade_r=grade_r, snap_gamma=0.0)
+        out = tone.curve_values(np.array([0.0, tone.DISPLAY_CEILING]), params)
         assert out[0] == pytest.approx(0.0, abs=1e-6)
         assert out[1] == pytest.approx(1.0, abs=1e-6)
 
@@ -276,9 +292,7 @@ def test_contrast_may_clip_endpoints_when_snap_is_nonzero():
 def test_curve_keeps_the_pivot_fixed_at_neutral_shaping():
     for grade_r in (50.0, 115.0, 180.0):
         for snap in (-0.5, 0.0, 0.5):
-            params = dataclasses.replace(
-                tone.NEUTRAL, grade_r=grade_r, snap_gamma=snap
-            )
+            params = dataclasses.replace(tone.NEUTRAL, grade_r=grade_r, snap_gamma=snap)
             out = tone.curve_values(np.array([0.5]), params)
             tol = 5e-3 if grade_r == 115.0 else 8e-2
             assert out[0] == pytest.approx(0.5, abs=tol)
@@ -296,9 +310,7 @@ def test_snap_steepens_without_moving_the_pivot():
     values = np.array([0.35, 0.5, 0.65])
     base = dataclasses.replace(tone.NEUTRAL, snap_gamma=0.0)
     flat = tone.curve_values(values, base)
-    snapped = tone.curve_values(
-        values, dataclasses.replace(base, snap_gamma=0.4)
-    )
+    snapped = tone.curve_values(values, dataclasses.replace(base, snap_gamma=0.4))
     assert snapped[2] - snapped[0] > flat[2] - flat[0]
     assert snapped[1] == pytest.approx(0.5, abs=2e-3)
 
@@ -357,9 +369,7 @@ def test_shoulder_heavy_keeps_highlights_ordered():
 def test_shoulder_off_is_the_unrolled_ramp():
     values = np.linspace(0.85, tone.DISPLAY_CEILING, 101)
     mild = dataclasses.replace(tone.NEUTRAL, shoulder=0.0)
-    off = tone.curve_values(
-        values, dataclasses.replace(mild, shoulder=-1.0)
-    )
+    off = tone.curve_values(values, dataclasses.replace(mild, shoulder=-1.0))
     default = tone.curve_values(values, mild)
     assert off[-1] == pytest.approx(1.0, abs=1e-4)
     assert np.all(off >= default - 1e-6)

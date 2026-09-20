@@ -53,7 +53,10 @@ def _negative(
     round 2's assumed-matched behaviour, so every pre-round-3 test fixture
     still exercises the same math by default. Pass `level_offset` to
     exercise the "measured drift" source instead (it takes priority)."""
-    record: dict = {"highlight_refs": highlight_refs, "exposure_matched": exposure_matched}
+    record: dict = {
+        "highlight_refs": highlight_refs,
+        "exposure_matched": exposure_matched,
+    }
     if level_offset is not None:
         record["base_check"] = {"level_offset": level_offset}
     return _FakeNegative(normalization=record)
@@ -117,7 +120,9 @@ def test_mono_negatives_never_qualify():
 
 def test_single_qualifying_negative_reproduces_its_own_ratio():
     refs = _highlight_refs(amplitude=-1.8)
-    roll = _FakeRoll(film_base={"density": list(_BASE)}, negatives=[_negative(list(refs))])
+    roll = _FakeRoll(
+        film_base={"density": list(_BASE)}, negatives=[_negative(list(refs))]
+    )
     lock = compute_roll_highlight_lock(roll)
     assert lock is not None
     assert lock.qualifying_count == 1
@@ -158,9 +163,7 @@ def test_roll_estimate_updates_when_a_negative_is_added():
 
     # A second negative with a different ratio shifts the median.
     other_k = (1.3, 1.0, 0.95)
-    roll.negatives.append(
-        _negative(list(_highlight_refs(k=other_k, amplitude=-1.2)))
-    )
+    roll.negatives.append(_negative(list(_highlight_refs(k=other_k, amplitude=-1.2))))
     lock_after = compute_roll_highlight_lock(roll)
     assert lock_after is not None
     assert lock_after.qualifying_count == 2
@@ -367,7 +370,9 @@ def test_exif_mismatch_with_no_level_offset_gives_no_correction():
     lock = HighlightLock(k=_K, base=_BASE, qualifying_count=5)
     refs = _highlight_refs(k=(1.4, 1.0, 0.6), amplitude=-1.5)
     floors, ceils = _floors_ceils_for(refs)
-    result = corrected_floors(floors, ceils, lock, refs, base_offset=base_offset_for(record))
+    result = corrected_floors(
+        floors, ceils, lock, refs, base_offset=base_offset_for(record)
+    )
     assert result == floors
 
 
@@ -378,7 +383,9 @@ def test_exif_mismatch_negative_does_not_contribute_to_k():
             _negative(list(_highlight_refs(amplitude=-1.8)), exposure_matched=False),
         ],
     )
-    assert compute_roll_highlight_lock(roll) is None  # the only negative doesn't qualify
+    assert (
+        compute_roll_highlight_lock(roll) is None
+    )  # the only negative doesn't qualify
 
     roll.negatives.append(
         _negative(list(_highlight_refs(amplitude=-1.8)), exposure_matched=True)
@@ -397,7 +404,9 @@ def test_exif_match_gives_a_correction_using_the_absolute_base():
     lock = HighlightLock(k=_K, base=_BASE, qualifying_count=5)
     refs = _highlight_refs(k=(1.4, 1.0, 0.6), amplitude=-1.5)
     floors, ceils = _floors_ceils_for(refs)
-    result = corrected_floors(floors, ceils, lock, None, base_offset=base_offset_for(record))
+    result = corrected_floors(
+        floors, ceils, lock, None, base_offset=base_offset_for(record)
+    )
     assert result != floors
     assert result[1] == floors[1]
 
@@ -411,9 +420,7 @@ def test_never_raises_on_malformed_input():
     lock = HighlightLock(k=_K, base=_BASE, qualifying_count=1)
     assert corrected_floors((-1.4, -0.3), (-0.4, -0.2), lock) == (-1.4, -0.3)
     # Non-finite input: must not raise, and must return a 3-tuple.
-    result = corrected_floors(
-        (float("nan"), -0.3, -0.4), (-0.4, -0.2, -0.35), lock
-    )
+    result = corrected_floors((float("nan"), -0.3, -0.4), (-0.4, -0.2, -0.35), lock)
     assert len(result) == 3
 
 

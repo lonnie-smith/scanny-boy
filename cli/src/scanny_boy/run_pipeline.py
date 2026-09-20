@@ -118,6 +118,7 @@ def run_full(
     emit: EmitFn,
     rig_profile_id: str | None = None,
     auto_rotate: bool = True,
+    auto_crop: bool = True,
     grid: GridSpec | None = None,
     defer_roll_refresh: bool = False,
 ) -> RunOutcome:
@@ -249,6 +250,7 @@ def run_full(
                     emit=stitch_emit,
                     rig_profile_id=rig_profile_id,
                     auto_rotate=auto_rotate,
+                    auto_crop=auto_crop,
                     defer_roll_refresh=defer_roll_refresh,
                 )
             except StitchError as exc:

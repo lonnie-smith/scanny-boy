@@ -119,11 +119,7 @@ def test_load_roll_defaults_a_missing_gain_or_scale_to_unity(roll_dir):
             text("SELECT negative_id, frames, pairs FROM negatives")
         ).one()
         frames = [
-            {
-                key: value
-                for key, value in frame.items()
-                if key not in ("gain", "scale")
-            }
+            {key: value for key, value in frame.items() if key not in ("gain", "scale")}
             for frame in json.loads(row.frames)
         ]
         pairs = [
@@ -152,13 +148,17 @@ def test_migrations_are_idempotent():
 def test_append_edit_assigns_ascending_positions(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    first = repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+    first = repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"}
+    )
     second = repo.append_edit(
         roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "ccw"}
     )
 
     assert (first["position"], second["position"]) == (1, 2)
-    assert [e["params"]["direction"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
+    assert [
+        e["params"]["direction"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")
+    ] == [
         "cw",
         "ccw",
     ]
@@ -192,7 +192,9 @@ def test_net_rotation_composes_quarter_turns(roll_dir):
 def test_net_rotation_ignores_unknown_ops_and_directions(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
-    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "sideways"})
+    repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "sideways"}
+    )
 
     assert repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01") == 0
 
@@ -235,11 +237,13 @@ def test_net_edit_state_tracks_flips_and_rotations(roll_dir):
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "ccw"})
     assert repo.net_edit_state(roll_dir, negative) == _state(2)
 
+
 def test_net_edit_state_ignores_unknown_ops(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(roll_dir, "rid-1-negative-01", "future_op", {"whatever": 1})
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state()
+
 
 def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     """The stitch stage's auto-seeded `rotate_fine` op adds to the net fine
@@ -255,7 +259,9 @@ def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     )
     assert repo.net_edit_state(roll_dir, negative) == _state(fine_angle_deg=3.5)
     append(roll_dir, negative, repo.FLIP_OP, {})
-    assert repo.net_edit_state(roll_dir, negative) == _state(flipped=True, fine_angle_deg=-3.5)
+    assert repo.net_edit_state(roll_dir, negative) == _state(
+        flipped=True, fine_angle_deg=-3.5
+    )
     append(roll_dir, negative, repo.ROTATE_OP, {"direction": "cw"})
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -3.5)
     # Fine rotations applied after a flip still add, whatever the flag is:
@@ -264,6 +270,7 @@ def test_net_edit_state_tracks_the_fine_rotation(roll_dir):
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -5.0)
     append(roll_dir, negative, repo.ROTATE_FINE_OP, {"angle_deg": 2.0})
     assert repo.net_edit_state(roll_dir, negative) == _state(1, True, -3.0)
+
 
 def test_net_edit_state_ignores_a_malformed_fine_angle(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
@@ -348,14 +355,14 @@ def test_validated_crop_params_rejects_out_of_range_and_malformed():
 
 
 def _tone_params(
-    grade_r: float = 115.0,
     snap_gamma: float = 0.0,
     **overrides: float,
 ) -> dict[str, float]:
     from scanny_boy import tone
 
-    params = dataclasses.asdict(tone.NEUTRAL)
-    params["grade_r"] = grade_r
+    params = {
+        key: dataclasses.asdict(tone.NEUTRAL)[key] for key in tone.TONE_PARAM_KEYS
+    }
     params["snap_gamma"] = snap_gamma
     params.update(overrides)
     return params
@@ -364,14 +371,12 @@ def _tone_params(
 def test_append_tone_edit_records_the_state(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    edit = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2)
-    )
+    edit = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
 
     assert edit["op"] == repo.TONE_OP
-    assert edit["params"] == _tone_params(90.0, 0.2)
+    assert edit["params"] == _tone_params(0.2)
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        tone=_tone_params(90.0, 0.2)
+        tone=_tone_params(0.2)
     )
 
 
@@ -381,25 +386,19 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
     rows — the one coalescing exception to the log's append-only rule."""
     _negative_in(roll_dir, "rid-1-negative-01")
 
-    first = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(115.0, 0.0)
-    )
+    first = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.0))
     repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
-    second = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(80.0, 0.3)
-    )
+    second = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.3))
 
     # A rotate landed between the two tone ops, so the second appends
     # after it rather than coalescing into the first.
     assert first["position"] == 1
     assert second["position"] == 3
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        1, tone=_tone_params(80.0, 0.3)
+        1, tone=_tone_params(0.3)
     )
 
-    third = repo.append_tone_edit(
-        roll_dir, "rid-1-negative-01", _tone_params(60.0, -0.1)
-    )
+    third = repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(-0.1))
     # Now the trailing op *is* a tone op: coalesced in place, same row.
     assert third["id"] == second["id"]
     assert third["position"] == second["position"] == 3
@@ -409,7 +408,7 @@ def test_append_tone_edit_coalesces_a_trailing_tone_op(roll_dir):
         "tone",
     ]
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        1, tone=_tone_params(60.0, -0.1)
+        1, tone=_tone_params(-0.1)
     )
 
 
@@ -417,7 +416,7 @@ def test_append_tone_edit_reset_records_null_params(roll_dir):
     from scanny_boy import tone
 
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
 
     repo.append_tone_edit(
         roll_dir,
@@ -433,14 +432,12 @@ def test_append_tone_edit_validates_its_params(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
     for params in [
-        _tone_params(49.0, 0.0),
-        _tone_params(181.0, 0.0),
-        _tone_params(115.0, -0.9),
-        _tone_params(115.0, 2.0),
+        _tone_params(-0.9),
+        _tone_params(2.0),
         _tone_params(density=3.0),
         _tone_params(shadow_density=1.0),
-        _tone_params(115.0, 0.0) | {"density": None},
-        _tone_params(115.0, 0.0) | {"grade_r": "hard"},
+        _tone_params(0.0) | {"density": None},
+        _tone_params(0.0) | {"snap_gamma": "hard"},
     ]:
         with pytest.raises(ValueError):
             repo.append_tone_edit(roll_dir, "rid-1-negative-01", params)
@@ -448,18 +445,28 @@ def test_append_tone_edit_validates_its_params(roll_dir):
     assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
 
 
-def test_legacy_two_key_tone_row_reads_with_neutral_defaults(roll_dir):
+def test_legacy_nine_key_tone_row_reads_user_keys_and_ignores_curve(roll_dir):
 
     _negative_in(roll_dir, "rid-1-negative-01")
     repo.append_edit(
         roll_dir,
         "rid-1-negative-01",
         repo.TONE_OP,
-        {"grade_r": 90.0, "snap_gamma": 0.2},
+        {
+            "grade_r": 90.0,
+            "snap_gamma": 0.2,
+            "density": 1.1,
+            "shadow_density": 0.0,
+            "highlight_density": 0.0,
+            "toe": 0.5,
+            "toe_width": 3.0,
+            "shoulder": -0.2,
+            "shoulder_width": 4.0,
+        },
     )
 
     tone_params = repo.net_edit_state(roll_dir, "rid-1-negative-01").tone
-    assert tone_params == _tone_params(90.0, 0.2)
+    assert tone_params == _tone_params(0.2, density=1.1)
 
 
 def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
@@ -468,7 +475,7 @@ def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
         roll_dir,
         "rid-1-negative-01",
         repo.TONE_OP,
-        {"grade_r": 90.0, "snap_gamma": 0.2, "density": 99.0},
+        {"snap_gamma": 0.2, "density": 99.0},
     )
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01").tone is None
@@ -476,8 +483,10 @@ def test_net_edit_state_rejects_out_of_range_new_tone_fields(roll_dir):
 
 def test_net_edit_state_degrades_a_malformed_tone_op_to_no_adjustment(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(90.0, 0.2))
-    repo.append_edit(roll_dir, "rid-1-negative-01", repo.TONE_OP, {"grade_r": "hard"})
+    repo.append_tone_edit(roll_dir, "rid-1-negative-01", _tone_params(0.2))
+    repo.append_edit(
+        roll_dir, "rid-1-negative-01", repo.TONE_OP, {"snap_gamma": "hard"}
+    )
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state()
 
@@ -534,9 +543,7 @@ def test_append_color_edit_reset_records_null_params(roll_dir):
     from scanny_boy import color
 
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1)
-    )
+    repo.append_color_edit(roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1))
 
     repo.append_color_edit(
         roll_dir,
@@ -610,9 +617,7 @@ def test_append_spots_edit_coalesces_a_trailing_spots_op(roll_dir):
 
     assert second["id"] == first["id"]
     assert second["position"] == first["position"] == 1
-    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == [
-        "spots"
-    ]
+    assert [e["op"] for e in repo.edits_for(roll_dir, "rid-1-negative-01")] == ["spots"]
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01").spots["repair"] is True
 
 

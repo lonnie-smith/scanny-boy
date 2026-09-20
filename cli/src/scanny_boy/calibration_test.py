@@ -54,7 +54,9 @@ def _render_ideal_board() -> np.ndarray:
     return np.repeat(image[:, :, np.newaxis], 3, axis=2).astype(np.uint16) * 257
 
 
-def _distortion_maps(size: tuple[int, int], scale: float) -> tuple[np.ndarray, np.ndarray]:
+def _distortion_maps(
+    size: tuple[int, int], scale: float
+) -> tuple[np.ndarray, np.ndarray]:
     """The inverse map the synthetic observation is sampled through:
     `observed(q) = ideal(map(q))`. The green channel samples
     `map = d^-1`; a CA channel's scale lives in *undistorted* space — the
@@ -163,7 +165,9 @@ def calibrated_profile(tmp_path, monkeypatch):
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
 
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
 
     events: list = []
     try:
@@ -224,7 +228,9 @@ def test_heldout_split_is_deterministic_across_runs(tmp_path, monkeypatch):
     library_db.reset_engine_cache()
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
     try:
         first = calibration.create_profile("One", paths)
         second = calibration.create_profile("Two", paths)
@@ -255,7 +261,9 @@ def test_too_few_calibration_frames_fails(tmp_path, monkeypatch):
     library_db.reset_engine_cache()
     decoder = FakeDecoder()
     monkeypatch.setattr(calibration, "decode_raw", decoder)
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES - 1)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES - 1)
+    ]
     try:
         with pytest.raises(calibration.RigError) as excinfo:
             calibration.create_profile("Few", paths)
@@ -280,7 +288,9 @@ def test_undetectable_board_raises_the_contract_code(tmp_path, monkeypatch):
         return DecodedFrame(pixels=blank, width=FULL_W, height=FULL_H)
 
     monkeypatch.setattr(calibration, "decode_raw", fake_decode)
-    paths = [tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)]
+    paths = [
+        tmp_path / f"cal-{i}.NEF" for i in range(calibration.MIN_CALIBRATION_FRAMES)
+    ]
     try:
         with pytest.raises(calibration.RigError) as excinfo:
             calibration.create_profile("Blank", paths)

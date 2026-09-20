@@ -95,9 +95,10 @@ def test_per_channel_constant_scales_cancel_identically():
     linear = _radial_falloff(300, 450, edge_fraction=0.4)
     scaled = linear * np.array([2.0, 0.5, 4.0], dtype=np.float32)
 
-    assert flatfield.compute_gain(scaled).tobytes() == flatfield.compute_gain(
-        linear
-    ).tobytes()
+    assert (
+        flatfield.compute_gain(scaled).tobytes()
+        == flatfield.compute_gain(linear).tobytes()
+    )
 
 
 # --- apply_in_place ---------------------------------------------------------
@@ -137,15 +138,11 @@ def test_banded_application_equals_whole_array_application_exactly():
     banded = pixels.copy()
     banded_clipped = flatfield.apply_in_place(banded, full_res_gain)
 
-    whole = encode_from_linear(
-        decode_to_linear(pixels) * full_res_gain
-    )
+    whole = encode_from_linear(decode_to_linear(pixels) * full_res_gain)
     assert np.array_equal(banded, whole)
     # The clip count is likewise independent of where the bands fall.
     corrected = decode_to_linear(pixels) * full_res_gain
-    whole_clipped = int(
-        np.count_nonzero(np.any(corrected > 1.0, axis=-1))
-    )
+    whole_clipped = int(np.count_nonzero(np.any(corrected > 1.0, axis=-1)))
     assert banded_clipped == whole_clipped
 
 
@@ -233,8 +230,11 @@ def test_load_gain_map_rejects_a_tampered_file(tmp_path, monkeypatch):
         path, sha256 = flatfield.save_gain_map(
             path, np.ones((8, 8, 3), dtype=np.float32)
         )
-        np.savez(path, format_version=flatfield.GAIN_MAP_FORMAT_VERSION,
-                 gain_map=np.full((8, 8, 3), 2.0, dtype=np.float32))
+        np.savez(
+            path,
+            format_version=flatfield.GAIN_MAP_FORMAT_VERSION,
+            gain_map=np.full((8, 8, 3), 2.0, dtype=np.float32),
+        )
 
         with pytest.raises(FlatFieldError) as excinfo:
             flatfield.load_gain_map(str(path), sha256)
