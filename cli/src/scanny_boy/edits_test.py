@@ -673,8 +673,7 @@ def test_color_partial_update_leaves_other_values(stitched_roll):
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).color == expected
 
 
-def test_color_temperature_moves_only_the_named_region(stitched_roll):
-    from scanny_boy import color
+def test_color_temperature_is_recorded_without_touching_the_sliders(stitched_roll):
     from scanny_boy.library import repo
 
     run_edit_color(
@@ -687,19 +686,17 @@ def test_color_temperature_moves_only_the_named_region(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        {},
-        temperature=3200.0,
-        region="shadows",
+        {"temperature": 11000.0},
         emit=lambda event: None,
     )
 
     state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID).color
     assert state is not None
+    assert state["temperature"] == pytest.approx(11000.0)
     assert state["wb_magenta"] == pytest.approx(0.1)
     assert state["wb_yellow"] == pytest.approx(0.05)
-    shadow_m, shadow_y = color.kelvin_to_wb(3200.0, 0.0, 0.0)
-    assert state["shadow_magenta"] == pytest.approx(shadow_m)
-    assert state["shadow_yellow"] == pytest.approx(shadow_y)
+    assert state["shadow_magenta"] == 0.0
+    assert state["shadow_yellow"] == 0.0
 
 
 def test_color_reset_returns_to_the_neutral_preview(stitched_roll):

@@ -92,7 +92,7 @@ CROP_MIN_SIZE_PX = 16
 # sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
 
-# `color` params are the complete preview colour state — thirteen keys, of
+# `color` params are the complete preview colour state — `color.COLOR_PARAM_KEYS`, of
 # which the original twelve are the compatibility floor
 # (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None` for the reset (see
 # `color.py`). A sibling of `tone`: preview-only, independently
@@ -814,6 +814,7 @@ def _color_neutral_defaults() -> dict[str, float]:
         "dye_separation": 1.0,
         "separation_damping": 0.0,
         "auto_neutral": 1.0,
+        "temperature": 5500.0,
     }
 
 

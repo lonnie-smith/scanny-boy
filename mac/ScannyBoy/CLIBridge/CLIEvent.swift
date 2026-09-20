@@ -417,7 +417,9 @@ extension CLIEvent {
                 castRemovalHighlights: params["cast_removal_highlights"]?.doubleValue ?? 0,
                 dyeSeparation: params["dye_separation"]?.doubleValue
                     ?? ColorAdjustment.neutral.dyeSeparation,
-                separationDamping: params["separation_damping"]?.doubleValue ?? 0
+                separationDamping: params["separation_damping"]?.doubleValue ?? 0,
+                temperature: params["temperature"]?.doubleValue
+                    ?? ColorAdjustment.neutral.temperature
             )
         )
     }

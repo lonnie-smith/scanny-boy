@@ -721,13 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--temperature",
         type=float,
         metavar="K",
-        help="3000-12000 K lever over the region's M/Y pair",
-    )
-    edit_color.add_argument(
-        "--region",
-        choices=("global", "shadows", "highlights"),
-        default="global",
-        help="which region --temperature drives (default: global)",
+        help="global temperature, 3500-12000 K (5500 neutral); a layer under the CMY sliders",
     )
     edit_color.add_argument(
         "--reset",
@@ -939,6 +933,7 @@ def _color_flag_updates(args) -> dict[str, float | None]:
         "cast_removal_highlights": "cast_removal_highlights",
         "dye_separation": "dye_separation",
         "separation_damping": "separation_damping",
+        "temperature": "temperature",
     }
     for arg_name, key in mapping.items():
         value = getattr(args, arg_name, None)
@@ -951,8 +946,8 @@ def _validate_color_args(args) -> None:
     """`--auto-cast` owns all three global
     CMY sliders outright — it is a usage error with `--reset` (which
     contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
-    (which it would overwrite). The `--temperature` exclusivity rules are
-    unchanged; the function only outgrew its temperature-only name."""
+    (which it would overwrite). `--temperature` is its own layer and
+    composes with all of them — the auto solve leaves it in place."""
     if args.auto_cast:
         if args.reset:
             raise ValueError("--auto-cast is mutually exclusive with --reset")
@@ -961,15 +956,6 @@ def _validate_color_args(args) -> None:
                 "--auto-cast is mutually exclusive with --cyan, --magenta and "
                 "--yellow; the auto owns all three"
             )
-    if args.temperature is None:
-        return
-    region = args.region
-    if region == "global" and args.magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --magenta")
-    if region == "shadows" and args.shadow_magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
-    if region == "highlights" and args.highlight_magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --highlight-magenta")
 
 
 def _run_stitch_command(
@@ -1275,13 +1261,6 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             negative[f"color_{key}"] = (
                 None if color_params is None else color_params[key]
             )
-        negative["color_temperature"] = (
-            None
-            if color_params is None
-            else color_mod.wb_to_kelvin(
-                color_params["wb_magenta"], color_params["wb_yellow"]
-            )
-        )
         # The spots summary, not the list: a 36-negative roll with 500
         # spots each would otherwise put megabytes of JSON through every
         # `roll info`. The full list is
@@ -1702,8 +1681,6 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.negative,
                 _color_flag_updates(args) if not args.reset else None,
                 reset=args.reset,
-                temperature=args.temperature,
-                region=args.region,
                 auto_cast=args.auto_cast,
                 emit=writer.write,
             )

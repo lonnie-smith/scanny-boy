@@ -379,8 +379,6 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         negatives: [String],
         adjustment: ColorAdjustment?,
-        region: String = "global",
-        temperatureKelvin: Double? = nil,
         auto: ColorAutoFlags = []
     ) -> CLICommand {
         var arguments = [
@@ -391,55 +389,32 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            let tempRegion = temperatureKelvin != nil ? region : nil
-            let autoCast = auto.contains(.cast)
-
-            if autoCast {
+            if auto.contains(.cast) {
                 arguments.append("--auto-cast")
             } else {
                 arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
-                if tempRegion == "global", let temperatureKelvin {
-                    arguments.append(contentsOf: [
-                        "--temperature", String(temperatureKelvin),
-                        "--region", "global",
-                    ])
-                } else {
-                    arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
-                    arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
-                }
+                arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
+                arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
             }
+            arguments.append(contentsOf: ["--temperature", String(adjustment.temperature)])
 
             arguments.append(contentsOf: ["--shadow-cyan", String(adjustment.shadowCyan)])
-            if tempRegion == "shadows", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "shadows",
-                ])
-            } else {
-                arguments.append(contentsOf: [
-                    "--shadow-magenta", String(adjustment.shadowMagenta),
-                ])
-                arguments.append(contentsOf: [
-                    "--shadow-yellow", String(adjustment.shadowYellow),
-                ])
-            }
+            arguments.append(contentsOf: [
+                "--shadow-magenta", String(adjustment.shadowMagenta),
+            ])
+            arguments.append(contentsOf: [
+                "--shadow-yellow", String(adjustment.shadowYellow),
+            ])
 
             arguments.append(contentsOf: [
                 "--highlight-cyan", String(adjustment.highlightCyan),
             ])
-            if tempRegion == "highlights", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "highlights",
-                ])
-            } else {
-                arguments.append(contentsOf: [
-                    "--highlight-magenta", String(adjustment.highlightMagenta),
-                ])
-                arguments.append(contentsOf: [
-                    "--highlight-yellow", String(adjustment.highlightYellow),
-                ])
-            }
+            arguments.append(contentsOf: [
+                "--highlight-magenta", String(adjustment.highlightMagenta),
+            ])
+            arguments.append(contentsOf: [
+                "--highlight-yellow", String(adjustment.highlightYellow),
+            ])
 
             arguments.append(contentsOf: ["--cast-removal", String(adjustment.castRemoval)])
             arguments.append(

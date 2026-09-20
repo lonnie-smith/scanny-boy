@@ -43,9 +43,12 @@ SEPARATION_K_MAX = 3.0
 # monotonicity near the reference at k=1.5; 2.0 leaves headroom.
 SEPARATION_DAMPING_GAIN = 2.0
 
-# Temperature lever — nominal readout, not colorimetric (NegPy logic.py).
+# Temperature — its own global layer under the CMY sliders, never written
+# into them. Nominal, not colorimetric: the mired shift from the reference
+# moves magenta and yellow along NegPy's Planckian direction, in slider
+# units. 3500–12000 K is ~±100 mireds either side of 5500 K.
 TEMP_REF_KELVIN = 5500.0
-TEMP_MIN_KELVIN = 3000.0
+TEMP_MIN_KELVIN = 3500.0
 TEMP_MAX_KELVIN = 12000.0
 TEMP_K_MAGENTA = 0.0029
 TEMP_K_YELLOW = 0.0057
@@ -69,6 +72,7 @@ COLOR_PARAM_KEYS = (
     "dye_separation",
     "separation_damping",
     "auto_neutral",
+    "temperature",
 )
 
 # The original twelve, frozen, in their original order. This exists only so
@@ -107,6 +111,7 @@ class ColorParams:
     dye_separation: float = 1.0
     separation_damping: float = 0.0
     auto_neutral: float = 1.0
+    temperature: float = TEMP_REF_KELVIN
 
 
 NEUTRAL_COLOR = ColorParams()
@@ -338,8 +343,18 @@ def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
     shift's luma is proportional to the luma-weighted mean of the post-
     division values; zeroing that is what holds lightness. An equal three-
     slider move is not a no-op when the ranges differ — it is a pure hue
-    move at constant lightness."""
-    sliders = (params.wb_cyan, params.wb_magenta, params.wb_yellow)
+    move at constant lightness.
+
+    Temperature is a separate layer the sliders sit on top of: its
+    magenta/yellow contribution is added to the slider values here, before
+    the gain, range division and luma removal, so it is lightness-neutral
+    by the same argument and never touches (or clamps) the sliders."""
+    temp = temperature_cmy(params.temperature)
+    sliders = (
+        params.wb_cyan + temp[0],
+        params.wb_magenta + temp[1],
+        params.wb_yellow + temp[2],
+    )
     if len(sliders) != len(metering.ranges):
         # Unreachable in production (mono never applies colour), but a
         # malformed record must not index out of range.
@@ -743,29 +758,13 @@ def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
     return luma + k_eff * diff
 
 
-def wb_to_kelvin(magenta: float, yellow: float) -> float:
-    """Nominal illuminant temperature: least-squares projection onto the
-    Planckian (mired) direction; 5500 K at neutral. Higher K is warmer
-    (Lightroom convention). Not colorimetric."""
-    km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
-    dmu = -(km * magenta + ky * yellow) / (km * km + ky * ky)
-    mu = min(
-        max(1e6 / TEMP_REF_KELVIN + dmu, 1e6 / TEMP_MAX_KELVIN),
-        1e6 / TEMP_MIN_KELVIN,
-    )
-    return float(1e6 / mu)
-
-
-def kelvin_to_wb(kelvin: float, magenta: float, yellow: float) -> tuple[float, float]:
-    """Move (M, Y) along the Planckian direction to `kelvin`, preserving
-    the off-locus tint component. Higher K warms the image."""
-    km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
-    kelvin = min(max(kelvin, TEMP_MIN_KELVIN), TEMP_MAX_KELVIN)
-    dmu_cur = -(km * magenta + ky * yellow) / (km * km + ky * ky)
-    delta = -(1e6 / kelvin - 1e6 / TEMP_REF_KELVIN) - dmu_cur
-    m2 = min(max(magenta + km * delta, CMY_MIN), CMY_MAX)
-    y2 = min(max(yellow + ky * delta, CMY_MIN), CMY_MAX)
-    return float(m2), float(y2)
+def temperature_cmy(kelvin: float) -> tuple[float, float, float]:
+    """The temperature layer's (C, M, Y) contribution in slider units:
+    the mired shift from 5500 K along the Planckian direction. Higher K is
+    warmer (Lightroom convention); zero at the reference; cyan untouched.
+    Linear in mireds, so equal slider travel reads as equal warmth."""
+    warmth = 1e6 / TEMP_REF_KELVIN - 1e6 / kelvin
+    return (0.0, TEMP_K_MAGENTA * warmth, TEMP_K_YELLOW * warmth)
 
 
 def _color_param_bounds() -> tuple[tuple[str, float, float], ...]:
@@ -789,4 +788,5 @@ def _color_param_bounds() -> tuple[tuple[str, float, float], ...]:
         ("dye_separation", DYE_SEPARATION_MIN, DYE_SEPARATION_MAX),
         ("separation_damping", SEPARATION_DAMPING_MIN, SEPARATION_DAMPING_MAX),
         ("auto_neutral", 0.0, 1.0),
+        ("temperature", TEMP_MIN_KELVIN, TEMP_MAX_KELVIN),
     )
