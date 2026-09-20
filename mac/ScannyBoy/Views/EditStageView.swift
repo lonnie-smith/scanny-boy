@@ -1441,9 +1441,6 @@ private struct ColorAdjustmentPanel: View {
 
     @State private var region: ColorRegion = .global
     @State private var values = ColorAdjustment.neutral
-    /// Anchor (M, Y) for the active region for the duration of a temperature drag.
-    @State private var temperatureAnchor: (magenta: Double, yellow: Double)?
-    @State private var temperatureKelvin = ColorTemperature.neutralKelvin
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1454,9 +1451,19 @@ private struct ColorAdjustmentPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: region) { syncTemperatureReadout() }
 
-                temperatureSlider
+                if region == .global {
+                    colorSlider(
+                        "Temperature",
+                        value: warmthBinding,
+                        range: ColorTemperature.warmthRange,
+                        step: 1,
+                        trackColors: CMYSliderTrackColors.temperature
+                    ) {
+                        String(format: "%.0fK", values.temperature)
+                    }
+                    .help("A brightness-neutral warm/cool layer; the sliders below adjust on top of it")
+                }
 
                 colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.cyan) {
                     String(format: "%+.2f", cyanBinding.wrappedValue)
@@ -1540,60 +1547,28 @@ private struct ColorAdjustmentPanel: View {
 
     private var magentaBinding: Binding<Double> {
         switch region {
-        case .global:
-            Binding(
-                get: { values.wbMagenta },
-                set: {
-                    values.wbMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .shadows:
-            Binding(
-                get: { values.shadowMagenta },
-                set: {
-                    values.shadowMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
+        case .global: Binding(get: { values.wbMagenta }, set: { values.wbMagenta = $0 })
+        case .shadows: Binding(get: { values.shadowMagenta }, set: { values.shadowMagenta = $0 })
         case .highlights:
-            Binding(
-                get: { values.highlightMagenta },
-                set: {
-                    values.highlightMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
+            Binding(get: { values.highlightMagenta }, set: { values.highlightMagenta = $0 })
         }
     }
 
     private var yellowBinding: Binding<Double> {
         switch region {
-        case .global:
-            Binding(
-                get: { values.wbYellow },
-                set: {
-                    values.wbYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .shadows:
-            Binding(
-                get: { values.shadowYellow },
-                set: {
-                    values.shadowYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
+        case .global: Binding(get: { values.wbYellow }, set: { values.wbYellow = $0 })
+        case .shadows: Binding(get: { values.shadowYellow }, set: { values.shadowYellow = $0 })
         case .highlights:
-            Binding(
-                get: { values.highlightYellow },
-                set: {
-                    values.highlightYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
+            Binding(get: { values.highlightYellow }, set: { values.highlightYellow = $0 })
         }
+    }
+
+    /// The temperature slider moves in mireds (reset value 0) and stores Kelvin.
+    private var warmthBinding: Binding<Double> {
+        Binding(
+            get: { ColorTemperature.warmth(kelvin: values.temperature) },
+            set: { values.temperature = ColorTemperature.kelvin(warmth: $0) }
+        )
     }
 
     private func colorSlider(
@@ -1638,6 +1613,7 @@ private struct ColorAdjustmentPanel: View {
         switch region {
         case .global:
             values.wbCyan = 0; values.wbMagenta = 0; values.wbYellow = 0
+            values.temperature = ColorTemperature.neutralKelvin
         case .shadows:
             values.shadowCyan = 0; values.shadowMagenta = 0; values.shadowYellow = 0
         case .highlights:
@@ -1648,88 +1624,6 @@ private struct ColorAdjustmentPanel: View {
 
     private func syncFromModel() {
         values = adjustment ?? ColorAdjustment.neutral
-        syncTemperatureReadout()
-        temperatureAnchor = nil
-    }
-
-    private func syncTemperatureReadout() {
-        let pair = regionMagentaYellow
-        temperatureKelvin = ColorTemperature.kelvin(
-            magenta: pair.magenta, yellow: pair.yellow
-        )
-    }
-
-    private var regionMagentaYellow: (magenta: Double, yellow: Double) {
-        switch region {
-        case .global: (values.wbMagenta, values.wbYellow)
-        case .shadows: (values.shadowMagenta, values.shadowYellow)
-        case .highlights: (values.highlightMagenta, values.highlightYellow)
-        }
-    }
-
-    private var temperatureSlider: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Temperature")
-                Spacer()
-                Text(String(format: "%.0fK", temperatureKelvin))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            Slider(
-                value: Binding(
-                    get: { temperatureKelvin },
-                    set: { kelvin in
-                        let snapped = ToneSlider.snap(
-                            kelvin, step: 50,
-                            range: ColorTemperature.minKelvin...ColorTemperature.maxKelvin
-                        )
-                        guard snapped != temperatureKelvin else { return }
-                        temperatureKelvin = snapped
-                        applyTemperature(snapped)
-                        onScheduleCommit(values)
-                    }
-                ),
-                in: ColorTemperature.minKelvin...ColorTemperature.maxKelvin,
-                step: 50
-            ) { editing in
-                if editing {
-                    let pair = regionMagentaYellow
-                    temperatureAnchor = (pair.magenta, pair.yellow)
-                } else {
-                    temperatureAnchor = nil
-                    onCommitNow(values, [])
-                }
-            }
-            .background(alignment: .center) {
-                SliderTrackBackground(colors: CMYSliderTrackColors.temperature)
-            }
-            .doubleClickReset {
-                temperatureKelvin = ColorTemperature.neutralKelvin
-                applyTemperature(temperatureKelvin)
-                onCommitNow(values, [])
-            }
-        }
-    }
-
-    private func applyTemperature(_ kelvin: Double) {
-        let anchor = temperatureAnchor ?? regionMagentaYellow
-        let balanced = ColorTemperature.whiteBalance(
-            kelvin: kelvin,
-            anchorMagenta: anchor.magenta,
-            anchorYellow: anchor.yellow
-        )
-        switch region {
-        case .global:
-            values.wbMagenta = balanced.magenta
-            values.wbYellow = balanced.yellow
-        case .shadows:
-            values.shadowMagenta = balanced.magenta
-            values.shadowYellow = balanced.yellow
-        case .highlights:
-            values.highlightMagenta = balanced.magenta
-            values.highlightYellow = balanced.yellow
-        }
     }
 }
 

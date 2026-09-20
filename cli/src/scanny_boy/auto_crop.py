@@ -212,7 +212,6 @@ def exclusion_hint(
     inv_scale = 1.0 / scale if scale > 0 else 1.0
     analysis_w = analysis_size[1]
     analysis_h = analysis_size[0]
-
     # Convert TIFF rect to full-display space (same as TIFF at scale=1,
     # before any quarter turns — the exclusion hint is measured without
     # display transforms since the carrier is in TIFF space).

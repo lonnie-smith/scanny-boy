@@ -1,6 +1,6 @@
 import Foundation
 
-/// The preview's complete colour state — the thirteen keys the `color` op records.
+/// The preview's complete colour state — the keys the `color` op records.
 public struct ColorAdjustment: Equatable, Sendable, Hashable {
     public var wbCyan: Double
     public var wbMagenta: Double
@@ -15,6 +15,9 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
     public var castRemovalHighlights: Double
     public var dyeSeparation: Double
     public var separationDamping: Double
+    /// Global temperature in Kelvin — a layer under the CMY sliders, never
+    /// written into them.
+    public var temperature: Double
 
     public static let neutral = ColorAdjustment(
         wbCyan: 0,
@@ -29,7 +32,8 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         castRemoval: 0,
         castRemovalHighlights: 0,
         dyeSeparation: 1,
-        separationDamping: 0
+        separationDamping: 0,
+        temperature: ColorTemperature.neutralKelvin
     )
 
     public init(
@@ -45,7 +49,8 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         castRemoval: Double,
         castRemovalHighlights: Double,
         dyeSeparation: Double,
-        separationDamping: Double
+        separationDamping: Double,
+        temperature: Double
     ) {
         self.wbCyan = wbCyan
         self.wbMagenta = wbMagenta
@@ -60,6 +65,7 @@ public struct ColorAdjustment: Equatable, Sendable, Hashable {
         self.castRemovalHighlights = castRemovalHighlights
         self.dyeSeparation = dyeSeparation
         self.separationDamping = separationDamping
+        self.temperature = temperature
     }
 }
 
@@ -90,45 +96,30 @@ extension RollManifest.Negative {
             castRemoval: colorCastRemoval ?? 0,
             castRemovalHighlights: colorCastRemovalHighlights ?? 0,
             dyeSeparation: colorDyeSeparation ?? ColorAdjustment.neutral.dyeSeparation,
-            separationDamping: colorSeparationDamping ?? 0
+            separationDamping: colorSeparationDamping ?? 0,
+            temperature: colorTemperature ?? ColorTemperature.neutralKelvin
         )
     }
 }
 
-/// Nominal Kelvin readout and temperature lever — mirrors `color.py`.
+/// The temperature layer's bounds, and the slider's mired-linear position —
+/// mirrors `color.py`. The CLI owns the actual colour math.
 enum ColorTemperature {
     static let neutralKelvin = 5500.0
-    static let minKelvin = 3000.0
+    static let minKelvin = 3500.0
     static let maxKelvin = 12000.0
 
-    private static let refKelvin = 5500.0
-    private static let kMagenta = 0.0029
-    private static let kYellow = 0.0057
-
-    static func kelvin(magenta: Double, yellow: Double) -> Double {
-        let dmu = -(kMagenta * magenta + kYellow * yellow)
-            / (kMagenta * kMagenta + kYellow * kYellow)
-        let mu = min(
-            max(1e6 / refKelvin + dmu, 1e6 / maxKelvin),
-            1e6 / minKelvin
-        )
-        return 1e6 / mu
+    /// Slider position: mired shift from neutral, positive warmer. Equal
+    /// travel is equal warmth, and neutral sits near the middle.
+    static func warmth(kelvin: Double) -> Double {
+        1e6 / neutralKelvin - 1e6 / kelvin
     }
 
-    /// Move (M, Y) along the Planckian direction to `kelvin`, preserving
-    /// the off-locus tint. Anchor the inputs for a whole drag — re-projecting
-    /// an already-clipped pair on every tick corrupts the tint component.
-    static func whiteBalance(
-        kelvin: Double,
-        anchorMagenta: Double,
-        anchorYellow: Double
-    ) -> (magenta: Double, yellow: Double) {
-        let clamped = min(max(kelvin, minKelvin), maxKelvin)
-        let dmuCurrent = -(kMagenta * anchorMagenta + kYellow * anchorYellow)
-            / (kMagenta * kMagenta + kYellow * kYellow)
-        let delta = -(1e6 / clamped - 1e6 / refKelvin) - dmuCurrent
-        let magenta = min(max(anchorMagenta + kMagenta * delta, -1), 1)
-        let yellow = min(max(anchorYellow + kYellow * delta, -1), 1)
-        return (magenta, yellow)
+    static func kelvin(warmth: Double) -> Double {
+        min(max(1e6 / (1e6 / neutralKelvin - warmth), minKelvin), maxKelvin)
+    }
+
+    static var warmthRange: ClosedRange<Double> {
+        warmth(kelvin: minKelvin)...warmth(kelvin: maxKelvin)
     }
 }

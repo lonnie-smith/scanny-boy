@@ -44,13 +44,6 @@ EmitFn = Any
 
 DIRECTIONS = {"cw", "ccw"}
 
-_COLOR_REGION_KEYS = {
-    "global": ("wb_magenta", "wb_yellow"),
-    "shadows": ("shadow_magenta", "shadow_yellow"),
-    "highlights": ("highlight_magenta", "highlight_yellow"),
-}
-
-
 def roll_is_monochrome(roll: RollManifest) -> bool:
     """The roll's frozen film kind. Colour has no
     meaning on a single-density roll: there are no layers to balance and
@@ -563,8 +556,6 @@ def run_edit_color(
     params: dict[str, float | None] | None,
     *,
     reset: bool = False,
-    temperature: float | None = None,
-    region: str = "global",
     auto_cast: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
@@ -599,27 +590,13 @@ def run_edit_color(
             "single-density roll",
         )
 
-    mag_key, yellow_key = _COLOR_REGION_KEYS[region]
-
     results: list[dict] = []
     for negative in negatives:
         if reset:
             solved = {key: None for key in color.COLOR_PARAM_KEYS}
         else:
             state = repo.net_edit_state(roll_dir, negative.negative_id)
-            updates = dict(params or {})
-            if temperature is not None:
-                import dataclasses
-
-                base = (
-                    dict(state.color)
-                    if state.color is not None
-                    else dataclasses.asdict(color.NEUTRAL_COLOR)
-                )
-                m, y = color.kelvin_to_wb(temperature, base[mag_key], base[yellow_key])
-                updates[mag_key] = m
-                updates[yellow_key] = y
-            solved = _merge_color_params(state.color, updates)
+            solved = _merge_color_params(state.color, dict(params or {}))
             # The metering warning: fire when EITHER tie strength is
             # non-zero and the metering it needs is missing — one warning
             # per negative, not two.

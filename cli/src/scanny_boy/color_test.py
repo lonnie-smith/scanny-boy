@@ -180,17 +180,36 @@ def test_apply_separation_damping_matches_gain():
         np.testing.assert_allclose(out, expected, rtol=1e-6)
 
 
-def test_kelvin_round_trips():
-    for kelvin in (3000.0, 5500.0, 12000.0):
-        m, y = color.kelvin_to_wb(kelvin, 0.1, -0.05)
-        assert color.wb_to_kelvin(m, y) == pytest.approx(kelvin, rel=0.01)
-    assert color.wb_to_kelvin(0.0, 0.0) == pytest.approx(5500.0)
-    m_warm, y_warm = color.kelvin_to_wb(6500.0, 0.0, 0.0)
+def test_temperature_direction():
+    assert color.temperature_cmy(color.TEMP_REF_KELVIN) == (0.0, 0.0, 0.0)
+    cyan, m_warm, y_warm = color.temperature_cmy(6500.0)
+    assert cyan == 0.0
     assert m_warm > 0.0
     assert y_warm > 0.0
-    m_cool, y_cool = color.kelvin_to_wb(4500.0, 0.0, 0.0)
+    _, m_cool, y_cool = color.temperature_cmy(4500.0)
     assert m_cool < 0.0
     assert y_cool < 0.0
+
+
+def test_temperature_is_a_lightness_neutral_layer_under_the_sliders():
+    """Pegged sliders plus an extreme temperature: the offsets stay
+    luma-neutral, and the temperature's shift is exactly additive — it
+    neither reads nor clamps the slider values."""
+    metering = _metering(ranges=(0.8, 1.0, 1.2))
+    sliders = color.ColorParams(wb_cyan=-0.4, wb_magenta=1.0, wb_yellow=1.0)
+    base = color.cmy_offsets(sliders, metering)
+    for kelvin in (color.TEMP_MIN_KELVIN, color.TEMP_MAX_KELVIN):
+        layered = color.cmy_offsets(
+            dataclasses.replace(sliders, temperature=kelvin), metering
+        )
+        temp_only = color.cmy_offsets(
+            color.ColorParams(temperature=kelvin), metering
+        )
+        assert _luma_sum(layered) == pytest.approx(0.0, abs=1e-12)
+        assert _luma_sum(temp_only) == pytest.approx(0.0, abs=1e-12)
+        assert layered == pytest.approx(
+            tuple(b + t for b, t in zip(base, temp_only, strict=True))
+        )
 
 
 def _luma_sum(triple: tuple[float, ...]) -> float:
