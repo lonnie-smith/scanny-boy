@@ -953,7 +953,6 @@ def _validate_color_args(args) -> None:
             )
 
 
-
 def _run_stitch_command(
     args,
     writer: EventWriter,

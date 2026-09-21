@@ -388,7 +388,11 @@ def curve_values(
             color_params.curve_blue_50,
             color_params.curve_blue_75,
         )
-        ch_offsets = (offsets[channel * 3], offsets[channel * 3 + 1], offsets[channel * 3 + 2])
+        ch_offsets = (
+            offsets[channel * 3],
+            offsets[channel * 3 + 1],
+            offsets[channel * 3 + 2],
+        )
         raw = color.channel_curve(raw, ch_offsets)
     return np.clip(raw, 0.0, 1.0)
 
@@ -408,9 +412,7 @@ def build_channel_tables(
     apply_color = channels > 1
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
     norm = normalization.decode_normalized(codes)
-    offsets = (
-        color.balance_offsets(color_params) if apply_color else (0.0,) * channels
-    )
+    offsets = color.balance_offsets(color_params) if apply_color else (0.0,) * channels
     tables = np.empty((channels, MAX_CODE + 1), dtype=np.float64)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0

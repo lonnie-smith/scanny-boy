@@ -1842,9 +1842,7 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(
-            params.get(key, defaults[key])
-        )
+        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):

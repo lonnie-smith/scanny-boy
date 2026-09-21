@@ -109,7 +109,8 @@ def test_solve_returns_none_for_malformed_input():
     )
     for bad in ([0.06], [0.06, -0.03, 0.0], ["0.06", -0.03], [True, -0.03]):
         assert (
-            auto_color.solve_balance(_record(bad), color.ColorParams(), 1.55, 0.5) is None
+            auto_color.solve_balance(_record(bad), color.ColorParams(), 1.55, 0.5)
+            is None
         )
 
 

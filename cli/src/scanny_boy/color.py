@@ -82,6 +82,7 @@ COLOR_PARAM_KEYS = (
     "auto_neutral",
 )
 
+
 @dataclasses.dataclass(frozen=True)
 class ColorParams:
     warmth: float = 0.0
@@ -370,9 +371,7 @@ def curve_offsets_in_order(offsets: tuple[float, float, float]) -> bool:
     return all(b - a >= CURVE_MIN_GAP - 1e-9 for a, b in itertools.pairwise(y_knots))
 
 
-def channel_curve(
-    v: np.ndarray, offsets: tuple[float, float, float]
-) -> np.ndarray:
+def channel_curve(v: np.ndarray, offsets: tuple[float, float, float]) -> np.ndarray:
     """Per-channel monotone cubic curve through three offset control points.
 
     Interpolates via PCHIP (Fritsch–Carlson) through the knots::
@@ -388,13 +387,15 @@ def channel_curve(
     from scipy.interpolate import PchipInterpolator
 
     x_knots = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
-    y_knots = np.array([
-        0.0,
-        0.25 + offsets[0],
-        0.5 + offsets[1],
-        0.75 + offsets[2],
-        1.0,
-    ])
+    y_knots = np.array(
+        [
+            0.0,
+            0.25 + offsets[0],
+            0.5 + offsets[1],
+            0.75 + offsets[2],
+            1.0,
+        ]
+    )
 
     spline = PchipInterpolator(x_knots, y_knots)
 

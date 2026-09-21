@@ -215,9 +215,7 @@ def test_neutral_colour_is_byte_identical():
     and the tables are what the achromatic path returns — the
     neutral-is-identical invariant."""
     metering = _metering_full((0.2, 0.15, 0.15), (0.9, 0.85, 0.85))
-    assert color.balance_offsets(color.NEUTRAL_COLOR) == pytest.approx(
-        (0.0, 0.0, 0.0)
-    )
+    assert color.balance_offsets(color.NEUTRAL_COLOR) == pytest.approx((0.0, 0.0, 0.0))
     tables = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, metering)
     achromatic = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, None)
     np.testing.assert_array_equal(tables, achromatic)
