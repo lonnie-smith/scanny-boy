@@ -1709,6 +1709,60 @@ def measure_neutral_residual(
     )
 
 
+def measure_band_neutral_mean(
+    grid_log: np.ndarray,
+    keep: np.ndarray,
+    bounds: Bounds,
+    *,
+    band: np.ndarray | None = None,
+) -> tuple[float, float] | None:
+    """The plain mean `(R-G, B-G)` over `band`, in normalized units.
+
+    The tone-split bands (`auto_neutral.measure_auto_neutral_bands`) use
+    this rather than `measure_neutral_residual`'s grey-surfaces weighting.
+    That weighting — `var_a * var_b * cov_ab`, divided by the cell's own
+    chroma — is an *illuminant* estimator: it asks which surfaces vary in
+    colour and discounts the strongly tinted ones. A cast lying uniformly
+    across a smooth shadow is exactly what it discounts, so it reads such a
+    frame as nearly neutral, which is the case the tone-split bands exist
+    to catch.
+
+    Measured on the Sep-20-2026 Portra roll (13 negatives; each band
+    estimate against the cast rendered from that negative's published
+    TIFF): the weighted estimate left 0.024 RMS of the cast behind, this
+    mean 0.008. On the roll's two frames dominated by a brick wall the
+    weighted estimate read -0.003 and +0.018 against casts of +0.031 and
+    +0.025 — on the first it had the sign wrong. Scaling it does not
+    rescue it: its error is erratic rather than proportional, and the
+    RMS-optimal gain of 1.26 bought 6%.
+
+    The cost, taken deliberately: a mean assumes the band *should* be
+    neutral, so a frame whose shadows carry real colour — dusk light, a
+    coloured wall filling the band — has some of it corrected away. That
+    cost is why this is the shadow band's estimator and not the highlight
+    band's: bright content carries far more real colour, and on the same
+    roll the mean read about twice the highlight cast actually rendered,
+    leaving more behind than no correction at all.
+
+    No erosion of `keep`, unlike the weighted estimator: nothing here
+    filters over a neighbourhood, so a withheld rebate or dense border
+    cannot leak into the accumulation in the first place.
+
+    Returns `None` for a single-channel grid (a mono negative has no
+    colour to be off) or when fewer than `NEUTRAL_RESIDUAL_MIN_CELLS`
+    cells are selected.
+    """
+    if grid_log.shape[-1] != 3:
+        return None
+    selected = keep if band is None else (keep & band)
+    if int(np.count_nonzero(selected)) < NEUTRAL_RESIDUAL_MIN_CELLS:
+        return None
+    norm = normalize_log_image(grid_log, bounds)
+    a = norm[..., 0] - norm[..., 1]
+    b = norm[..., 2] - norm[..., 1]
+    return (float(a[selected].mean()), float(b[selected].mean()))
+
+
 # --- the roll-population safety net ---------------------------------------------
 
 # The per-negative bounds a clamp needs before it will act.

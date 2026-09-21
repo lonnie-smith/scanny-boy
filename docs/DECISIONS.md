@@ -2154,3 +2154,97 @@ therefore more negative) — which silently returned `None` on every real
 roll. Both are documented at length in
 docs/ROLL_HIGHLIGHT_LOCK.md §3.0/§3.3/§3.4, including the numerical checks
 that caught them.
+
+# The tone-split bands' estimators (measured on the Sep-20-2026 Portra roll)
+
+## A different estimator at each end, because the measurement says so
+
+`auto_neutral.measure_auto_neutral_bands` reads its two numbers with two
+different estimators: the **shadow** band with
+`normalization.measure_band_neutral_mean`'s plain mean, the **highlight**
+band with `measure_neutral_residual`'s grey-surfaces weighting, unchanged.
+The asymmetry is deliberate and measured, not an oversight.
+
+The grey-surfaces weighting (`var_a * var_b * cov_ab`, divided by the
+cell's own chroma) is an *illuminant* estimator: it asks which surfaces
+vary in colour and discounts the strongly tinted ones. A cast lying
+uniformly across a smooth shadow is exactly what it discounts — so it
+reads such a frame as nearly neutral, which is the case the shadow band
+exists to catch.
+
+**The measurement.** Thirteen completed negatives of the Sep-20-2026
+Portra roll. For each, the band estimate was compared against the cast
+actually rendered from that negative's published TIFF — measured through
+`render.render_positive_float` with the colour ops off, on a flat tone
+ramp, and **before** the camera colour matrix, which is the space a
+correction acts in (the matrix roughly doubles what reaches the eye: 1.8x
+to 3.0x across the roll, so under-reading costs twice over).
+
+| Estimator | Shadow: RMS cast left | Highlight: RMS cast left |
+| --- | --- | --- |
+| No correction at all | 0.045 | 0.039 |
+| Grey-surfaces weighting | 0.024 | **0.025** |
+| Low-chroma half, mean | 0.015 | 0.024 |
+| **Plain mean** | **0.008** | 0.042 |
+
+At the thin end the mean wins by a factor of three. At the dense end it
+**loses to doing nothing**: bright content carries far more real colour,
+so the mean reads about twice the cast actually rendered (median +0.058
+against +0.027) with a worst-case over-correction of -0.075. Hence the
+split.
+
+## Why the gain was not simply raised instead
+
+The first proposal was to keep the weighting and multiply it up, since its
+median reading was about half the median cast. The measurement refused it.
+The weighting's error is **erratic, not proportional**: per-frame ratios
+between the true cast and its reading run from -9.7 to +9.0, and on three
+of thirteen frames it has the sign wrong. Scaling multiplies those errors —
+the frames it already reads well are the ones a gain ruins (a frame left
+with 0.001 of cast at gain 1.0 is left with -0.038 at gain 1.8). RMS by
+gain: 0.024 at 1.0, 0.022 at the optimum of 1.26, 0.028 at 1.8. A 6%
+improvement at n=13 is not a constant worth pinning, and 1.8 is worse than
+changing nothing.
+
+The clearest case is the roll's two frames dominated by a brick wall
+(`165214`, `165254`), which the user had independently flagged as the
+worst colour offenders. On `165254` the weighting read **-0.003 against a
++0.031 cast** — the wrong sign, so nothing was corrected at all. The plain
+mean reads +0.033. No gain rescues a reading of zero.
+
+## The cost, taken knowingly
+
+A mean assumes the band *should* be neutral. A frame whose shadows carry
+real colour — dusk light, a coloured wall filling the dark end — will have
+some of it corrected away. That cost is precisely why the highlight band
+keeps the weighting, and it is the open risk at the thin end: the
+validation above is **one roll, one stock, thirteen frames**, and it does
+not include a scene with genuinely coloured shadows. A dusk roll is the
+test that would close it.
+
+## What the same investigation found, recorded so it is not rediscovered
+
+**The feature had never run on a tether-captured roll.** The deferred
+stitch path (`stitch --defer-roll-refresh`) skips
+`auto_neutral.recompute_roll_auto_neutral`, and `roll_refresh.run_roll_refresh`
+— the only catch-up point — never measured it either. Every negative on
+such a roll therefore had no `auto_neutral` block, `color.auto_neutral_active`
+returned `False`, and the correction did nothing with the slider sitting at
+1.0. Fixed in `roll_refresh.py`, which now measures every completed colour
+negative and forces previews when any block moved.
+
+**`roll refresh` had never regenerated a preview either.** It passed
+`NegativeRecord` objects where `previews.sync_previews` expects output
+filenames and calls `set()` on them; `NegativeRecord` is unhashable, so
+every call raised `TypeError`, was swallowed, and surfaced as a
+`PREVIEW_FAILED` warning. Fixed alongside.
+
+**One test was passing vacuously.** `test_auto_neutral_false_is_identity`
+compared an inert correction against itself: the old estimator returned
+`None` on the smooth synthetic ramp, so nothing was applied at either
+slider setting. It now asserts the bands are live before comparing.
+
+`AUTO_NEUTRAL_MEASURE_VERSION` is 2. Version-1 shadow blocks are
+under-read; they are replaced the next time a stitch or `roll refresh`
+measures the roll. No protocol version change: the block is recorded data
+read at render time, and no published pixel depends on it.
