@@ -123,13 +123,32 @@ def rotate_with_fill(image: np.ndarray, angle_deg: float) -> np.ndarray:
     )
 
 
+def picture_mask(normalized: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The covered canvas and the thin material on it, from a normalized-
+    density image: `(covered, rebate)`, both boolean.
+
+    `covered` is every pixel that is not the empty-canvas fill (exactly
+    `NORMALIZED_FILL` in every channel). `rebate` is the thin end of what is
+    covered — clear base, sprocket holes and bare light alike, since all of
+    it sits at or above the thin anchor: base is the thinnest thing on the
+    film, and a scene shadow dense in any one channel is not base. Shared by
+    `estimate_rotation` and `auto_crop.estimate_crop`, so the two can never
+    disagree about what rebate is."""
+    fill = np.all(normalized >= NORMALIZED_FILL - 1e-6, axis=-1)
+    covered = ~fill
+    if not covered.any():
+        return covered, np.zeros_like(covered)
+    thinness = normalized.min(axis=-1)
+    anchor = float(np.percentile(thinness[covered], 99.5))
+    rebate = covered & (thinness >= anchor - REBATE_SLACK)
+    return covered, rebate
+
+
 def estimate_rotation(image: np.ndarray) -> float | None:
     """The clockwise rotation, in degrees, that squares the rebate's frame
     boundary with the canvas — or `None` when there is nothing trustworthy
     to rotate by (no detectable rebate, too little scene, tilt outside the
     clamps). `image` is the encoded uint16 normalized-density composite."""
-    from scanny_boy.auto_crop import picture_mask
-
     image = np.asarray(image)
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
@@ -149,8 +168,6 @@ def estimate_rotation(image: np.ndarray) -> float | None:
         small = image
     normalized = decode_normalized(small).astype(np.float32)
 
-    # Use the shared picture_mask so rotation and crop can never disagree
-    # about what rebate is.
     covered, rebate = picture_mask(normalized)
     if not covered.any():
         return None

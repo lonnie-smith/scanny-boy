@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from scanny_boy import concurrency
-from scanny_boy.cli import MAX_SELECTION_FILES, main
+from scanny_boy.cli import MAX_SELECTION_FILES, build_parser, main
 from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.library import repo
@@ -3326,6 +3326,272 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
     events, _ = _stdout_events(capsys)
     assert events[1]["manifest"]["negatives"][0]["crop"] is None
     assert err == ""
+
+
+def test_roll_set_setup_auto_crop_round_trips_through_roll_info(capsys, tmp_path):
+    from scanny_boy.roll_folder import create_roll
+
+    roll_dir = create_roll(tmp_path, "Setup-Roll")
+    capsys.readouterr()
+
+    assert (
+        main(["roll", "set-setup", "--roll", str(roll_dir), "--auto-crop", "on"]) == 0
+    )
+    assert main(["roll", "set-setup", "--roll", str(roll_dir), "--format", "6x7"]) == 0
+    capsys.readouterr()
+    assert main(["roll", "info", "--roll", str(roll_dir)]) == 0
+    events, _ = _stdout_events(capsys)
+    setup = events[1]["manifest"]["setup"]
+    assert setup["auto_crop"] is True
+    assert setup["format"] == "6x7"
+
+    assert (
+        main(["roll", "set-setup", "--roll", str(roll_dir), "--auto-crop", "off"]) == 0
+    )
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _ = _stdout_events(capsys)
+    assert events[1]["manifest"]["setup"]["auto_crop"] is False
+    assert events[1]["manifest"]["setup"]["format"] == "6x7"
+
+
+def test_no_auto_crop_flag_parses_on_stitch_and_run():
+    parser = build_parser()
+
+    stitch_args = ["stitch", "--work", "w", "--roll", "r"]
+    assert parser.parse_args(stitch_args).auto_crop is True
+    assert parser.parse_args([*stitch_args, "--no-auto-crop"]).auto_crop is False
+    run_args = ["run", "--input", "i", "--files", "f", "--roll", "r", "--work", "w"]
+    assert parser.parse_args(run_args).auto_crop is True
+    assert parser.parse_args([*run_args, "--no-auto-crop"]).auto_crop is False
+
+
+def _record_crop(roll_dir, negative, capsys, *extra):
+    capsys.readouterr()
+    status = main(
+        [
+            "edit",
+            "crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "10",
+            "--y",
+            "10",
+            "--width",
+            str(min(120, negative.output["width"] // 2)),
+            "--height",
+            str(min(80, negative.output["height"] // 2)),
+            *extra,
+        ]
+    )
+    events, _err = _stdout_events(capsys)
+    return status, events
+
+
+def test_edit_crop_source_auto_is_stored_and_reported(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+
+    status, events = _record_crop(
+        roll_dir, negative, capsys, "--preset", "35mm", "--source", "auto"
+    )
+
+    assert status == 0
+    assert events[1]["edit"]["params"]["source"] == "auto"
+    assert events[1]["crop"]["source"] == "auto"
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    info, _ = _stdout_events(capsys)
+    assert info[1]["manifest"]["negatives"][0]["crop"]["source"] == "auto"
+
+    # A crop without --source is the user's: the tag does not carry over.
+    status, events = _record_crop(roll_dir, negative, capsys, "--full-frame")
+    assert status == 0
+    assert "source" not in events[1]["edit"]["params"]
+    assert "source" not in events[1]["crop"]
+
+
+def test_edit_crop_rejects_a_source_other_than_auto(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+
+    status, events = _record_crop(roll_dir, negative, capsys, "--source", "user")
+
+    assert status == 1
+    assert events[-2]["code"] == "INVALID_EDIT"
+
+
+def _suggest(roll_dir, negative_id, capsys, *extra):
+    capsys.readouterr()
+    status = main(
+        [
+            "edit",
+            "suggest-crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            *extra,
+        ]
+    )
+    events, _err = _stdout_events(capsys)
+    return status, events
+
+
+def _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch):
+    """The synthetic scans carry no rebate, so stand in a detector result:
+    the CLI plumbing is under test, not the detector."""
+    from scanny_boy import auto_crop
+
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    seen = {}
+
+    def fake(analysis, *, full_size, ratio, exclude=None):
+        seen["ratio"] = ratio
+        seen["full_size"] = full_size
+        height, width = full_size
+        return auto_crop.AutoCrop(
+            rect=(width // 10, height // 10, width // 2, height // 2),
+            ratio=ratio,
+            picture_fraction=0.9,
+            fill_fraction=0.9,
+        )
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", fake)
+    return seen
+
+
+def test_suggest_crop_reports_a_rect_and_records_nothing(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    seen = _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch)
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    before = repo.edits_for(roll_dir, negative.negative_id)
+
+    status, events = _suggest(roll_dir, negative.negative_id, capsys, "--preset", "645")
+
+    assert status == 0
+    assert [e["event"] for e in events] == ["started", "crop_suggested", "finished"]
+    suggested = events[1]
+    assert suggested["negative_id"] == negative.negative_id
+    assert suggested["preset"] == "645"
+    assert suggested["refused"] is None
+    rect = suggested["rect"]
+    assert suggested["canvas_width"] == negative.output["width"]
+    assert suggested["canvas_height"] == negative.output["height"]
+    assert rect["x"] + rect["width"] <= suggested["canvas_width"]
+    assert rect["y"] + rect["height"] <= suggested["canvas_height"]
+    assert seen["ratio"] == pytest.approx(56 / 41.5)
+    assert repo.edits_for(roll_dir, negative.negative_id) == before
+
+
+def test_suggest_crop_falls_back_to_the_roll_format_then_to_unconstrained(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_setup
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    seen = _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch)
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+
+    _status, events = _suggest(roll_dir, negative_id, capsys)
+    assert seen["ratio"] is None
+    assert events[1]["preset"] is None
+
+    set_setup(roll_dir, format="6x6")
+    _status, events = _suggest(roll_dir, negative_id, capsys)
+    assert seen["ratio"] == 1.0
+    assert events[1]["preset"] == "6x6"  # the app lands its session on it
+
+    _status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "xpan")
+    assert seen["ratio"] == pytest.approx(65 / 24)
+    assert events[1]["preset"] == "xpan"
+
+
+def test_suggest_crop_reports_a_refusal_with_exit_zero(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy import auto_crop
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    monkeypatch.setattr(
+        auto_crop,
+        "estimate_crop",
+        lambda *args, **kwargs: auto_crop.Refusal("ragged"),
+    )
+
+    status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "6x9")
+
+    assert status == 0
+    assert events[1]["rect"] is None
+    assert events[1]["refused"] == "ragged"
+    assert events[-1]["status"] == "success"
+
+
+def test_suggest_crop_runs_the_real_detector_under_the_negatives_transform(
+    work_dir, capsys, tmp_path
+):
+    """No stand-in detector: the real image path (TIFF load, display
+    transform, hint, fit) answers with a rect inside the *display* canvas —
+    whose dimensions swap under an odd quarter turn — or a refusal, never a
+    crash. The synthetic scans carry no rebate, so either is a fair answer;
+    what matters is that the plumbing holds."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    repo.append_edit(
+        roll_dir, negative.negative_id, repo.ROTATE_OP, {"direction": "cw"}
+    )
+    repo.append_edit(roll_dir, negative.negative_id, repo.FLIP_OP, {})
+
+    status, events = _suggest(
+        roll_dir, negative.negative_id, capsys, "--preset", "35mm"
+    )
+
+    assert status == 0
+    suggested = events[1]
+    assert suggested["canvas_width"] == negative.output["height"]  # turned
+    assert suggested["canvas_height"] == negative.output["width"]
+    if suggested["rect"] is None:
+        assert suggested["refused"]
+    else:
+        rect = suggested["rect"]
+        assert rect["x"] + rect["width"] <= suggested["canvas_width"]
+        assert rect["y"] + rect["height"] <= suggested["canvas_height"]
+    assert not repo.net_edit_state(roll_dir, negative.negative_id).crop
+
+
+def test_suggest_crop_rejects_an_unknown_preset(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+
+    status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "8x10")
+
+    assert status == 1
+    assert events[-2]["code"] == "INVALID_EDIT"
 
 
 def test_edit_crop_rejects_an_out_of_bounds_rect(work_dir, capsys, tmp_path):

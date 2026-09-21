@@ -486,15 +486,27 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy edit suggest-crop --roll DIR --negative ID [--preset NAME]`
+    ///
+    /// The pure query behind crop mode's Auto button: detects the
+    /// picture-only window for the negative as it currently displays and
+    /// answers with `crop_suggested`. Nothing is recorded. `preset` is the
+    /// crop session's ratio preset (a `FilmFormat` raw value); omitted, the
+    /// CLI uses the roll's format, then fits unconstrained.
     public static func editSuggestCrop(
         roll: URL,
-        negative: String
+        negative: String,
+        preset: String? = nil
     ) -> CLICommand {
-        CLICommand(arguments: [
+        var arguments = [
             "edit", "suggest-crop",
             "--roll", roll.path,
             "--negative", negative,
-        ])
+        ]
+        if let preset {
+            arguments.append(contentsOf: ["--preset", preset])
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`

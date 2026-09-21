@@ -835,3 +835,42 @@ edges trimmed by very different amounts means refuse).
 - **A tilted auto crop.** The seeded rotation already squares the frame;
   compounding a second tilt makes the rect harder to reason about in crop
   mode, for no gain.
+
+---
+
+## 12. Implementation notes
+
+Where the code differs from, or settles a question the plan left open.
+AC-1 to AC-6 are implemented and tested; **AC-7 (§9) has not been run** — it
+needs real rolls and the user's approval, so every constant in `auto_crop.py`
+is still provisional.
+
+- **Dense-border pass (§2.2 step 3)** is `auto_crop._dense_carrier`. It adds
+  two constants the plan did not name, `AUTO_CROP_DENSE_MIN_AREA_FRACTION` and
+  `AUTO_CROP_DENSE_MIN_SPAN_FRACTION`, so a small dense mark or a compact
+  blob touching the border is not read as a holder. `AUTO_CROP_DENSE_LEVEL`
+  (0.0, the dense-end anchor) and `AUTO_CROP_MAX_DENSE_SPREAD` are pinned in
+  §9 like the rest.
+- **The `exclude` hint applies per edge**, only where the dense pass found
+  nothing on that edge, and it is the *outside* of the inner window that is
+  excluded. Edges with no recorded inset are pushed out of the canvas so they
+  constrain nothing. Under a fine rotation the inscribed axis-aligned rect is
+  used, which can only exclude more.
+- **§2.2 step 5, no ratio:** the "1-px erosion of isolated specks" is not
+  done; the open/close of step 4 already removes specks, and an erosion would
+  shrink every edge.
+- **Ratio orientation** uses the landscape form of the ratio (`max(r, 1/r)`),
+  turned to the picture rect's long axis, because `FORMAT_RATIOS` stores
+  `half-frame`, `645`, `6x7` and `6x9` portrait-native.
+- **Refusal tokens:** `unknown_format` is not produced by the detector
+  (callers check first); the evidence block also records `error` when the
+  detector raised.
+- **Adopted negatives are measured under their own mirror and net fine
+  angle** (§4.2 said to measure without the flip). A mirror negates the net
+  fine angle, so measuring it unmirrored would apply the rotation the wrong
+  way and mis-fit the crop.
+- **Evidence storage (§3.3)** needed a column: migration `0019` adds a
+  nullable `negatives.auto_crop`. `stitch_params["auto_crop"]` is excluded
+  from the roll-invariant comparison (`ROLL_PROFILE_STITCH_PARAMS_KEYS`).
+- **Protocol:** the feature landed at 23 and merged to 24; `CONTRACT.md` now
+  says 24. The `crop_suggested` event carries `rect`, not top-level `x/y/...`.

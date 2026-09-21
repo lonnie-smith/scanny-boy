@@ -227,6 +227,75 @@ struct CLIEventTests {
         #expect(crop.canvasHeight == 200)
     }
 
+    @Test("edit_recorded decodes the crop's source")
+    func editRecordedCropSourceDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop",\
+                "params":{"x":10},"created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":0,"flipped_horizontally":false,\
+                "crop":{"width":50,"height":24,"tilt_deg":0.0,"preset":"6x7",\
+                "source":"auto"},"preview_path":"/tmp/preview.png"}
+                """)
+        )
+        let crop = try #require(event.crop.flatMap { $0 })
+        #expect(crop.source == "auto")
+        #expect(crop.preset == "6x7")
+    }
+
+    @Test("A user's crop decodes with no source")
+    func userCropHasNoSource() throws {
+        let crop = try #require(
+            CropState(fields: [
+                "width": .int(50), "height": .int(24),
+                "tilt_deg": .double(0), "preset": .null,
+            ])
+        )
+        #expect(crop.source == nil)
+    }
+
+    // MARK: - crop_suggested (auto-crop)
+
+    @Test("crop_suggested decodes the rect and the fitted preset")
+    func cropSuggestedRectDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"crop_suggested","negative_id":"n1",\
+                "rect":{"x":212,"y":148,"width":5410,"height":3606},\
+                "canvas_width":5832,"canvas_height":3888,\
+                "preset":"35mm","refused":null}
+                """)
+        )
+        #expect(event.kind == .cropSuggested)
+        #expect(event.negativeID == "n1")
+        #expect(event.suggestedRect == CGRect(x: 212, y: 148, width: 5410, height: 3606))
+        #expect(event.suggestedPreset == "35mm")
+        #expect(event.cropRefusal == nil)
+    }
+
+    @Test("crop_suggested decodes a refusal: no rect, a reason, still an answer")
+    func cropSuggestedRefusalDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"crop_suggested","negative_id":"n1","rect":null,\
+                "canvas_width":5832,"canvas_height":3888,\
+                "preset":null,"refused":"ragged"}
+                """)
+        )
+        #expect(event.kind == .cropSuggested)
+        #expect(event.suggestedRect == nil)
+        #expect(event.suggestedPreset == nil)
+        #expect(event.cropRefusal == "ragged")
+    }
+
+    @Test("The auto-crop warning codes decode")
+    func autoCropWarningCodesDecode() throws {
+        #expect(CLICode(name: "AUTO_CROP_FAILED") == .autoCropFailed)
+        #expect(CLICode(name: "AUTO_CROP_NO_FORMAT") == .autoCropNoFormat)
+        #expect(CLICode.autoCropNoFormat.name == "AUTO_CROP_NO_FORMAT")
+    }
+
     @Test("edit_recorded with a null crop reports no live crop")
     func editRecordedNullCropDecodes() throws {
         let event = try CLIEvent(

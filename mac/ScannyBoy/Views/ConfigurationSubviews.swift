@@ -236,34 +236,53 @@ struct CatalogueDragPreview: View {
     }
 }
 
-/// The shared Format picker and Auto-crop toggle used by both the capture
-/// setup (Add Scans) and the edit setup (Edit) stages.  Extracted to avoid
-/// duplicating the `Picker` + binding boilerplate in two places.
+/// The roll's Format picker and Auto-crop toggle, shared by the Capture
+/// sheet's Setup section and the Add Scans sheet's Roll Setup section so the
+/// two cannot drift: both edit the same stored `setup` values through
+/// `ConfigurationModel`, so a change on one shows on the other.
 struct RollFormatFields: View {
-    @Bindable var model: ConfigurationModel
+    let model: ConfigurationModel
 
     var body: some View {
-        Picker("Format", selection: Binding(
-            get: { model.rollFormat },
-            set: { newValue in
-                guard let newValue else { return }
-                Task { await model.setRollFormat(newValue) }
-            }
-        )) {
+        Picker("Format", selection: formatBinding) {
             Text("Choose…").tag(FilmFormat?.none)
             ForEach(FilmFormat.allCases) { format in
                 Text(format.label).tag(FilmFormat?.some(format))
             }
         }
-        Toggle("Auto-crop", isOn: Binding(
+        .disabled(model.isSettingRollSetup)
+        Toggle("Auto-crop", isOn: autoCropBinding)
+            .disabled(model.isSettingRollSetup)
+            .help(
+                "Crops each newly stitched negative to the format's ratio, "
+                    + "excluding rebate and holder. Takes effect from the next "
+                    + "negative stitched. Adjust in Edit → Crop."
+            )
+        if model.rollAutoCrop && model.rollFormat == nil {
+            Text("Choose a format to auto-crop.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The roll's saved film format. Choosing a value calls `roll
+    /// set-setup` immediately.
+    private var formatBinding: Binding<FilmFormat?> {
+        Binding(
+            get: { model.rollFormat },
+            set: { newValue in
+                guard let newValue else { return }
+                Task { await model.setRollFormat(newValue) }
+            }
+        )
+    }
+
+    private var autoCropBinding: Binding<Bool> {
+        Binding(
             get: { model.rollAutoCrop },
             set: { newValue in
                 Task { await model.setRollAutoCrop(newValue) }
             }
-        ))
-        .help(
-            "Automatically detect the picture boundary and fit a "
-            + "cropped window to the roll's film-format ratio."
         )
     }
 }

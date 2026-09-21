@@ -196,7 +196,8 @@ private struct PreviewPane: View {
                 cropSession: cropSession,
                 displaySize: displaySize,
                 onBeginCrop: { beginCrop() },
-                onApplyCrop: { applyCrop() }
+                onApplyCrop: { applyCrop() },
+                onAutoCrop: { autoCrop() }
             )
             .frame(width: 360)
 
@@ -584,6 +585,7 @@ private struct PreviewPane: View {
                     },
                     onApplyCrop: {
                         guard cropSession.isActive, !edit.isCropping,
+                            !edit.isSuggestingCrop,
                             !AppKeyboard.isTextInputFirstResponder()
                         else { return false }
                         applyCrop()
@@ -800,32 +802,12 @@ private struct PreviewPane: View {
         // belongs to the full uncropped canvas.
         zoom.reset()
         let canvas = uncroppedDisplaySize
-        // AC-6: a pending suggest-crop result takes priority over the
-        // stored crop — the Auto button sets it.
-        if let suggestion = edit.pendingCropSuggestion {
-            edit.pendingCropSuggestion = nil
-            var preset = suggestion.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
-            if preset == .free {
-                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
-            }
-            cropSession.begin(
-                displaySize: canvas,
-                rect: suggestion.rect,
-                tiltDegrees: suggestion.tiltDegrees,
-                preset: preset
-            )
-        } else if let crop = negative.crop {
-            var preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
-            // AC-6: resolve auto crop's preset from the roll format when
-            // the ops-log entry did not carry an explicit label.
-            if preset == .free, crop.source == "auto" {
-                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
-            }
+        if let crop = negative.crop {
             cropSession.begin(
                 displaySize: canvas,
                 rect: crop.editingRect,
                 tiltDegrees: crop.tiltDegrees,
-                preset: preset
+                preset: crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
             )
         } else {
             cropSession.begin(displaySize: canvas)
@@ -836,6 +818,10 @@ private struct PreviewPane: View {
         let rect = cropSession.rect
         let tiltDegrees = cropSession.tiltDegrees
         let preset = cropSession.preset == .free ? nil : cropSession.preset.rawValue
+        // An untouched Auto crop stays tagged auto, so a re-stitch may
+        // still reseed it; any drag, tilt or ratio change made it the
+        // user's.
+        let source = cropSession.suggestedRect == nil ? nil : "auto"
         cropSession.end()
         Task {
             await edit.applyCrop(
@@ -843,8 +829,31 @@ private struct PreviewPane: View {
                 rect: rect,
                 tiltDegrees: tiltDegrees,
                 preset: preset,
-                fullFrame: true
+                fullFrame: true,
+                source: source
             )
+        }
+    }
+
+    /// The Auto button: ask the CLI for the picture-only window at the
+    /// session's ratio (or the roll's format), and load it into the
+    /// session. Nothing is recorded until Apply, exactly like Original.
+    private func autoCrop() {
+        guard cropSession.isActive, !edit.isSuggestingCrop else { return }
+        let preset = cropSession.preset == .free ? nil : cropSession.preset.rawValue
+        let negative = negative
+        Task {
+            guard let answer = await edit.suggestCrop(negative, preset: preset),
+                cropSession.isActive
+            else { return }
+            if let rect = answer.rect {
+                cropSession.applySuggestion(
+                    rect: rect,
+                    preset: answer.preset.flatMap(CropPreset.init(rawValue:))
+                )
+            } else {
+                cropSession.suggestionRefused = true
+            }
         }
     }
 }
@@ -863,6 +872,7 @@ private struct EditSidebar: View {
     let displaySize: CGSize
     let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
+    let onAutoCrop: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -917,7 +927,8 @@ private struct EditSidebar: View {
                 cropSession: cropSession,
                 displaySize: displaySize,
                 onBeginCrop: onBeginCrop,
-                onApplyCrop: onApplyCrop
+                onApplyCrop: onApplyCrop,
+                onAutoCrop: onAutoCrop
             )
         case .tone:
             ToneAdjustmentPanel(
@@ -990,6 +1001,7 @@ private struct GeometryAdjustmentPanel: View {
     let displaySize: CGSize
     let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
+    let onAutoCrop: () -> Void
 
     private var isDisabled: Bool {
         edit.isRotating || edit.isDeleting || edit.isSettingTone
@@ -1077,7 +1089,7 @@ private struct GeometryAdjustmentPanel: View {
 
             HStack {
                 Button("Apply") { onApplyCrop() }
-                    .disabled(edit.isCropping)
+                    .disabled(edit.isCropping || edit.isSuggestingCrop)
                     .keyboardShortcut(.defaultAction)
                     .help(
                         "Record the crop (Return; the published TIFF is untouched; "
@@ -1087,21 +1099,28 @@ private struct GeometryAdjustmentPanel: View {
                     .keyboardShortcut(.cancelAction)
                     .help("Discard this crop session (Escape)")
                 Spacer()
-                if edit.isCropping {
+                if edit.isCropping || edit.isSuggestingCrop {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
 
-            Button("Original") { cropSession.resetToOriginal() }
-                .disabled(edit.isCropping)
-                .help("Reset the crop window to the full image and clear the ratio preset")
-
-            Button("Auto") {
-                Task { await edit.suggestCrop(negative) }
+            HStack {
+                Button("Original") { cropSession.resetToOriginal() }
+                    .disabled(edit.isCropping)
+                    .help("Reset the crop window to the full image and clear the ratio preset")
+                Button("Auto") { onAutoCrop() }
+                    .disabled(edit.isCropping || edit.isSuggestingCrop)
+                    .help(
+                        "Fit the largest picture-only window, excluding rebate and "
+                            + "holder, to the selected ratio (or the roll's format)"
+                    )
             }
-            .disabled(edit.isCropping)
-            .help("Detect the picture boundary and fit a crop to the roll's film format")
+            if cropSession.suggestionRefused {
+                Text("Couldn't find the picture's edges on this frame.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } else {
             Button {
                 onBeginCrop()
@@ -1112,7 +1131,22 @@ private struct GeometryAdjustmentPanel: View {
             .disabled(!isCropAvailable)
             .help("Crop this negative (⌘R; ratio presets and tilt in the overlay session)")
             .accessibilityLabel("Crop")
+            if let label = Self.autoCropLabel(for: negative.crop) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    /// "Auto · 6×7" for a crop the app seeded (or the Auto button recorded
+    /// untouched); nil for a user's crop or none.
+    static func autoCropLabel(for crop: CropState?) -> String? {
+        guard let crop, crop.source == "auto" else { return nil }
+        guard let preset = crop.preset.flatMap(CropPreset.init(rawValue:)) else {
+            return "Auto"
+        }
+        return "Auto · \(preset.label)"
     }
 
     /// Defers preset reshaping out of the picker's update pass — mutating
