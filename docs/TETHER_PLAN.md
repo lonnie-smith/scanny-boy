@@ -227,7 +227,7 @@ Capture tab, roll selected
   │
   ├─ negative loop ──────────────────────────────────────────────────────────┐
   │     Space → sequence of across×down cells (§3.2)                         │
-  │       each cell: hold cue → release → exposure over → move cue           │
+  │       each cell: countdown → release → exposure over → move cue           │
   │                 → frame found → downloaded → file on disk → cell fills   │
   │                 → capture analyze (async, §6) → badges                   │
   │     last cell lands → negative complete → prepare → check (§4.1)         │
@@ -428,13 +428,13 @@ With a 1/2 s exposure and the default 4 s interval, from §0.1's measurements:
 
 ```
 t = 0.00  user starts negative ── initial interval clock starts
-t ≈ 3.00  hold cue (HOLD_CUE_LEAD = 1.0 s before release)
-t ≈ 4.00  release (cell 1)
+t ≈ 1–3   countdown beeps (3, 2, 1)
+t ≈ 4.00  release (cell 1) ── higher beep at 0
 t ≈ 4.55  exposure over (DeviceReady OK) ── move cue, interval clock starts
 t ≈ 5.1   frame found in the buffer
 t ≈ 5.7   file on disk ─────────────────── cell 1 fills
-t ≈ 7.55  hold cue
-t ≈ 8.55  release (cell 2)
+t ≈ 5.6–7.6  countdown beeps (3, 2, 1)
+t ≈ 8.55  release (cell 2) ── higher beep at 0
 …
 last cell's file on disk ── negative complete, enqueued for stitching
 ```
@@ -456,7 +456,7 @@ Keys, active only when the Capture stage has focus and no text field does:
 
 | Key | Idle | During a sequence | Paused |
 |---|---|---|---|
-| Space | Start the next negative | Pause after the in-flight shot | Resume (hold cue first) |
+| Space | Start the next negative | Pause after the in-flight shot | Resume (countdown first) |
 | Delete | — | — | Retake the last filled cell (replaces its file in place) |
 | Esc | — | Stop the negative | Stop the negative |
 
@@ -473,10 +473,13 @@ The operator is looking at the film, not the screen, so the cues are audible
 first:
 
 - **Move**: a short tick when the exposure ends.
-- **Hold**: a distinct tone `HOLD_CUE_LEAD` before the next release.
+- **Countdown**: a gentle beep at 3, 2 and 1 seconds before the next release,
+  then a slightly higher one at 0, on the release itself. Beeps that would
+  fall before the interval starts are skipped (a 2 s interval has only the 1).
 - A large countdown on screen for a glance from the stand.
 
-Both sounds are system sounds (`NSSound`); nothing new is bundled.
+The move tick is a system sound (`NSSound`); the countdown beeps are short
+sine tones synthesised in memory (`CaptureCues`), so nothing is bundled.
 
 ### 3.4 The mini-view
 

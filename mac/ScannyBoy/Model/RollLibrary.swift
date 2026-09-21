@@ -62,7 +62,7 @@ final class RollLibrary {
     init(
         runner: CLIRunner,
         libraryBase: URL? = nil,
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppEnvironment.defaults,
         fileManager: FileManager = .default,
         previewCache: PreviewCache = .shared
     ) {

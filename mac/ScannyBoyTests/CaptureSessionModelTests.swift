@@ -437,10 +437,13 @@ struct CaptureSessionModelTests {
             "source_name": .string("base-old.NEF"),
             "populations": .array([]),
         ])
+        var attached: FilmBase?
+        model.onFilmBaseAttached = { attached = $0 }
         await model.connect()
         await model.shootBaseFrame()
         #expect(model.filmBase?.sourceName == "base-replace.NEF")
         #expect(model.filmBase?.density == [-0.2, -0.05, -0.5])
+        #expect(attached == model.filmBase)
     }
 
     @Test("interval starts after exposure end")
@@ -525,6 +528,64 @@ struct CaptureSessionModelTests {
         #expect(model.across == 4)
         #expect(model.down == 2)
         #expect(model.cellStates.count == 8)
+    }
+
+    @Test("re-applying a grid mid-negative keeps the frames already shot")
+    func applyGridDimensionsMidNegativeKeepsFrames() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 2, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+
+        model.handleSpace()
+        try await Self.waitUntil {
+            if case .filled = model.cellStates[0] { true } else { false }
+        }
+        model.handleSpace()
+        #expect(model.sequencePhase == .paused)
+
+        // What a roll rescan does when a background stitch publishes.
+        for (across, down) in [(2, 1), (3, 1)] {
+            let profile = GridProfile(fields: [
+                "profile_id": .string("grid-\(across)x\(down)"),
+                "name": .string("grid"),
+                "across": .int(across),
+                "down": .int(down),
+            ])!
+            model.applyGridDimensions(from: profile)
+        }
+        #expect(model.across == 2)
+        #expect(model.cellStates.count == 2)
+        #expect(model.cellStates[0].isFilled)
+
+        model.handleSpace()
+        try await Self.waitUntil { model.completedNegatives.count == 1 }
+        #expect(model.completedNegatives[0].frameURLs.count == 2)
+    }
+
+    @Test("a finished negative's thumbnails stay until the next negative starts")
+    func finishedNegativeThumbnailsStayUntilNextStart() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 2, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        try await Self.waitUntil { model.isSessionOpen }
+        await model.waitForLeftoverClaim()
+
+        model.handleSpace()
+        try await Self.waitUntil { model.completedNegatives.count == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(model.cellStates.allSatisfy { $0.isFilled })
+
+        model.handleSpace()
+        #expect(!model.cellStates.contains { $0.isFilled })
+        #expect(model.cellStates.count == 2)
     }
 
     @Test("gridProfileID persists in UserDefaults")

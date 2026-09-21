@@ -14,21 +14,28 @@ struct CaptureStageView: View {
 
     private let intervalChoices = [2, 3, 4, 5, 6, 8, 10]
 
+    private var isRollLocked: Bool {
+        activity.isRollWriteLocked(for: capture.rollURL) && !capture.isSessionOpen
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                setupSection
+                // Locked per section, not on the Form: disabling the Form
+                // also disables its scrolling, stranding the lower sections
+                // behind the queue list while the roll is being stitched.
+                setupSection.disabled(isRollLocked)
+                // Connecting writes nothing to the roll, so it stays usable.
                 connectionSection
-                flatFieldReferenceSection
-                baseFrameSection
-                leftoverSection
-                sequenceSection
+                flatFieldReferenceSection.disabled(isRollLocked)
+                baseFrameSection.disabled(isRollLocked)
+                leftoverSection.disabled(isRollLocked)
+                sequenceSection.disabled(isRollLocked)
             }
             .formStyle(.grouped)
-            .disabled(activity.isRollWriteLocked(for: capture.rollURL) && !capture.isSessionOpen)
 
-            if !stitchQueue.negatives.isEmpty {
-                CaptureQueueList(stitchQueue: stitchQueue)
+            if !stitchQueue.negatives(for: capture.rollURL).isEmpty {
+                CaptureQueueList(stitchQueue: stitchQueue, rollURL: capture.rollURL)
                     .padding(.vertical, 8)
             }
 
@@ -191,7 +198,7 @@ struct CaptureStageView: View {
                     Task { await model.setFilmKind(choice.rawValue) }
                 }
             )
-            RollFormatFields()
+            RollFormatFields(model: model)
         }
     }
 
@@ -500,11 +507,12 @@ struct CaptureStageView: View {
     private var canDiscardUnpublished: Bool {
         capture.hasUnpublishedCaptureWork(
             publishedNegativeIDs: stitchQueue.publishedNegativeIDs
-        ) || stitchQueue.hasUnpublishedEntries
+        ) || stitchQueue.hasUnpublishedEntries(for: capture.rollURL)
     }
 
     private var discardConfirmationMessage: String {
-        let unpublishedCount = stitchQueue.negatives.filter { $0.step != .published }.count
+        let unpublishedCount = stitchQueue.negatives(for: capture.rollURL)
+            .filter { $0.step != .published }.count
         let inProgressCount = capture.cellStates.filter(\.isFilled).count
         var parts: [String] = []
         if unpublishedCount > 0 {
@@ -535,7 +543,7 @@ struct CaptureStageView: View {
         }
         guard capture.sequencePhase == .idle, !capture.hasUnresolvedLeftovers else { return }
         let publishedIDs = stitchQueue.publishedNegativeIDs
-        var urls = stitchQueue.discardUnpublished()
+        var urls = stitchQueue.discardUnpublished(for: capture.rollURL)
         urls.append(contentsOf: capture.discardUnpublishedCaptures(publishedNegativeIDs: publishedIDs))
         let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !existing.isEmpty else { return }

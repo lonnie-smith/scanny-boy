@@ -225,6 +225,54 @@ struct StitchQueueModelTests {
         #expect(urls.contains(frame))
     }
 
+    @Test("entries stay bound to the roll they were captured for after a roll switch")
+    func entriesStayBoundToTheirRoll() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false"))
+        let queue = StitchQueueModel(runner: runner)
+        let rollA = directory.appending(path: "rollA", directoryHint: .isDirectory)
+        let rollB = directory.appending(path: "rollB", directoryHint: .isDirectory)
+        let folderA = directory.appending(path: "captureA", directoryHint: .isDirectory)
+        let folderB = directory.appending(path: "captureB", directoryHint: .isDirectory)
+        for url in [folderA, folderB] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+
+        queue.configure(roll: rollA, captureFolder: folderA, across: 2, down: 1)
+        let idA = UUID()
+        queue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: idA, stamp: "a", frameURLs: [folderA.appending(path: "a.NEF")], startedAt: Date()
+            )
+        )
+        queue.testingMarkPublished(id: idA)
+
+        queue.configure(roll: rollB, captureFolder: folderB, across: 3, down: 1)
+        let idB = UUID()
+        queue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: idB, stamp: "b", frameURLs: [folderB.appending(path: "b.NEF")], startedAt: Date()
+            )
+        )
+
+        #expect(queue.negatives(for: rollA).map(\.id) == [idA])
+        #expect(queue.negatives(for: rollB).map(\.id) == [idB])
+        #expect(queue.negatives(for: nil).isEmpty)
+        let contextA = try #require(queue.negatives(for: rollA).first?.context)
+        #expect(contextA.rollPath == rollA.path)
+        #expect(contextA.captureFolder == folderA.path)
+        #expect(contextA.across == 2)
+        let contextB = try #require(queue.negatives(for: rollB).first?.context)
+        #expect(contextB.rollPath == rollB.path)
+        #expect(contextB.across == 3)
+
+        // Discarding from roll A must not touch roll B's queued negative.
+        _ = queue.discardUnpublished(for: rollA)
+        #expect(queue.negatives(for: rollB).map(\.id) == [idB])
+        #expect(queue.negatives(for: rollA).map(\.id) == [idA])
+    }
+
     @Test("discardUnpublished keeps published entries")
     func discardUnpublishedKeepsPublished() async throws {
         let directory = try Self.makeTemporaryDirectory()

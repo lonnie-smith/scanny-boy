@@ -60,7 +60,7 @@ final class AppActivity {
     func isRollWriteLocked(for rollURL: URL?) -> Bool {
         guard let rollURL else { return isBusy }
         if capture.isSessionOpen, capture.rollURL == rollURL { return true }
-        if stitchQueue.hasWork, stitchQueue.rollURL == rollURL { return true }
+        if stitchQueue.hasWork(on: rollURL) { return true }
         return isBusy
     }
 

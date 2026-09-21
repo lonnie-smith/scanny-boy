@@ -1842,7 +1842,9 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
+        assert negative[f"color_{key}"] == pytest.approx(
+            params.get(key, defaults[key])
+        )
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):
@@ -2918,6 +2920,37 @@ def test_edit_list_spots_on_a_stale_set_warns(capsys, tmp_path):
     ]
     assert events[1]["code"] == "SPOTS_STALE"
     assert events[2]["spots"] == []
+    assert err == ""
+
+
+def test_roll_info_survives_a_failed_negative_with_no_output(capsys, tmp_path):
+    """A failed stitch is stored with `output: None`. That must not crash
+    `roll info` — it would hide every other negative in the roll."""
+    from scanny_boy.roll_manifest_test import _negative
+
+    roll_dir, _negative_id = _spots_roll(capsys, tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    manifest.negatives.append(
+        _negative(
+            negative_id="failed-negative-02",
+            run_id="stitch-run",
+            status="failed",
+            output=None,
+            error_code="STITCH_FAILED",
+            error_message="boom",
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_info", "finished"]
+    negatives = events[1]["manifest"]["negatives"]
+    assert [n["status"] for n in negatives] == ["completed", "failed"]
+    assert negatives[1]["output"] is None
     assert err == ""
 
 
