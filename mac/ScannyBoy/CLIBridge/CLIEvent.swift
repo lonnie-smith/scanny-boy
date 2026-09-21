@@ -378,6 +378,22 @@ extension CLIEvent {
         return .some(CropState(fields: object))
     }
 
+    // `crop_suggested`: the answer to `edit suggest-crop`. `suggestedRect`
+    // is on the full uncropped display canvas — the space `CropSession`
+    // works in — and is nil exactly when `cropRefusal` is set.
+    public var suggestedRect: CGRect? {
+        guard let rect = fields["rect"]?.objectValue,
+            let x = rect["x"]?.intValue, let y = rect["y"]?.intValue,
+            let width = rect["width"]?.intValue, let height = rect["height"]?.intValue
+        else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+    /// The ratio preset the detector fitted (nil when it fitted
+    /// unconstrained).
+    public var suggestedPreset: String? { fields["preset"]?.stringValue }
+    /// The refusal token — `ragged`, `little_picture`, … — or nil.
+    public var cropRefusal: String? { fields["refused"]?.stringValue }
+
     /// The recorded op's tone params, when it is a `tone` op: its `params`
     /// always name all four user keys (explicit nulls for the reset to the
     /// default scan-start curve). The geometric ops carry no tone keys, so

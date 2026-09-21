@@ -233,6 +233,105 @@ struct ConfigurationModelTests {
         #expect(model.selectedFiles.isEmpty)
     }
 
+    // MARK: - Roll setup: Auto-crop
+
+    @Test("setRollAutoCrop issues roll set-setup --auto-crop and updates the state")
+    func setRollAutoCropIssuesTheCommand() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "args.log")
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
+              echo "$@" >> '\(log.path)'
+            fi
+            echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
+            """,
+            in: directory
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingProbes()
+        #expect(model.rollAutoCrop == false)
+
+        await model.setRollAutoCrop(true)
+
+        #expect(model.rollAutoCrop == true)
+        #expect(model.rollSetupError == nil)
+        #expect(model.isSettingRollSetup == false)
+        let logged = try String(contentsOf: log, encoding: .utf8)
+        #expect(logged.contains("--auto-crop on"))
+        #expect(!logged.contains("--format"))
+
+        await model.setRollAutoCrop(false)
+        #expect(model.rollAutoCrop == false)
+    }
+
+    @Test("A failed set-setup leaves rollAutoCrop unchanged and reports the error")
+    func setRollAutoCropFailureKeepsTheState() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            echo '{"protocol_version":24,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":24,"event":"finished","status":"failed","exit_status":1}'
+            """,
+            in: directory
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingProbes()
+
+        await model.setRollAutoCrop(true)
+
+        #expect(model.rollAutoCrop == false)
+        #expect(model.rollSetupError != nil)
+    }
+
+    @Test("The capture setup sync key follows the roll's format and Auto-crop")
+    func syncKeyIncludesAutoCrop() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            "echo '{\"protocol_version\":24,\"event\":\"finished\",\"status\":\"success\",\"exit_status\":0}'",
+            in: directory
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingProbes()
+        let before = ContentView.captureRollSetupSyncKey(for: model)
+
+        await model.setRollAutoCrop(true)
+        let ticked = ContentView.captureRollSetupSyncKey(for: model)
+        await model.setRollFormat(.sixBySeven)
+        let formatted = ContentView.captureRollSetupSyncKey(for: model)
+
+        #expect(before != ticked)
+        #expect(ticked != formatted)
+    }
+
+    @Test("RollCaptureSetup decodes auto_crop, defaulting to off")
+    func rollCaptureSetupDecodesAutoCrop() throws {
+        let on = try #require(
+            RollCaptureSetup(fields: [
+                "format": .string("6x7"), "auto_crop": .bool(true),
+            ])
+        )
+        #expect(on.autoCrop == true)
+        #expect(on.format == .sixBySeven)
+
+        let absent = try #require(RollCaptureSetup(fields: ["format": .string("35mm")]))
+        #expect(absent.autoCrop == false)
+        let null = try #require(RollCaptureSetup(fields: ["auto_crop": .null]))
+        #expect(null.autoCrop == false)
+    }
+
     // MARK: - Model state follows probe results
 
     @Test("The catalogue reflects probe's order verbatim; nothing here re-sorts it")

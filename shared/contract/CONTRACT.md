@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **23**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **24**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -150,6 +150,8 @@ scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
 scanny-boy roll set-base-frame --roll DIR --frame FILE
 scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]
+scanny-boy roll set-setup --roll DIR [--grid AxD] [--interval SECONDS] [--format FORMAT]
+                          [--auto-crop {on,off}]
 
 scanny-boy probe      --input DIR [--files FILE [FILE ...]] [--per-negative N | --grid AxD] [--roll DIR]
                       [--rig ID]
@@ -159,11 +161,12 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
                       [--jobs N] [--overwrite] [--rig ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ...] [--rig ID]
+                      [--negatives ID ...] [--rig ID] [--no-auto-rotate] [--no-auto-crop]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--rig ID]
+                      [--no-auto-rotate] [--no-auto-crop]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -172,6 +175,9 @@ scanny-boy metadata values --field FIELD
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
+scanny-boy edit crop   --roll DIR --negative ID (--x PX --y PX --width PX --height PX
+                       [--tilt DEG] [--preset FORMAT] [--full-frame] [--source auto] | --reset)
+scanny-boy edit suggest-crop --roll DIR --negative ID [--preset FORMAT]
 scanny-boy edit tone   --roll DIR --negative ID [ID ...] [--snap G] [--density D | --auto-density] [--shadow-density D] [--highlight-density D] | --reset
 scanny-boy edit color  --roll DIR --negative ID [ID ...] [--warmth V] [--tint V] [--red-25 V] [--red-50 V] [--red-75 V] [--green-25 V] [--green-50 V] [--green-75 V] [--blue-25 V] [--blue-50 V] [--blue-75 V] [--cast-removal V] [--cast-removal-highlights V] [--auto-balance] [--dye-separation V] [--separation-damping V] | --reset
 scanny-boy edit delete --roll DIR --negative ID [ID ...]
@@ -470,6 +476,67 @@ a crop whose canvas no longer matches the published TIFF (a re-stitch)
 reports as `null`. While a live crop exists, spot sets report no markers
 (the repair itself is replayed before the crop and still applies).
 
+**Auto-crop (`crop`, `source: "auto"`).** A roll's **Auto-crop** setting
+(`setup.auto_crop`, set by `roll set-setup --auto-crop on|off`; **off until
+ticked**, an unset key reads as off) makes the stitch seed a `crop` op on
+each negative, shaped to the roll's film format (`setup.format`) and sized to
+the largest window that holds **picture only** — no canvas fill, rebate,
+sprocket holes, bare light or negative holder (`scanny_boy/auto_crop.py`
+owns every threshold; they are provisional until the measurement gate in
+`docs/AUTO_CROP_PLAN.md` §9 pins them). The op is an ordinary crop —
+`{"x", "y", "w", "h", "tilt_deg", "canvas", "preset", "source": "auto"}`,
+`preset` being the format string — seeded after the auto-rotation it was
+measured under, so a negative gets two `edit_recorded` events (`rotate_fine`
+then `crop`; the second carries the net crop, `source` included). The
+stitch reads the setting when each negative's `stitch` starts, so ticking or
+unticking mid-roll affects only negatives not yet started.
+`stitch --no-auto-crop` (and `run --no-auto-crop`) can only turn seeding
+off; it never turns it on over a roll setting of off. Auto-crop with no
+format set (or one this build has no ratio for) emits the `AUTO_CROP_NO_FORMAT`
+warning once per run and seeds nothing.
+
+The crop's `source` is optional and its only value is `"auto"`; `edit crop
+--source auto` writes it, so an Auto-button crop the user applies unchanged
+stays tagged auto, and a crop without `source` is the user's (a `--reset`
+carries none either). `roll info` and every `edit_recorded` report it as
+`crop.source`. **Re-stitch rule:** an adopted negative is re-seeded only when
+its *latest crop op* carries `source: "auto"` — the new window replaces the
+app's own guess (nothing is appended when it equals the live one; a refusal
+leaves the old op alone); a user's crop, a cleared crop, and no crop at all
+are never touched. Each negative the stitch evaluated carries an
+`auto_crop` evidence block in the roll record — `{"result": "seeded" |
+"reseeded" | "refused" | "no_format", "reason", "picture_fraction",
+"fill_fraction", "version"}` — recorded and read by nothing; `reason` is a
+refusal token (below) or `error` when the detector raised (which also emits
+`AUTO_CROP_FAILED`). `stitch_params["auto_crop"]` records the detector's
+constants as a non-invariant entry.
+
+The format ratios (gate width : height; the stored `preset` is the format
+string, and orientation follows the picture's long axis, never the table):
+
+| format | ratio | format | ratio |
+|---|---|---|---|
+| `half-frame` | 18 : 24 | `6x7` | 56 : 69.5 |
+| `35mm` | 36 : 24 | `xpan` | 65 : 24 |
+| `6x3` | 56 : 28 | `6x9` | 56 : 84 |
+| `645` | 56 : 41.5 | `6x12` | 112 : 56 |
+| `6x6` | 1 : 1 | `6x17` | 168 : 56 |
+
+`auto_crop.FORMAT_RATIOS` (Python) and `CropPreset` (Swift) each hard-code
+this table and test it literally.
+
+`edit suggest-crop` is the pure query behind crop mode's **Auto** button: it
+detects the picture-only window for the negative as it currently displays
+(the net quarter turns, mirror and fine rotation; the crop ignored) and emits
+`crop_suggested`, recording nothing. `--preset` is the crop session's ratio
+preset (a format string); omitted, the roll's `setup.format` applies, and
+with neither the fit is unconstrained (the largest picture-only rect of any
+shape). An unknown preset fails `INVALID_EDIT`. A refusal is an answer, not
+an error: the command exits 0 with `rect: null` and `refused` set to one of
+`no_coverage`, `little_picture`, `no_fit`, `ragged` (the window is too small
+for the picture it was cut from: a ragged mask or the wrong format) or
+`too_small` (below 16×16).
+
 `edit tone` records a preview tone adjustment for one or more negatives:
 midtone contrast (`--snap`, −0.8…1.5), density/brightness (`--density`,
 0.0–2.0, neutral 1.0, higher is denser/darker, or `--auto-density`), zone
@@ -709,7 +776,8 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
 | `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
-| `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` or `null`), and `preview_path`. |
+| `crop_suggested` | The answer to `edit suggest-crop`. Carries `negative_id`, `rect` (`{x, y, width, height}` on the full uncropped display canvas, or `null` exactly when `refused` is set), `canvas_width`, `canvas_height`, `preset` (the ratio fitted, or `null` when unconstrained) and `refused` (a refusal token or `null`). Carries no `run_id`. |
+| `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` plus an optional `source: "auto"`, or `null`), and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
 | `region_rendered` | A display-space region of one negative's published TIFF was rendered at 1:1 by `edit render-region`. Carries `negative_id`, `path`, `x`, `y`, `width`, and `height`. Carries no `run_id`. |
 | `preview_rendered` | A negative's whole display image was rendered by `edit render-preview` in the requested display mode, downscaled like the cached preview. Carries `negative_id`, `path`, `width`, and `height`. Carries no `run_id`. |
@@ -863,6 +931,8 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_HEADROOM_CLIPPED` | Warning: the encode's headroom clipped more than 0.1% of one channel's pixels; the headroom constants are likely too tight |
 | `NORMALIZE_FILM_EXTENT_WITHHELD` | Informational: the film-extent pass withheld a non-film border band (likely the negative carrier) from the metering; the message names the four insets in canvas pixels. The published pixels are never cropped |
 | `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
+| `AUTO_CROP_NO_FORMAT` | Warning: the roll's Auto-crop is on but no film format is set; nothing is seeded (once per run) |
+| `AUTO_CROP_FAILED` | Warning: the auto-crop detector raised on one negative; the negative was published without a new automatic crop (a refusal is not a failure: it is only recorded in the evidence block) |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
 | `FILM_BASE_REQUIRED` | The roll has no film-base reference; `run`/`stitch` refuse before any pixel work |

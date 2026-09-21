@@ -434,6 +434,10 @@ struct ContentView: View {
     /// selection with whatever `model` last held, and this key's
     /// `onChange` catches the pickers up once the fetch actually lands.
     private var captureRollSetupSyncKey: String {
+        Self.captureRollSetupSyncKey(for: model)
+    }
+
+    static func captureRollSetupSyncKey(for model: ConfigurationModel) -> String {
         [
             model.filmKind,
             model.filmBase?.sourceName,
@@ -442,6 +446,8 @@ struct ContentView: View {
             model.flatField?.lockedAt,
             model.rollGrid.map { "\($0.across)x\($0.down)" },
             model.rollIntervalSeconds.map(String.init),
+            model.rollFormat?.rawValue,
+            String(model.rollAutoCrop),
         ]
         .map { $0 ?? "" }
         .joined(separator: "|")
@@ -620,6 +626,9 @@ struct ContentView: View {
                 },
                 fileURL: model.fileURL(for:)
             )
+            // The roll's Format and Auto-crop: the same stored values the
+            // Capture sheet edits (`RollFormatFields`).
+            RollFormatFields(model: model)
             Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)
                 ForEach(grid.profiles) { profile in
