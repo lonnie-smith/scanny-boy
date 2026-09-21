@@ -333,7 +333,7 @@ struct ContentView: View {
     /// Read `capture.isSessionOpen` here so sidebar lock state tracks the
     /// capture model directly, not only through `AppActivity`.
     private var sidebarSelectionLocked: Bool {
-        capture.isSessionOpen || activity.isBusy
+        capture.isSessionOpen || capture.sequencePhase != .idle || activity.isBusy
     }
 
     private var addScansStage: some View {
