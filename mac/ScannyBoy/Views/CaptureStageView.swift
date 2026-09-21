@@ -198,7 +198,7 @@ struct CaptureStageView: View {
                     Task { await model.setFilmKind(choice.rawValue) }
                 }
             )
-            RollFormatFields()
+            RollFormatFields(model: model)
         }
     }
 

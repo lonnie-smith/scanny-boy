@@ -240,7 +240,7 @@ struct CatalogueDragPreview: View {
 /// setup (Add Scans) and the edit setup (Edit) stages.  Extracted to avoid
 /// duplicating the `Picker` + binding boilerplate in two places.
 struct RollFormatFields: View {
-    @Environment(ConfigurationModel.self) private var model
+    @Bindable var model: ConfigurationModel
 
     var body: some View {
         Picker("Format", selection: Binding(
