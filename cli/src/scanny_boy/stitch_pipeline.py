@@ -29,6 +29,7 @@ import tifffile
 import tifftools
 from tifftools.constants import Tag
 
+from scanny_boy import auto_crop as auto_crop_module
 from scanny_boy import (
     auto_neutral,
     concurrency,
@@ -205,6 +206,59 @@ class _SolvedNegative:
     auto_rotation_deg: float | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class _CropSeed:
+    """One negative's auto-crop assignment (docs/AUTO_CROP_PLAN.md §4.4).
+
+    `ratio` is `None` when the roll has no usable film format: the negative
+    only records `no_format`. `adopted` marks a negative this run re-stitches
+    in place whose latest crop is still the app's own guess; then `flipped`
+    and `fine_angle_deg` carry the rotation state the crop is measured under
+    (rotation is never reseeded there). Both are unused for a new negative,
+    which is measured under the rotation seeded in the same publish."""
+
+    ratio: float | None
+    preset: str | None
+    adopted: bool = False
+    flipped: bool = False
+    fine_angle_deg: float = 0.0
+
+
+def _crop_seed_for(
+    out_dir: Path,
+    record: NegativeRecord,
+    *,
+    is_new: bool,
+    ratio: float | None,
+    preset: str | None,
+) -> _CropSeed | None:
+    """Whether this negative gets an auto crop, and under what state.
+
+    A new negative always does. An adopted one does only when its latest
+    `crop` op carries `source: "auto"`: a user's crop is never touched, and
+    "no crop" on an adopted negative means the user cleared it (or auto-crop
+    was off when it was first stitched) — either way not the app's to fill
+    in. The op is read from the log, not from `net_edit_state`: a stale
+    crop has no live state, but its op is still there."""
+    if is_new:
+        return _CropSeed(ratio=ratio, preset=preset)
+    latest_source = None
+    for edit in reversed(repo.edits_for(out_dir, record.negative_id)):
+        if edit["op"] == repo.CROP_OP:
+            latest_source = (edit["params"] or {}).get("source")
+            break
+    if latest_source != "auto":
+        return None
+    state = repo.net_edit_state(out_dir, record.negative_id)
+    return _CropSeed(
+        ratio=ratio,
+        preset=preset,
+        adopted=True,
+        flipped=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
+    )
+
+
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
@@ -297,6 +351,11 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         # are invalidated, so no stored stitch_params without a film_base
         # key is ever compared against a fresh one.
         "film_base": film_base.build_params(),
+        # The auto-crop detector's constants: a non-invariant entry
+        # (`ROLL_PROFILE_STITCH_PARAMS_KEYS`), refreshed by every run, so it
+        # never fails a roll stitched before it existed and never locks a
+        # roll to one build's provisional thresholds.
+        "auto_crop": auto_crop_module.build_params(),
     }
     if profile is not None and profile.geometry is not None:
         bucket: dict[str, Any] = {
@@ -1079,11 +1138,15 @@ def run_stitch(
     emitted as `edit_recorded` — never an adopted negative, whose log (and
     any user edits) already reflects its first publish.
 
-    `auto_crop` (default on, `--no-auto-crop` to turn it off) seeds each
-    *newly published* negative with an automatic crop to the roll's film
-    format ratio, when the roll's ``setup.auto_crop`` is enabled and a
-    format is set. One `crop` ops-log entry per negative, emitted as
-    `edit_recorded`.
+    `auto_crop` (default on, `--no-auto-crop` to turn it off) seeds an
+    automatic crop to the roll's film format ratio — one `crop` ops-log
+    entry tagged `source: "auto"`, emitted as `edit_recorded` — but only
+    when the roll's `setup.auto_crop` is ticked (off until then) and a
+    format is set. The flag can only turn seeding off. It seeds every
+    new negative and, as the one exception to "never an adopted negative",
+    re-seeds an adopted negative whose latest crop is still the automatic
+    one, because that only ever replaces the app's own guess; a user's crop
+    (or no crop at all) is never touched.
 
     Film kind is read from the roll manifest (set at `roll init`), not from
     a CLI flag.
@@ -1272,20 +1335,24 @@ def run_stitch(
             f"{roll_camera_model}; the measurement may still be fine",
         )
 
-    # Read the roll's setup to decide whether to seed auto-crop.
+    # Auto-crop is a roll setting (`setup.auto_crop`, off until ticked),
+    # read here so the checkbox's current value reaches every negative this
+    # run stitches; `--no-auto-crop` can only turn it off (§4.3).
     setup = roll.setup or {}
     roll_format = setup.get("format")
     crop_enabled = auto_crop and bool(setup.get("auto_crop", False))
-    from scanny_boy.auto_crop import FORMAT_RATIOS
-
-    seed_crop = FORMAT_RATIOS.get(roll_format) if crop_enabled else None
-    if crop_enabled and roll_format is None:
+    crop_ratio = (
+        auto_crop_module.FORMAT_RATIOS.get(roll_format) if crop_enabled else None
+    )
+    if crop_enabled and crop_ratio is None:
+        # Once per run, whatever the negative count; each negative records
+        # `no_format` in its own evidence block.
         emit(
             WarningEvent(
                 run_id=run_id,
                 code=Code.AUTO_CROP_NO_FORMAT,
-                message="auto-crop is enabled but the roll has no format set; "
-                "set one with `roll set-setup --format`",
+                message="auto-crop is enabled but the roll has no film format "
+                "set; choose one (`roll set-setup --format`)",
             )
         )
 
@@ -1373,7 +1440,11 @@ def run_stitch(
     # Auto-rotation seeds only the negatives this run created fresh: an
     # adopted one's ops log already reflects its first publish, and
     # re-seeding would stack a second fine rotation on top of the first
-    # (and on top of any user edits made since).
+    # (and on top of any user edits made since). Auto-crop has one
+    # exception: an adopted negative whose latest crop is still
+    # `source: "auto"` gets a fresh one (`_crop_seed_for`), since a crop is
+    # a state op — the new one replaces the app's own guess rather than
+    # stacking on it.
     auto_edits: list[dict] = []
     for entry in solved:
         if cancelled or cancel.cancelled:
@@ -1386,22 +1457,17 @@ def run_stitch(
             continue
 
         try:
-            # Determine whether to seed auto-crop for this negative.
-            negative_seed_crop = None
-            if seed_crop is not None:
-                if entry.record.negative_id in new_negative_ids:
-                    negative_seed_crop = seed_crop
-                else:
-                    # Adopted negative: reseed only if its latest crop is
-                    # still automatic.
-                    negative_edits = repo.edits_for(out_dir, entry.record.negative_id)
-                    latest_crop_source = None
-                    for edit in reversed(negative_edits):
-                        if edit["op"] == repo.CROP_OP:
-                            latest_crop_source = edit.get("params", {}).get("source")
-                            break
-                    if latest_crop_source == "auto":
-                        negative_seed_crop = seed_crop
+            crop_seed = (
+                _crop_seed_for(
+                    out_dir,
+                    entry.record,
+                    is_new=entry.record.negative_id in new_negative_ids,
+                    ratio=crop_ratio,
+                    preset=roll_format,
+                )
+                if crop_enabled
+                else None
+            )
 
             auto_edit_fields = _composite_and_publish(
                 work_dir=work_dir,
@@ -1421,7 +1487,7 @@ def run_stitch(
                 seed_rotation=(
                     auto_rotate and entry.record.negative_id in new_negative_ids
                 ),
-                seed_crop=negative_seed_crop,
+                crop_seed=crop_seed,
             )
         except CancelledError:
             cancelled = True
@@ -1861,6 +1927,64 @@ def _remove_covered_negatives(
             )
 
 
+def _crop_evidence(
+    seed: _CropSeed,
+    outcome: auto_crop_module.AutoCrop | auto_crop_module.Refusal | None,
+    errored: bool,
+) -> dict[str, Any]:
+    """The negative's `auto_crop` evidence block (docs/AUTO_CROP_PLAN.md
+    §3.3): what the detector concluded, so the measurement gate can see
+    refusal rates on real rolls without re-running the stitch. Recorded,
+    read by nothing."""
+    block: dict[str, Any] = {
+        "result": "no_format",
+        "reason": None,
+        "picture_fraction": None,
+        "fill_fraction": None,
+        "version": auto_crop_module.AUTO_CROP_VERSION,
+    }
+    if seed.ratio is None:
+        return block
+    if errored or outcome is None:
+        block.update(result="refused", reason="error")
+    elif isinstance(outcome, auto_crop_module.Refusal):
+        block.update(
+            result="refused",
+            reason=outcome.reason,
+            picture_fraction=outcome.picture_fraction,
+            fill_fraction=outcome.fill_fraction,
+        )
+    else:
+        block.update(
+            result="reseeded" if seed.adopted else "seeded",
+            picture_fraction=outcome.picture_fraction,
+            fill_fraction=outcome.fill_fraction,
+        )
+    return block
+
+
+def _auto_edit_fields(out_dir: Path, record: NegativeRecord, edit: dict) -> dict:
+    """The deferred `edit_recorded` field set for one seeded op — the net
+    transform and crop *after that op*, so a negative seeded with a rotation
+    and a crop reports two ordinary events and the second carries both."""
+    state = repo.net_edit_state(out_dir, record.negative_id)
+    tiff_size = (record.output["height"], record.output["width"])
+    return {
+        "negative_id": record.negative_id,
+        "edit": edit,
+        "rotation_quarter_turns": state.quarter_turns,
+        "flipped_horizontally": state.flipped,
+        "fine_rotation_deg": state.fine_angle_deg,
+        "crop": previews.crop_report(
+            state.crop if previews.crop_is_live(state.crop, tiff_size) else None,
+            tiff_size,
+            quarter_turns=state.quarter_turns,
+            flipped_horizontally=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+        ),
+    }
+
+
 def _composite_and_publish(
     *,
     work_dir: Path,
@@ -1878,7 +2002,7 @@ def _composite_and_publish(
     sources_by_filename: dict | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
     seed_rotation: bool = False,
-    seed_crop: float | None = None,
+    crop_seed: _CropSeed | None = None,
 ) -> list[dict]:
     """Composite one negative, apply the remaining gates, and stage-then-
     publish it atomically, exactly as Phase 1 publishes a group.
@@ -1889,14 +2013,19 @@ def _composite_and_publish(
     With `seed_rotation` set, the composite also gets one pass of
     `auto_rotate.estimate_rotation` and — when it finds a trustworthy
     rebate tilt — one `rotate_fine` ops-log entry is appended to the
-    negative, seeded as the auto edit. Returns the `edit_recorded` field
-    set to emit (minus the preview path, which `sync_previews` fills in
-    later), or None when nothing was seeded.
-
-    With `seed_crop` set to a format ratio, the composite also gets one
-    pass of `auto_crop.estimate_crop` and — when it finds a trustworthy
-    picture boundary — one `crop` ops-log entry is appended to the
     negative, seeded as the auto edit.
+
+    With `crop_seed` set, the composite also gets one pass of
+    `auto_crop.estimate_crop` — measured under the rotation just seeded (or
+    an adopted negative's existing one) — and, when it finds a trustworthy
+    picture boundary, one `crop` ops-log entry tagged `source: "auto"` is
+    appended after the rotation. An adopted negative whose live crop already
+    is that window gets no new op; a refusal leaves its old op alone. Either
+    way the negative's `auto_crop` evidence block records what happened.
+
+    Returns the `edit_recorded` field sets to emit, one per seeded op (each
+    built from the net state after that op, minus the preview path, which
+    `sync_previews` fills in later); empty when nothing was seeded.
 
     The published TIFF itself is never rotated or cropped: the rotation
     and crop are nondestructive ops-log entries, and their pixels are
@@ -2113,52 +2242,57 @@ def _composite_and_publish(
         # and exports will see, fill sentinel and all.
         auto_rotation_deg = estimate_rotation(result.image) if seed_rotation else None
 
-        # Auto-crop detection, measured on the composite while still in
-        # memory. The fine angle is the rotation that was just seeded (if
-        # any), since the crop is stored in TIFF space and the detector
-        # measures under the rotation it will be displayed under.
-        auto_crop_result = None
-        if seed_crop is not None:
+        # Auto-crop is measured on the composite while it is still in memory,
+        # under the fine rotation the display will carry: the one just
+        # seeded for a new negative, the existing net one for an adopted
+        # negative (rotation is never reseeded there). The crop is stored in
+        # TIFF space, so quarter turns never matter; the mirror does, because
+        # it negates the net fine angle.
+        crop_outcome: auto_crop_module.AutoCrop | auto_crop_module.Refusal | None = None
+        crop_error = False
+        crop_flipped = False
+        crop_fine_angle = 0.0
+        if crop_seed is not None and crop_seed.ratio is not None:
+            if crop_seed.adopted:
+                crop_flipped = crop_seed.flipped
+                crop_fine_angle = crop_seed.fine_angle_deg
+            else:
+                crop_fine_angle = auto_rotation_deg or 0.0
             try:
-                from scanny_boy import auto_crop as auto_crop_mod
-
-                seed_fine_angle = auto_rotation_deg or 0.0
-                analysis, scale = auto_crop_mod.analysis_display(
+                analysis, _scale = auto_crop_module.analysis_display(
                     result.image,
-                    quarter_turns=0,
-                    flipped=False,
-                    fine_angle_deg=seed_fine_angle,
+                    flipped=crop_flipped,
+                    fine_angle_deg=crop_fine_angle,
                 )
-                height, width = result.image.shape[:2]
-                exclude = auto_crop_mod.exclusion_hint(
-                    record.normalization,
-                    (height, width),
-                    {
-                        "quarter_turns": 0,
-                        "flipped": False,
-                        "fine_angle_deg": seed_fine_angle,
-                    },
-                    scale,
-                    (analysis.shape[0], analysis.shape[1]),
-                )
-                auto_crop_result = auto_crop_mod.estimate_crop(
+                crop_outcome = auto_crop_module.estimate_crop(
                     analysis,
-                    full_size=(height, width),
-                    ratio=seed_crop,
-                    exclude=exclude,
+                    full_size=result.image.shape[:2],
+                    ratio=crop_seed.ratio,
+                    exclude=auto_crop_module.exclusion_hint(
+                        record.normalization,
+                        result.image.shape[:2],
+                        quarter_turns=0,
+                        flipped=crop_flipped,
+                        fine_angle_deg=crop_fine_angle,
+                        analysis_size=analysis.shape[:2],
+                    ),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                crop_error = True
                 emit(
                     WarningEvent(
                         run_id=run_id,
                         code=Code.AUTO_CROP_FAILED,
                         message=(
-                            f"{record.negative_id}: auto-crop detection "
-                            "failed; the negative was published without "
-                            "automatic cropping"
+                            f"{record.negative_id}: auto-crop failed ({exc}); "
+                            "the negative was published without a new "
+                            "automatic crop"
                         ),
                     )
                 )
+
+        if crop_seed is not None:
+            record.auto_crop = _crop_evidence(crop_seed, crop_outcome, crop_error)
 
         # The roll records the capture time the negative's first frame
         # actually carries, which is exactly the value just read.
@@ -2280,49 +2414,20 @@ def _composite_and_publish(
                 repo.ROTATE_FINE_OP,
                 {"angle_deg": auto_rotation_deg, "source": "auto"},
             )
-            state = repo.net_edit_state(out_dir, record.negative_id)
-            quarter_turns, flipped, fine_angle = (
-                state.quarter_turns,
-                state.flipped,
-                state.fine_angle_deg,
-            )
-            auto_edit_fields_list.append(
-                {
-                    "negative_id": record.negative_id,
-                    "edit": edit,
-                    "rotation_quarter_turns": quarter_turns,
-                    "flipped_horizontally": flipped,
-                    "fine_rotation_deg": fine_angle,
-                    "crop": (
-                        previews.crop_report(
-                            state.crop
-                            if previews.crop_is_live(
-                                state.crop,
-                                (record.output["height"], record.output["width"]),
-                            )
-                            else None,
-                            (record.output["height"], record.output["width"]),
-                            quarter_turns=quarter_turns,
-                            flipped_horizontally=flipped,
-                            fine_angle_deg=fine_angle,
-                        )
-                    ),
-                }
-            )
+            auto_edit_fields_list.append(_auto_edit_fields(out_dir, record, edit))
 
-        # Seed the crop op after rotation.
-        if auto_crop_result is not None and hasattr(auto_crop_result, "rect"):
-            x, y, w, h = auto_crop_result.rect
-            # Map the display-space rect to TIFF space using the same
-            # function the app uses for re-entering crop mode.
-            state = repo.net_edit_state(out_dir, record.negative_id)
+        # The crop is seeded after the rotation it was measured under.
+        if crop_seed is not None and isinstance(
+            crop_outcome, auto_crop_module.AutoCrop
+        ):
+            tiff_size = (height, width)
             tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
-                (x, y, w, h),
-                (height, width),
+                crop_outcome.rect,
+                tiff_size,
                 tilt_deg=0.0,
-                quarter_turns=state.quarter_turns,
-                flipped_horizontally=state.flipped,
-                fine_angle_deg=state.fine_angle_deg,
+                quarter_turns=0,
+                flipped_horizontally=crop_flipped,
+                fine_angle_deg=crop_fine_angle,
                 crop_params=None,
                 full_frame=True,
             )
@@ -2330,9 +2435,6 @@ def _composite_and_publish(
             ty = min(max(ty, 0), height - 1)
             tw = min(tw, width - tx)
             th = min(th, height - ty)
-
-            roll_setup = roll.setup or {}
-            crop_preset = roll_setup.get("format")
             crop_params = repo.validated_crop_params(
                 {
                     "canvas": [width, height],
@@ -2341,45 +2443,24 @@ def _composite_and_publish(
                     "w": tw,
                     "h": th,
                     "tilt_deg": tilt,
-                    "preset": crop_preset,
+                    "preset": crop_seed.preset,
                     "source": "auto",
                 }
             )
-            crop_edit = repo.append_edit(
-                out_dir,
-                record.negative_id,
-                repo.CROP_OP,
-                crop_params,
-            )
-            state = repo.net_edit_state(out_dir, record.negative_id)
-            quarter_turns, flipped, fine_angle = (
-                state.quarter_turns,
-                state.flipped,
-                state.fine_angle_deg,
-            )
-            auto_edit_fields_list.append(
-                {
-                    "negative_id": record.negative_id,
-                    "edit": crop_edit,
-                    "rotation_quarter_turns": quarter_turns,
-                    "flipped_horizontally": flipped,
-                    "fine_rotation_deg": fine_angle,
-                    "crop": (
-                        previews.crop_report(
-                            state.crop
-                            if previews.crop_is_live(
-                                state.crop,
-                                (record.output["height"], record.output["width"]),
-                            )
-                            else None,
-                            (record.output["height"], record.output["width"]),
-                            quarter_turns=quarter_turns,
-                            flipped_horizontally=flipped,
-                            fine_angle_deg=fine_angle,
-                        )
-                    ),
-                }
-            )
+            # An adopted negative whose live crop already is this window
+            # keeps its op: a re-stitch that changed nothing adds nothing.
+            existing = repo.net_edit_state(out_dir, record.negative_id).crop
+            if not (
+                crop_seed.adopted
+                and previews.crop_is_live(existing, tiff_size)
+                and existing == crop_params
+            ):
+                crop_edit = repo.append_edit(
+                    out_dir, record.negative_id, repo.CROP_OP, crop_params
+                )
+                auto_edit_fields_list.append(
+                    _auto_edit_fields(out_dir, record, crop_edit)
+                )
 
         emit(
             NegativeDone(

@@ -338,6 +338,63 @@ struct CLICommandTests {
         #expect(command.arguments.contains("--full-frame"))
     }
 
+    @Test("edit crop can tag the crop as auto-suggested")
+    func editCropSourceArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out,
+            negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            preset: "35mm",
+            fullFrame: true,
+            source: "auto"
+        )
+        #expect(command.arguments.suffix(2) == ["--source", "auto"])
+        let untagged = CLICommand.editCrop(
+            roll: Self.out, negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24)
+        )
+        #expect(!untagged.arguments.contains("--source"))
+    }
+
+    @Test("edit suggest-crop names the roll and negative, and the preset when given")
+    func editSuggestCropArguments() {
+        #expect(
+            CLICommand.editSuggestCrop(roll: Self.out, negative: "neg-01").arguments == [
+                "edit", "suggest-crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+            ]
+        )
+        #expect(
+            CLICommand.editSuggestCrop(
+                roll: Self.out, negative: "neg-01", preset: "645"
+            ).arguments == [
+                "edit", "suggest-crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--preset", "645",
+            ]
+        )
+    }
+
+    @Test("roll set-setup carries --auto-crop on or off")
+    func rollSetSetupAutoCropArguments() {
+        #expect(
+            CLICommand.rollSetSetup(roll: Self.out, autoCrop: true).arguments == [
+                "roll", "set-setup", "--roll", "/Volumes/Scans/roll-12-tif",
+                "--auto-crop", "on",
+            ]
+        )
+        #expect(
+            CLICommand.rollSetSetup(roll: Self.out, autoCrop: false).arguments.suffix(2)
+                == ["--auto-crop", "off"]
+        )
+        #expect(
+            !CLICommand.rollSetSetup(roll: Self.out, format: "6x7").arguments
+                .contains("--auto-crop")
+        )
+    }
+
     @Test("edit render-preview can ignore the live crop")
     func editRenderPreviewFullFrameArguments() {
         let command = CLICommand.editRenderPreview(

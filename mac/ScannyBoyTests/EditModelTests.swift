@@ -1409,6 +1409,131 @@ struct EditModelTests {
         #expect(model.isCropping == false)
     }
 
+    /// A helper that logs the argv of every `edit crop` / `edit suggest-crop`
+    /// call to `args.log` (one line each) and answers `suggest-crop` with
+    /// `suggestion`; `roll info` carries one negative.
+    private static func autoCropRunner(
+        _ directory: URL, suggestion: String
+    ) throws -> (runner: CLIRunner, log: URL) {
+        let initial = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let log = directory.appending(path: "args.log")
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "suggest-crop" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":24,"event":"started","command":"edit suggest-crop"}'
+              echo '\(suggestion)'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
+            elif [ "$1" = "edit" ] && [ "$2" = "crop" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":24,"event":"started","command":"edit crop"}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
+            else
+              echo '\(initial)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return (CLIRunner(executable: executable), log)
+    }
+
+    private static func tempDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private static let rectSuggestion = """
+        {"protocol_version":24,"event":"crop_suggested","negative_id":"n1",\
+        "rect":{"x":10,"y":8,"width":300,"height":200},\
+        "canvas_width":400,"canvas_height":300,"preset":"645","refused":null}
+        """
+
+    @Test("suggestCrop returns the rect and preset, passes --preset, and records nothing")
+    func testSuggestCropReturnsTheAnswer() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: Self.rectSuggestion)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let answer = try #require(await model.suggestCrop(anchor, preset: "645"))
+
+        #expect(answer.rect == CGRect(x: 10, y: 8, width: 300, height: 200))
+        #expect(answer.preset == "645")
+        #expect(answer.refused == nil)
+        #expect(model.isSuggestingCrop == false)
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("suggest-crop"))
+        #expect(lines[0].contains("--preset 645"))
+        #expect(!lines[0].contains("--source"))
+        // A query: the negative's crop is untouched.
+        #expect(model.visibleNegatives[0].crop == nil)
+    }
+
+    @Test("suggestCrop omits --preset for Free and reports a refusal as an answer")
+    func testSuggestCropRefusal() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refusal = """
+            {"protocol_version":24,"event":"crop_suggested","negative_id":"n1","rect":null,\
+            "canvas_width":400,"canvas_height":300,"preset":null,"refused":"ragged"}
+            """
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: refusal)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let answer = try #require(await model.suggestCrop(anchor, preset: nil))
+
+        #expect(answer.rect == nil)
+        #expect(answer.refused == "ragged")
+        let logged = try String(contentsOf: log, encoding: .utf8)
+        #expect(!logged.contains("--preset"))
+    }
+
+    @Test("Apply after an untouched suggestion sends --source auto; after a drag it does not")
+    func testApplyCropSourceFollowsTheSession() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: Self.rectSuggestion)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let session = CropSession()
+        session.begin(displaySize: CGSize(width: 400, height: 300))
+        session.applySuggestion(
+            rect: CGRect(x: 10, y: 8, width: 300, height: 200), preset: .film645
+        )
+        await model.applyCrop(
+            anchor, rect: session.rect, tiltDegrees: session.tiltDegrees,
+            preset: session.preset.rawValue, fullFrame: true,
+            source: session.suggestedRect == nil ? nil : "auto"
+        )
+
+        session.rect = session.rect.offsetBy(dx: 5, dy: 0)
+        await model.applyCrop(
+            anchor, rect: session.rect, tiltDegrees: session.tiltDegrees,
+            preset: session.preset.rawValue, fullFrame: true,
+            source: session.suggestedRect == nil ? nil : "auto"
+        )
+
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(lines.count == 2)
+        #expect(lines[0].hasSuffix("--source auto"))
+        #expect(!lines[1].contains("--source"))
+    }
+
     @Test("Reset clears the crop")
     func testResetCropClearsTheState() async throws {
         let directory = FileManager.default.temporaryDirectory

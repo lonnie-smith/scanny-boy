@@ -243,6 +243,13 @@ class NegativeRecord:
     # extrema, headroom clipping, and the rebate finding. Null when this
     # build predates normalization or the negative never published.
     normalization: dict[str, Any] | None = None
+    # The auto-crop evidence block — `{"result": "seeded" | "reseeded" |
+    # "refused" | "no_format", "reason": str | None, "picture_fraction":
+    # float | None, "fill_fraction": float | None, "version": int}`. Written
+    # by the stitch only, recorded, read by nothing: it lets the measurement
+    # gate (docs/AUTO_CROP_PLAN.md §9) see refusal rates on real rolls
+    # without re-running the stitch. Null when auto-crop was off.
+    auto_crop: dict[str, Any] | None = None
     # The fitted rig-tilt rectification: `l` in 1/px, the centre it acts
     # about, and the fit's before/after diagnostics. Null when the fit was
     # rejected, the negative failed before it ran, or this build predates
@@ -296,6 +303,7 @@ class NegativeRecord:
             "fill_color": list(self.fill_color),
             "normalized_fill": self.normalized_fill,
             "normalization": self.normalization,
+            "auto_crop": self.auto_crop,
             "rectification": self.rectification,
             "rebate_deviation_px": self.rebate_deviation_px,
             "used_clahe_fallback": self.used_clahe_fallback,
@@ -627,8 +635,11 @@ ROLL_PROFILE_PROCESSING_PARAMS_KEYS = ("flat_field", "chromatic_aberration")
 
 # `stitch_params["geometry"]` (`_stitch_params` in stitch_pipeline.py) is
 # the same profile's optional geometric calibration bucket — excluded here
-# for the same reason.
-ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry",)
+# for the same reason. `"auto_crop"` is the auto-crop detector's constants:
+# it shapes an ops-log seed, never published pixels, so it is refreshed by
+# every run rather than held invariant (and a roll stitched before it
+# existed must not mismatch).
+ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry", "auto_crop")
 
 
 def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:

@@ -770,16 +770,43 @@
           "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op."
         },
         "auto_crop": {
-          "type": ["object", "null"],
-          "description": "Auto-crop evidence block, present when stitching seeded a crop. The app reads `source` to decide whether a re-stitch may reseed.",
-          "properties": {
-            "source": {
-              "type": "string",
-              "const": "auto",
-              "description": "Fixed string identifying this crop as auto-generated."
-            }
-          },
-          "additionalProperties": false
+          "description": "Auto-crop evidence: what the stitch's detector concluded for this negative. Written by stitching only, recorded and read by nothing, so refusal rates on real rolls are visible without re-running the stitch. Null when auto-crop was off; an adopted negative the re-stitch did not evaluate keeps the block from the last run that did.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "result",
+                "reason",
+                "picture_fraction",
+                "fill_fraction",
+                "version"
+              ],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["seeded", "reseeded", "refused", "no_format"]
+                },
+                "reason": {
+                  "description": "Set when `result` is `refused`: a detector refusal token, or `error` when the detector raised (which also emits `AUTO_CROP_FAILED`).",
+                  "type": ["string", "null"],
+                  "enum": [
+                    "no_coverage",
+                    "little_picture",
+                    "no_fit",
+                    "ragged",
+                    "too_small",
+                    "error",
+                    null
+                  ]
+                },
+                "picture_fraction": { "type": ["number", "null"] },
+                "fill_fraction": { "type": ["number", "null"] },
+                "version": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
         }
       }
     },

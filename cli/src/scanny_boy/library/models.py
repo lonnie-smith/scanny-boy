@@ -195,6 +195,9 @@ class NegativeRow(Base):
     # this build predates normalization or the negative never published.
     normalization: Mapped[dict | None] = mapped_column(JSONText)
     normalized_fill: Mapped[float | None] = mapped_column(SQLFloat)
+    # The auto-crop evidence block (docs/AUTO_CROP_PLAN.md §3.3); null when
+    # auto-crop was off for the stitch that published this negative.
+    auto_crop: Mapped[dict | None] = mapped_column(JSONText)
     # The fitted rig-tilt rectification; null when the fit was rejected or
     # this build predates it.
     rectification: Mapped[dict | None] = mapped_column(JSONText)

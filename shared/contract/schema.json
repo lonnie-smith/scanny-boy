@@ -175,7 +175,9 @@
         "CAPTURE_FOCUS_DRIFT",
         "CAPTURE_FOCUS_TILT",
         "LIBRARY_DB_UNSUPPORTED",
-        "INTERNAL_ERROR"
+        "INTERNAL_ERROR",
+        "AUTO_CROP_FAILED",
+        "AUTO_CROP_NO_FORMAT"
       ]
     },
     "rollOverlapEntry": {
@@ -382,6 +384,7 @@
               "roll delete",
               "roll set-base-frame",
               "roll set-film-kind",
+              "roll set-setup",
               "apply-metadata",
               "metadata set",
               "metadata values",
@@ -389,6 +392,7 @@
               "edit flip",
               "edit delete",
               "edit crop",
+              "edit suggest-crop",
               "edit tone",
               "edit color",
               "edit render-region",
@@ -791,21 +795,62 @@
       "then": {
         "required": [
           "negative_id",
-          "x",
-          "y",
-          "width",
-          "height",
-          "tilt_deg",
-          "preset"
+          "rect",
+          "canvas_width",
+          "canvas_height",
+          "preset",
+          "refused"
         ],
         "properties": {
           "negative_id": { "type": "string" },
-          "x": { "type": "integer", "minimum": 0 },
-          "y": { "type": "integer", "minimum": 0 },
-          "width": { "type": "integer", "minimum": 1 },
-          "height": { "type": "integer", "minimum": 1 },
-          "tilt_deg": { "type": "number" },
-          "preset": { "type": ["string", "null"] }
+          "rect": {
+            "description": "The suggested window on the full uncropped display canvas (the space `crop` reports `x`/`y`/`canvas_*` in). Null exactly when `refused` is set.",
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["x", "y", "width", "height"],
+                "properties": {
+                  "x": { "type": "integer", "minimum": 0 },
+                  "y": { "type": "integer", "minimum": 0 },
+                  "width": { "type": "integer", "minimum": 1 },
+                  "height": { "type": "integer", "minimum": 1 }
+                },
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ]
+          },
+          "canvas_width": { "type": "integer", "minimum": 1 },
+          "canvas_height": { "type": "integer", "minimum": 1 },
+          "preset": {
+            "description": "The ratio preset the detector fitted: the requested `--preset`, else the roll's `setup.format`; null when it fitted unconstrained.",
+            "type": ["string", "null"],
+            "enum": [
+              "half-frame",
+              "35mm",
+              "6x3",
+              "645",
+              "6x6",
+              "6x7",
+              "xpan",
+              "6x9",
+              "6x12",
+              "6x17",
+              null
+            ]
+          },
+          "refused": {
+            "description": "Why no window was suggested. A refusal is an answer, not an error: the command still exits 0.",
+            "type": ["string", "null"],
+            "enum": [
+              "no_coverage",
+              "little_picture",
+              "no_fit",
+              "ragged",
+              "too_small",
+              null
+            ]
+          }
         }
       }
     },

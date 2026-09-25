@@ -94,15 +94,21 @@ final class EditModel {
     /// `isRotating`.
     private(set) var isCropping = false
 
-    struct CropSuggestion: Sendable {
-        let rect: CGRect
-        let tiltDegrees: Double
-        let preset: String?
-    }
+    /// Set while one `edit suggest-crop` query is in flight — the Auto
+    /// button's detection decodes a full published TIFF, so it can take a
+    /// moment. A query, not an edit: it never blocks the ops-log writers
+    /// (`isCropping` and friends), only Apply and a second Auto.
+    private(set) var isSuggestingCrop = false
 
-    /// Set by `suggestCrop`, consumed by `PreviewPane.beginCrop()` on the
-    /// next appearance of crop mode.
-    var pendingCropSuggestion: CropSuggestion?
+    /// The answer to `edit suggest-crop`: a window on the full uncropped
+    /// display canvas and the ratio preset it was fitted to, or the
+    /// detector's refusal token. `rect` is nil exactly when `refused` is
+    /// set. A refusal is an answer, not an error.
+    struct CropSuggestion: Sendable, Hashable {
+        let rect: CGRect?
+        let preset: String?
+        let refused: String?
+    }
 
     /// Set while one `edit detect-spots` round trip is in flight —
     /// detection decodes a full published TIFF, so it can take a moment.
@@ -522,7 +528,8 @@ final class EditModel {
         rect: CGRect,
         tiltDegrees: Double,
         preset: String?,
-        fullFrame: Bool = false
+        fullFrame: Bool = false,
+        source: String? = nil
     ) async {
         await recordCrop(negative) { rollURL in
             .editCrop(
@@ -531,42 +538,45 @@ final class EditModel {
                 rect: rect,
                 tiltDegrees: tiltDegrees,
                 preset: preset,
-                fullFrame: fullFrame
+                fullFrame: fullFrame,
+                source: source
             )
         }
     }
 
-    /// Runs `edit suggest-crop` for the anchor negative, then enters crop
-    /// mode with the returned window — the Auto button's action.
-    func suggestCrop(_ negative: RollManifest.Negative) async {
-        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
-        isCropping = true
-        defer { isCropping = false }
+    /// Runs `edit suggest-crop` for `negative` — the Auto button's query —
+    /// and returns what the detector answered. `preset` is the crop
+    /// session's current ratio preset (a `FilmFormat` raw value, nil for
+    /// Free): the CLI then falls back to the roll's format, then to an
+    /// unconstrained fit. Records nothing, like Original; the caller loads
+    /// the answer into the crop session. Returns nil when the query could
+    /// not run (no roll, one already in flight, the helper failed).
+    func suggestCrop(
+        _ negative: RollManifest.Negative, preset: String?
+    ) async -> CropSuggestion? {
+        guard let rollURL, !isSuggestingCrop else { return nil }
+        isSuggestingCrop = true
+        defer { isSuggestingCrop = false }
+        var suggestion: CropSuggestion?
         do {
             let session = runner.session(
-                for: .editSuggestCrop(roll: rollURL, negative: negative.negativeID)
+                for: .editSuggestCrop(
+                    roll: rollURL, negative: negative.negativeID, preset: preset
+                )
             )
             for await output in try await session.start() {
-                if case .event(let event) = output,
-                    event.kind == .cropSuggested,
-                    let x = event.fields["x"]?.intValue,
-                    let y = event.fields["y"]?.intValue,
-                    let w = event.fields["width"]?.intValue,
-                    let h = event.fields["height"]?.intValue
-                {
-                    let rect = CGRect(x: x, y: y, width: w, height: h)
-                    let tilt = event.fields["tilt_deg"]?.doubleValue ?? 0
-                    let preset = event.fields["preset"]?.stringValue
-                    self.pendingCropSuggestion = CropSuggestion(
-                        rect: rect,
-                        tiltDegrees: tilt,
-                        preset: preset
+                if case .event(let event) = output, event.kind == .cropSuggested {
+                    suggestion = CropSuggestion(
+                        rect: event.suggestedRect,
+                        preset: event.suggestedPreset,
+                        refused: event.cropRefusal
                     )
                 }
             }
         } catch {
-            return
+            return nil
         }
+        return suggestion
     }
 
     /// Clears the anchor negative's crop — `edit crop --reset` — and
