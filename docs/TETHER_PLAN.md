@@ -442,8 +442,11 @@ last cell's file on disk ── negative complete, enqueued for stitching
 Rules:
 
 - An **initial interval** of the same duration runs before cell 1's release.
-  If the operator pauses during it and cell 1 has not fired yet, the initial
-  interval runs again on resume.
+- **Resuming a negative always counts down the full interval** before the
+  next release — whether resuming from paused or from stopped, and whether
+  or not cell 1 has already fired. The operator's decision: a resume is a
+  fresh "hold still" warning, not a continuation of a clock that was running
+  when they walked away.
 - Inter-shot intervals start at the end of the exposure (§0.5).
 - **The next release waits for the previous frame's download.** The PTP
   channel runs one transaction at a time and a 25 MB `GetObject` takes 0.55 s;
@@ -454,11 +457,11 @@ Rules:
 
 Keys, active only when the Capture stage has focus and no text field does:
 
-| Key | Idle | During a sequence | Paused |
-|---|---|---|---|
-| Space | Start the next negative | Pause after the in-flight shot | Resume (countdown first) |
-| Delete | — | — | Retake the last filled cell (replaces its file in place) |
-| Esc | — | Stop the negative | Stop the negative |
+| Key | Idle | During a sequence | Paused | Stopped |
+|---|---|---|---|---|
+| Space | Start the next negative | Pause after the in-flight shot | Resume (countdown first) | Resume from cell *k* (countdown first) |
+| Delete | — | — | Retake the last filled cell (replaces its file in place) | Retake the last filled cell |
+| Esc | — | Stop the negative | Stop the negative | — |
 
 Nothing in the app binds a plain Space today (checked: `AppKeyboard.swift` and
 every view's `keyboardShortcut`).

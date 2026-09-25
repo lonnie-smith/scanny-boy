@@ -11,6 +11,7 @@ struct CaptureStageView: View {
     let activity: AppActivity
     @FocusState private var captureFocused: Bool
     @State private var isConfirmingDiscard = false
+    @State private var isConfirmingDiscardNegative = false
 
     private let intervalChoices = [2, 3, 4, 5, 6, 8, 10]
 
@@ -54,14 +55,36 @@ struct CaptureStageView: View {
         } message: {
             Text(discardConfirmationMessage)
         }
+        .confirmationDialog(
+            "Discard this negative?",
+            isPresented: $isConfirmingDiscardNegative
+        ) {
+            Button("Discard", role: .destructive) {
+                capture.discardStoppedNegative()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(discardNegativeConfirmationMessage)
+        }
+        // Bound to the stage, not the play/pause button: the button is
+        // removed from the hierarchy while focus assist is open and can't
+        // take focus at all while disabled (and, on macOS, a Button only
+        // takes focus with Full Keyboard Access on) — any of which used to
+        // strand F/Esc/R/C with nothing able to hold `captureFocused`.
         .focusable()
+        .focusEffectDisabled()
+        .focused($captureFocused)
         .onKeyPress("f") {
             guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
             guard capture.isSessionOpen else { return .ignored }
             if capture.focusAssist.isOpen {
                 Task { await capture.focusAssist.close() }
-            } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused {
+            } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused
+                || capture.sequencePhase == .stopped
+            {
                 capture.focusAssist.open()
+            } else {
+                return .ignored
             }
             return .handled
         }
@@ -80,15 +103,20 @@ struct CaptureStageView: View {
             return .handled
         }
         .onKeyPress(.delete) {
-            guard captureFocused else { return .ignored }
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                  capture.sequencePhase == .paused || capture.sequencePhase == .stopped
+            else { return .ignored }
             capture.handleDelete()
             return .handled
         }
         .onKeyPress(.escape) {
-            guard captureFocused else { return .ignored }
+            guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
             if capture.focusAssist.isOpen {
                 Task { await capture.focusAssist.close() }
                 return .handled
+            }
+            guard capture.sequencePhase == .running || capture.sequencePhase == .paused else {
+                return .ignored
             }
             capture.handleEscape()
             return .handled
@@ -99,8 +127,14 @@ struct CaptureStageView: View {
         .onChange(of: capture.sequencePhase) { _, _ in
             captureFocused = true
         }
+        .onChange(of: capture.focusAssist.isOpen) { _, _ in
+            captureFocused = true
+        }
         .onChange(of: capture.gridProfileID) { _, profileID in
             applyCaptureGridSelection(profileID: profileID)
+        }
+        .onChange(of: capture.rigProfileID) { _, rigProfileID in
+            applyCaptureRigSelection(rigProfileID: rigProfileID)
         }
         .onChange(of: capture.intervalSeconds) { _, seconds in
             guard model.rollURL != nil else { return }
@@ -281,6 +315,12 @@ struct CaptureStageView: View {
             capture.connectionState != .ready
                 || capture.isShootingFlatFieldReference
                 || capture.flatField?.lockedAt != nil
+                // A one-shot must never overlap the sequence, the other
+                // one-shot, or a focus-assist check shot (§3.2) — all fire a
+                // camera release, and two at once fire two.
+                || capture.sequencePhase != .idle
+                || capture.isShootingBaseFrame
+                || capture.focusAssist.isCheckShotBusy
         )
     }
 
@@ -292,6 +332,9 @@ struct CaptureStageView: View {
             capture.connectionState != .ready
                 || capture.isShootingBaseFrame
                 || capture.filmBase?.lockedAt != nil
+                || capture.sequencePhase != .idle
+                || capture.isShootingFlatFieldReference
+                || capture.focusAssist.isCheckShotBusy
         )
     }
 
@@ -385,11 +428,18 @@ struct CaptureStageView: View {
     private var sequenceSection: some View {
         Section("Capture") {
             if capture.focusAssist.isOpen {
-                FocusAssistPanel(focusAssist: capture.focusAssist)
+                FocusAssistPanel(
+                    focusAssist: capture.focusAssist,
+                    onClose: { Task { await capture.focusAssist.close() } },
+                    onCheckShot: {
+                        Task { await capture.focusAssist.takeCheckShot(captureFolder: capture.captureFolder) }
+                    }
+                )
             }
             Text(sequenceHint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            focusAssistToggleButton
             if !capture.focusAssist.isOpen {
                 playPauseButton
             }
@@ -405,7 +455,31 @@ struct CaptureStageView: View {
                     cellStates: capture.cellStates,
                     cellWarnings: capture.cellWarnings
                 )
+                // §3.2: a stopped negative's two actions live with the grid
+                // that shows what it kept. "Resume from cell k" is the
+                // play/pause button above, already retitled for `.stopped`.
+                if capture.sequencePhase == .stopped {
+                    Button("Discard negative…", role: .destructive) {
+                        isConfirmingDiscardNegative = true
+                    }
+                }
             }
+        }
+    }
+
+    /// A mouse-reachable way to open or close focus assist: the F key needs
+    /// stage focus, and the play/pause button is unavailable while a start
+    /// prerequisite is unmet, so without this there was no on-screen control
+    /// for it at all.
+    @ViewBuilder
+    private var focusAssistToggleButton: some View {
+        if capture.focusAssist.isOpen {
+            Button("Close focus assist") { capture.focusAssist.toggle() }
+        } else if capture.isSessionOpen,
+            capture.sequencePhase == .idle || capture.sequencePhase == .paused
+                || capture.sequencePhase == .stopped
+        {
+            Button("Focus assist") { capture.focusAssist.toggle() }
         }
     }
 
@@ -419,7 +493,6 @@ struct CaptureStageView: View {
         .keyboardShortcut(.space, modifiers: [])
         .disabled(!capture.canToggleSequence)
         .help(capture.startBlockedReason ?? playPauseTitle)
-        .focused($captureFocused)
     }
 
     private var playPauseTitle: String {
@@ -430,9 +503,17 @@ struct CaptureStageView: View {
             "Pause"
         case .paused:
             "Resume"
+        case .stopped:
+            "Resume from cell \(resumeFromCellNumber)"
         case .waitingForDownload:
             "Waiting…"
         }
+    }
+
+    /// The 1-based label for "Resume from cell k" (§3.2): the first unfilled
+    /// cell of the stopped negative.
+    private var resumeFromCellNumber: Int {
+        (capture.cellStates.firstIndex(where: { !$0.isFilled }) ?? 0) + 1
     }
 
     private var playPauseSymbol: String {
@@ -454,13 +535,18 @@ struct CaptureStageView: View {
         if let reason = capture.startBlockedReason {
             return reason
         }
+        // Per TETHER_PLAN §3.2's key table: only list a key here when it
+        // actually does something in this phase.
         switch capture.sequencePhase {
         case .idle:
-            return "Space or click Capture next negative · F focus assist · Delete retakes · Esc stops"
+            return "Space or click Capture next negative · F focus assist"
         case .running:
-            return "Space or click Pause · F focus assist · Delete retakes · Esc stops"
+            return "Space or click Pause · Esc stops"
         case .paused:
             return "Space or click Resume · F focus assist · Delete retakes · Esc stops"
+        case .stopped:
+            return "Space or click Resume from cell \(resumeFromCellNumber) · "
+                + "F focus assist · Delete retakes · Discard negative"
         case .waitingForDownload:
             return "Waiting for download…"
         }
@@ -529,6 +615,11 @@ struct CaptureStageView: View {
         return "\(summary) will be moved to the Trash. Negatives already published to the roll are kept."
     }
 
+    private var discardNegativeConfirmationMessage: String {
+        let count = capture.cellStates.filter(\.isFilled).count
+        return "\(count) frame\(count == 1 ? "" : "s") will be moved to the Trash."
+    }
+
     @ViewBuilder
     private var discardButton: some View {
         Button("Discard unpublished captures…", role: .destructive) {
@@ -538,16 +629,30 @@ struct CaptureStageView: View {
     }
 
     private func discardUnpublishedCaptures() {
-        if capture.sequencePhase != .idle {
+        // Esc from `.running`/`.paused` now lands on `.stopped` (with a
+        // filled cell) or `.idle` (§3.2); the model's discard accepts both.
+        if capture.sequencePhase == .running || capture.sequencePhase == .paused {
             capture.handleEscape()
         }
-        guard capture.sequencePhase == .idle, !capture.hasUnresolvedLeftovers else { return }
+        guard capture.sequencePhase == .idle || capture.sequencePhase == .stopped,
+            !capture.hasUnresolvedLeftovers
+        else { return }
         let publishedIDs = stitchQueue.publishedNegativeIDs
         var urls = stitchQueue.discardUnpublished(for: capture.rollURL)
         urls.append(contentsOf: capture.discardUnpublishedCaptures(publishedNegativeIDs: publishedIDs))
         let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !existing.isEmpty else { return }
         NSWorkspace.shared.recycle(existing) { _, _ in }
+    }
+
+    /// Keeps the Capture tab's rig picker in sync with `model.rigProfileID`
+    /// (the single source of truth `wireCaptureToRoll` pulls from on every
+    /// roll rescan) and re-stitches queued negatives with the new rig,
+    /// matching the Add Scans picker's behavior.
+    private func applyCaptureRigSelection(rigProfileID: String?) {
+        guard model.rigProfileID != rigProfileID else { return }
+        model.rigProfileID = rigProfileID
+        reconfigureStitchQueue()
     }
 
     private func applyCaptureGridSelection(profileID: String?) {
