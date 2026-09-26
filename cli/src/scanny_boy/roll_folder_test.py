@@ -134,6 +134,34 @@ def test_set_film_kind_updates_manifest(tmp_path):
     assert manifest.published_icc_profile == profile_record(ProfileKind.DENSITY_GREY)
 
 
+# --- set_setup -----------------------------------------------------------
+
+
+def test_set_setup_merges_keys_and_an_unset_auto_crop_reads_off(tmp_path):
+    from scanny_boy.roll_folder import set_setup
+
+    roll_dir = create_roll(tmp_path, "Setup")
+    assert load_roll_manifest(roll_dir).setup is None
+
+    set_setup(roll_dir, format="6x7")
+    setup = load_roll_manifest(roll_dir).setup
+    assert setup["format"] == "6x7"
+    assert not setup.get("auto_crop", False)
+
+    set_setup(roll_dir, auto_crop=True)
+    set_setup(roll_dir, interval_seconds=20)  # a partial update keeps the rest
+    setup = load_roll_manifest(roll_dir).setup
+    assert setup == {
+        "grid": None,
+        "interval_seconds": 20,
+        "format": "6x7",
+        "auto_crop": True,
+    }
+
+    set_setup(roll_dir, auto_crop=False)
+    assert load_roll_manifest(roll_dir).setup["auto_crop"] is False
+
+
 # --- rename_roll ---------------------------------------------------------
 
 

@@ -379,8 +379,6 @@ public struct CLICommand: Sendable, Hashable {
         roll: URL,
         negatives: [String],
         adjustment: ColorAdjustment?,
-        region: String = "global",
-        temperatureKelvin: Double? = nil,
         auto: ColorAutoFlags = []
     ) -> CLICommand {
         var arguments = [
@@ -391,56 +389,21 @@ public struct CLICommand: Sendable, Hashable {
             arguments.append(contentsOf: ["--negative", negative])
         }
         if let adjustment {
-            let tempRegion = temperatureKelvin != nil ? region : nil
-            let autoCast = auto.contains(.cast)
-
-            if autoCast {
-                arguments.append("--auto-cast")
+            if auto.contains(.balance) {
+                arguments.append("--auto-balance")
             } else {
-                arguments.append(contentsOf: ["--cyan", String(adjustment.wbCyan)])
-                if tempRegion == "global", let temperatureKelvin {
-                    arguments.append(contentsOf: [
-                        "--temperature", String(temperatureKelvin),
-                        "--region", "global",
-                    ])
-                } else {
-                    arguments.append(contentsOf: ["--magenta", String(adjustment.wbMagenta)])
-                    arguments.append(contentsOf: ["--yellow", String(adjustment.wbYellow)])
-                }
+                arguments.append(contentsOf: ["--warmth", String(adjustment.warmth)])
+                arguments.append(contentsOf: ["--tint", String(adjustment.tint)])
             }
-
-            arguments.append(contentsOf: ["--shadow-cyan", String(adjustment.shadowCyan)])
-            if tempRegion == "shadows", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "shadows",
-                ])
-            } else {
-                arguments.append(contentsOf: [
-                    "--shadow-magenta", String(adjustment.shadowMagenta),
-                ])
-                arguments.append(contentsOf: [
-                    "--shadow-yellow", String(adjustment.shadowYellow),
-                ])
-            }
-
-            arguments.append(contentsOf: [
-                "--highlight-cyan", String(adjustment.highlightCyan),
-            ])
-            if tempRegion == "highlights", let temperatureKelvin {
-                arguments.append(contentsOf: [
-                    "--temperature", String(temperatureKelvin),
-                    "--region", "highlights",
-                ])
-            } else {
-                arguments.append(contentsOf: [
-                    "--highlight-magenta", String(adjustment.highlightMagenta),
-                ])
-                arguments.append(contentsOf: [
-                    "--highlight-yellow", String(adjustment.highlightYellow),
-                ])
-            }
-
+            arguments.append(contentsOf: ["--red-25", String(adjustment.curveRed25)])
+            arguments.append(contentsOf: ["--red-50", String(adjustment.curveRed50)])
+            arguments.append(contentsOf: ["--red-75", String(adjustment.curveRed75)])
+            arguments.append(contentsOf: ["--green-25", String(adjustment.curveGreen25)])
+            arguments.append(contentsOf: ["--green-50", String(adjustment.curveGreen50)])
+            arguments.append(contentsOf: ["--green-75", String(adjustment.curveGreen75)])
+            arguments.append(contentsOf: ["--blue-25", String(adjustment.curveBlue25)])
+            arguments.append(contentsOf: ["--blue-50", String(adjustment.curveBlue50)])
+            arguments.append(contentsOf: ["--blue-75", String(adjustment.curveBlue75)])
             arguments.append(contentsOf: ["--cast-removal", String(adjustment.castRemoval)])
             arguments.append(
                 contentsOf: [
@@ -523,15 +486,27 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy edit suggest-crop --roll DIR --negative ID [--preset NAME]`
+    ///
+    /// The pure query behind crop mode's Auto button: detects the
+    /// picture-only window for the negative as it currently displays and
+    /// answers with `crop_suggested`. Nothing is recorded. `preset` is the
+    /// crop session's ratio preset (a `FilmFormat` raw value); omitted, the
+    /// CLI uses the roll's format, then fits unconstrained.
     public static func editSuggestCrop(
         roll: URL,
-        negative: String
+        negative: String,
+        preset: String? = nil
     ) -> CLICommand {
-        CLICommand(arguments: [
+        var arguments = [
             "edit", "suggest-crop",
             "--roll", roll.path,
             "--negative", negative,
-        ])
+        ]
+        if let preset {
+            arguments.append(contentsOf: ["--preset", preset])
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy edit render-region --roll DIR --negative ID --x PX --y PX --width PX --height PX --output PATH [--mode positive|negative]`

@@ -94,15 +94,21 @@ final class EditModel {
     /// `isRotating`.
     private(set) var isCropping = false
 
-    struct CropSuggestion: Sendable {
-        let rect: CGRect
-        let tiltDegrees: Double
-        let preset: String?
-    }
+    /// Set while one `edit suggest-crop` query is in flight — the Auto
+    /// button's detection decodes a full published TIFF, so it can take a
+    /// moment. A query, not an edit: it never blocks the ops-log writers
+    /// (`isCropping` and friends), only Apply and a second Auto.
+    private(set) var isSuggestingCrop = false
 
-    /// Set by `suggestCrop`, consumed by `PreviewPane.beginCrop()` on the
-    /// next appearance of crop mode.
-    var pendingCropSuggestion: CropSuggestion?
+    /// The answer to `edit suggest-crop`: a window on the full uncropped
+    /// display canvas and the ratio preset it was fitted to, or the
+    /// detector's refusal token. `rect` is nil exactly when `refused` is
+    /// set. A refusal is an answer, not an error.
+    struct CropSuggestion: Sendable, Hashable {
+        let rect: CGRect?
+        let preset: String?
+        let refused: String?
+    }
 
     /// Set while one `edit detect-spots` round trip is in flight —
     /// detection decodes a full published TIFF, so it can take a moment.
@@ -522,7 +528,8 @@ final class EditModel {
         rect: CGRect,
         tiltDegrees: Double,
         preset: String?,
-        fullFrame: Bool = false
+        fullFrame: Bool = false,
+        source: String? = nil
     ) async {
         await recordCrop(negative) { rollURL in
             .editCrop(
@@ -531,42 +538,45 @@ final class EditModel {
                 rect: rect,
                 tiltDegrees: tiltDegrees,
                 preset: preset,
-                fullFrame: fullFrame
+                fullFrame: fullFrame,
+                source: source
             )
         }
     }
 
-    /// Runs `edit suggest-crop` for the anchor negative, then enters crop
-    /// mode with the returned window — the Auto button's action.
-    func suggestCrop(_ negative: RollManifest.Negative) async {
-        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
-        isCropping = true
-        defer { isCropping = false }
+    /// Runs `edit suggest-crop` for `negative` — the Auto button's query —
+    /// and returns what the detector answered. `preset` is the crop
+    /// session's current ratio preset (a `FilmFormat` raw value, nil for
+    /// Free): the CLI then falls back to the roll's format, then to an
+    /// unconstrained fit. Records nothing, like Original; the caller loads
+    /// the answer into the crop session. Returns nil when the query could
+    /// not run (no roll, one already in flight, the helper failed).
+    func suggestCrop(
+        _ negative: RollManifest.Negative, preset: String?
+    ) async -> CropSuggestion? {
+        guard let rollURL, !isSuggestingCrop else { return nil }
+        isSuggestingCrop = true
+        defer { isSuggestingCrop = false }
+        var suggestion: CropSuggestion?
         do {
             let session = runner.session(
-                for: .editSuggestCrop(roll: rollURL, negative: negative.negativeID)
+                for: .editSuggestCrop(
+                    roll: rollURL, negative: negative.negativeID, preset: preset
+                )
             )
             for await output in try await session.start() {
-                if case .event(let event) = output,
-                    event.kind == .cropSuggested,
-                    let x = event.fields["x"]?.intValue,
-                    let y = event.fields["y"]?.intValue,
-                    let w = event.fields["width"]?.intValue,
-                    let h = event.fields["height"]?.intValue
-                {
-                    let rect = CGRect(x: x, y: y, width: w, height: h)
-                    let tilt = event.fields["tilt_deg"]?.doubleValue ?? 0
-                    let preset = event.fields["preset"]?.stringValue
-                    self.pendingCropSuggestion = CropSuggestion(
-                        rect: rect,
-                        tiltDegrees: tilt,
-                        preset: preset
+                if case .event(let event) = output, event.kind == .cropSuggested {
+                    suggestion = CropSuggestion(
+                        rect: event.suggestedRect,
+                        preset: event.suggestedPreset,
+                        refused: event.cropRefusal
                     )
                 }
             }
         } catch {
-            return
+            return nil
         }
+        return suggestion
     }
 
     /// Clears the anchor negative's crop — `edit crop --reset` — and
@@ -888,20 +898,21 @@ final class EditModel {
         var toneDensity = negative.toneDensity
         var toneShadowDensity = negative.toneShadowDensity
         var toneHighlightDensity = negative.toneHighlightDensity
-        var colorWbCyan = negative.colorWbCyan
-        var colorWbMagenta = negative.colorWbMagenta
-        var colorWbYellow = negative.colorWbYellow
-        var colorShadowCyan = negative.colorShadowCyan
-        var colorShadowMagenta = negative.colorShadowMagenta
-        var colorShadowYellow = negative.colorShadowYellow
-        var colorHighlightCyan = negative.colorHighlightCyan
-        var colorHighlightMagenta = negative.colorHighlightMagenta
-        var colorHighlightYellow = negative.colorHighlightYellow
+        var colorWarmth = negative.colorWarmth
+        var colorTint = negative.colorTint
+        var colorCurveRed25 = negative.colorCurveRed25
+        var colorCurveRed50 = negative.colorCurveRed50
+        var colorCurveRed75 = negative.colorCurveRed75
+        var colorCurveGreen25 = negative.colorCurveGreen25
+        var colorCurveGreen50 = negative.colorCurveGreen50
+        var colorCurveGreen75 = negative.colorCurveGreen75
+        var colorCurveBlue25 = negative.colorCurveBlue25
+        var colorCurveBlue50 = negative.colorCurveBlue50
+        var colorCurveBlue75 = negative.colorCurveBlue75
         var colorCastRemoval = negative.colorCastRemoval
         var colorCastRemovalHighlights = negative.colorCastRemovalHighlights
         var colorDyeSeparation = negative.colorDyeSeparation
         var colorSeparationDamping = negative.colorSeparationDamping
-        var colorTemperature = negative.colorTemperature
         if let recorded = event.recordedTone {
             if let tone = recorded {
                 toneSnapGamma = tone.snapGamma
@@ -917,35 +928,37 @@ final class EditModel {
         }
         if let recorded = event.recordedColor {
             if let color = recorded {
-                colorWbCyan = color.wbCyan
-                colorWbMagenta = color.wbMagenta
-                colorWbYellow = color.wbYellow
-                colorShadowCyan = color.shadowCyan
-                colorShadowMagenta = color.shadowMagenta
-                colorShadowYellow = color.shadowYellow
-                colorHighlightCyan = color.highlightCyan
-                colorHighlightMagenta = color.highlightMagenta
-                colorHighlightYellow = color.highlightYellow
+                colorWarmth = color.warmth
+                colorTint = color.tint
+                colorCurveRed25 = color.curveRed25
+                colorCurveRed50 = color.curveRed50
+                colorCurveRed75 = color.curveRed75
+                colorCurveGreen25 = color.curveGreen25
+                colorCurveGreen50 = color.curveGreen50
+                colorCurveGreen75 = color.curveGreen75
+                colorCurveBlue25 = color.curveBlue25
+                colorCurveBlue50 = color.curveBlue50
+                colorCurveBlue75 = color.curveBlue75
                 colorCastRemoval = color.castRemoval
                 colorCastRemovalHighlights = color.castRemovalHighlights
                 colorDyeSeparation = color.dyeSeparation
                 colorSeparationDamping = color.separationDamping
-                colorTemperature = nil
             } else {
-                colorWbCyan = nil
-                colorWbMagenta = nil
-                colorWbYellow = nil
-                colorShadowCyan = nil
-                colorShadowMagenta = nil
-                colorShadowYellow = nil
-                colorHighlightCyan = nil
-                colorHighlightMagenta = nil
-                colorHighlightYellow = nil
+                colorWarmth = nil
+                colorTint = nil
+                colorCurveRed25 = nil
+                colorCurveRed50 = nil
+                colorCurveRed75 = nil
+                colorCurveGreen25 = nil
+                colorCurveGreen50 = nil
+                colorCurveGreen75 = nil
+                colorCurveBlue25 = nil
+                colorCurveBlue50 = nil
+                colorCurveBlue75 = nil
                 colorCastRemoval = nil
                 colorCastRemovalHighlights = nil
                 colorDyeSeparation = nil
                 colorSeparationDamping = nil
-                colorTemperature = nil
             }
         }
         roll = manifest.replacingNegative(
@@ -970,20 +983,21 @@ final class EditModel {
                 toneDensity: toneDensity,
                 toneShadowDensity: toneShadowDensity,
                 toneHighlightDensity: toneHighlightDensity,
-                colorWbCyan: colorWbCyan,
-                colorWbMagenta: colorWbMagenta,
-                colorWbYellow: colorWbYellow,
-                colorShadowCyan: colorShadowCyan,
-                colorShadowMagenta: colorShadowMagenta,
-                colorShadowYellow: colorShadowYellow,
-                colorHighlightCyan: colorHighlightCyan,
-                colorHighlightMagenta: colorHighlightMagenta,
-                colorHighlightYellow: colorHighlightYellow,
+                colorWarmth: colorWarmth,
+                colorTint: colorTint,
+                colorCurveRed25: colorCurveRed25,
+                colorCurveRed50: colorCurveRed50,
+                colorCurveRed75: colorCurveRed75,
+                colorCurveGreen25: colorCurveGreen25,
+                colorCurveGreen50: colorCurveGreen50,
+                colorCurveGreen75: colorCurveGreen75,
+                colorCurveBlue25: colorCurveBlue25,
+                colorCurveBlue50: colorCurveBlue50,
+                colorCurveBlue75: colorCurveBlue75,
                 colorCastRemoval: colorCastRemoval,
                 colorCastRemovalHighlights: colorCastRemovalHighlights,
                 colorDyeSeparation: colorDyeSeparation,
                 colorSeparationDamping: colorSeparationDamping,
-                colorTemperature: colorTemperature,
                 errorCode: negative.errorCode,
                 errorMessage: negative.errorMessage,
                 maxOverlapMAD: negative.maxOverlapMAD,

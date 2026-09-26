@@ -246,7 +246,7 @@ struct ContentView: View {
         } message: {
             if let count = selectedRoll?.negativeCount {
                 Text(
-                    "This roll already contains \(count) negative(s). "
+                    "This roll already contains \(Pluralize.count(count, "negative")). "
                         + "Add the new scans here, or create a new roll for them."
                 )
             }
@@ -333,7 +333,7 @@ struct ContentView: View {
     /// Read `capture.isSessionOpen` here so sidebar lock state tracks the
     /// capture model directly, not only through `AppActivity`.
     private var sidebarSelectionLocked: Bool {
-        capture.isSessionOpen || activity.isBusy
+        capture.isSessionOpen || capture.sequencePhase != .idle || activity.isBusy
     }
 
     private var addScansStage: some View {
@@ -387,6 +387,11 @@ struct ContentView: View {
                 model.receiveFlatFieldReference(flatField)
             }
         }
+        if capture.onFilmBaseAttached == nil {
+            capture.onFilmBaseAttached = { [model] filmBase in
+                model.receiveFilmBase(filmBase)
+            }
+        }
         if stitchQueue.onRollUpdated == nil {
             stitchQueue.onRollUpdated = { [edit, library] in
                 edit.refresh()
@@ -394,9 +399,10 @@ struct ContentView: View {
             }
         }
         if stitchQueue.onNegativePublished == nil {
-            stitchQueue.onNegativePublished = { [edit, library] in
+            stitchQueue.onNegativePublished = { [edit, library, model] in
                 edit.refresh()
                 library.scan()
+                model.refreshRollLocks()
             }
         }
     }
@@ -428,12 +434,20 @@ struct ContentView: View {
     /// selection with whatever `model` last held, and this key's
     /// `onChange` catches the pickers up once the fetch actually lands.
     private var captureRollSetupSyncKey: String {
+        Self.captureRollSetupSyncKey(for: model)
+    }
+
+    static func captureRollSetupSyncKey(for model: ConfigurationModel) -> String {
         [
             model.filmKind,
             model.filmBase?.sourceName,
+            model.filmBase?.lockedAt,
             model.flatField?.sourceName,
+            model.flatField?.lockedAt,
             model.rollGrid.map { "\($0.across)x\($0.down)" },
             model.rollIntervalSeconds.map(String.init),
+            model.rollFormat?.rawValue,
+            String(model.rollAutoCrop),
         ]
         .map { $0 ?? "" }
         .joined(separator: "|")
@@ -449,6 +463,9 @@ struct ContentView: View {
         // carry over a different roll's pick. Dimensions alone can't drive
         // `gridProfileID` (it needs a profile id), so this only applies
         // when a profile with matching dimensions still exists.
+        // Not while a negative is being shot: the grid and interval are
+        // fixed for its duration, and this runs on every roll rescan.
+        guard capture.sequencePhase == .idle else { return }
         if let rollGrid = model.rollGrid,
            let profile = grid.profiles.first(where: {
                $0.across == rollGrid.across && $0.down == rollGrid.down
@@ -609,6 +626,9 @@ struct ContentView: View {
                 },
                 fileURL: model.fileURL(for:)
             )
+            // The roll's Format and Auto-crop: the same stored values the
+            // Capture sheet edits (`RollFormatFields`).
+            RollFormatFields(model: model)
             Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
                 Text("Choose…").tag(String?.none)
                 ForEach(grid.profiles) { profile in

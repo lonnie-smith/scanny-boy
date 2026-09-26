@@ -58,6 +58,7 @@ from scanny_boy.roll_manifest_schema_test_support import (
 )
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
+    NEGATIVE_1,
     NEGATIVE_2,
     requires_real_samples,
 )
@@ -798,6 +799,70 @@ def test_real_underconstrained_negative_recovers_with_clahe(tmp_path):
     negative = roll.negatives[0]
     assert negative.status == "completed"
     assert negative.used_clahe_fallback is True
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_real_auto_crop_lies_inside_the_recorded_film_extent(tmp_path):
+    """A real roll's seeded crop stays inside the film-extent inset the
+    stitch recorded (the carrier the metering already withheld) — or the
+    detector refused and said why. Never a crop that includes carrier."""
+    import cv2
+
+    from scanny_boy.normalization import analysis_grid_block_sizes
+    from scanny_boy.pipeline import run_convert
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    for name in NEGATIVE_1:
+        (input_dir / name).write_bytes((FIXTURES_DIR / name).read_bytes())
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    run_convert(
+        input_dir,
+        NEGATIVE_1,
+        work_dir,
+        3,
+        run_id="convert-run",
+        jobs=1,
+        cancel=CancellationToken(),
+        emit=lambda event: None,
+    )
+    out_dir = make_roll_dir(tmp_path)
+    _tick_auto_crop(out_dir, "35mm")
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir)
+
+    assert outcome.status == "complete"
+    negative = load_roll_manifest(out_dir).negatives[0]
+    assert negative.auto_crop is not None
+    ops = _crop_ops(out_dir, negative.negative_id)
+    if not ops:
+        assert negative.auto_crop["result"] == "refused"
+        assert negative.auto_crop["reason"]
+        return
+    params = ops[-1]["params"]
+    extent = negative.normalization["film_extent"]
+    if not extent["detected"]:
+        return
+    block = analysis_grid_block_sizes(
+        (negative.output["height"], negative.output["width"])
+    )[0]
+    x, y, w, h = negative.normalization["analysis_rect"]
+    top, bottom, left, right = (v * block for v in extent["insets"])
+    inner = (x + left, y + top, x + w - right, y + h - bottom)
+    centre = (params["x"] + params["w"] / 2, params["y"] + params["h"] / 2)
+    matrix = cv2.getRotationMatrix2D(centre, params["tilt_deg"], 1.0)
+    for cx, cy in (
+        (params["x"], params["y"]),
+        (params["x"] + params["w"], params["y"]),
+        (params["x"] + params["w"], params["y"] + params["h"]),
+        (params["x"], params["y"] + params["h"]),
+    ):
+        px = matrix[0, 0] * cx + matrix[0, 1] * cy + matrix[0, 2]
+        py = matrix[1, 0] * cx + matrix[1, 1] * cy + matrix[1, 2]
+        assert inner[0] - 2 <= px <= inner[2] + 2
+        assert inner[1] - 2 <= py <= inner[3] + 2
 
 
 def test_cancellation_keeps_completed_negatives(tmp_path):
@@ -1986,6 +2051,425 @@ def test_a_re_stitch_never_re_seeds_the_auto_rotation(work_dir, tmp_path, monkey
     edits = repo.edits_for(out_dir, "stitch-negative-01")
     rotate_edits = [e for e in edits if e["op"] == repo.ROTATE_FINE_OP]
     assert len(rotate_edits) == 1
+
+
+# --- auto-crop seeding -----------------------------------------------------
+
+
+def _tick_auto_crop(roll_dir, format="35mm"):
+    from scanny_boy.roll_folder import set_setup
+
+    set_setup(roll_dir, format=format, auto_crop=True)
+
+
+def _detector(monkeypatch, *, rect=(100, 60, 1200, 600), result=None):
+    """Stand in for `auto_crop.estimate_crop`: the synthetic scans carry no
+    rebate for the real detector to read, and the pipeline's seeding is what
+    is under test (the detector has its own tests). Returns the call log."""
+    from scanny_boy import auto_crop
+
+    calls: list[dict] = []
+
+    def fake(analysis, *, full_size, ratio, exclude=None):
+        calls.append({"ratio": ratio, "full_size": full_size, "exclude": exclude})
+        if result is not None:
+            return result
+        return auto_crop.AutoCrop(
+            rect=rect, ratio=ratio, picture_fraction=0.81, fill_fraction=0.93
+        )
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", fake)
+    return calls
+
+
+def _user_ops(out_dir, negative_id="stitch-negative-01"):
+    """The negative's ops, less the scratch detector's own re-detection
+    (a stitch refreshes that state op independently of auto-crop)."""
+    return [
+        e for e in repo.edits_for(out_dir, negative_id) if e["op"] != repo.SCRATCHES_OP
+    ]
+
+
+def _crop_ops(out_dir, negative_id="stitch-negative-01"):
+    return [e for e in repo.edits_for(out_dir, negative_id) if e["op"] == repo.CROP_OP]
+
+
+def test_auto_crop_seeds_a_crop_after_the_rotation_on_a_new_negative(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import edits
+
+    out_dir = make_roll_dir(tmp_path, "autocrop")
+    _tick_auto_crop(out_dir, "35mm")
+    calls = _detector(monkeypatch)
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
+    events: list = []
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    ops = [e["op"] for e in repo.edits_for(out_dir, "stitch-negative-01")]
+    assert ops.index(repo.ROTATE_FINE_OP) < ops.index(repo.CROP_OP)
+    (crop,) = _crop_ops(out_dir)
+    params = crop["params"]
+    assert params["source"] == "auto"
+    assert params["preset"] == "35mm"
+    assert params["canvas"] == [2080, 730]
+    assert calls[0]["ratio"] == pytest.approx(1.5)
+    # Two ordinary edit_recorded events; the second carries the net crop.
+    recorded = [e for e in events if isinstance(e, EditRecorded)]
+    assert [e.edit["op"] for e in recorded] == [repo.ROTATE_FINE_OP, repo.CROP_OP]
+    assert recorded[0].crop is None
+    assert recorded[1].crop["source"] == "auto"
+    assert recorded[1].crop["preset"] == "35mm"
+    assert recorded[1].preview_path is not None
+    # The evidence block.
+    negative = load_roll_manifest(out_dir).negative("stitch-negative-01")
+    assert negative.auto_crop == {
+        "result": "seeded",
+        "reason": None,
+        "picture_fraction": 0.81,
+        "fill_fraction": 0.93,
+        "version": 1,
+    }
+    # Crop mode round trip: `edit crop --full-frame` with the reported
+    # x/y/width/height reproduces the stored window.
+    report = recorded[1].crop
+    before = repo.net_edit_state(out_dir, "stitch-negative-01").crop
+    edits.run_edit_crop(
+        out_dir,
+        "stitch-negative-01",
+        rect=(report["x"], report["y"], report["width"], report["height"]),
+        tilt_deg=report["tilt_deg"],
+        full_frame=True,
+        emit=lambda event: None,
+    )
+    after = repo.net_edit_state(out_dir, "stitch-negative-01").crop
+    for key in ("x", "y", "w", "h"):
+        assert after[key] == pytest.approx(before[key], abs=2)
+    assert after["tilt_deg"] == pytest.approx(before["tilt_deg"], abs=0.05)
+
+
+def test_auto_crop_is_measured_under_the_seeded_rotation(
+    work_dir, tmp_path, monkeypatch
+):
+    out_dir = make_roll_dir(tmp_path, "cropangle")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
+    seen: list[dict] = []
+    real = stitch_pipeline.auto_crop_module.analysis_display
+
+    def spy(image, **kwargs):
+        seen.append(kwargs)
+        return real(image, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline.auto_crop_module, "analysis_display", spy)
+
+    run_stitch_with_defaults(work_dir, out_dir)
+
+    assert seen == [{"flipped": False, "fine_angle_deg": 1.5}]
+
+
+def test_auto_crop_off_or_unset_seeds_nothing_and_records_no_evidence(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import auto_crop
+    from scanny_boy.roll_folder import set_setup
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("the detector must not run with auto-crop off")
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", _fail)
+    out_dir = make_roll_dir(tmp_path, "cropoff")
+    set_setup(out_dir, format="35mm")  # a format alone does not turn it on
+
+    events: list = []
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    assert _crop_ops(out_dir) == []
+    assert load_roll_manifest(out_dir).negative("stitch-negative-01").auto_crop is None
+    assert not [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code == Code.AUTO_CROP_NO_FORMAT
+    ]
+
+
+def test_no_auto_crop_flag_overrides_a_ticked_roll(work_dir, tmp_path, monkeypatch):
+    from scanny_boy import auto_crop
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("--no-auto-crop must not run the detector")
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", _fail)
+    out_dir = make_roll_dir(tmp_path, "nocropflag")
+    _tick_auto_crop(out_dir)
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, auto_crop=False)
+
+    assert outcome.status == "complete"
+    assert _crop_ops(out_dir) == []
+    assert load_roll_manifest(out_dir).negative("stitch-negative-01").auto_crop is None
+
+
+def test_auto_crop_without_a_format_warns_once_per_run_and_records_no_format(
+    tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_setup
+
+    work_dir = make_work_dir(tmp_path, negatives=2)
+    out_dir = make_roll_dir(tmp_path, "noformat")
+    set_setup(out_dir, auto_crop=True)
+    calls = _detector(monkeypatch)
+    events: list = []
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code == Code.AUTO_CROP_NO_FORMAT
+    ]
+    assert len(warnings) == 1
+    assert calls == []
+    manifest = load_roll_manifest(out_dir)
+    assert len(manifest.negatives) == 2
+    for negative in manifest.negatives:
+        assert negative.auto_crop["result"] == "no_format"
+        assert _crop_ops(out_dir, negative.negative_id) == []
+
+
+def test_a_detector_exception_warns_and_the_stitch_still_succeeds(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import auto_crop
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("no picture for you")
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", boom)
+    out_dir = make_roll_dir(tmp_path, "cropboom")
+    _tick_auto_crop(out_dir)
+    events: list = []
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    (warning,) = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code == Code.AUTO_CROP_FAILED
+    ]
+    assert "no picture for you" in warning.message
+    assert _crop_ops(out_dir) == []
+    negative = load_roll_manifest(out_dir).negative("stitch-negative-01")
+    assert negative.auto_crop["result"] == "refused"
+    assert negative.auto_crop["reason"] == "error"
+
+
+def test_a_refusal_seeds_nothing_and_is_recorded_as_evidence(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import auto_crop
+
+    out_dir = make_roll_dir(tmp_path, "cropref")
+    _tick_auto_crop(out_dir)
+    _detector(
+        monkeypatch,
+        result=auto_crop.Refusal("ragged", picture_fraction=0.5, fill_fraction=0.4),
+    )
+    events: list = []
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    assert _crop_ops(out_dir) == []
+    assert not [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code == Code.AUTO_CROP_FAILED
+    ]
+    negative = load_roll_manifest(out_dir).negative("stitch-negative-01")
+    assert negative.auto_crop == {
+        "result": "refused",
+        "reason": "ragged",
+        "picture_fraction": 0.5,
+        "fill_fraction": 0.4,
+        "version": 1,
+    }
+
+
+def test_a_re_stitch_replaces_a_crop_that_is_still_automatic(
+    work_dir, tmp_path, monkeypatch
+):
+    out_dir = make_roll_dir(tmp_path, "reseed")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch, rect=(100, 60, 1200, 600))
+    run_stitch_with_defaults(work_dir, out_dir)
+    (first,) = _crop_ops(out_dir)
+    events: list = []
+
+    _detector(monkeypatch, rect=(140, 80, 1100, 550))
+    outcome = run_stitch_with_defaults(
+        work_dir, out_dir, run_id="restitch-run", events=events
+    )
+
+    assert outcome.status == "complete"
+    ops = _crop_ops(out_dir)
+    assert len(ops) == 2
+    assert ops[1]["params"]["source"] == "auto"
+    assert (ops[1]["params"]["x"], ops[1]["params"]["w"]) != (
+        first["params"]["x"],
+        first["params"]["w"],
+    )
+    assert (
+        load_roll_manifest(out_dir).negative("stitch-negative-01").auto_crop["result"]
+        == "reseeded"
+    )
+    recorded = [e for e in events if isinstance(e, EditRecorded)]
+    assert [e.edit["op"] for e in recorded] == [repo.CROP_OP]
+
+
+def test_a_re_stitch_with_an_identical_crop_appends_nothing(
+    work_dir, tmp_path, monkeypatch
+):
+    out_dir = make_roll_dir(tmp_path, "noreseed")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    run_stitch_with_defaults(work_dir, out_dir)
+    events: list = []
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run", events=events)
+
+    assert len(_crop_ops(out_dir)) == 1
+    assert not [e for e in events if isinstance(e, EditRecorded)]
+
+
+def test_a_re_stitch_leaves_a_user_crop_alone(work_dir, tmp_path, monkeypatch):
+    from scanny_boy import edits
+
+    out_dir = make_roll_dir(tmp_path, "usercrop")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    run_stitch_with_defaults(work_dir, out_dir)
+    edits.run_edit_crop(
+        out_dir,
+        "stitch-negative-01",
+        rect=(200, 100, 900, 500),
+        full_frame=True,
+        emit=lambda event: None,
+    )
+    calls = _detector(monkeypatch, rect=(1, 1, 500, 300))
+    before = _user_ops(out_dir)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert calls == []
+    assert _user_ops(out_dir) == before
+
+
+def test_a_re_stitch_leaves_a_cleared_crop_alone(work_dir, tmp_path, monkeypatch):
+    """`Original` then Apply records a reset: the latest crop op carries no
+    `source`, so the reseed rule reads it as the user's."""
+    from scanny_boy import edits
+
+    out_dir = make_roll_dir(tmp_path, "clearcrop")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    run_stitch_with_defaults(work_dir, out_dir)
+    edits.run_edit_crop(
+        out_dir, "stitch-negative-01", reset=True, emit=lambda event: None
+    )
+    calls = _detector(monkeypatch, rect=(1, 1, 500, 300))
+    before = _user_ops(out_dir)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert calls == []
+    assert _user_ops(out_dir) == before
+
+
+def test_a_re_stitch_never_fills_in_a_crop_that_was_never_seeded(
+    work_dir, tmp_path, monkeypatch
+):
+    out_dir = make_roll_dir(tmp_path, "nevercrop")
+    run_stitch_with_defaults(work_dir, out_dir)  # auto-crop off: no crop
+    _tick_auto_crop(out_dir)
+    calls = _detector(monkeypatch)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert calls == []
+    assert _crop_ops(out_dir) == []
+
+
+def test_a_refused_reseed_leaves_the_old_op_alone(work_dir, tmp_path, monkeypatch):
+    from scanny_boy import auto_crop
+
+    out_dir = make_roll_dir(tmp_path, "refusereseed")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    run_stitch_with_defaults(work_dir, out_dir)
+    before = _user_ops(out_dir)
+    _detector(monkeypatch, result=auto_crop.Refusal("little_picture"))
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert _user_ops(out_dir) == before
+    negative = load_roll_manifest(out_dir).negative("stitch-negative-01")
+    assert negative.auto_crop["result"] == "refused"
+    assert negative.auto_crop["reason"] == "little_picture"
+
+
+def test_a_reseed_is_measured_under_the_negatives_own_mirror_and_rotation(
+    work_dir, tmp_path, monkeypatch
+):
+    """The mirror negates the net fine angle, so an adopted negative is
+    measured flipped and under its existing net rotation — never the
+    seeded one (rotation is not reseeded)."""
+    out_dir = make_roll_dir(tmp_path, "reseedflip")
+    _tick_auto_crop(out_dir)
+    _detector(monkeypatch)
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 1.5)
+    run_stitch_with_defaults(work_dir, out_dir)
+    repo.append_edit(out_dir, "stitch-negative-01", repo.FLIP_OP, {})
+    _detector(monkeypatch, rect=(140, 80, 1100, 550))
+    monkeypatch.setattr(stitch_pipeline, "estimate_rotation", lambda image: 4.0)
+    seen: list[dict] = []
+    real = stitch_pipeline.auto_crop_module.analysis_display
+
+    def spy(image, **kwargs):
+        seen.append(kwargs)
+        return real(image, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline.auto_crop_module, "analysis_display", spy)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert seen == [{"flipped": True, "fine_angle_deg": -1.5}]
+    assert repo.net_edit_state(out_dir, "stitch-negative-01").fine_angle_deg == -1.5
+
+
+def test_stitch_params_record_the_detector_constants_without_locking_the_roll(
+    work_dir, tmp_path
+):
+    """The auto-crop entry is non-invariant: a roll stitched before it
+    existed must still accept a run that carries it."""
+    out_dir = make_roll_dir(tmp_path, "cropparams")
+    run_stitch_with_defaults(work_dir, out_dir)
+    roll = load_roll_manifest(out_dir)
+    assert roll.stitch_params["auto_crop"]["version"] == 1
+
+    del roll.stitch_params["auto_crop"]  # a roll from before this feature
+    write_roll_manifest(out_dir, roll)
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    assert outcome.status == "complete"
+    assert load_roll_manifest(out_dir).stitch_params["auto_crop"]["version"] == 1
 
 
 # --- explicit film kind at roll init -------------------------------------

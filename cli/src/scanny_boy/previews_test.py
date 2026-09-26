@@ -432,8 +432,8 @@ def test_ensure_preview_regenerates_on_a_color_op(tmp_path):
     flat = previews.ensure_preview(roll_dir, "rid-1", negative)
     flat_pixels = cv2.imread(str(flat), cv2.IMREAD_UNCHANGED)
     params = dataclasses.asdict(color.NEUTRAL_COLOR) | {
-        "wb_cyan": 0.2,
-        "wb_magenta": 0.1,
+        "warmth": 0.2,
+        "tint": 0.1,
     }
     repo.append_color_edit(roll_dir, negative.negative_id, params)
     coloured = previews.ensure_preview(roll_dir, "rid-1", negative, repo.COLOR_OP)

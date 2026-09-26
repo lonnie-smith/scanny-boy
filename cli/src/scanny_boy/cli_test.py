@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from scanny_boy import concurrency
-from scanny_boy.cli import MAX_SELECTION_FILES, main
+from scanny_boy.cli import MAX_SELECTION_FILES, build_parser, main
 from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.library import repo
@@ -1020,13 +1020,15 @@ def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_p
     import cv2
     import tifffile
 
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
+    from scanny_boy import color, render
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
-    negative = load_roll_manifest(roll_dir).negatives[0]
+    roll = load_roll_manifest(roll_dir)
+    negative = roll.negatives[0]
     tiff = tifffile.imread(roll_dir / negative.output["name"])
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
     capsys.readouterr()
 
     destination = tmp_path / "region.png"
@@ -1067,7 +1069,19 @@ def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_p
     assert err == ""
 
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-    display = NORMALIZED_DISPLAY_LUT[tiff[2:8, 4:14]]
+    # The positive encode is the shared render — the negative's metering
+    # (auto-neutral bands included) and the roll's camera matrix — not the
+    # bare density LUT; the negative view is the one that stays flat.
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=roll.highlight_lock
+    )
+    display = render.encode_positive_uint8(
+        tiff[2:8, 4:14],
+        render.camera_matrix_from_roll(roll),
+        state.tone,
+        color_params=state.color,
+        metering=meter,
+    )
     np.testing.assert_array_equal(stored, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
 
 
@@ -1077,8 +1091,8 @@ def test_edit_render_region_folds_in_the_net_transform(work_dir, capsys, tmp_pat
     import cv2
     import tifffile
 
+    from scanny_boy import color, render
     from scanny_boy.library import repo
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -1117,16 +1131,26 @@ def test_edit_render_region_folds_in_the_net_transform(work_dir, capsys, tmp_pat
     assert [e["event"] for e in events] == ["started", "region_rendered", "finished"]
 
     # One cw turn: display space is the TIFF rotated clockwise. The pixels
-    # are what the cached preview shows at those display coordinates.
+    # are what the cached preview shows at those display coordinates — the
+    # shared positive encode, metering and camera matrix included.
     tiff = tifffile.imread(roll_dir / negative.output["name"])
-    display = np.ascontiguousarray(np.rot90(tiff, k=3))
+    rotated = np.ascontiguousarray(np.rot90(tiff, k=3))
+    window = rotated[
+        events[1]["y"] : events[1]["y"] + events[1]["height"],
+        events[1]["x"] : events[1]["x"] + events[1]["width"],
+    ]
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=roll.highlight_lock
+    )
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[
-            display[
-                events[1]["y"] : events[1]["y"] + events[1]["height"],
-                events[1]["x"] : events[1]["x"] + events[1]["width"],
-            ]
-        ],
+        render.encode_positive_uint8(
+            window,
+            render.camera_matrix_from_roll(roll),
+            state.tone,
+            color_params=state.color,
+            metering=meter,
+        ),
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
@@ -1694,12 +1718,10 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--cyan",
+            "--warmth",
             "0.1",
-            "--magenta",
+            "--tint",
             "0.2",
-            "--yellow",
-            "0.05",
             "--cast-removal",
             "0.1",
             "--dye-separation",
@@ -1713,7 +1735,7 @@ def test_edit_color_records_the_adjustment_and_refreshes_the_preview(
     assert events[0]["command"] == "edit color"
     assert events[0]["protocol_version"] == PROTOCOL_VERSION
     assert events[1]["edit"]["op"] == "color"
-    assert events[1]["edit"]["params"]["wb_cyan"] == pytest.approx(0.1)
+    assert events[1]["edit"]["params"]["warmth"] == pytest.approx(0.1)
     assert Path(events[1]["preview_path"]).exists()
     assert events[2]["status"] == "success"
     assert err == ""
@@ -1726,7 +1748,7 @@ def test_edit_color_partial_update_preserves_recorded_values(
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
-    base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
+    base = _color_params(warmth=0.1, tint=0.2, cast_removal=0.3)
     assert (
         main(
             [
@@ -1736,12 +1758,10 @@ def test_edit_color_partial_update_preserves_recorded_values(
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--cyan",
-                str(base["wb_cyan"]),
-                "--magenta",
-                str(base["wb_magenta"]),
-                "--yellow",
-                str(base["wb_yellow"]),
+                "--warmth",
+                str(base["warmth"]),
+                "--tint",
+                str(base["tint"]),
                 "--cast-removal",
                 str(base["cast_removal"]),
             ]
@@ -1758,21 +1778,22 @@ def test_edit_color_partial_update_preserves_recorded_values(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--cyan",
+            "--warmth",
             "0.5",
         ]
     )
     assert status == 0
     events, _err = _stdout_events(capsys)
     params = events[1]["edit"]["params"]
-    assert params["wb_cyan"] == pytest.approx(0.5)
-    assert params["wb_magenta"] == pytest.approx(0.2)
+    assert params["warmth"] == pytest.approx(0.5)
+    assert params["tint"] == pytest.approx(0.2)
     assert params["cast_removal"] == pytest.approx(0.3)
 
 
-def test_edit_color_temperature_is_exclusive_with_region_magenta(
-    work_dir, capsys, tmp_path
-):
+def test_edit_color_rejects_a_reversing_curve(work_dir, capsys, tmp_path):
+    """curve_red_25=0.2, curve_red_50=-0.2 reverses the curve (0.45 -> 0.30)
+    — CURVE_MIN_GAP's ordering rule must fail this with INVALID_EDIT, not
+    record it."""
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
@@ -1787,15 +1808,16 @@ def test_edit_color_temperature_is_exclusive_with_region_magenta(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--temperature",
-            "3200",
-            "--magenta",
-            "0.1",
+            "--red-25",
+            "0.2",
+            "--red-50",
+            "-0.2",
         ]
     )
 
     assert status == 1
     events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
     assert events[1]["code"] == "INVALID_EDIT"
 
 
@@ -1809,24 +1831,15 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     assert outcome.status == "complete"
     negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
     params = _color_params(
-        wb_cyan=0.1,
-        wb_magenta=0.2,
-        wb_yellow=0.05,
-        shadow_cyan=0.01,
+        warmth=0.1,
+        tint=0.2,
         cast_removal=0.15,
         dye_separation=1.1,
         separation_damping=0.2,
     )
     flag_for_key = {
-        "wb_cyan": "--cyan",
-        "wb_magenta": "--magenta",
-        "wb_yellow": "--yellow",
-        "shadow_cyan": "--shadow-cyan",
-        "shadow_magenta": "--shadow-magenta",
-        "shadow_yellow": "--shadow-yellow",
-        "highlight_cyan": "--highlight-cyan",
-        "highlight_magenta": "--highlight-magenta",
-        "highlight_yellow": "--highlight-yellow",
+        "warmth": "--warmth",
+        "tint": "--tint",
         "cast_removal": "--cast-removal",
         "cast_removal_highlights": "--cast-removal-highlights",
         "dye_separation": "--dye-separation",
@@ -1853,10 +1866,9 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
-    assert negative["color_temperature"] == pytest.approx(
-        color.wb_to_kelvin(params["wb_magenta"], params["wb_yellow"]), rel=0.02
-    )
+        assert negative[f"color_{key}"] == pytest.approx(
+            params.get(key, defaults[key])
+        )
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):
@@ -2935,6 +2947,37 @@ def test_edit_list_spots_on_a_stale_set_warns(capsys, tmp_path):
     assert err == ""
 
 
+def test_roll_info_survives_a_failed_negative_with_no_output(capsys, tmp_path):
+    """A failed stitch is stored with `output: None`. That must not crash
+    `roll info` — it would hide every other negative in the roll."""
+    from scanny_boy.roll_manifest_test import _negative
+
+    roll_dir, _negative_id = _spots_roll(capsys, tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    manifest.negatives.append(
+        _negative(
+            negative_id="failed-negative-02",
+            run_id="stitch-run",
+            status="failed",
+            output=None,
+            error_code="STITCH_FAILED",
+            error_message="boom",
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    capsys.readouterr()
+
+    status = main(["roll", "info", "--roll", str(roll_dir)])
+
+    assert status == 0
+    events, err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "roll_info", "finished"]
+    negatives = events[1]["manifest"]["negatives"]
+    assert [n["status"] for n in negatives] == ["completed", "failed"]
+    assert negatives[1]["output"] is None
+    assert err == ""
+
+
 def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
     from scanny_boy.library import repo
 
@@ -2971,7 +3014,7 @@ def test_roll_info_carries_the_spots_summary(capsys, tmp_path):
     assert negative["spots"]["rejected"] == 0
 
 
-# --- --cast-removal-highlights and --auto-cast
+# --- --cast-removal-highlights and --auto-balance
 
 
 def test_cast_removal_highlights_round_trips_through_roll_info(
@@ -3004,7 +3047,7 @@ def test_cast_removal_highlights_round_trips_through_roll_info(
     negative = events[1]["manifest"]["negatives"][0]
     assert negative["color_cast_removal_highlights"] == pytest.approx(0.4)
     # A single flag leaves the other twelve at their recorded values.
-    assert negative["color_wb_cyan"] == pytest.approx(0.0)
+    assert negative["color_warmth"] == pytest.approx(0.0)
     assert negative["color_cast_removal"] == pytest.approx(0.0)
     assert negative["color_dye_separation"] == pytest.approx(1.0)
 
@@ -3017,7 +3060,7 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
     # Record an auto-neutral estimate for the manual Auto button to read.
     roll = load_roll_manifest(roll_dir)
     roll.negatives[0].normalization["auto_neutral"] = {
-        "shadow": [0.06, -0.03],
+        "shadow": [0.03, -0.015],
         "highlight": None,
         "highlight_lock": roll.highlight_lock,
         "measure_version": 1,
@@ -3033,7 +3076,7 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
 
@@ -3041,23 +3084,20 @@ def test_auto_cast_writes_nulling_filtration(work_dir, capsys, tmp_path, monkeyp
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
     params = events[1]["edit"]["params"]
-    # The three CMY values null the residual: with unit ranges,
-    # o_R - o_G = -a and o_B - o_G = -b.
     from scanny_boy import color as color_mod
 
-    metering = color_mod.read_metering(
-        load_roll_manifest(roll_dir).negatives[0].normalization
-    )
-    offsets = color_mod.cmy_offsets(
+    balance = color_mod.balance_offsets(
         color_mod.ColorParams(
-            wb_cyan=params["wb_cyan"],
-            wb_magenta=params["wb_magenta"],
-            wb_yellow=params["wb_yellow"],
-        ),
-        metering,
+            warmth=params["warmth"],
+            tint=params["tint"],
+        )
     )
-    assert offsets[0] - offsets[1] == pytest.approx(-0.06, abs=1e-6)
-    assert offsets[2] - offsets[1] == pytest.approx(0.03, abs=1e-6)
+    # The solve projects the nulling density offsets onto the balance axes;
+    # balance_offsets recovers those offsets exactly (the axes are
+    # W-orthonormal and the target is luma-zero, so this round-trips
+    # before clamping — auto_color_test.py checks the general case).
+    assert balance[1] - balance[0] == pytest.approx(0.03, abs=1e-6)
+    assert balance[1] - balance[2] == pytest.approx(-0.015, abs=1e-6)
 
 
 def test_auto_cast_without_a_residual_warns_and_records_unchanged(
@@ -3087,7 +3127,7 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
 
@@ -3102,7 +3142,7 @@ def test_auto_cast_without_a_residual_warns_and_records_unchanged(
     assert events[1]["code"] == "TONE_METERING_UNAVAILABLE"
     assert "no neutral estimate" in events[1]["message"]
     params = events[2]["edit"]["params"]
-    assert params["wb_cyan"] == pytest.approx(0.0)
+    assert params["warmth"] == pytest.approx(0.0)
     assert params["cast_removal"] == pytest.approx(0.0)
 
 
@@ -3117,9 +3157,8 @@ def test_auto_cast_is_exclusive_with_reset_and_global_sliders(
 
     for extra in (
         ["--reset"],
-        ["--cyan", "0.1"],
-        ["--magenta", "0.1"],
-        ["--yellow", "0.1"],
+        ["--warmth", "0.1"],
+        ["--tint", "0.1"],
     ):
         status = main(
             [
@@ -3129,7 +3168,7 @@ def test_auto_cast_is_exclusive_with_reset_and_global_sliders(
                 str(roll_dir),
                 "--negative",
                 negative_id,
-                "--auto-cast",
+                "--auto-balance",
                 *extra,
             ]
         )
@@ -3143,7 +3182,7 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
     work_dir, capsys, tmp_path
 ):
     """§7.3's tie-compensation test at the CLI level: with the highlight
-    strength at rest, the solved CMY does not move when a shadow tie is
+    strength at rest, the solved warmth/tint does not move when a shadow tie is
     already recorded."""
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -3167,7 +3206,7 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
             str(roll_dir),
             "--negative",
             negative_id,
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
     first = _stdout_events(capsys)[0][1]["edit"]["params"]
@@ -3182,14 +3221,13 @@ def test_auto_cast_result_is_independent_of_cast_removal_in_the_one_point_branch
             negative_id,
             "--cast-removal",
             "0.8",
-            "--auto-cast",
+            "--auto-balance",
         ]
     )
     second = _stdout_events(capsys)[0][1]["edit"]["params"]
 
-    assert second["wb_cyan"] == pytest.approx(first["wb_cyan"], abs=1e-9)
-    assert second["wb_magenta"] == pytest.approx(first["wb_magenta"], abs=1e-9)
-    assert second["wb_yellow"] == pytest.approx(first["wb_yellow"], abs=1e-9)
+    assert second["warmth"] == pytest.approx(first["warmth"], abs=1e-9)
+    assert second["tint"] == pytest.approx(first["tint"], abs=1e-9)
 
 
 def test_cast_removal_highlights_warns_without_a_highlight_reference(
@@ -3312,6 +3350,309 @@ def test_edit_crop_records_the_window_and_roll_info_reports_it(
     events, _ = _stdout_events(capsys)
     assert events[1]["manifest"]["negatives"][0]["crop"] is None
     assert err == ""
+
+
+def test_roll_set_setup_auto_crop_round_trips_through_roll_info(capsys, tmp_path):
+    from scanny_boy.roll_folder import create_roll
+
+    roll_dir = create_roll(tmp_path, "Setup-Roll")
+    capsys.readouterr()
+
+    assert (
+        main(["roll", "set-setup", "--roll", str(roll_dir), "--auto-crop", "on"]) == 0
+    )
+    assert main(["roll", "set-setup", "--roll", str(roll_dir), "--format", "6x7"]) == 0
+    capsys.readouterr()
+    assert main(["roll", "info", "--roll", str(roll_dir)]) == 0
+    events, _ = _stdout_events(capsys)
+    setup = events[1]["manifest"]["setup"]
+    assert setup["auto_crop"] is True
+    assert setup["format"] == "6x7"
+
+    assert (
+        main(["roll", "set-setup", "--roll", str(roll_dir), "--auto-crop", "off"]) == 0
+    )
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _ = _stdout_events(capsys)
+    assert events[1]["manifest"]["setup"]["auto_crop"] is False
+    assert events[1]["manifest"]["setup"]["format"] == "6x7"
+
+
+def test_stitch_on_a_folder_with_no_work_manifest_reports_bad_manifest(
+    capsys, tmp_path
+):
+    """A folder that never held a work manifest fails `BAD_MANIFEST` before
+    `stitch` looks at whether `--roll` itself is real. The roll lock
+    resolves `--roll` to a library id first, so the work manifest is read
+    ahead of it."""
+    work = tmp_path / "empty"
+    roll = tmp_path / "out"
+    work.mkdir()
+    roll.mkdir()
+
+    status = main(["stitch", "--work", str(work), "--roll", str(roll)])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "BAD_MANIFEST"
+
+
+def test_stitch_into_an_unregistered_roll_reports_roll_not_found(
+    work_dir, capsys, tmp_path
+):
+    """With a usable work manifest, an `--roll` the library does not know is
+    `ROLL_NOT_FOUND` — the lock's own lookup — not an unexpected
+    exception."""
+    roll = tmp_path / "out"
+    roll.mkdir()
+
+    status = main(["stitch", "--work", str(work_dir), "--roll", str(roll)])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
+
+
+def test_no_auto_crop_flag_parses_on_stitch_and_run():
+    parser = build_parser()
+
+    stitch_args = ["stitch", "--work", "w", "--roll", "r"]
+    assert parser.parse_args(stitch_args).auto_crop is True
+    assert parser.parse_args([*stitch_args, "--no-auto-crop"]).auto_crop is False
+    run_args = ["run", "--input", "i", "--files", "f", "--roll", "r", "--work", "w"]
+    assert parser.parse_args(run_args).auto_crop is True
+    assert parser.parse_args([*run_args, "--no-auto-crop"]).auto_crop is False
+
+
+def _record_crop(roll_dir, negative, capsys, *extra):
+    capsys.readouterr()
+    status = main(
+        [
+            "edit",
+            "crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative.negative_id,
+            "--x",
+            "10",
+            "--y",
+            "10",
+            "--width",
+            str(min(120, negative.output["width"] // 2)),
+            "--height",
+            str(min(80, negative.output["height"] // 2)),
+            *extra,
+        ]
+    )
+    events, _err = _stdout_events(capsys)
+    return status, events
+
+
+def test_edit_crop_source_auto_is_stored_and_reported(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+
+    status, events = _record_crop(
+        roll_dir, negative, capsys, "--preset", "35mm", "--source", "auto"
+    )
+
+    assert status == 0
+    assert events[1]["edit"]["params"]["source"] == "auto"
+    assert events[1]["crop"]["source"] == "auto"
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    info, _ = _stdout_events(capsys)
+    assert info[1]["manifest"]["negatives"][0]["crop"]["source"] == "auto"
+
+    # A crop without --source is the user's: the tag does not carry over.
+    status, events = _record_crop(roll_dir, negative, capsys, "--full-frame")
+    assert status == 0
+    assert "source" not in events[1]["edit"]["params"]
+    assert "source" not in events[1]["crop"]
+
+
+def test_edit_crop_rejects_a_source_other_than_auto(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+
+    status, events = _record_crop(roll_dir, negative, capsys, "--source", "user")
+
+    assert status == 1
+    assert events[-2]["code"] == "INVALID_EDIT"
+
+
+def _suggest(roll_dir, negative_id, capsys, *extra):
+    capsys.readouterr()
+    status = main(
+        [
+            "edit",
+            "suggest-crop",
+            "--roll",
+            str(roll_dir),
+            "--negative",
+            negative_id,
+            *extra,
+        ]
+    )
+    events, _err = _stdout_events(capsys)
+    return status, events
+
+
+def _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch):
+    """The synthetic scans carry no rebate, so stand in a detector result:
+    the CLI plumbing is under test, not the detector."""
+    from scanny_boy import auto_crop
+
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    seen = {}
+
+    def fake(analysis, *, full_size, ratio, exclude=None):
+        seen["ratio"] = ratio
+        seen["full_size"] = full_size
+        height, width = full_size
+        return auto_crop.AutoCrop(
+            rect=(width // 10, height // 10, width // 2, height // 2),
+            ratio=ratio,
+            picture_fraction=0.9,
+            fill_fraction=0.9,
+        )
+
+    monkeypatch.setattr(auto_crop, "estimate_crop", fake)
+    return seen
+
+
+def test_suggest_crop_reports_a_rect_and_records_nothing(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    seen = _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch)
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    before = repo.edits_for(roll_dir, negative.negative_id)
+
+    status, events = _suggest(roll_dir, negative.negative_id, capsys, "--preset", "645")
+
+    assert status == 0
+    assert [e["event"] for e in events] == ["started", "crop_suggested", "finished"]
+    suggested = events[1]
+    assert suggested["negative_id"] == negative.negative_id
+    assert suggested["preset"] == "645"
+    assert suggested["refused"] is None
+    rect = suggested["rect"]
+    assert suggested["canvas_width"] == negative.output["width"]
+    assert suggested["canvas_height"] == negative.output["height"]
+    assert rect["x"] + rect["width"] <= suggested["canvas_width"]
+    assert rect["y"] + rect["height"] <= suggested["canvas_height"]
+    assert seen["ratio"] == pytest.approx(56 / 41.5)
+    assert repo.edits_for(roll_dir, negative.negative_id) == before
+
+
+def test_suggest_crop_falls_back_to_the_roll_format_then_to_unconstrained(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_setup
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    seen = _stitch_a_negative_with_a_picture(work_dir, roll_dir, monkeypatch)
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+
+    _status, events = _suggest(roll_dir, negative_id, capsys)
+    assert seen["ratio"] is None
+    assert events[1]["preset"] is None
+
+    set_setup(roll_dir, format="6x6")
+    _status, events = _suggest(roll_dir, negative_id, capsys)
+    assert seen["ratio"] == 1.0
+    assert events[1]["preset"] == "6x6"  # the app lands its session on it
+
+    _status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "xpan")
+    assert seen["ratio"] == pytest.approx(65 / 24)
+    assert events[1]["preset"] == "xpan"
+
+
+def test_suggest_crop_reports_a_refusal_with_exit_zero(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    from scanny_boy import auto_crop
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    monkeypatch.setattr(
+        auto_crop,
+        "estimate_crop",
+        lambda *args, **kwargs: auto_crop.Refusal("ragged"),
+    )
+
+    status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "6x9")
+
+    assert status == 0
+    assert events[1]["rect"] is None
+    assert events[1]["refused"] == "ragged"
+    assert events[-1]["status"] == "success"
+
+
+def test_suggest_crop_runs_the_real_detector_under_the_negatives_transform(
+    work_dir, capsys, tmp_path
+):
+    """No stand-in detector: the real image path (TIFF load, display
+    transform, hint, fit) answers with a rect inside the *display* canvas —
+    whose dimensions swap under an odd quarter turn — or a refusal, never a
+    crash. The synthetic scans carry no rebate, so either is a fair answer;
+    what matters is that the plumbing holds."""
+    from scanny_boy.library import repo
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    repo.append_edit(
+        roll_dir, negative.negative_id, repo.ROTATE_OP, {"direction": "cw"}
+    )
+    repo.append_edit(roll_dir, negative.negative_id, repo.FLIP_OP, {})
+
+    status, events = _suggest(
+        roll_dir, negative.negative_id, capsys, "--preset", "35mm"
+    )
+
+    assert status == 0
+    suggested = events[1]
+    assert suggested["canvas_width"] == negative.output["height"]  # turned
+    assert suggested["canvas_height"] == negative.output["width"]
+    if suggested["rect"] is None:
+        assert suggested["refused"]
+    else:
+        rect = suggested["rect"]
+        assert rect["x"] + rect["width"] <= suggested["canvas_width"]
+        assert rect["y"] + rect["height"] <= suggested["canvas_height"]
+    assert not repo.net_edit_state(roll_dir, negative.negative_id).crop
+
+
+def test_suggest_crop_rejects_an_unknown_preset(work_dir, capsys, tmp_path):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+
+    status, events = _suggest(roll_dir, negative_id, capsys, "--preset", "8x10")
+
+    assert status == 1
+    assert events[-2]["code"] == "INVALID_EDIT"
 
 
 def test_edit_crop_rejects_an_out_of_bounds_rect(work_dir, capsys, tmp_path):

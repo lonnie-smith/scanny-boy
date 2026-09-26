@@ -247,9 +247,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "deleted").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "delete" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":23,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":24,"event":"negative_deleted","negative_id":"\(deletedID)","output":"\(deletedID).tif"}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(fresh)'
@@ -319,9 +319,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit delete"}'
-              echo '{"protocol_version":23,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
-              echo '{"protocol_version":23,"event":"finished","status":"failed","exit_status":1}'
+              echo '{"protocol_version":24,"event":"started","command":"edit delete"}'
+              echo '{"protocol_version":24,"event":"error","code":"ROLL_NOT_FOUND","message":"gone"}'
+              echo '{"protocol_version":24,"event":"finished","status":"failed","exit_status":1}'
             else
               echo '\(alone)'
             fi
@@ -440,7 +440,7 @@ struct EditModelTests {
     ) throws -> CLIRunner {
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":23,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":24,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -459,11 +459,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit rotate"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -508,7 +508,7 @@ struct EditModelTests {
         let paramsJSON = toneParamsJSON(from: adjustment)
         let events = negativeIDs.map { id in
             """
-            {"protocol_version":23,"event":"edit_recorded","negative_id":"\(id)",\
+            {"protocol_version":24,"event":"edit_recorded","negative_id":"\(id)",\
             "edit":{"id":1,"negative_id":"\(id)","position":1,"op":"tone",\
             "params":{\(paramsJSON)},"created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}
@@ -527,11 +527,11 @@ struct EditModelTests {
         let marker = directory.appending(path: "toned").path
         let script = """
             if [ "$1" = "edit" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit tone"}'
               for event in \(events.map { "'\($0)'" }.joined(separator: " ")); do
                 echo "$event"
               done
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(toned)'
@@ -609,7 +609,7 @@ struct EditModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let event =
             """
-            {"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
+            {"protocol_version":24,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":2,"negative_id":"n1","position":2,"op":"rotate",\
             "params":{"direction":"cw"},"created_at":"2026-09-01T00:00:01Z"},\
             "rotation_quarter_turns":1,"flipped_horizontally":false,"preview_path":null}
@@ -623,9 +623,9 @@ struct EditModelTests {
         let marker = directory.appending(path: "rotated").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "rotate" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit rotate"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit rotate"}'
               echo '\(event)'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(rotated)'
@@ -693,6 +693,30 @@ struct EditModelTests {
         )
     }
 
+    /// A failed stitch is stored with `output: null`. The roll must still
+    /// decode — one failed negative may not hide every other negative.
+    func testRollWithAFailedNegativeStillDecodes() throws {
+        let manifestJSON = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z",\
+        "updated_at":"2026-01-01T00:00:00Z","runs":[],"metadata":{},\
+        "negatives":[\
+        {"negative_id":"ok","run_id":"r","members":["a.NEF"],"sequence":1,\
+        "expected_output":"ok.tif","status":"completed","capture_time":{},\
+        "output":{"name":"ok.tif","size":1,"sha256":"x","width":10,"height":10}},\
+        {"negative_id":"bad","run_id":"r","members":["b.NEF"],"sequence":null,\
+        "expected_output":"bad.tif","status":"failed","capture_time":{},\
+        "output":null,"crop":null,"frames":[],"error_code":"STITCH_FAILED",\
+        "error_message":"boom"}]}
+        """
+        let fields = try #require(
+            try JSONDecoder().decode(JSONValue.self, from: Data(manifestJSON.utf8)).objectValue
+        )
+        let manifest = try #require(RollManifest(fields: fields))
+        #expect(manifest.negatives.map(\.negativeID) == ["ok", "bad"])
+        #expect(manifest.negatives[1].output == nil)
+        #expect(manifest.negatives[1].errorCode == "STITCH_FAILED")
+    }
+
     @Test("A roll info payload without highlight cast removal defaults to zero")
     func testColorAdjustmentDefaultsMissingHighlightCastRemoval() throws {
         let manifestJSON = """
@@ -700,7 +724,7 @@ struct EditModelTests {
         "updated_at":"2026-01-01T00:00:00Z","runs":[],"metadata":{},\
         "negatives":[{"negative_id":"n1","run_id":"r","members":["a.NEF"],\
         "expected_output":"n1.tif","status":"completed","capture_time":{},\
-        "color_wb_cyan":0.1,"color_wb_magenta":0.2,"color_wb_yellow":0,\
+        "color_warmth":0.1,"color_tint":0.2,\
         "color_cast_removal":0.3}]}
         """
         let fields = try #require(
@@ -742,9 +766,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":23,"event":"started","command":"edit render-preview"}'
-              echo '{"protocol_version":23,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"started","command":"edit render-preview"}'
+              echo '{"protocol_version":24,"event":"preview_rendered","negative_id":"n1","path":"x","width":2,"height":2}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$out"
             else
@@ -898,9 +922,9 @@ struct EditModelTests {
                 if [ "$prev" = "--output" ]; then out="$a"; fi
                 prev="$a"
               done
-              echo '{"protocol_version":23,"event":"started","command":"edit render-region"}'
-              echo '{"protocol_version":23,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"started","command":"edit render-region"}'
+              echo '{"protocol_version":24,"event":"region_rendered","negative_id":"n1","path":"x","x":0,"y":0,"width":4,"height":4}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
               mkdir -p "$(dirname "$out")"
               legacy="${out%.rgba}.png"
               printf 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==' | base64 -D > "$legacy"
@@ -1014,14 +1038,14 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
-              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":24,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":24,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1049,15 +1073,15 @@ struct EditModelTests {
               done
               count=$(cat '\(counter.path)' 2>/dev/null || echo 0)
               echo $((count + 1)) > '\(counter.path)'
-              echo '{"protocol_version":23,"event":"started","command":"edit tone"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit tone"}'
               sleep 0.2
-              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":24,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"tone",\
             "params":{"snap_gamma":'"$snap"',"density":1,"shadow_density":0,\
             "highlight_density":0},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,"preview_path":null}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1098,21 +1122,22 @@ struct EditModelTests {
             toneDensity: toneSnapGamma == nil ? nil : 1,
             toneShadowDensity: toneSnapGamma == nil ? nil : 0,
             toneHighlightDensity: toneSnapGamma == nil ? nil : 0,
-            colorWbCyan: colorDyeSeparation == nil ? nil : 0,
-            colorWbMagenta: colorDyeSeparation == nil ? nil : 0,
-            colorWbYellow: colorDyeSeparation == nil ? nil : 0,
-            colorShadowCyan: nil,
-            colorShadowMagenta: nil,
-            colorShadowYellow: nil,
-            colorHighlightCyan: nil,
-            colorHighlightMagenta: nil,
-            colorHighlightYellow: nil,
+            colorWarmth: colorDyeSeparation == nil ? nil : 0,
+            colorTint: colorDyeSeparation == nil ? nil : 0,
+            colorCurveRed25: nil,
+            colorCurveRed50: nil,
+            colorCurveRed75: nil,
+            colorCurveGreen25: nil,
+            colorCurveGreen50: nil,
+            colorCurveGreen75: nil,
+            colorCurveBlue25: nil,
+            colorCurveBlue50: nil,
+            colorCurveBlue75: nil,
             colorCastRemoval: colorDyeSeparation == nil ? nil : 0,
             colorCastRemovalHighlights: colorCastRemovalHighlights
                 ?? (colorDyeSeparation == nil ? nil : 0),
             colorDyeSeparation: colorDyeSeparation,
             colorSeparationDamping: colorDyeSeparation == nil ? nil : 0,
-            colorTemperature: nil,
             errorCode: nil,
             errorMessage: nil,
             maxOverlapMAD: nil,
@@ -1142,14 +1167,14 @@ struct EditModelTests {
         let marker = directory.appending(path: "reviewed").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "list-spots" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit list-spots"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit list-spots"}'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: nil))'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             elif [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit spots"}'
               : > '\(marker)'
               echo '\(Self.spotsEvent(spots: initialSpots, repair: false, preview: "/tmp/preview.png"))'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(reviewed)'
@@ -1165,7 +1190,7 @@ struct EditModelTests {
     private static func spotsEvent(spots: String, repair: Bool, preview: String?) -> String {
         let previewJSON = preview.map { "\"\($0)\"" } ?? "null"
         return """
-            {"protocol_version":23,"event":"spots_reported","negative_id":"n1",\
+            {"protocol_version":24,"event":"spots_reported","negative_id":"n1",\
             "detector_version":1,"sensitivity":0.5,"repair":\(repair),\
             "spots":\(spots),"found":2,"preview_path":\(previewJSON)}
             """
@@ -1213,9 +1238,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: rejectedJSON, repair: false, preview: nil))'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1280,9 +1305,9 @@ struct EditModelTests {
         ])
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "spots" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit spots"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit spots"}'
               echo '\(Self.spotsEvent(spots: Self.twoSpotsJSON, repair: true, preview: nil))'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               echo '\(initial)'
             fi
@@ -1332,14 +1357,14 @@ struct EditModelTests {
         let marker = directory.appending(path: "cropped").path
         let script = """
             if [ "$1" = "edit" ] && [ "$2" = "crop" ]; then
-              echo '{"protocol_version":23,"event":"started","command":"edit crop"}'
+              echo '{"protocol_version":24,"event":"started","command":"edit crop"}'
               : > '\(marker)'
-              echo '{"protocol_version":23,"event":"edit_recorded","negative_id":"n1",\
+              echo '{"protocol_version":24,"event":"edit_recorded","negative_id":"n1",\
             "edit":{"id":1,"negative_id":"n1","position":1,"op":"crop","params":{"x":10},\
             "created_at":"2026-09-01T00:00:00Z"},\
             "rotation_quarter_turns":0,"flipped_horizontally":false,\
             "crop":\(cropReport),"preview_path":"/tmp/preview.png"}'
-              echo '{"protocol_version":23,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
             else
               if [ -f '\(marker)' ]; then
                 echo '\(cropped)'
@@ -1382,6 +1407,131 @@ struct EditModelTests {
         #expect(crop.tiltDegrees == 2.5)
         #expect(crop.preset == "35mm")
         #expect(model.isCropping == false)
+    }
+
+    /// A helper that logs the argv of every `edit crop` / `edit suggest-crop`
+    /// call to `args.log` (one line each) and answers `suggest-crop` with
+    /// `suggestion`; `roll info` carries one negative.
+    private static func autoCropRunner(
+        _ directory: URL, suggestion: String
+    ) throws -> (runner: CLIRunner, log: URL) {
+        let initial = Self.rollInfoEvent(negatives: [
+            Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+        ])
+        let log = directory.appending(path: "args.log")
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "suggest-crop" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":24,"event":"started","command":"edit suggest-crop"}'
+              echo '\(suggestion)'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
+            elif [ "$1" = "edit" ] && [ "$2" = "crop" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":24,"event":"started","command":"edit crop"}'
+              echo '{"protocol_version":24,"event":"finished","status":"success","exit_status":0}'
+            else
+              echo '\(initial)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return (CLIRunner(executable: executable), log)
+    }
+
+    private static func tempDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private static let rectSuggestion = """
+        {"protocol_version":24,"event":"crop_suggested","negative_id":"n1",\
+        "rect":{"x":10,"y":8,"width":300,"height":200},\
+        "canvas_width":400,"canvas_height":300,"preset":"645","refused":null}
+        """
+
+    @Test("suggestCrop returns the rect and preset, passes --preset, and records nothing")
+    func testSuggestCropReturnsTheAnswer() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: Self.rectSuggestion)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let answer = try #require(await model.suggestCrop(anchor, preset: "645"))
+
+        #expect(answer.rect == CGRect(x: 10, y: 8, width: 300, height: 200))
+        #expect(answer.preset == "645")
+        #expect(answer.refused == nil)
+        #expect(model.isSuggestingCrop == false)
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("suggest-crop"))
+        #expect(lines[0].contains("--preset 645"))
+        #expect(!lines[0].contains("--source"))
+        // A query: the negative's crop is untouched.
+        #expect(model.visibleNegatives[0].crop == nil)
+    }
+
+    @Test("suggestCrop omits --preset for Free and reports a refusal as an answer")
+    func testSuggestCropRefusal() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refusal = """
+            {"protocol_version":24,"event":"crop_suggested","negative_id":"n1","rect":null,\
+            "canvas_width":400,"canvas_height":300,"preset":null,"refused":"ragged"}
+            """
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: refusal)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let answer = try #require(await model.suggestCrop(anchor, preset: nil))
+
+        #expect(answer.rect == nil)
+        #expect(answer.refused == "ragged")
+        let logged = try String(contentsOf: log, encoding: .utf8)
+        #expect(!logged.contains("--preset"))
+    }
+
+    @Test("Apply after an untouched suggestion sends --source auto; after a drag it does not")
+    func testApplyCropSourceFollowsTheSession() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log) = try Self.autoCropRunner(directory, suggestion: Self.rectSuggestion)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        let session = CropSession()
+        session.begin(displaySize: CGSize(width: 400, height: 300))
+        session.applySuggestion(
+            rect: CGRect(x: 10, y: 8, width: 300, height: 200), preset: .film645
+        )
+        await model.applyCrop(
+            anchor, rect: session.rect, tiltDegrees: session.tiltDegrees,
+            preset: session.preset.rawValue, fullFrame: true,
+            source: session.suggestedRect == nil ? nil : "auto"
+        )
+
+        session.rect = session.rect.offsetBy(dx: 5, dy: 0)
+        await model.applyCrop(
+            anchor, rect: session.rect, tiltDegrees: session.tiltDegrees,
+            preset: session.preset.rawValue, fullFrame: true,
+            source: session.suggestedRect == nil ? nil : "auto"
+        )
+
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(lines.count == 2)
+        #expect(lines[0].hasSuffix("--source auto"))
+        #expect(!lines[1].contains("--source"))
     }
 
     @Test("Reset clears the crop")

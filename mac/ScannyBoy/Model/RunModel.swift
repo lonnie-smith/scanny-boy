@@ -202,7 +202,7 @@ final class RunModel {
 
     /// Section 4.2: derived from counts, never from a source index. Tracks
     /// `negativesCompleted`/`totalNegatives` rather than the pipeline's
-    /// `completedSteps`/`totalSteps`, so the bar and the "N of M negative(s)"
+    /// `completedSteps`/`totalSteps`, so the bar and the "N of M negatives"
     /// label next to it always agree — `nil` when the caller didn't supply a
     /// `totalNegatives` to divide by.
     var fractionComplete: Double? {
@@ -257,9 +257,9 @@ final class RunModel {
         if invocation == .applyMetadata {
             switch outcome {
             case .success:
-                return "Applied \(appliedNegativeIDs.count) negative(s)."
+                return "Applied \(Pluralize.count(appliedNegativeIDs.count, "negative"))."
             case .failure:
-                return "Applied \(appliedNegativeIDs.count) negative(s); "
+                return "Applied \(Pluralize.count(appliedNegativeIDs.count, "negative")); "
                     + "\(skippedMetadata.count) skipped."
             case .cancelled, .usageError, .terminatedBySignal:
                 break
@@ -268,13 +268,15 @@ final class RunModel {
         switch outcome {
         case .success:
             if isStitchInvocation {
-                return "Converted \(stitchedNegatives.count) negative(s)."
+                return "Converted \(Pluralize.count(stitchedNegatives.count, "negative"))."
             }
-            return "Converted \(publishedOutputs.count) file(s) in "
-                + "\(completedGroups.count) negative(s)."
+            return "Converted \(Pluralize.count(publishedOutputs.count, "file")) in "
+                + "\(Pluralize.count(completedGroups.count, "negative"))."
         case .cancelled(let forced):
             let keptCount = isStitchInvocation ? stitchedNegatives.count : completedGroups.count
-            let kept = "\(keptCount) completed negative(s) were kept; "
+            let kept = (keptCount == 1
+                ? "1 completed negative was kept; "
+                : "\(keptCount) completed negatives were kept; ")
                 + "the negative in progress was discarded."
             return forced
                 ? "Cancelled by force after the grace period. \(kept)"
@@ -290,7 +292,7 @@ final class RunModel {
                 : failedGroups.count
             return failedCount == 0
                 ? "The run failed."
-                : "The run finished with \(failedCount) failed negative(s)."
+                : "The run finished with \(failedCount) failed \(failedCount == 1 ? "negative" : "negatives")."
         case .terminatedBySignal(let signal):
             return "The helper was terminated by signal \(signal)."
         }

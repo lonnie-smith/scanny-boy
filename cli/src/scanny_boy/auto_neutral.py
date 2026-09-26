@@ -36,7 +36,13 @@ AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_HIGH = 98.0  # PROVISIONAL
 # band statistics materially on the Portra-II replay negatives.
 AUTO_NEUTRAL_MEASURE_SCALE = 1.0 / 8.0
 
-AUTO_NEUTRAL_MEASURE_VERSION = 1
+# 2: the *shadow* band moved from `measure_neutral_residual`'s
+# grey-surfaces weighting to `measure_band_neutral_mean`'s plain mean, the
+# estimator that sees a uniform cast (see that function for the
+# measurement); the highlight band kept the weighting. Shadow blocks
+# written at version 1 are under-read; they are replaced the next time a
+# stitch or `roll refresh` measures the roll.
+AUTO_NEUTRAL_MEASURE_VERSION = 2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -99,7 +105,21 @@ def measure_auto_neutral_bands(
     keep: np.ndarray,
     bounds: normalization.Bounds,
 ) -> AutoNeutralBands:
-    """Grey-surfaces `(R-G, B-G)` residuals per tonal band, or `None`."""
+    """`(R-G, B-G)` per tonal band, or `None` — **a different estimator at
+    each end**, because the measurement says so.
+
+    Shadow: `normalization.measure_band_neutral_mean`'s plain mean. The
+    grey-surfaces weighting discounts a cast lying evenly across a smooth
+    shadow, which is the case this band exists to catch (see that
+    function).
+
+    Highlight: `normalization.measure_neutral_residual`'s weighting,
+    unchanged. The same Sep-20-2026 Portra roll says the mean is the wrong
+    tool here — bright content carries far more real colour, so the mean
+    reads roughly twice the cast actually rendered (median +0.058 against
+    +0.027) and leaves 0.042 RMS behind, **worse than not correcting at
+    all** (0.039). The weighting leaves 0.025, near the best of the six
+    estimators tried at this end."""
     if grid_log.shape[-1] != 3:
         return AutoNeutralBands(shadow=None, highlight=None)
     luma = _display_luma_grid(grid_log, bounds)
@@ -116,7 +136,7 @@ def measure_auto_neutral_bands(
         AUTO_NEUTRAL_HIGHLIGHT_LUMA_PERCENTILE_HIGH,
     )
     return AutoNeutralBands(
-        shadow=normalization.measure_neutral_residual(
+        shadow=normalization.measure_band_neutral_mean(
             grid_log, keep, bounds, band=shadow_keep
         ),
         highlight=normalization.measure_neutral_residual(

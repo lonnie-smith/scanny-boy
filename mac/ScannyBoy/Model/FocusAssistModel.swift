@@ -43,7 +43,7 @@ final class FocusAssistModel {
     }
 
     var focusAssistAvailable: Bool {
-        sequencePhase == .idle || sequencePhase == .paused
+        sequencePhase == .idle || sequencePhase == .paused || sequencePhase == .stopped
     }
 
     private var sequencePhase: CaptureSequencePhase = .idle

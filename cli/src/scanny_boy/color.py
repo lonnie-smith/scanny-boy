@@ -8,17 +8,9 @@ negative's `normalization` record is read here; curve composition lives in
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 import numpy as np
-
-# Global CMY filtration — NegPy's cmy_max_density, unchanged (log10 density).
-CMY_MAX_DENSITY = 0.2
-CMY_MIN = -1.0
-CMY_MAX = 1.0
-
-# Per-slider scale applied before luma removal. Magenta starts at 0.5 so
-# equal travel matches cyan/yellow feel; cyan and yellow stay 1.0.
-CMY_SLIDER_GAIN = (1.0, 0.5, 1.0)
 
 # Cast removal — NegPy's cast_removal_max_offset, same normalized units.
 # CAST_MAX_OFFSET bounds BOTH ends' ties.
@@ -27,10 +19,6 @@ CAST_REMOVAL_MAX = 1.0
 CAST_REMOVAL_HIGHLIGHTS_MIN = 0.0
 CAST_REMOVAL_HIGHLIGHTS_MAX = 1.0
 CAST_MAX_OFFSET = 0.1
-
-# Regional CMY — calibrated for our 0..1 display axis. Zone weights match
-# the tone panel's shadow/highlight density centres (0.25 / 0.75).
-REGION_CMY_SCALE = 1.0
 
 # Dye separation and damping — NegPy's clamp; ref spread mapped to display.
 DYE_SEPARATION_MIN = 0.5
@@ -43,27 +31,50 @@ SEPARATION_K_MAX = 3.0
 # monotonicity near the reference at k=1.5; 2.0 leaves headroom.
 SEPARATION_DAMPING_GAIN = 2.0
 
-# Temperature lever — nominal readout, not colorimetric (NegPy logic.py).
-TEMP_REF_KELVIN = 5500.0
-TEMP_MIN_KELVIN = 3000.0
-TEMP_MAX_KELVIN = 12000.0
-TEMP_K_MAGENTA = 0.0029
-TEMP_K_YELLOW = 0.0057
-
 # Rec.709 luma weights — used for lightness-neutral mean removal and dye
 # separation so a colour move does not change perceived brightness.
 LUMA_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
+# Balance axes — two vectors perpendicular to grey (1, 1, 1) and to each
+# other, under the Rec.709 luma inner product <u, v> = sum(w_i * u_i * v_i)
+# with w = LUMA_WEIGHTS — *not* the Euclidean dot product, under which
+# these axes are neither unit nor orthogonal.  Both have luma of exactly
+# zero.  Positive warmth = yellow; positive tint = magenta.  Unit under the
+# W inner product (Euclidean norm is about 3.396 for warm, 2.328 for
+# magenta — see color_test.py's derivation, which reconstructs both to
+# full precision from LUMA_WEIGHTS and checks these constants against it).
+# Stored as literal constants and derived in tests, not at import.
+WARM_AXIS = (1.0919857630, 0.0, -3.2154594629)
+MAGENTA_AXIS = (1.5846879677, -0.6310390565, 1.5846879677)
+
+# Balance scale — converts the slider's [-1, 1] range into a density
+# offset.  The axes above are W-unit but not Euclidean-unit (WARM_AXIS's
+# Euclidean norm is ~3.396), so this scale is chosen to keep a ±1 warmth
+# move at roughly the same Euclidean density magnitude as the old
+# Euclidean-unit axis gave (0.04 = 0.04 * |unit vector|): 0.04 /
+# 3.3958227963 (WARM_AXIS's Euclidean norm).  One shared scale for both
+# sliders, as before.  This is a provisional starting value, not measured
+# on real rolls — chunk 9's Adobe-RGB luma-drift measurement is
+# outstanding (DECISIONS.md §"Balance and channel curves" > "Tuning").
+BALANCE_SCALE = 0.0117791777
+
+# Channel curve — per-channel offsets at display values 0.25, 0.5, 0.75,
+# with ends pinned at 0 and 1.  Monotone cubic (PCHIP) interpolation.
+CURVE_OFFSET_MAX = 0.2
+CURVE_MIN_GAP = 0.02
+
 COLOR_PARAM_KEYS = (
-    "wb_cyan",
-    "wb_magenta",
-    "wb_yellow",
-    "shadow_cyan",
-    "shadow_magenta",
-    "shadow_yellow",
-    "highlight_cyan",
-    "highlight_magenta",
-    "highlight_yellow",
+    "warmth",
+    "tint",
+    "curve_red_25",
+    "curve_red_50",
+    "curve_red_75",
+    "curve_green_25",
+    "curve_green_50",
+    "curve_green_75",
+    "curve_blue_25",
+    "curve_blue_50",
+    "curve_blue_75",
     "cast_removal",
     "cast_removal_highlights",
     "dye_separation",
@@ -71,37 +82,20 @@ COLOR_PARAM_KEYS = (
     "auto_neutral",
 )
 
-# The original twelve, frozen, in their original order. This exists only so
-# `repo._parse_color_op` can recognise an older op: a twelve-key op is a
-# complete colour state, and a missing newer key keeps its neutral default.
-# Nothing else may read it.
-COLOR_PARAM_KEYS_V1 = (
-    "wb_cyan",
-    "wb_magenta",
-    "wb_yellow",
-    "shadow_cyan",
-    "shadow_magenta",
-    "shadow_yellow",
-    "highlight_cyan",
-    "highlight_magenta",
-    "highlight_yellow",
-    "cast_removal",
-    "dye_separation",
-    "separation_damping",
-)
-
 
 @dataclasses.dataclass(frozen=True)
 class ColorParams:
-    wb_cyan: float = 0.0
-    wb_magenta: float = 0.0
-    wb_yellow: float = 0.0
-    shadow_cyan: float = 0.0
-    shadow_magenta: float = 0.0
-    shadow_yellow: float = 0.0
-    highlight_cyan: float = 0.0
-    highlight_magenta: float = 0.0
-    highlight_yellow: float = 0.0
+    warmth: float = 0.0
+    tint: float = 0.0
+    curve_red_25: float = 0.0
+    curve_red_50: float = 0.0
+    curve_red_75: float = 0.0
+    curve_green_25: float = 0.0
+    curve_green_50: float = 0.0
+    curve_green_75: float = 0.0
+    curve_blue_25: float = 0.0
+    curve_blue_50: float = 0.0
+    curve_blue_75: float = 0.0
     cast_removal: float = 0.0
     cast_removal_highlights: float = 0.0
     dye_separation: float = 1.0
@@ -326,50 +320,6 @@ def remap_dense_end(norm: np.ndarray, channel: int, metering: Metering) -> np.nd
     return (delta + norm * (span - delta)) / span
 
 
-def cmy_offsets(params: ColorParams, metering: Metering) -> tuple[float, ...]:
-    """Global CMY as normalized log-density input offsets, made
-    **lightness-neutral**: the raw range-divided offsets are luma-mean-
-    removed, so moving the sliders changes hue without changing Rec.709
-    luma — Print Density and the zone controls keep sole ownership of
-    lightness.
-
-    The mean is removed *after* the range division because the curve
-    applies the same slope to every channel near the pivot, so the display
-    shift's luma is proportional to the luma-weighted mean of the post-
-    division values; zeroing that is what holds lightness. An equal three-
-    slider move is not a no-op when the ranges differ — it is a pure hue
-    move at constant lightness."""
-    sliders = (params.wb_cyan, params.wb_magenta, params.wb_yellow)
-    if len(sliders) != len(metering.ranges):
-        # Unreachable in production (mono never applies colour), but a
-        # malformed record must not index out of range.
-        return (0.0,) * len(sliders)
-    raw = [
-        slider * CMY_MAX_DENSITY * CMY_SLIDER_GAIN[ch] / max(metering.ranges[ch], 1e-6)
-        for ch, slider in enumerate(sliders)
-    ]
-    return _luma_removed(raw)
-
-
-def region_cmy(params: ColorParams) -> tuple[tuple[float, ...], ...]:
-    """Regional shadow/highlight CMY slider tuples, each **luma-mean-
-    removed**: they are added to the display value directly, so a luma-zero
-    triple contributes a luma-neutral display shift — the region controls
-    are purely chromatic and stop competing with the shadow/highlight
-    density trims."""
-    shadow = (
-        params.shadow_cyan * CMY_SLIDER_GAIN[0],
-        params.shadow_magenta * CMY_SLIDER_GAIN[1],
-        params.shadow_yellow * CMY_SLIDER_GAIN[2],
-    )
-    highlight = (
-        params.highlight_cyan * CMY_SLIDER_GAIN[0],
-        params.highlight_magenta * CMY_SLIDER_GAIN[1],
-        params.highlight_yellow * CMY_SLIDER_GAIN[2],
-    )
-    return _luma_removed(shadow), _luma_removed(highlight)
-
-
 def _luma_weighted_sum(triple: tuple[float, ...]) -> float:
     return sum(value * weight for value, weight in zip(triple, LUMA_WEIGHTS))
 
@@ -378,6 +328,87 @@ def _luma_removed(triple: tuple[float, ...]) -> tuple[float, ...]:
     """Subtract the scalar that zeroes the Rec.709 luma-weighted sum."""
     mean = _luma_weighted_sum(triple)
     return tuple(value - mean for value in triple)
+
+
+def _w_inner(u: tuple[float, ...], v: tuple[float, ...]) -> float:
+    """The luma-weighted inner product <u, v> = sum(w_i * u_i * v_i), with
+    w = LUMA_WEIGHTS — the inner product WARM_AXIS and MAGENTA_AXIS are
+    orthonormal under, not the Euclidean dot product."""
+    return sum(ui * vi * wi for ui, vi, wi in zip(u, v, LUMA_WEIGHTS))
+
+
+def balance_offsets(params: ColorParams) -> tuple[float, float, float]:
+    """Per-channel density offset from the warmth/tint balance sliders.
+
+    Returns a tuple of log-density offsets (one per channel) that go
+    *before* the ``1 − val`` flip and the camera matrix, exactly where
+    ``balance_offsets`` applies today.  A positive offset darkens the display
+    in that channel.
+
+    The display-direction vectors ``WARM_AXIS`` and ``MAGENTA_AXIS`` are
+    orthogonal to each other and to grey under Rec.709 luma, so the two
+    sliders are lightness-neutral by construction.
+    """
+    w = params.warmth
+    t = params.tint
+    display = (
+        BALANCE_SCALE * (w * WARM_AXIS[0] + t * MAGENTA_AXIS[0]),
+        BALANCE_SCALE * (w * WARM_AXIS[1] + t * MAGENTA_AXIS[1]),
+        BALANCE_SCALE * (w * WARM_AXIS[2] + t * MAGENTA_AXIS[2]),
+    )
+    return (-display[0], -display[1], -display[2])
+
+
+def curve_offsets_in_order(offsets: tuple[float, float, float]) -> bool:
+    """The ordering rule (§2.2): each knot's y must stay at least
+    ``CURVE_MIN_GAP`` above the previous one, so a curve can never reverse.
+    Checked over the full knot list ``(0, 0.25+o25, 0.5+o50, 0.75+o75, 1)``.
+    """
+    y_knots = (0.0, 0.25 + offsets[0], 0.5 + offsets[1], 0.75 + offsets[2], 1.0)
+    # A tiny epsilon absorbs float round-off in the knot sums (e.g.
+    # 0.25 + -0.23 lands a ULP under 0.02) without letting a real
+    # reversal through.
+    return all(b - a >= CURVE_MIN_GAP - 1e-9 for a, b in itertools.pairwise(y_knots))
+
+
+def channel_curve(v: np.ndarray, offsets: tuple[float, float, float]) -> np.ndarray:
+    """Per-channel monotone cubic curve through three offset control points.
+
+    Interpolates via PCHIP (Fritsch–Carlson) through the knots::
+
+        x = (0,   0.25,        0.5,         0.75,         1)
+        y = (0,   0.25 + o₂₅,  0.5 + o₅₀,   0.75 + o₇₅,   1)
+
+    Identity above 1 (display headroom passes through).  The ordering
+    rule (each knot's y at least ``CURVE_MIN_GAP`` above the previous) is
+    enforced by the caller's validation; this function assumes valid
+    offsets.
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    x_knots = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    y_knots = np.array(
+        [
+            0.0,
+            0.25 + offsets[0],
+            0.5 + offsets[1],
+            0.75 + offsets[2],
+            1.0,
+        ]
+    )
+
+    spline = PchipInterpolator(x_knots, y_knots)
+
+    v = np.asarray(v, dtype=np.float64)
+    out = np.empty_like(v)
+    mask_low = v <= 0.0
+    out[mask_low] = 0.0
+    mask_high = v >= 1.0
+    out[mask_high] = v[mask_high]
+    mask_mid = ~mask_low & ~mask_high
+    if np.any(mask_mid):
+        out[mask_mid] = spline(v[mask_mid])
+    return out.astype(v.dtype)
 
 
 def _cast_slopes_one_point_targets(
@@ -743,43 +774,19 @@ def apply_separation(rgb: np.ndarray, params: ColorParams) -> np.ndarray:
     return luma + k_eff * diff
 
 
-def wb_to_kelvin(magenta: float, yellow: float) -> float:
-    """Nominal illuminant temperature: least-squares projection onto the
-    Planckian (mired) direction; 5500 K at neutral. Higher K is warmer
-    (Lightroom convention). Not colorimetric."""
-    km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
-    dmu = -(km * magenta + ky * yellow) / (km * km + ky * ky)
-    mu = min(
-        max(1e6 / TEMP_REF_KELVIN + dmu, 1e6 / TEMP_MAX_KELVIN),
-        1e6 / TEMP_MIN_KELVIN,
-    )
-    return float(1e6 / mu)
-
-
-def kelvin_to_wb(kelvin: float, magenta: float, yellow: float) -> tuple[float, float]:
-    """Move (M, Y) along the Planckian direction to `kelvin`, preserving
-    the off-locus tint component. Higher K warms the image."""
-    km, ky = TEMP_K_MAGENTA, TEMP_K_YELLOW
-    kelvin = min(max(kelvin, TEMP_MIN_KELVIN), TEMP_MAX_KELVIN)
-    dmu_cur = -(km * magenta + ky * yellow) / (km * km + ky * ky)
-    delta = -(1e6 / kelvin - 1e6 / TEMP_REF_KELVIN) - dmu_cur
-    m2 = min(max(magenta + km * delta, CMY_MIN), CMY_MAX)
-    y2 = min(max(yellow + ky * delta, CMY_MIN), CMY_MAX)
-    return float(m2), float(y2)
-
-
 def _color_param_bounds() -> tuple[tuple[str, float, float], ...]:
-    cmy = (CMY_MIN, CMY_MAX)
     return (
-        ("wb_cyan", *cmy),
-        ("wb_magenta", *cmy),
-        ("wb_yellow", *cmy),
-        ("shadow_cyan", *cmy),
-        ("shadow_magenta", *cmy),
-        ("shadow_yellow", *cmy),
-        ("highlight_cyan", *cmy),
-        ("highlight_magenta", *cmy),
-        ("highlight_yellow", *cmy),
+        ("warmth", -1.0, 1.0),
+        ("tint", -1.0, 1.0),
+        ("curve_red_25", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_red_50", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_red_75", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_green_25", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_green_50", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_green_75", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_blue_25", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_blue_50", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
+        ("curve_blue_75", -CURVE_OFFSET_MAX, CURVE_OFFSET_MAX),
         ("cast_removal", CAST_REMOVAL_MIN, CAST_REMOVAL_MAX),
         (
             "cast_removal_highlights",

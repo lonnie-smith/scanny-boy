@@ -196,7 +196,8 @@ private struct PreviewPane: View {
                 cropSession: cropSession,
                 displaySize: displaySize,
                 onBeginCrop: { beginCrop() },
-                onApplyCrop: { applyCrop() }
+                onApplyCrop: { applyCrop() },
+                onAutoCrop: { autoCrop() }
             )
             .frame(width: 360)
 
@@ -584,6 +585,7 @@ private struct PreviewPane: View {
                     },
                     onApplyCrop: {
                         guard cropSession.isActive, !edit.isCropping,
+                            !edit.isSuggestingCrop,
                             !AppKeyboard.isTextInputFirstResponder()
                         else { return false }
                         applyCrop()
@@ -800,32 +802,12 @@ private struct PreviewPane: View {
         // belongs to the full uncropped canvas.
         zoom.reset()
         let canvas = uncroppedDisplaySize
-        // AC-6: a pending suggest-crop result takes priority over the
-        // stored crop — the Auto button sets it.
-        if let suggestion = edit.pendingCropSuggestion {
-            edit.pendingCropSuggestion = nil
-            var preset = suggestion.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
-            if preset == .free {
-                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
-            }
-            cropSession.begin(
-                displaySize: canvas,
-                rect: suggestion.rect,
-                tiltDegrees: suggestion.tiltDegrees,
-                preset: preset
-            )
-        } else if let crop = negative.crop {
-            var preset = crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
-            // AC-6: resolve auto crop's preset from the roll format when
-            // the ops-log entry did not carry an explicit label.
-            if preset == .free, crop.source == "auto" {
-                preset = edit.roll?.captureSetup?.format.flatMap(CropPreset.init(format:)) ?? .free
-            }
+        if let crop = negative.crop {
             cropSession.begin(
                 displaySize: canvas,
                 rect: crop.editingRect,
                 tiltDegrees: crop.tiltDegrees,
-                preset: preset
+                preset: crop.preset.flatMap(CropPreset.init(rawValue:)) ?? .free
             )
         } else {
             cropSession.begin(displaySize: canvas)
@@ -836,6 +818,10 @@ private struct PreviewPane: View {
         let rect = cropSession.rect
         let tiltDegrees = cropSession.tiltDegrees
         let preset = cropSession.preset == .free ? nil : cropSession.preset.rawValue
+        // An untouched Auto crop stays tagged auto, so a re-stitch may
+        // still reseed it; any drag, tilt or ratio change made it the
+        // user's.
+        let source = cropSession.suggestedRect == nil ? nil : "auto"
         cropSession.end()
         Task {
             await edit.applyCrop(
@@ -843,8 +829,31 @@ private struct PreviewPane: View {
                 rect: rect,
                 tiltDegrees: tiltDegrees,
                 preset: preset,
-                fullFrame: true
+                fullFrame: true,
+                source: source
             )
+        }
+    }
+
+    /// The Auto button: ask the CLI for the picture-only window at the
+    /// session's ratio (or the roll's format), and load it into the
+    /// session. Nothing is recorded until Apply, exactly like Original.
+    private func autoCrop() {
+        guard cropSession.isActive, !edit.isSuggestingCrop else { return }
+        let preset = cropSession.preset == .free ? nil : cropSession.preset.rawValue
+        let negative = negative
+        Task {
+            guard let answer = await edit.suggestCrop(negative, preset: preset),
+                cropSession.isActive
+            else { return }
+            if let rect = answer.rect {
+                cropSession.applySuggestion(
+                    rect: rect,
+                    preset: answer.preset.flatMap(CropPreset.init(rawValue:))
+                )
+            } else {
+                cropSession.suggestionRefused = true
+            }
         }
     }
 }
@@ -863,6 +872,7 @@ private struct EditSidebar: View {
     let displaySize: CGSize
     let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
+    let onAutoCrop: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -917,7 +927,8 @@ private struct EditSidebar: View {
                 cropSession: cropSession,
                 displaySize: displaySize,
                 onBeginCrop: onBeginCrop,
-                onApplyCrop: onApplyCrop
+                onApplyCrop: onApplyCrop,
+                onAutoCrop: onAutoCrop
             )
         case .tone:
             ToneAdjustmentPanel(
@@ -990,6 +1001,7 @@ private struct GeometryAdjustmentPanel: View {
     let displaySize: CGSize
     let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
+    let onAutoCrop: () -> Void
 
     private var isDisabled: Bool {
         edit.isRotating || edit.isDeleting || edit.isSettingTone
@@ -1077,7 +1089,7 @@ private struct GeometryAdjustmentPanel: View {
 
             HStack {
                 Button("Apply") { onApplyCrop() }
-                    .disabled(edit.isCropping)
+                    .disabled(edit.isCropping || edit.isSuggestingCrop)
                     .keyboardShortcut(.defaultAction)
                     .help(
                         "Record the crop (Return; the published TIFF is untouched; "
@@ -1087,21 +1099,28 @@ private struct GeometryAdjustmentPanel: View {
                     .keyboardShortcut(.cancelAction)
                     .help("Discard this crop session (Escape)")
                 Spacer()
-                if edit.isCropping {
+                if edit.isCropping || edit.isSuggestingCrop {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
 
-            Button("Original") { cropSession.resetToOriginal() }
-                .disabled(edit.isCropping)
-                .help("Reset the crop window to the full image and clear the ratio preset")
-
-            Button("Auto") {
-                Task { await edit.suggestCrop(negative) }
+            HStack {
+                Button("Original") { cropSession.resetToOriginal() }
+                    .disabled(edit.isCropping)
+                    .help("Reset the crop window to the full image and clear the ratio preset")
+                Button("Auto") { onAutoCrop() }
+                    .disabled(edit.isCropping || edit.isSuggestingCrop)
+                    .help(
+                        "Fit the largest picture-only window, excluding rebate and "
+                            + "holder, to the selected ratio (or the roll's format)"
+                    )
             }
-            .disabled(edit.isCropping)
-            .help("Detect the picture boundary and fit a crop to the roll's film format")
+            if cropSession.suggestionRefused {
+                Text("Couldn't find the picture's edges on this frame.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } else {
             Button {
                 onBeginCrop()
@@ -1112,7 +1131,22 @@ private struct GeometryAdjustmentPanel: View {
             .disabled(!isCropAvailable)
             .help("Crop this negative (⌘R; ratio presets and tilt in the overlay session)")
             .accessibilityLabel("Crop")
+            if let label = Self.autoCropLabel(for: negative.crop) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    /// "Auto · 6×7" for a crop the app seeded (or the Auto button recorded
+    /// untouched); nil for a user's crop or none.
+    static func autoCropLabel(for crop: CropState?) -> String? {
+        guard let crop, crop.source == "auto" else { return nil }
+        guard let preset = crop.preset.flatMap(CropPreset.init(rawValue:)) else {
+            return "Auto"
+        }
+        return "Auto · \(preset.label)"
     }
 
     /// Defers preset reshaping out of the picker's update pass — mutating
@@ -1404,32 +1438,363 @@ private struct SliderTrackBackground: View {
     }
 }
 
-private enum CMYSliderTrackColors {
-    static let cyan: [Color] = [
-        Color(red: 0.95, green: 0.35, blue: 0.35),
-        Color(white: 0.55),
-        Color(red: 0.20, green: 0.80, blue: 0.90),
-    ]
-    static let magenta: [Color] = [
-        Color(red: 0.35, green: 0.90, blue: 0.35),
-        Color(white: 0.55),
-        Color(red: 0.95, green: 0.20, blue: 0.85),
-    ]
-    static let yellow: [Color] = [
-        Color(red: 0.35, green: 0.55, blue: 0.95),
-        Color(white: 0.55),
-        Color(red: 1.0, green: 0.90, blue: 0.20),
-    ]
-    static let temperature: [Color] = [
+private enum BalanceTrackColors {
+    static let warmth: [Color] = [
         Color(red: 0.35, green: 0.55, blue: 0.95),
         Color(red: 1.0, green: 0.82, blue: 0.25),
     ]
+    static let tint: [Color] = [
+        Color(red: 0.35, green: 0.90, blue: 0.35),
+        Color(red: 0.95, green: 0.20, blue: 0.85),
+    ]
 }
 
-private enum ColorRegion: String, CaseIterable, Identifiable {
-    case global, shadows, highlights
-    var id: String { rawValue }
-    var label: String { rawValue.capitalized }
+/// The per-channel curve background: the channel's color above the
+/// identity line and its complement below. Blue/yellow and green/magenta
+/// match the Warmth and Tint slider tracks.
+private enum CurveTintColors {
+    static let red = (
+        above: Color(red: 0.95, green: 0.30, blue: 0.30),
+        below: Color(red: 0.25, green: 0.85, blue: 0.95)
+    )
+    static let green = (above: BalanceTrackColors.tint[0], below: BalanceTrackColors.tint[1])
+    static let blue = (above: BalanceTrackColors.warmth[0], below: BalanceTrackColors.warmth[1])
+}
+
+private struct ChannelCurvesEditor: View {
+    @Binding var values: ColorAdjustment
+    let onScheduleCommit: () -> Void
+    let onCommitNow: () -> Void
+
+    enum Channel: String, CaseIterable, Identifiable {
+        case red, green, blue, all
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+    }
+
+    @State private var selectedChannel: Channel = .red
+    /// The point being dragged, set from the nearest point to the mouse
+    /// down location and held until the gesture ends.
+    @State private var draggedPointIndex: Int?
+    /// Set instead of `draggedPointIndex` when the drag started ⌥-held,
+    /// so the whole channel resets on release rather than one point moving.
+    @State private var isResettingChannel = false
+
+    private var offsets: Binding<(q1: Double, mid: Double, q3: Double)> {
+        Binding(
+            get: {
+                switch selectedChannel {
+                case .red: (values.curveRed25, values.curveRed50, values.curveRed75)
+                case .green: (values.curveGreen25, values.curveGreen50, values.curveGreen75)
+                case .blue: (values.curveBlue25, values.curveBlue50, values.curveBlue75)
+                case .all: (0, 0, 0)
+                }
+            },
+            set: { new in
+                switch selectedChannel {
+                case .red:
+                    values.curveRed25 = new.q1
+                    values.curveRed50 = new.mid
+                    values.curveRed75 = new.q3
+                case .green:
+                    values.curveGreen25 = new.q1
+                    values.curveGreen50 = new.mid
+                    values.curveGreen75 = new.q3
+                case .blue:
+                    values.curveBlue25 = new.q1
+                    values.curveBlue50 = new.mid
+                    values.curveBlue75 = new.q3
+                case .all: break
+                }
+                onScheduleCommit()
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Curves").font(.headline)
+                Spacer()
+                Picker("Channel", selection: $selectedChannel) {
+                    ForEach(Channel.allCases) { item in
+                        Text(item.label).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+            }
+            curveCanvas
+                .frame(height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+            if selectedChannel != .all {
+                curvePointControls
+            }
+            Button("Reset Curves") {
+                resetCurves()
+                onCommitNow()
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private var curveCanvas: some View {
+        GeometryReader { geometry in
+            Canvas { context, size in
+                let w = size.width
+                let h = size.height
+                if let tint = tintShading(for: selectedChannel, size: size) {
+                    context.fill(Path(CGRect(origin: .zero, size: size)), with: tint)
+                }
+                // Grid lines
+                let gridColor = Color.secondary.opacity(0.15)
+                for i in 1...3 {
+                    let x = w * Double(i) / 4.0
+                    context.stroke(Path(CGRect(x: x, y: 0, width: 0, height: h)), with: .color(gridColor))
+                    let y = h * Double(i) / 4.0
+                    context.stroke(Path(CGRect(x: 0, y: y, width: w, height: 0)), with: .color(gridColor))
+                }
+                // Identity line
+                var identity = Path()
+                identity.move(to: CGPoint(x: 0, y: h))
+                identity.addLine(to: CGPoint(x: w, y: 0))
+                context.stroke(identity, with: .color(Color.secondary.opacity(0.25)), lineWidth: 1)
+                // Draw curves
+                let channels: [(Color, (Double, Double, Double))] = selectedChannel == .all
+                    ? [
+                        (.red, (values.curveRed25, values.curveRed50, values.curveRed75)),
+                        (.green, (values.curveGreen25, values.curveGreen50, values.curveGreen75)),
+                        (.blue, (values.curveBlue25, values.curveBlue50, values.curveBlue75)),
+                    ]
+                    : [(
+                        channelColor(selectedChannel),
+                        (offsets.wrappedValue.q1, offsets.wrappedValue.mid, offsets.wrappedValue.q3)
+                    )]
+                for (color, off) in channels {
+                    let y = ChannelCurve.yKnots(off)
+                    let slopes = ChannelCurve.slopes(x: ChannelCurve.xKnots, y: y)
+                    var path = Path()
+                    let steps = 64
+                    for i in 0...steps {
+                        let t = Double(i) / Double(steps)
+                        let value = ChannelCurve.evaluate(t: t, x: ChannelCurve.xKnots, y: y, slopes: slopes)
+                        let px = t * w
+                        let py = (1.0 - value) * h
+                        if i == 0 {
+                            path.move(to: CGPoint(x: px, y: py))
+                        } else {
+                            path.addLine(to: CGPoint(x: px, y: py))
+                        }
+                    }
+                    context.stroke(path, with: .color(color), lineWidth: 2)
+                }
+                // Control points
+                if selectedChannel != .all {
+                    let off = offsets.wrappedValue
+                    let pts = [
+                        (0.25, 0.25 + off.q1),
+                        (0.5, 0.5 + off.mid),
+                        (0.75, 0.75 + off.q3),
+                    ]
+                    let color = channelColor(selectedChannel)
+                    for (px, py) in pts {
+                        let center = CGPoint(x: px * w, y: (1.0 - py) * h)
+                        let rect = CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
+                        context.fill(Path(ellipseIn: rect), with: .color(color))
+                        context.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(dragGesture(in: geometry.size))
+            .highPriorityGesture(doubleClickGesture(in: geometry.size))
+        }
+    }
+
+    /// Drags the nearest point (by x) vertically. Starting the drag with
+    /// ⌥ held resets the whole channel on release instead of moving a
+    /// point. No-op in "All" mode, where no points are editable.
+    private func dragGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard selectedChannel != .all else { return }
+                if draggedPointIndex == nil, !isResettingChannel {
+                    if NSEvent.modifierFlags.contains(.option) {
+                        isResettingChannel = true
+                        return
+                    }
+                    draggedPointIndex = nearestPointIndex(to: value.startLocation, size: size)
+                }
+                guard !isResettingChannel, let index = draggedPointIndex else { return }
+                setOffset(index, offset(atLocation: value.location, size: size, index: index))
+            }
+            .onEnded { _ in
+                defer {
+                    draggedPointIndex = nil
+                    isResettingChannel = false
+                }
+                if isResettingChannel {
+                    resetCurves()
+                    onCommitNow()
+                } else if draggedPointIndex != nil {
+                    onCommitNow()
+                }
+            }
+    }
+
+    /// Double-clicking a point resets it. No-op in "All" mode.
+    private func doubleClickGesture(in size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2)
+            .onEnded { value in
+                guard selectedChannel != .all else { return }
+                setOffset(nearestPointIndex(to: value.location, size: size), 0)
+                onCommitNow()
+            }
+    }
+
+    private func nearestPointIndex(to location: CGPoint, size: CGSize) -> Int {
+        guard size.width > 0 else { return 0 }
+        let t = Double(location.x / size.width)
+        let xs = Array(ChannelCurve.xKnots[1...3])
+        var best = 0
+        var bestDistance = Double.greatestFiniteMagnitude
+        for (index, x) in xs.enumerated() {
+            let distance = abs(x - t)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = index
+            }
+        }
+        return best
+    }
+
+    /// The clamped offset that puts control point `index` at `location`'s
+    /// height.
+    private func offset(atLocation location: CGPoint, size: CGSize, index: Int) -> Double {
+        guard size.height > 0 else { return 0 }
+        let displayValue = 1.0 - Double(location.y / size.height)
+        let base = ChannelCurve.xKnots[index + 1]
+        return ChannelCurve.clampOffset(displayValue - base, at: index, other: offsets.wrappedValue)
+    }
+
+    private func setOffset(_ index: Int, _ value: Double) {
+        switch index {
+        case 0: offsets.wrappedValue.q1 = value
+        case 1: offsets.wrappedValue.mid = value
+        default: offsets.wrappedValue.q3 = value
+        }
+    }
+
+    private var curvePointControls: some View {
+        VStack(spacing: 6) {
+            curvePointRow("25%", index: 0)
+            curvePointRow("50%", index: 1)
+            curvePointRow("75%", index: 2)
+        }
+    }
+
+    private func curvePointRow(_ label: String, index: Int) -> some View {
+        HStack {
+            Text(label)
+                .monospacedDigit()
+                .frame(width: 30)
+            ToneSlider(
+                value: pointOffsetBinding(index),
+                range: -ChannelCurve.offsetMax...ChannelCurve.offsetMax,
+                step: 0.01,
+                resetValue: 0,
+                onScheduleCommit: onScheduleCommit,
+                onCommitNow: onCommitNow
+            )
+            Text(String(format: "%+.2f", pointOffsetBinding(index).wrappedValue))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 45, alignment: .trailing)
+        }
+    }
+
+    private func pointOffsetBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                switch index {
+                case 0: offsets.wrappedValue.q1
+                case 1: offsets.wrappedValue.mid
+                default: offsets.wrappedValue.q3
+                }
+            },
+            set: { newValue in
+                let clamped = ChannelCurve.clampOffset(newValue, at: index, other: offsets.wrappedValue)
+                setOffset(index, clamped)
+            }
+        )
+    }
+
+    /// A two-sided wash behind a single channel's curve: the channel's own
+    /// color above the identity line (curve raised, more of that channel),
+    /// strongest in the upper-left corner, and its complement below it,
+    /// strongest in the lower-right, each fading to nothing at the line.
+    /// The gradient runs along the identity line's normal so its isolines
+    /// stay parallel to the diagonal on a non-square canvas. `nil` in "All"
+    /// mode, where no single channel owns the canvas.
+    private func tintShading(for channel: Channel, size: CGSize) -> GraphicsContext.Shading? {
+        let colors: (above: Color, below: Color)
+        switch channel {
+        case .red: colors = CurveTintColors.red
+        case .green: colors = CurveTintColors.green
+        case .blue: colors = CurveTintColors.blue
+        case .all: return nil
+        }
+        let w = size.width
+        let h = size.height
+        let diagonal = (w * w + h * h).squareRoot()
+        guard diagonal > 0 else { return nil }
+        // Both corners sit w·h/diagonal from the identity line.
+        let reach = w * h / diagonal
+        let normal = CGVector(dx: h / diagonal, dy: w / diagonal)
+        let center = CGPoint(x: w / 2, y: h / 2)
+        let opacity = 0.4
+        let gradient = Gradient(stops: [
+            .init(color: colors.above.opacity(opacity), location: 0),
+            .init(color: colors.above.opacity(0), location: 0.5),
+            .init(color: colors.below.opacity(0), location: 0.5),
+            .init(color: colors.below.opacity(opacity), location: 1),
+        ])
+        return .linearGradient(
+            gradient,
+            startPoint: CGPoint(x: center.x - reach * normal.dx, y: center.y - reach * normal.dy),
+            endPoint: CGPoint(x: center.x + reach * normal.dx, y: center.y + reach * normal.dy)
+        )
+    }
+
+    /// Only ever called for a single selected channel — "All" mode draws
+    /// its three curves with fixed colors and has no editable points.
+    private func channelColor(_ channel: Channel) -> Color {
+        switch channel {
+        case .red: .red
+        case .green: .green
+        case .blue: .blue
+        case .all: preconditionFailure("channelColor(.all) is unreachable")
+        }
+    }
+
+    private func resetCurves() {
+        switch selectedChannel {
+        case .red:
+            values.curveRed25 = 0; values.curveRed50 = 0; values.curveRed75 = 0
+        case .green:
+            values.curveGreen25 = 0; values.curveGreen50 = 0; values.curveGreen75 = 0
+        case .blue:
+            values.curveBlue25 = 0; values.curveBlue50 = 0; values.curveBlue75 = 0
+        case .all:
+            values.curveRed25 = 0; values.curveRed50 = 0; values.curveRed75 = 0
+            values.curveGreen25 = 0; values.curveGreen50 = 0; values.curveGreen75 = 0
+            values.curveBlue25 = 0; values.curveBlue50 = 0; values.curveBlue75 = 0
+        }
+    }
 }
 
 private struct ColorAdjustmentPanel: View {
@@ -1439,161 +1804,106 @@ private struct ColorAdjustmentPanel: View {
     let onCommitNow: (_ adjustment: ColorAdjustment, _ auto: ColorAutoFlags) -> Void
     let onReset: () -> Void
 
-    @State private var region: ColorRegion = .global
     @State private var values = ColorAdjustment.neutral
-    /// Anchor (M, Y) for the active region for the duration of a temperature drag.
-    @State private var temperatureAnchor: (magenta: Double, yellow: Double)?
-    @State private var temperatureKelvin = ColorTemperature.neutralKelvin
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Color").font(.headline)
-                Picker("Region", selection: $region) {
-                    ForEach(ColorRegion.allCases) { item in
-                        Text(item.label).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: region) { syncTemperatureReadout() }
 
-                temperatureSlider
+            colorSlider(
+                "Warmth",
+                value: $values.warmth,
+                range: -1...1,
+                step: 0.02,
+                resetValue: ColorAdjustment.neutral.warmth,
+                trackColors: BalanceTrackColors.warmth
+            ) {
+                String(format: "%+.2f", values.warmth)
+            }
+            .help("Blue (−) to yellow (+); lightness-neutral")
 
-                colorSlider("Cyan", value: cyanBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.cyan) {
-                    String(format: "%+.2f", cyanBinding.wrappedValue)
-                }
-                colorSlider("Magenta", value: magentaBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.magenta) {
-                    String(format: "%+.2f", magentaBinding.wrappedValue)
-                }
-                colorSlider("Yellow", value: yellowBinding, range: -1...1, step: 0.02, trackColors: CMYSliderTrackColors.yellow) {
-                    String(format: "%+.2f", yellowBinding.wrappedValue)
-                }
+            colorSlider(
+                "Tint",
+                value: $values.tint,
+                range: -1...1,
+                step: 0.02,
+                resetValue: ColorAdjustment.neutral.tint,
+                trackColors: BalanceTrackColors.tint
+            ) {
+                String(format: "%+.2f", values.tint)
+            }
+            .help("Green (−) to magenta (+); lightness-neutral")
 
-                Button {
-                    onCommitNow(values, .cast)
-                } label: {
-                    Label("Auto", systemImage: "wand.and.stars")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isBusy)
-                .help("Solve the filtration from this negative's own neutral estimate")
+            Button {
+                onCommitNow(values, .balance)
+            } label: {
+                Label("Auto", systemImage: "wand.and.stars")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+            .help("Solve the balance from this negative's own neutral estimate")
 
-                Text("Correction").font(.headline)
-                colorSlider(
-                    "Cast Removal — Shadows",
-                    value: $values.castRemoval,
-                    range: 0...1,
-                    step: 0.05
-                ) {
-                    String(format: "%.2f", values.castRemoval)
-                }
-                .help("Balances each layer against the frame's own shadow greys.")
-                colorSlider(
-                    "Cast Removal — Highlights",
-                    value: $values.castRemovalHighlights,
-                    range: 0...1,
-                    step: 0.05
-                ) {
-                    String(format: "%.2f", values.castRemovalHighlights)
-                }
-                .help(
-                    "Balances each layer against the frame's own highlight greys. "
-                        + "Needs a highlight reference; inactive on rolls stitched before it was measured."
-                )
+            ChannelCurvesEditor(
+                values: $values,
+                onScheduleCommit: { onScheduleCommit(values) },
+                onCommitNow: { onCommitNow(values, []) }
+            )
 
-                Text("Saturation").font(.headline)
-                colorSlider("Dye Separation", value: $values.dyeSeparation, range: 0.5...1.5, step: 0.02) {
-                    String(format: "%.2f", values.dyeSeparation)
-                }
-                colorSlider(
-                    "Separation Damping",
-                    value: $values.separationDamping,
-                    range: 0...1,
-                    step: 0.05,
-                    disabled: values.dyeSeparation == 1
-                ) {
-                    String(format: "%.2f", values.separationDamping)
-                }
-                .help(
-                    "Amplifies muted color and eases already-vivid areas; "
-                        + "inactive at neutral separation"
-                )
+            Text("Correction").font(.headline)
+            colorSlider(
+                "Cast Removal — Shadows",
+                value: $values.castRemoval,
+                range: 0...1,
+                step: 0.05,
+                resetValue: ColorAdjustment.neutral.castRemoval
+            ) {
+                String(format: "%.2f", values.castRemoval)
+            }
+            .help("Balances each layer against the frame's own shadow greys.")
+            colorSlider(
+                "Cast Removal — Highlights",
+                value: $values.castRemovalHighlights,
+                range: 0...1,
+                step: 0.05,
+                resetValue: ColorAdjustment.neutral.castRemovalHighlights
+            ) {
+                String(format: "%.2f", values.castRemovalHighlights)
+            }
+            .help(
+                "Balances each layer against the frame's own highlight greys. "
+                    + "Needs a highlight reference; inactive on rolls stitched before it was measured."
+            )
 
-                HStack {
-                    Button("Region Reset") { resetRegion() }
-                    Spacer()
-                    Button("Reset All", role: .destructive) { onReset() }
-                }
+            Text("Saturation").font(.headline)
+            colorSlider(
+                "Dye Separation",
+                value: $values.dyeSeparation,
+                range: 0.5...1.5,
+                step: 0.02,
+                resetValue: ColorAdjustment.neutral.dyeSeparation
+            ) {
+                String(format: "%.2f", values.dyeSeparation)
+            }
+            colorSlider(
+                "Separation Damping",
+                value: $values.separationDamping,
+                range: 0...1,
+                step: 0.05,
+                resetValue: ColorAdjustment.neutral.separationDamping,
+                disabled: values.dyeSeparation == 1
+            ) {
+                String(format: "%.2f", values.separationDamping)
+            }
+            .help(
+                "Amplifies muted color and eases already-vivid areas; "
+                    + "inactive at neutral separation"
+            )
+
+            Button("Reset All", role: .destructive) { onReset() }
         }
         .disabled(isBusy)
         .onAppear(perform: syncFromModel)
         .onChange(of: adjustment) { syncFromModel() }
-    }
-
-    private var cyanBinding: Binding<Double> {
-        switch region {
-        case .global: Binding(get: { values.wbCyan }, set: { values.wbCyan = $0 })
-        case .shadows: Binding(get: { values.shadowCyan }, set: { values.shadowCyan = $0 })
-        case .highlights:
-            Binding(get: { values.highlightCyan }, set: { values.highlightCyan = $0 })
-        }
-    }
-
-    private var magentaBinding: Binding<Double> {
-        switch region {
-        case .global:
-            Binding(
-                get: { values.wbMagenta },
-                set: {
-                    values.wbMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .shadows:
-            Binding(
-                get: { values.shadowMagenta },
-                set: {
-                    values.shadowMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .highlights:
-            Binding(
-                get: { values.highlightMagenta },
-                set: {
-                    values.highlightMagenta = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        }
-    }
-
-    private var yellowBinding: Binding<Double> {
-        switch region {
-        case .global:
-            Binding(
-                get: { values.wbYellow },
-                set: {
-                    values.wbYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .shadows:
-            Binding(
-                get: { values.shadowYellow },
-                set: {
-                    values.shadowYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        case .highlights:
-            Binding(
-                get: { values.highlightYellow },
-                set: {
-                    values.highlightYellow = $0
-                    if temperatureAnchor == nil { syncTemperatureReadout() }
-                }
-            )
-        }
     }
 
     private func colorSlider(
@@ -1601,6 +1911,7 @@ private struct ColorAdjustmentPanel: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
+        resetValue: Double,
         disabled: Bool = false,
         trackColors: [Color]? = nil,
         label: @escaping () -> String
@@ -1617,7 +1928,7 @@ private struct ColorAdjustmentPanel: View {
                 value: value,
                 range: range,
                 step: step,
-                resetValue: resetValue(for: title),
+                resetValue: resetValue,
                 trackColors: trackColors,
                 onScheduleCommit: { onScheduleCommit(values) },
                 onCommitNow: { onCommitNow(values, []) }
@@ -1626,110 +1937,8 @@ private struct ColorAdjustmentPanel: View {
         }
     }
 
-    private func resetValue(for title: String) -> Double {
-        switch title {
-        case "Cast Removal — Shadows", "Cast Removal — Highlights", "Separation Damping": 0
-        case "Dye Separation": 1
-        default: 0
-        }
-    }
-
-    private func resetRegion() {
-        switch region {
-        case .global:
-            values.wbCyan = 0; values.wbMagenta = 0; values.wbYellow = 0
-        case .shadows:
-            values.shadowCyan = 0; values.shadowMagenta = 0; values.shadowYellow = 0
-        case .highlights:
-            values.highlightCyan = 0; values.highlightMagenta = 0; values.highlightYellow = 0
-        }
-        onCommitNow(values, [])
-    }
-
     private func syncFromModel() {
         values = adjustment ?? ColorAdjustment.neutral
-        syncTemperatureReadout()
-        temperatureAnchor = nil
-    }
-
-    private func syncTemperatureReadout() {
-        let pair = regionMagentaYellow
-        temperatureKelvin = ColorTemperature.kelvin(
-            magenta: pair.magenta, yellow: pair.yellow
-        )
-    }
-
-    private var regionMagentaYellow: (magenta: Double, yellow: Double) {
-        switch region {
-        case .global: (values.wbMagenta, values.wbYellow)
-        case .shadows: (values.shadowMagenta, values.shadowYellow)
-        case .highlights: (values.highlightMagenta, values.highlightYellow)
-        }
-    }
-
-    private var temperatureSlider: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Temperature")
-                Spacer()
-                Text(String(format: "%.0fK", temperatureKelvin))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            Slider(
-                value: Binding(
-                    get: { temperatureKelvin },
-                    set: { kelvin in
-                        let snapped = ToneSlider.snap(
-                            kelvin, step: 50,
-                            range: ColorTemperature.minKelvin...ColorTemperature.maxKelvin
-                        )
-                        guard snapped != temperatureKelvin else { return }
-                        temperatureKelvin = snapped
-                        applyTemperature(snapped)
-                        onScheduleCommit(values)
-                    }
-                ),
-                in: ColorTemperature.minKelvin...ColorTemperature.maxKelvin,
-                step: 50
-            ) { editing in
-                if editing {
-                    let pair = regionMagentaYellow
-                    temperatureAnchor = (pair.magenta, pair.yellow)
-                } else {
-                    temperatureAnchor = nil
-                    onCommitNow(values, [])
-                }
-            }
-            .background(alignment: .center) {
-                SliderTrackBackground(colors: CMYSliderTrackColors.temperature)
-            }
-            .doubleClickReset {
-                temperatureKelvin = ColorTemperature.neutralKelvin
-                applyTemperature(temperatureKelvin)
-                onCommitNow(values, [])
-            }
-        }
-    }
-
-    private func applyTemperature(_ kelvin: Double) {
-        let anchor = temperatureAnchor ?? regionMagentaYellow
-        let balanced = ColorTemperature.whiteBalance(
-            kelvin: kelvin,
-            anchorMagenta: anchor.magenta,
-            anchorYellow: anchor.yellow
-        )
-        switch region {
-        case .global:
-            values.wbMagenta = balanced.magenta
-            values.wbYellow = balanced.yellow
-        case .shadows:
-            values.shadowMagenta = balanced.magenta
-            values.shadowYellow = balanced.yellow
-        case .highlights:
-            values.highlightMagenta = balanced.magenta
-            values.highlightYellow = balanced.yellow
-        }
     }
 }
 
