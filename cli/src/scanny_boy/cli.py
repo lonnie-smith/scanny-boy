@@ -960,13 +960,27 @@ def _run_stitch_command(
     cancel: CancellationToken | None = None,
 ) -> int:
     """The `stitch` subcommand: mirrors `convert`'s event and exit-status
-    shape exactly, over `run_stitch` instead of `run_convert`."""
+    shape exactly, over `run_stitch` instead of `run_convert`.
+
+    The work manifest is read before the roll lock is taken, because the
+    lock resolves `--roll` to a library id: a folder that never held a
+    manifest must fail `BAD_MANIFEST` before `stitch` ever looks at whether
+    `--roll` itself is real."""
+    from scanny_boy.library import repo
+    from scanny_boy.manifest import load_manifest
     from scanny_boy.registration import StitchError
     from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.stitch_pipeline import run_stitch
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="stitch", run_id=run_id))
+
+    try:
+        load_manifest(Path(args.work))
+    except BadManifestError as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
 
     try:
         with (
@@ -994,6 +1008,10 @@ def _run_stitch_command(
         return 1
     except RollBusyError as exc:
         return _fail_roll_busy(writer, exc, run_id=run_id)
+    except repo.RollNotRegisteredError as exc:
+        writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
+        writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
+        return 1
 
     if outcome.status == "cancelled":
         writer.write(

@@ -1020,13 +1020,15 @@ def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_p
     import cv2
     import tifffile
 
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
+    from scanny_boy import color, render
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
     assert outcome.status == "complete"
-    negative = load_roll_manifest(roll_dir).negatives[0]
+    roll = load_roll_manifest(roll_dir)
+    negative = roll.negatives[0]
     tiff = tifffile.imread(roll_dir / negative.output["name"])
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
     capsys.readouterr()
 
     destination = tmp_path / "region.png"
@@ -1067,7 +1069,19 @@ def test_edit_render_region_renders_the_requested_region(work_dir, capsys, tmp_p
     assert err == ""
 
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-    display = NORMALIZED_DISPLAY_LUT[tiff[2:8, 4:14]]
+    # The positive encode is the shared render — the negative's metering
+    # (auto-neutral bands included) and the roll's camera matrix — not the
+    # bare density LUT; the negative view is the one that stays flat.
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=roll.highlight_lock
+    )
+    display = render.encode_positive_uint8(
+        tiff[2:8, 4:14],
+        render.camera_matrix_from_roll(roll),
+        state.tone,
+        color_params=state.color,
+        metering=meter,
+    )
     np.testing.assert_array_equal(stored, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
 
 
@@ -1077,8 +1091,8 @@ def test_edit_render_region_folds_in_the_net_transform(work_dir, capsys, tmp_pat
     import cv2
     import tifffile
 
+    from scanny_boy import color, render
     from scanny_boy.library import repo
-    from scanny_boy.previews import NORMALIZED_DISPLAY_LUT
 
     roll_dir = make_roll_dir(tmp_path)
     outcome = run_stitch_with_defaults(work_dir, roll_dir)
@@ -1117,16 +1131,26 @@ def test_edit_render_region_folds_in_the_net_transform(work_dir, capsys, tmp_pat
     assert [e["event"] for e in events] == ["started", "region_rendered", "finished"]
 
     # One cw turn: display space is the TIFF rotated clockwise. The pixels
-    # are what the cached preview shows at those display coordinates.
+    # are what the cached preview shows at those display coordinates — the
+    # shared positive encode, metering and camera matrix included.
     tiff = tifffile.imread(roll_dir / negative.output["name"])
-    display = np.ascontiguousarray(np.rot90(tiff, k=3))
+    rotated = np.ascontiguousarray(np.rot90(tiff, k=3))
+    window = rotated[
+        events[1]["y"] : events[1]["y"] + events[1]["height"],
+        events[1]["x"] : events[1]["x"] + events[1]["width"],
+    ]
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    meter = color.read_metering(
+        negative.normalization, highlight_lock=roll.highlight_lock
+    )
     expected = cv2.cvtColor(
-        NORMALIZED_DISPLAY_LUT[
-            display[
-                events[1]["y"] : events[1]["y"] + events[1]["height"],
-                events[1]["x"] : events[1]["x"] + events[1]["width"],
-            ]
-        ],
+        render.encode_positive_uint8(
+            window,
+            render.camera_matrix_from_roll(roll),
+            state.tone,
+            color_params=state.color,
+            metering=meter,
+        ),
         cv2.COLOR_RGB2BGR,
     )
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
@@ -3353,6 +3377,43 @@ def test_roll_set_setup_auto_crop_round_trips_through_roll_info(capsys, tmp_path
     events, _ = _stdout_events(capsys)
     assert events[1]["manifest"]["setup"]["auto_crop"] is False
     assert events[1]["manifest"]["setup"]["format"] == "6x7"
+
+
+def test_stitch_on_a_folder_with_no_work_manifest_reports_bad_manifest(
+    capsys, tmp_path
+):
+    """A folder that never held a work manifest fails `BAD_MANIFEST` before
+    `stitch` looks at whether `--roll` itself is real. The roll lock
+    resolves `--roll` to a library id first, so the work manifest is read
+    ahead of it."""
+    work = tmp_path / "empty"
+    roll = tmp_path / "out"
+    work.mkdir()
+    roll.mkdir()
+
+    status = main(["stitch", "--work", str(work), "--roll", str(roll)])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "BAD_MANIFEST"
+
+
+def test_stitch_into_an_unregistered_roll_reports_roll_not_found(
+    work_dir, capsys, tmp_path
+):
+    """With a usable work manifest, an `--roll` the library does not know is
+    `ROLL_NOT_FOUND` — the lock's own lookup — not an unexpected
+    exception."""
+    roll = tmp_path / "out"
+    roll.mkdir()
+
+    status = main(["stitch", "--work", str(work_dir), "--roll", str(roll)])
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_NOT_FOUND"
 
 
 def test_no_auto_crop_flag_parses_on_stitch_and_run():
