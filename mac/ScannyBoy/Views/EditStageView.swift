@@ -1449,6 +1449,18 @@ private enum BalanceTrackColors {
     ]
 }
 
+/// The per-channel curve background: the channel's color above the
+/// identity line and its complement below. Blue/yellow and green/magenta
+/// match the Warmth and Tint slider tracks.
+private enum CurveTintColors {
+    static let red = (
+        above: Color(red: 0.95, green: 0.30, blue: 0.30),
+        below: Color(red: 0.25, green: 0.85, blue: 0.95)
+    )
+    static let green = (above: BalanceTrackColors.tint[0], below: BalanceTrackColors.tint[1])
+    static let blue = (above: BalanceTrackColors.warmth[0], below: BalanceTrackColors.warmth[1])
+}
+
 private struct ChannelCurvesEditor: View {
     @Binding var values: ColorAdjustment
     let onScheduleCommit: () -> Void
@@ -1535,6 +1547,9 @@ private struct ChannelCurvesEditor: View {
             Canvas { context, size in
                 let w = size.width
                 let h = size.height
+                if let tint = tintShading(for: selectedChannel, size: size) {
+                    context.fill(Path(CGRect(origin: .zero, size: size)), with: tint)
+                }
                 // Grid lines
                 let gridColor = Color.secondary.opacity(0.15)
                 for i in 1...3 {
@@ -1715,6 +1730,43 @@ private struct ChannelCurvesEditor: View {
                 let clamped = ChannelCurve.clampOffset(newValue, at: index, other: offsets.wrappedValue)
                 setOffset(index, clamped)
             }
+        )
+    }
+
+    /// A two-sided wash behind a single channel's curve: the channel's own
+    /// color above the identity line (curve raised, more of that channel),
+    /// strongest in the upper-left corner, and its complement below it,
+    /// strongest in the lower-right, each fading to nothing at the line.
+    /// The gradient runs along the identity line's normal so its isolines
+    /// stay parallel to the diagonal on a non-square canvas. `nil` in "All"
+    /// mode, where no single channel owns the canvas.
+    private func tintShading(for channel: Channel, size: CGSize) -> GraphicsContext.Shading? {
+        let colors: (above: Color, below: Color)
+        switch channel {
+        case .red: colors = CurveTintColors.red
+        case .green: colors = CurveTintColors.green
+        case .blue: colors = CurveTintColors.blue
+        case .all: return nil
+        }
+        let w = size.width
+        let h = size.height
+        let diagonal = (w * w + h * h).squareRoot()
+        guard diagonal > 0 else { return nil }
+        // Both corners sit w·h/diagonal from the identity line.
+        let reach = w * h / diagonal
+        let normal = CGVector(dx: h / diagonal, dy: w / diagonal)
+        let center = CGPoint(x: w / 2, y: h / 2)
+        let opacity = 0.4
+        let gradient = Gradient(stops: [
+            .init(color: colors.above.opacity(opacity), location: 0),
+            .init(color: colors.above.opacity(0), location: 0.5),
+            .init(color: colors.below.opacity(0), location: 0.5),
+            .init(color: colors.below.opacity(opacity), location: 1),
+        ])
+        return .linearGradient(
+            gradient,
+            startPoint: CGPoint(x: center.x - reach * normal.dx, y: center.y - reach * normal.dy),
+            endPoint: CGPoint(x: center.x + reach * normal.dx, y: center.y + reach * normal.dy)
         )
     }
 
