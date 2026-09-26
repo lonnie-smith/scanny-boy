@@ -545,12 +545,15 @@ final class CaptureSessionModel {
     }
 
     private func finishNegative(firstRelease: Date) {
-        let stamp = CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
-            .replacingOccurrences(of: "_01.NEF", with: "")
         let frames = cellStates.compactMap { state -> URL? in
             if case .filled(let url) = state { return url }
             return nil
         }
+        // Derived from cell 1's real file name rather than recomputed from
+        // `firstRelease`: `exclusiveURL` appends a `-2`, `-3`, … suffix to
+        // the stamp when two negatives start in the same second, and this
+        // must track whichever stamp the frames actually landed under.
+        let stamp = Self.stamp(fromFirstFrame: frames.first, firstRelease: firstRelease)
         completedNegatives.append(
             CompletedNegative(id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease)
         )
@@ -562,6 +565,23 @@ final class CaptureSessionModel {
         focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
         onNegativeCompleted?(completedNegatives.last!)
+    }
+
+    /// Strips cell 1's `_01` (or `_01.NEF`) suffix off its real file name,
+    /// leaving the stamp exactly as `CaptureNaming` chose it — including a
+    /// `-2`, `-3`, … collision suffix `CaptureNaming.filename` alone cannot
+    /// reproduce. Falls back to recomputing it when there is no frame
+    /// (should not happen: `finishNegative` only runs once every cell
+    /// filled).
+    private static func stamp(fromFirstFrame url: URL?, firstRelease: Date) -> String {
+        guard let url,
+            let underscoreRange = url.deletingPathExtension().lastPathComponent
+                .range(of: "_", options: .backwards)
+        else {
+            return CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
+                .replacingOccurrences(of: "_01.NEF", with: "")
+        }
+        return String(url.deletingPathExtension().lastPathComponent[..<underscoreRange.lowerBound])
     }
 
     var onNegativeCompleted: ((CompletedNegative) -> Void)?
