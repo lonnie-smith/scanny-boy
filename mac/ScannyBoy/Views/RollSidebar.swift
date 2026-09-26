@@ -174,7 +174,7 @@ private struct RollRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(roll.displayName)
                 if roll.status == .ok, let count = roll.negativeCount {
-                    Text("\(count) negative(s)")
+                    Text(Pluralize.count(count, "negative"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if let reason = roll.reason {

@@ -471,7 +471,7 @@
         "unclamped_ceils": { "$ref": "#/definitions/channelArray" },
         "highlight_refs": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/channelArray" }],
-          "description": "The dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read only by --auto-cast."
+          "description": "The dense end's shared, chroma-gated same-pixel neutral reference, normalized against the negative's own bounds; null when the band held no trustworthy neutrals or the negative predates the meter. Recorded, read only by --auto-balance."
         },
         "neutral_residual": {
           "oneOf": [
@@ -483,7 +483,7 @@
               "maxItems": 2
             }
           ],
-          "description": "The frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read only by --auto-cast."
+          "description": "The frame's residual neutral offset (R-G, B-G) in normalized units, measured on the grid normalized by the published bounds; null when there was no estimate. Recorded, read only by --auto-balance."
         },
         "base_check": { "$ref": "#/definitions/baseCheck" },
         "exposure_matched": {
@@ -709,41 +709,49 @@
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — the net highlights density from the latest `tone` op."
         },
-        "color_wb_cyan": {
+        "color_warmth": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — warmth balance from the latest `color` op."
         },
-        "color_wb_magenta": {
+        "color_tint": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — tint balance from the latest `color` op."
         },
-        "color_wb_yellow": {
+        "color_curve_red_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — global yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.25 from the latest `color` op."
         },
-        "color_shadow_cyan": {
+        "color_curve_red_50": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.50 from the latest `color` op."
         },
-        "color_shadow_magenta": {
+        "color_curve_red_75": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — red channel curve offset at 0.75 from the latest `color` op."
         },
-        "color_shadow_yellow": {
+        "color_curve_green_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — shadow yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.25 from the latest `color` op."
         },
-        "color_highlight_cyan": {
+        "color_curve_green_50": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight cyan from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.50 from the latest `color` op."
         },
-        "color_highlight_magenta": {
+        "color_curve_green_75": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight magenta from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — green channel curve offset at 0.75 from the latest `color` op."
         },
-        "color_highlight_yellow": {
+        "color_curve_blue_25": {
           "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — highlight yellow from the latest `color` op."
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.25 from the latest `color` op."
+        },
+        "color_curve_blue_50": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.50 from the latest `color` op."
+        },
+        "color_curve_blue_75": {
+          "type": ["number", "null"],
+          "description": "Derived, not stored: present in `roll info` output only — blue channel curve offset at 0.75 from the latest `color` op."
         },
         "color_cast_removal": {
           "type": ["number", "null"],
@@ -761,21 +769,44 @@
           "type": ["number", "null"],
           "description": "Derived, not stored: present in `roll info` output only — the highlight-end cast-removal tie strength from the latest `color` op."
         },
-        "color_temperature": {
-          "type": ["number", "null"],
-          "description": "Derived, not stored: present in `roll info` output only — nominal Kelvin readout from global magenta/yellow; null when no `color` op."
-        },
         "auto_crop": {
-          "type": ["object", "null"],
-          "description": "Auto-crop evidence block, present when stitching seeded a crop. The app reads `source` to decide whether a re-stitch may reseed.",
-          "properties": {
-            "source": {
-              "type": "string",
-              "const": "auto",
-              "description": "Fixed string identifying this crop as auto-generated."
-            }
-          },
-          "additionalProperties": false
+          "description": "Auto-crop evidence: what the stitch's detector concluded for this negative. Written by stitching only, recorded and read by nothing, so refusal rates on real rolls are visible without re-running the stitch. Null when auto-crop was off; an adopted negative the re-stitch did not evaluate keeps the block from the last run that did.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "result",
+                "reason",
+                "picture_fraction",
+                "fill_fraction",
+                "version"
+              ],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["seeded", "reseeded", "refused", "no_format"]
+                },
+                "reason": {
+                  "description": "Set when `result` is `refused`: a detector refusal token, or `error` when the detector raised (which also emits `AUTO_CROP_FAILED`).",
+                  "type": ["string", "null"],
+                  "enum": [
+                    "no_coverage",
+                    "little_picture",
+                    "no_fit",
+                    "ragged",
+                    "too_small",
+                    "error",
+                    null
+                  ]
+                },
+                "picture_fraction": { "type": ["number", "null"] },
+                "fill_fraction": { "type": ["number", "null"] },
+                "version": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
         }
       }
     },

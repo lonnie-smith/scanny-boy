@@ -92,12 +92,10 @@ CROP_MIN_SIZE_PX = 16
 # sanctioned exception to the log's append-only discipline.
 TONE_OP = "tone"
 
-# `color` params are the complete preview colour state — thirteen keys, of
-# which the original twelve are the compatibility floor
-# (`color.COLOR_PARAM_KEYS_V1`) — all set or all `None` for the reset (see
-# `color.py`). A sibling of `tone`: preview-only, independently
-# resettable, coalesced in place. Baked at export through the same render
-# as the preview.
+# `color` params are the complete preview colour state — `color.COLOR_PARAM_KEYS`,
+# all set or all `None` for the reset (see `color.py`). A sibling of `tone`:
+# preview-only, independently resettable, coalesced in place. Baked at export
+# through the same render as the preview.
 COLOR_OP = "color"
 
 # `spots` params are the spot detector's proposals plus the whole-negative
@@ -307,6 +305,7 @@ def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
                     fill_color=list(negative.fill_color),
                     normalized_fill=negative.normalized_fill,
                     normalization=negative.normalization,
+                    auto_crop=negative.auto_crop,
                     rectification=negative.rectification,
                     rebate_deviation_px=negative.rebate_deviation_px,
                     used_clahe_fallback=negative.used_clahe_fallback,
@@ -531,6 +530,7 @@ def load_roll(roll_dir: Path) -> RollManifest:
                     valid_rect=None if n.valid_rect is None else tuple(n.valid_rect),
                     normalized_fill=n.normalized_fill,
                     normalization=n.normalization,
+                    auto_crop=n.auto_crop,
                     rectification=n.rectification,
                     rebate_deviation_px=n.rebate_deviation_px,
                     used_clahe_fallback=bool(n.used_clahe_fallback),
@@ -657,15 +657,12 @@ def validated_tone_params(
 def validated_color_params(
     params: dict[str, float | None] | None,
 ) -> dict[str, float | None]:
-    """The `color` op's params: all twelve compatibility-floor keys set, or
-    all `None`. A newer key absent
-    from `params` is filled from the neutral defaults before validation —
-    that is what "this op predates the control" means."""
+    """The `color` op's params: all keys set, or all `None` for reset."""
     from scanny_boy import color
 
     if params is None:
         return {key: None for key in color.COLOR_PARAM_KEYS}
-    missing = [key for key in color.COLOR_PARAM_KEYS_V1 if key not in params]
+    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
     if missing:
         raise ValueError(f"color params missing keys: {', '.join(missing)}")
     defaults = _color_neutral_defaults()
@@ -684,6 +681,18 @@ def validated_color_params(
                 f"color {name} must be within [{low}, {high}], got {value}"
             )
         validated[name] = float(value)
+    for channel in ("red", "green", "blue"):
+        offsets = (
+            validated[f"curve_{channel}_25"],
+            validated[f"curve_{channel}_50"],
+            validated[f"curve_{channel}_75"],
+        )
+        if not color.curve_offsets_in_order(offsets):
+            raise ValueError(
+                f"color curve_{channel} knots must each be at least "
+                f"CURVE_MIN_GAP ({color.CURVE_MIN_GAP}) above the previous, "
+                f"got offsets {offsets}"
+            )
     return validated
 
 
@@ -800,15 +809,17 @@ def _tone_neutral_defaults() -> dict[str, float]:
 
 def _color_neutral_defaults() -> dict[str, float]:
     return {
-        "wb_cyan": 0.0,
-        "wb_magenta": 0.0,
-        "wb_yellow": 0.0,
-        "shadow_cyan": 0.0,
-        "shadow_magenta": 0.0,
-        "shadow_yellow": 0.0,
-        "highlight_cyan": 0.0,
-        "highlight_magenta": 0.0,
-        "highlight_yellow": 0.0,
+        "warmth": 0.0,
+        "tint": 0.0,
+        "curve_red_25": 0.0,
+        "curve_red_50": 0.0,
+        "curve_red_75": 0.0,
+        "curve_green_25": 0.0,
+        "curve_green_50": 0.0,
+        "curve_green_75": 0.0,
+        "curve_blue_25": 0.0,
+        "curve_blue_50": 0.0,
+        "curve_blue_75": 0.0,
         "cast_removal": 0.0,
         "cast_removal_highlights": 0.0,
         "dye_separation": 1.0,
@@ -858,28 +869,44 @@ def _parse_tone_op(params: dict) -> dict[str, float] | None:
 
 
 def _parse_color_op(params: dict) -> dict[str, float] | None:
+    """The colour op's decision-table parse (COLOR_BALANCE_CURVES_PLAN.md
+    §4.1: "an op without the new keys parses as no colour op"):
+
+    - any of `color.COLOR_PARAM_KEYS` missing -> `None` (an older op, or
+      one carrying only unrelated keys, is no colour op — never a partial
+      state built from defaults).
+    - every present key `None` -> `None` (the reset).
+    - any single key `None` among an otherwise-present set -> `None`
+      (a malformed partial op, same as any other invalid shape).
+    - a non-number, an out-of-range value, or a curve that violates the
+      ordering rule -> `None`.
+    - otherwise the values, unconditionally — including the all-neutral
+      case, which is a *recorded* neutral op, not the absence of one."""
     from scanny_boy import color
 
-    # Gate on the ORIGINAL twelve: an op written before the thirteenth key
-    # was added has no thirteenth key and is still a complete colour
-    # state. Newer keys fall back to their neutral defaults, which is what
-    # "this op predates the control" means.
-    if not all(key in params for key in color.COLOR_PARAM_KEYS_V1):
+    missing = [key for key in color.COLOR_PARAM_KEYS if key not in params]
+    if missing:
         return None
-    if all(params.get(key) is None for key in color.COLOR_PARAM_KEYS_V1):
+    values = {key: params[key] for key in color.COLOR_PARAM_KEYS}
+    if all(value is None for value in values.values()):
         return None
-    merged = _color_neutral_defaults()
-    for key in merged:
-        value = params.get(key)
-        if value is None:
-            if key in color.COLOR_PARAM_KEYS_V1:
-                return None  # a null among the twelve is still a reset
-            continue  # a missing newer key keeps its default
+    if any(value is None for value in values.values()):
+        return None
+    merged: dict[str, float] = {}
+    for key, value in values.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         merged[key] = float(value)
     if not _color_in_range(merged):
         return None
+    for channel in ("red", "green", "blue"):
+        offsets = (
+            merged[f"curve_{channel}_25"],
+            merged[f"curve_{channel}_50"],
+            merged[f"curve_{channel}_75"],
+        )
+        if not color.curve_offsets_in_order(offsets):
+            return None
     return merged
 
 

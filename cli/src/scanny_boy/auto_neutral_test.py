@@ -105,11 +105,49 @@ def test_auto_neutral_false_is_identity():
     cast = grid.copy()
     cast[..., 0] += np.where(shadow, 0.08, 0.0)
     bands = measure_auto_neutral_bands(cast, keep, _bounds())
+    # Not vacuous: the bands must be live for the comparison below to say
+    # anything. Until the bands moved to `measure_band_neutral_mean` this
+    # test compared an inert correction against itself — the grey-surfaces
+    # weighting returned `None` on a smooth ramp, so nothing was applied
+    # with the slider at either end.
+    assert bands.shadow is not None
     meter = _metering(shadow=bands.shadow, highlight=bands.highlight)
     off = dataclasses.replace(color.NEUTRAL_COLOR, auto_neutral=0.0)
     tables = tone.build_channel_tables(tone.NEUTRAL, off, meter)
-    neutral = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, meter)
-    np.testing.assert_array_equal(tables, neutral)
+    inert = tone.build_channel_tables(
+        tone.NEUTRAL, off, _metering(shadow=None, highlight=None)
+    )
+    np.testing.assert_array_equal(tables, inert)
+
+
+def test_bands_report_a_uniform_shadow_cast_at_full_strength():
+    """The estimator swap, end to end: a cast laid evenly over the shadow
+    band — no chroma structure for the grey-surfaces weight to key on — is
+    reported at its own size, not discounted toward zero."""
+    grid, keep = _grey_ramp_grid()
+    shadow = auto_neutral._luma_band(
+        auto_neutral._display_luma_grid(grid, _bounds()),
+        keep,
+        AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_LOW,
+        AUTO_NEUTRAL_SHADOW_LUMA_PERCENTILE_HIGH,
+    )
+    cast = grid.copy()
+    cast[..., 2] += np.where(shadow, 0.06, 0.0)
+
+    bands = measure_auto_neutral_bands(cast, keep, _bounds())
+
+    assert bands.shadow is not None
+    # Not exact: the band is re-selected on the cast grid, whose display
+    # luma the added blue shifts slightly, so a few cells at the band's
+    # edge differ from the mask used to lay the cast down. The point is
+    # that it lands within a few percent of 0.06 rather than near zero,
+    # which is what the grey-surfaces weighting reported here.
+    assert bands.shadow[1] == pytest.approx(0.06, abs=2e-3)
+    assert bands.shadow[0] == pytest.approx(0.0, abs=1e-6)
+    # The highlight end keeps the grey-surfaces weighting, which declines
+    # to answer on a smooth ramp with no chroma structure — the asymmetry
+    # is the point, not an oversight.
+    assert bands.highlight is None
 
 
 def test_preview_matches_export_with_auto_neutral_on():

@@ -36,6 +36,10 @@ enum CaptureSequencePhase: Sendable, Equatable {
     case running
     case paused
     case waitingForDownload
+    /// Stopped by Esc with at least one cell filled (§3.2). The negative's
+    /// files stay on disk and off the queue; the operator resumes from the
+    /// first unfilled cell or discards it.
+    case stopped
 }
 
 /// Setup, sequence state machine, interval clock, and cues for the Capture tab.
@@ -121,6 +125,7 @@ final class CaptureSessionModel {
     private(set) var flatFieldReferenceError: ConfigurationModel.Issue?
     private(set) var referenceAperture: UInt32?
     var onFlatFieldReferenceAttached: ((FlatFieldReference) -> Void)?
+    var onFilmBaseAttached: ((FilmBase) -> Void)?
     private(set) var currentNegativeIndex = 0
     private(set) var pausedAfterCell = false
     private(set) var cellWarnings: [Int: [String]] = [:]
@@ -134,12 +139,15 @@ final class CaptureSessionModel {
     /// every cell of the negative shares one file stamp.
     private var negativeFirstRelease: Date?
     private var sequenceLoopActive = false
+    /// Set by a resume that rides a still-active loop, so that loop's next
+    /// interval restarts in full: a resume always counts down (§3.2).
+    private var intervalRestartRequested = false
 
     init(
         runner: CLIRunner,
         camera: any CameraControlling,
         clock: any CaptureClock = ContinuousCaptureClock(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = AppEnvironment.defaults
     ) {
         self.runner = runner
         self.camera = camera
@@ -177,6 +185,15 @@ final class CaptureSessionModel {
             && filmBase != nil
             && sequencePhase == .idle
             && !hasUnresolvedLeftovers
+            && !isShootingBaseFrame
+            && !isShootingFlatFieldReference
+            && !focusAssist.isCheckShotBusy
+    }
+
+    /// The camera is reachable for a resume: `.busy` counts, because a shot
+    /// still in flight after a pause reports it until its download finishes.
+    var isCameraConnected: Bool {
+        connectionState == .ready || connectionState == .busy
     }
 
     /// A leftover is being downloaded or is waiting for the operator's choice.
@@ -185,13 +202,26 @@ final class CaptureSessionModel {
     }
 
     /// First unmet prerequisite blocking start from idle, for button help and hints.
+    /// While `.paused` or `.stopped` this instead explains what blocks
+    /// *resuming* — the hint's own per-phase text already covers Resume vs.
+    /// Discard, so starting a new negative needs no separate message here:
+    /// there is no start control to explain while a negative is open.
     var startBlockedReason: String? {
+        if sequencePhase == .paused || sequencePhase == .stopped, !isCameraConnected {
+            return "Reconnect the camera to resume."
+        }
         guard sequencePhase == .idle else { return nil }
         if connectionState != .ready {
             return "Connect the camera before capturing."
         }
         if hasUnresolvedLeftovers {
             return Self.leftoverBlockedReason
+        }
+        if isShootingBaseFrame || isShootingFlatFieldReference {
+            return "Wait for the one-shot capture to finish."
+        }
+        if focusAssist.isCheckShotBusy {
+            return "Wait for the check shot to finish."
         }
         if exposure?.isManualProgram == false {
             return "Switch the camera to Manual exposure before capturing."
@@ -223,8 +253,9 @@ final class CaptureSessionModel {
         switch sequencePhase {
         case .running:
             return true
-        case .paused:
-            return !hasUnresolvedLeftovers
+        case .paused, .stopped:
+            // §2.5: resuming after a drop needs the camera back first.
+            return !hasUnresolvedLeftovers && isCameraConnected
         case .idle:
             return runEnabled
         case .waitingForDownload:
@@ -273,7 +304,12 @@ final class CaptureSessionModel {
     func openSession() {
         guard !isSessionOpen else { return }
         isSessionOpen = true
-        resetCells()
+        // A preserved `negativeFirstRelease` means a negative was left open
+        // by a drop (§2.5, closeSession below); its filled cells must
+        // survive the reconnect, not be wiped by a fresh resetCells().
+        if negativeFirstRelease == nil {
+            resetCells()
+        }
         claimLeftovers()
     }
 
@@ -283,7 +319,29 @@ final class CaptureSessionModel {
         sequenceTask?.cancel()
         sequenceTask = nil
         isSessionOpen = false
-        sequencePhase = .idle
+        // §2.5: if the device disappears mid-sequence, the sequence stops,
+        // but cells whose files are on disk stay filled, and the negative
+        // stays open (paused) so reconnect can resume it or offer a
+        // leftover for its one empty cell — it is not thrown away.
+        // `negativeFirstRelease` is set for exactly this window (from
+        // `startNegative` until `finishNegative`/`stopNegative` clear it), so
+        // it alone tells a negative genuinely in progress apart from a
+        // finished one whose filled cells are only being kept on screen
+        // until the next negative starts (which must still close to idle).
+        let hasOpenNegative = negativeFirstRelease != nil
+        if hasOpenNegative {
+            resetPendingCells()
+            // A stopped negative (Esc with a filled cell, §3.2) stays
+            // stopped — losing the camera doesn't make it any less
+            // deliberately stopped. Only a drop mid-sequence becomes paused.
+            if sequencePhase != .stopped {
+                sequencePhase = .paused
+            }
+        } else {
+            negativeFirstRelease = nil
+            sequencePhase = .idle
+        }
+        focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
         onSessionClosed?()
     }
@@ -295,7 +353,7 @@ final class CaptureSessionModel {
             startNegative()
         case .running:
             pauseAfterCurrentShot()
-        case .paused:
+        case .paused, .stopped:
             resumeSequence()
         default:
             break
@@ -303,17 +361,22 @@ final class CaptureSessionModel {
     }
 
     func handleDelete() {
-        guard sequencePhase == .paused else { return }
+        guard sequencePhase == .paused || sequencePhase == .stopped else { return }
         retakeLastFilledCell()
     }
 
+    /// Esc (§3.2): stops the running or paused negative. Does nothing while
+    /// already `.stopped` — that Esc is spent, the operator resumes or
+    /// discards instead.
     func handleEscape() {
         guard sequencePhase == .running || sequencePhase == .paused else { return }
         stopNegative()
     }
 
     func shootFlatFieldReference() async {
-        guard flatField?.lockedAt == nil, let rollURL, let captureFolder else { return }
+        guard flatField?.lockedAt == nil, let rollURL, let captureFolder,
+              sequencePhase == .idle, !isShootingBaseFrame, !focusAssist.isCheckShotBusy
+        else { return }
         isShootingFlatFieldReference = true
         flatFieldReferenceError = nil
         defer { isShootingFlatFieldReference = false }
@@ -342,7 +405,9 @@ final class CaptureSessionModel {
     }
 
     func shootBaseFrame() async {
-        guard filmBase?.lockedAt == nil, let rollURL, let captureFolder else { return }
+        guard filmBase?.lockedAt == nil, let rollURL, let captureFolder,
+              sequencePhase == .idle, !isShootingFlatFieldReference, !focusAssist.isCheckShotBusy
+        else { return }
         isShootingBaseFrame = true
         baseFrameError = nil
         defer { isShootingBaseFrame = false }
@@ -357,8 +422,9 @@ final class CaptureSessionModel {
             )
             if let error = result.error {
                 baseFrameError = error
-            } else {
-                filmBase = result.filmBase
+            } else if let filmBase = result.filmBase {
+                self.filmBase = filmBase
+                onFilmBaseAttached?(filmBase)
             }
         } catch {
             baseFrameError = ConfigurationModel.Issue(code: .internalError, message: error.localizedDescription)
@@ -384,7 +450,11 @@ final class CaptureSessionModel {
     private func runSequence() async {
         guard let folder = captureFolder else { return }
         sequenceLoopActive = true
-        defer { sequenceLoopActive = false }
+        intervalRestartRequested = false
+        defer {
+            sequenceLoopActive = false
+            intervalRestartRequested = false
+        }
         await leftoverClaim?.value
         let firstRelease = negativeFirstRelease ?? clock.now()
         negativeFirstRelease = firstRelease
@@ -393,11 +463,13 @@ final class CaptureSessionModel {
             try await camera.drainEvents()
             handlesBefore = Set(try await camera.scanBuffer())
         } catch TetherCaptureError.leftoverPresent {
+            guard !Task.isCancelled else { return }
             sequencePhase = .paused
             focusAssist.updateSequencePhase(sequencePhase)
             claimLeftovers()
             return
         } catch {
+            guard !Task.isCancelled else { return }
             markNextFailed(error.localizedDescription)
             return
         }
@@ -406,29 +478,41 @@ final class CaptureSessionModel {
         let pending = cellStates.indices.filter { !cellStates[$0].isFilled }
         for (position, cellIndex) in pending.enumerated() {
             // Pause takes effect between shots; the in-flight one finishes.
+            // Cancellation (Esc/stop, §3.2) must not mutate cell/phase state
+            // here — `stopNegative` already set the state it wants.
             guard !Task.isCancelled, sequencePhase == .running else { return }
 
             let shot = cellIndex + 1
 
             do {
-                if cellIndex == 0, case .next = cellStates[0] {
+                // The operator's decision (§3.2): resuming a negative —
+                // whether paused or stopped — always counts down the full
+                // interval before the next release, not only when cell 1
+                // hasn't fired yet. So the first pending shot of every
+                // `runSequence` invocation (a fresh start or a resume that
+                // spawns a new loop) waits here; a resume that finds the
+                // loop still active restarts that loop's next interval in
+                // full instead (`intervalRestartRequested`).
+                if position == 0 {
                     let intervalEnd = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
                     try await waitForInterval(end: intervalEnd)
-                    guard sequencePhase == .running else { return }
-                    playHoldCue(at: intervalEnd.addingTimeInterval(-TetherTiming.holdCueLead))
+                    guard !Task.isCancelled, sequencePhase == .running else { return }
                 }
 
                 cellStates[cellIndex] = .exposing
                 markNext(after: cellIndex)
+                playCaptureCue()
                 try await camera.release()
-                playMoveCue()
                 try await camera.waitForExposureEnd()
+                playMoveCue()
 
-                if position + 1 < pending.count {
-                    let intervalEnd = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
-                    try await waitForInterval(end: intervalEnd)
-                    playHoldCue(at: intervalEnd.addingTimeInterval(-TetherTiming.holdCueLead))
-                }
+                // The interval runs from the end of the exposure and the
+                // download happens inside it (TETHER_PLAN §3.2), so the next
+                // release — and its beep — lands on the interval's end
+                // rather than a download later.
+                let intervalEnd: Date? = position + 1 < pending.count
+                    ? clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
+                    : nil
 
                 cellStates[cellIndex] = .downloading
                 let url = try CaptureNaming.exclusiveURL(
@@ -441,10 +525,19 @@ final class CaptureSessionModel {
                 // Not added to handlesBefore: the download cleared the handle,
                 // and the Z f reuses the lowest free one for the next frame.
                 analyzeFrame(url, cellIndex: cellIndex)
+
+                if let intervalEnd {
+                    try await waitForInterval(end: intervalEnd)
+                }
             } catch {
+                // A cancellation (Esc/stop) surfaces here as an error from
+                // whichever await was in flight; it must leave the state
+                // `stopNegative` set rather than mark the cell failed.
+                guard !Task.isCancelled else { return }
                 cellStates[cellIndex] = .failed(error.localizedDescription)
                 sequencePhase = .paused
                 focusAssist.updateSequencePhase(sequencePhase)
+                countdownText = ""
                 return
             }
         }
@@ -452,12 +545,15 @@ final class CaptureSessionModel {
     }
 
     private func finishNegative(firstRelease: Date) {
-        let stamp = CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
-            .replacingOccurrences(of: "_01.NEF", with: "")
         let frames = cellStates.compactMap { state -> URL? in
             if case .filled(let url) = state { return url }
             return nil
         }
+        // Derived from cell 1's real file name rather than recomputed from
+        // `firstRelease`: `exclusiveURL` appends a `-2`, `-3`, … suffix to
+        // the stamp when two negatives start in the same second, and this
+        // must track whichever stamp the frames actually landed under.
+        let stamp = Self.stamp(fromFirstFrame: frames.first, firstRelease: firstRelease)
         completedNegatives.append(
             CompletedNegative(id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease)
         )
@@ -471,20 +567,65 @@ final class CaptureSessionModel {
         onNegativeCompleted?(completedNegatives.last!)
     }
 
+    /// Strips cell 1's `_01` (or `_01.NEF`) suffix off its real file name,
+    /// leaving the stamp exactly as `CaptureNaming` chose it — including a
+    /// `-2`, `-3`, … collision suffix `CaptureNaming.filename` alone cannot
+    /// reproduce. Falls back to recomputing it when there is no frame
+    /// (should not happen: `finishNegative` only runs once every cell
+    /// filled).
+    private static func stamp(fromFirstFrame url: URL?, firstRelease: Date) -> String {
+        guard let url,
+            let underscoreRange = url.deletingPathExtension().lastPathComponent
+                .range(of: "_", options: .backwards)
+        else {
+            return CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
+                .replacingOccurrences(of: "_01.NEF", with: "")
+        }
+        return String(url.deletingPathExtension().lastPathComponent[..<underscoreRange.lowerBound])
+    }
+
     var onNegativeCompleted: ((CompletedNegative) -> Void)?
     var onSessionClosed: (() -> Void)?
 
-    private func waitForInterval(end: Date) async throws {
-        while clock.now() < end {
-            if sequencePhase == .paused { return }
+    /// Waits until `end`, ticking the countdown beeps at 3, 2 and 1 seconds
+    /// before it. The beep at 0 is `playCaptureCue`, played on the release.
+    private func waitForInterval(end initialEnd: Date) async throws {
+        var end = initialEnd
+        var pendingTicks = CaptureCues.countdownSeconds.filter {
+            Double($0) < end.timeIntervalSince(clock.now())
+        }
+        while clock.now() < end || intervalRestartRequested {
+            if intervalRestartRequested {
+                intervalRestartRequested = false
+                end = clock.now().addingTimeInterval(TimeInterval(intervalSeconds))
+                pendingTicks = CaptureCues.countdownSeconds.filter { Double($0) < Double(intervalSeconds) }
+            }
+            // Paused: leave the frozen countdown text behind. Idle: stopped
+            // outright (Esc, disconnect) — same thing, and cancellation may
+            // never reach here to clear it otherwise.
+            if sequencePhase == .paused || sequencePhase == .idle || Task.isCancelled {
+                countdownText = ""
+                return
+            }
+            var remaining = end.timeIntervalSince(clock.now())
+            while let seconds = pendingTicks.first, remaining <= Double(seconds) + 0.005 {
+                pendingTicks.removeFirst()
+                playCountdownTick()
+            }
+            remaining = end.timeIntervalSince(clock.now())
             if case .downloading = cellStates.first(where: { if case .downloading = $0 { true } else { false } }) {
                 countdownText = "waiting for download"
                 try await clock.sleep(until: clock.now().addingTimeInterval(0.1))
                 continue
             }
-            let remaining = end.timeIntervalSince(clock.now())
             countdownText = String(format: "%.1f s", max(0, remaining))
-            try await clock.sleep(until: min(end, clock.now().addingTimeInterval(0.1)))
+            // Wake exactly on the next beep so the rhythm doesn't jitter
+            // with the 0.1 s display refresh.
+            var wake = min(end, clock.now().addingTimeInterval(0.1))
+            if let seconds = pendingTicks.first {
+                wake = min(wake, end.addingTimeInterval(-Double(seconds)))
+            }
+            try await clock.sleep(until: wake)
         }
         countdownText = ""
     }
@@ -494,9 +635,14 @@ final class CaptureSessionModel {
         NSSound(named: "Tink")?.play()
     }
 
-    private func playHoldCue(at _: Date) {
+    private func playCountdownTick() {
         guard cuesEnabled else { return }
-        NSSound(named: "Pop")?.play()
+        CaptureCues.playTick()
+    }
+
+    private func playCaptureCue() {
+        guard cuesEnabled else { return }
+        CaptureCues.playCapture()
     }
 
     private func pauseAfterCurrentShot() {
@@ -506,28 +652,84 @@ final class CaptureSessionModel {
     }
 
     private func resumeSequence() {
-        guard sequencePhase == .paused, !hasUnresolvedLeftovers else { return }
+        // §2.5: a paused or stopped negative left open by a drop needs the
+        // camera back before it can shoot again.
+        guard sequencePhase == .paused || sequencePhase == .stopped,
+            !hasUnresolvedLeftovers, isCameraConnected
+        else { return }
         sequencePhase = .running
         focusAssist.updateSequencePhase(sequencePhase)
         pausedAfterCell = false
-        // Paused before its in-flight shot finished: that loop carries on.
-        guard !sequenceLoopActive else { return }
+        // Paused before its in-flight shot finished: that loop carries on,
+        // but its next interval restarts in full.
+        guard !sequenceLoopActive else {
+            intervalRestartRequested = true
+            return
+        }
         sequenceTask = Task { await runSequence() }
     }
 
+    /// Esc (§3.2): stops the negative. With at least one cell filled it goes
+    /// `.stopped` — the files stay, off the queue, resumable or discardable
+    /// (`discardStoppedNegative` below). With nothing filled (e.g. Esc during
+    /// the first countdown) there is nothing to keep, so it goes straight to
+    /// `.idle` as before.
     private func stopNegative() {
         sequenceTask?.cancel()
-        negativeFirstRelease = nil
-        sequencePhase = .idle
+        if cellStates.contains(where: \.isFilled) {
+            resetPendingCells()
+            sequencePhase = .stopped
+        } else {
+            negativeFirstRelease = nil
+            sequencePhase = .idle
+        }
         focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
     }
 
+    /// Discard negative (§3.2): trashes a stopped negative's filled NEFs —
+    /// recoverable, like deleting a roll — and returns to idle. Needs no
+    /// camera.
+    func discardStoppedNegative() {
+        guard sequencePhase == .stopped else { return }
+        let urls = cellStates.compactMap { state -> URL? in
+            if case .filled(let url) = state { return url }
+            return nil
+        }
+        if !urls.isEmpty {
+            NSWorkspace.shared.recycle(urls) { _, _ in }
+        }
+        negativeFirstRelease = nil
+        sequencePhase = .idle
+        focusAssist.updateSequencePhase(sequencePhase)
+        countdownText = ""
+        resetCells()
+    }
+
+    /// Delete while paused (§3.2): replaces the last filled cell's file in
+    /// place. The old NEF goes to the Trash so the reshoot's `exclusiveURL`
+    /// reuses the same name, its warning badge is cleared (a late
+    /// `analyzeFrame` for the old frame is guarded against re-adding it,
+    /// see below), and it becomes the only `.next` cell.
     private func retakeLastFilledCell() {
         guard let index = cellStates.lastIndex(where: {
             if case .filled = $0 { true } else { false }
-        }) else { return }
-        cellStates[index] = .next
+        }), case .filled(let oldURL) = cellStates[index] else { return }
+        NSWorkspace.shared.recycle([oldURL]) { _, _ in }
+        cellWarnings[index] = nil
+        cellStates[index] = .empty
+        resetPendingCells()
+    }
+
+    /// Sets the earliest unfilled cell to `.next` and every cell after it to
+    /// `.empty`, undoing any premature "up next" marking. Used after a
+    /// retake and after a drop leaves a negative open (§2.5).
+    private func resetPendingCells() {
+        var foundNext = false
+        for index in cellStates.indices where !cellStates[index].isFilled {
+            cellStates[index] = foundNext ? .empty : .next
+            foundNext = true
+        }
     }
 
     private func captureOneFrame(to url: URL) async throws {
@@ -562,7 +764,9 @@ final class CaptureSessionModel {
 
     /// The one cell an open negative still needs, when there is exactly one.
     var leftoverTargetCell: Int? {
-        guard sequencePhase == .paused, !sequenceLoopActive, negativeFirstRelease != nil else {
+        guard sequencePhase == .paused || sequencePhase == .stopped,
+            !sequenceLoopActive, negativeFirstRelease != nil
+        else {
             return nil
         }
         let unfilled = cellStates.indices.filter { !cellStates[$0].isFilled }
@@ -680,6 +884,13 @@ final class CaptureSessionModel {
                         continue
                     }
                     let warnings = event.warnings ?? []
+                    // A retake (§3.2) can replace this cell's file before
+                    // this late result lands; only write the warning if the
+                    // cell still holds the frame being analyzed.
+                    guard cellIndex < cellStates.count,
+                        case .filled(let currentURL) = cellStates[cellIndex],
+                        currentURL == url
+                    else { continue }
                     if !warnings.isEmpty {
                         cellWarnings[cellIndex] = warnings
                     }
@@ -703,12 +914,21 @@ final class CaptureSessionModel {
         }
         sequencePhase = .paused
         focusAssist.updateSequencePhase(sequencePhase)
+        countdownText = ""
     }
 
+    /// Applying a grid must never disturb a negative in progress: roll
+    /// syncs re-apply the same grid whenever the library rescans (each
+    /// background stitch publishing triggers one), and resetting the cells
+    /// mid-sequence dropped the frames already shot from the negative.
     func applyGridDimensions(from profile: GridProfile) {
+        guard sequencePhase == .idle else { return }
+        let changed = across != profile.across || down != profile.down
         down = profile.down
         across = profile.across
-        resetCells()
+        if changed || cellStates.count != perNegative {
+            resetCells()
+        }
     }
 
     /// Applies one saved grid preset when the sequence is idle.
@@ -737,8 +957,13 @@ final class CaptureSessionModel {
 
     /// Clears in-progress and unpublished session state. Returns NEF URLs from
     /// filled cells and unpublished completed negatives for the caller to recycle.
+    /// Accepts `.idle` (nothing open) and `.stopped` (a stopped negative being
+    /// abandoned along with the rest) — the view sends Esc first for
+    /// `.running`/`.paused`, which now lands on one of those two.
     func discardUnpublishedCaptures(publishedNegativeIDs: Set<UUID>) -> [URL] {
-        guard sequencePhase == .idle, !hasUnresolvedLeftovers else { return [] }
+        guard sequencePhase == .idle || sequencePhase == .stopped, !hasUnresolvedLeftovers else {
+            return []
+        }
         var urls: [URL] = []
         for state in cellStates {
             if case .filled(let url) = state { urls.append(url) }
@@ -750,6 +975,8 @@ final class CaptureSessionModel {
         baselineFrameURLs = completedNegatives.first?.frameURLs ?? []
         currentNegativeIndex = completedNegatives.count
         negativeFirstRelease = nil
+        sequencePhase = .idle
+        focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
         resetCells()
         return urls

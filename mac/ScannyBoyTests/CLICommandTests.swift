@@ -338,6 +338,63 @@ struct CLICommandTests {
         #expect(command.arguments.contains("--full-frame"))
     }
 
+    @Test("edit crop can tag the crop as auto-suggested")
+    func editCropSourceArguments() {
+        let command = CLICommand.editCrop(
+            roll: Self.out,
+            negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24),
+            preset: "35mm",
+            fullFrame: true,
+            source: "auto"
+        )
+        #expect(command.arguments.suffix(2) == ["--source", "auto"])
+        let untagged = CLICommand.editCrop(
+            roll: Self.out, negative: "neg-01",
+            rect: CGRect(x: 10, y: 8, width: 50, height: 24)
+        )
+        #expect(!untagged.arguments.contains("--source"))
+    }
+
+    @Test("edit suggest-crop names the roll and negative, and the preset when given")
+    func editSuggestCropArguments() {
+        #expect(
+            CLICommand.editSuggestCrop(roll: Self.out, negative: "neg-01").arguments == [
+                "edit", "suggest-crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+            ]
+        )
+        #expect(
+            CLICommand.editSuggestCrop(
+                roll: Self.out, negative: "neg-01", preset: "645"
+            ).arguments == [
+                "edit", "suggest-crop",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--negative", "neg-01",
+                "--preset", "645",
+            ]
+        )
+    }
+
+    @Test("roll set-setup carries --auto-crop on or off")
+    func rollSetSetupAutoCropArguments() {
+        #expect(
+            CLICommand.rollSetSetup(roll: Self.out, autoCrop: true).arguments == [
+                "roll", "set-setup", "--roll", "/Volumes/Scans/roll-12-tif",
+                "--auto-crop", "on",
+            ]
+        )
+        #expect(
+            CLICommand.rollSetSetup(roll: Self.out, autoCrop: false).arguments.suffix(2)
+                == ["--auto-crop", "off"]
+        )
+        #expect(
+            !CLICommand.rollSetSetup(roll: Self.out, format: "6x7").arguments
+                .contains("--auto-crop")
+        )
+    }
+
     @Test("edit render-preview can ignore the live crop")
     func editRenderPreviewFullFrameArguments() {
         let command = CLICommand.editRenderPreview(
@@ -402,19 +459,30 @@ struct CLICommandTests {
 
     // MARK: - Edit color
 
-    @Test("edit color with temperature omits that region's magenta")
-    func editColorTemperatureArguments() {
+    @Test("edit color sends warmth, tint, and curve offsets")
+    func editColorBalanceArguments() {
+        var adjustment = ColorAdjustment.neutral
+        adjustment.warmth = 0.3
+        adjustment.tint = -0.1
+        adjustment.curveRed25 = 0.05
+        adjustment.curveGreen50 = -0.03
+        adjustment.curveBlue75 = 0.02
         let command = CLICommand.editColor(
             roll: Self.out,
             negatives: ["neg-01"],
-            adjustment: .neutral,
-            region: "global",
-            temperatureKelvin: 3200
+            adjustment: adjustment
         )
-        #expect(command.arguments.contains("--temperature"))
-        #expect(command.arguments.contains("3200.0"))
-        #expect(!command.arguments.contains { $0 == "--magenta" })
-        #expect(command.arguments.contains("--cyan"))
+        let warmth = command.arguments.firstIndex(of: "--warmth")
+        #expect(warmth.map { command.arguments[$0 + 1] } == "0.3")
+        let tint = command.arguments.firstIndex(of: "--tint")
+        #expect(tint.map { command.arguments[$0 + 1] } == "-0.1")
+        let red25 = command.arguments.firstIndex(of: "--red-25")
+        #expect(red25.map { command.arguments[$0 + 1] } == "0.05")
+        let green50 = command.arguments.firstIndex(of: "--green-50")
+        #expect(green50.map { command.arguments[$0 + 1] } == "-0.03")
+        let blue75 = command.arguments.firstIndex(of: "--blue-75")
+        #expect(blue75.map { command.arguments[$0 + 1] } == "0.02")
+        #expect(!command.arguments.contains("--region"))
     }
 
     @Test("edit color with no adjustment is a reset")
@@ -423,25 +491,23 @@ struct CLICommandTests {
             roll: Self.out, negatives: ["neg-01"], adjustment: nil
         )
         #expect(command.arguments.last == "--reset")
-        #expect(!command.arguments.contains("--cyan"))
+        #expect(!command.arguments.contains("--warmth"))
     }
 
-    @Test("edit color with auto cast omits the global filtration sliders")
-    func editColorAutoCastArguments() {
+    @Test("edit color with auto balance omits warmth and tint")
+    func editColorAutoBalanceArguments() {
         var adjustment = ColorAdjustment.neutral
-        adjustment.wbCyan = 0.2
-        adjustment.wbMagenta = -0.1
-        adjustment.wbYellow = 0.05
+        adjustment.warmth = 0.2
+        adjustment.tint = -0.1
         let command = CLICommand.editColor(
             roll: Self.out,
             negatives: ["neg-01"],
             adjustment: adjustment,
-            auto: .cast
+            auto: .balance
         )
-        #expect(command.arguments.contains("--auto-cast"))
-        #expect(!command.arguments.contains { $0 == "--cyan" })
-        #expect(!command.arguments.contains { $0 == "--magenta" })
-        #expect(!command.arguments.contains { $0 == "--yellow" })
+        #expect(command.arguments.contains("--auto-balance"))
+        #expect(!command.arguments.contains { $0 == "--warmth" })
+        #expect(!command.arguments.contains { $0 == "--tint" })
     }
 
     @Test("edit color emits the highlight cast removal strength")
@@ -456,7 +522,7 @@ struct CLICommandTests {
         #expect(command.arguments.contains("--cast-removal-highlights"))
         let index = command.arguments.firstIndex(of: "--cast-removal-highlights")
         #expect(index.map { command.arguments[$0 + 1] } == "0.4")
-        #expect(!command.arguments.contains("--auto-cast"))
+        #expect(!command.arguments.contains("--auto-balance"))
     }
 
     // MARK: - Rig profiles

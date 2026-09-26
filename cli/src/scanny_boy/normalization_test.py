@@ -1638,6 +1638,60 @@ def test_neutral_residual_on_a_cast_frame_matches_the_offset_within_ten_percent(
     assert residual[1] == pytest.approx(0.0, abs=1e-3)
 
 
+def test_band_neutral_mean_sees_a_uniform_cast_the_weighted_estimate_misses():
+    """The reason the tone-split bands use the mean: a smooth frame with a
+    constant blue offset has no chroma *structure*, so the grey-surfaces
+    weight is zero everywhere and the weighted estimate declines to answer.
+    The mean reports the offset."""
+    ramp = np.broadcast_to(
+        np.linspace(0.2, 0.8, 64, dtype=np.float32)[None, :], (64, 64)
+    ).copy()
+    grid = np.stack([ramp, ramp, ramp + 0.05], axis=-1).astype(np.float32)
+    keep = np.ones((64, 64), dtype=bool)
+
+    assert nz.measure_neutral_residual(grid, keep, _IDENTITY_BOUNDS) is None
+
+    mean = nz.measure_band_neutral_mean(grid, keep, _IDENTITY_BOUNDS)
+    assert mean is not None
+    assert mean[0] == pytest.approx(0.0, abs=1e-6)
+    assert mean[1] == pytest.approx(0.05, abs=1e-6)
+
+
+def test_band_neutral_mean_reads_only_the_band():
+    ramp = np.broadcast_to(
+        np.linspace(0.2, 0.8, 64, dtype=np.float32)[None, :], (64, 64)
+    ).copy()
+    grid = np.stack([ramp, ramp, ramp], axis=-1).astype(np.float32)
+    grid[:32, :, 2] += 0.04
+    keep = np.ones((64, 64), dtype=bool)
+    band = np.zeros((64, 64), dtype=bool)
+    band[:32, :] = True
+
+    inside = nz.measure_band_neutral_mean(grid, keep, _IDENTITY_BOUNDS, band=band)
+    outside = nz.measure_band_neutral_mean(grid, keep, _IDENTITY_BOUNDS, band=~band)
+    assert inside is not None and outside is not None
+    assert inside[1] == pytest.approx(0.04, abs=1e-6)
+    assert outside[1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_band_neutral_mean_needs_enough_cells():
+    grid, keep = _structured_grid()
+    keep[:] = False
+    keep[20:27, 20:27] = True  # 49 < NEUTRAL_RESIDUAL_MIN_CELLS
+
+    assert nz.measure_band_neutral_mean(grid, keep, _IDENTITY_BOUNDS) is None
+
+
+def test_band_neutral_mean_on_a_mono_grid_is_none():
+    grid = np.full((64, 64, 1), 0.5, dtype=np.float32)
+    keep = np.ones((64, 64), dtype=bool)
+
+    assert (
+        nz.measure_band_neutral_mean(grid, keep, Bounds(floors=(0.0,), ceils=(1.0,)))
+        is None
+    )
+
+
 def test_neutral_residual_on_a_flat_grid_is_none():
     grid = np.full((64, 64, 3), 0.5, dtype=np.float32)
     keep = np.ones((64, 64), dtype=bool)

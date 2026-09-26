@@ -205,7 +205,7 @@ def _linear_lut_from_codes(
     codes = np.arange(MAX_CODE + 1, dtype=np.float64)
     norm = normalization.decode_normalized(codes)
     apply_color = channels > 1
-    offsets = color.cmy_offsets(color_obj, meter) if apply_color else (0.0,) * channels
+    offsets = color.balance_offsets(color_obj) if apply_color else (0.0,) * channels
     luts = np.empty((channels, MAX_CODE + 1), dtype=np.float32)
     for ch in range(channels):
         offset = offsets[ch] if ch < len(offsets) else 0.0

@@ -679,15 +679,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="negative to adjust; repeat for a selection",
     )
     for flag, help_text in (
-        ("--cyan", "global cyan filtration, -1..1"),
-        ("--magenta", "global magenta filtration, -1..1"),
-        ("--yellow", "global yellow filtration, -1..1"),
-        ("--shadow-cyan", "shadows cyan, -1..1"),
-        ("--shadow-magenta", "shadows magenta, -1..1"),
-        ("--shadow-yellow", "shadows yellow, -1..1"),
-        ("--highlight-cyan", "highlights cyan, -1..1"),
-        ("--highlight-magenta", "highlights magenta, -1..1"),
-        ("--highlight-yellow", "highlights yellow, -1..1"),
+        ("--warmth", "warmth, -1..1 (positive = yellow)"),
+        ("--tint", "tint, -1..1 (positive = magenta)"),
+        ("--red-25", "red channel curve at 0.25, -0.2..0.2"),
+        ("--red-50", "red channel curve at 0.5, -0.2..0.2"),
+        ("--red-75", "red channel curve at 0.75, -0.2..0.2"),
+        ("--green-25", "green channel curve at 0.25, -0.2..0.2"),
+        ("--green-50", "green channel curve at 0.5, -0.2..0.2"),
+        ("--green-75", "green channel curve at 0.75, -0.2..0.2"),
+        ("--blue-25", "blue channel curve at 0.25, -0.2..0.2"),
+        ("--blue-50", "blue channel curve at 0.5, -0.2..0.2"),
+        ("--blue-75", "blue channel curve at 0.75, -0.2..0.2"),
         (
             "--cast-removal-highlights",
             "highlight-end cast removal strength, 0..1 (0 neutral)",
@@ -695,9 +697,9 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         edit_color.add_argument(flag, type=float, metavar="V", help=help_text)
     edit_color.add_argument(
-        "--auto-cast",
+        "--auto-balance",
         action="store_true",
-        help="solve global filtration from this negative's recorded neutral estimate",
+        help="solve warmth/tint from this negative's recorded neutral estimate",
     )
     edit_color.add_argument(
         "--cast-removal",
@@ -716,18 +718,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar="V",
         help="separation damping, 0..1 (0 neutral)",
-    )
-    edit_color.add_argument(
-        "--temperature",
-        type=float,
-        metavar="K",
-        help="3000-12000 K lever over the region's M/Y pair",
-    )
-    edit_color.add_argument(
-        "--region",
-        choices=("global", "shadows", "highlights"),
-        default="global",
-        help="which region --temperature drives (default: global)",
     )
     edit_color.add_argument(
         "--reset",
@@ -926,15 +916,17 @@ def _color_flag_updates(args) -> dict[str, float | None]:
 
     updates: dict[str, float | None] = {}
     mapping = {
-        "cyan": "wb_cyan",
-        "magenta": "wb_magenta",
-        "yellow": "wb_yellow",
-        "shadow_cyan": "shadow_cyan",
-        "shadow_magenta": "shadow_magenta",
-        "shadow_yellow": "shadow_yellow",
-        "highlight_cyan": "highlight_cyan",
-        "highlight_magenta": "highlight_magenta",
-        "highlight_yellow": "highlight_yellow",
+        "warmth": "warmth",
+        "tint": "tint",
+        "red_25": "curve_red_25",
+        "red_50": "curve_red_50",
+        "red_75": "curve_red_75",
+        "green_25": "curve_green_25",
+        "green_50": "curve_green_50",
+        "green_75": "curve_green_75",
+        "blue_25": "curve_blue_25",
+        "blue_50": "curve_blue_50",
+        "blue_75": "curve_blue_75",
         "cast_removal": "cast_removal",
         "cast_removal_highlights": "cast_removal_highlights",
         "dye_separation": "dye_separation",
@@ -948,28 +940,17 @@ def _color_flag_updates(args) -> dict[str, float | None]:
 
 
 def _validate_color_args(args) -> None:
-    """`--auto-cast` owns all three global
-    CMY sliders outright — it is a usage error with `--reset` (which
-    contradicts it) and with an explicit `--cyan`/`--magenta`/`--yellow`
-    (which it would overwrite). The `--temperature` exclusivity rules are
-    unchanged; the function only outgrew its temperature-only name."""
-    if args.auto_cast:
+    """`--auto-balance` owns warmth and tint — it is a usage error with
+    `--reset` (which contradicts it) and with explicit `--warmth`/`--tint`
+    (which it would overwrite)."""
+    if args.auto_balance:
         if args.reset:
-            raise ValueError("--auto-cast is mutually exclusive with --reset")
-        if args.cyan is not None or args.magenta is not None or args.yellow is not None:
+            raise ValueError("--auto-balance is mutually exclusive with --reset")
+        if args.warmth is not None or args.tint is not None:
             raise ValueError(
-                "--auto-cast is mutually exclusive with --cyan, --magenta and "
-                "--yellow; the auto owns all three"
+                "--auto-balance is mutually exclusive with --warmth and "
+                "--tint; the auto owns both"
             )
-    if args.temperature is None:
-        return
-    region = args.region
-    if region == "global" and args.magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --magenta")
-    if region == "shadows" and args.shadow_magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --shadow-magenta")
-    if region == "highlights" and args.highlight_magenta is not None:
-        raise ValueError("--temperature is mutually exclusive with --highlight-magenta")
 
 
 def _run_stitch_command(
@@ -1241,8 +1222,12 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         # TIFF's own dimensions — a re-stitch invalidates the window, and
         # the report degrades to none rather than describing pixels the
         # display no longer shows.
-        output_width = negative.get("output", {}).get("width")
-        output_height = negative.get("output", {}).get("height")
+        # A failed negative carries `output: None` (the key is present), so
+        # `.get("output", {})` would hand back None and crash the whole
+        # `roll info` — hiding every other negative in the roll.
+        published_output = negative.get("output") or {}
+        output_width = published_output.get("width")
+        output_height = published_output.get("height")
         live_crop = (
             state.crop
             if previews.crop_is_live(state.crop, (output_height, output_width))
@@ -1275,13 +1260,6 @@ def _run_roll_command(args, writer: EventWriter) -> int:
             negative[f"color_{key}"] = (
                 None if color_params is None else color_params[key]
             )
-        negative["color_temperature"] = (
-            None
-            if color_params is None
-            else color_mod.wb_to_kelvin(
-                color_params["wb_magenta"], color_params["wb_yellow"]
-            )
-        )
         # The spots summary, not the list: a 36-negative roll with 500
         # spots each would otherwise put megabytes of JSON through every
         # `roll info`. The full list is
@@ -1702,9 +1680,7 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                 args.negative,
                 _color_flag_updates(args) if not args.reset else None,
                 reset=args.reset,
-                temperature=args.temperature,
-                region=args.region,
-                auto_cast=args.auto_cast,
+                auto_balance=args.auto_balance,
                 emit=writer.write,
             )
             confirmation = EditRecorded

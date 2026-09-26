@@ -28,7 +28,7 @@ enum CropPreset: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .free: "Free"
-        case .filmHalfFrame: "Half-frame"
+        case .filmHalfFrame: "Half Frame"
         case .film35: "35mm"
         case .film6x3: "6×3"
         case .film645: "6×4.5"
@@ -59,9 +59,8 @@ enum CropPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Creates a `CropPreset` from a `FilmFormat`, returning `nil` if no
-    /// matching preset exists (every `FilmFormat` should map to a non-free
-    /// preset).
+    /// The preset for a `FilmFormat`. Total: every format has one, and
+    /// `CropSessionTests` fails loudly when a format is added without it.
     init(format: FilmFormat) {
         switch format {
         case .halfFrame: self = .filmHalfFrame
@@ -102,6 +101,25 @@ final class CropSession {
     /// The display image's size when the session began — the reference
     /// for orienting ratio presets to the image, not the current rect.
     private(set) var displaySize: CGSize = .zero
+    /// What the Auto button last loaded, kept so "is this still the
+    /// automatic crop?" can be answered by comparison (`suggestedRect`).
+    private var suggestion: (rect: CGRect, preset: CropPreset)?
+    /// Set when the last Auto found nothing trustworthy; the panel shows a
+    /// caption until the next suggestion, `begin` or `end`.
+    var suggestionRefused = false
+
+    /// The rect Auto loaded, while nothing has touched it — nil after any
+    /// drag, tilt or ratio change (each moves `rect`, `tiltDegrees` or
+    /// `preset` off what `applySuggestion` set). Apply passes
+    /// `source: "auto"` exactly when this is non-nil, so an untouched Auto
+    /// crop stays eligible for a re-stitch's reseed and a touched one
+    /// becomes the user's.
+    var suggestedRect: CGRect? {
+        guard let suggestion, rect == suggestion.rect, tiltDegrees == 0,
+            preset == suggestion.preset
+        else { return nil }
+        return suggestion.rect
+    }
 
     func begin(
         displaySize: CGSize,
@@ -111,6 +129,8 @@ final class CropSession {
     ) {
         guard displaySize.width > 0, displaySize.height > 0 else { return }
         self.displaySize = displaySize
+        suggestion = nil
+        suggestionRefused = false
         if let seedPreset { preset = seedPreset }
         if let seedRect, seedRect.width > 0, seedRect.height > 0 {
             rect = CropGeometry.clampFrame(seedRect, in: displaySize)
@@ -124,6 +144,28 @@ final class CropSession {
 
     func end() {
         isActive = false
+        dragBaseRect = nil
+        suggestion = nil
+        suggestionRefused = false
+    }
+
+    /// Loads the Auto button's answer: the rect (clamped into the image),
+    /// no tilt (the suggestion is measured without any), and the preset it
+    /// was fitted to — so a Free session given a roll format lands on that
+    /// format. A local edit like Original: nothing is recorded until Apply.
+    /// The preset assignment must not reshape the rect the detector just
+    /// fitted, so `applyPreset` skips while the session is on the suggestion.
+    func applySuggestion(rect suggestedRect: CGRect, preset suggestedPreset: CropPreset?) {
+        guard displaySize.width > 0, displaySize.height > 0,
+            suggestedRect.width > 0, suggestedRect.height > 0
+        else { return }
+        let clamped = CropGeometry.clampFrame(suggestedRect, in: displaySize)
+        let landed = suggestedPreset ?? preset
+        suggestion = (clamped, landed)
+        suggestionRefused = false
+        preset = landed
+        rect = clamped
+        tiltDegrees = 0
         dragBaseRect = nil
     }
 
@@ -143,6 +185,9 @@ final class CropSession {
     func applyPreset() {
         guard orientedRatio != nil else { return }
         guard rect.width > 0, rect.height > 0 else { return }
+        // Already on the detector's own fit for this preset (Auto just set
+        // the preset): reshaping would only nudge it.
+        guard suggestedRect == nil else { return }
         let previous = rect
         rect = CropGeometry.maxInscribedRect(
             in: previous.size, ratio: orientedRatio, origin: previous.origin
@@ -153,6 +198,8 @@ final class CropSession {
     /// "Original". A local edit like the ratio picker; nothing is recorded
     /// until Apply.
     func resetToOriginal() {
+        suggestion = nil
+        suggestionRefused = false
         preset = .free
         rect = CropGeometry.maxInscribedRect(in: displaySize, ratio: nil)
     }

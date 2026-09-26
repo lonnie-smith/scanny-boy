@@ -43,6 +43,7 @@ struct ScannyBoyApp: App {
     /// large after a long run of the old layout, and nothing waits on it:
     /// these are caches, and re-rendering one is a round trip.
     init() {
+        AppEnvironment.isolateForTestsIfNeeded()
         let cache = PreviewCache.shared
         Task.detached(priority: .utility) {
             cache.purgeUnscopedCaches()

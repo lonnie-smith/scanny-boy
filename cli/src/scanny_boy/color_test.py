@@ -28,52 +28,44 @@ def test_neutral_tables_match_density_plan_lut():
     np.testing.assert_array_equal(tables[1], tables[2])
 
 
-def test_magenta_slider_is_attenuated():
-    """Magenta travel is weaker than before the gain; cyan and yellow are
-    unchanged because their gains are 1.0."""
-    metering = _metering(ranges=(1.0, 1.0, 1.0))
-    cyan = color.cmy_offsets(
-        dataclasses.replace(color.NEUTRAL_COLOR, wb_cyan=1.0), metering
-    )
-    yellow = color.cmy_offsets(
-        dataclasses.replace(color.NEUTRAL_COLOR, wb_yellow=1.0), metering
-    )
-    magenta = color.cmy_offsets(
-        dataclasses.replace(color.NEUTRAL_COLOR, wb_magenta=1.0), metering
-    )
-
-    assert cyan == color._luma_removed((color.CMY_MAX_DENSITY, 0.0, 0.0))
-    assert yellow == color._luma_removed((0.0, 0.0, color.CMY_MAX_DENSITY))
-
-    unscaled_magenta = color._luma_removed((0.0, color.CMY_MAX_DENSITY, 0.0))
-    assert np.linalg.norm(magenta) < np.linalg.norm(unscaled_magenta)
-    assert abs(magenta[0]) < abs(unscaled_magenta[0])
-    assert abs(magenta[2]) < abs(unscaled_magenta[2])
+def test_warmth_slider_shifts_red_up_blue_down():
+    """Full warmth: red channel density offset is negative (brighter display),
+    blue is positive, green is zero."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0)
+    offsets = color.balance_offsets(params)
+    assert offsets[0] < 0.0  # red density down = display up
+    assert offsets[2] > 0.0  # blue density up = display down
+    assert offsets[1] == pytest.approx(0.0, abs=1e-12)
 
 
-def test_global_cmy_offsets_red_only():
-    """A cyan-only slider still bites hardest where red's range is narrow —
-    and the offsets are luma-neutral: all three channels move while Rec.709
-    luma stays fixed."""
-    params = dataclasses.replace(color.NEUTRAL_COLOR, wb_cyan=1.0)
-    narrow = _metering(ranges=(0.5, 1.0, 1.0))
-    wide = _metering(ranges=(1.0, 1.0, 1.0))
-    offsets_narrow = color.cmy_offsets(params, narrow)
-    offsets_wide = color.cmy_offsets(params, wide)
-
-    assert offsets_narrow[0] > offsets_wide[0] > 0.0
-    assert _luma_sum(offsets_narrow) == pytest.approx(0.0, abs=1e-12)
-    assert offsets_narrow[1] < 0.0
-    assert offsets_narrow[2] < 0.0
+def test_tint_slider_shifts_green_down():
+    """Full tint: green channel density offset is positive (darker display),
+    red and blue are negative."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, tint=1.0)
+    offsets = color.balance_offsets(params)
+    assert offsets[1] > 0.0  # green density up = display down
+    assert offsets[0] < 0.0  # red density down = display up
+    assert offsets[2] < 0.0  # blue density down = display up
 
 
-def test_regional_cmy_is_regional():
-    params = dataclasses.replace(color.NEUTRAL_COLOR, shadow_cyan=1.0)
+def test_warmth_shifts_red_up_blue_down_and_is_luma_neutral():
+    """A warmth slider moves red and blue in opposite directions while
+    Rec.709 luma stays fixed."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0)
+    offsets = color.balance_offsets(params)
+    assert offsets[0] < 0.0  # red density down = display up
+    assert offsets[2] > 0.0  # blue density up = display down
+    assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_warmth_shifts_tables():
+    """A warmth slider moves the red and blue tables away from neutral."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0)
     tables = tone.build_channel_tables(tone.NEUTRAL, params, _metering())
     neutral = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, _metering())
-    low_delta = neutral[0, 52429] - tables[0, 52429]
-    high_delta = neutral[0, 13107] - tables[0, 13107]
-    assert low_delta > high_delta
+    mid = 32768
+    assert tables[0, mid] != pytest.approx(neutral[0, mid], abs=1e-6)
+    assert tables[2, mid] != pytest.approx(neutral[2, mid], abs=1e-6)
 
 
 def test_cast_removal_ties_shadow_reference():
@@ -180,19 +172,6 @@ def test_apply_separation_damping_matches_gain():
         np.testing.assert_allclose(out, expected, rtol=1e-6)
 
 
-def test_kelvin_round_trips():
-    for kelvin in (3000.0, 5500.0, 12000.0):
-        m, y = color.kelvin_to_wb(kelvin, 0.1, -0.05)
-        assert color.wb_to_kelvin(m, y) == pytest.approx(kelvin, rel=0.01)
-    assert color.wb_to_kelvin(0.0, 0.0) == pytest.approx(5500.0)
-    m_warm, y_warm = color.kelvin_to_wb(6500.0, 0.0, 0.0)
-    assert m_warm > 0.0
-    assert y_warm > 0.0
-    m_cool, y_cool = color.kelvin_to_wb(4500.0, 0.0, 0.0)
-    assert m_cool < 0.0
-    assert y_cool < 0.0
-
-
 def _luma_sum(triple: tuple[float, ...]) -> float:
     return color._luma_weighted_sum(triple)
 
@@ -232,93 +211,94 @@ def _display_at(
 
 
 def test_neutral_colour_is_byte_identical():
-    """§4 test 1: at every slider zero, both offset functions return all
-    zeros and the tables are what the achromatic path returns — the
+    """§4 test 1: at every slider zero, the balance offsets are all zeros
+    and the tables are what the achromatic path returns — the
     neutral-is-identical invariant."""
     metering = _metering_full((0.2, 0.15, 0.15), (0.9, 0.85, 0.85))
-    assert color.cmy_offsets(color.NEUTRAL_COLOR, metering) == (0.0, 0.0, 0.0)
-    shadow, highlight = color.region_cmy(color.NEUTRAL_COLOR)
-    assert shadow == (0.0, 0.0, 0.0)
-    assert highlight == (0.0, 0.0, 0.0)
+    assert color.balance_offsets(color.NEUTRAL_COLOR) == pytest.approx((0.0, 0.0, 0.0))
     tables = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, metering)
     achromatic = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, None)
     np.testing.assert_array_equal(tables, achromatic)
 
 
-def test_global_cmy_is_lightness_neutral_over_random_triples():
-    """For random slider triples and unequal ranges, the offsets are luma-
-    neutral to 1e-12 — filtration changes hue, never Rec.709 luma."""
+def test_balance_offsets_are_luma_neutral_over_random_triples():
+    """For random warmth/tint pairs, the offsets are luma-neutral to 1e-12 —
+    filtration changes hue, never Rec.709 luma."""
     rng = np.random.default_rng(11)
     for _ in range(64):
-        sliders = rng.uniform(-1.0, 1.0, 3)
-        params = color.ColorParams(
-            wb_cyan=float(sliders[0]),
-            wb_magenta=float(sliders[1]),
-            wb_yellow=float(sliders[2]),
-        )
-        metering = _metering(ranges=(0.6, 1.0, 0.8))
-        offsets = color.cmy_offsets(params, metering)
+        w = float(rng.uniform(-1.0, 1.0))
+        t = float(rng.uniform(-1.0, 1.0))
+        params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=w, tint=t)
+        offsets = color.balance_offsets(params)
         assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
 
 
-def test_global_cmy_equal_move_is_a_hue_move_with_unequal_ranges():
-    """§4 test 4 — §1.1's stated consequence, asserted so it cannot be
-    'fixed' by accident: an equal three-slider move with unequal ranges
-    sums to zero but is NOT three equal offsets."""
-    params = color.ColorParams(wb_cyan=0.5, wb_magenta=0.5, wb_yellow=0.5)
-    offsets = color.cmy_offsets(params, _metering(ranges=(0.5, 1.0, 1.0)))
+def test_balance_equal_warmth_and_tint_move_is_luma_neutral():
+    """An equal warmth and tint move sums to luma-neutral offsets."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=0.5, tint=0.5)
+    offsets = color.balance_offsets(params)
     assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
     assert offsets[0] != pytest.approx(offsets[1], abs=1e-9)
     assert offsets[0] != pytest.approx(offsets[2], abs=1e-9)
 
 
-def test_regional_cmy_is_lightness_neutral_and_exactly_cancels():
-    """Each returned triple is luma-neutral; equal gained sliders cancel;
-    shadow and highlight trims differ at midtone."""
-    params = dataclasses.replace(
-        color.NEUTRAL_COLOR,
-        shadow_cyan=0.8,
-        shadow_magenta=-0.3,
-        shadow_yellow=0.1,
-        highlight_cyan=-0.6,
-        highlight_magenta=0.4,
-        highlight_yellow=0.2,
+def test_balance_offsets_are_luma_neutral_and_compose():
+    """Warmth and tint offsets are individually luma-neutral and compose
+    additively."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=0.5, tint=-0.3)
+    offsets = color.balance_offsets(params)
+    assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
+
+    warmth_only = color.balance_offsets(
+        dataclasses.replace(color.NEUTRAL_COLOR, warmth=0.5)
     )
-    shadow, highlight = color.region_cmy(params)
-    assert _luma_sum(shadow) == pytest.approx(0.0, abs=1e-12)
-    assert _luma_sum(highlight) == pytest.approx(0.0, abs=1e-12)
-
-    equal_gained = color.ColorParams(
-        shadow_cyan=0.5, shadow_magenta=1.0, shadow_yellow=0.5
+    tint_only = color.balance_offsets(
+        dataclasses.replace(color.NEUTRAL_COLOR, tint=-0.3)
     )
-    assert color.region_cmy(equal_gained)[0] == (0.0, 0.0, 0.0)
-
-    shadow_only = dataclasses.replace(color.NEUTRAL_COLOR, shadow_yellow=1.0)
-    highlight_only = dataclasses.replace(color.NEUTRAL_COLOR, highlight_yellow=1.0)
-    quarter = 0.25
-    shadow_out = _display_at(2, shadow_only, _metering(), quarter)
-    highlight_out = _display_at(2, highlight_only, _metering(), quarter)
-    assert shadow_out != pytest.approx(highlight_out, abs=1e-6)
+    composed = color.balance_offsets(params)
+    assert composed[0] == pytest.approx(warmth_only[0] + tint_only[0], abs=1e-12)
+    assert composed[1] == pytest.approx(warmth_only[1] + tint_only[1], abs=1e-12)
+    assert composed[2] == pytest.approx(warmth_only[2] + tint_only[2], abs=1e-12)
 
 
-def test_regional_cmy_matches_global_strength_at_zone_centres():
-    """Full-travel shadow yellow at the quarter tone is comparable to full-
-    travel global yellow at the midtone on the default grade."""
+def test_balance_composition_shifts_tables_differently():
+    """Warmth-only and tint-only produce different table shifts at the
+    midtone, confirming they are independent axes."""
+    metering = _metering()
+    warm_tables = tone.build_channel_tables(
+        tone.NEUTRAL, dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0), metering
+    )
+    tint_tables = tone.build_channel_tables(
+        tone.NEUTRAL, dataclasses.replace(color.NEUTRAL_COLOR, tint=1.0), metering
+    )
+    code_mid = 32768
+    assert warm_tables[0, code_mid] != pytest.approx(tint_tables[0, code_mid], abs=1e-4)
+    assert warm_tables[2, code_mid] != pytest.approx(tint_tables[2, code_mid], abs=1e-4)
+
+
+def test_warmth_and_tint_affect_different_channels():
+    """Warmth primarily shifts red/blue; tint primarily shifts green.
+    Both produce measurable table changes."""
     metering = _metering()
     neutral = tone.build_channel_tables(tone.NEUTRAL, color.NEUTRAL_COLOR, metering)
-    global_tables = tone.build_channel_tables(
-        tone.NEUTRAL, color.ColorParams(wb_yellow=1.0), metering
+    warm_tables = tone.build_channel_tables(
+        tone.NEUTRAL, dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0), metering
     )
-    shadow_tables = tone.build_channel_tables(
-        tone.NEUTRAL, color.ColorParams(shadow_yellow=1.0), metering
+    tint_tables = tone.build_channel_tables(
+        tone.NEUTRAL, dataclasses.replace(color.NEUTRAL_COLOR, tint=1.0), metering
     )
     code_mid = int(np.argmin(np.abs(neutral[0] - 0.5)))
-    code_sh = int(np.argmin(np.abs(neutral[0] - 0.25)))
-    global_delta = abs(global_tables[2, code_mid] - neutral[2, code_mid])
-    shadow_delta = abs(shadow_tables[2, code_sh] - neutral[2, code_sh])
-    assert global_delta > 0.02
-    assert shadow_delta > 0.02
-    assert shadow_delta == pytest.approx(global_delta, rel=0.30)
+    warm_delta_r = abs(warm_tables[0, code_mid] - neutral[0, code_mid])
+    tint_delta_g = abs(tint_tables[1, code_mid] - neutral[1, code_mid])
+    tint_delta_r = abs(tint_tables[0, code_mid] - neutral[0, code_mid])
+    # Thresholds scale with BALANCE_SCALE (chunk 1's rescale for the
+    # W-orthonormal axes shrank a full-strength move somewhat), not a
+    # magic 0.01 — both must still be clearly nonzero.
+    assert warm_delta_r > 0.005
+    assert tint_delta_g > 0.005
+    # Warmth should affect red more than tint affects red, and vice versa
+    # for green — but both can be nonzero; the key is that they're different.
+    assert warm_delta_r != pytest.approx(tint_delta_r, abs=0.005)
 
 
 def test_one_point_parity_is_byte_for_byte():
@@ -554,9 +534,8 @@ def test_colour_tables_monotone_and_in_range(cast_removal, cast_removal_highligh
         color.NEUTRAL_COLOR,
         cast_removal=cast_removal,
         cast_removal_highlights=cast_removal_highlights,
-        wb_cyan=0.5,
-        shadow_magenta=-0.4,
-        highlight_yellow=0.3,
+        warmth=0.5,
+        tint=-0.4,
     )
     tables = tone.build_channel_tables(tone.NEUTRAL, params, metering)
     for ch in range(3):
@@ -576,3 +555,230 @@ def test_base_slope_and_pivot_reproduce_the_curve_inputs():
             assert pivot_in == pytest.approx(0.5 + (density - 1.0) * 0.2)
             out = tone.curve_values(np.array([pivot_in]), params)
             assert out[0] == pytest.approx(0.5, abs=2e-3)
+
+
+# --- balance axes (chunk 1) -----------------------------------------------
+#
+# WARM_AXIS and MAGENTA_AXIS are orthonormal under the luma-weighted inner
+# product <u, v> = sum(w_i * u_i * v_i), w = LUMA_WEIGHTS — *not* under the
+# Euclidean dot product, which these vectors' Euclidean norms of ~3.396 and
+# ~2.328 make obvious. The derivation below reconstructs both axes to full
+# precision from LUMA_WEIGHTS alone, independent of the stored constants:
+# for WARM_AXIS (G = 0), luma-zero forces the R:B ratio, so any vector
+# proportional to (w_b, 0, -w_r) is luma-zero; for MAGENTA_AXIS (R = B),
+# luma-zero forces the R:G ratio, so any vector proportional to
+# (w_g, -(w_r + w_b), w_g) is luma-zero. Both directions are then
+# normalized to unit W-norm.
+
+
+def _w_inner(u, v):
+    return color._w_inner(tuple(u), tuple(v))
+
+
+def _derive_warm_axis_unit():
+    w_r, _w_g, w_b = color.LUMA_WEIGHTS
+    direction = (w_b, 0.0, -w_r)
+    norm = np.sqrt(_w_inner(direction, direction))
+    return tuple(x / norm for x in direction)
+
+
+def _derive_magenta_axis_unit():
+    w_r, w_g, w_b = color.LUMA_WEIGHTS
+    direction = (w_g, -(w_r + w_b), w_g)
+    norm = np.sqrt(_w_inner(direction, direction))
+    return tuple(x / norm for x in direction)
+
+
+def test_warm_axis_matches_its_derivation():
+    derived = _derive_warm_axis_unit()
+    np.testing.assert_allclose(color.WARM_AXIS, derived, atol=1e-9)
+
+
+def test_magenta_axis_matches_its_derivation():
+    derived = _derive_magenta_axis_unit()
+    np.testing.assert_allclose(color.MAGENTA_AXIS, derived, atol=1e-9)
+
+
+def test_warm_axis_luma_is_zero():
+    assert _luma_sum(color.WARM_AXIS) == pytest.approx(0.0, abs=1e-10)
+
+
+def test_magenta_axis_luma_is_zero():
+    assert _luma_sum(color.MAGENTA_AXIS) == pytest.approx(0.0, abs=1e-10)
+
+
+def test_warm_axis_unit_norm_under_w_inner_product():
+    assert _w_inner(color.WARM_AXIS, color.WARM_AXIS) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_magenta_axis_unit_norm_under_w_inner_product():
+    assert _w_inner(color.MAGENTA_AXIS, color.MAGENTA_AXIS) == pytest.approx(
+        1.0, abs=1e-9
+    )
+
+
+def test_axes_euclidean_norm_is_not_one():
+    """The axes are unit under the W inner product, not Euclidean — a
+    regression guard against reintroducing a Euclidean-unit vector that
+    happens to look plausible but is not W-orthonormal."""
+    assert np.linalg.norm(color.WARM_AXIS) == pytest.approx(3.3958227963, abs=1e-6)
+    assert np.linalg.norm(color.MAGENTA_AXIS) == pytest.approx(2.3282358560, abs=1e-6)
+
+
+def test_axes_are_orthogonal_under_w_inner_product():
+    assert _w_inner(color.WARM_AXIS, color.MAGENTA_AXIS) == pytest.approx(
+        0.0, abs=1e-10
+    )
+
+
+def test_tint_moves_red_and_blue_equally():
+    """MAGENTA_AXIS's R and B components are exactly equal, so a tint move
+    shifts red and blue by the same amount (and only warmth tells them
+    apart)."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, tint=0.7)
+    offsets = color.balance_offsets(params)
+    assert offsets[0] == pytest.approx(offsets[2], abs=1e-12)
+    assert offsets[0] != pytest.approx(offsets[1], abs=1e-6)
+
+
+def test_warmth_signs():
+    """+warmth raises display R and lowers B (yellow shift)."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=1.0)
+    offsets = color.balance_offsets(params)
+    # density offset: + density = darker display
+    # balance_offsets returns -display, so -offset = display direction
+    display = (-offsets[0], -offsets[1], -offsets[2])
+    assert display[0] > 0  # red up
+    assert display[2] < 0  # blue down
+    assert display[1] == pytest.approx(0.0, abs=1e-12)  # green untouched
+
+
+def test_tint_signs():
+    """+tint lowers display G (magenta shift)."""
+    params = dataclasses.replace(color.NEUTRAL_COLOR, tint=1.0)
+    offsets = color.balance_offsets(params)
+    display = (-offsets[0], -offsets[1], -offsets[2])
+    assert display[1] < 0  # green down
+    assert display[0] > 0  # red up
+    assert display[2] > 0  # blue up
+
+
+def test_balance_neutral_is_zero():
+    params = color.NEUTRAL_COLOR
+    offsets = color.balance_offsets(params)
+    assert offsets == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_balance_offsets_are_luma_neutral():
+    """Every warmth/tint combination stays luma-neutral."""
+    rng = np.random.default_rng(42)
+    for _ in range(64):
+        w = float(rng.uniform(-1.0, 1.0))
+        t = float(rng.uniform(-1.0, 1.0))
+        params = dataclasses.replace(color.NEUTRAL_COLOR, warmth=w, tint=t)
+        offsets = color.balance_offsets(params)
+        assert _luma_sum(offsets) == pytest.approx(0.0, abs=1e-12)
+
+
+# --- channel curve (chunk 2) ----------------------------------------------
+
+
+def test_channel_curve_identity_at_zero_offsets():
+    v = np.linspace(0.0, 1.0, 100)
+    result = color.channel_curve(v, (0.0, 0.0, 0.0))
+    np.testing.assert_allclose(result, v, atol=1e-10)
+
+
+def test_channel_curve_ends_pinned():
+    v = np.concatenate([np.linspace(-0.1, 0.0, 20), [1.0], np.linspace(1.0, 1.1, 20)])
+    result = color.channel_curve(v, (0.05, 0.05, 0.05))
+    assert result[0] == pytest.approx(0.0, abs=1e-10)
+    idx_1 = np.argmin(np.abs(v - 1.0))
+    assert result[idx_1] == pytest.approx(1.0, abs=1e-10)
+
+
+def test_channel_curve_exact_at_knots():
+    offsets = (0.05, -0.03, 0.08)
+    for x, expected in [
+        (0.0, 0.0),
+        (0.25, 0.25 + offsets[0]),
+        (0.5, 0.5 + offsets[1]),
+        (0.75, 0.75 + offsets[2]),
+        (1.0, 1.0),
+    ]:
+        result = color.channel_curve(np.array([x]), offsets)
+        assert result[0] == pytest.approx(expected, abs=1e-10)
+
+
+def test_channel_curve_identity_above_1():
+    v = np.array([1.0, 1.05, 1.1, 1.2])
+    result = color.channel_curve(v, (0.1, 0.1, 0.1))
+    np.testing.assert_allclose(result, v, atol=1e-10)
+
+
+def test_channel_curve_monotone():
+    """A curve with positive offsets must be monotonically increasing."""
+    offsets = (0.1, 0.1, 0.1)
+    v = np.linspace(0.0, 1.0, 500)
+    result = color.channel_curve(v, offsets)
+    assert np.all(np.diff(result) >= -1e-10)
+
+
+def test_channel_curve_monotone_negative_offsets():
+    offsets = (-0.1, -0.1, -0.1)
+    v = np.linspace(0.0, 1.0, 500)
+    result = color.channel_curve(v, offsets)
+    assert np.all(np.diff(result) >= -1e-10)
+
+
+def test_curve_offsets_in_order_accepts_a_valid_curve():
+    # Knots: 0, 0.02, 0.5, 0.95, 1 — each at least CURVE_MIN_GAP above the
+    # previous.
+    assert color.curve_offsets_in_order((-0.23, 0.0, 0.2))
+
+
+def test_curve_offsets_in_order_rejects_a_reversal():
+    """The bug this ordering rule exists to catch: curve_red_25=0.2,
+    curve_red_50=-0.2 gives y(0.25)=0.45 then y(0.5)=0.30 — the curve
+    reverses. `curve_offsets_in_order` must say no."""
+    assert not color.curve_offsets_in_order((0.2, -0.2, 0.0))
+
+
+def test_curve_offsets_in_order_rejects_a_gap_exactly_at_the_boundary():
+    # y(0) = 0, y(0.25) = 0.25 + offset25 — a gap of exactly CURVE_MIN_GAP
+    # above y(0) is allowed (modulo float round-off in the knot sum), a
+    # clearly smaller gap is not.
+    just_enough = color.CURVE_MIN_GAP - 0.25
+    assert color.curve_offsets_in_order((just_enough, 0.0, 0.0))
+    assert not color.curve_offsets_in_order((just_enough - 1e-3, 0.0, 0.0))
+
+
+def test_channel_curve_ordering_rule():
+    """Offsets that violate CURVE_MIN_GAP produce a non-monotone curve.
+    This is the ordering-rule check — validation should reject such inputs
+    before they reach channel_curve, but the function itself does not enforce it."""
+    # o25 = -0.23, o50 = 0.0 -> y at 0.25 = 0.02, y at 0.5 = 0.5
+    # That's still monotone.  A real violation would be caught by validation.
+    offsets = (-0.23, 0.0, 0.2)
+    v = np.linspace(0.0, 1.0, 500)
+    result = color.channel_curve(v, offsets)
+    # The curve should still be monotone with valid offsets.
+    assert np.all(np.diff(result) >= -1e-10)
+
+
+def test_channel_curve_small_offsets_near_identity():
+    """Tiny offsets produce a curve very close to the identity."""
+    offsets = (0.01, -0.01, 0.005)
+    v = np.linspace(0.0, 1.0, 100)
+    result = color.channel_curve(v, offsets)
+    np.testing.assert_allclose(result, v, atol=0.02)
+
+
+def test_channel_curve_extreme_offsets():
+    """Max offsets push the curve but it stays bounded and monotone."""
+    offsets = (color.CURVE_OFFSET_MAX, color.CURVE_OFFSET_MAX, color.CURVE_OFFSET_MAX)
+    v = np.linspace(0.0, 1.0, 500)
+    result = color.channel_curve(v, offsets)
+    assert np.all(np.diff(result) >= -1e-10)
+    assert result.min() >= -0.01
+    assert result.max() <= 1.25

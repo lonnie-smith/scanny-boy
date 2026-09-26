@@ -266,7 +266,7 @@ def test_preview_and_export_agree_with_matrix_and_color_within_one_8_bit_code():
     when a camera matrix and a colour op are both active."""
     matrix = _TEST_MATRIX
     tone_params = {"snap_gamma": 0.0}
-    color_params = {"wb_cyan": 0.05, "dye_separation": 1.2}
+    color_params = {"warmth": 0.05, "dye_separation": 1.2}
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
     codes = np.stack(
         [np.arange(tone.MAX_CODE + 1, dtype=np.uint16)] * 3, axis=-1
@@ -287,12 +287,12 @@ def test_colour_only_render_uses_the_default_print_curve():
     """A colour op with no recorded tone op still renders on `tone.NEUTRAL`."""
     matrix = _TEST_MATRIX
     metering = color.Metering(ranges=(1.0, 1.0, 1.0), shadow_refs_norm=None)
-    color_params = {"wb_magenta": 0.2}
+    color_params = {"tint": 0.2}
 
     mid_code = int(0.5 * tone.MAX_CODE)
     mid_img = np.full((1, 1, 3), mid_code, dtype=np.uint16)
     neutral_only, _ = render.render_positive_float(
-        mid_img, matrix, None, {"wb_magenta": 0.0}, metering
+        mid_img, matrix, None, {"tint": 0.0}, metering
     )
     colored, _ = render.render_positive_float(
         mid_img, matrix, None, color_params, metering

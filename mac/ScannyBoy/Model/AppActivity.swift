@@ -60,7 +60,7 @@ final class AppActivity {
     func isRollWriteLocked(for rollURL: URL?) -> Bool {
         guard let rollURL else { return isBusy }
         if capture.isSessionOpen, capture.rollURL == rollURL { return true }
-        if stitchQueue.hasWork, stitchQueue.rollURL == rollURL { return true }
+        if stitchQueue.hasWork(on: rollURL) { return true }
         return isBusy
     }
 
@@ -69,6 +69,9 @@ final class AppActivity {
     /// queue disables roll-writing controls per roll, not roll switching.
     var isSidebarSelectionLocked: Bool {
         if capture.isSessionOpen { return true }
+        // A negative left open by a dropped connection (§2.5) still belongs
+        // to this roll: switching would resume it into another roll's folder.
+        if capture.sequencePhase != .idle { return true }
         return isBusy
     }
 }

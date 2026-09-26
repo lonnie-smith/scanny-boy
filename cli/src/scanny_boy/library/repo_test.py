@@ -505,13 +505,13 @@ def test_append_color_edit_records_the_state(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
     edit = repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1, wb_magenta=0.2)
+        roll_dir, "rid-1-negative-01", _color_params(warmth=0.1, tint=0.2)
     )
 
     assert edit["op"] == repo.COLOR_OP
-    assert edit["params"] == _color_params(wb_cyan=0.1, wb_magenta=0.2)
+    assert edit["params"] == _color_params(warmth=0.1, tint=0.2)
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        color=_color_params(wb_cyan=0.1, wb_magenta=0.2)
+        color=_color_params(warmth=0.1, tint=0.2)
     )
 
 
@@ -519,23 +519,23 @@ def test_append_color_edit_coalesces_a_trailing_color_op(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
     first = repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1)
+        roll_dir, "rid-1-negative-01", _color_params(warmth=0.1)
     )
     repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
     second = repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.2)
+        roll_dir, "rid-1-negative-01", _color_params(warmth=0.2)
     )
 
     assert first["position"] == 1
     assert second["position"] == 3
 
     third = repo.append_color_edit(
-        roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.3)
+        roll_dir, "rid-1-negative-01", _color_params(warmth=0.3)
     )
     assert third["id"] == second["id"]
     assert third["position"] == second["position"] == 3
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(
-        1, color=_color_params(wb_cyan=0.3)
+        1, color=_color_params(warmth=0.3)
     )
 
 
@@ -543,7 +543,7 @@ def test_append_color_edit_reset_records_null_params(roll_dir):
     from scanny_boy import color
 
     _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_color_edit(roll_dir, "rid-1-negative-01", _color_params(wb_cyan=0.1))
+    repo.append_color_edit(roll_dir, "rid-1-negative-01", _color_params(warmth=0.1))
 
     repo.append_color_edit(
         roll_dir,
@@ -558,10 +558,10 @@ def test_append_color_edit_validates_its_params(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
 
     for params in [
-        _color_params(wb_cyan=2.0),
+        _color_params(warmth=2.0),
         _color_params(cast_removal=1.5),
         _color_params(dye_separation=0.2),
-        _color_params(wb_cyan=0.1) | {"wb_magenta": None},
+        _color_params(warmth=0.1) | {"tint": None},
     ]:
         with pytest.raises(ValueError):
             repo.append_color_edit(roll_dir, "rid-1-negative-01", params)
@@ -968,82 +968,15 @@ def test_pre_0004_row_reads_back_with_four_nones():
     assert summary.chromatic_aberration_mode is None
 
 
-# --- the thirteenth colour key -------------------------------------------------
-
-
-def _twelve_key_color_params(**overrides: float) -> dict[str, float]:
-    import dataclasses
-
-    from scanny_boy import color
-
-    params = {
-        key: value
-        for key, value in dataclasses.asdict(color.NEUTRAL_COLOR).items()
-        if key != "cast_removal_highlights"
-    }
-    params.update(overrides)
-    return params
-
-
-def test_a_twelve_key_color_op_parses_with_the_new_default(roll_dir):
-    """An op written before the thirteenth key was added has no
-    thirteenth key and is still a complete colour state — it parses to the
-    thirteen-key state with `cast_removal_highlights` at its neutral
-    default and every other value preserved. A gate on all thirteen keys
-    would silently discard real user state."""
-    from scanny_boy import color
-
-    _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_edit(
-        roll_dir,
-        "rid-1-negative-01",
-        repo.COLOR_OP,
-        _twelve_key_color_params(wb_cyan=0.1, cast_removal=0.4),
-    )
-
-    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
-
-    assert set(state.color) == set(color.COLOR_PARAM_KEYS)
-    assert state.color["cast_removal_highlights"] == 0.0
-    assert state.color["wb_cyan"] == 0.1
-    assert state.color["cast_removal"] == 0.4
-    assert state.color["dye_separation"] == 1.0
-
-
-def test_a_twelve_key_color_op_that_is_all_none_still_reads_as_a_reset(roll_dir):
-    from scanny_boy import color
-
-    _negative_in(roll_dir, "rid-1-negative-01")
-    repo.append_edit(
-        roll_dir,
-        "rid-1-negative-01",
-        repo.COLOR_OP,
-        {key: None for key in color.COLOR_PARAM_KEYS_V1},
-    )
-
-    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").color is None
-
-
-def test_a_thirteen_key_color_op_round_trips(roll_dir):
+def test_color_op_round_trips(roll_dir):
     _negative_in(roll_dir, "rid-1-negative-01")
     params = _color_params(
-        cast_removal=0.2, cast_removal_highlights=0.6, wb_yellow=-0.1
+        cast_removal=0.2, cast_removal_highlights=0.6, curve_red_25=-0.1
     )
 
     repo.append_color_edit(roll_dir, "rid-1-negative-01", params)
 
     assert repo.net_edit_state(roll_dir, "rid-1-negative-01") == _state(color=params)
-
-
-def test_validated_color_params_accepts_a_twelve_key_dict():
-    from scanny_boy import color
-    from scanny_boy.library.repo import validated_color_params
-
-    validated = validated_color_params(_twelve_key_color_params(wb_cyan=0.1))
-
-    assert set(validated) == set(color.COLOR_PARAM_KEYS)
-    assert validated["cast_removal_highlights"] == 0.0
-    assert validated["wb_cyan"] == 0.1
 
 
 def test_validated_color_params_rejects_an_out_of_range_new_key():
@@ -1060,6 +993,95 @@ def test_validated_color_params_still_rejects_a_mixed_dict():
 
     from scanny_boy.library.repo import validated_color_params
 
-    mixed = _color_params() | {"wb_cyan": None}
+    mixed = _color_params() | {"warmth": None}
     with pytest.raises(ValueError):
         validated_color_params(mixed)
+
+
+def test_validated_color_params_rejects_a_reversing_curve():
+    """The bug this ordering rule exists to catch: curve_red_25=0.2,
+    curve_red_50=-0.2 gives y(0.25)=0.45 then y(0.5)=0.30 — the curve
+    reverses. `validated_color_params` must reject it, not just
+    `channel_curve` (which doesn't enforce ordering by design)."""
+    from scanny_boy.library.repo import validated_color_params
+
+    reversed_curve = _color_params(curve_red_25=0.2, curve_red_50=-0.2)
+    with pytest.raises(ValueError):
+        validated_color_params(reversed_curve)
+
+
+def test_validated_color_params_accepts_a_curve_at_the_min_gap():
+    """o25=0.1, o50=-0.13 puts y(0.25)=0.35 and y(0.5)=0.37 — a gap of
+    exactly CURVE_MIN_GAP (0.02), both offsets within [-0.2, 0.2]."""
+    from scanny_boy.library.repo import validated_color_params
+
+    ok = _color_params(curve_green_25=0.1, curve_green_50=-0.13)
+    validated = validated_color_params(ok)
+    assert validated["curve_green_25"] == pytest.approx(0.1)
+    assert validated["curve_green_50"] == pytest.approx(-0.13)
+
+    just_under = _color_params(curve_green_25=0.1, curve_green_50=-0.131)
+    with pytest.raises(ValueError):
+        validated_color_params(just_under)
+
+
+def test_validated_color_params_rejects_each_channel_independently():
+    from scanny_boy.library.repo import validated_color_params
+
+    for channel in ("red", "green", "blue"):
+        bad = _color_params(**{f"curve_{channel}_50": 0.2, f"curve_{channel}_75": -0.2})
+        with pytest.raises(ValueError):
+            validated_color_params(bad)
+
+
+# --- _parse_color_op (COLOR_BALANCE_CURVES_PLAN.md §4.1) --------------------
+
+
+def test_parse_color_op_none_for_an_old_key_only_op():
+    """An op recorded before the balance/curves keys existed — carrying
+    only e.g. cast_removal/dye_separation — parses as no colour op, not a
+    partial new state."""
+    from scanny_boy.library.repo import _parse_color_op
+
+    old_op = {"cast_removal": 0.4, "dye_separation": 1.2}
+    assert _parse_color_op(old_op) is None
+
+
+def test_parse_color_op_none_when_all_keys_are_none():
+    """The reset shape: every key present and `None`."""
+    from scanny_boy import color
+    from scanny_boy.library.repo import _parse_color_op
+
+    reset = {key: None for key in color.COLOR_PARAM_KEYS}
+    assert _parse_color_op(reset) is None
+
+
+def test_parse_color_op_none_for_a_single_missing_value_among_present_keys():
+    from scanny_boy.library.repo import _parse_color_op
+
+    partial = _color_params(warmth=0.2) | {"tint": None}
+    assert _parse_color_op(partial) is None
+
+
+def test_parse_color_op_returns_the_all_neutral_op_recorded_not_none():
+    """A recorded op whose values happen to equal the neutral defaults is
+    still a *recorded* colour op, distinct from no colour op at all."""
+    from scanny_boy.library.repo import _parse_color_op
+
+    neutral = _color_params()
+    parsed = _parse_color_op(neutral)
+    assert parsed == neutral
+
+
+def test_parse_color_op_none_for_a_reversing_curve():
+    from scanny_boy.library.repo import _parse_color_op
+
+    reversed_curve = _color_params(curve_blue_25=0.2, curve_blue_50=-0.2)
+    assert _parse_color_op(reversed_curve) is None
+
+
+def test_parse_color_op_none_for_an_out_of_range_value():
+    from scanny_boy.library.repo import _parse_color_op
+
+    out_of_range = _color_params(warmth=2.0)
+    assert _parse_color_op(out_of_range) is None

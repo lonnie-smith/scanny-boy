@@ -27,6 +27,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import tifffile
+
 from scanny_boy import color, previews, render, scratches, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
@@ -43,13 +45,6 @@ if TYPE_CHECKING:
 EmitFn = Any
 
 DIRECTIONS = {"cw", "ccw"}
-
-_COLOR_REGION_KEYS = {
-    "global": ("wb_magenta", "wb_yellow"),
-    "shadows": ("shadow_magenta", "shadow_yellow"),
-    "highlights": ("highlight_magenta", "highlight_yellow"),
-}
-
 
 def roll_is_monochrome(roll: RollManifest) -> bool:
     """The roll's frozen film kind. Colour has no
@@ -430,102 +425,82 @@ def run_edit_suggest_crop(
     preset: str | None = None,
     emit: EmitFn,
 ) -> dict:
-    """Pure query: detect the picture-only crop for the negative's
-    current display image and emit ``crop_suggested``. Records nothing.
+    """Pure query, backing crop mode's **Auto** button: detect the
+    picture-only crop for the negative as it currently displays and report
+    it. Records nothing; the ops log is untouched.
 
-    Parameters
-    ----------
-    preset : str | None
-        The crop session's current ratio preset (a ``FORMAT_RATIOS`` key).
-        When ``None``, falls back to the roll's ``setup.format``, then
-        to unconstrained.
-    """
+    `preset` is the crop session's current ratio preset (a
+    `auto_crop.FORMAT_RATIOS` key). Omitted, the roll's `setup.format`
+    applies; with neither, the fit is unconstrained (the largest
+    picture-only rect of any shape). An unknown preset fails
+    `INVALID_EDIT`.
+
+    The analysis copy is the published TIFF under the negative's full net
+    state — quarter turns, mirror, fine rotation — with the crop ignored;
+    scratch and spot repair are skipped (they are small in-picture
+    corrections that do not move the picture's edges). The rect is reported
+    in full-frame display space, the space `CropSession` works in. A
+    refusal is not an error: `rect` is null, `refused` names why, and the
+    command exits 0."""
     from scanny_boy import auto_crop
-    from scanny_boy.previews import _display_image
 
-    _roll, negative = _validated_negative(roll_dir, negative_id)
+    roll, negative = _validated_negative(roll_dir, negative_id)
+    if preset is not None and preset not in auto_crop.FORMAT_RATIOS:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--preset must be one of {', '.join(auto_crop.FORMAT_RATIOS)}, "
+            f"got {preset!r}",
+        )
+    if preset is None:
+        roll_format = (roll.setup or {}).get("format")
+        if roll_format in auto_crop.FORMAT_RATIOS:
+            preset = roll_format
+    ratio = None if preset is None else auto_crop.FORMAT_RATIOS[preset]
+
     state = repo.net_edit_state(roll_dir, negative_id)
-    output = negative.output
-    tiff_h, tiff_w = int(output["height"]), int(output["width"])
-
-    # Determine the ratio.
-    ratio = None
-    if preset is not None:
-        if preset not in auto_crop.FORMAT_RATIOS:
-            raise EditFailure(
-                Code.INVALID_EDIT,
-                f"unknown crop preset {preset!r}",
-            )
-        ratio = auto_crop.FORMAT_RATIOS[preset]
-    else:
-        roll_setup = _roll.setup or {}
-        roll_format = roll_setup.get("format")
-        if roll_format and roll_format in auto_crop.FORMAT_RATIOS:
-            ratio = auto_crop.FORMAT_RATIOS[roll_format]
-
-    # Build the analysis copy from the published TIFF.
-    # The Auto button uses the negative's full net state with crop ignored.
     tiff_path = roll_dir / negative.output["name"]
     if not tiff_path.exists():
         raise EditFailure(
-            Code.INVALID_EDIT,
-            f"negative {negative_id} has no published TIFF",
+            Code.NEGATIVE_NOT_FOUND,
+            f"{negative_id}'s published file {tiff_path.name} is missing",
         )
-
-    display = _display_image(
-        tiff_path,
+    image = previews._promote_to_rgb(tifffile.imread(tiff_path))
+    tiff_size = (int(image.shape[0]), int(image.shape[1]))
+    display_h, display_w = previews.display_shape(
+        tiff_size, quarter_turns=state.quarter_turns, crop_params=None
+    )
+    analysis, _scale = auto_crop.analysis_display(
+        image,
         quarter_turns=state.quarter_turns,
-        flipped_horizontally=state.flipped,
+        flipped=state.flipped,
         fine_angle_deg=state.fine_angle_deg,
-        crop_params=None,  # crop ignored for Auto button
     )
-
-    analysis, scale = auto_crop.analysis_display(
-        display,
-        quarter_turns=0,
-        flipped=False,
-        fine_angle_deg=0.0,
-    )
-
-    display_h, display_w = display.shape[:2]
-    exclude = auto_crop.exclusion_hint(
-        negative.normalization,
-        (tiff_h, tiff_w),
-        {
-            "quarter_turns": state.quarter_turns,
-            "flipped": state.flipped,
-            "fine_angle_deg": state.fine_angle_deg,
-        },
-        scale,
-        (analysis.shape[0], analysis.shape[1]),
-    )
-
-    result = auto_crop.estimate_crop(
+    del image
+    outcome = auto_crop.estimate_crop(
         analysis,
         full_size=(display_h, display_w),
         ratio=ratio,
-        exclude=exclude,
+        exclude=auto_crop.exclusion_hint(
+            negative.normalization,
+            tiff_size,
+            quarter_turns=state.quarter_turns,
+            flipped=state.flipped,
+            fine_angle_deg=state.fine_angle_deg,
+            analysis_size=analysis.shape[:2],
+        ),
     )
-
-    if isinstance(result, auto_crop.Refusal):
-        return {
-            "event_type": "crop_suggested",
-            "negative_id": negative_id,
-            "rect": None,
-            "canvas_width": display_w,
-            "canvas_height": display_h,
-            "preset": preset,
-            "refused": result.reason,
-        }
-
-    x, y, w, h = result.rect
-    return {
-        "event_type": "crop_suggested",
+    fields: dict[str, Any] = {
         "negative_id": negative_id,
-        "rect": {"x": x, "y": y, "width": w, "height": h},
         "canvas_width": display_w,
         "canvas_height": display_h,
         "preset": preset,
+    }
+    if isinstance(outcome, auto_crop.Refusal):
+        return {**fields, "rect": None, "refused": outcome.reason}
+    x, y, width, height = outcome.rect
+    return {
+        **fields,
+        "rect": {"x": x, "y": y, "width": width, "height": height},
         "refused": None,
     }
 
@@ -563,17 +538,15 @@ def run_edit_color(
     params: dict[str, float | None] | None,
     *,
     reset: bool = False,
-    temperature: float | None = None,
-    region: str = "global",
-    auto_cast: bool = False,
+    auto_balance: bool = False,
     emit: EmitFn,
 ) -> list[dict]:
     """Records each selected negative's preview colour adjustment — the full
-    thirteen-key colour state, or all
+    colour state, or all
     `None` for the reset.
 
-    `auto_cast` solves the global CMY
-    from the negative's recorded neutral estimate and writes the three
+    `auto_balance` solves the warmth/tint balance
+    from the negative's recorded neutral estimate and writes the two
     values over whatever the merge produced — composing with explicit
     flags exactly as `--auto-density` does: the auto result wins over a
     recorded value and loses to nothing, because a caller that wants both
@@ -582,13 +555,13 @@ def run_edit_color(
     from scanny_boy import auto_color, color, tone
 
     roll, negatives = _validated_negatives(roll_dir, _as_selection(negative_ids))
-    if auto_cast and roll.refresh_pending:
+    if auto_balance and roll.refresh_pending:
         emit(
             WarningEvent(
                 code=Code.ROLL_REFRESH_PENDING,
                 message=(
                     "this roll's highlight lock has not been refreshed since "
-                    "the last tethered capture; auto cast may read stale colour"
+                    "the last tethered capture; auto balance may read stale colour"
                 ),
             )
         )
@@ -599,27 +572,13 @@ def run_edit_color(
             "single-density roll",
         )
 
-    mag_key, yellow_key = _COLOR_REGION_KEYS[region]
-
     results: list[dict] = []
     for negative in negatives:
         if reset:
             solved = {key: None for key in color.COLOR_PARAM_KEYS}
         else:
             state = repo.net_edit_state(roll_dir, negative.negative_id)
-            updates = dict(params or {})
-            if temperature is not None:
-                import dataclasses
-
-                base = (
-                    dict(state.color)
-                    if state.color is not None
-                    else dataclasses.asdict(color.NEUTRAL_COLOR)
-                )
-                m, y = color.kelvin_to_wb(temperature, base[mag_key], base[yellow_key])
-                updates[mag_key] = m
-                updates[yellow_key] = y
-            solved = _merge_color_params(state.color, updates)
+            solved = _merge_color_params(state.color, dict(params or {}))
             # The metering warning: fire when EITHER tie strength is
             # non-zero and the metering it needs is missing — one warning
             # per negative, not two.
@@ -644,20 +603,20 @@ def run_edit_color(
                             ),
                         )
                     )
-            if auto_cast:
+            if auto_balance:
                 tone_state = state.tone
                 tone_params = (
                     tone.ToneParams(**tone_state) if tone_state else tone.NEUTRAL
                 )
                 slope, pivot_in = tone.base_slope_and_pivot(tone_params)
-                solved_cmy = auto_color.solve_cmy(
+                balance = auto_color.solve_balance(
                     negative.normalization,
                     color.ColorParams(**solved),
                     slope,
                     pivot_in,
                     highlight_lock=roll.highlight_lock,
                 )
-                if solved_cmy is None:
+                if balance is None:
                     emit(
                         WarningEvent(
                             code=Code.TONE_METERING_UNAVAILABLE,
@@ -668,9 +627,8 @@ def run_edit_color(
                         )
                     )
                 else:
-                    solved["wb_cyan"] = solved_cmy[0]
-                    solved["wb_magenta"] = solved_cmy[1]
-                    solved["wb_yellow"] = solved_cmy[2]
+                    solved["warmth"] = balance[0]
+                    solved["tint"] = balance[1]
         try:
             validated = repo.validated_color_params(solved)
         except ValueError as exc:

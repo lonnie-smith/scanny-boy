@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 23
+PROTOCOL_VERSION = 24
 
 
 class EventType(enum.StrEnum):
@@ -209,8 +209,9 @@ class Code(enum.StrEnum):
     CAPTURE_FOCUS_TILT = "CAPTURE_FOCUS_TILT"
     LIBRARY_DB_UNSUPPORTED = "LIBRARY_DB_UNSUPPORTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
-    # The auto-crop detector refused or failed. The message carries the
-    # refusal reason or exception.
+    # The auto-crop detector raised on one negative (a refusal is not a
+    # failure: it is recorded in the negative's evidence block only). The
+    # message carries the exception.
     AUTO_CROP_FAILED = "AUTO_CROP_FAILED"
     # Auto-crop was enabled but the roll has no format set.
     AUTO_CROP_NO_FORMAT = "AUTO_CROP_NO_FORMAT"

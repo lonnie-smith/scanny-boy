@@ -6,6 +6,8 @@ struct CaptureQueueList: View {
     static let maxVisibleRows = 5
 
     let stitchQueue: StitchQueueModel
+    /// The roll being captured; the queue holds other rolls' entries too.
+    let rollURL: URL?
 
     var body: some View {
         // Rows are a fixed height; the list scrolls past `maxVisibleRows`
@@ -16,7 +18,7 @@ struct CaptureQueueList: View {
                     CaptureQueueRow(
                         negative: negative,
                         progress: stitchQueue.progress[negative.id],
-                        rollURL: stitchQueue.rollURL
+                        rollURL: rollURL
                     )
                 }
             }
@@ -28,7 +30,7 @@ struct CaptureQueueList: View {
 
     /// Newest first — the negative just shot is at the top.
     private var negatives: [StitchQueueModel.QueuedNegative] {
-        stitchQueue.negatives.reversed()
+        stitchQueue.negatives(for: rollURL).reversed()
     }
 }
 

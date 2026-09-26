@@ -7,6 +7,12 @@ struct CaptureMiniView: View {
     let cellStates: [CaptureCellState]
     let cellWarnings: [Int: [String]]
 
+    /// The cells are sized to fill the available width; the grid takes this
+    /// fraction of it, so each cell is that fraction of its old size.
+    private static let widthFraction: CGFloat = 0.5
+
+    @State private var availableWidth: CGFloat?
+
     var body: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: max(across, 1))
         LazyVGrid(columns: columns, spacing: 4) {
@@ -18,6 +24,9 @@ struct CaptureMiniView: View {
                 )
             }
         }
+        .frame(width: availableWidth.map { $0 * Self.widthFraction })
+        .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
         .padding(8)
     }
 }

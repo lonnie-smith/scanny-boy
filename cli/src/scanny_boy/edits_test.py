@@ -423,7 +423,7 @@ def test_tone_reset_under_colour_matches_neutral_plus_colour(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        {"tint": 0.2, "warmth": 0.0},
         emit=lambda event: None,
     )
     run_edit_tone(
@@ -477,7 +477,7 @@ def test_snap_only_tone_commit_is_incremental_on_neutral(tmp_path):
     run_edit_color(
         roll_dir,
         _NEGATIVE_ID,
-        {"wb_magenta": 0.1, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        {"tint": 0.1, "warmth": 0.0},
         emit=lambda event: None,
     )
     manifest = load_roll_manifest(roll_dir)
@@ -521,7 +521,7 @@ def test_colour_commit_does_not_create_a_tone_op(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        {"wb_magenta": 0.2, "wb_cyan": 0.0, "wb_yellow": 0.0},
+        {"tint": 0.2, "warmth": 0.0},
         emit=lambda event: None,
     )
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).tone is None
@@ -624,7 +624,7 @@ def test_color_records_the_state_and_changes_the_preview(stitched_roll):
     from scanny_boy.library import repo
 
     _ramp_tiff(stitched_roll)
-    params = _color_params(wb_cyan=0.1, dye_separation=1.2)
+    params = _color_params(warmth=0.1, dye_separation=1.2)
 
     (fields,) = run_edit_color(
         stitched_roll, _NEGATIVE_ID, params, emit=lambda event: None
@@ -657,49 +657,44 @@ def test_color_records_the_state_and_changes_the_preview(stitched_roll):
 def test_color_partial_update_leaves_other_values(stitched_roll):
     from scanny_boy.library import repo
 
-    base = _color_params(wb_cyan=0.1, wb_magenta=0.2, cast_removal=0.3)
+    base = _color_params(warmth=0.1, tint=0.2, cast_removal=0.3)
     run_edit_color(stitched_roll, _NEGATIVE_ID, base, emit=lambda event: None)
 
     (fields,) = run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        {"wb_cyan": 0.5},
+        {"warmth": 0.5},
         emit=lambda event: None,
     )
 
     expected = dict(base)
-    expected["wb_cyan"] = 0.5
+    expected["warmth"] = 0.5
     assert fields["edit"]["params"] == expected
     assert repo.net_edit_state(stitched_roll, _NEGATIVE_ID).color == expected
 
 
-def test_color_temperature_moves_only_the_named_region(stitched_roll):
-    from scanny_boy import color
+def test_color_warmth_is_recorded_without_touching_the_tint(stitched_roll):
     from scanny_boy.library import repo
 
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        _color_params(wb_magenta=0.1, wb_yellow=0.05),
+        _color_params(tint=0.1, warmth=0.05),
         emit=lambda event: None,
     )
 
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        {},
-        temperature=3200.0,
-        region="shadows",
+        {"warmth": 0.3},
         emit=lambda event: None,
     )
 
     state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID).color
     assert state is not None
-    assert state["wb_magenta"] == pytest.approx(0.1)
-    assert state["wb_yellow"] == pytest.approx(0.05)
-    shadow_m, shadow_y = color.kelvin_to_wb(3200.0, 0.0, 0.0)
-    assert state["shadow_magenta"] == pytest.approx(shadow_m)
-    assert state["shadow_yellow"] == pytest.approx(shadow_y)
+    assert state["warmth"] == pytest.approx(0.3)
+    assert state["tint"] == pytest.approx(0.1)
+    assert state["cast_removal"] == 0.0
 
 
 def test_color_reset_returns_to_the_neutral_preview(stitched_roll):
@@ -708,7 +703,7 @@ def test_color_reset_returns_to_the_neutral_preview(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        _color_params(wb_cyan=0.2),
+        _color_params(warmth=0.2),
         emit=lambda event: None,
     )
 
@@ -741,7 +736,7 @@ def test_color_never_touches_the_published_tiff(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        _color_params(wb_magenta=0.3),
+        _color_params(tint=0.3),
         emit=lambda event: None,
     )
     run_edit_color(
@@ -759,7 +754,7 @@ def test_color_refused_on_monochrome_roll_except_reset(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        _color_params(wb_cyan=0.1),
+        _color_params(warmth=0.1),
         emit=lambda event: None,
     )
     manifest = load_roll_manifest(stitched_roll)
@@ -776,7 +771,7 @@ def test_color_refused_on_monochrome_roll_except_reset(stitched_roll):
         run_edit_color(
             stitched_roll,
             _NEGATIVE_ID,
-            _color_params(wb_cyan=0.2),
+            _color_params(warmth=0.2),
             emit=lambda event: None,
         )
     assert exc_info.value.code is Code.INVALID_EDIT
@@ -815,13 +810,13 @@ def test_color_composes_with_tone(stitched_roll):
     run_edit_color(
         stitched_roll,
         _NEGATIVE_ID,
-        _color_params(wb_yellow=0.2),
+        _color_params(warmth=0.2),
         emit=lambda event: None,
     )
 
     state = repo.net_edit_state(stitched_roll, _NEGATIVE_ID)
     assert state.tone == _tone_params(0.4)
-    assert state.color == _color_params(wb_yellow=0.2)
+    assert state.color == _color_params(warmth=0.2)
 
 
 # --- edit delete -----------------------------------------------------------
@@ -969,11 +964,11 @@ def test_delete_survives_a_stuck_tiff(stitched_roll, monkeypatch):
     assert [w.code for w in warnings] == [Code.ORPHAN_FILE_NOT_REMOVED]
 
 
-def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
+def test_merge_color_params_survives_a_sixteen_key_recorded_state(stitched_roll):
     """The merge builds its base from
-    the neutral defaults and overlays the recorded dict, so a twelve-key
-    recorded state (an op predating the thirteenth key) merges instead of
-    raising, and a one-key update leaves the other twelve untouched."""
+    the neutral defaults and overlays the recorded dict, so a sixteen-key
+    recorded state (an op predating a new key) merges instead of
+    raising, and a one-key update leaves the other fifteen untouched."""
     import dataclasses
 
     from scanny_boy import color
@@ -982,15 +977,15 @@ def test_merge_color_params_survives_a_twelve_key_recorded_state(stitched_roll):
     recorded = {
         key: value
         for key, value in dataclasses.asdict(color.NEUTRAL_COLOR).items()
-        if key != "cast_removal_highlights"
-    } | {"wb_cyan": 0.1, "cast_removal": 0.4}
+        if key != "auto_neutral"
+    } | {"warmth": 0.1, "cast_removal": 0.4}
 
-    merged = _merge_color_params(recorded, {"wb_magenta": 0.3})
+    merged = _merge_color_params(recorded, {"tint": 0.3})
 
     assert set(merged) == set(color.COLOR_PARAM_KEYS)
-    assert merged["cast_removal_highlights"] == 0.0
-    assert merged["wb_cyan"] == 0.1
-    assert merged["wb_magenta"] == 0.3
+    assert merged["auto_neutral"] == 1.0
+    assert merged["warmth"] == 0.1
+    assert merged["tint"] == 0.3
     assert merged["cast_removal"] == 0.4
 
 

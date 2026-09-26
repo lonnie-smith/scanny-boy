@@ -3,6 +3,8 @@ import SwiftUI
 /// Loupe, zoom readout, focus meter, and check-shot grid.
 struct FocusAssistPanel: View {
     @Bindable var focusAssist: FocusAssistModel
+    let onClose: () -> Void
+    let onCheckShot: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -34,6 +36,13 @@ struct FocusAssistPanel: View {
             }
             if focusAssist.isCheckShotBusy {
                 ProgressView("Check shot…")
+            }
+            // Mouse-reachable equivalents of F and C: the keys need stage
+            // focus, and the panel has no other way to close or check shot.
+            HStack {
+                Button("Close", action: onClose)
+                Button("Check shot", action: onCheckShot)
+                    .disabled(focusAssist.isCheckShotBusy)
             }
             Text("F or Esc closes · R resets peak · C check shot")
                 .font(.caption)

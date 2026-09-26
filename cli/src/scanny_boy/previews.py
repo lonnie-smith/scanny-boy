@@ -620,6 +620,67 @@ def _window_from_tilted_corners(
     )
 
 
+def _forward_display_points(
+    points: list[tuple[float, float]],
+    stage_h: int,
+    stage_w: int,
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> list[tuple[float, float]]:
+    """Pixel-index points `(x, y)` on a `stage_h` x `stage_w` canvas carried
+    forward through `_display_image`'s geometric steps: the mirror, then the
+    fine rotation (the matrix `rotate_with_fill` builds, negated angle and
+    all), then the quarter turns."""
+    import cv2
+
+    if flipped_horizontally:
+        points = [(stage_w - 1 - px, py) for px, py in points]
+    if abs(fine_angle_deg) >= 1e-9:
+        matrix = cv2.getRotationMatrix2D(
+            (stage_w / 2.0, stage_h / 2.0), -float(fine_angle_deg), 1.0
+        )
+        points = [
+            (
+                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
+                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
+            )
+            for px, py in points
+        ]
+    # The inverse of `_display_point_to_tiff`'s case table. r = the
+    # counter-clockwise turn count np.rot90 applies.
+    r = (-int(quarter_turns)) % 4
+    if r == 1:
+        points = [(py, stage_w - 1 - px) for px, py in points]
+    elif r == 2:
+        points = [(stage_w - 1 - px, stage_h - 1 - py) for px, py in points]
+    elif r == 3:
+        points = [(stage_h - 1 - py, px) for px, py in points]
+    return points
+
+
+def tiff_points_to_display(
+    points: list[tuple[float, float]],
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool,
+    fine_angle_deg: float,
+) -> list[tuple[float, float]]:
+    """TIFF-space pixel-index points `(x, y)` as display-space points on the
+    full uncropped display canvas."""
+    tiff_h, tiff_w = tiff_size
+    return _forward_display_points(
+        points,
+        tiff_h,
+        tiff_w,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+    )
+
+
 def tiff_crop_window_to_display(
     crop_params: dict,
     tiff_size: tuple[int, int],  # (height, width)
@@ -663,26 +724,14 @@ def tiff_crop_window_to_display(
             )
             for px, py in corners
         ]
-    if flipped_horizontally:
-        corners = [(stage_w - 1 - px, py) for px, py in corners]
-    if abs(fine_angle_deg) >= 1e-9:
-        matrix = cv2.getRotationMatrix2D(
-            (stage_w / 2.0, stage_h / 2.0), -float(fine_angle_deg), 1.0
-        )
-        corners = [
-            (
-                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
-                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
-            )
-            for px, py in corners
-        ]
-    r = (-int(quarter_turns)) % 4
-    if r == 1:
-        corners = [(py, stage_w - 1 - px) for px, py in corners]
-    elif r == 2:
-        corners = [(stage_w - 1 - px, stage_h - 1 - py) for px, py in corners]
-    elif r == 3:
-        corners = [(stage_h - 1 - py, px) for px, py in corners]
+    corners = _forward_display_points(
+        corners,
+        stage_h,
+        stage_w,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+    )
     return _window_from_tilted_corners(corners)
 
 
@@ -1135,31 +1184,17 @@ def tiff_rect_to_display(
             )
             for px, py in corners
         ]
-    # 1. Mirror, when flipped.
-    if flipped_horizontally:
-        corners = [(stage_w - 1 - px, py) for px, py in corners]
-    # 2. The fine rotation, about the canvas center, negated angle — the
-    # same matrix `rotate_with_fill` builds.
-    if abs(fine_angle_deg) >= 1e-9:
-        matrix = cv2.getRotationMatrix2D(
-            (stage_w / 2.0, stage_h / 2.0), -fine_angle_deg, 1.0
-        )
-        corners = [
-            (
-                matrix[0, 0] * px + matrix[0, 1] * py + matrix[0, 2],
-                matrix[1, 0] * px + matrix[1, 1] * py + matrix[1, 2],
-            )
-            for px, py in corners
-        ]
-    # 3. Quarter turns (the inverse of `_display_point_to_tiff`'s case
-    # table). r = the counter-clockwise turn count np.rot90 applies.
+    # 1-3. The mirror, the fine rotation about the canvas centre, and the
+    # quarter turns.
+    corners = _forward_display_points(
+        corners,
+        stage_h,
+        stage_w,
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped_horizontally,
+        fine_angle_deg=fine_angle_deg,
+    )
     r = (-int(quarter_turns)) % 4
-    if r == 1:
-        corners = [(py, stage_w - 1 - px) for px, py in corners]
-    elif r == 2:
-        corners = [(stage_w - 1 - px, stage_h - 1 - py) for px, py in corners]
-    elif r == 3:
-        corners = [(stage_h - 1 - py, px) for px, py in corners]
 
     xs = [px for px, _ in corners]
     ys = [py for _, py in corners]

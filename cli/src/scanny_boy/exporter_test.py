@@ -1187,7 +1187,7 @@ def test_the_color_op_changes_the_export_and_is_recorded_in_provenance(
     from scanny_boy.library import repo
 
     flat = _decode(_export(colour_roll, tmp_path / "flat"))
-    params = _color_params(wb_magenta=0.15, dye_separation=1.3)
+    params = _color_params(tint=0.15, dye_separation=1.3)
     run_edit_color(colour_roll, _NEGATIVE_ID, params, emit=lambda event: None)
     tinted_dest = _export(colour_roll, tmp_path / "tinted")
 

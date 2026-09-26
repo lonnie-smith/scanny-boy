@@ -227,7 +227,7 @@ Capture tab, roll selected
   │
   ├─ negative loop ──────────────────────────────────────────────────────────┐
   │     Space → sequence of across×down cells (§3.2)                         │
-  │       each cell: hold cue → release → exposure over → move cue           │
+  │       each cell: countdown → release → exposure over → move cue           │
   │                 → frame found → downloaded → file on disk → cell fills   │
   │                 → capture analyze (async, §6) → badges                   │
   │     last cell lands → negative complete → prepare → check (§4.1)         │
@@ -393,10 +393,13 @@ first release, then the shot's number within the negative, `01` upward.
 - If a name already exists (two negatives started in one second), the file is
   created with `O_EXCL` and the suffix `-2`, `-3`, … is appended to the stamp.
 
-One consequence, accepted by the user: `roll_manifest.allocate_output_name`
-names a published TIFF after its first member's stem, so tethered negatives
-publish as `20260911-123325_01.tif`. No separate naming rule for tethered
-negatives.
+A tethered negative's first frame always ends `_01`, so `stitch`'s plain
+first-member-stem rule would publish every negative in a session as
+`..._01.tif`. `roll_manifest.allocate_output_name` special-cases this: a
+tethered group publishes as `<stamp>_<NN>.tif`, where `NN` runs through the
+roll's negatives in the order they are first published (`01`, `02`, …) —
+`_tethered_output_stem` in `roll_manifest.py`. Any other source name (Add
+Scans, camera-named files) keeps the plain stem rule.
 
 `CaptureNaming.swift` is the only place a capture name is chosen.
 
@@ -428,13 +431,13 @@ With a 1/2 s exposure and the default 4 s interval, from §0.1's measurements:
 
 ```
 t = 0.00  user starts negative ── initial interval clock starts
-t ≈ 3.00  hold cue (HOLD_CUE_LEAD = 1.0 s before release)
-t ≈ 4.00  release (cell 1)
+t ≈ 1–3   countdown beeps (3, 2, 1)
+t ≈ 4.00  release (cell 1) ── higher beep at 0
 t ≈ 4.55  exposure over (DeviceReady OK) ── move cue, interval clock starts
 t ≈ 5.1   frame found in the buffer
 t ≈ 5.7   file on disk ─────────────────── cell 1 fills
-t ≈ 7.55  hold cue
-t ≈ 8.55  release (cell 2)
+t ≈ 5.6–7.6  countdown beeps (3, 2, 1)
+t ≈ 8.55  release (cell 2) ── higher beep at 0
 …
 last cell's file on disk ── negative complete, enqueued for stitching
 ```
@@ -442,8 +445,11 @@ last cell's file on disk ── negative complete, enqueued for stitching
 Rules:
 
 - An **initial interval** of the same duration runs before cell 1's release.
-  If the operator pauses during it and cell 1 has not fired yet, the initial
-  interval runs again on resume.
+- **Resuming a negative always counts down the full interval** before the
+  next release — whether resuming from paused or from stopped, and whether
+  or not cell 1 has already fired. The operator's decision: a resume is a
+  fresh "hold still" warning, not a continuation of a clock that was running
+  when they walked away.
 - Inter-shot intervals start at the end of the exposure (§0.5).
 - **The next release waits for the previous frame's download.** The PTP
   channel runs one transaction at a time and a 25 MB `GetObject` takes 0.55 s;
@@ -454,11 +460,11 @@ Rules:
 
 Keys, active only when the Capture stage has focus and no text field does:
 
-| Key | Idle | During a sequence | Paused |
-|---|---|---|---|
-| Space | Start the next negative | Pause after the in-flight shot | Resume (hold cue first) |
-| Delete | — | — | Retake the last filled cell (replaces its file in place) |
-| Esc | — | Stop the negative | Stop the negative |
+| Key | Idle | During a sequence | Paused | Stopped |
+|---|---|---|---|---|
+| Space | Start the next negative | Pause after the in-flight shot | Resume (countdown first) | Resume from cell *k* (countdown first) |
+| Delete | — | — | Retake the last filled cell (replaces its file in place) | Retake the last filled cell |
+| Esc | — | Stop the negative | Stop the negative | — |
 
 Nothing in the app binds a plain Space today (checked: `AppKeyboard.swift` and
 every view's `keyboardShortcut`).
@@ -473,10 +479,13 @@ The operator is looking at the film, not the screen, so the cues are audible
 first:
 
 - **Move**: a short tick when the exposure ends.
-- **Hold**: a distinct tone `HOLD_CUE_LEAD` before the next release.
+- **Countdown**: a gentle beep at 3, 2 and 1 seconds before the next release,
+  then a slightly higher one at 0, on the release itself. Beeps that would
+  fall before the interval starts are skipped (a 2 s interval has only the 1).
 - A large countdown on screen for a glance from the stand.
 
-Both sounds are system sounds (`NSSound`); nothing new is bundled.
+The move tick is a system sound (`NSSound`); the countdown beeps are short
+sine tones synthesised in memory (`CaptureCues`), so nothing is bundled.
 
 ### 3.4 The mini-view
 
@@ -629,7 +638,7 @@ only at render and edit time (`color.read_metering` from `previews.py` and
   drained, and whenever it opens the Edit or Export tab on a roll with
   `refresh_pending` set — so a crash mid-session never leaves stale colour.
 - **An auto solve on a refresh-pending roll** (`edit tone --auto-grade`,
-  `--auto-density`, `edit color --auto-cast`) warns `ROLL_REFRESH_PENDING`: it
+  `--auto-density`, `edit color --auto-balance`) warns `ROLL_REFRESH_PENDING`: it
   would read a lock the roll's newest negatives have not contributed to yet.
 
 `edits.run_edit_delete` keeps recomputing the lock immediately; a delete is

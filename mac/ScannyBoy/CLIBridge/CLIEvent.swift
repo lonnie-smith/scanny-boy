@@ -52,7 +52,7 @@ public struct CLIEvent: Sendable, Hashable {
     /// `FILM_BASE_*` / `ROLL_PREDATES_FILM_BASE` codes, and the per-negative
     /// `base_check` meters. Protocol 14 extends `edit color` with
     /// `--cast-removal-highlights` and
-    /// `--auto-cast`, adds the derived `color_cast_removal_highlights`
+    /// `--auto-balance`, adds the derived `color_cast_removal_highlights`
     /// field to `roll info`, and records the `highlight_refs` /
     /// `neutral_residual` meters in the per-negative `normalization`
     /// block; global and regional CMY are now mean-removed. No new
@@ -64,8 +64,12 @@ public struct CLIEvent: Sendable, Hashable {
     /// one-shot invocation has no daemon to scope an event to. The same
     /// bump adds the film-extent pass:
     /// the `NORMALIZE_FILM_EXTENT_WITHHELD` and
-    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes.
-    public static let supportedProtocolVersion = 23
+    /// `NORMALIZE_FILM_EXTENT_EXCESSIVE` warning codes. Protocol 24 replaces
+    /// the regional CMY colour balance with warmth/tint plus per-channel
+    /// curves: `edit color`'s `--warmth`/`--tint`/`--red-*`/`--green-*`/
+    /// `--blue-*` flags and `--auto-balance`, and the matching
+    /// `color_warmth`/`color_tint`/`color_curve_*` roll manifest fields.
+    public static let supportedProtocolVersion = 24
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -374,6 +378,22 @@ extension CLIEvent {
         return .some(CropState(fields: object))
     }
 
+    // `crop_suggested`: the answer to `edit suggest-crop`. `suggestedRect`
+    // is on the full uncropped display canvas — the space `CropSession`
+    // works in — and is nil exactly when `cropRefusal` is set.
+    public var suggestedRect: CGRect? {
+        guard let rect = fields["rect"]?.objectValue,
+            let x = rect["x"]?.intValue, let y = rect["y"]?.intValue,
+            let width = rect["width"]?.intValue, let height = rect["height"]?.intValue
+        else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+    /// The ratio preset the detector fitted (nil when it fitted
+    /// unconstrained).
+    public var suggestedPreset: String? { fields["preset"]?.stringValue }
+    /// The refusal token — `ragged`, `little_picture`, … — or nil.
+    public var cropRefusal: String? { fields["refused"]?.stringValue }
+
     /// The recorded op's tone params, when it is a `tone` op: its `params`
     /// always name all four user keys (explicit nulls for the reset to the
     /// default scan-start curve). The geometric ops carry no tone keys, so
@@ -396,23 +416,24 @@ extension CLIEvent {
     /// The recorded op's colour params when it is a `color` op.
     public var recordedColor: ColorAdjustment?? {
         guard let params = edit?["params"]?.objectValue,
-            case .some = params["wb_cyan"]
+            case .some = params["warmth"]
         else { return nil }
-        guard let wbCyan = params["wb_cyan"]?.doubleValue,
-            let wbMagenta = params["wb_magenta"]?.doubleValue,
-            let wbYellow = params["wb_yellow"]?.doubleValue
+        guard let warmth = params["warmth"]?.doubleValue,
+            let tint = params["tint"]?.doubleValue
         else { return .some(nil) }
         return .some(
             ColorAdjustment(
-                wbCyan: wbCyan,
-                wbMagenta: wbMagenta,
-                wbYellow: wbYellow,
-                shadowCyan: params["shadow_cyan"]?.doubleValue ?? 0,
-                shadowMagenta: params["shadow_magenta"]?.doubleValue ?? 0,
-                shadowYellow: params["shadow_yellow"]?.doubleValue ?? 0,
-                highlightCyan: params["highlight_cyan"]?.doubleValue ?? 0,
-                highlightMagenta: params["highlight_magenta"]?.doubleValue ?? 0,
-                highlightYellow: params["highlight_yellow"]?.doubleValue ?? 0,
+                warmth: warmth,
+                tint: tint,
+                curveRed25: params["curve_red_25"]?.doubleValue ?? 0,
+                curveRed50: params["curve_red_50"]?.doubleValue ?? 0,
+                curveRed75: params["curve_red_75"]?.doubleValue ?? 0,
+                curveGreen25: params["curve_green_25"]?.doubleValue ?? 0,
+                curveGreen50: params["curve_green_50"]?.doubleValue ?? 0,
+                curveGreen75: params["curve_green_75"]?.doubleValue ?? 0,
+                curveBlue25: params["curve_blue_25"]?.doubleValue ?? 0,
+                curveBlue50: params["curve_blue_50"]?.doubleValue ?? 0,
+                curveBlue75: params["curve_blue_75"]?.doubleValue ?? 0,
                 castRemoval: params["cast_removal"]?.doubleValue ?? 0,
                 castRemovalHighlights: params["cast_removal_highlights"]?.doubleValue ?? 0,
                 dyeSeparation: params["dye_separation"]?.doubleValue

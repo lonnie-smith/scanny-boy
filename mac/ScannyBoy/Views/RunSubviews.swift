@@ -24,7 +24,7 @@ struct RunProgressView: View {
                 Text(stepDescription)
                 Spacer()
                 if let totalNegatives = run.totalNegatives {
-                    Text("\(run.negativesCompleted) of \(totalNegatives) negative(s)")
+                    Text("\(run.negativesCompleted) of \(Pluralize.count(totalNegatives, "negative"))")
                 }
             }
             .font(.caption)

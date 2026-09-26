@@ -31,6 +31,21 @@ final class StitchQueueModel {
         }
     }
 
+    /// Where an entry belongs, snapshotted when it is enqueued. The queue
+    /// outlives a roll switch (only a live capture session pins the
+    /// sidebar), so an entry must never read the *current* roll, capture
+    /// folder or grid — it would prepare and stitch against the wrong roll.
+    struct EntryContext: Codable, Sendable {
+        var rollPath: String
+        var captureFolder: String
+        var rigProfileID: String?
+        var across: Int
+        var down: Int
+
+        var rollURL: URL { URL(fileURLWithPath: rollPath) }
+        var captureFolderURL: URL { URL(fileURLWithPath: captureFolder) }
+    }
+
     struct QueuedNegative: Identifiable, Codable, Sendable {
         let id: UUID
         let stamp: String
@@ -42,6 +57,9 @@ final class StitchQueueModel {
         let enqueuedAt: Date
         var publishedAt: Date?
         var outputFilename: String?
+        /// Nil only for entries persisted before contexts existed; restore
+        /// fills those in from the state file's header.
+        var context: EntryContext?
     }
 
     struct StepProgress: Equatable, Sendable {
@@ -81,9 +99,9 @@ final class StitchQueueModel {
     private var down: Int = 1
     private var drainTask: Task<Void, Never>?
     private var sleepAssertion: NSObjectProtocol?
-    /// Set when a stitch publishes with its roll refresh deferred; cleared
-    /// when `rollRefresh` runs for this queue's roll.
-    private var needsRollRefresh = false
+    /// Rolls a stitch published to with the roll refresh deferred; each is
+    /// removed when `rollRefresh` runs for it.
+    private var rollsNeedingRefresh: Set<String> = []
 
     init(runner: CLIRunner) {
         self.runner = runner
@@ -108,6 +126,24 @@ final class StitchQueueModel {
 
     var isQueueBusy: Bool { hasWork || isStitching || isRefreshing }
 
+    /// The entries that belong to `roll`, oldest first. The queue holds
+    /// entries for every roll it has worked on, but a roll's Capture tab
+    /// must only show its own.
+    func negatives(for roll: URL?) -> [QueuedNegative] {
+        guard let roll else { return [] }
+        return negatives.filter { entry in
+            entry.context.map { Self.isSameRoll($0.rollURL, roll) } ?? false
+        }
+    }
+
+    func hasUnpublishedEntries(for roll: URL?) -> Bool {
+        negatives(for: roll).contains { $0.step != .published }
+    }
+
+    func hasWork(on roll: URL) -> Bool {
+        negatives(for: roll).contains { !$0.step.isTerminal }
+    }
+
     func configure(
         roll: URL,
         captureFolder: URL,
@@ -123,7 +159,7 @@ final class StitchQueueModel {
     }
 
     func enqueue(_ negative: CaptureSessionModel.CompletedNegative) {
-        guard let captureFolder else { return }
+        guard let rollURL, let captureFolder else { return }
         let work = captureFolder
             .appending(path: ".work", directoryHint: .isDirectory)
             .appending(path: negative.stamp, directoryHint: .isDirectory)
@@ -135,7 +171,14 @@ final class StitchQueueModel {
             step: .waitingPrepare,
             failureMessage: nil,
             failureCode: nil,
-            enqueuedAt: negative.startedAt
+            enqueuedAt: negative.startedAt,
+            context: EntryContext(
+                rollPath: rollURL.path,
+                captureFolder: captureFolder.path,
+                rigProfileID: rigProfileID,
+                across: across,
+                down: down
+            )
         )
         negatives.append(entry)
         persistState()
@@ -144,7 +187,7 @@ final class StitchQueueModel {
     }
 
     func endSession() {
-        guard hasWork || needsRollRefresh else { return }
+        guard hasWork || !rollsNeedingRefresh.isEmpty else { return }
         drainTask = Task { await drainAndRefresh() }
     }
 
@@ -155,22 +198,34 @@ final class StitchQueueModel {
     }
 
     /// Removes every queue entry that has not published and returns paths to
-    /// recycle (frame NEFs and work folders).
-    func discardUnpublished() -> [URL] {
-        drainTask?.cancel()
-        drainTask = nil
-        isStitching = false
-        isRefreshing = false
+    /// recycle (frame NEFs and work folders). With `roll`, only that roll's
+    /// entries go; other rolls' queued work is left running.
+    func discardUnpublished(for roll: URL? = nil) -> [URL] {
+        let leavesOtherWork = roll.map { roll in
+            negatives.contains { entry in
+                guard !entry.step.isTerminal else { return false }
+                return !(entry.context.map { Self.isSameRoll($0.rollURL, roll) } ?? false)
+            }
+        } ?? false
+        if !leavesOtherWork {
+            drainTask?.cancel()
+            drainTask = nil
+            isStitching = false
+            isRefreshing = false
+        }
         var urls: [URL] = []
         let remaining = negatives.filter { entry in
             guard entry.step != .published else { return true }
+            if let roll, !(entry.context.map { Self.isSameRoll($0.rollURL, roll) } ?? false) {
+                return true
+            }
             urls.append(contentsOf: entry.framePaths.map { URL(fileURLWithPath: $0) })
             urls.append(URL(fileURLWithPath: entry.workFolder))
             progress.removeValue(forKey: entry.id)
             return false
         }
         negatives = remaining
-        activePrepareCount = 0
+        if !leavesOtherWork { activePrepareCount = 0 }
         if negatives.isEmpty {
             clearPersistedState()
         } else {
@@ -192,7 +247,6 @@ final class StitchQueueModel {
 
     private func startPreparesIfNeeded() {
         guard activePrepareCount < Self.maxParallelPrepares else { return }
-        guard let captureFolder else { return }
         let waiting = negatives.filter { $0.step == .waitingPrepare || $0.step == .waitingForDisk }
         for entry in waiting.prefix(Self.maxParallelPrepares - activePrepareCount) {
             guard negatives.firstIndex(where: { $0.id == entry.id }) != nil else { continue }
@@ -205,7 +259,7 @@ final class StitchQueueModel {
             Task {
                 // `runPrepare` carries the entry through its check and leaves
                 // it at its outcome — nothing here may overwrite `step`.
-                await runPrepare(id: id, captureFolder: captureFolder, rigProfileID: rigProfileID)
+                await runPrepare(id: id)
                 activePrepareCount = max(0, activePrepareCount - 1)
                 pump()
                 // A failed prepare or check can be the last thing the queue
@@ -215,19 +269,20 @@ final class StitchQueueModel {
         }
     }
 
-    private func runPrepare(id: UUID, captureFolder: URL, rigProfileID: String?) async {
-        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
-        let entry = negatives.first(where: { $0.id == id })!
+    private func runPrepare(id: UUID) async {
+        guard let entry = negatives.first(where: { $0.id == id }),
+              let context = entry.context
+        else { return }
         let files = entry.framePaths.map { URL(fileURLWithPath: $0).lastPathComponent }
         let work = URL(fileURLWithPath: entry.workFolder)
         try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         let command = CLICommand.prepare(
-            input: captureFolder,
+            input: context.captureFolderURL,
             files: files,
             out: work,
-            across: across,
-            down: down,
-            rig: rigProfileID
+            across: context.across,
+            down: context.down,
+            rig: context.rigProfileID
         )
         let result = await runCommand(id: id, command)
         progress.removeValue(forKey: id)
@@ -247,19 +302,19 @@ final class StitchQueueModel {
             return
         }
         mutateEntry(id: id) { $0.step = .waitingCheck }
-        await runCheck(id: id, rigProfileID: rigProfileID)
+        await runCheck(id: id)
         persistState()
         pump()
     }
 
-    private func runCheck(id: UUID, rigProfileID: String?) async {
-        guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
+    private func runCheck(id: UUID) async {
+        guard let context = negatives.first(where: { $0.id == id })?.context else { return }
         mutateEntry(id: id) { $0.step = .checking }
         progress[id] = StepProgress(
             completed: 0, total: 0, step: nil, startedAt: .now
         )
         let work = URL(fileURLWithPath: negatives.first(where: { $0.id == id })!.workFolder)
-        let command = CLICommand.captureCheck(work: work, rig: rigProfileID)
+        let command = CLICommand.captureCheck(work: work, rig: context.rigProfileID)
         let result = await runCaptureCheck(id: id, command)
         progress.removeValue(forKey: id)
         guard negatives.firstIndex(where: { $0.id == id }) != nil else { return }
@@ -278,9 +333,12 @@ final class StitchQueueModel {
 
     private func startNextStitchIfNeeded() {
         // `roll refresh` holds the roll lock; a stitch started now would fail.
-        guard !isStitching, !isRefreshing, let rollURL else { return }
+        guard !isStitching, !isRefreshing else { return }
         guard negatives.allSatisfy({ $0.step != .preparing && $0.step != .checking }) else { return }
-        guard let entry = negatives.first(where: { $0.step == .waitingStitch }) else { return }
+        guard let entry = negatives.first(where: { $0.step == .waitingStitch }),
+              let context = entry.context
+        else { return }
+        let rollURL = context.rollURL
         isStitching = true
         let id = entry.id
         mutateEntry(id: id) { $0.step = .stitching }
@@ -290,7 +348,7 @@ final class StitchQueueModel {
         let work = URL(fileURLWithPath: entry.workFolder)
         Task {
             let command = CLICommand.stitch(
-                work: work, roll: rollURL, rig: rigProfileID, deferRollRefresh: true
+                work: work, roll: rollURL, rig: context.rigProfileID, deferRollRefresh: true
             )
             let result = await runCommand(id: id, command)
             progress.removeValue(forKey: id)
@@ -307,7 +365,7 @@ final class StitchQueueModel {
                         $0.publishedAt = Date()
                         $0.outputFilename = result.outputFilename
                     }
-                    needsRollRefresh = true
+                    rollsNeedingRefresh.insert(Self.normalizedPath(rollURL))
                     onNegativePublished?()
                     try? FileManager.default.removeItem(at: work)
                 }
@@ -331,23 +389,25 @@ final class StitchQueueModel {
     /// publishes deferred. Failed entries do not hold it back.
     private func finishDrainIfNeeded() async {
         updateSleepAssertion()
-        guard let rollURL, !hasWork, !isStitching, needsRollRefresh else { return }
-        await rollRefresh(roll: rollURL)
+        guard !hasWork, !isStitching else { return }
+        for path in rollsNeedingRefresh.sorted() {
+            await rollRefresh(roll: URL(fileURLWithPath: path))
+        }
     }
 
     /// TETHER_PLAN §4.4: brings a roll whose refresh was deferred up to date
     /// when its Edit or Export tab opens. Skipped while this queue is still
     /// working on that roll — its own end-of-queue refresh covers it.
     func refreshDeferredRoll(_ roll: URL) async {
-        if let rollURL, Self.isSameRoll(rollURL, roll), hasWork || isStitching { return }
+        if hasWork(on: roll) { return }
         await rollRefresh(roll: roll)
     }
 
     func rollRefresh(roll: URL) async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        let isQueueRoll = rollURL.map { Self.isSameRoll($0, roll) } ?? false
-        if isQueueRoll { needsRollRefresh = false }
+        let refreshedQueuedRoll = rollsNeedingRefresh.remove(Self.normalizedPath(roll)) != nil
+        let isQueueRoll = refreshedQueuedRoll || (rollURL.map { Self.isSameRoll($0, roll) } ?? false)
         // rollRefresh is not tied to a specific negative; pass a dummy id.
         _ = await runCommand(id: UUID(), .rollRefresh(roll: roll))
         // Only this queue's roll owns `stitch-queue.json`, and failed entries
@@ -361,15 +421,17 @@ final class StitchQueueModel {
     }
 
     private static func isSameRoll(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
+        normalizedPath(lhs) == normalizedPath(rhs)
+    }
+
+    private static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.path
     }
 
     // MARK: - Persistence
 
     private var stateFileURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appending(path: "ScannyBoy", directoryHint: .isDirectory)
-            .appending(path: Self.stateFilename)
+        AppEnvironment.supportDirectory.appending(path: Self.stateFilename)
     }
 
     private func persistState() {
@@ -410,6 +472,13 @@ final class StitchQueueModel {
         down = state.down
         negatives = state.negatives.map { entry in
             var copy = entry
+            copy.context = entry.context ?? EntryContext(
+                rollPath: state.rollPath,
+                captureFolder: state.captureFolder,
+                rigProfileID: state.rigProfileID,
+                across: state.across,
+                down: state.down
+            )
             switch copy.step {
             case .stitching:
                 copy.step = .waitingStitch

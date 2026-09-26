@@ -617,6 +617,132 @@ pixel value does (`punchlist.md`).
 - Everything Phase 1 and 2's own "Scope ... does not cover" sections say
   still applies unchanged.
 
+# Balance and channel curves (protocol version 24)
+
+This supersedes the earlier colour op's CMY sliders and temperature layer
+(docs/COLOR_BALANCE_CURVES_PLAN.md, chunks 1–9).
+
+## The balance sliders
+
+Two global, lightness-neutral sliders replace the temperature layer and the
+three-region (global/shadow/highlight) CMY sliders:
+
+- **Warmth** (blue↔yellow): offsets density along the `WARM_AXIS`, which
+  is perpendicular to grey and to the tint axis under Rec.709 luma.
+- **Tint** (green↔magenta): offsets density along the `MAGENTA_AXIS`,
+  also perpendicular to grey and to warmth.
+
+Both axes are exact under the Rec.709 luma-weighted inner product
+`<u, v> = sum(w_i * u_i * v_i)`, `w = LUMA_WEIGHTS` — not the Euclidean dot
+product, under which they are neither unit nor orthogonal: `luma(WARM_AXIS)
+= 0`, `luma(MAGENTA_AXIS) = 0`, `<WARM_AXIS, WARM_AXIS> = 1`,
+`<MAGENTA_AXIS, MAGENTA_AXIS> = 1`, and `<WARM_AXIS, MAGENTA_AXIS> = 0`.
+The guarantee is exact in the density space the offset is applied to; after
+the camera matrix mixes channels, it holds to first order — the same
+guarantee the old global CMY sliders had.
+
+The slider value maps directly to a density offset with no range division
+by `metering.ranges`, so equal warmth gives an equal display shift on every
+frame. This is better for copying a balance across a roll.
+
+`BALANCE_SCALE` (in `color.py`) converts the slider's [-1, 1] range into
+a density offset. Its value is provisional and not yet measured on real
+rolls (see Tuning below).
+
+## The channel curves
+
+Three curves (red, green, blue), each with three vertical-only control
+points at display values 0.25, 0.5 and 0.75, applied after the shared
+endpoint rescale in `tone.curve_values`. Ends are pinned at 0 and 1.
+
+- Interpolation is monotone cubic (PCHIP / Fritsch–Carlson) — no overshoot.
+- Each offset is bounded to ±0.2 (`CURVE_OFFSET_MAX`).
+- **Ordering rule:** each knot's y must stay at least `CURVE_MIN_GAP`
+  (0.02) above the previous, so a curve can never reverse. Enforced by
+  `repo.validated_color_params`.
+
+The curves are **not** lightness-neutral, by design: a curve the user draws
+is the curve that's applied. Lightness stays with the tone panel.
+
+**The editor draws the curve itself, so its PCHIP must match scipy's.** The
+CLI renders pixels with `scipy.interpolate.PchipInterpolator`; the Mac
+editor (`ChannelCurve` in `ColorAdjustment.swift`) reimplements it for
+drawing only. The first Swift cut used one-sided endpoint slopes and drew
+up to 0.015 away from the render; it now ports scipy's three-point
+shape-preserving endpoint formula and weighted-harmonic interior slopes,
+pinned by `ChannelCurveTests` against scipy reference values. The editor
+also clamps every drag and slider move to `CURVE_OFFSET_MAX` and
+`CURVE_MIN_GAP`, so it never sends a curve the CLI would reject. Dragging a
+point sets its offset; double-click resets the point; ⌥ held while dragging
+resets the channel.
+
+## Auto balance
+
+`auto_color.solve_cmy` was renamed to `solve_balance`. Its first three
+steps are unchanged from before the rename: the target density offsets
+from `_neutral_defaults_target` (the residual's luma-neutral CMY
+equivalent), the cast-slope compensation loop (`color.cast_slopes` against
+the negative's own metering, so a two-point cast-removal tie already in
+effect is accounted for rather than fought), and luma removal. The
+resulting luma-zero offset vector `o` is projected onto the two axes:
+
+```
+d = -o / BALANCE_SCALE
+warmth = clamp(<d, WARM_AXIS>, -1, 1)   # <.,.> is the W inner product
+tint   = clamp(<d, MAGENTA_AXIS>, -1, 1)
+```
+
+Because the axes are orthonormal under that inner product and `o` is
+luma-zero (so it lies exactly in the plane the axes span), this round-trips
+exactly back through `balance_offsets` whenever the clamp doesn't bind —
+checked directly in `auto_color_test.py`.
+
+The Auto button overwrites warmth and tint and leaves the curves untouched.
+The flag is `--auto-balance` (Swift: `ColorAutoFlags.balance`), mutually
+exclusive with `--reset`, `--warmth` and `--tint`.
+
+## Protocol and manifest
+
+`PROTOCOL_VERSION` is **24** (23 was taken by auto-crop in the meantime —
+see `docs/AUTO_CROP_PLAN.md`). The roll manifest's colour fields are now:
+`color_warmth`, `color_tint`, `color_curve_{red,green,blue}_{25,50,75}`,
+plus the unchanged `color_cast_removal`, `color_cast_removal_highlights`,
+`color_dye_separation`, `color_separation_damping`.
+
+**Old colour ops are not migrated.** No real edits depended on the old
+keys, so `repo._parse_color_op` reads a `color` op as no colour op unless
+it carries every key in `COLOR_PARAM_KEYS` with in-range, correctly
+ordered values. A partial old op does not leak its surviving keys
+(`cast_removal`, `dye_separation`, …) into the new state. An op whose
+values all equal the neutral defaults is still a recorded state, not a
+reset. Negatives with an old colour op (protocol 23 or earlier) render with
+neutral colour, and their cached previews stay stale until each is
+re-rendered — there is no one-time forced refresh.
+
+## Tuning
+
+`BALANCE_SCALE` = 0.0117791777: WARM_AXIS and MAGENTA_AXIS are unit under
+the W inner product, not Euclidean, so their Euclidean norms are ~3.396 and
+~2.328 respectively rather than 1. This value keeps a ±1 warmth move at
+roughly the old Euclidean density magnitude (0.04, when the old axis was
+Euclidean-unit): `0.04 / 3.3958227963` (WARM_AXIS's Euclidean norm). It is
+a **provisional starting value, not yet measured on real rolls** — chunk
+9's Adobe RGB luma-drift measurement of a warmth/tint sweep after the
+camera matrix is still outstanding. The luma-zero guarantee this section
+opened with is exact by construction in the density space the offset is
+applied to; whether it stays visually negligible after the camera matrix
+is exactly what that measurement would settle.
+
+`CURVE_OFFSET_MAX` = 0.2: each control point can shift its knot by up to
+20% of the display range. This is large enough for visible correction
+without allowing the curve to invert or clip.
+
+`CURVE_MIN_GAP` = 0.02: the minimum vertical distance between consecutive
+knots. Enforced by `repo.validated_color_params`; a curve that would
+reverse is rejected with `INVALID_EDIT`.
+
+---
+
 # Flat-field decisions
 
 These are the locked decisions of
@@ -1741,8 +1867,14 @@ targets the scan-start grade (R180), not R115.
 
 ## The preview's colour adjustment: the `color` op (protocol version 12)
 
-Six controls from NegPy's Colour panel — temperature (a Kelvin lever over
-magenta and yellow, derived never stored), global/shadow/highlight CMY,
+> **Superseded in part by "Balance and channel curves (protocol version
+> 24)".** Temperature and global/shadow/highlight CMY are gone, replaced by
+> warmth/tint and per-channel curves; items 1 (the CMY parts) and 8 below
+> are historical. Cast removal, dye separation and damping (items 3–7)
+> still apply.
+
+Six controls from NegPy's Colour panel — temperature (a global Kelvin
+layer under the CMY sliders, see 8), global/shadow/highlight CMY,
 cast removal, dye separation, and separation damping — land as a second
 op (`repo.COLOR_OP`), sibling to `tone`. The same boundaries apply as
 tone after the colour-managed export landed: the published TIFF never
@@ -1776,6 +1908,15 @@ What is not obvious from the code:
    the slider barely moves on real frames.
 7. **Cast removal ports the shadow-tie branch only.** We do not measure
    the neutral-axis refs NegPy's other branch needs.
+8. **Temperature is its own stored layer, not a lever over the sliders.**
+   The first cut derived Kelvin from magenta/yellow and wrote the lever's
+   result back into them. With the sliders clamped at ±1, a large warm
+   move pegged both, the projection back to Kelvin then read the clipped
+   pair, and dragging cool could not undo it. Now `temperature` is a key of
+   its own, global only: its mired shift adds a magenta/yellow term to the
+   global sliders inside `cmy_offsets`, before luma removal, so it is
+   lightness-neutral, never clamps a slider, and Auto Cast (which solves
+   the sliders alone) leaves the warmth in place.
 
 # The spotting feature (protocol version 13)
 
@@ -1915,7 +2056,8 @@ still measures larger, this paragraph — not the panel — is wrong.
 **7. `TONE_METERING_UNAVAILABLE` is reused for the colour-only conditions
 rather than renamed.** COLOR_PLAN §7.2 proposed renaming it to
 `METERING_UNAVAILABLE` before it shipped; it has shipped. Renaming a live
-contract code costs more than the wart, so the auto-cast and cast-removal
+contract code costs more than the wart, so the auto-balance (formerly
+auto-cast) and cast-removal
 metering absences warn with the historical name.
 
 # The Edit tab's latency decisions (docs/OPTIMIZATION.md)
@@ -1985,7 +2127,8 @@ the bit") hold exactly rather than approximately.
 **`neutral_residual` stays stale, on purpose.** It was measured at stitch
 time against the *uncorrected* bounds and cannot be re-measured without
 published pixels, which this plan — like every plan before it — does not
-touch. `auto_color.solve_cmy` threads the roll's lock into the cast-removal
+touch. `auto_color.solve_balance` (formerly `solve_cmy`) threads the
+roll's lock into the cast-removal
 tie compensation it already performs, but the residual itself is read back
 unmodified; it was already a first-order approximation before this feature
 existed.
@@ -2011,3 +2154,97 @@ therefore more negative) — which silently returned `None` on every real
 roll. Both are documented at length in
 docs/ROLL_HIGHLIGHT_LOCK.md §3.0/§3.3/§3.4, including the numerical checks
 that caught them.
+
+# The tone-split bands' estimators (measured on the Sep-20-2026 Portra roll)
+
+## A different estimator at each end, because the measurement says so
+
+`auto_neutral.measure_auto_neutral_bands` reads its two numbers with two
+different estimators: the **shadow** band with
+`normalization.measure_band_neutral_mean`'s plain mean, the **highlight**
+band with `measure_neutral_residual`'s grey-surfaces weighting, unchanged.
+The asymmetry is deliberate and measured, not an oversight.
+
+The grey-surfaces weighting (`var_a * var_b * cov_ab`, divided by the
+cell's own chroma) is an *illuminant* estimator: it asks which surfaces
+vary in colour and discounts the strongly tinted ones. A cast lying
+uniformly across a smooth shadow is exactly what it discounts — so it
+reads such a frame as nearly neutral, which is the case the shadow band
+exists to catch.
+
+**The measurement.** Thirteen completed negatives of the Sep-20-2026
+Portra roll. For each, the band estimate was compared against the cast
+actually rendered from that negative's published TIFF — measured through
+`render.render_positive_float` with the colour ops off, on a flat tone
+ramp, and **before** the camera colour matrix, which is the space a
+correction acts in (the matrix roughly doubles what reaches the eye: 1.8x
+to 3.0x across the roll, so under-reading costs twice over).
+
+| Estimator | Shadow: RMS cast left | Highlight: RMS cast left |
+| --- | --- | --- |
+| No correction at all | 0.045 | 0.039 |
+| Grey-surfaces weighting | 0.024 | **0.025** |
+| Low-chroma half, mean | 0.015 | 0.024 |
+| **Plain mean** | **0.008** | 0.042 |
+
+At the thin end the mean wins by a factor of three. At the dense end it
+**loses to doing nothing**: bright content carries far more real colour,
+so the mean reads about twice the cast actually rendered (median +0.058
+against +0.027) with a worst-case over-correction of -0.075. Hence the
+split.
+
+## Why the gain was not simply raised instead
+
+The first proposal was to keep the weighting and multiply it up, since its
+median reading was about half the median cast. The measurement refused it.
+The weighting's error is **erratic, not proportional**: per-frame ratios
+between the true cast and its reading run from -9.7 to +9.0, and on three
+of thirteen frames it has the sign wrong. Scaling multiplies those errors —
+the frames it already reads well are the ones a gain ruins (a frame left
+with 0.001 of cast at gain 1.0 is left with -0.038 at gain 1.8). RMS by
+gain: 0.024 at 1.0, 0.022 at the optimum of 1.26, 0.028 at 1.8. A 6%
+improvement at n=13 is not a constant worth pinning, and 1.8 is worse than
+changing nothing.
+
+The clearest case is the roll's two frames dominated by a brick wall
+(`165214`, `165254`), which the user had independently flagged as the
+worst colour offenders. On `165254` the weighting read **-0.003 against a
++0.031 cast** — the wrong sign, so nothing was corrected at all. The plain
+mean reads +0.033. No gain rescues a reading of zero.
+
+## The cost, taken knowingly
+
+A mean assumes the band *should* be neutral. A frame whose shadows carry
+real colour — dusk light, a coloured wall filling the dark end — will have
+some of it corrected away. That cost is precisely why the highlight band
+keeps the weighting, and it is the open risk at the thin end: the
+validation above is **one roll, one stock, thirteen frames**, and it does
+not include a scene with genuinely coloured shadows. A dusk roll is the
+test that would close it.
+
+## What the same investigation found, recorded so it is not rediscovered
+
+**The feature had never run on a tether-captured roll.** The deferred
+stitch path (`stitch --defer-roll-refresh`) skips
+`auto_neutral.recompute_roll_auto_neutral`, and `roll_refresh.run_roll_refresh`
+— the only catch-up point — never measured it either. Every negative on
+such a roll therefore had no `auto_neutral` block, `color.auto_neutral_active`
+returned `False`, and the correction did nothing with the slider sitting at
+1.0. Fixed in `roll_refresh.py`, which now measures every completed colour
+negative and forces previews when any block moved.
+
+**`roll refresh` had never regenerated a preview either.** It passed
+`NegativeRecord` objects where `previews.sync_previews` expects output
+filenames and calls `set()` on them; `NegativeRecord` is unhashable, so
+every call raised `TypeError`, was swallowed, and surfaced as a
+`PREVIEW_FAILED` warning. Fixed alongside.
+
+**One test was passing vacuously.** `test_auto_neutral_false_is_identity`
+compared an inert correction against itself: the old estimator returned
+`None` on the smooth synthetic ramp, so nothing was applied at either
+slider setting. It now asserts the bands are live before comparing.
+
+`AUTO_NEUTRAL_MEASURE_VERSION` is 2. Version-1 shadow blocks are
+under-read; they are replaced the next time a stitch or `roll refresh`
+measures the roll. No protocol version change: the block is recorded data
+read at render time, and no published pixel depends on it.
