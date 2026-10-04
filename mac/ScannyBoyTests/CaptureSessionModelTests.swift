@@ -456,6 +456,52 @@ struct CaptureSessionModelTests {
         #expect(model.completedNegatives.count == 1)
     }
 
+    @Test("auto-advance rolls into the next negative until paused")
+    func autoAdvanceRunsUntilPaused() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.autoAdvanceEnabled = true
+        await model.connect()
+        model.handleSpace()
+        for _ in 0..<200 where model.completedNegatives.count < 2 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(model.completedNegatives.count >= 2)
+        #expect(model.sequencePhase == .running)
+        model.handleSpace()
+        #expect(model.sequencePhase == .paused)
+    }
+
+    @Test("auto-advance is ignored for a multi-frame grid")
+    func autoAdvanceIgnoredForStitchGrids() async throws {
+        let (model, _, _) = Self.makeModel(across: 2, down: 1)
+        model.autoAdvanceEnabled = true
+        #expect(model.autoAdvanceActive == false)
+        model.across = 1
+        #expect(model.autoAdvanceActive == true)
+    }
+
+    @Test("without auto-advance a 1x1 negative ends idle")
+    func noAutoAdvanceEndsIdle() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.autoAdvanceEnabled = false
+        await model.connect()
+        model.handleSpace()
+        for _ in 0..<200 where model.completedNegatives.isEmpty {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(model.completedNegatives.count == 1)
+        #expect(model.sequencePhase == .idle)
+    }
+
     @Test("initial interval delays first release")
     func initialIntervalDelaysFirstRelease() async throws {
         let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)

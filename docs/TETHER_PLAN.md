@@ -457,6 +457,12 @@ Rules:
   interval, the countdown shows "waiting for download" rather than firing late
   without saying so.
 - The last cell has no interval after it.
+- **Auto-advance** (Setup toggle "Capture next negative automatically",
+  shown for 1×1 grids only, off by default, remembered in `UserDefaults`):
+  when a negative completes while the sequence is still running, the next
+  negative starts at once — initial countdown, one shot, repeat — until the
+  operator pauses (Space) or stops (Esc), or a shot fails. A pause during the
+  final shot lets that frame finish and then goes idle rather than rolling on.
 
 Keys, active only when the Capture stage has focus and no text field does:
 
