@@ -150,6 +150,31 @@ ALL_EVENTS: list[Event] = [
         flipped_horizontally=False,
         preview_path="/Users/me/Library/Application Support/ScannyBoy/previews/roll/a1b2c3-negative-03.png",
     ),
+    EditRecorded(
+        negative_id="a1b2c3-negative-03",
+        edit={
+            "id": 2,
+            "negative_id": "a1b2c3-negative-03",
+            "position": 2,
+            "op": "deband",
+            "params": {
+                "fit_version": 1,
+                "regions": [{"id": 1, "window": [0, 0, 9, 9, 0]}],
+            },
+            "created_at": "2026-08-31T12:00:00Z",
+        },
+        rotation_quarter_turns=0,
+        flipped_horizontally=False,
+        preview_path=None,
+        deband={
+            "fit_version": 1,
+            "enabled": True,
+            "strength": 1.0,
+            "axis": "vertical",
+            "regions": [{"id": 1, "display_rect": [0, 0, 9, 9]}],
+            "stale": False,
+        },
+    ),
     ExportDone(
         negative_id="a1b2c3-negative-03",
         output="_DSC4638.tif",
@@ -267,7 +292,7 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 24
+    assert PROTOCOL_VERSION == 25
 
 
 def test_new_event_kinds_round_trip():
@@ -431,3 +456,23 @@ def test_progress_carries_stitch_stage():
         stage=Stage.STITCH,
     )
     assert event.to_dict()["stage"] == "stitch"
+
+
+def test_edit_recorded_always_carries_a_deband_field():
+    """Like `crop`, the deband report rides every edit confirmation (null
+    when there is none), so the app can overwrite without caring which op
+    was recorded."""
+    data = EditRecorded(
+        negative_id="n",
+        edit={"op": "rotate", "params": {}},
+        rotation_quarter_turns=0,
+        flipped_horizontally=False,
+        preview_path=None,
+    ).to_dict()
+
+    assert data["protocol_version"] == PROTOCOL_VERSION
+    assert "deband" in data and data["deband"] is None
+
+
+def test_the_deband_refit_warning_code_is_stable():
+    assert Code.DEBAND_REFIT_FAILED.value == "DEBAND_REFIT_FAILED"

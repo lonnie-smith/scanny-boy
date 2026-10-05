@@ -1697,3 +1697,260 @@ def test_tiff_rect_to_display_folds_the_crop_in():
         crop_params=crop,
     )
     assert rect == (10, 10, 20, 10)
+
+
+# --- the deband op in the replay -------------------------------------------
+
+
+def _deband_scene(height=1300, width=1800, seed=2):
+    from scanny_boy import deband_support
+
+    codes, _info = deband_support.make_banded_scene(height, width, seed=seed, flat=True)
+    return codes, deband_support.DEFAULT_SPANS
+
+
+def _deband_op(codes, spans, windows, *, axis="vertical", strength=1.0):
+    """A `deband` op fitted region by region, each on the ones before it —
+    the way `edit deband` and the re-stitch refit build one."""
+    from scanny_boy import deband
+
+    fits: list = []
+    for window in windows:
+        fits.append(
+            deband.fit_region(codes, spans, window, axis, prior_regions=list(fits))
+        )
+    return deband.deband_params(
+        (codes.shape[1], codes.shape[0]), axis, fits, True, strength, spans
+    )
+
+
+_THREE_OVERLAPPING_WINDOWS = [
+    (100.0, 80.0, 900.0, 700.0, 0.0),
+    (500.0, 300.0, 900.0, 700.0, 0.0),
+    (300.0, 500.0, 1200.0, 700.0, 2.0),
+]
+
+
+def _region_vs_full(tmp_path, tiff_path, rect, **transform):
+    """`render_region`'s PNG against the slice of the full display image
+    the same transform and heal params produce."""
+    from scanny_boy.previews import _display_image, render_region
+
+    heal_params = transform.pop("heal")
+    destination = tmp_path / "region.png"
+    x, y, w, h = rect
+    render_region(
+        tiff_path, x, y, w, h, destination=destination, heal=heal_params, **transform
+    )
+    full = _display_image(
+        tiff_path,
+        transform.get("quarter_turns", 0),
+        transform.get("flipped_horizontally", False),
+        0.0,
+        heal_params,
+    )
+    stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+    expected = cv2.cvtColor(
+        _default_positive_display(full[y : y + h, x : x + w]), cv2.COLOR_RGB2BGR
+    )
+    np.testing.assert_array_equal(stored, expected)
+    return full
+
+
+def test_a_live_deband_op_changes_the_display_and_a_disabled_one_does_not(tmp_path):
+    from scanny_boy.previews import _display_image
+
+    codes, spans = _deband_scene(800, 1400)
+    tiff_path = _write_published_tiff(tmp_path, codes)
+    op = _deband_op(codes, spans, [(0.0, 0.0, 1400.0, 800.0, 0.0)])
+
+    plain = _display_image(tiff_path)
+    healed = _display_image(tiff_path, heal=heal.HealParams(deband=op))
+    disabled = _display_image(
+        tiff_path, heal=heal.HealParams(deband={**op, "enabled": False})
+    )
+    other_canvas = _display_image(
+        tiff_path, heal=heal.HealParams(deband={**op, "canvas": [1400, 799]})
+    )
+
+    assert not np.array_equal(plain, healed)
+    np.testing.assert_array_equal(plain, disabled)
+    np.testing.assert_array_equal(plain, other_canvas)
+
+
+def test_render_region_with_one_deband_region_equals_the_full_render_slice(
+    tmp_path, monkeypatch
+):
+    from scanny_boy import previews
+
+    codes, spans = _deband_scene()
+    tiff_path = _write_published_tiff(tmp_path, codes)
+    op = _deband_op(codes, spans, [(100.0, 80.0, 900.0, 700.0, 0.0)])
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a deband region render must stay on the fast path")
+
+    monkeypatch.setattr(previews, "cached_display_image", boom)
+    for rect in ((300, 250, 220, 180), (0, 0, 260, 200), (80, 60, 1000, 800)):
+        _region_vs_full(tmp_path, tiff_path, rect, heal=heal.HealParams(deband=op))
+
+
+def test_render_region_with_several_deband_regions_equals_the_full_render_slice(
+    tmp_path, monkeypatch
+):
+    """Region k is fitted on, and replayed over, the image with the regions
+    before it applied, so the exact zone shrinks by one margin per region:
+    the read rect widens by `REGION_MARGIN` x (live regions), and the
+    result is byte-identical to slicing the full render — including where
+    the rect straddles two regions and in the overlap of all three."""
+    from scanny_boy import previews
+
+    codes, spans = _deband_scene()
+    tiff_path = _write_published_tiff(tmp_path, codes)
+    op = _deband_op(codes, spans, _THREE_OVERLAPPING_WINDOWS)
+    assert len(op["regions"]) == 3
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a deband region render must stay on the fast path")
+
+    monkeypatch.setattr(previews, "cached_display_image", boom)
+    for rect in (
+        (650, 560, 200, 150),  # inside the overlap of all three
+        (950, 400, 260, 220),  # straddles the first region's edge
+        (0, 0, 1800, 1300),  # the whole frame
+        (1500, 1000, 300, 300),  # the corner, clamped by the image edge
+        (700, 650, 17, 9),
+    ):
+        _region_vs_full(tmp_path, tiff_path, rect, heal=heal.HealParams(deband=op))
+
+
+def test_the_per_region_margin_keeps_the_render_exact_when_regions_shift_luminance(
+    tmp_path,
+):
+    """Fitted corrections are chroma-only, so a real region barely changes
+    the luminance the next region's protection weight reads, and the
+    sequential dependence only shows at the quantization level. The margin
+    rule does not lean on that: with hand-made regions that *do* shift
+    luminance (a step the later regions' protection blur sees), the render
+    is still byte-identical to the full render with `REGION_MARGIN` per
+    region."""
+    from scanny_boy import deband
+    from scanny_boy.previews import _display_image
+
+    codes, spans = _deband_scene()
+    tiff_path = _write_published_tiff(tmp_path, codes)
+
+    def stepped_fit(window):
+        n_cols = -(-int(window[2]) // deband.PITCH_PX)
+        corr = np.zeros((3, n_cols, 3), dtype=np.float32)
+        corr[:, n_cols // 2 :, :] = 0.05  # not zero-sum: shifts luminance
+        return deband.RegionFit(
+            window=window,
+            axis="vertical",
+            block_px=deband.BLOCK_PX,
+            pitch_px=deband.PITCH_PX,
+            blocks=3,
+            corr=corr,
+        )
+
+    op = deband.deband_params(
+        (1800, 1300),
+        "vertical",
+        [stepped_fit(window) for window in _THREE_OVERLAPPING_WINDOWS],
+        True,
+        1.0,
+        spans,
+    )
+    full = _display_image(tiff_path, heal=heal.HealParams(deband=op))
+    # Near where the first region's step (x = 100 + 450) leaves a luminance
+    # edge inside the later regions' read windows.
+    x, y, w, h = 600, 600, 200, 150
+
+    def render_with_margin(margin):
+        x0, y0 = max(0, x - margin), max(0, y - margin)
+        x1, y1 = min(1800, x + w + margin), min(1300, y + h + margin)
+        return deband.apply(
+            codes[y0:y1, x0:x1].copy(),
+            op,
+            region=(x - x0, y - y0, w, h),
+            origin=(x0, y0),
+        )
+
+    wanted = full[y : y + h, x : x + w]
+    np.testing.assert_array_equal(render_with_margin(deband.REGION_MARGIN * 3), wanted)
+
+    # And through the real fast path.
+    _region_vs_full(tmp_path, tiff_path, (x, y, w, h), heal=heal.HealParams(deband=op))
+
+
+@pytest.mark.parametrize(("quarter_turns", "flipped"), [(1, False), (2, True)])
+def test_render_region_with_deband_under_quarter_turns_and_a_mirror(
+    tmp_path, quarter_turns, flipped
+):
+    codes, spans = _deband_scene()
+    tiff_path = _write_published_tiff(tmp_path, codes)
+    op = _deband_op(codes, spans, _THREE_OVERLAPPING_WINDOWS[:2])
+
+    _region_vs_full(
+        tmp_path,
+        tiff_path,
+        (200, 300, 240, 200),
+        heal=heal.HealParams(deband=op),
+        quarter_turns=quarter_turns,
+        flipped_horizontally=flipped,
+    )
+
+
+def test_render_region_with_deband_and_scratches_widens_by_both_margins(tmp_path):
+    """Scratches replay first and need their own margin *beyond* the deband
+    margins, so both ops are exact in one region render."""
+    from scanny_boy import scratches
+
+    codes, spans = _deband_scene()
+    val = normalization.decode_normalized(codes).astype(np.float32)
+    for column in range(898, 903):  # a vertical scratch through the regions
+        val[:, column, 0] += 0.10
+        val[:, column, 1] += 0.085
+        val[:, column, 2] -= 0.02
+    codes = normalization.encode_normalized(val).astype(np.uint16)
+    # The detector's own bar is not under test here, so hand it the path.
+    candidate = scratches.Candidate(
+        axis="vertical",
+        centres=np.full(1300 // scratches.BAND_PX, 900.0),
+        score=1.0,
+        agreement=1.0,
+        drift=0.0,
+    )
+    scratch_op = scratches.scratches_params(
+        (1800, 1300), [scratches.fit(codes, candidate)], enabled=True
+    )
+    # Fit the bands on what replay gives them: scratch-corrected pixels.
+    clean = scratches.apply(codes, scratch_op)
+    assert not np.array_equal(clean, codes), "the scratch op must do something"
+    op = _deband_op(clean, spans, _THREE_OVERLAPPING_WINDOWS[:2])
+    tiff_path = _write_published_tiff(tmp_path, codes)
+
+    for rect in ((820, 600, 160, 120), (880, 100, 70, 300)):
+        _region_vs_full(
+            tmp_path,
+            tiff_path,
+            rect,
+            heal=heal.HealParams(scratches=scratch_op, deband=op),
+        )
+
+
+def test_the_display_pixel_cache_distinguishes_deband_ops(tmp_path):
+    from scanny_boy import previews
+
+    codes, spans = _deband_scene(800, 1400)
+    tiff_path = _write_published_tiff(tmp_path, codes)
+    op = _deband_op(codes, spans, [(0.0, 0.0, 1400.0, 800.0, 0.0)])
+
+    plain = previews._display_pixel_cache_key(tiff_path)
+    with_op = previews._display_pixel_cache_key(
+        tiff_path, heal=heal.HealParams(deband=op)
+    )
+    weaker = previews._display_pixel_cache_key(
+        tiff_path, heal=heal.HealParams(deband={**op, "strength": 0.5})
+    )
+    assert len({plain, with_op, weaker}) == 3

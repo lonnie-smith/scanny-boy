@@ -328,7 +328,9 @@ def main() -> None:
             fit = deband.fit_region(image, spans, window, args.axis)
             t_fit = time.time() - t0
 
-            params = deband.deband_params(canvas, args.axis, [fit], True, args.strength)
+            params = deband.deband_params(
+                canvas, args.axis, [fit], True, args.strength, spans
+            )
             t1 = time.time()
             healed = deband.apply(image, params)
             t_apply = time.time() - t1
@@ -343,7 +345,7 @@ def main() -> None:
             t2 = time.time()
             held_out_fit = _held_out_split_fit(image, spans, window, args.axis)
             held_out_params = deband.deband_params(
-                canvas, args.axis, [held_out_fit], True, args.strength
+                canvas, args.axis, [held_out_fit], True, args.strength, spans
             )
             held_out_healed = deband.apply(image, held_out_params)
             held_before, held_after = _held_out_score(
@@ -359,9 +361,9 @@ def main() -> None:
             # apart): a sharp band edge shows up here.
             max_step_log = float(np.abs(np.diff(corr_b_log, axis=1)).max())
             max_abs_log = float(np.abs(corr_log).max())
-            table_b64 = deband.deband_params(canvas, args.axis, [fit], True, 1.0)[
-                "regions"
-            ][0]["corr"]
+            table_b64 = deband.deband_params(
+                canvas, args.axis, [fit], True, 1.0, spans
+            )["regions"][0]["corr"]
 
             row.update(
                 {

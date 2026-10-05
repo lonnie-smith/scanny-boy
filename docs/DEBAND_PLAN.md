@@ -108,79 +108,131 @@ its own Heal panel section.
 
 ## 3. Algorithm
 
-All arithmetic is in `val` (`decode_normalized`) × per-channel span from
-the negative's normalization record, i.e. log10 units, as in
-`scratches.py`. The stored correction is converted back to `val` units per
-channel, so replay is a plain subtraction.
+*This section describes the model as built and calibrated (step 1,
+`cli/tools/measure_deband.py`); it supersedes the first-draft §3.1 (a single
+shared baseline, no cross-block agreement). The constants and their
+provenance are listed in `deband.py`'s docstring.*
 
-New module: `cli/src/scanny_boy/deband.py`. It is a leaf importing only
-`numpy`, `scipy.ndimage`, `cv2`, and `normalization`.
+All arithmetic is in log10 density: `val` (`decode_normalized`) × the
+per-channel span (`ceil − floor` from the negative's normalization record),
+as in `scratches.py`. The stored correction is converted back to `val`
+units per channel, so replay is a plain subtraction. The op carries the
+spans (§4), so replay can also judge the protection weight in log10.
 
-Everything below is written for the vertical axis. Horizontal runs on the
-transposed view.
+Module: `cli/src/scanny_boy/deband.py`, a leaf importing only `numpy`,
+`scipy.ndimage`, `cv2` and `normalization`.
+
+Everything below is written for the vertical axis ("bands vary along the
+window's height"). Horizontal swaps the window's local width and height
+roles; the source image is never transposed.
 
 ### 3.1 Fit (per region)
 
 Input: the region's TIFF-space window `(x, y, w, h, tilt)`, and the image
-with all earlier regions already applied (§3.3, ordering).
+with all earlier regions already applied (§3.3).
 
-1. **Sample.** Read the window's bounding box plus a 144 px margin, and
-   rasterize the tilted window as a mask.
-2. **Background mask.** `L = mean over channels`,
-   `Ls = GaussianBlur(L, σ=48)`. A pixel counts as background when
-   `|L − Ls| < 0.03`. This excludes wires, poles and edges.
-3. **Block profiles.** Split the region's rows into blocks of 256. Per
-   block, per column, per channel, take the median over background
-   pixels.
-   - Columns whose background fraction across the whole region is
-     < 0.4 (a full-height pole or tower) are interpolated from their
-     neighbours.
-   - Columns whose background fraction within the block is < 0.2 are
-     interpolated too.
-4. **Smooth along the band.** Gaussian across blocks, σ = 1 block. Bands
-   vary slowly along their length, and this lets a slightly tilted or
-   wandering edge be tracked.
-5. **Baseline.** Take one robust polynomial of degree 2 over the region
-   width, fitted to the block-mean profile per channel (3 passes,
-   rejecting residuals > 2.5 × 1.4826 × MAD). This is what separates
-   "band" from the scene's own gradual gradient (sky toward the horizon,
-   light falloff). It is shared by every block.
-6. **Deviation.** `dev = profile − baseline`, then a Gaussian across x
-   with σ = 2 px. That is enough to cut grain without blurring a sharp
-   edge; σ = 8 leaves a visible line (§1).
-7. **Chroma only.** `corr = dev − mean_over_channels(dev)`. The
-   correction sums to zero across channels in log units, so luminance is
-   untouched.
-8. **Store** `corr` per block at an x pitch of 4 px (§4). The pitch is to
-   be confirmed in step 1 of §8.
+1. **Sample.** A tilted window is warped straight (`cv2.warpAffine`, window
+   rotation, `SAMPLE_MARGIN_PX` = `REGION_MARGIN` = 192 px of margin on each
+   side) so the statistics can be taken on an axis-aligned grid. Pixels the
+   warp filled (outside the canvas) are never background.
+2. **Background mask.** `L` = mean over channels (log10), `Ls` =
+   `GaussianBlur(L, σ=48)`. A pixel is background when `|L − Ls| < 0.03`.
+   This excludes wires, poles and edges. A region with under 20 % background
+   pixels is rejected (`ValueError`, surfaced as `INVALID_EDIT`: "pick a
+   flatter area"). Regions under 256 px along the bands or 512 px across are
+   rejected the same way.
+3. **Per-block profiles.** Split the region's lines into blocks of 256. Per
+   block, per column, per channel: the median over background pixels.
+   Columns with under 40 % background across the whole region (a pole or
+   tower) or under 50 % within the block are unmeasured there; a block with
+   under 25 % measurable columns is unmeasured.
+4. **Per-block baseline.** *Each block's* profile gets its own robust
+   degree-2 baseline (3 passes, rejecting residuals > 2.5 × 1.4826 × MAD),
+   subtracted. This separates "band" from the scene's own gradual gradient,
+   and it has to be per block: a baseline shared across blocks turned each
+   block's own vertical sky gradient into a "correction".
+5. **Common profile, not per-block profile.** A band runs the whole length,
+   so the correction is what the measured blocks agree on:
+   - per column, the densest cluster of the blocks' low-passed (σ = 96 px)
+     deviations, within 0.012 log10 of each other (ties go to the cluster
+     nearer zero); its median is the **common profile**;
+   - a cloud, a tree's shadow or any broad object that only some blocks
+     see falls outside the cluster and is never "corrected" into the band;
+   - a block within 0.004 log10 of the common profile also contributes its
+     own small *wander* (a tilted or drifting edge), fading out with the
+     offset, capped at 0.02;
+   - gaps are filled along the band (a cell unmeasured in one block takes
+     the nearest measured blocks' value in that column), then across x for a
+     column unmeasured in every block.
+6. **Confidence.** The correction is scaled by the cluster's share of the
+   measured blocks (smoothstep between 0.5 and 0.8, blurred 48 px), so
+   ambiguous columns get no correction rather than a guess. Columns within
+   24 px of an unmeasured run are re-derived from clean columns beyond (an
+   object's halo).
+7. **Smoothing, chroma only, cap.** Gaussian across blocks (σ = 1 block) and
+   across x (σ = 2 px: enough to cut grain without blurring a sharp edge;
+   σ = 8 left a visible line). Then `corr −= mean over channels`, so it sums
+   to zero across channels in log units and luminance is untouched. A hard
+   cap of 0.05 log10 on the stored correction (measured bands are ≤ 0.03)
+   limits the damage from a misused region.
+8. **Store** `corr` per block at an x pitch of **8 px**, in `val` units
+   (÷ span), int16 at scale 1e-5, zlib, base64. (The plan said 4 px;
+   identical held-out scores at 8, half the size: a 1 876-line region is
+   about 46 KB, a full 6 000-line frame about 90–130 KB.)
 
-Cost in the prototype: well under a second per region, in unoptimized
-numpy.
+Cost: well under a second per region.
 
 ### 3.2 Apply (per region)
 
 For each pixel inside the region's feathered mask:
 
 - **Look up** `corr`: bilinear across x (pitch) and across blocks, by the
-  pixel's position along the band axis.
-- **Protection weight.** `p = exp(−((L − Ls) / 0.04)²)`, with `Ls` the
-  σ=48 blur recomputed from the image being corrected. Pixels that differ
-  from their surroundings (tower, wires, a building edge at the horizon)
-  keep their colour.
-- **Feather.** A mask ramp over `min(128 px, 10 % of the side)` on all
-  four sides of the window.
-- `val[..., ch] −= strength · feather · p · corr_ch / span_ch`.
+  pixel's position in the window's local frame. The window's rotation is
+  applied *algebraically* to the pixel's position; the image itself is
+  never resampled. That is what makes a region render byte-identical to a
+  slice of the full render. `tilt` is the same quantity the `crop` op
+  stores: counter-clockwise as displayed, `cv2.getRotationMatrix2D`'s sense.
+- **Protection weight.** `p = exp(−((L − Ls) / 0.04)²)`, with `L` and
+  `Ls` in **log10** (via the op's `spans`) and `Ls` the σ = 48 blur
+  recomputed from the image being corrected. Pixels that differ from their
+  surroundings (tower, wires, a building edge at the horizon) keep their
+  colour.
+- **Feather.** A mask ramp over `min(128 px, 10 % of the side)` on all four
+  sides of the window.
+- `val[..., ch] −= strength · feather · p · corr_ch`.
 
-The correction is purely per pixel, given the stored table. The only
-neighbourhood dependence is `Ls`, so a region render needs a margin of
-144 px (3σ). Pixels equal to the fill code are skipped. Values are clipped
-to the encode headroom like `scratches._apply_one_scratch`.
+Pixels equal to the fill code are skipped. Values are clipped to the encode
+headroom like `scratches._apply_one_scratch`. The only neighbourhood
+dependence is `Ls`, so one region needs a read margin of
+**`REGION_MARGIN` = 192 px** (4σ: `cv2.GaussianBlur` with `ksize=0` reads
+4σ, not 3σ, and a 144 px margin was measurably not enough).
 
-### 3.3 Ordering
+### 3.3 Ordering, and the multi-region rule
 
-Regions apply in list order. Region *k* is fitted on the image with
-regions `< k` already applied, so sequential replay matches what each fit
-saw. Removing or changing the axis refits every region, which is cheap.
+Regions apply in list order. Region *k* is fitted on the image with regions
+`< k` already applied (`fit_region(..., prior_regions=...)`), so sequential
+replay matches what each fit saw. Removing a region or changing the axis
+refits every region, in order, from their stored windows; adding one fits
+only the new region on top of the stored ones. Scratch correction is
+applied before every fit, because replay applies it before deband.
+
+**Region renders.** Region *k*'s protection blur reads the image after
+regions `< k`, so the zone where a render is exact shrinks by one margin
+per sequential region. `previews.render_region`'s fast path therefore reads
+the rect widened by **`REGION_MARGIN` × (number of regions in the op)** —
+not by one margin — and, when scratches are live too, by the scratch margin
+beyond that (scratches replay first and finish exact over the deband rect
+before deband runs). The alternative, sending every multi-region render
+through the full-decode exact path, was rejected: it would decode and cache
+a ~300 MB display image for what is, with three regions, a 1 150 px margin
+on a viewer tile, and viewer tiles arrive constantly. Tests hold
+byte-identity of the region render against the full render's slice for one
+and for three overlapping regions, including hand-made regions that shift
+luminance. (Fitted corrections are chroma-only, so a real region barely
+changes the luminance the next region's protection weight reads; with real
+fits a single margin differs from the full render at most at the
+quantization level. The per-region margin is the rule that is exact by
+construction, not by that coincidence, and it costs only a wider read.)
 
 **Why the fit is stored.** Same reasons as scratches: a 1:1 region render
 must not decode the whole region on every fetch, and a later change to the
@@ -201,35 +253,45 @@ trailing op coalesces in place, and it lives in TIFF space.
   "strength": 1.0,
   "axis": "vertical",
   "canvas": [8269, 6255],
+  "spans": [1.35, 1.25, 1.45],
   "regions": [
     {
       "id": 1,
-      "window": [150, 5000, 7970, 1092, 0.0],
+      "window": [150.0, 5000.0, 7970.0, 1092.0, 0.0],
       "block_px": 256,
-      "pitch_px": 4,
+      "pitch_px": 8,
       "blocks": 5,
-      "corr": "<base64 zlib int16, shape (blocks, ceil(w/pitch), 3), val units, scale 1e-5>"
+      "corr": "<base64 zlib int16, shape (blocks, ceil(cross/pitch), 3), val units, scale 1e-5>"
     }
   ]
 }
 ```
 
-- `window` is `(x, y, w, h, tilt_deg)` in TIFF pixels, the same shape the
-  `crop` op stores, so the display→TIFF mapping is shared.
-- **Size.** zlib before base64. The profiles are smooth, so this should
-  compress several-fold. Target ≤ 64 KB per region; confirm in step 1.
-- **Liveness.** The op is live when:
-  - `enabled` is true;
-  - `regions` is non-empty;
-  - `canvas` matches the TIFF;
-  - the image is 3-channel.
-
-  Anything else is a no-op, never an error. A newer `fit_version` parses
-  to `None`.
-- **Replay order.** `scratches` → `deband` → `spots` → geometry.
-  - Scratch tables were fitted on un-debanded pixels.
-  - Spot detection wants clean pixels.
-  - The deband window is in TIFF space.
+- `axis` is the **TIFF-space** direction the bands run; `roll info` and
+  `edit_recorded` report it as displayed (swapped under odd quarter turns).
+- `spans` is the negative's per-channel `ceil − floor` (log10) at fit time.
+  It makes the protection weight's 0.04 log10 tolerance exact at replay.
+  `fit_version` stays 1: nothing was ever persisted before spans existed.
+- `window` is `(x, y, w, h, tilt_deg)` in TIFF pixels, the same shape and
+  tilt sense the `crop` op stores, so the display→TIFF mapping is shared
+  (`previews.display_crop_window_to_tiff`). `id` is a small positive int,
+  stable across edits.
+- `strength` is 0–1.5. `repo.validated_deband_params` checks every field and
+  decodes each table against its window (a corrupt table is rejected when
+  written and replays as no op). Unknown keys are ignored.
+- **Size.** Target ≤ 64 KB per region held for regions up to ~3 000 lines;
+  a full-frame region is ~90–130 KB. `edit_recorded` omits the `corr`
+  tables.
+- **Liveness.** The op is live when `enabled`, `regions` is non-empty,
+  `canvas` matches the TIFF, `spans` is valid, and the image is 3-channel.
+  Anything else is a no-op, never an error. A newer `fit_version` parses to
+  `None`.
+- **Replay order.** `scratches` → `deband` → `spots` → geometry
+  (`heal.apply`). Scratch tables were fitted on un-debanded pixels but
+  deband is fitted on scratch-corrected ones; spot detection wants clean
+  pixels; the deband window is in TIFF space.
+- **Pixel-cache key.** `heal.cache_key` gained a third element, a hash of the
+  whole op (a new key shape; the cache is in-memory only).
 
 ---
 
@@ -239,32 +301,40 @@ trailing op coalesces in place, and it lives in TIFF space.
 
 **`deband.py`** (new):
 
-- `fit_region(image_codes, spans, window, axis, prior_regions) -> RegionFit`
-- `deband_params(canvas, axis, fits, enabled, strength) -> dict`
+- `fit_region(image_codes, spans, window, axis, *, prior_regions=None,
+  row_mask=None) -> RegionFit` (`row_mask` is a calibration hook)
+- `deband_params(canvas, axis, fits, enabled, strength, spans, *, ids=None)
+  -> dict`
 - `is_live(params, shape) -> bool`
 - `apply(image_codes, params, *, region=None, origin=None) -> image_codes`
   (the `scratches.apply` signature)
-- `REGION_MARGIN = 144`
+- `fits_from_params`, `clamp_window`, `parse_region` (used by the CLI)
+- `REGION_MARGIN = 192`, `PITCH_PX = 8`
 
 **`library/repo.py`:**
 
 - `DEBAND_OP = "deband"` and a comment block.
-- `EditState.deband`.
+- `EditState.deband` (also `HealParams.deband`, `heal.apply` order
+  scratches → deband → spots).
 - `validated_deband_params` and `_parse_deband_op` sharing one checker.
 - `append_deband_edit` → `_coalesce_state_edit`.
 - `net_edit_state` fills the new field.
 
 **`previews.py` / `exporter.py`.**
 
-- Follow every `scratches_params` site: there are ~36 in `previews.py`
-  and ~13 in `exporter.py`. The core ones are:
-  - `_display_image`, applied after `scratches.apply`;
-  - `_deband_cache_key`;
+- With `HealParams` (step 2a) previews and the exporter already replay
+  through `heal.apply`, so the work was:
+  - `heal.cache_key`'s deband element;
   - `_STATE_PREVIEW_OPS`;
-  - `render_region`, with the rect expanded by `REGION_MARGIN` when live;
-  - export, with XMP `rendered.deband: {fit_version, regions}`.
-- Check that auto-tone and auto-colour analysis read through
-  `_display_image`, so they see debanded pixels.
+  - `render_region`, with the rect widened by `REGION_MARGIN` × (number of
+    regions) when live (§3.3);
+  - export, with XMP `rendered.deband: {fit_version, regions}` (the region
+    count) when live.
+- Auto-tone and auto-colour do **not** read pixels: they solve from the
+  negative's stored normalization record, so a deband op cannot change
+  them. Auto-neutral (`auto_neutral.measure_auto_neutral_from_tiff`) and
+  auto-crop do read the raw published TIFF with no heal replay, exactly as
+  for scratches and spots; they ignore the op.
 
 **Worth deciding first.** Adding a second heal op this way threads another
 kwarg through ~50 call sites. A small preparatory refactor, bundling
@@ -274,13 +344,13 @@ step 2a (§8), mechanical, landing with no behaviour change.
 
 **`stitch_pipeline._composite_and_publish`.**
 
-- **Re-stitch.** When a previous `deband` op exists, even a stale one:
+- **Re-stitch** (`stitch_pipeline._refit_deband`). When a previous `deband` op exists, even a stale one:
   1. clamp each window to the new canvas;
   2. refit each region in order on the new image;
-  3. preserve `enabled`, `strength` and `axis`;
+  3. preserve `enabled`, `strength`, `axis` and the region ids;
   4. append the new op.
-- **Failure.** Any exception logs a warning and records nothing. It never
-  fails the stitch.
+- **Failure.** Any exception emits a `DEBAND_REFIT_FAILED` warning and
+  records nothing (the old op stays, stale). It never fails the stitch.
 - Windows can be off by the canvas shift between stitches (tens of px).
   That is acceptable: regions are coarse, and the fit recomputes the
   correction from the new pixels.
@@ -293,18 +363,24 @@ step 2a (§8), mechanical, landing with no behaviour change.
     Swift never does"), fits, and appends.
   - `--remove-region ID`, which refits the remainder.
   - `--axis vertical|horizontal`, as displayed. The CLI converts to TIFF
-    space through the quarter turns and refits everything.
+    space through the quarter turns and refits everything. A fresh op runs
+    along the TIFF's vertical axis.
   - `--on` / `--off` and `--strength S`, which need no refit.
   - `--clear`.
 - **Failures.** `INVALID_EDIT` on a monochrome roll, on a region smaller
   than 256 px along the band or 512 px across, or on a region with < 20 %
   background pixels. The last one gets a message telling the user to pick
   a flatter area.
-- **Output.** Regenerates previews and emits `edit_recorded`.
+- **Output.** Regenerates previews and emits `edit_recorded`, whose
+  `deband` field carries the same display-space report as `roll info`
+  (every edit confirmation does, because a rotation moves the rects) and
+  whose `edit.params` omits the `corr` tables. Selection is not supported
+  (single `--negative`).
 - **`roll info`.** A per-negative `deband` block:
   `{fit_version, enabled, strength, axis, regions: [{id, display_rect}], stale}`,
-  with display-space rects (via `tiff_rect_to_display`) for the overlay,
-  or `null` when there is no op.
+  with display-space rects (via `tiff_rect_to_display`, with the window's
+  tilt) for the overlay, or `null` when there is no op. `stale` means the
+  op's canvas no longer matches (a failed re-stitch refit).
 
 **Contract.** Bump `PROTOCOL_VERSION` 24 → 25. Update
 `shared/contract/CONTRACT.md` (the command, the `roll info` block, the
@@ -385,6 +461,8 @@ gradient that must survive.
     reusing the crop tests' transforms.
   - `INVALID_EDIT` on mono, on too-small regions, and on regions with
     too little background.
+- **Multi-region render.** The region render of an op with three
+  overlapping regions equals the full render's slice byte for byte (§3.3).
 - **Stitch pipeline** (`make_work_dir`, re-stitch):
   - regions are refitted onto the new canvas, with settings preserved;
   - a refit that raises still publishes and emits a warning.
@@ -455,12 +533,12 @@ record which constants are measured in the module docstring.
 
 ## 8. Order of work
 
-1. **Algorithm, no pipeline changes.** Build `deband.py` fit/apply, the
+1. **Algorithm, no pipeline changes** (done). Build `deband.py` fit/apply, the
    synthetic fast tests, and `measure_deband.py`. Calibrate on the §6.3
    set. This is where the risk is, so it goes first.
 2. **Op and replay.**
-   - 2a. The `HealParams` refactor, if adopted. No behaviour change.
-   - 2b. The repo op and parser; previews, `render-region` and export;
+   - 2a. The `HealParams` refactor (done, no behaviour change).
+   - 2b. (Done.) The repo op and parser; previews, `render-region` and export;
      `edit deband` and the `roll info` block; re-stitch refit; the
      contract bump; pipeline and edit tests.
 3. **App.** Summary parsing, the Heal panel section, draw mode (the

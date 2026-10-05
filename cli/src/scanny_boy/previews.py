@@ -59,7 +59,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scanny_boy import auto_rotate, color, normalization, render, scratches, spots, tone
+from scanny_boy import (
+    auto_rotate,
+    color,
+    deband,
+    normalization,
+    render,
+    scratches,
+    spots,
+    tone,
+)
 from scanny_boy import heal as heal_ops
 from scanny_boy import highlight_lock as highlight_lock_module
 from scanny_boy.library import repo
@@ -119,9 +128,9 @@ def _display_pixel_cache_key(
         int(quarter_turns) % 4,
         bool(flipped_horizontally),
         round(float(fine_angle_deg), 6),
-        # `heal.cache_key` returns the spot half then the scratch half, in
-        # that order — spliced in flat so this tuple is exactly the shape
-        # it was before the two params were bundled into `HealParams`.
+        # `heal.cache_key` returns the spot, scratch and deband elements, in
+        # that order, spliced in flat (the deband element is the newest;
+        # the cache is in-memory only, so the key shape may change freely).
         *heal_ops.cache_key(heal),
         crop_key,
     )
@@ -776,6 +785,61 @@ def crop_report(
     }
 
 
+def deband_display_axis(tiff_axis: str, quarter_turns: int) -> str:
+    """A deband op's TIFF-space band axis as displayed (odd net quarter
+    turns swap it). The mapping is its own inverse, so it also converts a
+    displayed axis to the TIFF axis the op stores."""
+    if int(quarter_turns) % 2 == 0:
+        return tiff_axis
+    return "horizontal" if tiff_axis == "vertical" else "vertical"
+
+
+def deband_report(
+    deband_params: dict | None,
+    tiff_size: tuple[int, int],  # (height, width)
+    *,
+    quarter_turns: int,
+    flipped_horizontally: bool = False,
+    fine_angle_deg: float = 0.0,
+    crop_params: dict | None = None,
+) -> dict | None:
+    """The net `deband` op as `roll info` and `edit_recorded` report it, in
+    display space, or None when there is no op: `{fit_version, enabled,
+    strength, axis, regions: [{id, display_rect}], stale}`. `axis` is as
+    displayed. Each `display_rect` is `[x, y, w, h]`, the bounding box of
+    the (possibly tilted) region on the display image, live crop included.
+    `stale` means the op was fitted against a different canvas — a
+    re-stitch replaced the TIFF and the refit failed — so it applies
+    nothing. The op's correction tables never leave the CLI."""
+    if deband_params is None:
+        return None
+    canvas = deband_params.get("canvas") or (None, None)
+    stale = (canvas[0], canvas[1]) != (tiff_size[1], tiff_size[0])
+    regions = []
+    for region in deband_params.get("regions") or []:
+        x, y, w, h, tilt = region["window"]
+        rect = tiff_rect_to_display(
+            (round(x), round(y), round(w), round(h)),
+            tiff_size,
+            quarter_turns=quarter_turns,
+            flipped_horizontally=flipped_horizontally,
+            fine_angle_deg=fine_angle_deg,
+            crop_params=crop_params,
+            tilt_deg=tilt,
+        )
+        regions.append({"id": region["id"], "display_rect": list(rect)})
+    return {
+        "fit_version": deband_params.get("fit_version"),
+        "enabled": bool(deband_params.get("enabled")),
+        "strength": float(deband_params.get("strength", 1.0)),
+        "axis": deband_display_axis(
+            deband_params.get("axis", "vertical"), quarter_turns
+        ),
+        "regions": regions,
+        "stale": stale,
+    }
+
+
 def display_crop_window_to_tiff(
     rect: tuple[int, int, int, int],  # display space: (x, y, w, h)
     tiff_size: tuple[int, int],  # (height, width)
@@ -872,6 +936,21 @@ def display_crop_window_to_tiff(
     return _window_from_tilted_corners(mapped)
 
 
+def _expand_rect(
+    rect: tuple[int, int, int, int],
+    margin_x: int,
+    margin_y: int,
+    bounds: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """`rect` (x, y, w, h) grown by the margins on every side and clamped to
+    `bounds` (width, height)."""
+    x0 = max(0, rect[0] - margin_x)
+    y0 = max(0, rect[1] - margin_y)
+    x1 = min(bounds[0], rect[0] + rect[2] + margin_x)
+    y1 = min(bounds[1], rect[1] + rect[3] + margin_y)
+    return x0, y0, x1 - x0, y1 - y0
+
+
 def _display_image(
     tiff_path: Path,
     quarter_turns: int = 0,
@@ -881,8 +960,8 @@ def _display_image(
     crop_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (scratch correction, then spot repair — `heal.apply`,
-    which owns that order — then the mirror, then the fine rotation's warp
+    in canonical order (scratch correction, then band removal, then spot
+    repair — `heal.apply`, which owns that order — then the mirror, then the fine rotation's warp
     with the fill sentinel, then the quarter turns, then the crop on the
     uncropped display canvas) — the pixels `generate_preview`,
     `render_preview`, and `render_region`'s exact path all work from.
@@ -940,7 +1019,7 @@ def generate_preview(
     replay says, so the caller passes the canonical angle through
     untouched. `tone_params` is the net `tone` op's full param dict (None =
     the default print curve), composed into the display LUT. `heal` bundles
-    the net `scratches`/`spots` ops (`heal.HealParams`); the net `crop` op's
+    the net `scratches`/`deband`/`spots` ops (`heal.HealParams`); the net `crop` op's
     window (`crop_params`, TIFF space in the ops log) is replayed last on
     the uncropped display canvas — which is why a live crop's window is
     what `display_shape` sizes.
@@ -1086,6 +1165,7 @@ def tiff_rect_to_display(
     flipped_horizontally: bool,
     fine_angle_deg: float,
     crop_params: dict | None = None,
+    tilt_deg: float = 0.0,
 ) -> tuple[int, int, int, int]:
     """A TIFF-space `(x, y, width, height)` rect as the display-space rect
     the app draws markers over — the exact forward map of
@@ -1098,6 +1178,11 @@ def tiff_rect_to_display(
     crop window's dimensions when a crop is present. A box under a fine
     rotation grows slightly — correct behaviour for a review marker, not a
     bug to fix.
+
+    `tilt_deg` makes the rect a *tilted window* — the shape the `crop` and
+    `deband` ops store: the rect rotated counter-clockwise (as displayed)
+    about its pixel-index centre before the forward map, so the box
+    returned bounds the tilted window.
 
     The CLI converts; Swift never does. Every command and query reports
     spots in display space, already transformed."""
@@ -1122,6 +1207,17 @@ def tiff_rect_to_display(
             (x, y + h - 1),
         )
     ]
+    if abs(tilt_deg) >= 1e-9:
+        tilt_matrix = cv2.getRotationMatrix2D(
+            (x + (w - 1) / 2.0, y + (h - 1) / 2.0), float(tilt_deg), 1.0
+        )
+        corners = [
+            (
+                tilt_matrix[0, 0] * px + tilt_matrix[0, 1] * py + tilt_matrix[0, 2],
+                tilt_matrix[1, 0] * px + tilt_matrix[1, 1] * py + tilt_matrix[1, 2],
+            )
+            for px, py in corners
+        ]
     # 0. The live crop, forward: the crop output point is the inverse
     # rotation of the TIFF point, minus the window's origin.
     if live_crop:
@@ -1268,7 +1364,10 @@ def render_region(
     `test_render_region_matches_full_decode` holds that equivalence, and
     the strip-level reader (only the strips overlapping the rect are
     decoded, since the published TIFF is strip-compressed, not tiled) is
-    held to the full read as well. The fine rotation's warp interpolates
+    held to the full read as well. Scratch correction and band removal are
+    local, so the fast path reads a TIFF-space rect widened by each live
+    op's margin (band removal: `deband.REGION_MARGIN` per region, because
+    regions replay sequentially) and replays them on it. The fine rotation's warp interpolates
     across the crop boundary, the spot repair's inpainting differs between
     a crop and the whole image, and a live crop's own warp interpolates —
     any of the three takes the exact path instead: decode the whole TIFF,
@@ -1341,25 +1440,59 @@ def render_region(
     if flipped_horizontally:
         tx0, tx1 = tiff_w - tx1, tiff_w - tx0
 
+    # The heal ops' replay order (scratches, deband) runs on a TIFF-space
+    # buffer read wider than the rect, each op consuming its own margin:
+    # `rect` is what the caller asked for, `deband_rect` is `rect` plus every
+    # live deband region's margin, and `read_rect` adds the scratches' margin
+    # on top of that, so scratches can finish exact over all of `deband_rect`
+    # before deband runs.
+    bounds = (tiff_w, tiff_h)
+    rect = (tx0, ty0, tx1 - tx0, ty1 - ty0)
+    live_deband = deband.is_live(heal.deband, (tiff_h, tiff_w))
+    if live_deband:
+        # Region k is fitted on, and replayed over, the image with regions
+        # < k applied, and its protection blur reads `deband.REGION_MARGIN`
+        # around each pixel. The exact zone therefore shrinks by one margin
+        # per sequential region, so n regions need n margins here.
+        deband_margin = deband.REGION_MARGIN * len(heal.deband["regions"])
+        deband_rect = _expand_rect(rect, deband_margin, deband_margin, bounds)
+    else:
+        deband_rect = rect
     live_scratches = scratches.is_live(heal.scratches, (tiff_h, tiff_w))
     if live_scratches:
-        tx0_exp = max(0, tx0 - scratches.REGION_COL_MARGIN)
-        ty0_exp = max(0, ty0 - scratches.REGION_ROW_MARGIN)
-        tx1_exp = min(tiff_w, tx1 + scratches.REGION_COL_MARGIN)
-        ty1_exp = min(tiff_h, ty1 + scratches.REGION_ROW_MARGIN)
-        inner_x = tx0 - tx0_exp
-        inner_y = ty0 - ty0_exp
-        crop = _read_tiff_region(
-            tiff_path, (tx0_exp, ty0_exp, tx1_exp - tx0_exp, ty1_exp - ty0_exp)
+        read_rect = _expand_rect(
+            deband_rect,
+            scratches.REGION_COL_MARGIN,
+            scratches.REGION_ROW_MARGIN,
+            bounds,
         )
+    else:
+        read_rect = deband_rect
+    crop = _read_tiff_region(tiff_path, read_rect)
+    if live_scratches:
         crop = scratches.apply(
             crop,
             heal.scratches,
-            region=(inner_x, inner_y, tx1 - tx0, ty1 - ty0),
-            origin=(tx0_exp, ty0_exp),
+            region=(
+                deband_rect[0] - read_rect[0],
+                deband_rect[1] - read_rect[1],
+                deband_rect[2],
+                deband_rect[3],
+            ),
+            origin=(read_rect[0], read_rect[1]),
         )
-    else:
-        crop = _read_tiff_region(tiff_path, (tx0, ty0, tx1 - tx0, ty1 - ty0))
+    if live_deband:
+        crop = deband.apply(
+            crop,
+            heal.deband,
+            region=(
+                rect[0] - deband_rect[0],
+                rect[1] - deband_rect[1],
+                rect[2],
+                rect[3],
+            ),
+            origin=(deband_rect[0], deband_rect[1]),
+        )
     if flipped_horizontally:
         crop = np.ascontiguousarray(crop[:, ::-1])
     if r:
@@ -1386,7 +1519,8 @@ def render_region(
 # tone and color ops never route through the lossless incremental path —
 # an 8-bit PNG cannot be re-curved or re-coloured losslessly. The spots op
 # joins them: a repair changes pixels, and the incremental path is
-# lossless-geometry only. The crop op joins too — its
+# lossless-geometry only; scratches and deband change pixels the same way.
+# The crop op joins too — its
 # window changes which pixels exist, and a tilted window is a warp.
 PREVIEW_OPS = {"cw", "ccw", "flip"}
 _STATE_PREVIEW_OPS = {
@@ -1394,6 +1528,7 @@ _STATE_PREVIEW_OPS = {
     repo.COLOR_OP,
     repo.SPOTS_OP,
     repo.SCRATCHES_OP,
+    repo.DEBAND_OP,
     repo.CROP_OP,
 }
 

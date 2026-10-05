@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import tifffile
 
-from scanny_boy import color, previews, render, scratches, spots
+from scanny_boy import color, deband, previews, render, scratches, spots
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 EmitFn = Any
 
 DIRECTIONS = {"cw", "ccw"}
+
 
 def roll_is_monochrome(roll: RollManifest) -> bool:
     """The roll's frozen film kind. Colour has no
@@ -156,6 +157,26 @@ def _crop_report_fields(roll_dir: Path, negative: NegativeRecord) -> dict | None
     )
 
 
+def _deband_report_fields(roll_dir: Path, negative: NegativeRecord) -> dict | None:
+    """The net deband state as `edit_recorded` carries it — a full state
+    report (null when there is no op), exactly the block `roll info`
+    reports, in display space. Every edit carries it because a rotation or
+    a flip moves the regions' display rects and flips the displayed axis."""
+    output = negative.output or {}
+    width, height = output.get("width"), output.get("height")
+    if width is None or height is None:
+        return None
+    state = repo.net_edit_state(roll_dir, negative.negative_id)
+    return previews.deband_report(
+        state.deband,
+        (height, width),
+        quarter_turns=state.quarter_turns,
+        flipped_horizontally=state.flipped,
+        fine_angle_deg=state.fine_angle_deg,
+        crop_params=state.crop,
+    )
+
+
 def _result_fields(roll_dir: Path, negative: NegativeRecord, edit: dict) -> dict:
     """The `EditRecorded` field set shared by every op that appends one:
     the ops log entry, the net transform after it, the net crop state,
@@ -168,6 +189,7 @@ def _result_fields(roll_dir: Path, negative: NegativeRecord, edit: dict) -> dict
         "flipped_horizontally": state.flipped,
         "fine_rotation_deg": state.fine_angle_deg,
         "crop": _crop_report_fields(roll_dir, negative),
+        "deband": _deband_report_fields(roll_dir, negative),
         "preview_path": negative.preview_path,
     }
 
@@ -1363,3 +1385,277 @@ def run_edit_list_scratches(roll_dir: Path, negative_id: str, *, emit: EmitFn) -
         stale=stale,
         preview_path=None,
     ).to_dict()
+
+
+# --- deband ------------------------------------------------------------------
+
+
+def parse_region_arg(text: str) -> tuple[int, int, int, int]:
+    """`--add-region`'s `X,Y,W,H` (display pixels) as ints. Raises
+    `EditFailure(INVALID_EDIT)` for anything else."""
+    parts = text.split(",")
+    try:
+        if len(parts) != 4:
+            raise ValueError
+        x, y, w, h = (int(part) for part in parts)
+    except ValueError:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--add-region needs X,Y,W,H as four integers, got {text!r}",
+        ) from None
+    return x, y, w, h
+
+
+def _slim_deband_edit(edit: dict) -> dict:
+    """The ops-log entry as `edit_recorded` reports it: a deband op's
+    correction tables run to ~100 KB per region and mean nothing to the
+    app, so each region's `corr` is dropped from the event (never from the
+    log)."""
+    params = dict(edit["params"])
+    params["regions"] = [
+        {key: value for key, value in region.items() if key != "corr"}
+        for region in params["regions"]
+    ]
+    return {**edit, "params": params}
+
+
+def _fit_regions(
+    image: Any,
+    spans: tuple[float, ...],
+    windows: Sequence[tuple[float, float, float, float, float]],
+    axis: str,
+    ids: Sequence[int],
+    *,
+    prior: list[deband.RegionFit] | None = None,
+) -> list[deband.RegionFit]:
+    """Fit `windows` in order, each on top of every earlier fit (`prior`
+    first). A region `fit_region` rejects (too small, too little
+    background) fails the whole edit, naming the region."""
+    fits = list(prior or [])
+    for region_id, window in zip(ids, windows, strict=True):
+        try:
+            fits.append(
+                deband.fit_region(image, spans, window, axis, prior_regions=list(fits))
+            )
+        except ValueError as exc:
+            raise EditFailure(Code.INVALID_EDIT, f"region {region_id}: {exc}") from exc
+    return fits
+
+
+def run_edit_deband(
+    roll_dir: Path,
+    negative_id: str,
+    *,
+    add_region: tuple[int, int, int, int] | None = None,
+    tilt_deg: float = 0.0,
+    remove_region: int | None = None,
+    axis: str | None = None,
+    enabled: bool | None = None,
+    strength: float | None = None,
+    clear: bool = False,
+    emit: EmitFn,
+) -> dict:
+    """Edits one negative's development-band removal (`deband.py`,
+    docs/DEBAND_PLAN.md) and records it as one `deband` op — a state, so a
+    trailing `deband` op is updated in place. Exactly one *structural*
+    option may be given, any of the settings may ride along with it:
+
+    - `add_region` `(x, y, w, h)` and `tilt_deg`, in **display space** (the
+      image as it renders, live crop included): mapped to a TIFF-space
+      window by `previews.display_crop_window_to_tiff` ("the CLI converts;
+      Swift never does"), fitted on top of the existing regions, appended
+      under the next id;
+    - `remove_region` id: the rest are refitted in order;
+    - `axis` `"vertical"`/`"horizontal"` **as displayed**: converted
+      through the quarter turns to the stored TIFF axis, every region
+      refitted;
+    - `clear`: every region removed (the settings stay).
+
+    `enabled` and `strength` (0..1.5) change the op's switches and need no
+    refit. Regions are fitted on the published TIFF with the scratch
+    correction already applied, the order replay runs them in. Region ids
+    are small ints, stable across edits (a new region takes the largest
+    id + 1). A fresh op defaults to enabled, strength 1.0, and the TIFF's
+    vertical band axis (film length on this rig).
+
+    Raises `EditFailure(INVALID_EDIT)` for a monochrome roll, malformed or
+    out-of-range values, an unknown region id, an option combination that
+    makes no sense, and the `ValueError`s `deband.fit_region` raises (a
+    region too small, or with too little background). Returns the
+    `EditRecorded` field values."""
+    roll, negative = _validated_negative(roll_dir, negative_id)
+    if roll_is_monochrome(roll):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "this roll is monochrome — band removal applies to colour film only",
+        )
+    structural = [
+        name
+        for name, given in (
+            ("--add-region", add_region is not None),
+            ("--remove-region", remove_region is not None),
+            ("--axis", axis is not None),
+            ("--clear", clear),
+        )
+        if given
+    ]
+    if len(structural) > 1:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"edit deband takes one of {', '.join(structural)}, not several",
+        )
+    if not structural and enabled is None and strength is None:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            "edit deband needs --add-region, --remove-region, --axis, --clear, "
+            "--on/--off, or --strength",
+        )
+    if abs(tilt_deg) > 1e-12 and add_region is None:
+        raise EditFailure(Code.INVALID_EDIT, "--tilt only goes with --add-region")
+    if axis is not None and axis not in ("vertical", "horizontal"):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--axis must be vertical or horizontal, got {axis!r}",
+        )
+    if strength is not None and not 0.0 <= strength <= repo.DEBAND_STRENGTH_MAX:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--strength must be within 0..{repo.DEBAND_STRENGTH_MAX}, got {strength}",
+        )
+    if abs(tilt_deg) > repo.CROP_TILT_MAX_DEG + 1e-9:
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"--tilt must be within ±{repo.CROP_TILT_MAX_DEG}, got {tilt_deg}",
+        )
+
+    state = repo.net_edit_state(roll_dir, negative_id)
+    existing = state.deband
+    tiff_h, tiff_w = int(negative.output["height"]), int(negative.output["width"])
+    canvas = (tiff_w, tiff_h)
+    stale = existing is not None and tuple(existing["canvas"]) != canvas
+    try:
+        norm = negative.normalization
+        spans = tuple(
+            float(norm["ceils"][ch]) - float(norm["floors"][ch]) for ch in range(3)
+        )
+    except (KeyError, TypeError, IndexError):
+        raise EditFailure(
+            Code.INVALID_EDIT,
+            f"{negative_id} has no normalization record to fit against",
+        ) from None
+    if existing is not None and not stale:
+        # Keep the spans the op was fitted with: a toggle never refits.
+        spans = tuple(existing["spans"])
+
+    new_enabled = existing["enabled"] if existing else True
+    new_strength = existing["strength"] if existing else 1.0
+    if enabled is not None:
+        new_enabled = enabled
+    if strength is not None:
+        new_strength = float(strength)
+    stored_axis = existing["axis"] if existing else "vertical"
+    old_regions = list(existing["regions"]) if existing else []
+
+    if not structural:
+        # A switch or the strength: the stored fits are untouched.
+        if existing is not None:
+            params = dict(existing)
+            params["enabled"] = new_enabled
+            params["strength"] = new_strength
+        else:
+            params = deband.deband_params(
+                canvas, stored_axis, [], new_enabled, new_strength, spans
+            )
+    else:
+        ids = [region["id"] for region in old_regions]
+        windows = [tuple(region["window"]) for region in old_regions]
+        if clear:
+            ids, windows = [], []
+        if remove_region is not None:
+            if remove_region not in ids:
+                raise EditFailure(
+                    Code.INVALID_EDIT,
+                    f"{negative_id} has no deband region {remove_region}",
+                )
+            keep = [i for i, region_id in enumerate(ids) if region_id != remove_region]
+            ids = [ids[i] for i in keep]
+            windows = [windows[i] for i in keep]
+        if axis is not None:
+            stored_axis = previews.deband_display_axis(axis, state.quarter_turns)
+        if stale:
+            # The stored windows belong to a canvas a re-stitch replaced;
+            # carry them onto this one, as the re-stitch refit does.
+            windows = [deband.clamp_window(window, canvas) for window in windows]
+
+        # An add on a current, same-axis op can fit on top of the stored
+        # fits; everything else refits the lot in order.
+        reuse = add_region is not None and existing is not None and not stale
+        needs_image = add_region is not None or (windows and not clear)
+        image = None
+        if needs_image:
+            image = tifffile.imread(roll_dir / negative.output["name"])
+            # Replay applies scratches before deband, so fit on that.
+            image = scratches.apply(image, state.scratches)
+        if add_region is not None:
+            x, y, w, h = add_region
+            existing_crop = (
+                state.crop
+                if previews.crop_is_live(state.crop, (tiff_h, tiff_w))
+                else None
+            )
+            display_h, display_w = previews.display_shape(
+                (tiff_h, tiff_w),
+                quarter_turns=state.quarter_turns,
+                crop_params=existing_crop,
+            )
+            if w <= 0 or h <= 0:
+                raise EditFailure(
+                    Code.INVALID_EDIT,
+                    f"--add-region must have a positive size, got {w}x{h}",
+                )
+            if x < 0 or y < 0 or x + w > display_w or y + h > display_h:
+                raise EditFailure(
+                    Code.INVALID_EDIT,
+                    f"region {x},{y},{w},{h} does not fit the "
+                    f"{display_w}x{display_h} display image",
+                )
+            tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
+                (x, y, w, h),
+                (tiff_h, tiff_w),
+                tilt_deg=tilt_deg,
+                quarter_turns=state.quarter_turns,
+                flipped_horizontally=state.flipped,
+                fine_angle_deg=state.fine_angle_deg,
+                crop_params=existing_crop,
+            )
+            new_window = deband.clamp_window((tx, ty, tw, th, tilt), canvas)
+            new_id = max(ids, default=0) + 1
+        if reuse:
+            try:
+                prior = deband.fits_from_params(existing)
+            except ValueError as exc:
+                raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+            fits = _fit_regions(
+                image, spans, [new_window], stored_axis, [new_id], prior=prior
+            )
+            ids = [*ids, new_id]
+        else:
+            if add_region is not None:
+                ids = [*ids, new_id]
+                windows = [*windows, new_window]
+            fits = (
+                _fit_regions(image, spans, windows, stored_axis, ids) if windows else []
+            )
+        del image
+        params = deband.deband_params(
+            canvas, stored_axis, fits, new_enabled, new_strength, spans, ids=ids
+        )
+
+    try:
+        edit = repo.append_deband_edit(roll_dir, negative_id, params)
+    except ValueError as exc:
+        raise EditFailure(Code.INVALID_EDIT, str(exc)) from exc
+    _refresh_preview(
+        roll_dir, roll, negative, repo.DEBAND_OP, what="band removal", emit=emit
+    )
+    return _result_fields(roll_dir, negative, _slim_deband_edit(edit))

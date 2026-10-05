@@ -13,11 +13,15 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy import heal, previews, spots
+from scanny_boy import deband as deband_module
+from scanny_boy import heal, previews, scratches, spots
+from scanny_boy.deband_support import make_banded_roll
 from scanny_boy.edits import (
     EditFailure,
+    parse_region_arg,
     run_edit_color,
     run_edit_crop,
+    run_edit_deband,
     run_edit_delete,
     run_edit_flip,
     run_edit_render_region,
@@ -1592,3 +1596,445 @@ def test_spot_markers_hide_while_a_crop_is_live(croppable_roll):
         },
     )
     assert reported == []
+
+
+# --- `edit deband` -------------------------------------------------------------
+
+
+def _deband(roll_dir, negative_id, **kwargs):
+    return run_edit_deband(roll_dir, negative_id, emit=lambda event: None, **kwargs)
+
+
+def _tables(roll_dir, negative_id):
+    state = repo.net_edit_state(roll_dir, negative_id)
+    return {region["id"]: region["corr"] for region in state.deband["regions"]}
+
+
+@pytest.fixture()
+def banded_roll(tmp_path):
+    return make_banded_roll(tmp_path)  # 1100 x 700, colour
+
+
+def test_deband_add_region_records_a_fitted_region(banded_roll):
+    roll_dir, nid = banded_roll
+    tiff_before = (roll_dir / "_DSC0001.tif").read_bytes()
+    events: list = []
+
+    fields = run_edit_deband(
+        roll_dir, nid, add_region=(40, 30, 900, 600), emit=events.append
+    )
+
+    assert events == []  # no PREVIEW_FAILED
+    assert (roll_dir / "_DSC0001.tif").read_bytes() == tiff_before
+    assert fields["edit"]["op"] == repo.DEBAND_OP
+    assert all("corr" not in region for region in fields["edit"]["params"]["regions"])
+    state = repo.net_edit_state(roll_dir, nid)
+    op = state.deband
+    assert op["fit_version"] == deband_module.FIT_VERSION
+    assert (op["enabled"], op["strength"], op["axis"]) == (True, 1.0, "vertical")
+    assert op["canvas"] == [1100, 700]
+    assert op["spans"] == [pytest.approx(v) for v in (1.35, 1.25, 1.45)]
+    (region,) = op["regions"]
+    assert region["id"] == 1
+    assert region["window"][:4] == [40.0, 30.0, 900.0, 600.0]
+    assert region["pitch_px"] == deband_module.PITCH_PX
+    assert fields["deband"] == {
+        "fit_version": 1,
+        "enabled": True,
+        "strength": 1.0,
+        "axis": "vertical",
+        "regions": [{"id": 1, "display_rect": [40, 30, 900, 600]}],
+        "stale": False,
+    }
+    assert Path(fields["preview_path"]).exists()
+
+
+def test_deband_preview_shows_the_correction(banded_roll):
+    """The refreshed preview is the replay's: it differs from the
+    un-debanded display, and equals a fresh render of the net state."""
+    import cv2
+
+    roll_dir, nid = banded_roll
+    before = previews._display_image(roll_dir / "_DSC0001.tif")
+    fields = _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+
+    state = repo.net_edit_state(roll_dir, nid)
+    after = previews._display_image(
+        roll_dir / "_DSC0001.tif",
+        state.quarter_turns,
+        state.flipped,
+        state.fine_angle_deg,
+        heal.HealParams.from_state(state),
+        state.crop,
+    )
+    assert not np.array_equal(before, after)
+    stored = cv2.imread(str(fields["preview_path"]), cv2.IMREAD_UNCHANGED)
+    rendered = roll_dir / "replayed.png"
+    previews.render_preview(
+        roll_dir / "_DSC0001.tif", rendered, heal=heal.HealParams.from_state(state)
+    )
+    np.testing.assert_array_equal(
+        stored, cv2.imread(str(rendered), cv2.IMREAD_UNCHANGED)
+    )
+    plain = roll_dir / "plain.png"
+    previews.render_preview(roll_dir / "_DSC0001.tif", plain)
+    assert not np.array_equal(stored, cv2.imread(str(plain), cv2.IMREAD_UNCHANGED))
+
+
+def test_deband_second_region_gets_the_next_id_and_keeps_the_first_fit(banded_roll):
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 400))
+    first = _tables(roll_dir, nid)[1]
+
+    fields = _deband(roll_dir, nid, add_region=(0, 300, 1100, 400))
+
+    assert [r["id"] for r in fields["deband"]["regions"]] == [1, 2]
+    assert _tables(roll_dir, nid)[1] == first  # the first region was not refitted
+
+
+def test_deband_remove_region_refits_the_remainder_and_ids_stay_stable(banded_roll):
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 400))
+    _deband(roll_dir, nid, add_region=(0, 300, 1100, 400))
+    _deband(roll_dir, nid, add_region=(100, 0, 700, 700))
+
+    fields = _deband(roll_dir, nid, remove_region=1)
+
+    assert [r["id"] for r in fields["deband"]["regions"]] == [2, 3]
+    # Removing the head changes what the second region saw: it was refitted.
+    refit = deband_module.fits_from_params(repo.net_edit_state(roll_dir, nid).deband)
+    assert len(refit) == 2
+
+    again = _deband(roll_dir, nid, add_region=(0, 0, 1100, 300))
+    assert [r["id"] for r in again["deband"]["regions"]] == [2, 3, 4]
+
+
+def test_deband_refit_matches_a_from_scratch_sequential_fit(banded_roll):
+    """Removing a region leaves exactly what fitting the survivors in order
+    from nothing would give — the stored fits are never stale relative to
+    the regions they sit behind."""
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 400))
+    _deband(roll_dir, nid, add_region=(0, 300, 1100, 400))
+    _deband(roll_dir, nid, remove_region=1)
+    removed = _tables(roll_dir, nid)
+
+    other_dir, other_nid = make_banded_roll(
+        roll_dir.parent, name="other", negative_id="other-negative-01"
+    )
+    _deband(other_dir, other_nid, add_region=(0, 300, 1100, 400))
+
+    assert removed[2] == _tables(other_dir, other_nid)[1]
+
+
+def test_deband_axis_is_given_as_displayed_and_refits_every_region(
+    banded_roll, monkeypatch
+):
+    roll_dir, nid = banded_roll
+    # One quarter turn: the displayed vertical is the TIFF's horizontal.
+    repo.append_edit(roll_dir, nid, repo.ROTATE_OP, {"direction": "cw"})
+    _deband(roll_dir, nid, add_region=(0, 0, 600, 1000))
+    assert repo.net_edit_state(roll_dir, nid).deband["axis"] == "vertical"
+
+    calls: list[str] = []
+    real = deband_module.fit_region
+
+    def spy(image, spans, window, axis, **kwargs):
+        calls.append(axis)
+        return real(image, spans, window, axis, **kwargs)
+
+    monkeypatch.setattr(deband_module, "fit_region", spy)
+
+    fields = _deband(roll_dir, nid, axis="horizontal")
+
+    # Displayed horizontal after one quarter turn is the TIFF's vertical.
+    assert repo.net_edit_state(roll_dir, nid).deband["axis"] == "vertical"
+    assert fields["deband"]["axis"] == "horizontal"
+    assert calls == ["vertical"]
+
+
+def test_deband_settings_need_no_refit(banded_roll, monkeypatch):
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+    before = _tables(roll_dir, nid)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a switch must not refit")
+
+    monkeypatch.setattr(deband_module, "fit_region", boom)
+
+    fields = _deband(roll_dir, nid, enabled=False)
+    assert fields["deband"]["enabled"] is False
+    fields = _deband(roll_dir, nid, enabled=True, strength=1.5)
+    assert fields["deband"]["enabled"] is True
+    assert fields["deband"]["strength"] == 1.5
+    fields = _deband(roll_dir, nid, strength=0.0)
+    assert fields["deband"]["strength"] == 0.0
+    assert _tables(roll_dir, nid) == before
+    # A state op: the trailing deband op is updated in place.
+    ops = [e["op"] for e in repo.edits_for(roll_dir, nid)]
+    assert ops == [repo.DEBAND_OP]
+
+
+def test_deband_settings_before_any_region_record_an_empty_op(banded_roll):
+    roll_dir, nid = banded_roll
+
+    fields = _deband(roll_dir, nid, strength=0.4)
+
+    assert fields["deband"]["regions"] == []
+    assert fields["deband"]["strength"] == 0.4
+    # Nothing to apply yet, so a region added later still fits.
+    fields = _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+    assert fields["deband"]["strength"] == 0.4
+    assert [r["id"] for r in fields["deband"]["regions"]] == [1]
+
+
+def test_deband_clear_empties_the_regions_and_keeps_the_settings(banded_roll):
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 700), strength=0.8)
+
+    fields = _deband(roll_dir, nid, clear=True)
+
+    assert fields["deband"]["regions"] == []
+    assert fields["deband"]["strength"] == 0.8
+    state = repo.net_edit_state(roll_dir, nid)
+    assert state.deband["regions"] == []
+    # The preview is the plain display again.
+    assert not deband_module.is_live(state.deband, (700, 1100))
+
+
+def test_deband_rejects_a_monochrome_roll(tmp_path):
+    roll_dir, nid = make_banded_roll(tmp_path, film_kind="monochrome")
+
+    with pytest.raises(EditFailure) as excinfo:
+        _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert "monochrome" in excinfo.value.message
+    assert repo.edits_for(roll_dir, nid) == []
+
+
+def test_deband_rejects_a_region_that_is_too_small(banded_roll):
+    roll_dir, nid = banded_roll
+    for rect in ((0, 0, 1100, 100), (0, 0, 300, 700)):
+        with pytest.raises(EditFailure) as excinfo:
+            _deband(roll_dir, nid, add_region=rect)
+        assert excinfo.value.code is Code.INVALID_EDIT
+        assert "need at least" in excinfo.value.message
+    assert repo.edits_for(roll_dir, nid) == []
+
+
+def test_deband_rejects_a_region_with_too_little_background(tmp_path):
+    rng = np.random.default_rng(0)
+    val = 0.5 + rng.normal(0, 0.25, (700, 1100, 3)).astype(np.float32)
+    val = np.clip(val, -0.1, 1.1)
+    from scanny_boy import normalization
+
+    codes = normalization.encode_normalized(val).astype(np.uint16)
+    roll_dir, nid = make_banded_roll(tmp_path, codes=codes)
+
+    with pytest.raises(EditFailure) as excinfo:
+        _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert "flatter area" in excinfo.value.message
+    assert repo.edits_for(roll_dir, nid) == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"strength": 1.6},
+        {"strength": -0.1},
+        {"strength": float("nan")},
+        {"axis": "diagonal"},
+        {"remove_region": 5},
+        {"tilt_deg": 5.0},
+        {"add_region": (0, 0, 1100, 700), "tilt_deg": 60.0},
+        {"add_region": (0, 0, 0, 700)},
+        {"add_region": (-1, 0, 500, 500)},
+        {"add_region": (0, 0, 1101, 700)},
+        {"add_region": (0, 0, 1100, 700), "clear": True},
+        {"add_region": (0, 0, 1100, 700), "axis": "horizontal"},
+        {"remove_region": 1, "clear": True},
+    ],
+)
+def test_deband_rejects_malformed_values(banded_roll, kwargs):
+    roll_dir, nid = banded_roll
+
+    with pytest.raises(EditFailure) as excinfo:
+        _deband(roll_dir, nid, **kwargs)
+
+    assert excinfo.value.code is Code.INVALID_EDIT
+    assert repo.edits_for(roll_dir, nid) == []
+
+
+def test_parse_region_arg():
+    assert parse_region_arg("10,20,300,400") == (10, 20, 300, 400)
+    for bad in ("", "1,2,3", "1,2,3,4,5", "a,b,c,d", "1.5,2,3,4"):
+        with pytest.raises(EditFailure) as excinfo:
+            parse_region_arg(bad)
+        assert excinfo.value.code is Code.INVALID_EDIT
+
+
+def test_deband_unknown_or_unstitched_negatives_fail(tmp_path):
+    roll_dir, _nid = make_banded_roll(tmp_path)
+    with pytest.raises(EditFailure) as excinfo:
+        _deband(roll_dir, "nope", strength=1.0)
+    assert excinfo.value.code is Code.NEGATIVE_NOT_FOUND
+
+
+_TRANSFORMS = [
+    # (quarter_turns, flipped, fine_angle_deg)
+    (0, False, 0.0),
+    (1, False, 0.0),
+    (2, False, 0.0),
+    (3, False, 0.0),
+    (0, True, 0.0),
+    (1, True, 0.0),
+    (3, True, 0.0),
+    (0, False, 1.5),
+    (1, False, -2.0),
+    (3, True, 2.5),
+]
+
+
+def _record_transform(roll_dir, nid, quarter_turns, flipped, fine):
+    for _ in range(quarter_turns):
+        repo.append_edit(roll_dir, nid, repo.ROTATE_OP, {"direction": "cw"})
+    if flipped:
+        repo.append_edit(roll_dir, nid, repo.FLIP_OP, {})
+    if fine:
+        repo.append_edit(roll_dir, nid, repo.ROTATE_FINE_OP, {"angle_deg": fine})
+    return repo.net_edit_state(roll_dir, nid)
+
+
+@pytest.mark.parametrize(("quarter_turns", "flipped", "fine"), _TRANSFORMS)
+def test_deband_display_rect_maps_through_the_net_transform(
+    banded_roll, quarter_turns, flipped, fine
+):
+    """A region drawn in display space under any quarter turns / mirror /
+    fine rotation lands in TIFF space such that the CLI's own report maps it
+    back onto the drawn rect (within the rounding of the corners). The
+    mapping is `display_crop_window_to_tiff`'s, as `edit crop` uses."""
+    roll_dir, nid = banded_roll
+    state = _record_transform(roll_dir, nid, quarter_turns, flipped, fine)
+    display_h, display_w = previews.display_shape(
+        (700, 1100), quarter_turns=state.quarter_turns, crop_params=None
+    )
+    rect = (30, 20, display_w - 110, display_h - 90)
+
+    fields = _deband(roll_dir, nid, add_region=rect)
+
+    (region,) = fields["deband"]["regions"]
+    got = region["display_rect"]
+    assert all(abs(a - b) <= 3 for a, b in zip(got, rect, strict=True)), (got, rect)
+    # The stored window carries the fine rotation's tilt, mirrored back
+    # into TIFF space when the display is flipped.
+    window = repo.net_edit_state(roll_dir, nid).deband["regions"][0]["window"]
+    assert abs(window[4] - (-fine if flipped else fine)) < 0.6
+    # Odd quarter turns swap the TIFF extents the region occupies.
+    if quarter_turns % 2 == 1:
+        assert window[2] == pytest.approx(rect[3], abs=4)
+        assert window[3] == pytest.approx(rect[2], abs=4)
+    elif not fine:
+        assert window[2] == pytest.approx(rect[2], abs=2)
+        assert window[3] == pytest.approx(rect[3], abs=2)
+
+
+def test_deband_drawn_tilt_composes_with_the_fine_rotation(banded_roll):
+    roll_dir, nid = banded_roll
+    _record_transform(roll_dir, nid, 0, False, 1.5)
+
+    fields = _deband(roll_dir, nid, add_region=(60, 40, 800, 560), tilt_deg=3.0)
+
+    window = repo.net_edit_state(roll_dir, nid).deband["regions"][0]["window"]
+    assert window[4] == pytest.approx(4.5, abs=0.6)
+    (region,) = fields["deband"]["regions"]
+    # The report's rect bounds the tilted region, so it contains the drawn
+    # rect's centre and is at least as large as the rect.
+    x, y, w, h = region["display_rect"]
+    assert x <= 60 + 400 <= x + w and y <= 40 + 280 <= y + h
+    assert w >= 800 - 3 and h >= 560 - 3
+
+
+def test_deband_axis_reports_as_displayed_under_quarter_turns(banded_roll):
+    roll_dir, nid = banded_roll
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+    assert repo.net_edit_state(roll_dir, nid).deband["axis"] == "vertical"
+
+    (fields,) = run_edit_rotate(roll_dir, nid, "cw", emit=lambda e: None)
+    # The TIFF-space axis did not move; the displayed one did, and so did
+    # the rect (the report rides every edit confirmation).
+    assert repo.net_edit_state(roll_dir, nid).deband["axis"] == "vertical"
+    assert fields["deband"]["axis"] == "horizontal"
+    assert fields["deband"]["regions"][0]["display_rect"] == [0, 0, 700, 1100]
+
+    fields = _deband(roll_dir, nid, axis="vertical")
+    assert repo.net_edit_state(roll_dir, nid).deband["axis"] == "horizontal"
+    assert fields["deband"]["axis"] == "vertical"
+
+
+def test_deband_region_is_drawn_in_the_cropped_display_when_a_crop_is_live(
+    banded_roll,
+):
+    roll_dir, nid = banded_roll
+    run_edit_crop(roll_dir, nid, rect=(100, 50, 900, 600), emit=lambda e: None)
+
+    fields = _deband(roll_dir, nid, add_region=(10, 10, 800, 560))
+
+    window = repo.net_edit_state(roll_dir, nid).deband["regions"][0]["window"]
+    assert window[:4] == [110.0, 60.0, 800.0, 560.0]
+    assert fields["deband"]["regions"][0]["display_rect"] == [10, 10, 800, 560]
+
+
+def test_deband_fits_on_the_scratch_corrected_image(banded_roll, monkeypatch):
+    """Replay runs scratches before deband, so the fit must see the image
+    after the scratch correction."""
+    roll_dir, nid = banded_roll
+    seen = {}
+
+    def fake_apply(image, params, **kwargs):
+        out = image.copy()
+        out[0, 0, 0] = 12345
+        return out
+
+    real_fit = deband_module.fit_region
+
+    def spy(image, spans, window, axis, **kwargs):
+        seen["marker"] = int(image[0, 0, 0])
+        return real_fit(image, spans, window, axis, **kwargs)
+
+    monkeypatch.setattr(scratches, "apply", fake_apply)
+    monkeypatch.setattr(deband_module, "fit_region", spy)
+
+    _deband(roll_dir, nid, add_region=(0, 0, 1100, 700))
+
+    assert seen["marker"] == 12345
+
+
+def test_deband_edit_on_a_stale_op_carries_the_regions_onto_the_new_canvas(tmp_path):
+    from scanny_boy import deband_support
+
+    roll_dir, nid = make_banded_roll(tmp_path)
+    big, _info = deband_support.make_banded_scene(760, 1250, seed=3)
+    spans = deband_support.DEFAULT_SPANS
+    fit = deband_module.fit_region(
+        big, spans, (0.0, 0.0, 1250.0, 760.0, 0.0), "vertical"
+    )
+    stale = deband_module.deband_params(
+        (1250, 760), "vertical", [fit], False, 0.6, spans, ids=[4]
+    )
+    repo.append_deband_edit(roll_dir, nid, stale)
+    report = _deband(roll_dir, nid, strength=0.7)["deband"]
+    assert report["stale"] is True  # a switch never refits
+
+    fields = _deband(roll_dir, nid, add_region=(0, 0, 1100, 300))
+
+    op = repo.net_edit_state(roll_dir, nid).deband
+    assert op["canvas"] == [1100, 700]
+    assert [r["id"] for r in op["regions"]] == [4, 5]
+    assert op["regions"][0]["window"][:4] == [0.0, 0.0, 1100.0, 700.0]
+    assert (op["enabled"], op["strength"]) == (False, 0.7)
+    assert fields["deband"]["stale"] is False

@@ -95,8 +95,11 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **24** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 24 replaces the CMY sliders and
+`PROTOCOL_VERSION` is **25** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 25 adds user-guided development-band
+removal — `edit deband`, the per-negative `deband` block in `roll info` and
+`edit_recorded`, and the `DEBAND_REFIT_FAILED` warning (see
+`docs/DEBAND_PLAN.md`); 24 replaces the CMY sliders and
 temperature layer with balance (warmth/tint) and channel curves; 23 adds
 auto-crop detection and seeding — a `crop` op seeded after rotation when
 `setup.auto_crop` is enabled and a film format is set (see
@@ -182,6 +185,8 @@ edit list-spots --roll DIR --negative ID
 edit detect-scratches --roll DIR --negative ID [...]
 edit scratches --roll DIR --negative ID [...] [--on | --off]
 edit list-scratches --roll DIR --negative ID
+edit deband --roll DIR --negative ID (--add-region X,Y,W,H [--tilt DEG] | --remove-region ID
+            | --axis vertical|horizontal | --clear) [--on | --off] [--strength S]
 edit render-region  --roll DIR --negative ID --x PX --y PX --width PX --height PX
                     --output PATH [--mode positive|negative]
 edit render-preview --roll DIR --negative ID --output PATH [--mode positive|negative]
@@ -292,6 +297,8 @@ to bottom.
 | `color.py` | The preview/export colour adjustment (balance warmth/tint, channel curves, cast removal, dye separation) and the metering the auto solves read. |
 | `spots.py` | The dust/scratch spot detector and the `spots` op's mask arithmetic. |
 | `scratches.py` | Film-length scratch detection, level-binned correction tables, and the `scratches` op (see [SCRATCH_REMOVAL_PLAN.md](SCRATCH_REMOVAL_PLAN.md)). |
+| `deband.py` | User-guided development-band removal: per-region fit of a chroma-only per-line correction, its replay, and the `deband` op's params (see [DEBAND_PLAN.md](DEBAND_PLAN.md)). |
+| `heal.py` | `HealParams`: the three heal ops (`scratches`, `deband`, `spots`) bundled as one value, their canonical replay order, and their pixel-cache key; previews and the exporter both replay through it. |
 | `auto_rotate.py` | The rebate-squaring angle estimator (stitch-time seeding) and the fine-rotation warp both preview and export replay. |
 | `render.py` | The shared positive render: decode normalized density, invert, tone/colour, camera-matrix + Adobe RGB encode; preview and export both drive it. |
 | `resample.py` | The export's long-edge downscale. |

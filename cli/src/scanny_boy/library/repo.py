@@ -20,6 +20,7 @@ the manifest was a JSON file.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -120,6 +121,20 @@ SPOTS_OP = "spots"
 # nothing there"`` from ``"never looked"`` (a pre-feature negative).
 SCRATCHES_OP = "scratches"
 
+# `deband` params are the user-drawn development-band regions and their fitted
+# per-line chroma corrections (see ``deband.py``, docs/DEBAND_PLAN.md):
+# ``{"fit_version", "enabled", "strength", "axis", "canvas", "spans",
+# "regions"}``, each region carrying a stable small-int ``id``, its
+# TIFF-space ``window`` ``[x, y, w, h, tilt_deg]`` and the base64 correction
+# table. ``spans`` is the negative's per-channel ``ceil - floor`` log10 span at
+# fit time, so replay can judge the protection weight in log10. A sibling of
+# ``scratches``/``spots`` — a state, the latest one wins, coalesced in place —
+# with the same canvas guard (a mismatch applies nothing) and the same
+# degrade-toward-no-op parse. Unlike ``scratches`` nothing is detected: every
+# region is the user's, fitted when drawn (and refitted on re-stitch). A newer
+# ``fit_version`` than this build knows parses to ``None``.
+DEBAND_OP = "deband"
+
 # The gain a frame record carries when the row predates gain normalization
 # and never had one written: unity, since nothing was applied.
 _UNITY_GAIN = (1.0, 1.0, 1.0)
@@ -138,6 +153,9 @@ class EditState:
     # The net `scratches` op's params, or None — a state like `spots`,
     # TIFF-space geometry; the preview folds it in and the export bakes it.
     scratches: dict | None = None
+    # The net `deband` op's params, or None — same family as `scratches`,
+    # TIFF-space; the preview folds it in and the export bakes it.
+    deband: dict | None = None
     # The net `crop` op's params, or None — same state family, TIFF-space
     # like `spots`; the preview folds it in and the export bakes it.
     crop: dict | None = None
@@ -800,6 +818,14 @@ def append_scratches_edit(roll_dir: Path, negative_id: str, params: dict) -> dic
     return _coalesce_state_edit(roll_dir, negative_id, SCRATCHES_OP, validated)
 
 
+def append_deband_edit(roll_dir: Path, negative_id: str, params: dict) -> dict:
+    """Records the negative's deband state (see `deband.py`), coalescing a
+    trailing `deband` op in place — same state family as `scratches`.
+    Raises `ValueError` on malformed params."""
+    validated = validated_deband_params(params)
+    return _coalesce_state_edit(roll_dir, negative_id, DEBAND_OP, validated)
+
+
 def _tone_neutral_defaults() -> dict[str, float]:
     from scanny_boy import tone
 
@@ -1106,6 +1132,126 @@ def _parse_scratches_op(params: dict) -> dict | None:
         return None
 
 
+_DEBAND_AXES = ("vertical", "horizontal")
+DEBAND_STRENGTH_MAX = 1.5
+
+
+def _is_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def _check_deband_params(params: dict) -> dict:
+    """The shared validation behind `validated_deband_params` (which raises)
+    and `_parse_deband_op` (which degrades to `None`). Unknown keys are
+    ignored; a region's correction table is decoded, so a corrupt one fails
+    here rather than in the middle of a render."""
+    from scanny_boy import deband
+
+    version = params.get("fit_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("deband fit_version must be an int")  # noqa: TRY004
+    if version > deband.FIT_VERSION:
+        raise ValueError(
+            f"deband fit_version {version} is newer than this "
+            f"build's {deband.FIT_VERSION}"
+        )
+    enabled = params.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("deband enabled must be a bool")  # noqa: TRY004
+    strength = params.get("strength")
+    if not _is_number(strength) or not 0.0 <= float(strength) <= DEBAND_STRENGTH_MAX:
+        raise ValueError(
+            f"deband strength must be a number in 0...{DEBAND_STRENGTH_MAX}"
+        )
+    axis = params.get("axis")
+    if axis not in _DEBAND_AXES:
+        raise ValueError(f"deband axis must be one of {list(_DEBAND_AXES)}")
+    canvas = params.get("canvas")
+    if (
+        not isinstance(canvas, list)
+        or len(canvas) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in canvas
+        )
+    ):
+        raise ValueError("deband canvas must be [width, height], two positive ints")
+    spans = params.get("spans")
+    if (
+        not isinstance(spans, list)
+        or len(spans) != 3
+        or any(not _is_number(v) or not math.isfinite(v) or v <= 0 for v in spans)
+    ):
+        raise ValueError("deband spans must be three positive numbers")
+    region_list = params.get("regions")
+    if not isinstance(region_list, list):
+        raise ValueError("deband regions must be a list")  # noqa: TRY004
+    checked: list[dict] = []
+    seen_ids: set[int] = set()
+    for region in region_list:
+        if not isinstance(region, dict):
+            raise ValueError("each deband region must be an object")  # noqa: TRY004
+        region_id = region.get("id")
+        if (
+            isinstance(region_id, bool)
+            or not isinstance(region_id, int)
+            or region_id < 1
+        ):
+            raise ValueError("deband region id must be a positive int")
+        if region_id in seen_ids:
+            raise ValueError(f"duplicate deband region id {region_id}")
+        seen_ids.add(region_id)
+        window = region.get("window")
+        if (
+            not isinstance(window, list)
+            or len(window) != 5
+            or any(not _is_number(v) or not math.isfinite(v) for v in window)
+        ):
+            raise ValueError("deband region window must be [x, y, w, h, tilt_deg]")
+        if window[2] <= 0 or window[3] <= 0:
+            raise ValueError("deband region window must have a positive size")
+        for key in ("block_px", "pitch_px", "blocks"):
+            value = region.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"deband region {key} must be a positive int")
+        table = region.get("corr")
+        if not isinstance(table, str) or not table:
+            raise ValueError("deband region corr must be a non-empty base64 string")
+        # Decodes the table against the window: raises ValueError if the
+        # table does not match the shape the window and pitch imply.
+        deband.parse_region(region, axis)
+        checked.append(dict(region))
+    return {
+        "fit_version": version,
+        "enabled": enabled,
+        "strength": float(strength),
+        "axis": axis,
+        "canvas": list(canvas),
+        "spans": [float(v) for v in spans],
+        "regions": checked,
+    }
+
+
+def validated_deband_params(params: dict) -> dict:
+    """The `deband` op's params, validated. Raises `ValueError` with a
+    specific message for each malformed shape; `edits.py` turns those into
+    `INVALID_EDIT`."""
+    if not isinstance(params, dict):
+        raise ValueError("deband params must be an object")  # noqa: TRY004
+    return _check_deband_params(params)
+
+
+def _parse_deband_op(params: dict) -> dict | None:
+    """The `deband` op as replayed into `EditState`. Never raises: anything
+    malformed, or from a newer fit, degrades to `None` (no correction)."""
+    if not isinstance(params, dict):
+        return None
+    try:
+        return _check_deband_params(params)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def validated_crop_params(
     params: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -1202,7 +1348,7 @@ def edits_for(roll_dir: Path, negative_id: str) -> list[dict]:
 def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     """Replays the negative's edit ops in order and reduces them to the
     canonical net state. Geometric ops compose; `tone`, `color`, `spots`,
-    `scratches`, and `crop` are states where only the latest op of each kind
+    `scratches`, `deband`, and `crop` are states where only the latest op of each kind
     matters. Unknown ops are skipped; malformed state ops degrade to no
     adjustment."""
     turns = 0
@@ -1212,6 +1358,7 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
     color: dict[str, float] | None = None
     spots: dict | None = None
     scratches: dict | None = None
+    deband: dict | None = None
     crop: dict | None = None
     for edit in edits_for(roll_dir, negative_id):
         op = edit["op"]
@@ -1243,6 +1390,10 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
             # Same family: TIFF-space geometry, a state where only the
             # latest op matters.
             scratches = _parse_scratches_op(edit["params"])
+        elif op == DEBAND_OP:
+            # Same family again; replayed after `scratches` but, being a
+            # state, its position in the log is irrelevant.
+            deband = _parse_deband_op(edit["params"])
         elif op == CROP_OP:
             # Same family: TIFF-space geometry, a state where only the
             # latest op matters (each op already stores the fully-composed
@@ -1256,6 +1407,7 @@ def net_edit_state(roll_dir: Path, negative_id: str) -> EditState:
         color=color,
         spots=spots,
         scratches=scratches,
+        deband=deband,
         crop=crop,
     )
 

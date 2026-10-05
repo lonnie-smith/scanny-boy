@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 24
+PROTOCOL_VERSION = 25
 
 
 class EventType(enum.StrEnum):
@@ -201,6 +201,11 @@ class Code(enum.StrEnum):
     # The negative's scratches op was recorded against a canvas a re-stitch
     # has replaced; it corrects nothing and needs re-detecting.
     SCRATCHES_STALE = "SCRATCHES_STALE"
+    # A re-stitch could not refit the negative's deband regions onto the new
+    # canvas (a region fell outside it, too small, or had no background
+    # left). The stitch itself succeeded; the old deband op is left
+    # recorded but stale, and applies nothing until the user redraws.
+    DEBAND_REFIT_FAILED = "DEBAND_REFIT_FAILED"
     ROLL_BUSY = "ROLL_BUSY"
     ROLL_REFRESH_PENDING = "ROLL_REFRESH_PENDING"
     CAPTURE_CLIPPED = "CAPTURE_CLIPPED"
@@ -489,7 +494,10 @@ class EditRecorded(Event):
     preview the app should now display. `crop` is the net crop state as a
     full report — display-space dimensions plus the stored tilt and preset
     label, or None — carried by *every* edit confirmation so the app can
-    overwrite without caring which op was recorded. No pixel data of the
+    overwrite without caring which op was recorded. `deband` is likewise the
+    net development-band state as `roll info` reports it (display-space
+    region rects, the axis as displayed), or None; a rotation or flip moves
+    those rects, so every confirmation carries it. No pixel data of the
     published TIFF changes."""
 
     event_type: ClassVar[EventType] = EventType.EDIT_RECORDED
@@ -501,6 +509,7 @@ class EditRecorded(Event):
     preview_path: str | None
     fine_rotation_deg: float = 0.0
     crop: dict | None = None
+    deband: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

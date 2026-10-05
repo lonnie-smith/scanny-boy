@@ -33,6 +33,7 @@ from scanny_boy import auto_crop as auto_crop_module
 from scanny_boy import (
     auto_neutral,
     concurrency,
+    deband,
     disk_check,
     film_base,
     hashing,
@@ -1985,6 +1986,73 @@ def _auto_edit_fields(out_dir: Path, record: NegativeRecord, edit: dict) -> dict
     }
 
 
+def _refit_deband(
+    out_dir: Path,
+    record: NegativeRecord,
+    image: np.ndarray,
+    scratches_params: dict | None,
+    run_id: str,
+    emit: EmitFn,
+) -> None:
+    """Carry a negative's earlier deband op onto the freshly stitched canvas.
+
+    When a `deband` op exists, live or stale: each region's window is clamped
+    to the new canvas and refitted, in order, on the new pixels (with the
+    just-seeded scratch correction applied, as replay runs them); `enabled`,
+    `strength` and `axis` are preserved; the result is appended as the new
+    op. The windows can be off by the canvas shift between stitches (tens of
+    pixels), which is fine — regions are coarse and the fit recomputes the
+    correction from the new pixels. Any failure emits `DEBAND_REFIT_FAILED`,
+    records nothing (the old op stays, stale and inert), and never fails
+    the stitch."""
+    try:
+        previous = repo.net_edit_state(out_dir, record.negative_id).deband
+        if previous is None:
+            return
+        height, width = image.shape[0], image.shape[1]
+        norm = record.normalization
+        spans = tuple(
+            float(norm["ceils"][ch]) - float(norm["floors"][ch]) for ch in range(3)
+        )
+        fit_image = scratches.apply(image, scratches_params)
+        axis = previous["axis"]
+        ids: list[int] = []
+        fits: list[deband.RegionFit] = []
+        for region in previous["regions"]:
+            window = deband.clamp_window(tuple(region["window"]), (width, height))
+            try:
+                fits.append(
+                    deband.fit_region(
+                        fit_image, spans, window, axis, prior_regions=list(fits)
+                    )
+                )
+            except ValueError as exc:
+                raise ValueError(f"region {region['id']}: {exc}") from exc
+            ids.append(region["id"])
+        params = deband.deband_params(
+            (width, height),
+            axis,
+            fits,
+            previous["enabled"],
+            previous["strength"],
+            spans,
+            ids=ids,
+        )
+        repo.append_deband_edit(out_dir, record.negative_id, params)
+    except Exception as exc:  # noqa: BLE001
+        emit(
+            WarningEvent(
+                run_id=run_id,
+                code=Code.DEBAND_REFIT_FAILED,
+                message=(
+                    f"{record.negative_id}: could not refit the band-removal "
+                    f"regions onto the new canvas ({exc}); the negative was "
+                    "published without band removal"
+                ),
+            )
+        )
+
+
 def _composite_and_publish(
     *,
     work_dir: Path,
@@ -2332,6 +2400,7 @@ def _composite_and_publish(
         # Scratch detection on colour rolls.  Runs at stitch time on the
         # published representation; the result is recorded as an ordinary
         # edit op.  Failure never fails the stitch.
+        seeded_scratches: dict | None = None
         if film_kind is FilmKind.COLOUR:
             try:
                 spans = tuple(
@@ -2355,6 +2424,7 @@ def _composite_and_publish(
                     enabled=enabled,
                 )
                 repo.append_scratches_edit(out_dir, record.negative_id, params)
+                seeded_scratches = params
             except Exception:  # noqa: BLE001
                 # Detection failure must never fail the stitch.
                 emit(
@@ -2368,6 +2438,11 @@ def _composite_and_publish(
                         ),
                     )
                 )
+
+        # Band-removal regions the user drew on an earlier stitch are refitted
+        # onto this canvas (docs/DEBAND_PLAN.md §5.1).  Never fails the stitch.
+        if film_kind is FilmKind.COLOUR:
+            _refit_deband(out_dir, record, result.image, seeded_scratches, run_id, emit)
 
         del result
 

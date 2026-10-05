@@ -69,7 +69,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// curves: `edit color`'s `--warmth`/`--tint`/`--red-*`/`--green-*`/
     /// `--blue-*` flags and `--auto-balance`, and the matching
     /// `color_warmth`/`color_tint`/`color_curve_*` roll manifest fields.
-    public static let supportedProtocolVersion = 24
+    /// Protocol 25 adds development-band removal: `edit deband`, the
+    /// per-negative `deband` block in `roll info` and `edit_recorded`, and
+    /// the `DEBAND_REFIT_FAILED` warning code. Nothing the app must decode
+    /// yet; the app's own UI for it lands separately.
+    public static let supportedProtocolVersion = 25
 
     public let protocolVersion: Int
     public let kind: Kind

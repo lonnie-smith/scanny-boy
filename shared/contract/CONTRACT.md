@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **24**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **25**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -114,6 +114,58 @@ a live correction (before any geometry) and records it in the XMP
 provenance's `rendered.scratches`:
 `{detector_version, corrected}`, `null` when none. v1 has no scratch overlay.
 
+**The development-band removal feature** (`docs/DEBAND_PLAN.md`): broad,
+low-contrast colour bands running along the film's length (uneven
+development) are removed from regions the *user* draws over flat banded
+film; nothing is detected automatically. `edit deband --roll DIR --negative
+ID` takes exactly one negative (a region's position is per frame, so there
+is no selection) and records one `deband` op — a state op, coalesced in
+place like `scratches` — carrying every region's fitted per-line chroma
+correction. One *structural* option at a time: `--add-region X,Y,W,H
+[--tilt DEG]` fits and appends a region (`X,Y,W,H` is a rect in **display
+space**, the image as it renders with a live crop included; `--tilt` is its
+counter-clockwise tilt as displayed, within ±45); `--remove-region ID`
+removes one and refits the rest in order; `--axis vertical|horizontal` sets
+the direction the bands run **as displayed** and refits every region;
+`--clear` removes every region (the settings stay). `--on`/`--off` and
+`--strength S` (0 to 1.5, default 1.0) ride alongside any of them and never
+refit. A fresh op is enabled, strength 1.0, and runs along the TIFF's
+vertical axis. Region ids are small positive ints, stable across edits (a
+new region takes the largest id + 1). The CLI maps the drawn rect through
+the net transform to TIFF space (`display_crop_window_to_tiff`, as `edit
+crop` does) — **the app never converts coordinates.** Regions are fitted on
+the published TIFF with the scratch correction already applied, the order
+the replay runs them in. `edit deband` fails `INVALID_EDIT` for a
+monochrome roll, a region too small (under 256 px along the bands or 512
+across, measured in the TIFF), a region with too little flat background
+(under 20 %; the message tells the user to pick a flatter area), an unknown
+region id, a malformed or out-of-range value, and more than one structural
+option; `NEGATIVE_NOT_FOUND` for an unknown or unstitched negative. It
+regenerates the preview and emits `edit_recorded`; the op's ops-log entry
+there omits each region's `corr` table (about 100 KB a region), which never
+leaves the CLI. **The net deband state is a display-space report carried
+by every `edit_recorded` (its `deband` field) and by `roll info`'s
+per-negative `deband` block**: `{fit_version, enabled, strength, axis,
+regions: [{id, display_rect: [x, y, w, h]}], stale}`, or `null` when the
+negative has no op. `axis` is as displayed (a rotation of 90 degrees swaps
+it); each `display_rect` is the bounding box of the (possibly tilted)
+region on the display image, already transformed by the net
+rotation/flip/fine angle/crop — a rotation or flip moves it, which is why
+every edit confirmation carries the report. `stale` means the op was fitted
+against a canvas a re-stitch replaced and could not be refitted; it applies
+nothing until the user redraws. Replay order is `scratches` then `deband`
+then `spots`, all in TIFF space ahead of any geometry; the export applies a
+live op and records it in the XMP provenance's `rendered.deband`:
+`{fit_version, regions}` (the region count), `null` when none or disabled.
+**Re-stitch refit**: when a negative being re-stitched already has a
+`deband` op (live or stale), the stitch clamps each region's window to the
+new canvas, refits the regions in order on the new pixels, keeps `enabled`,
+`strength`, `axis` and the ids, and records the result as the new op. If
+that fails for any reason (a region now too small, no flat background left,
+anything else) the stitch still publishes, records nothing (the old op
+stays, now stale and inert), and emits a `DEBAND_REFIT_FAILED` warning
+naming the negative and the cause.
+
 **Monochrome film support**: `roll init` requires `--film-kind
 {colour,monochrome}` — the user chooses once at roll creation. `"colour"` is
 the path for colour negatives and chromogenic B&W (XP2, BW400CN, stained
@@ -194,6 +246,11 @@ scanny-boy edit list-spots     --roll DIR --negative ID
 scanny-boy edit detect-scratches --roll DIR --negative ID [ID ...]
 scanny-boy edit scratches        --roll DIR --negative ID [ID ...] [--on | --off]
 scanny-boy edit list-scratches   --roll DIR --negative ID
+
+scanny-boy edit deband --roll DIR --negative ID
+                       (--add-region X,Y,W,H [--tilt DEG] | --remove-region ID
+                        | --axis vertical|horizontal | --clear)
+                       [--on | --off] [--strength S]
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
                        [--downsample {none,6048,9072,12096}]

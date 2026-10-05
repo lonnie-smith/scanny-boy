@@ -16,7 +16,7 @@ import pytest
 import tifffile
 import tifftools
 
-from scanny_boy import heal, jxl_writer, render
+from scanny_boy import color, heal, jxl_writer, render
 from scanny_boy.edits import run_edit_flip, run_edit_rotate, run_edit_tone
 from scanny_boy.edits_test import _tone_params
 from scanny_boy.events import Code, ExportDone, WarningEvent
@@ -1194,3 +1194,93 @@ def test_the_color_op_changes_the_export_and_is_recorded_in_provenance(
         record["rendered"]["color"]
         == repo.net_edit_state(colour_roll, _NEGATIVE_ID).color
     )
+
+
+# --- the deband op reaches the export ---------------------------------------
+
+
+@pytest.fixture()
+def banded_export_roll(tmp_path: Path) -> Path:
+    """A colour roll whose one 700x1100 negative carries development bands
+    and a fitted `deband` op over the whole frame."""
+    from scanny_boy import deband
+    from scanny_boy import deband_support as ds
+    from scanny_boy.library import repo
+
+    roll_dir, negative_id = ds.make_banded_roll(tmp_path)
+    assert negative_id == _NEGATIVE_ID
+    manifest = load_roll_manifest(roll_dir)
+    manifest.camera_color = _MATRIX
+    write_roll_manifest(roll_dir, manifest)
+    codes = tifffile.imread(roll_dir / "_DSC0001.tif")
+    fit = deband.fit_region(
+        codes, ds.DEFAULT_SPANS, (0.0, 0.0, 1100.0, 700.0, 0.0), "vertical"
+    )
+    repo.append_deband_edit(
+        roll_dir,
+        _NEGATIVE_ID,
+        deband.deband_params(
+            (1100, 700), "vertical", [fit], True, 1.0, ds.DEFAULT_SPANS
+        ),
+    )
+    return roll_dir
+
+
+def test_the_export_replays_the_deband_op_before_the_geometry(
+    banded_export_roll, tmp_path
+):
+    from scanny_boy.library import repo
+
+    roll_dir = banded_export_roll
+    codes = tifffile.imread(roll_dir / "_DSC0001.tif")
+    state = repo.net_edit_state(roll_dir, _NEGATIVE_ID)
+    healed = heal.apply(codes, heal.HealParams.from_state(state))
+    assert not np.array_equal(healed, codes)
+
+    destination = _export(roll_dir, tmp_path)
+
+    negative = load_roll_manifest(roll_dir).negative(_NEGATIVE_ID)
+    expected, _ = render.render_export(
+        healed,
+        render.export_matrix(_MATRIX.rgb_xyz_matrix),
+        None,
+        None,
+        color.read_metering(negative.normalization),
+    )
+    np.testing.assert_array_equal(_decode(destination), expected)
+    # And the correction is really in the file.
+    unhealed, _ = render.render_export(
+        codes,
+        render.export_matrix(_MATRIX.rgb_xyz_matrix),
+        None,
+        None,
+        color.read_metering(negative.normalization),
+    )
+    assert not np.array_equal(_decode(destination), unhealed)
+
+
+def test_the_provenance_record_names_the_deband_regions(banded_export_roll, tmp_path):
+    from scanny_boy import deband
+
+    destination = _export(banded_export_roll, tmp_path)
+
+    record = _provenance(destination)
+    assert record["rendered"]["deband"] == {
+        "fit_version": deband.FIT_VERSION,
+        "regions": 1,
+    }
+
+
+def test_the_provenance_record_is_null_without_a_live_deband(
+    banded_export_roll, tmp_path
+):
+    from scanny_boy.library import repo
+
+    state = repo.net_edit_state(banded_export_roll, _NEGATIVE_ID)
+    repo.append_deband_edit(
+        banded_export_roll, _NEGATIVE_ID, {**state.deband, "enabled": False}
+    )
+
+    destination = _export(banded_export_roll, tmp_path)
+
+    assert _provenance(destination)["rendered"]["deband"] is None

@@ -2614,3 +2614,207 @@ def test_seed_camera_color_no_ops_without_a_matrix():
         emit=lambda event: None,  # type: ignore[arg-type]
     )
     assert roll.camera_color is None
+
+
+# --- re-stitch refits the deband regions -------------------------------------
+
+
+def _fake_deband_fit(window, axis="vertical", *, blocks=3):
+    from scanny_boy import deband
+
+    n_cols = math.ceil(
+        (window[2] if axis == "vertical" else window[3]) / deband.PITCH_PX
+    )
+    return deband.RegionFit(
+        window=tuple(float(v) for v in window),
+        axis=axis,
+        block_px=deband.BLOCK_PX,
+        pitch_px=deband.PITCH_PX,
+        blocks=blocks,
+        corr=np.zeros((blocks, n_cols, 3), dtype=np.float32),
+    )
+
+
+def _plant_deband_op(
+    out_dir, record, windows, *, canvas=(2200, 790), axis="vertical", **settings
+):
+    """Record a `deband` op the way an earlier edit would have, against a
+    canvas that differs from the stitched one (so it is stale)."""
+    from scanny_boy import deband
+
+    norm = record.normalization
+    spans = tuple(norm["ceils"][ch] - norm["floors"][ch] for ch in range(3))
+    params = deband.deband_params(
+        canvas,
+        axis,
+        [_fake_deband_fit(window, axis) for window in windows],
+        settings.get("enabled", True),
+        settings.get("strength", 1.0),
+        spans,
+        ids=settings.get("ids"),
+    )
+    repo.append_deband_edit(out_dir, record.negative_id, params)
+    return params
+
+
+def _stitched_with_stale_deband(work_dir, tmp_path, windows, **kwargs):
+    out_dir = make_roll_dir(tmp_path, "debandroll")
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+    record = load_roll_manifest(out_dir).negatives[0]
+    params = _plant_deband_op(out_dir, record, windows, **kwargs)
+    return out_dir, record, params
+
+
+def test_restitch_refits_the_deband_regions_onto_the_new_canvas(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import deband
+
+    out_dir, record, _planted = _stitched_with_stale_deband(
+        work_dir,
+        tmp_path,
+        [(0.0, 0.0, 2200.0, 790.0, 0.0), (300.0, 100.0, 900.0, 600.0, 1.5)],
+        axis="horizontal",
+        enabled=False,
+        strength=0.6,
+        ids=[3, 8],
+    )
+    assert repo.net_edit_state(out_dir, record.negative_id).deband["canvas"] == [
+        2200,
+        790,
+    ]
+    calls: list[dict] = []
+
+    def stub_fit(image, spans, window, axis, *, prior_regions=None, **kwargs):
+        calls.append(
+            {
+                "shape": image.shape,
+                "spans": tuple(spans),
+                "window": window,
+                "axis": axis,
+                "prior": len(prior_regions or []),
+            }
+        )
+        return _fake_deband_fit(window, axis)
+
+    monkeypatch.setattr(deband, "fit_region", stub_fit)
+    events: list = []
+
+    outcome = run_stitch_with_defaults(
+        work_dir, out_dir, events=events, run_id="restitch-run"
+    )
+
+    assert outcome.status == "complete"
+    assert not [
+        e for e in events if getattr(e, "code", None) is Code.DEBAND_REFIT_FAILED
+    ]
+    spans = tuple(
+        record.normalization["ceils"][c] - record.normalization["floors"][c]
+        for c in range(3)
+    )
+    assert [(c["shape"], c["axis"], c["prior"]) for c in calls] == [
+        ((730, 2080, 3), "horizontal", 0),
+        ((730, 2080, 3), "horizontal", 1),
+    ]
+    assert calls[0]["spans"] == pytest.approx(spans)
+    # Each window is clamped to the new 2080 x 730 canvas.
+    assert calls[0]["window"] == (0.0, 0.0, 2080.0, 730.0, 0.0)
+    assert calls[1]["window"] == (300.0, 100.0, 900.0, 600.0, 1.5)
+    op = repo.net_edit_state(out_dir, record.negative_id).deband
+    assert op["canvas"] == [2080, 730]
+    assert (op["enabled"], op["strength"], op["axis"]) == (False, 0.6, "horizontal")
+    assert [r["id"] for r in op["regions"]] == [3, 8]
+    assert op["spans"] == pytest.approx(spans)
+    assert deband.fits_from_params(op)  # the new tables decode
+
+
+def test_restitch_with_no_deband_op_records_none_and_does_not_fit(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import deband
+
+    out_dir = make_roll_dir(tmp_path, "nodeband")
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+
+    def boom(*args, **kwargs):
+        raise AssertionError("nothing to refit")
+
+    monkeypatch.setattr(deband, "fit_region", boom)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    ops = [e["op"] for e in repo.edits_for(out_dir, "stitch-negative-01")]
+    assert repo.DEBAND_OP not in ops
+
+
+def test_restitch_carries_an_empty_deband_op_onto_the_new_canvas(
+    work_dir, tmp_path, monkeypatch
+):
+    """A cleared op keeps its settings; the refit just moves it to the new
+    canvas so it is not reported stale."""
+    from scanny_boy import deband
+
+    out_dir, record, _ = _stitched_with_stale_deband(
+        work_dir, tmp_path, [], enabled=False, strength=1.2
+    )
+
+    def boom(*args, **kwargs):
+        raise AssertionError("no regions to refit")
+
+    monkeypatch.setattr(deband, "fit_region", boom)
+
+    run_stitch_with_defaults(work_dir, out_dir, run_id="restitch-run")
+
+    op = repo.net_edit_state(out_dir, record.negative_id).deband
+    assert op["canvas"] == [2080, 730]
+    assert op["regions"] == []
+    assert (op["enabled"], op["strength"]) == (False, 1.2)
+
+
+@pytest.mark.parametrize("failure", ["too_little_background", "crash"])
+def test_a_failed_deband_refit_warns_and_never_fails_the_stitch(
+    work_dir, tmp_path, monkeypatch, failure
+):
+    """The synthetic scene is all texture, so the real fit refuses it for
+    lack of flat background; a crash anywhere in the refit is handled the
+    same way. Either way the stitch publishes, the warning names the
+    negative, and the old op is left exactly as it was."""
+    from scanny_boy import deband
+
+    out_dir, record, planted = _stitched_with_stale_deband(
+        work_dir,
+        tmp_path,
+        [(0.0, 0.0, 2200.0, 790.0, 0.0), (300.0, 100.0, 900.0, 600.0, 0.0)],
+        ids=[4, 5],
+    )
+    if failure == "crash":
+
+        def crash(*args, **kwargs):
+            raise RuntimeError("fit exploded")
+
+        monkeypatch.setattr(deband, "fit_region", crash)
+    events: list = []
+
+    outcome = run_stitch_with_defaults(
+        work_dir, out_dir, events=events, run_id="restitch-run"
+    )
+
+    assert outcome.status == "complete"
+    warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.DEBAND_REFIT_FAILED
+    ]
+    assert len(warnings) == 1
+    assert record.negative_id in warnings[0].message
+    if failure == "crash":
+        assert "fit exploded" in warnings[0].message
+    else:
+        assert "region 4" in warnings[0].message
+    # Recorded nothing: the op is the planted one, stale against the new canvas.
+    op = repo.net_edit_state(out_dir, record.negative_id).deband
+    assert op == repo.validated_deband_params(planted)
+    assert op["canvas"] == [2200, 790]
+    # The negative was still published.
+    assert load_roll_manifest(out_dir).negatives[0].status == "completed"
+    assert any(isinstance(e, NegativeDone) for e in events)

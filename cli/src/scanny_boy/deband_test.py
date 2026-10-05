@@ -37,7 +37,7 @@ def test_removal_reduces_banding_below_bound():
     before = ds.banding_score(codes, SPANS)
 
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
     after = ds.banding_score(healed, SPANS)
 
@@ -51,7 +51,7 @@ def test_gradient_is_preserved():
         H, W, seed=1, sharp_amplitude=0, broad_amplitude=0
     )
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     before_profile = _decode(codes).mean(axis=(0, 2))
@@ -74,7 +74,7 @@ CANOPY = (600, 600, 1000)
 
 def _tall_fit(codes):
     fit = deband.fit_region(codes, SPANS, TALL_WINDOW, "vertical")
-    params = deband.deband_params((TALL_W, TALL_H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((TALL_W, TALL_H), "vertical", [fit], True, 1.0, SPANS)
     return fit, deband.apply(codes, params)
 
 
@@ -134,7 +134,7 @@ def test_locality_outside_feathered_window_is_byte_identical():
     codes, _info = ds.make_banded_scene(H, W, seed=2)
     window = (200.0, 100.0, 900.0, 560.0, 0.0)
     fit = deband.fit_region(codes, SPANS, window, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     x, y, w, h, _tilt = window
@@ -155,7 +155,7 @@ def test_pole_chroma_is_protected():
     pole_x = int(W * 0.6)
     codes, info = ds.make_banded_scene(H, W, seed=3, pole_x=pole_x)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     lo, hi = info["pole"]
@@ -172,7 +172,7 @@ def test_high_contrast_pole_is_left_untouched():
     pole_x = int(W * 0.7)  # on the shoulder of the broad band
     codes, info = ds.make_banded_scene(H, W, seed=3, pole_x=pole_x, pole_contrast=3.0)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     lo, hi = info["pole"]
@@ -189,7 +189,7 @@ def test_wire_is_unchanged():
     wire_y = H // 2
     codes, info = ds.make_banded_scene(H, W, seed=4, wire_y=wire_y)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     lo, hi = info["wire"]
@@ -201,7 +201,7 @@ def test_wire_is_unchanged():
 def test_luminance_is_preserved():
     codes, _info = ds.make_banded_scene(H, W, seed=5)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     before_lum = _decode(codes).mean()
@@ -216,7 +216,7 @@ def test_fill_code_pixels_are_skipped():
     codes, _info = ds.make_banded_scene(H, W, seed=4)
     codes[300:340, 700:900] = deband.FILL_CODE
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     assert np.array_equal(healed[300:340, 700:900], codes[300:340, 700:900])
@@ -228,10 +228,10 @@ def test_strength_scales_the_correction(strength):
     codes, _info = ds.make_banded_scene(H, W, seed=4)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
     full = deband.apply(
-        codes, deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+        codes, deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     )
     scaled = deband.apply(
-        codes, deband.deband_params((W, H), "vertical", [fit], True, strength)
+        codes, deband.deband_params((W, H), "vertical", [fit], True, strength, SPANS)
     )
     if strength == 0.0:
         assert np.array_equal(scaled, codes)
@@ -247,7 +247,7 @@ def test_tilted_window_stays_local_and_changes_inside():
     codes, _info = ds.make_banded_scene(H, W, seed=2)
     window = (300.0, 150.0, 1000.0, 480.0, 6.0)
     fit = deband.fit_region(codes, SPANS, window, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     healed = deband.apply(codes, params)
 
     changed = np.any(healed != codes, axis=-1)
@@ -285,7 +285,7 @@ def test_horizontal_axis_matches_vertical_behaviour():
     window_h = (0.0, 0.0, float(H), float(W), 0.0)
 
     fit_h = deband.fit_region(codes_h, SPANS, window_h, "horizontal")
-    params_h = deband.deband_params((H, W), "horizontal", [fit_h], True, 1.0)
+    params_h = deband.deband_params((H, W), "horizontal", [fit_h], True, 1.0, SPANS)
     healed_h = deband.apply(codes_h, params_h)
 
     before_score = ds.banding_score(codes_v, SPANS)
@@ -303,7 +303,7 @@ def test_overlapping_regions_apply_deterministically():
 
     fit_a = deband.fit_region(codes, SPANS, window_a, "vertical")
     fit_b = deband.fit_region(codes, SPANS, window_b, "vertical", prior_regions=[fit_a])
-    params = deband.deband_params((W, H), "vertical", [fit_a, fit_b], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit_a, fit_b], True, 1.0, SPANS)
 
     healed_1 = deband.apply(codes, params)
     healed_2 = deband.apply(codes, params)
@@ -337,7 +337,7 @@ def test_region_render_matches_full_apply_slice(axis, tilt_deg):
     height, width = codes.shape[:2]
     window = (80.0, 60.0, float(width - 160), float(height - 120), tilt_deg)
     fit = deband.fit_region(codes, SPANS, window, axis)
-    params = deband.deband_params((width, height), axis, [fit], True, 1.0)
+    params = deband.deband_params((width, height), axis, [fit], True, 1.0, SPANS)
 
     margin = deband.REGION_MARGIN
     x0, y0, w0, h0 = 250, 150, 400, 300
@@ -358,11 +358,11 @@ def test_region_render_matches_full_apply_slice(axis, tilt_deg):
 def test_params_round_trip():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
 
     # Decoding the serialized table reproduces the fitted correction to
     # within the int16/1e-5 quantization `_encode_table` uses.
-    window, block_px, pitch_px, blocks, corr = deband._parse_region_dict(
+    window, block_px, pitch_px, blocks, corr = deband.parse_region(
         params["regions"][0], "vertical"
     )
     assert window == fit.window
@@ -381,7 +381,7 @@ def test_params_round_trip():
 def test_malformed_region_raises():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     params["regions"][0]["corr"] = "not valid base64 !!"
     with pytest.raises(ValueError):
         deband.apply(codes, params)
@@ -390,7 +390,7 @@ def test_malformed_region_raises():
 def test_malformed_region_missing_key_raises():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     del params["regions"][0]["window"]
     with pytest.raises(ValueError):
         deband.apply(codes, params)
@@ -399,7 +399,7 @@ def test_malformed_region_missing_key_raises():
 def test_newer_fit_version_is_not_live():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     params["fit_version"] = deband.FIT_VERSION + 1
     assert deband.is_live(params, (H, W)) is False
     # And, being a whole-image apply with no `region`, it is a no-op.
@@ -409,7 +409,7 @@ def test_newer_fit_version_is_not_live():
 def test_canvas_mismatch_is_not_live():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     params["canvas"] = [W + 10, H]
     assert deband.is_live(params, (H, W)) is False
 
@@ -417,7 +417,7 @@ def test_canvas_mismatch_is_not_live():
 def test_2d_image_is_a_noop():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
     mono = codes[..., 0]
     assert np.array_equal(deband.apply(mono, params), mono)
 
@@ -425,9 +425,9 @@ def test_2d_image_is_a_noop():
 def test_disabled_or_empty_is_not_live():
     codes, _info = ds.make_banded_scene(H, W, seed=9)
     fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
-    params = deband.deband_params((W, H), "vertical", [fit], False, 1.0)
+    params = deband.deband_params((W, H), "vertical", [fit], False, 1.0, SPANS)
     assert deband.is_live(params, (H, W)) is False
-    empty_params = deband.deband_params((W, H), "vertical", [], True, 1.0)
+    empty_params = deband.deband_params((W, H), "vertical", [], True, 1.0, SPANS)
     assert deband.is_live(empty_params, (H, W)) is False
 
 
@@ -464,3 +464,91 @@ def test_non_3_channel_image_raises():
     mono = codes[..., 0]
     with pytest.raises(ValueError, match="3-channel"):
         deband.fit_region(mono, SPANS, FULL_WINDOW, "vertical")
+
+
+# --- spans ride in the op ----------------------------------------------
+
+
+def test_params_carry_the_negatives_spans():
+    codes, _info = ds.make_banded_scene(H, W, seed=9)
+    fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
+    assert params["spans"] == [float(v) for v in SPANS]
+
+
+@pytest.mark.parametrize(
+    "bad_spans", [None, [1.0, 1.0], [1.0, 0.0, 1.0], [1.0, -1.0, 1.0], [1, "x", 1]]
+)
+def test_missing_or_malformed_spans_are_not_live(bad_spans):
+    codes, _info = ds.make_banded_scene(H, W, seed=9)
+    fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
+    params = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
+    params["spans"] = bad_spans
+    assert deband.is_live(params, (H, W)) is False
+    assert np.array_equal(deband.apply(codes, params), codes)
+
+
+def test_protection_tolerance_is_in_log10_not_val_units():
+    """The same stored table protects more when the op's spans are larger:
+    a given `val` luminance deviation is a larger log10 deviation, so it
+    falls further outside `PROTECT_TOL`."""
+    codes, _info = ds.make_banded_scene(H, W, seed=9, pole_x=W // 2)
+    fit = deband.fit_region(codes, SPANS, FULL_WINDOW, "vertical")
+    narrow = deband.deband_params((W, H), "vertical", [fit], True, 1.0, SPANS)
+    wide = deband.deband_params(
+        (W, H), "vertical", [fit], True, 1.0, tuple(3.0 * s for s in SPANS)
+    )
+    moved_narrow = np.abs(
+        deband.apply(codes, narrow).astype(np.int64) - codes.astype(np.int64)
+    ).sum()
+    moved_wide = np.abs(
+        deband.apply(codes, wide).astype(np.int64) - codes.astype(np.int64)
+    ).sum()
+    assert moved_wide < moved_narrow
+
+
+# --- the window's tilt is the crop op's tilt -------------------------------
+
+
+def test_a_tilted_windows_footprint_follows_the_crop_ops_sense_of_tilt():
+    """`tilt_deg` means what the `crop` op's does (counter-clockwise as
+    displayed, `cv2.getRotationMatrix2D`'s sense): the pixels a tilted
+    window's correction touches fill the polygon rotated that way about the
+    window's centre, not the mirror-image one."""
+    import cv2
+
+    height, width = 700, 900
+    flat = normalization.encode_normalized(
+        np.full((height, width, 3), 0.5, dtype=np.float32)
+    ).astype(np.uint16)
+    window = (150.0, 200.0, 600.0, 300.0, 12.0)
+    n_cols = -(-int(window[2]) // deband.PITCH_PX)
+    fit = deband.RegionFit(
+        window=window,
+        axis="vertical",
+        block_px=deband.BLOCK_PX,
+        pitch_px=deband.PITCH_PX,
+        blocks=2,
+        corr=np.full((2, n_cols, 3), 0.004, dtype=np.float32),
+    )
+    params = deband.deband_params((width, height), "vertical", [fit], True, 1.0, SPANS)
+
+    touched = np.any(deband.apply(flat, params) != flat, axis=2)
+
+    x, y, w, h, tilt = window
+    centre = (x + (w - 1) / 2.0, y + (h - 1) / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, tilt, 1.0)
+    corners = np.array(
+        [[x, y], [x + w - 1, y], [x + w - 1, y + h - 1], [x, y + h - 1]],
+        dtype=np.float64,
+    )
+    rotated = corners @ matrix[:, :2].T + matrix[:, 2]
+    expected = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(expected, [np.round(rotated).astype(np.int32)], 1)
+    expected = expected.astype(bool)
+
+    intersection = np.count_nonzero(touched & expected)
+    union = np.count_nonzero(touched | expected)
+    # Feathered edges leave the outer ring barely touched, so this is a
+    # coarse overlap, but the mirror-image tilt would score far lower.
+    assert intersection / union > 0.9

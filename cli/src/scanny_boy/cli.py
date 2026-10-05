@@ -848,6 +848,60 @@ def build_parser() -> argparse.ArgumentParser:
     edit_list_scratches.add_argument("--roll", required=True, metavar="DIR")
     edit_list_scratches.add_argument("--negative", required=True, metavar="ID")
 
+    edit_deband = edit_subparsers.add_parser(
+        "deband",
+        help=(
+            "Edit one negative's development-band removal: add or remove a "
+            "region, set the band axis, switch it on or off, set its strength, "
+            "or clear it (docs/DEBAND_PLAN.md). One negative only."
+        ),
+    )
+    edit_deband.add_argument("--roll", required=True, metavar="DIR")
+    edit_deband.add_argument("--negative", required=True, metavar="ID")
+    deband_action = edit_deband.add_mutually_exclusive_group()
+    deband_action.add_argument(
+        "--add-region",
+        metavar="X,Y,W,H",
+        help=(
+            "fit and add a region over flat banded film, display-space "
+            "pixels (the image as shown, live crop included)"
+        ),
+    )
+    deband_action.add_argument(
+        "--remove-region",
+        type=int,
+        metavar="ID",
+        help="remove a region by id; the rest are refitted",
+    )
+    deband_action.add_argument(
+        "--axis",
+        choices=("vertical", "horizontal"),
+        help="the direction the bands run, as displayed; refits every region",
+    )
+    deband_action.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove every region (the on/off and strength settings stay)",
+    )
+    edit_deband.add_argument(
+        "--tilt",
+        type=float,
+        metavar="DEG",
+        default=0.0,
+        help="with --add-region: the region's counter-clockwise tilt as displayed",
+    )
+    deband_on_off = edit_deband.add_mutually_exclusive_group()
+    deband_on_off.add_argument("--on", action="store_true", help="enable band removal")
+    deband_on_off.add_argument(
+        "--off", action="store_true", help="disable band removal"
+    )
+    edit_deband.add_argument(
+        "--strength",
+        type=float,
+        metavar="S",
+        help="correction strength, 0..1.5 (1.0 full); no refit",
+    )
+
     export = subparsers.add_parser(
         "export",
         help="Write TIFFs with each negative's edits applied into an output folder.",
@@ -1301,6 +1355,20 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                 "stale": stale,
                 "count": 0 if stale else len(scratch_list),
             }
+        # The deband block: display-space region rects and the settings,
+        # never the correction tables.
+        negative["deband"] = (
+            None
+            if output_width is None or output_height is None
+            else previews.deband_report(
+                state.deband,
+                (output_height, output_width),
+                quarter_turns=state.quarter_turns,
+                flipped_horizontally=state.flipped,
+                fine_angle_deg=state.fine_angle_deg,
+                crop_params=state.crop,
+            )
+        )
     if manifest.film is not None:
         info["film_kind"] = manifest.film.get("kind")
     else:
@@ -1611,8 +1679,10 @@ def _run_edit_command(args, writer: EventWriter) -> int:
     the `finished` line."""
     from scanny_boy.edits import (
         EditFailure,
+        parse_region_arg,
         run_edit_color,
         run_edit_crop,
+        run_edit_deband,
         run_edit_delete,
         run_edit_detect_scratches,
         run_edit_detect_spots,
@@ -1734,6 +1804,26 @@ def _run_edit_command(args, writer: EventWriter) -> int:
                         emit=writer.write,
                     )
                 ]
+            confirmation = EditRecorded
+        elif args.edit_command == "deband":
+            results = [
+                run_edit_deband(
+                    Path(args.roll),
+                    args.negative,
+                    add_region=(
+                        parse_region_arg(args.add_region)
+                        if args.add_region is not None
+                        else None
+                    ),
+                    tilt_deg=args.tilt,
+                    remove_region=args.remove_region,
+                    axis=args.axis,
+                    enabled=True if args.on else (False if args.off else None),
+                    strength=args.strength,
+                    clear=args.clear,
+                    emit=writer.write,
+                )
+            ]
             confirmation = EditRecorded
         elif args.edit_command == "suggest-crop":
             try:

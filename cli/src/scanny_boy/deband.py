@@ -93,9 +93,12 @@ new: ``PROTECT_TOL``, the feather, ``COL_BG_FRACTION_REGION``,
 ``MIN_BG_FRACTION``, ``MIN_BLOCK_GOOD_COLUMNS``, ``AGREE_SMOOTH_PX``,
 ``AGREEMENT_LOW`` / ``AGREEMENT_HIGH``, ``MIN_AGREE_BLOCKS``,
 ``CONFIDENCE_SMOOTH_PX``, ``EDGE_GUARD_PX``, ``TRACK_LIMIT_LOG10`` (a guard
-on narrow per-block spikes), the reject constants. ``PROTECT_TOL`` is in
-``val`` units (the op carries no spans), roughly 0.06 log10 for this roll's
-spans, not the plan's 0.04 log10.
+on narrow per-block spikes), the reject constants. ``PROTECT_TOL`` is the
+plan's 0.04 **log10**: the op carries the negative's per-channel ``spans``
+(``ceil - floor`` at fit time) so replay can compute the protection weight's
+luminance in log10, exactly as the fit does. (Step 1 ran it in ``val`` units,
+roughly 0.06 log10 for this roll's spans; ``measure_deband.py`` numbers above
+predate the switch.)
 """
 
 from __future__ import annotations
@@ -177,7 +180,7 @@ TABLE_SCALE = 1e-5  # matches scratches.py's table quantization
 # --- apply ----------------------------------------------------------------
 
 PROTECT_BLUR_SIGMA = BG_BLUR_SIGMA  # "recomputed from the image being corrected"
-PROTECT_TOL = 0.04  # provisional (plan §3.2)
+PROTECT_TOL = 0.04  # provisional (plan §3.2); log10 units, via the op's ``spans``
 
 FEATHER_PX = 128  # provisional (plan §3.2)
 FEATHER_FRACTION = 0.10  # provisional (plan §3.2, "10% of the side")
@@ -207,14 +210,17 @@ class RegionFit:
 
 
 def _rotation_matrix(angle_deg: float) -> np.ndarray:
-    """CCW rotation matrix mapping local (u, v) offsets onto global (x, y)
-    offsets: ``global = R @ local``. Purely a bookkeeping convention shared
-    by fit (image warp) and apply (algebraic point rotation) — nothing
-    downstream depends on which rotation sense "CCW" means in pixel space,
-    only that both sides agree."""
+    """Rotation matrix mapping a window's local (u, v) offsets onto global
+    (x, y) offsets: ``global = R @ local``. It is `cv2.getRotationMatrix2D`'s
+    sense (positive = counter-clockwise as displayed, y down), so a window's
+    ``tilt_deg`` means exactly what the `crop` op's does:
+    `previews.display_crop_window_to_tiff` produces it, and
+    `previews.tiff_rect_to_display(..., tilt_deg=)` reads it back. Fit
+    (image warp) and apply (algebraic point rotation) share this one
+    matrix."""
     angle_rad = math.radians(angle_deg)
     cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
-    return np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float64)
+    return np.array([[cos_a, sin_a], [-sin_a, cos_a]], dtype=np.float64)
 
 
 def _decode_val(codes: np.ndarray) -> np.ndarray:
@@ -438,6 +444,7 @@ def fit_region(
             prior_regions,
             True,
             1.0,
+            spans,
         )
         image_codes = apply(image_codes, prior_params)
 
@@ -566,13 +573,22 @@ def deband_params(
     fits: list[RegionFit],
     enabled: bool,
     strength: float,
+    spans: tuple[float, ...],
+    *,
+    ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Build the ``deband`` op's JSON shape (plan §4). ``canvas`` is
-    ``(width, height)``. Region ids are assigned sequentially starting at 1
-    in list order — id stability across edits is a `library/repo.py`
-    concern (step 2), out of scope for this module."""
+    ``(width, height)``. ``spans`` is the negative's per-channel
+    ``ceil - floor`` log10 span at fit time; it rides in the op so replay can
+    judge the protection weight in log10 (`_apply_one_region`). Region ids
+    are ``ids`` (one per fit, kept stable across edits by `edits.py`) or, by
+    default, assigned sequentially from 1 in list order."""
+    if ids is not None and len(ids) != len(fits):
+        raise ValueError("deband_params needs one id per fit")
     regions = []
-    for region_id, fit in enumerate(fits, start=1):
+    for region_id, fit in zip(
+        ids if ids is not None else range(1, len(fits) + 1), fits, strict=True
+    ):
         regions.append(
             {
                 "id": region_id,
@@ -589,8 +605,47 @@ def deband_params(
         "strength": float(strength),
         "axis": axis,
         "canvas": [int(canvas[0]), int(canvas[1])],
+        "spans": [float(v) for v in spans],
         "regions": regions,
     }
+
+
+def fits_from_params(params: dict) -> list[RegionFit]:
+    """The op's regions as `RegionFit`s, in op order — what `fit_region`'s
+    ``prior_regions`` takes, so a new region can be fitted on top of the
+    stored ones without refitting them. Raises ``ValueError`` for a
+    malformed region."""
+    axis = params.get("axis", "vertical")
+    fits = []
+    for region in params.get("regions", []):
+        window, block_px, pitch_px, blocks, corr = parse_region(region, axis)
+        fits.append(
+            RegionFit(
+                window=window,
+                axis=axis,
+                block_px=block_px,
+                pitch_px=pitch_px,
+                blocks=blocks,
+                corr=corr,
+            )
+        )
+    return fits
+
+
+def clamp_window(
+    window: tuple[float, float, float, float, float], canvas: tuple[int, int]
+) -> tuple[float, float, float, float, float]:
+    """``window`` pulled inside ``canvas`` ``(width, height)``: the origin
+    clamped into the canvas and the extent trimmed to what remains, as the
+    `crop` op's stored rect is. Re-stitch refit uses it to carry a window
+    onto a canvas of different size; a window the clamp shrinks below the
+    fit's minimum then fails in `fit_region` like any too-small region."""
+    x, y, w, h, tilt = (float(v) for v in window)
+    x = min(max(x, 0.0), canvas[0] - 1.0)
+    y = min(max(y, 0.0), canvas[1] - 1.0)
+    w = min(w, canvas[0] - x)
+    h = min(h, canvas[1] - y)
+    return (x, y, w, h, tilt)
 
 
 def is_live(params: dict | None, shape: tuple[int, int]) -> bool:
@@ -613,18 +668,37 @@ def is_live(params: dict | None, shape: tuple[int, int]) -> bool:
             return False
     except (TypeError, ValueError):
         return False
-    regions = params.get("regions")
-    return isinstance(regions, list) and len(regions) > 0
-
-
-def _params_enabled(params: dict | None) -> bool:
-    if not isinstance(params, dict) or not params.get("enabled"):
+    if _params_spans(params) is None:
         return False
     regions = params.get("regions")
     return isinstance(regions, list) and len(regions) > 0
 
 
-def _parse_region_dict(
+def _params_spans(params: dict) -> np.ndarray | None:
+    """The op's per-channel spans as a float32 array, or ``None`` when absent
+    or malformed (3 positive finite numbers)."""
+    spans = params.get("spans")
+    if not isinstance(spans, (list, tuple)) or len(spans) != 3:
+        return None
+    try:
+        arr = np.asarray([float(v) for v in spans], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(arr)) or np.any(arr <= 0):
+        return None
+    return arr
+
+
+def _params_enabled(params: dict | None) -> bool:
+    if not isinstance(params, dict) or not params.get("enabled"):
+        return False
+    if _params_spans(params) is None:
+        return False
+    regions = params.get("regions")
+    return isinstance(regions, list) and len(regions) > 0
+
+
+def parse_region(
     region: dict, axis: str
 ) -> tuple[tuple[float, float, float, float, float], int, int, int, np.ndarray]:
     """Parse and decode one region dict. Raises ``ValueError`` with a clear
@@ -656,10 +730,11 @@ def _apply_one_region(
     *,
     axis: str,
     strength: float,
+    spans: np.ndarray,
     row_origin: int,
     col_origin: int,
 ) -> None:
-    window, block_px, pitch_px, _blocks, corr = _parse_region_dict(region, axis)
+    window, block_px, pitch_px, _blocks, corr = parse_region(region, axis)
     x, y, w, h, tilt_deg = window
     x -= col_origin
     y -= row_origin
@@ -712,7 +787,8 @@ def _apply_one_region(
     if not np.any(feather > 0):
         return
 
-    luminance = sub_val.mean(axis=2)
+    # log10 luminance, the same quantity the fit's background test uses.
+    luminance = (sub_val * spans[np.newaxis, np.newaxis, :]).mean(axis=2)
     blurred = cv2.GaussianBlur(
         luminance.astype(np.float32), (0, 0), sigmaX=PROTECT_BLUR_SIGMA
     )
@@ -791,6 +867,8 @@ def apply(
     image = image_codes.copy()
     axis = params.get("axis", "vertical")
     strength = float(params.get("strength", 1.0))
+    spans = _params_spans(params)
+    assert spans is not None  # `is_live` / `_params_enabled` checked it
     ox, oy = (0, 0) if origin is None else (int(origin[0]), int(origin[1]))
 
     for region_dict in params.get("regions", []):
@@ -799,6 +877,7 @@ def apply(
             region_dict,
             axis=axis,
             strength=strength,
+            spans=spans,
             row_origin=oy,
             col_origin=ox,
         )

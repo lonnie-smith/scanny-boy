@@ -1085,3 +1085,174 @@ def test_parse_color_op_none_for_an_out_of_range_value():
 
     out_of_range = _color_params(warmth=2.0)
     assert _parse_color_op(out_of_range) is None
+
+
+# --- the `deband` op ---------------------------------------------------------
+
+
+def _deband_params(**overrides):
+    """A valid `deband` op with two regions, built from hand-made fits (no
+    fitting needed to test the parser)."""
+    import numpy as np
+
+    from scanny_boy import deband
+
+    def fit(window):
+        n_cols = -(-int(window[2]) // deband.PITCH_PX)
+        return deband.RegionFit(
+            window=window,
+            axis="vertical",
+            block_px=deband.BLOCK_PX,
+            pitch_px=deband.PITCH_PX,
+            blocks=2,
+            corr=np.full((2, n_cols, 3), 0.001, dtype=np.float32),
+        )
+
+    params = deband.deband_params(
+        (900, 700),
+        "vertical",
+        [fit((0.0, 0.0, 600.0, 400.0, 0.0)), fit((100.0, 200.0, 640.0, 480.0, 1.5))],
+        True,
+        1.25,
+        (1.3, 1.2, 1.4),
+        ids=[3, 7],
+    )
+    params.update(overrides)
+    return params
+
+
+def test_deband_params_round_trip_through_the_log(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    params = _deband_params()
+
+    recorded = repo.append_deband_edit(roll_dir, "rid-1-negative-01", params)
+
+    assert recorded["op"] == repo.DEBAND_OP
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state.deband == params
+    assert [region["id"] for region in state.deband["regions"]] == [3, 7]
+    assert state.deband["spans"] == [1.3, 1.2, 1.4]
+
+
+def test_deband_op_coalesces_a_trailing_op_in_place(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_deband_edit(roll_dir, "rid-1-negative-01", _deband_params())
+    repo.append_deband_edit(
+        roll_dir, "rid-1-negative-01", _deband_params(enabled=False, strength=0.5)
+    )
+
+    rows = [
+        edit
+        for edit in repo.edits_for(roll_dir, "rid-1-negative-01")
+        if edit["op"] == repo.DEBAND_OP
+    ]
+    assert len(rows) == 1
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state.deband["enabled"] is False
+    assert state.deband["strength"] == 0.5
+
+
+def test_deband_op_survives_a_rotation(roll_dir):
+    """TIFF-space band geometry does not move when the display transform
+    does."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_deband_edit(roll_dir, "rid-1-negative-01", _deband_params())
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+
+    state = repo.net_edit_state(roll_dir, "rid-1-negative-01")
+    assert state.quarter_turns == 1
+    assert state.deband == _deband_params()
+
+
+def test_deband_unknown_keys_are_ignored(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    params = _deband_params(future_field="x")
+    params["regions"][0]["future_region_field"] = 1
+
+    validated = repo.validated_deband_params(params)
+
+    assert "future_field" not in validated
+    assert validated["regions"][0]["id"] == 3
+
+
+def test_future_deband_fit_version_degrades_to_none(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    repo.append_edit(
+        roll_dir,
+        "rid-1-negative-01",
+        repo.DEBAND_OP,
+        _deband_params(fit_version=99),
+    )
+
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").deband is None
+    with pytest.raises(ValueError, match="newer"):
+        repo.validated_deband_params(_deband_params(fit_version=99))
+
+
+def _break(key, value):
+    def mutate(params):
+        params[key] = value
+
+    return mutate
+
+
+def _break_region(key, value):
+    def mutate(params):
+        params["regions"][0][key] = value
+
+    return mutate
+
+
+def _duplicate_ids(params):
+    params["regions"][1]["id"] = params["regions"][0]["id"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _break("fit_version", "1"),
+        _break("enabled", 1),
+        _break("strength", 2.0),
+        _break("strength", -0.1),
+        _break("strength", "1"),
+        _break("axis", "diagonal"),
+        _break("canvas", [900]),
+        _break("canvas", [900.0, 700]),
+        _break("spans", [1.0, 1.0]),
+        _break("spans", [1.0, 0.0, 1.0]),
+        _break("spans", None),
+        _break("regions", {}),
+        _break_region("id", 0),
+        _break_region("id", True),
+        _break_region("window", [0, 0, 100]),
+        _break_region("window", [0, 0, 0, 100, 0]),
+        _break_region("block_px", 0),
+        _break_region("blocks", 0),
+        _break_region("corr", ""),
+        _break_region("corr", "not base64 !!"),
+        # A table that decodes but is not the shape the window implies.
+        _break_region("blocks", 3),
+        _duplicate_ids,
+    ],
+)
+def test_malformed_deband_params_are_rejected_and_replay_as_none(roll_dir, mutate):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    params = _deband_params()
+    mutate(params)
+
+    with pytest.raises(ValueError):
+        repo.validated_deband_params(params)
+    with pytest.raises(ValueError):
+        repo.append_deband_edit(roll_dir, "rid-1-negative-01", params)
+    assert repo.edits_for(roll_dir, "rid-1-negative-01") == []
+
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.DEBAND_OP, params)
+    assert repo.net_edit_state(roll_dir, "rid-1-negative-01").deband is None
+
+
+def test_non_object_deband_params_are_rejected():
+    with pytest.raises(ValueError, match="object"):
+        repo.validated_deband_params([])

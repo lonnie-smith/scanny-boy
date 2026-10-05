@@ -11,6 +11,7 @@ import pytest
 
 from scanny_boy import concurrency
 from scanny_boy.cli import MAX_SELECTION_FILES, build_parser, main
+from scanny_boy.deband_support import make_banded_roll
 from scanny_boy.events import PROTOCOL_VERSION
 from scanny_boy.fake_nef_support import write_fake_nef
 from scanny_boy.library import repo
@@ -1842,9 +1843,7 @@ def test_edit_color_round_trips_through_roll_info(work_dir, capsys, tmp_path):
     negative = events[1]["manifest"]["negatives"][0]
     defaults = dataclasses.asdict(color.NEUTRAL_COLOR)
     for key in color.COLOR_PARAM_KEYS:
-        assert negative[f"color_{key}"] == pytest.approx(
-            params.get(key, defaults[key])
-        )
+        assert negative[f"color_{key}"] == pytest.approx(params.get(key, defaults[key]))
 
 
 def test_edit_tone_auto_density_records_a_solved_value(work_dir, capsys, tmp_path):
@@ -3726,3 +3725,85 @@ def test_export_defaults_to_no_downsample(capsys, tmp_path):
     done = next(e for e in events if e["event"] == "export_done")
     assert done["width"] == 4
     assert done["height"] == 3
+
+
+def _deband_cli(capsys, roll_dir, negative_id, *argv):
+    capsys.readouterr()
+    status = main(
+        ["edit", "deband", "--roll", str(roll_dir), "--negative", negative_id, *argv]
+    )
+    events, _err = _stdout_events(capsys)
+    return status, events
+
+
+def test_edit_deband_records_regions_and_roll_info_reports_them(capsys, tmp_path):
+    """`edit deband` fits and records a region, emits `edit_recorded` with
+    the net deband report (no correction tables), and `roll info` carries
+    the same block; every option round-trips; `--clear` empties it."""
+    roll_dir, nid = make_banded_roll(tmp_path)
+    negative = load_roll_manifest(roll_dir).negatives[0]
+    tiff_w, tiff_h = negative.output["width"], negative.output["height"]
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _ = _stdout_events(capsys)
+    assert events[1]["manifest"]["negatives"][0]["deband"] is None
+
+    status, events = _deband_cli(
+        capsys, roll_dir, nid, "--add-region", f"0,0,{tiff_w},{tiff_h}"
+    )
+
+    assert status == 0, events
+    assert [e["event"] for e in events] == ["started", "edit_recorded", "finished"]
+    assert events[0]["command"] == "edit deband"
+    recorded = events[1]
+    assert recorded["edit"]["op"] == "deband"
+    assert all("corr" not in region for region in recorded["edit"]["params"]["regions"])
+    assert recorded["deband"] == {
+        "fit_version": 1,
+        "enabled": True,
+        "strength": 1.0,
+        "axis": "vertical",
+        "regions": [{"id": 1, "display_rect": [0, 0, tiff_w, tiff_h]}],
+        "stale": False,
+    }
+    assert Path(recorded["preview_path"]).exists()
+
+    capsys.readouterr()
+    main(["roll", "info", "--roll", str(roll_dir)])
+    events, _ = _stdout_events(capsys)
+    assert events[1]["manifest"]["negatives"][0]["deband"] == recorded["deband"]
+
+    status, events = _deband_cli(capsys, roll_dir, nid, "--off", "--strength", "0.5")
+    assert status == 0
+    assert events[1]["deband"]["enabled"] is False
+    assert events[1]["deband"]["strength"] == 0.5
+    assert [r["id"] for r in events[1]["deband"]["regions"]] == [1]
+
+    status, events = _deband_cli(capsys, roll_dir, nid, "--axis", "horizontal")
+    assert status == 0
+    assert events[1]["deband"]["axis"] == "horizontal"
+
+    status, events = _deband_cli(capsys, roll_dir, nid, "--clear")
+    assert status == 0
+    assert events[1]["deband"]["regions"] == []
+    assert events[1]["deband"]["enabled"] is False  # settings survive a clear
+
+
+def test_edit_deband_invalid_values_are_invalid_edit_events(work_dir, capsys, tmp_path):
+    roll_dir = make_roll_dir(tmp_path)
+    assert run_stitch_with_defaults(work_dir, roll_dir).status == "complete"
+    nid = load_roll_manifest(roll_dir).negatives[0].negative_id
+
+    for argv in (
+        ["--add-region", "1,2,3"],
+        ["--add-region", "a,b,c,d"],
+        ["--strength", "2"],
+        ["--remove-region", "9"],
+        [],
+        ["--tilt", "5"],
+    ):
+        status, events = _deband_cli(capsys, roll_dir, nid, *argv)
+        assert status == 1, argv
+        assert [e["event"] for e in events] == ["started", "error", "finished"], argv
+        assert events[1]["code"] == "INVALID_EDIT", argv
+    assert repo.net_edit_state(roll_dir, nid).deband is None

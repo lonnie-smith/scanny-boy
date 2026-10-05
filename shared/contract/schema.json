@@ -168,6 +168,7 @@
         "SPOTS_STALE",
         "SCRATCH_DETECTION_FAILED",
         "SCRATCHES_STALE",
+        "DEBAND_REFIT_FAILED",
         "ROLL_BUSY",
         "ROLL_REFRESH_PENDING",
         "CAPTURE_CLIPPED",
@@ -206,6 +207,42 @@
       "properties": {
         "code": { "type": "string" },
         "message": { "type": "string" }
+      }
+    },
+    "debandReport": {
+      "type": ["object", "null"],
+      "description": "A negative's net development-band removal in display space (`roll info`'s per-negative `deband` block, and `edit_recorded`'s `deband`), or null when no deband op is recorded. The correction tables never leave the CLI.",
+      "required": ["fit_version", "enabled", "strength", "axis", "regions", "stale"],
+      "properties": {
+        "fit_version": { "type": "integer", "minimum": 1 },
+        "enabled": { "type": "boolean" },
+        "strength": { "type": "number", "minimum": 0, "maximum": 1.5 },
+        "axis": {
+          "type": "string",
+          "enum": ["vertical", "horizontal"],
+          "description": "The direction the bands run, as displayed."
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "display_rect"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "display_rect": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 0 },
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "[x, y, width, height] on the display image (live crop included): the bounding box of the region, which may be tilted."
+              }
+            }
+          }
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "True when the op was fitted against a canvas a re-stitch has replaced and could not be refitted; it applies nothing."
+        }
       }
     },
     "rigProfile": {
@@ -262,7 +299,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 24
+      "const": 25
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -392,6 +429,7 @@
               "edit flip",
               "edit delete",
               "edit crop",
+              "edit deband",
               "edit suggest-crop",
               "edit tone",
               "edit color",
@@ -503,7 +541,7 @@
     {
       "if": { "properties": { "event": { "const": "edit_recorded" } } },
       "then": {
-        "required": ["negative_id", "edit", "rotation_quarter_turns", "flipped_horizontally", "fine_rotation_deg", "crop", "preview_path"],
+        "required": ["negative_id", "edit", "rotation_quarter_turns", "flipped_horizontally", "fine_rotation_deg", "crop", "deband", "preview_path"],
         "properties": {
           "negative_id": { "type": "string" },
           "edit": {
@@ -540,6 +578,7 @@
               }
             }
           },
+          "deband": { "$ref": "#/definitions/debandReport" },
           "preview_path": { "type": ["string", "null"] }
         }
       }

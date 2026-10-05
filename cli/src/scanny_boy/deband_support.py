@@ -216,3 +216,98 @@ def banding_score(
     ).ravel()
     smoothed = np.where(good, smoothed, np.nan)
     return float(np.nanpercentile(np.abs(smoothed), 99) * 1000.0)
+
+
+def make_banded_roll(
+    tmp_path,
+    *,
+    height: int = 700,
+    width: int = 1100,
+    name: str = "banded",
+    film_kind: str = "colour",
+    codes: np.ndarray | None = None,
+    seed: int = 1,
+    negative_id: str = "stitch-negative-01",
+):
+    """A registered roll with one completed negative whose published TIFF
+    is a banded synthetic scene (`make_banded_scene`, or `codes` when
+    given), written the way the stitch writes it (deflate + predictor).
+    The negative's normalization record carries `DEFAULT_SPANS` as its
+    floors/ceils. Returns `(roll_dir, negative_id)`. The stitched
+    `work_dir` scene is textured scene content with too little flat
+    background to fit a region on, so the `edit deband` tests use this."""
+    import tifffile
+
+    from scanny_boy.manifest import SourceRecord
+    from scanny_boy.roll_manifest import (
+        NegativeRecord,
+        RunRecord,
+        append_run,
+        load_roll_manifest,
+        merge_sources,
+        write_roll_manifest,
+    )
+    from scanny_boy.work_dir_support import make_roll_dir
+
+    roll_dir = make_roll_dir(tmp_path, name, film_kind=film_kind)
+    if codes is None:
+        codes, _info = make_banded_scene(height, width, seed=seed)
+    height, width = codes.shape[:2]
+    manifest = load_roll_manifest(roll_dir)
+    append_run(
+        manifest,
+        RunRecord(
+            run_id="stitch-run",
+            short_id="stitch",
+            kind="stitch",
+            status="complete",
+            started_at="2026-08-02T00:00:00Z",
+            convert_run_id="convert-1",
+            input_folder=None,
+            source_order=["a.NEF"],
+            work_dir="/tmp/work",
+            finished_at="2026-08-02T00:10:00Z",
+        ),
+    )
+    merge_sources(
+        manifest,
+        [
+            SourceRecord(
+                filename="a.NEF", absolute_path="/x", size=1, mtime=1.0, sha256="a" * 64
+            )
+        ],
+        "stitch-run",
+    )
+    manifest.negatives.append(
+        NegativeRecord(
+            negative_id=negative_id,
+            run_id="stitch-run",
+            members=["a.NEF"],
+            expected_output="_DSC0001.tif",
+            fill_color=(0, 0, 0),
+            status="completed",
+            sequence=1,
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": width,
+                "height": height,
+            },
+            normalization={
+                "floors": [0.0, 0.0, 0.0],
+                "ceils": [float(v) for v in DEFAULT_SPANS],
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(
+        roll_dir / "_DSC0001.tif",
+        codes,
+        photometric="rgb",
+        compression="deflate",
+        predictor=True,
+        maxworkers=1,
+        metadata=None,
+    )
+    return roll_dir, negative_id

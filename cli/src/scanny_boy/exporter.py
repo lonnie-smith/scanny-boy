@@ -184,8 +184,9 @@ def provenance_record(
     "some pixels here are interpolated" is exactly the kind of thing the
     XMP exists to say. The `scratches` entry records scratch correction:
     "some pixels here were replaced by level-dependent background
-    interpolation" is the same intent — both read off `heal`
-    (`heal.HealParams`). The `crop` entry records the
+    interpolation" is the same intent, and the `deband` entry records
+    development-band removal (`fit_version` and how many regions were
+    replayed) — all read off `heal` (`heal.HealParams`). The `crop` entry records the
     window the exported frame was taken from — the published TIFF beside
     the export still holds the full frame, and the record says which part
     of it this file is."""
@@ -203,6 +204,16 @@ def provenance_record(
         scratch_record = {
             "detector_version": heal.scratches.get("detector_version"),
             "corrected": len(heal.scratches.get("scratches") or []),
+        }
+    deband_record = None
+    if (
+        heal.deband is not None
+        and heal.deband.get("enabled")
+        and heal.deband.get("regions")
+    ):
+        deband_record = {
+            "fit_version": heal.deband.get("fit_version"),
+            "regions": len(heal.deband["regions"]),
         }
     cropped = None
     if crop_params is not None:
@@ -230,6 +241,7 @@ def provenance_record(
             "clip_fractions": list(clipped_fractions),
             "spots": repaired,
             "scratches": scratch_record,
+            "deband": deband_record,
             "crop": cropped,
             "downsample": (
                 None
