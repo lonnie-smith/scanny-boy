@@ -1264,20 +1264,20 @@ def _run_roll_command(args, writer: EventWriter) -> int:
         # spots each would otherwise put megabytes of JSON through every
         # `roll info`. The full list is
         # `edit list-spots`' job.
-        spots_params = state.spots
-        if spots_params is None:
+        spots_state = state.spots
+        if spots_state is None:
             negative["spots"] = None
         else:
             output = negative.get("output") or {}
-            stale = tuple(spots_params.get("canvas") or (None, None)) != (
+            stale = tuple(spots_state.get("canvas") or (None, None)) != (
                 output.get("width"),
                 output.get("height"),
             )
-            spot_list = spots_params.get("spots") or []
+            spot_list = spots_state.get("spots") or []
             negative["spots"] = {
-                "detector_version": spots_params.get("detector_version"),
-                "sensitivity": spots_params.get("sensitivity"),
-                "repair": spots_params.get("repair"),
+                "detector_version": spots_state.get("detector_version"),
+                "sensitivity": spots_state.get("sensitivity"),
+                "repair": spots_state.get("repair"),
                 "stale": stale,
                 "count": 0 if stale else len(spot_list),
                 "rejected": (
@@ -1285,19 +1285,19 @@ def _run_roll_command(args, writer: EventWriter) -> int:
                 ),
             }
         # The scratches summary: enabled state and count, not the full list.
-        scratches_params = state.scratches
-        if scratches_params is None:
+        scratches_state = state.scratches
+        if scratches_state is None:
             negative["scratches"] = None
         else:
             output = negative.get("output") or {}
-            stale = tuple(scratches_params.get("canvas") or (None, None)) != (
+            stale = tuple(scratches_state.get("canvas") or (None, None)) != (
                 output.get("width"),
                 output.get("height"),
             )
-            scratch_list = scratches_params.get("scratches") or []
+            scratch_list = scratches_state.get("scratches") or []
             negative["scratches"] = {
-                "detector_version": scratches_params.get("detector_version"),
-                "enabled": scratches_params.get("enabled"),
+                "detector_version": scratches_state.get("detector_version"),
+                "enabled": scratches_state.get("enabled"),
                 "stale": stale,
                 "count": 0 if stale else len(scratch_list),
             }

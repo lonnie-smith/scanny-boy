@@ -44,7 +44,8 @@ from typing import Any
 import numpy as np
 import tifffile
 
-from scanny_boy import color, jxl_writer, previews, render, resample, scratches, spots
+from scanny_boy import color, jxl_writer, previews, render, resample
+from scanny_boy import heal as heal_ops
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
@@ -170,8 +171,7 @@ def provenance_record(
     color_params: dict[str, float] | None,
     profile_kind: ProfileKind,
     clipped_fractions: tuple[float, ...],
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
     highlight_lock: dict | None = None,
@@ -184,26 +184,25 @@ def provenance_record(
     "some pixels here are interpolated" is exactly the kind of thing the
     XMP exists to say. The `scratches` entry records scratch correction:
     "some pixels here were replaced by level-dependent background
-    interpolation" is the same intent. The `crop` entry records the
+    interpolation" is the same intent — both read off `heal`
+    (`heal.HealParams`). The `crop` entry records the
     window the exported frame was taken from — the published TIFF beside
     the export still holds the full frame, and the record says which part
     of it this file is."""
     repaired = None
-    if spots_params is not None and spots_params.get("repair"):
+    if heal.spots is not None and heal.spots.get("repair"):
         repaired = {
-            "detector_version": spots_params.get("detector_version"),
-            "sensitivity": spots_params.get("sensitivity"),
+            "detector_version": heal.spots.get("detector_version"),
+            "sensitivity": heal.spots.get("sensitivity"),
             "repaired": sum(
-                1
-                for spot in spots_params.get("spots") or []
-                if not spot.get("rejected")
+                1 for spot in heal.spots.get("spots") or [] if not spot.get("rejected")
             ),
         }
     scratch_record = None
-    if scratches_params is not None and scratches_params.get("enabled"):
+    if heal.scratches is not None and heal.scratches.get("enabled"):
         scratch_record = {
-            "detector_version": scratches_params.get("detector_version"),
-            "corrected": len(scratches_params.get("scratches") or []),
+            "detector_version": heal.scratches.get("detector_version"),
+            "corrected": len(heal.scratches.get("scratches") or []),
         }
     cropped = None
     if crop_params is not None:
@@ -398,21 +397,19 @@ def _export_negative(
             fine_angle,
             tone_params,
             color_params,
-            spots_params,
-            scratches_params,
+            heal,
         ) = (
             state.quarter_turns,
             state.flipped,
             state.fine_angle_deg,
             state.tone,
             state.color,
-            state.spots,
-            state.scratches,
+            heal_ops.HealParams.from_state(state),
         )
         meter = color.read_metering(
             negative.normalization, highlight_lock=roll.highlight_lock
         )
-        # Spot repair runs in TIFF space before the net transform replay.
+        # The heal ops run in TIFF space before the net transform replay.
         # The crop is replayed last on the uncropped display canvas; a stale
         # crop — a re-stitch changed the canvas — applies as nothing, the
         # same degrade `apply_crop` performs for the previews.
@@ -421,8 +418,7 @@ def _export_negative(
             if previews.crop_is_live(state.crop, (image.shape[0], image.shape[1]))
             else None
         )
-        image = scratches.apply(image, scratches_params)
-        image = spots.apply_repair(image, spots_params)
+        image = heal_ops.apply(image, heal)
         rotated = apply_edits(image, quarter_turns, flipped, fine_angle, crop_params)
         # The matrix follows the channel count — `None` for a mono roll's
         # 2-D published TIFF, the recorded camera matrix for a colour one.
@@ -451,8 +447,7 @@ def _export_negative(
             tone_params,
             color_params,
             clipped_fractions,
-            spots_params,
-            scratches_params,
+            heal,
             crop_params,
             applied,
         )
@@ -484,8 +479,7 @@ def _write_export(
     tone_params: dict[str, float] | None,
     color_params: dict[str, float] | None,
     clipped_fractions: tuple[float, ...],
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
 ) -> None:
@@ -511,8 +505,7 @@ def _write_export(
         color_params,
         profile_kind,
         clipped_fractions,
-        spots_params,
-        scratches_params,
+        heal,
         crop_params,
         applied_downsample,
         roll.highlight_lock,

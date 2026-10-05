@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 import pytest
 
-from scanny_boy import normalization, render
+from scanny_boy import heal, normalization, render
 from scanny_boy.previews import MAX_CODE, NORMALIZED_DISPLAY_LUT, transform_preview
 
 
@@ -785,7 +785,9 @@ def test_generate_preview_with_a_repair_off_is_byte_identical(tmp_path):
         roll_dir,
         "rid-1",
         negative,
-        spots_params=_spots_params_for(image, (10, 12, 4, 3), repair=False),
+        heal=heal.HealParams(
+            spots=_spots_params_for(image, (10, 12, 4, 3), repair=False)
+        ),
     )
     assert plain.read_bytes() == off.read_bytes()
 
@@ -806,7 +808,9 @@ def test_generate_preview_with_a_repair_differs_only_near_the_spot(tmp_path):
         roll_dir,
         "rid-1",
         negative,
-        spots_params=_spots_params_for(image, (10, 12, 4, 3), repair=True),
+        heal=heal.HealParams(
+            spots=_spots_params_for(image, (10, 12, 4, 3), repair=True)
+        ),
     )
     repaired = cv2.imread(str(repaired_path), cv2.IMREAD_UNCHANGED)
     assert not np.array_equal(plain, repaired)
@@ -846,11 +850,17 @@ def test_render_region_takes_the_exact_path_when_a_repair_is_live(
 
     destination = tmp_path / "region.png"
     rect = previews.render_region(
-        tiff_path, 5, 8, 20, 12, destination=destination, spots_params=params
+        tiff_path,
+        5,
+        8,
+        20,
+        12,
+        destination=destination,
+        heal=heal.HealParams(spots=params),
     )
     assert rect == (5, 8, 20, 12)
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-    display = previews._display_image(tiff_path, spots_params=params)
+    display = previews._display_image(tiff_path, heal=heal.HealParams(spots=params))
     expected = cv2.cvtColor(
         _default_positive_display(display[8:20, 5:25]), cv2.COLOR_RGB2BGR
     )
@@ -878,7 +888,7 @@ def test_ensure_preview_regenerates_on_a_spots_op(tmp_path):
     repaired_pixels = cv2.imread(str(preview), cv2.IMREAD_UNCHANGED)
     assert not np.array_equal(flat_pixels, repaired_pixels)
     expected_path = previews.generate_preview(
-        roll_dir, "rid-1", negative, spots_params=params
+        roll_dir, "rid-1", negative, heal=heal.HealParams(spots=params)
     )
     assert (
         repaired_pixels.tobytes()
@@ -1001,7 +1011,7 @@ def test_preview_cache_folds_the_spot_set_into_its_key(tmp_path):
 
     image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
     tiff_path = _write_published_tiff(tmp_path, image)
-    spots_params = {
+    spots_state = {
         "repair": True,
         "spots": [{"rect": [10, 10, 4, 4], "rejected": False, "rle": "1x4"}],
     }
@@ -1016,12 +1026,15 @@ def test_preview_cache_folds_the_spot_set_into_its_key(tmp_path):
     previews._display_image = counting
     try:
         previews.render_preview(
-            tiff_path, tmp_path / "a.png", spots_params=spots_params, mode="negative"
+            tiff_path,
+            tmp_path / "a.png",
+            heal=heal.HealParams(spots=spots_state),
+            mode="negative",
         )
         previews.render_preview(
             tiff_path,
             tmp_path / "b.png",
-            spots_params=dict(spots_params),
+            heal=heal.HealParams(spots=dict(spots_state)),
             mode="negative",
         )
         assert len(decode_calls) == 1
@@ -1030,7 +1043,10 @@ def test_preview_cache_folds_the_spot_set_into_its_key(tmp_path):
             "spots": [{"rect": [12, 12, 4, 4], "rejected": False, "rle": "1x4"}],
         }
         previews.render_preview(
-            tiff_path, tmp_path / "c.png", spots_params=changed, mode="negative"
+            tiff_path,
+            tmp_path / "c.png",
+            heal=heal.HealParams(spots=changed),
+            mode="negative",
         )
         assert len(decode_calls) == 2
     finally:
@@ -1190,8 +1206,7 @@ def test_the_recorded_crop_slices_the_display_exactly(tmp_path, quarter_turns, f
         quarter_turns,
         flipped,
         0.0,
-        None,
-        _window_params(window, tiff_size),
+        crop_params=_window_params(window, tiff_size),
     )
     assert cropped.shape[:2] == (rect[3], rect[2])
     uncropped = _display_image(tiff_path, quarter_turns, flipped)
@@ -1347,7 +1362,7 @@ def test_the_tilted_crop_removes_the_drawn_tilt(tmp_path):
     assert abs(window[4] - tilt) < 0.51
 
     cropped = _display_image(
-        tiff_path, 0, False, 0.0, None, _window_params(window, tiff_size)
+        tiff_path, 0, False, 0.0, crop_params=_window_params(window, tiff_size)
     )
     assert cropped.shape[:2] == (rect[3], rect[2])
     uncropped = _display_image(tiff_path, 0, False)
@@ -1404,8 +1419,7 @@ def test_tilted_crop_replay_matches_drawn_tilt_under_a_fine_angle(tmp_path):
         quarter_turns,
         False,
         fine_angle_deg,
-        None,
-        _window_params(window, tiff_size),
+        crop_params=_window_params(window, tiff_size),
     )
     assert cropped.shape[:2] == (rect[3], rect[2])
     uncropped = _display_image(tiff_path, quarter_turns, False, fine_angle_deg)
@@ -1446,7 +1460,7 @@ def test_positive_tilt_samples_the_ccw_diagonal(tmp_path):
         crop_params=None,
     )
     cropped = _display_image(
-        tiff_path, 0, False, 0.0, None, _window_params(window, tiff_size)
+        tiff_path, 0, False, 0.0, crop_params=_window_params(window, tiff_size)
     )
     width = cropped.shape[1]
     left_mean = float(cropped[:, : width // 3].mean())
@@ -1466,7 +1480,7 @@ def test_positive_tilt_samples_the_ccw_diagonal(tmp_path):
         crop_params=None,
     )
     opposite = _display_image(
-        tiff_path, 0, False, 0.0, None, _window_params(opposite_window, tiff_size)
+        tiff_path, 0, False, 0.0, crop_params=_window_params(opposite_window, tiff_size)
     )
     opposite_left = float(opposite[:, : width // 3].mean())
     opposite_right = float(opposite[:, -width // 3 :].mean())
@@ -1497,7 +1511,11 @@ def test_the_crop_composes_with_the_display_transforms(tmp_path):
         crop_params=None,
     )
     cropped = _display_image(
-        tiff_path, quarter_turns, flipped, 0.0, None, _window_params(window, tiff_size)
+        tiff_path,
+        quarter_turns,
+        flipped,
+        0.0,
+        crop_params=_window_params(window, tiff_size),
     )
     uncropped = _display_image(tiff_path, quarter_turns, flipped)
     expected = uncropped[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
@@ -1543,12 +1561,12 @@ def test_a_recrop_composes_into_one_window(tmp_path):
     )
     second = _window_params(second_window, tiff_size)
 
-    replayed = _display_image(tiff_path, 0, False, 0.0, None, second)
+    replayed = _display_image(tiff_path, 0, False, 0.0, crop_params=second)
     assert replayed.shape[:2] == (second_rect[3], second_rect[2])
 
     # The expectation: the first crop's display, warped by the drawn tilt
     # about the drawn rect's centre, sliced at the drawn rect.
-    first_display = _display_image(tiff_path, 0, False, 0.0, None, first)
+    first_display = _display_image(tiff_path, 0, False, 0.0, crop_params=first)
     centre = (
         second_rect[0] + second_rect[2] / 2.0,
         second_rect[1] + second_rect[3] / 2.0,
@@ -1588,7 +1606,7 @@ def test_apply_crop_ignores_a_stale_crop(tmp_path):
     assert not previews.crop_is_live(stale, image.shape[:2])
     np.testing.assert_array_equal(previews.apply_crop(image, stale), image)
     np.testing.assert_array_equal(
-        _display_image(tiff_path, 0, False, 0.0, None, stale),
+        _display_image(tiff_path, 0, False, 0.0, crop_params=stale),
         _display_image(tiff_path, 0, False),
     )
 
@@ -1654,7 +1672,7 @@ def test_render_region_works_in_cropped_display_space(tmp_path):
     )
     assert rect == (20, 10, 50, 30)
     stored = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
-    display = _display_image(tiff_path, 0, False, 0.0, None, crop)
+    display = _display_image(tiff_path, 0, False, 0.0, crop_params=crop)
     expected = cv2.cvtColor(
         _default_positive_display(display[10:40, 20:70]),
         cv2.COLOR_RGB2BGR,

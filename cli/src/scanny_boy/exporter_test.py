@@ -16,7 +16,7 @@ import pytest
 import tifffile
 import tifftools
 
-from scanny_boy import jxl_writer, render
+from scanny_boy import heal, jxl_writer, render
 from scanny_boy.edits import run_edit_flip, run_edit_rotate, run_edit_tone
 from scanny_boy.edits_test import _tone_params
 from scanny_boy.events import Code, ExportDone, WarningEvent
@@ -943,8 +943,7 @@ def test_apply_edits_matches_display_image_with_fine_rotation_and_crop(tmp_path)
             quarter_turns,
             False,
             fine_angle_deg,
-            None,
-            crop,
+            crop_params=crop,
         ),
     )
 
@@ -1007,8 +1006,7 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
         None,
         ProfileKind.EXPORT_GREY,
         (0.0,),
-        None,
-        None,
+        heal.NONE,
         crop,
     )
     assert record["rendered"]["crop"] == {
@@ -1027,8 +1025,7 @@ def test_the_export_provenance_records_the_crop(croppable_export_roll, tmp_path)
             None,
             ProfileKind.EXPORT_GREY,
             (0.0,),
-            None,
-            None,
+            heal.NONE,
         )["rendered"]["crop"]
         is None
     )

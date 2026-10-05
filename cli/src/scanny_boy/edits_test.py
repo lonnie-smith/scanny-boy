@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from scanny_boy import previews, spots
+from scanny_boy import heal, previews, spots
 from scanny_boy.edits import (
     EditFailure,
     run_edit_color,
@@ -1370,7 +1370,7 @@ def test_crop_records_the_window_and_refreshes_the_preview(croppable_roll):
         state.quarter_turns,
         state.flipped,
         state.fine_angle_deg,
-        state.spots,
+        heal.HealParams.from_state(state),
         state.crop,
     )
     stored = cv2.imread(str(fields["preview_path"]), cv2.IMREAD_UNCHANGED)

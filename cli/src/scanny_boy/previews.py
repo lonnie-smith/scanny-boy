@@ -47,8 +47,6 @@ JPEG: repeated edits would otherwise compound generational loss.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import os
 import struct
@@ -62,6 +60,7 @@ import cv2
 import numpy as np
 
 from scanny_boy import auto_rotate, color, normalization, render, scratches, spots, tone
+from scanny_boy import heal as heal_ops
 from scanny_boy import highlight_lock as highlight_lock_module
 from scanny_boy.library import repo
 from scanny_boy.library.db import library_db_path
@@ -95,46 +94,12 @@ _DISPLAY_IMAGE_CACHE_LOCK = threading.Lock()
 REGION_RAW_MAGIC = b"SB01"
 
 
-def _spots_cache_key(spots_params: dict | None) -> tuple:
-    """The spot half of the pixel-cache key.
-
-    A live spot set changes decoded pixels — its repair is the first step
-    of the display replay — so the whole set is folded into the key,
-    hashed rather than compared: the masks can be large and the set is
-    bounded (`MAX_SPOTS`), so a hash of its canonical JSON is both cheap
-    and exact. Swift's counterpart term is `EditModel.spotsTerm`
-    (`repair#count#rejected`), a coarser summary of the same rule; the two
-    sites are commented at each other because they cannot share a
-    definition — one lives in Swift, one here."""
-    if spots_params is None:
-        return (None,)
-    canonical = json.dumps(spots_params, sort_keys=True, default=str)
-    digest = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
-    return ("spots", digest)
-
-
-def _scratches_cache_key(scratches_params: dict | None) -> tuple:
-    """The scratches half of the pixel-cache key.
-
-    A live scratches op changes decoded pixels — its correction is the
-    first step of the display replay — so the whole set is folded into the
-    key, hashed rather than compared.  Swift's counterpart term is
-    `EditModel.scratchesTerm` (`enabled#count#stale`), a coarser summary
-    of the same rule; the two sites are commented at each other."""
-    if scratches_params is None:
-        return (None,)
-    canonical = json.dumps(scratches_params, sort_keys=True, default=str)
-    digest = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
-    return ("scratches", digest)
-
-
 def _display_pixel_cache_key(
     tiff_path: Path,
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
 ) -> tuple:
     stat = os.stat(tiff_path)
@@ -154,8 +119,10 @@ def _display_pixel_cache_key(
         int(quarter_turns) % 4,
         bool(flipped_horizontally),
         round(float(fine_angle_deg), 6),
-        _spots_cache_key(spots_params),
-        _scratches_cache_key(scratches_params),
+        # `heal.cache_key` returns the spot half then the scratch half, in
+        # that order — spliced in flat so this tuple is exactly the shape
+        # it was before the two params were bundled into `HealParams`.
+        *heal_ops.cache_key(heal),
         crop_key,
     )
 
@@ -165,8 +132,7 @@ def cached_preview_codes(
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
 ) -> np.ndarray:
     """The display image's preview-resolution density codes — the decoded,
@@ -193,8 +159,7 @@ def cached_preview_codes(
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
-        spots_params,
-        scratches_params,
+        heal,
         crop_params,
     )
     with _DISPLAY_PREVIEW_CACHE_LOCK:
@@ -208,9 +173,8 @@ def cached_preview_codes(
             quarter_turns,
             flipped_horizontally,
             fine_angle_deg,
-            spots_params,
+            heal,
             crop_params,
-            scratches_params,
         )
     )
     with _DISPLAY_PREVIEW_CACHE_LOCK:
@@ -230,8 +194,7 @@ def cached_display_image(
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
 ) -> np.ndarray:
     """The full display-resolution density codes for `render_region`'s slow
@@ -245,8 +208,7 @@ def cached_display_image(
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
-        spots_params,
-        scratches_params,
+        heal,
         crop_params,
     )
     with _DISPLAY_IMAGE_CACHE_LOCK:
@@ -259,9 +221,8 @@ def cached_display_image(
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
-        spots_params,
+        heal,
         crop_params,
-        scratches_params,
     )
     with _DISPLAY_IMAGE_CACHE_LOCK:
         _DISPLAY_IMAGE_CACHE[key] = image
@@ -916,27 +877,26 @@ def _display_image(
     quarter_turns: int = 0,
     flipped_horizontally: bool = False,
     fine_angle_deg: float = 0.0,
-    spots_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
-    scratches_params: dict | None = None,
 ) -> np.ndarray:
     """The published TIFF's full display image — the net transform replayed
-    in canonical order (scratch correction, then spot repair, then the
-    mirror, then the fine rotation's warp with the fill sentinel, then the
-    quarter turns, then the crop on the uncropped display canvas) — the
-    pixels `generate_preview`, `render_preview`, and `render_region`'s
-    exact path all work from. uint16 RGB in density codes, like the TIFF.
+    in canonical order (scratch correction, then spot repair — `heal.apply`,
+    which owns that order — then the mirror, then the fine rotation's warp
+    with the fill sentinel, then the quarter turns, then the crop on the
+    uncropped display canvas) — the pixels `generate_preview`,
+    `render_preview`, and `render_region`'s exact path all work from.
+    uint16 RGB in density codes, like the TIFF.
 
-    Scratch and spot ops run in TIFF space before any geometry. The stored
-    crop window is TIFF space in the ops log; replay converts it to
-    display space via `display_crop_params` and applies it last, matching
-    crop mode's uncropped display plus slider tilt."""
+    The heal ops run in TIFF space before any geometry. The stored crop
+    window is TIFF space in the ops log; replay converts it to display
+    space via `display_crop_params` and applies it last, matching crop
+    mode's uncropped display plus slider tilt."""
     import tifffile
 
     image = _promote_to_rgb(tifffile.imread(tiff_path))
     tiff_size = (image.shape[0], image.shape[1])
-    image = scratches.apply(image, scratches_params)
-    image = spots.apply_repair(image, spots_params)
+    image = heal_ops.apply(image, heal)
     if flipped_horizontally:
         image = np.ascontiguousarray(image[:, ::-1])
     if abs(fine_angle_deg) >= 1e-9:
@@ -967,8 +927,7 @@ def generate_preview(
     tone_params: dict[str, float] | None = None,
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
 ) -> Path | None:
     """A preview of `negative`'s published TIFF with the negative's net
@@ -980,7 +939,8 @@ def generate_preview(
     fine angle is negated by a flip exactly as `repo.net_edit_state`'s
     replay says, so the caller passes the canonical angle through
     untouched. `tone_params` is the net `tone` op's full param dict (None =
-    the default print curve), composed into the display LUT. The net `crop` op's
+    the default print curve), composed into the display LUT. `heal` bundles
+    the net `scratches`/`spots` ops (`heal.HealParams`); the net `crop` op's
     window (`crop_params`, TIFF space in the ops log) is replayed last on
     the uncropped display canvas — which is why a live crop's window is
     what `display_shape` sizes.
@@ -995,8 +955,7 @@ def generate_preview(
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
-        spots_params,
-        scratches_params,
+        heal,
         crop_params,
     )
     channels = image.shape[2] if image.ndim == 3 else 1
@@ -1025,8 +984,7 @@ def render_preview(
     tone_params: dict[str, float] | None = None,
     color_params: dict[str, float] | None = None,
     metering: color.Metering | None = None,
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
     matrix: np.ndarray | None = None,
 ) -> tuple[int, int]:
@@ -1035,7 +993,7 @@ def render_preview(
     sibling of `generate_preview` backing the app's positive/negative
     toggle (`edit render-preview`): nothing is recorded, the TIFF is
     untouched. The transform replays exactly as `generate_preview`'s does,
-    the net crop window included.
+    `heal` (`heal.HealParams`) and the net crop window included.
     `mode` is `"positive"` (the inverted look, always what the managed
     on-disk preview holds; `tone_params` — the net `tone` op's
     the four user tone keys — composes into its LUT exactly as it does
@@ -1047,8 +1005,7 @@ def render_preview(
         quarter_turns,
         flipped_horizontally,
         fine_angle_deg,
-        spots_params,
-        scratches_params,
+        heal,
         crop_params,
     )
     _encode_display_png(
@@ -1287,8 +1244,7 @@ def render_region(
     metering: color.Metering | None = None,
     destination: Path | None = None,
     mode: str = "positive",
-    spots_params: dict | None = None,
-    scratches_params: dict | None = None,
+    heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
     matrix: np.ndarray | None = None,
 ) -> Region:
@@ -1333,7 +1289,7 @@ def render_region(
     if (
         abs(fine_angle_deg) >= 1e-9
         or crop_is_live(crop_params, (tiff_h, tiff_w))
-        or spots.is_repairing(spots_params, (tiff_h, tiff_w))
+        or spots.is_repairing(heal.spots, (tiff_h, tiff_w))
     ):
         # The fine warp interpolates across its source's boundaries, the
         # crop warp does the same, inpainting a crop uses different
@@ -1346,8 +1302,7 @@ def render_region(
             quarter_turns,
             flipped_horizontally,
             fine_angle_deg,
-            spots_params,
-            scratches_params,
+            heal,
             crop_params,
         )
         if destination is not None:
@@ -1386,7 +1341,7 @@ def render_region(
     if flipped_horizontally:
         tx0, tx1 = tiff_w - tx1, tiff_w - tx0
 
-    live_scratches = scratches.is_live(scratches_params, (tiff_h, tiff_w))
+    live_scratches = scratches.is_live(heal.scratches, (tiff_h, tiff_w))
     if live_scratches:
         tx0_exp = max(0, tx0 - scratches.REGION_COL_MARGIN)
         ty0_exp = max(0, ty0 - scratches.REGION_ROW_MARGIN)
@@ -1399,7 +1354,7 @@ def render_region(
         )
         crop = scratches.apply(
             crop,
-            scratches_params,
+            heal.scratches,
             region=(inner_x, inner_y, tx1 - tx0, ty1 - ty0),
             origin=(tx0_exp, ty0_exp),
         )
@@ -1487,8 +1442,7 @@ def ensure_preview(
             tone_params=state.tone,
             color_params=state.color,
             metering=meter,
-            spots_params=state.spots,
-            scratches_params=state.scratches,
+            heal=heal_ops.HealParams.from_state(state),
             crop_params=state.crop,
         )
     state = repo.net_edit_state(roll_dir, negative.negative_id)
@@ -1505,8 +1459,7 @@ def ensure_preview(
                 tone_params=state.tone,
                 color_params=state.color,
                 metering=meter,
-                spots_params=state.spots,
-                scratches_params=state.scratches,
+                heal=heal_ops.HealParams.from_state(state),
                 crop_params=state.crop,
             )
         return transform_preview(Path(negative.preview_path), op)
@@ -1524,8 +1477,7 @@ def ensure_preview(
             tone_params=state.tone,
             color_params=state.color,
             metering=meter,
-            spots_params=state.spots,
-            scratches_params=state.scratches,
+            heal=heal_ops.HealParams.from_state(state),
             crop_params=state.crop,
         )
     return Path(negative.preview_path)
@@ -1583,8 +1535,7 @@ def sync_previews(
             tone_params=state.tone,
             color_params=state.color,
             metering=meter,
-            spots_params=state.spots,
-            scratches_params=state.scratches,
+            heal=heal_ops.HealParams.from_state(state),
             crop_params=state.crop,
         )
         if preview is not None:
