@@ -1440,6 +1440,34 @@ def _exposure_from_source(frame: Path) -> dict:
     }
 
 
+def _film_base_locked_error(film_base_block: dict):
+    """The `FILM_BASE_LOCKED` refusal, for both the early check and the
+    re-check inside the write transaction."""
+    from scanny_boy import film_base
+
+    return film_base.FilmBaseError(
+        Code.FILM_BASE_LOCKED,
+        "this roll's film-base reference was locked on "
+        f"{str(film_base_block['locked_at'])[:10]} when its "
+        "first negative was converted and cannot be changed; "
+        "create a new roll to use a different base frame",
+    )
+
+
+def _flatfield_reference_locked_error(flat_field_block: dict):
+    """The `FLATFIELD_REFERENCE_LOCKED` refusal, for both the early check
+    and the re-check inside the write transaction."""
+    from scanny_boy import flatfield
+
+    return flatfield.FlatFieldError(
+        Code.FLATFIELD_REFERENCE_LOCKED,
+        "this roll's flat-field reference was locked on "
+        f"{str(flat_field_block['locked_at'])[:10]} when its "
+        "first negative was published and cannot be changed; "
+        "create a new roll to use a different reference",
+    )
+
+
 def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     """The `roll set-base-frame` subcommand: decode, measure, gate, and attach (or replace)
     the roll's film-base reference. A gate failure emits the error and
@@ -1454,7 +1482,7 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         ROLL_MANIFEST_FORMAT_VERSION,
         _now_iso,
         load_roll_manifest,
-        write_roll_manifest,
+        mutate_roll_manifest,
     )
 
     writer.write(Started(command="roll set-base-frame"))
@@ -1496,17 +1524,8 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     # §3.2 rule 3: the lock is the only state — `locked_at` set means the
     # reference is frozen for the life of the roll.
     if manifest.film_base is not None and manifest.film_base.get("locked_at"):
-        writer.write(
-            ErrorEvent(
-                code=Code.FILM_BASE_LOCKED,
-                message=(
-                    "this roll's film-base reference was locked on "
-                    f"{str(manifest.film_base['locked_at'])[:10]} when its "
-                    "first negative was converted and cannot be changed; "
-                    "create a new roll to use a different base frame"
-                ),
-            )
-        )
+        locked = _film_base_locked_error(manifest.film_base)
+        writer.write(ErrorEvent(code=locked.code, message=locked.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
@@ -1576,7 +1595,7 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
             )
         )
 
-    manifest.film_base = {
+    new_film_base = {
         "density": list(measurement.density),
         "locked_at": None,
         "attached_at": _now_iso(),
@@ -1595,11 +1614,23 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         # each scan's at stitch time.
         "exposure": base_exposure,
     }
+
+    def apply_film_base(fresh) -> None:
+        # The reference may have been locked since the early check above
+        # (a first publish landing during the measurement).
+        if fresh.film_base is not None and fresh.film_base.get("locked_at"):
+            raise _film_base_locked_error(fresh.film_base)
+        fresh.film_base = new_film_base
+
     try:
         with exclusive_roll_lock(roll_dir):
-            write_roll_manifest(roll_dir, manifest)
+            manifest, _ = mutate_roll_manifest(roll_dir, apply_film_base)
     except RollBusyError as exc:
         return _fail_roll_busy(writer, exc)
+    except film_base.FilmBaseError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
 
     chosen = measurement.populations[measurement.chosen_index]
     writer.write(
@@ -2049,7 +2080,7 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         ROLL_MANIFEST_FORMAT_VERSION,
         _now_iso,
         load_roll_manifest,
-        write_roll_manifest,
+        mutate_roll_manifest,
     )
 
     writer.write(Started(command="roll set-flatfield-reference"))
@@ -2085,17 +2116,8 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         return 1
 
     if manifest.flat_field is not None and manifest.flat_field.get("locked_at"):
-        writer.write(
-            ErrorEvent(
-                code=Code.FLATFIELD_REFERENCE_LOCKED,
-                message=(
-                    "this roll's flat-field reference was locked on "
-                    f"{str(manifest.flat_field['locked_at'])[:10]} when its "
-                    "first negative was published and cannot be changed; "
-                    "create a new roll to use a different reference"
-                ),
-            )
-        )
+        locked = _flatfield_reference_locked_error(manifest.flat_field)
+        writer.write(ErrorEvent(code=locked.code, message=locked.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
@@ -2143,7 +2165,7 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
     gain_map_path = flatfield.roll_gain_map_path(manifest.roll_id)
     path, sha256 = flatfield.save_gain_map(gain_map_path, gain_map)
 
-    manifest.flat_field = {
+    new_flat_field = {
         "gain_map_path": str(path),
         "gain_map_sha256": sha256,
         "source_name": frame.name,
@@ -2155,7 +2177,20 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         "locked_at": None,
         "attached_at": _now_iso(),
     }
-    write_roll_manifest(roll_dir, manifest)
+
+    def apply_flat_field(fresh) -> None:
+        # Locked since the early check above (a first publish landing
+        # while the reference was being built).
+        if fresh.flat_field is not None and fresh.flat_field.get("locked_at"):
+            raise _flatfield_reference_locked_error(fresh.flat_field)
+        fresh.flat_field = new_flat_field
+
+    try:
+        manifest, _ = mutate_roll_manifest(roll_dir, apply_flat_field)
+    except flatfield.FlatFieldError as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
 
     writer.write(
         FlatFieldReferenceSet(

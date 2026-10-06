@@ -207,3 +207,102 @@ def test_roll_not_found_raises(tmp_path):
     with pytest.raises(ApplyMetadataFailure) as exc_info:
         run_apply_metadata(tmp_path / "nope", emit=lambda e: None)
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
+
+
+def _while_rewriting(monkeypatch, change):
+    """Run `change()` once, as the first TIFF rewrite starts: the window in
+    which another writer can commit to the roll."""
+    from scanny_boy import apply_metadata
+
+    real_rewrite = apply_metadata.rewrite_date_time_original
+    fired = []
+
+    def rewrite(tiff_path, intended):
+        if not fired:
+            fired.append(True)
+            change()
+        return real_rewrite(tiff_path, intended)
+
+    monkeypatch.setattr(apply_metadata, "rewrite_date_time_original", rewrite)
+
+
+def test_apply_keeps_changes_committed_during_the_rewrite(tmp_path, monkeypatch):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    roll_dir = _stitched_roll(tmp_path, negatives=2)
+    first, second = load_roll_manifest(roll_dir).negatives
+    _mark_dirty(roll_dir, first.negative_id)
+
+    def other_writer_edits_the_second_negative_and_the_roll():
+        def edit(fresh):
+            fresh.negative(second.negative_id).metadata.city = "Lisbon"
+            fresh.metadata.camera = "Nikon F3"
+
+        mutate_roll_manifest(roll_dir, edit)
+
+    _while_rewriting(monkeypatch, other_writer_edits_the_second_negative_and_the_roll)
+
+    outcome = run_apply_metadata(roll_dir, emit=lambda e: None)
+
+    assert outcome.applied == [first.negative_id]
+    roll = load_roll_manifest(roll_dir)
+    assert roll.negative(second.negative_id).metadata.city == "Lisbon"
+    assert roll.metadata.camera == "Nikon F3"
+    applied = roll.negative(first.negative_id)
+    assert applied.capture_time.applied_datetime_original == _INTENDED
+    assert applied.output["sha256"] == hashing.sha256_file(
+        roll_dir / applied.output["name"]
+    )
+    assert roll.metadata.last_applied_at is not None
+
+
+def test_a_date_edited_during_the_rewrite_stays_dirty(tmp_path, monkeypatch):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    roll_dir = _stitched_roll(tmp_path)
+    negative_id = load_roll_manifest(roll_dir).negatives[0].negative_id
+    _mark_dirty(roll_dir, negative_id)
+    newer = "2026-02-20T11:00:00.500000"
+
+    def other_writer_changes_the_intended_time():
+        mutate_roll_manifest(
+            roll_dir,
+            lambda fresh: setattr(
+                fresh.negative(negative_id).capture_time,
+                "intended_datetime_original",
+                newer,
+            ),
+        )
+
+    _while_rewriting(monkeypatch, other_writer_changes_the_intended_time)
+
+    run_apply_metadata(roll_dir, emit=lambda e: None)
+
+    capture_time = load_roll_manifest(roll_dir).negative(negative_id).capture_time
+    # The TIFF holds the time that was intended when it was rewritten; the
+    # newer intent is still waiting to be applied.
+    assert capture_time.applied_datetime_original == _INTENDED
+    assert capture_time.intended_datetime_original == newer
+
+
+def test_a_negative_deleted_during_the_rewrite_is_skipped(tmp_path, monkeypatch):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    roll_dir = _stitched_roll(tmp_path, negatives=2)
+    first, second = load_roll_manifest(roll_dir).negatives
+    _mark_dirty(roll_dir, first.negative_id)
+
+    def other_writer_deletes_the_negative():
+        def delete(fresh):
+            fresh.negatives = [
+                n for n in fresh.negatives if n.negative_id != first.negative_id
+            ]
+
+        mutate_roll_manifest(roll_dir, delete)
+
+    _while_rewriting(monkeypatch, other_writer_deletes_the_negative)
+
+    run_apply_metadata(roll_dir, emit=lambda e: None)
+
+    roll = load_roll_manifest(roll_dir)
+    assert [n.negative_id for n in roll.negatives] == [second.negative_id]

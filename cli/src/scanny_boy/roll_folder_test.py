@@ -199,6 +199,125 @@ def test_rename_roll_leaves_everything_alone_on_move_failure(tmp_path, monkeypat
     assert manifest.roll_name == original_manifest.roll_name
 
 
+# --- concurrent writers --------------------------------------------------------
+#
+# Each writer below commits through a read-modify-write transaction, so a
+# change another writer commits after this one read the roll must survive.
+
+
+def _after_snapshot_read(monkeypatch, change):
+    """Run `change(roll_dir)` right after the writer's early `load_roll`."""
+    from scanny_boy.library import repo
+
+    real_load_roll = repo.load_roll
+
+    def load_then_change(roll_dir):
+        manifest = real_load_roll(roll_dir)
+        change(roll_dir)
+        return manifest
+
+    monkeypatch.setattr(repo, "load_roll", load_then_change)
+
+
+def _add_run(roll_dir):
+    from scanny_boy.roll_manifest import RunRecord, mutate_roll_manifest
+
+    mutate_roll_manifest(
+        roll_dir,
+        lambda fresh: fresh.runs.append(
+            RunRecord(
+                run_id="run-1",
+                short_id="aaaaaa",
+                kind="stitch",
+                started_at="2026-08-02T00:00:00Z",
+                status="running",
+            )
+        ),
+    )
+
+
+def test_create_roll_never_overwrites_a_registered_roll(tmp_path, monkeypatch):
+    import uuid
+
+    from scanny_boy.library.repo import RollAlreadyRegisteredError
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=7))
+    first = create_roll(tmp_path, "First", film_kind="colour")
+
+    with pytest.raises(RollAlreadyRegisteredError):
+        create_roll(tmp_path, "Second", film_kind="monochrome")
+
+    manifest = load_roll_manifest(first)
+    assert manifest.roll_name == "First"
+    assert manifest.film == {"kind": "colour"}
+
+
+def test_set_film_kind_keeps_a_change_committed_after_its_read(tmp_path, monkeypatch):
+    from scanny_boy.roll_folder import set_film_kind, set_setup
+
+    roll_dir = create_roll(tmp_path, "Fresh")
+    _after_snapshot_read(monkeypatch, lambda d: set_setup(d, format="6x7"))
+
+    set_film_kind(roll_dir, "monochrome")
+
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "monochrome"}
+    assert manifest.setup["format"] == "6x7"
+
+
+def test_set_film_kind_refuses_a_run_that_appears_after_its_early_check(
+    tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_film_kind
+
+    roll_dir = create_roll(tmp_path, "Fresh", film_kind="colour")
+    _after_snapshot_read(monkeypatch, _add_run)
+
+    with pytest.raises(RollFolderError) as exc_info:
+        set_film_kind(roll_dir, "monochrome")
+
+    assert exc_info.value.code == "FILM_KIND_LOCKED"
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film == {"kind": "colour"}
+    assert [run.run_id for run in manifest.runs] == ["run-1"]
+
+
+def test_set_setup_merges_into_the_setup_another_writer_just_committed(
+    tmp_path, monkeypatch
+):
+    from scanny_boy import roll_folder
+    from scanny_boy.roll_folder import set_setup
+
+    roll_dir = create_roll(tmp_path, "Setup")
+    real_mutate = roll_folder.mutate_roll_manifest
+
+    def commit_another_key_first(directory, fn, **kw):
+        monkeypatch.setattr(roll_folder, "mutate_roll_manifest", real_mutate)
+        set_setup(directory, format="6x7")
+        return real_mutate(directory, fn, **kw)
+
+    monkeypatch.setattr(roll_folder, "mutate_roll_manifest", commit_another_key_first)
+
+    set_setup(roll_dir, interval_seconds=20)
+
+    setup = load_roll_manifest(roll_dir).setup
+    assert setup["format"] == "6x7"
+    assert setup["interval_seconds"] == 20
+
+
+def test_rename_roll_keeps_a_change_committed_after_its_read(tmp_path, monkeypatch):
+    from scanny_boy.roll_folder import set_setup
+
+    roll_dir = create_roll(tmp_path, "Old Name", film_kind="colour")
+    _after_snapshot_read(monkeypatch, lambda d: set_setup(d, format="6x7"))
+
+    new_dir = rename_roll(roll_dir, "New Name")
+
+    manifest = load_roll_manifest(new_dir)
+    assert manifest.roll_name == "New Name"
+    assert manifest.setup["format"] == "6x7"
+
+
 # --- scan_library ----------------------------------------------------------
 
 

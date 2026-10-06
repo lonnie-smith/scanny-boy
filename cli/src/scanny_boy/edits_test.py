@@ -993,6 +993,107 @@ def test_merge_color_params_survives_a_sixteen_key_recorded_state(stitched_roll)
     assert merged["cast_removal"] == 0.4
 
 
+# --- concurrent writers ------------------------------------------------------
+
+
+def _add_negative_in_another_writer(roll_dir: Path, negative_id: str) -> None:
+    """Commit a second negative, as a concurrent writer (a stitch publishing,
+    say) would, through its own transaction."""
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    mutate_roll_manifest(
+        roll_dir,
+        lambda fresh: fresh.negatives.append(
+            _negative(negative_id=negative_id, run_id="stitch-run")
+        ),
+    )
+
+
+def test_a_refreshed_preview_keeps_a_negative_committed_during_the_render(
+    stitched_roll, monkeypatch
+):
+    real_ensure_preview = previews.ensure_preview
+
+    def render_while_another_writer_commits(*args, **kwargs):
+        _add_negative_in_another_writer(stitched_roll, "stitch-negative-02")
+        return real_ensure_preview(*args, **kwargs)
+
+    monkeypatch.setattr(previews, "ensure_preview", render_while_another_writer_commits)
+
+    (fields,) = run_edit_rotate(
+        stitched_roll, _NEGATIVE_ID, "cw", emit=lambda event: None
+    )
+
+    manifest = load_roll_manifest(stitched_roll)
+    assert manifest.negative(_NEGATIVE_ID).preview_path == fields["preview_path"]
+    assert fields["preview_path"] is not None
+    assert manifest.negative("stitch-negative-02") is not None
+
+
+def test_delete_keeps_a_negative_committed_after_its_read(stitched_roll, monkeypatch):
+    from scanny_boy import edits
+
+    real_load = edits.load_roll_manifest
+
+    def load_then_commit_another_negative(roll_dir):
+        manifest = real_load(roll_dir)
+        _add_negative_in_another_writer(roll_dir, "stitch-negative-02")
+        return manifest
+
+    monkeypatch.setattr(edits, "load_roll_manifest", load_then_commit_another_negative)
+
+    run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    manifest = load_roll_manifest(stitched_roll)
+    assert [n.negative_id for n in manifest.negatives] == ["stitch-negative-02"]
+
+
+def test_delete_writes_back_only_the_auto_neutral_it_measured(
+    stitched_roll, monkeypatch
+):
+    from scanny_boy import auto_neutral
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    _append_stitched_negative(stitched_roll, "stitch-negative-02", "_DSC0004.tif")
+    mutate_roll_manifest(
+        stitched_roll,
+        lambda fresh: setattr(
+            fresh.negative("stitch-negative-02"),
+            "normalization",
+            {"floors": [1.0, 2.0, 3.0], "ceilings": [4.0, 5.0, 6.0]},
+        ),
+    )
+    monkeypatch.setattr(previews, "sync_previews", lambda *args, **kwargs: None)
+
+    def measure_while_another_writer_commits(negative, roll_dir, *, highlight_lock):
+        # The measurement reads the TIFF, which is when other writers get in.
+        mutate_roll_manifest(
+            roll_dir,
+            lambda fresh: setattr(
+                fresh.negative("stitch-negative-02").metadata, "city", "Lisbon"
+            ),
+        )
+        negative.normalization["auto_neutral"] = {"measured": True}
+        return True
+
+    monkeypatch.setattr(
+        auto_neutral,
+        "recompute_negative_auto_neutral",
+        measure_while_another_writer_commits,
+    )
+
+    run_edit_delete(stitched_roll, _NEGATIVE_ID, emit=lambda event: None)
+
+    survivor = load_roll_manifest(stitched_roll).negative("stitch-negative-02")
+    assert survivor.normalization == {
+        "floors": [1.0, 2.0, 3.0],
+        "ceilings": [4.0, 5.0, 6.0],
+        "auto_neutral": {"measured": True},
+    }
+    assert survivor.metadata.city == "Lisbon"
+    assert survivor.sequence == 1
+
+
 # --- spotting -----------------------------------------------------------
 
 # A published canvas small enough to keep detection instant, with the

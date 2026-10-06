@@ -33,7 +33,7 @@ from scanny_boy.manifest import BadManifestError
 from scanny_boy.roll_manifest import (
     METADATA_FIELDS,
     load_roll_manifest,
-    write_roll_manifest,
+    mutate_roll_manifest,
 )
 from scanny_boy.roll_sequence import apply_intended_times
 
@@ -216,16 +216,23 @@ def run_metadata_set(
             for key, value in fields.items()
         }
 
-    roll = _validated_roll(roll_dir)
-    by_id = {negative.negative_id: negative for negative in roll.negatives}
-    _apply_roll_fields(roll, clean_roll_fields)
-    _apply_negative_fields(roll, by_id, clean_negative_fields)
+    # The early read reports a missing roll before anything else; the edit
+    # itself is applied to the roll as it is when the transaction opens.
+    _validated_roll(roll_dir)
 
-    # The intended timestamps are pure derived state — always the formula's
-    # current answer after any date change (and re-derived identically when
-    # no date changed).
-    apply_intended_times(roll)
-    write_roll_manifest(roll_dir, roll)
+    def apply(fresh: RollManifest) -> None:
+        by_id = {negative.negative_id: negative for negative in fresh.negatives}
+        _apply_roll_fields(fresh, clean_roll_fields)
+        _apply_negative_fields(fresh, by_id, clean_negative_fields)
+        # The intended timestamps are pure derived state — always the
+        # formula's current answer after any date change (and re-derived
+        # identically when no date changed).
+        apply_intended_times(fresh)
+
+    try:
+        roll, _ = mutate_roll_manifest(roll_dir, apply)
+    except (BadManifestError, RollNotRegisteredError) as exc:
+        raise MetadataEditFailure(exc.code, exc.message) from exc
 
     _remember_catalog_values(clean_roll_fields, clean_negative_fields)
 

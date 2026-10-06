@@ -27,8 +27,9 @@ from scanny_boy.library import repo
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.roll_manifest import (
     NegativeRecord,
+    RollManifest,
     load_roll_manifest,
-    write_roll_manifest,
+    mutate_roll_manifest,
 )
 from scanny_boy.tiff_exif import (
     DATE_TIME_ORIGINAL,
@@ -51,6 +52,15 @@ class ApplyMetadataFailure(Exception):
 class ApplyMetadataOutcome:
     applied: list[str]
     skipped: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Rewritten:
+    """What one TIFF rewrite changed, carried into the write transaction."""
+
+    size: int
+    sha256: str
+    datetime_original: str | None
 
 
 def _now_iso() -> str:
@@ -150,6 +160,7 @@ def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
 
     applied: list[str] = []
     skipped: list[str] = []
+    rewritten: dict[str, _Rewritten] = {}
 
     for negative in dirty:
         assert negative.output is not None
@@ -186,15 +197,30 @@ def run_apply_metadata(roll_dir: Path, *, emit: EmitFn) -> ApplyMetadataOutcome:
             skipped.append(negative.negative_id)
             continue
 
-        negative.output["size"] = tiff_path.stat().st_size
-        negative.output["sha256"] = hashing.sha256_file(tiff_path)
-        negative.capture_time.applied_datetime_original = (
-            negative.capture_time.intended_datetime_original
+        rewritten[negative.negative_id] = _Rewritten(
+            size=tiff_path.stat().st_size,
+            sha256=hashing.sha256_file(tiff_path),
+            # What was written into the TIFF — the intent as of the
+            # snapshot. A concurrent date edit stays dirty.
+            datetime_original=negative.capture_time.intended_datetime_original,
         )
         applied.append(negative.negative_id)
         emit(MetadataApplied(negative_id=negative.negative_id))
 
-    roll.metadata.last_applied_at = _now_iso()
-    write_roll_manifest(roll_dir, roll)
+    applied_at = _now_iso()
+
+    def apply(fresh: RollManifest) -> None:
+        by_id = {n.negative_id: n for n in fresh.negatives}
+        for negative_id, result in rewritten.items():
+            # Deleted since the snapshot: nothing to record.
+            negative = by_id.get(negative_id)
+            if negative is None or negative.output is None:
+                continue
+            negative.output["size"] = result.size
+            negative.output["sha256"] = result.sha256
+            negative.capture_time.applied_datetime_original = result.datetime_original
+        fresh.metadata.last_applied_at = applied_at
+
+    mutate_roll_manifest(roll_dir, apply)
 
     return ApplyMetadataOutcome(applied=applied, skipped=skipped)

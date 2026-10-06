@@ -22,8 +22,9 @@ from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.roll_manifest import (
+    RollManifest,
+    mutate_roll_manifest,
     new_roll_manifest,
-    write_roll_manifest,
 )
 
 SLUG_MAX_LENGTH = 60
@@ -127,8 +128,16 @@ def create_roll(library: Path, name: str, film_kind: str | None = None) -> Path:
         roll_name=name,
         film_kind=film_kind,
     )
-    write_roll_manifest(roll_dir, manifest)
+    repo.insert_roll(roll_dir, manifest)
     return roll_dir
+
+
+def _film_kind_locked() -> RollFolderError:
+    return RollFolderError(
+        Code.FILM_KIND_LOCKED,
+        "this roll's film kind was frozen when its first negative was "
+        "converted; create a new roll to use a different film kind",
+    )
 
 
 def set_film_kind(roll_dir: Path, film_kind: str) -> None:
@@ -136,16 +145,19 @@ def set_film_kind(roll_dir: Path, film_kind: str) -> None:
     roll has been stitched — the kind is frozen for the life of the roll."""
     manifest = repo.load_roll(roll_dir)
     if manifest.runs:
-        raise RollFolderError(
-            Code.FILM_KIND_LOCKED,
-            "this roll's film kind was frozen when its first negative was "
-            "converted; create a new roll to use a different film kind",
-        )
+        raise _film_kind_locked()
     from scanny_boy.icc_profile import profile_record, published_profile_kind
 
-    manifest.film = {"kind": film_kind}
-    manifest.published_icc_profile = profile_record(published_profile_kind(film_kind))
-    write_roll_manifest(roll_dir, manifest)
+    published = profile_record(published_profile_kind(film_kind))
+
+    def apply(fresh: RollManifest) -> None:
+        # A run may have been recorded since the early check above.
+        if fresh.runs:
+            raise _film_kind_locked()
+        fresh.film = {"kind": film_kind}
+        fresh.published_icc_profile = published
+
+    mutate_roll_manifest(roll_dir, apply)
 
 
 def set_setup(
@@ -163,26 +175,30 @@ def set_setup(
 
     Each argument left ``None`` keeps whatever the roll already has for that
     key — this is a partial update, not a replace."""
-    manifest = repo.load_roll(roll_dir)
-    current = dict(
-        manifest.setup
-        or {
-            "grid": None,
-            "interval_seconds": None,
-            "format": None,
-            "auto_crop": False,
-        }
-    )
-    if grid is not None:
-        current["grid"] = grid
-    if interval_seconds is not None:
-        current["interval_seconds"] = interval_seconds
-    if format is not None:
-        current["format"] = format
-    if auto_crop is not None:
-        current["auto_crop"] = auto_crop
-    manifest.setup = current
-    write_roll_manifest(roll_dir, manifest)
+
+    def apply(fresh: RollManifest) -> None:
+        # The merge base is the fresh roll's setup, so a concurrent
+        # set-setup of a different key survives.
+        current = dict(
+            fresh.setup
+            or {
+                "grid": None,
+                "interval_seconds": None,
+                "format": None,
+                "auto_crop": False,
+            }
+        )
+        if grid is not None:
+            current["grid"] = grid
+        if interval_seconds is not None:
+            current["interval_seconds"] = interval_seconds
+        if format is not None:
+            current["format"] = format
+        if auto_crop is not None:
+            current["auto_crop"] = auto_crop
+        fresh.setup = current
+
+    mutate_roll_manifest(roll_dir, apply)
 
 
 def rename_roll(roll_dir: Path, new_name: str) -> Path:
@@ -216,8 +232,10 @@ def rename_roll(roll_dir: Path, new_name: str) -> Path:
                 f"could not rename {roll_dir} to {new_path}: {exc}",
             ) from exc
 
-    manifest.roll_name = new_name
-    write_roll_manifest(new_path, manifest)
+    def apply(fresh: RollManifest) -> None:
+        fresh.roll_name = new_name
+
+    mutate_roll_manifest(new_path, apply, roll_id=manifest.roll_id, folder=new_path)
     return new_path
 
 

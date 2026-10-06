@@ -36,7 +36,7 @@ from scanny_boy.library.repo import RollNotRegisteredError
 from scanny_boy.manifest import BadManifestError
 from scanny_boy.roll_manifest import (
     load_roll_manifest,
-    write_roll_manifest,
+    mutate_roll_manifest,
 )
 
 if TYPE_CHECKING:
@@ -133,8 +133,19 @@ def _refresh_preview(
         return
 
     if negative.preview_path != str(preview):
+        # The caller's copy reflects the new path (it reads it back for its
+        # report); the transaction records it in the roll as it is now.
         negative.preview_path = str(preview)
-        write_roll_manifest(roll_dir, roll)
+        negative_id = negative.negative_id
+        path = str(preview)
+
+        def apply(fresh: RollManifest) -> None:
+            # Deleted since the snapshot: nothing to record.
+            for candidate in fresh.negatives:
+                if candidate.negative_id == negative_id:
+                    candidate.preview_path = path
+
+        mutate_roll_manifest(roll_dir, apply)
 
 
 def _crop_report_fields(roll_dir: Path, negative: NegativeRecord) -> dict | None:
@@ -840,6 +851,24 @@ def run_edit_render_preview(
     }
 
 
+def _measure_auto_neutral(roll: RollManifest, roll_dir: Path) -> dict[str, dict | None]:
+    """Measure `auto_neutral` for every completed colour negative of `roll`
+    (the committed roll — it is updated in place) and return the blocks that
+    changed, by `negative_id`. Reads TIFFs, so it never runs inside a roll
+    transaction."""
+    from scanny_boy import auto_neutral
+
+    measured: dict[str, dict | None] = {}
+    for negative in roll.negatives:
+        if negative.status != "completed" or negative.output is None:
+            continue
+        if auto_neutral.recompute_negative_auto_neutral(
+            negative, roll_dir, highlight_lock=roll.highlight_lock
+        ):
+            measured[negative.negative_id] = negative.normalization["auto_neutral"]
+    return measured
+
+
 def run_edit_delete(
     roll_dir: Path, negative_ids: str | Sequence[str], *, emit: EmitFn
 ) -> list[dict]:
@@ -880,25 +909,43 @@ def run_edit_delete(
         output_name = negative.output["name"] if negative.output is not None else None
         removals.append((negative, output_name))
 
-    for negative, _ in removals:
-        roll.negatives.remove(negative)
     # docs/ROLL_HIGHLIGHT_LOCK.md §4: a deletion changes the roll's
     # qualifying-negative set exactly as a stitch run does, so the estimate
     # is recomputed here too — the stitch stage is not the only place the
-    # roll's negative set changes.
+    # roll's negative set changes. The removal and the lock (pure
+    # computation over the manifest) share one transaction against the roll
+    # as it is now; the removed negatives' rows (and their edits) go with
+    # the save, and the survivors' sequences are renumbered.
     from scanny_boy import highlight_lock as highlight_lock_module
 
-    previous_lock = roll.highlight_lock
-    new_lock = highlight_lock_module.compute_roll_highlight_lock(roll)
-    roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
-    lock_changed = roll.highlight_lock != previous_lock
-    from scanny_boy import auto_neutral
+    doomed = {negative.negative_id for negative, _ in removals}
 
-    auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(roll, roll_dir)
-    # One write for the whole batch: `write_roll_manifest` renumbers the
-    # survivors' sequences and saves; the removed negatives' rows (and their
-    # edits) are deleted by the save's diff.
-    write_roll_manifest(roll_dir, roll)
+    def apply_delete(fresh: RollManifest) -> tuple[bool, dict[str, NegativeRecord]]:
+        removed = {n.negative_id: n for n in fresh.negatives if n.negative_id in doomed}
+        fresh.negatives = [n for n in fresh.negatives if n.negative_id not in doomed]
+        previous_lock = fresh.highlight_lock
+        new_lock = highlight_lock_module.compute_roll_highlight_lock(fresh)
+        fresh.highlight_lock = None if new_lock is None else new_lock.to_dict()
+        return fresh.highlight_lock != previous_lock, removed
+
+    roll, (lock_changed, removed_records) = mutate_roll_manifest(roll_dir, apply_delete)
+
+    # Auto-neutral reads the survivors' TIFFs, so it is measured outside the
+    # transaction, on the committed roll, and only its own keys are written
+    # back in a second, small one.
+    measured = _measure_auto_neutral(roll, roll_dir)
+    auto_neutral_changed = bool(measured)
+    if measured:
+
+        def apply_auto_neutral(fresh: RollManifest) -> None:
+            by_id = {n.negative_id: n for n in fresh.negatives}
+            for negative_id, block in measured.items():
+                negative = by_id.get(negative_id)
+                if negative is None or negative.normalization is None:
+                    continue
+                negative.normalization["auto_neutral"] = block
+
+        roll, _ = mutate_roll_manifest(roll_dir, apply_auto_neutral)
 
     if lock_changed or auto_neutral_changed:
         # §5: the surviving negatives' displayed colour may have moved even
@@ -916,7 +963,15 @@ def run_edit_delete(
             )
 
     results: list[dict] = []
-    for negative, output_name in removals:
+    for snapshot_negative, snapshot_output_name in removals:
+        # The record as it was when it was removed, which is the freshest
+        # view of its files; the snapshot's if another delete got there first.
+        negative = removed_records.get(snapshot_negative.negative_id, snapshot_negative)
+        output_name = (
+            negative.output["name"]
+            if negative.output is not None
+            else snapshot_output_name
+        )
         targets = [Path(negative.preview_path)] if negative.preview_path else []
         if output_name is not None:
             targets.insert(0, roll_dir / output_name)

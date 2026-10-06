@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from scanny_boy import auto_neutral, highlight_lock, previews
 from scanny_boy.events import Code, Event, WarningEvent
-from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
+from scanny_boy.roll_manifest import load_roll_manifest, mutate_roll_manifest
 
 if TYPE_CHECKING:
     from scanny_boy.roll_manifest import RollManifest
@@ -50,7 +50,7 @@ class RollRefreshOutcome:
 
 def _recompute_auto_neutral_tolerant(
     roll: RollManifest, roll_dir: Path, *, emit: EmitFn
-) -> bool:
+) -> dict[str, dict | None]:
     """Measure `auto_neutral` for every completed colour negative.
 
     Mirrors `auto_neutral.recompute_roll_auto_neutral`'s per-negative work
@@ -60,8 +60,11 @@ def _recompute_auto_neutral_tolerant(
     corrupt or since-removed TIFF, say — must not abort the rest of the
     roll's catch-up, the same tolerance `sync_previews` below gets for a
     preview failure.
+
+    Returns the `auto_neutral` block of every negative whose block changed,
+    by `negative_id` — what the caller writes back into a fresh roll.
     """
-    changed = False
+    changed: dict[str, dict | None] = {}
     for negative in roll.negatives:
         if negative.status != "completed" or negative.output is None:
             continue
@@ -69,7 +72,7 @@ def _recompute_auto_neutral_tolerant(
             if auto_neutral.recompute_negative_auto_neutral(
                 negative, roll_dir, highlight_lock=roll.highlight_lock
             ):
-                changed = True
+                changed[negative.negative_id] = negative.normalization["auto_neutral"]
         except Exception as exc:  # noqa: BLE001 — one bad negative must not abort the refresh
             emit(
                 WarningEvent(
@@ -95,10 +98,22 @@ def run_roll_refresh(roll_dir: Path, *, emit: EmitFn) -> RollRefreshOutcome:
     # docs/ROLL_HIGHLIGHT_LOCK.md §4 / auto_neutral.py: auto-neutral is
     # measured against the published TIFF using the (possibly just-updated)
     # highlight lock, so it runs after the lock above, not before.
-    auto_neutral_changed = _recompute_auto_neutral_tolerant(roll, roll_dir, emit=emit)
+    measured = _recompute_auto_neutral_tolerant(roll, roll_dir, emit=emit)
+    auto_neutral_changed = bool(measured)
+    lock_value = roll.highlight_lock
 
-    roll.refresh_pending = False
-    write_roll_manifest(roll_dir, roll)
+    def apply(fresh: RollManifest) -> None:
+        fresh.highlight_lock = lock_value
+        by_id = {negative.negative_id: negative for negative in fresh.negatives}
+        for negative_id, block in measured.items():
+            # Deleted since the snapshot: nothing to record.
+            negative = by_id.get(negative_id)
+            if negative is None or negative.normalization is None:
+                continue
+            negative.normalization["auto_neutral"] = block
+        fresh.refresh_pending = False
+
+    roll, _ = mutate_roll_manifest(roll_dir, apply)
 
     # `sync_previews`'s third argument names the output files *this call*
     # just published (`list[str]`, per `previews.py`) — refresh never

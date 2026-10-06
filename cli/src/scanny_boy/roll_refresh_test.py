@@ -162,3 +162,75 @@ def test_one_negatives_measurement_failure_does_not_abort_the_others(
     assert by_id[failing_id].normalization.get("auto_neutral") is None
     other_id = next(n for n in refreshed.negatives if n.negative_id != failing_id)
     assert by_id[other_id.negative_id].normalization.get("auto_neutral") is not None
+
+
+def test_refresh_keeps_changes_committed_while_it_measures(
+    tmp_path, work_dir, monkeypatch
+):
+    """The measurement reads TIFFs outside any transaction, so another writer
+    can commit meanwhile; the refresh writes only what it measured."""
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    out_dir = make_roll_dir(tmp_path, "out")
+    assert run_stitch_with_defaults(
+        work_dir, out_dir, defer_roll_refresh=True
+    ).status == ("complete")
+    negative_id = load_roll_manifest(out_dir).negatives[0].negative_id
+
+    real_recompute = auto_neutral.recompute_negative_auto_neutral
+    fired: list[bool] = []
+
+    def measure_while_another_writer_commits(negative, roll_dir, *, highlight_lock):
+        if not fired:
+            fired.append(True)
+
+            def edit(fresh):
+                fresh.metadata.camera = "Nikon F3"
+                fresh.negative(negative_id).metadata.city = "Lisbon"
+
+            mutate_roll_manifest(roll_dir, edit)
+        return real_recompute(negative, roll_dir, highlight_lock=highlight_lock)
+
+    monkeypatch.setattr(
+        roll_refresh.auto_neutral,
+        "recompute_negative_auto_neutral",
+        measure_while_another_writer_commits,
+    )
+
+    run_roll_refresh(out_dir, emit=lambda e: None)
+
+    refreshed = load_roll_manifest(out_dir)
+    assert refreshed.refresh_pending is False
+    negative = refreshed.negative(negative_id)
+    assert negative.normalization.get("auto_neutral") is not None
+    assert refreshed.metadata.camera == "Nikon F3"
+    assert negative.metadata.city == "Lisbon"
+
+
+def test_refresh_skips_a_negative_deleted_while_it_measures(
+    tmp_path, work_dir, monkeypatch
+):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    out_dir = make_roll_dir(tmp_path, "out")
+    assert run_stitch_with_defaults(
+        work_dir, out_dir, defer_roll_refresh=True
+    ).status == ("complete")
+
+    real_recompute = auto_neutral.recompute_negative_auto_neutral
+
+    def measure_while_another_writer_deletes(negative, roll_dir, *, highlight_lock):
+        mutate_roll_manifest(roll_dir, lambda fresh: fresh.negatives.clear())
+        return real_recompute(negative, roll_dir, highlight_lock=highlight_lock)
+
+    monkeypatch.setattr(
+        roll_refresh.auto_neutral,
+        "recompute_negative_auto_neutral",
+        measure_while_another_writer_deletes,
+    )
+
+    run_roll_refresh(out_dir, emit=lambda e: None)
+
+    refreshed = load_roll_manifest(out_dir)
+    assert refreshed.negatives == []
+    assert refreshed.refresh_pending is False

@@ -278,6 +278,79 @@ def test_set_requires_a_registered_roll(tmp_path: Path):
     assert excinfo.value.code == Code.ROLL_NOT_FOUND
 
 
+# --- concurrent writers -------------------------------------------------------
+
+
+def _after_snapshot_read(monkeypatch, change):
+    """Run `change()` right after `run_metadata_set`'s early read of the roll."""
+    from scanny_boy import metadata_edit
+
+    real_load = metadata_edit.load_roll_manifest
+
+    def load_then_change(roll_dir):
+        manifest = real_load(roll_dir)
+        change()
+        return manifest
+
+    monkeypatch.setattr(metadata_edit, "load_roll_manifest", load_then_change)
+
+
+def test_metadata_set_keeps_a_change_committed_after_its_read(
+    two_negative_roll: Path, monkeypatch
+):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    def other_writer_edits_b():
+        mutate_roll_manifest(
+            two_negative_roll,
+            lambda fresh: setattr(
+                fresh.negative(_NEGATIVE_B).metadata, "city", "Lisbon"
+            ),
+        )
+
+    _after_snapshot_read(monkeypatch, other_writer_edits_b)
+
+    run_metadata_set(
+        two_negative_roll,
+        {"roll": {"camera": "Nikon F3"}, "negatives": {_NEGATIVE_A: {"state": "ME"}}},
+    )
+
+    manifest = load_roll_manifest(two_negative_roll)
+    assert manifest.metadata.camera == "Nikon F3"
+    assert manifest.negative(_NEGATIVE_A).metadata.state == "ME"
+    assert manifest.negative(_NEGATIVE_B).metadata.city == "Lisbon"
+
+
+def test_metadata_set_for_a_negative_deleted_after_its_read_fails_cleanly(
+    two_negative_roll: Path, monkeypatch
+):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    def other_writer_deletes_a():
+        def delete(fresh):
+            fresh.negatives = [
+                n for n in fresh.negatives if n.negative_id != _NEGATIVE_A
+            ]
+
+        mutate_roll_manifest(two_negative_roll, delete)
+
+    _after_snapshot_read(monkeypatch, other_writer_deletes_a)
+
+    with pytest.raises(MetadataEditFailure) as exc_info:
+        run_metadata_set(
+            two_negative_roll,
+            {
+                "roll": {"camera": "Nikon F3"},
+                "negatives": {_NEGATIVE_A: {"state": "ME"}},
+            },
+        )
+
+    assert exc_info.value.code == Code.NEGATIVE_NOT_FOUND
+    manifest = load_roll_manifest(two_negative_roll)
+    assert manifest.metadata.camera is None
+    assert [n.negative_id for n in manifest.negatives] == [_NEGATIVE_B]
+
+
 # --- the CLI surface --------------------------------------------------------
 
 

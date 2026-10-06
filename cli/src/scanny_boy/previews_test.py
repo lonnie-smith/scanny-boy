@@ -1954,3 +1954,72 @@ def test_the_display_pixel_cache_distinguishes_deband_ops(tmp_path):
         tiff_path, heal=heal.HealParams(deband={**op, "strength": 0.5})
     )
     assert len({plain, with_op, weaker}) == 3
+
+
+def test_sync_previews_keeps_a_negative_committed_during_the_render(
+    tmp_path, monkeypatch
+):
+    """Rendering is slow and runs outside any transaction; a writer that
+    commits meanwhile must not lose its negative to the preview paths
+    `sync_previews` records afterwards."""
+    from scanny_boy import previews
+    from scanny_boy.roll_manifest import (
+        NegativeRecord,
+        load_roll_manifest,
+        mutate_roll_manifest,
+    )
+
+    image = np.repeat(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 3, axis=-1)
+    image = (image * 3000).astype(np.uint16)
+    roll_dir, manifest, negative = _roll_with_published_negative(tmp_path, image)
+    real_generate = previews.generate_preview
+
+    def render_while_another_writer_commits(*args, **kwargs):
+        mutate_roll_manifest(
+            roll_dir,
+            lambda fresh: fresh.negatives.append(
+                NegativeRecord(
+                    negative_id="rid-1-negative-02",
+                    run_id="run-1",
+                    members=["c.NEF", "d.NEF"],
+                    expected_output="out2.tif",
+                    fill_color=(0, 0, 0),
+                )
+            ),
+        )
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        previews, "generate_preview", render_while_another_writer_commits
+    )
+
+    previews.sync_previews(roll_dir, manifest)
+
+    stored = load_roll_manifest(roll_dir)
+    assert stored.negative(negative.negative_id).preview_path == negative.preview_path
+    assert negative.preview_path is not None
+    assert stored.negative("rid-1-negative-02") is not None
+
+
+def test_sync_previews_skips_a_negative_deleted_during_the_render(
+    tmp_path, monkeypatch
+):
+    from scanny_boy import previews
+    from scanny_boy.roll_manifest import load_roll_manifest, mutate_roll_manifest
+
+    image = np.repeat(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 3, axis=-1)
+    image = (image * 3000).astype(np.uint16)
+    roll_dir, manifest, _negative = _roll_with_published_negative(tmp_path, image)
+    real_generate = previews.generate_preview
+
+    def render_while_another_writer_deletes(*args, **kwargs):
+        mutate_roll_manifest(roll_dir, lambda fresh: fresh.negatives.clear())
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        previews, "generate_preview", render_while_another_writer_deletes
+    )
+
+    previews.sync_previews(roll_dir, manifest)
+
+    assert load_roll_manifest(roll_dir).negatives == []

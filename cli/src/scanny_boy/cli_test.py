@@ -675,6 +675,150 @@ def test_roll_set_base_frame_refuses_a_locked_roll(capsys, tmp_path, monkeypatch
     assert load_roll_manifest(roll_dir).film_base["locked_at"] == "2026-09-06T19:00:00Z"
 
 
+def test_roll_set_base_frame_keeps_a_change_committed_during_the_measurement(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_setup
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+
+    def measure_while_another_writer_commits(_frame, _gain):
+        set_setup(roll_dir, format="6x7")
+        return _base_measurement()
+
+    monkeypatch.setattr(
+        "scanny_boy.film_base.load", measure_while_another_writer_commits
+    )
+
+    assert _set_base_frame(capsys, roll_dir, frame) == 0
+
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film_base["source_name"] == "_DSC5012.NEF"
+    assert manifest.setup["format"] == "6x7"
+
+
+def test_roll_set_base_frame_refuses_a_lock_that_appears_after_the_early_check(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    monkeypatch.setattr(
+        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+    )
+    assert _set_base_frame(capsys, roll_dir, frame) == 0
+    capsys.readouterr()
+
+    def measure_while_a_publish_locks_the_base(_frame, _gain):
+        def lock(fresh):
+            fresh.film_base["locked_at"] = "2026-09-06T19:00:00Z"
+
+        mutate_roll_manifest(roll_dir, lock)
+        return _base_measurement(density=(-0.1, -0.2, -0.3))
+
+    monkeypatch.setattr(
+        "scanny_boy.film_base.load", measure_while_a_publish_locks_the_base
+    )
+
+    status = _set_base_frame(
+        capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5013.NEF")
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "FILM_BASE_LOCKED"
+    block = load_roll_manifest(roll_dir).film_base
+    assert block["source_name"] == "_DSC5012.NEF"
+    assert block["density"] == [-0.42, -0.12, -0.99]
+    assert block["locked_at"] == "2026-09-06T19:00:00Z"
+
+
+# --- roll set-flatfield-reference -----------
+
+
+def _set_flatfield_reference(capsys, roll_dir: Path, frame: Path) -> int:
+    return main(
+        [
+            "roll",
+            "set-flatfield-reference",
+            "--roll",
+            str(roll_dir),
+            "--frame",
+            str(frame),
+        ]
+    )
+
+
+def _patch_flatfield_build(monkeypatch, tmp_path, *, during_build=None):
+    """Replace the gain-map build and save, so the command runs without
+    decoding a RAW or writing under the real Application Support folder.
+    `during_build` runs while the reference is being built — the window in
+    which another writer can commit."""
+
+    def build(_reference, *, chromatic_aberration=None):
+        if during_build is not None:
+            during_build()
+        return np.ones((4, 4, 3)), 4000, 3000
+
+    monkeypatch.setattr("scanny_boy.flatfield.build_gain_map", build)
+    monkeypatch.setattr(
+        "scanny_boy.flatfield.save_gain_map",
+        lambda _path, _gain_map: (tmp_path / "gain.npz", "a" * 64),
+    )
+
+
+def test_roll_set_flatfield_reference_keeps_a_change_committed_during_the_build(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_folder import set_setup
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5001.NEF")
+    _patch_flatfield_build(
+        monkeypatch, tmp_path, during_build=lambda: set_setup(roll_dir, format="6x7")
+    )
+
+    assert _set_flatfield_reference(capsys, roll_dir, frame) == 0
+
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.flat_field["source_name"] == "_DSC5001.NEF"
+    assert manifest.setup["format"] == "6x7"
+
+
+def test_roll_set_flatfield_reference_refuses_a_lock_that_appears_mid_build(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5001.NEF")
+    _patch_flatfield_build(monkeypatch, tmp_path)
+    assert _set_flatfield_reference(capsys, roll_dir, frame) == 0
+    capsys.readouterr()
+
+    def lock():
+        def set_lock(fresh):
+            fresh.flat_field["locked_at"] = "2026-09-06T19:00:00Z"
+
+        mutate_roll_manifest(roll_dir, set_lock)
+
+    _patch_flatfield_build(monkeypatch, tmp_path, during_build=lock)
+
+    status = _set_flatfield_reference(
+        capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5002.NEF")
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "FLATFIELD_REFERENCE_LOCKED"
+    block = load_roll_manifest(roll_dir).flat_field
+    assert block["source_name"] == "_DSC5001.NEF"
+    assert block["locked_at"] == "2026-09-06T19:00:00Z"
+
+
 def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(
     capsys, tmp_path, monkeypatch
 ):

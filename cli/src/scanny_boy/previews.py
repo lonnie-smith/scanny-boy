@@ -1640,7 +1640,7 @@ def sync_previews(
     still render differently, and its cached preview PNG (unlike the LUT
     step that builds it) does not pick that up on its own."""
     published = set(published_outputs or [])
-    changed = False
+    rendered: dict[str, str] = {}
     for negative in manifest.negatives:
         if negative.status != "completed" or negative.output is None:
             continue
@@ -1674,12 +1674,22 @@ def sync_previews(
             crop_params=state.crop,
         )
         if preview is not None:
+            # The caller's copy reflects the render too (the stitch reads
+            # its working copy afterwards); the transaction below records
+            # it in the roll as it is now.
             negative.preview_path = str(preview)
-            changed = True
-    if changed:
-        from scanny_boy.roll_manifest import write_roll_manifest
+            rendered[negative.negative_id] = str(preview)
+    if rendered:
+        from scanny_boy.roll_manifest import RollManifest, mutate_roll_manifest
 
-        write_roll_manifest(roll_dir, manifest)
+        def apply(fresh: RollManifest) -> None:
+            by_id = {n.negative_id: n for n in fresh.negatives}
+            for negative_id, path in rendered.items():
+                # Deleted since the snapshot: nothing to record.
+                if negative_id in by_id:
+                    by_id[negative_id].preview_path = path
+
+        mutate_roll_manifest(roll_dir, apply)
 
 
 def transforms_for(manifest, roll_dir: Path) -> dict[str, repo.EditState]:
