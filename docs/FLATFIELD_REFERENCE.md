@@ -16,7 +16,7 @@ Block shape (written by `roll set-flatfield-reference`):
 
 ```json
 {
-  "gain_map_path": "/…/flatfield/rolls/{roll_id}.npz",
+  "gain_map_path": "/…/flatfield/rolls/{roll_id}-{unique}.npz",
   "gain_map_sha256": "…",
   "source_name": "_DSC5001.NEF",
   "source_sha256": "…",
@@ -33,6 +33,12 @@ Block shape (written by `roll set-flatfield-reference`):
   reference when the mode is `"scale"`.
 - `locked_at` is `null` while replaceable, an ISO-8601 UTC timestamp once
   locked. **This is the only lock state.**
+- Every `roll set-flatfield-reference` writes its gain map to a **new**,
+  uniquely named file (temporary name, then renamed into place), never over
+  the file the current block names: a publish can lock that block while the
+  new reference is being built, and a prepare may be reading it. The block is
+  then replaced in one transaction that re-checks `locked_at`, under the roll
+  lock. A refusal removes the new file; a success removes the replaced one.
 
 ## 3.2 The state machine
 

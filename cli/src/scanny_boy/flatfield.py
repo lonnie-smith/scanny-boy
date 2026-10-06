@@ -30,6 +30,8 @@ Every constant in this module is defined here and nowhere else.
 from __future__ import annotations
 
 import datetime
+import os
+import uuid
 from pathlib import Path
 
 import cv2
@@ -78,9 +80,31 @@ def flatfield_root() -> Path:
     return library_db_path().parent / "flatfield"
 
 
-def roll_gain_map_path(roll_id: str) -> Path:
-    """The `.npz` for one roll's attached flat-field reference."""
-    return flatfield_root() / "rolls" / f"{roll_id}.npz"
+def save_roll_gain_map(roll_id: str, gain_map: np.ndarray) -> tuple[Path, str]:
+    """Write a new gain map for one roll's flat-field reference and return its
+    path and SHA-256.
+
+    Every write lands in a **new**, uniquely named file, never over the file
+    the roll's `flat_field` block currently names (not even when the bytes
+    match, so the caller can remove a refused file without checking):
+    that block may be locked, or about to be, by a publish, and a prepare may
+    be reading the file. The bytes are written to a temporary name and
+    renamed into place, so a reader never sees a partial file. The caller
+    records the new path in the roll and removes the file it replaced (or,
+    if the roll refused the new reference, this one)."""
+    rolls = flatfield_root() / "rolls"
+    rolls.mkdir(parents=True, exist_ok=True)
+    name = f"{roll_id}-{uuid.uuid4().hex}"
+    path = rolls / f"{name}.npz"
+    # `np.savez` appends `.npz` to a name that lacks it.
+    staging = rolls / f".{name}.tmp.npz"
+    try:
+        np.savez(staging, format_version=GAIN_MAP_FORMAT_VERSION, gain_map=gain_map)
+        sha256 = sha256_file(staging)
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
+    return path, sha256
 
 
 def _now_iso() -> str:

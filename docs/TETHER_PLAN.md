@@ -618,7 +618,8 @@ library database. A second writer fails immediately with the new error
 
 - **Exclusive**: `run`, `stitch`, every `edit` command that records an op or
   deletes, `metadata set`, `apply-metadata`, `roll set-base-frame`,
-  `roll rename`, `roll delete`, and `roll refresh` (§4.4).
+  `roll set-flatfield-reference`, `roll rename`, `roll delete`, and
+  `roll refresh` (§4.4).
 - **Shared**: `export`, which reads published TIFFs a stitch may be replacing.
 - **None**: `prepare` and `capture check` (neither touches the roll),
   `roll list`, `roll info`, `probe`, `edit list-*`, `edit render-*`.

@@ -281,7 +281,6 @@ def _film_base_block(locked_at: str | None = None) -> dict:
         "attached_at": "2026-09-06T18:04:11Z",
         "source_name": "_DSC5012.NEF",
         "source_sha256": _OTHER_SHA,
-        "flat_field_profile_id": "a1b2c3d4-0000-4000-8000-000000000001",
         "camera_model": "NIKON Z f",
         "chosen_index": 0,
         "populations": [
@@ -318,6 +317,22 @@ def test_film_base_round_trips_through_the_database(tmp_path):
 
     assert loaded.film_base == manifest.film_base
     assert loaded.to_dict() == manifest.to_dict()
+    assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
+
+
+def test_a_legacy_film_base_with_a_flat_field_profile_id_still_validates(tmp_path):
+    """A base frame attached before protocol 22 was measured through a
+    flat-field profile and recorded `flat_field_profile_id`. Nothing writes
+    it now, but such a roll must still load and validate."""
+    legacy = {
+        **_film_base_block(),
+        "flat_field_profile_id": "a1b2c3d4-0000-4000-8000-000000000001",
+    }
+    write_roll_manifest(tmp_path, _manifest(film_base=legacy))
+
+    loaded = load_roll_manifest(tmp_path)
+
+    assert loaded.film_base == legacy
     assert_matches_roll_manifest_schema(loaded.to_dict(), load_roll_manifest_schema())
 
 

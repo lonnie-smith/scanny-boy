@@ -13,7 +13,6 @@
         "attached_at",
         "source_name",
         "source_sha256",
-        "flat_field_profile_id",
         "camera_model",
         "chosen_index",
         "populations",
@@ -39,7 +38,7 @@
         "source_sha256": { "$ref": "#/definitions/sha256" },
         "flat_field_profile_id": {
           "type": ["string", "null"],
-          "description": "The profile whose gain map the measurement used; null when none was given."
+          "description": "Legacy, optional: written only by builds before protocol 22, when a base frame was measured through a flat-field profile. Nothing writes or reads it now; the gain map is the roll's own `flat_field` block."
         },
         "camera_model": {
           "type": ["string", "null"],

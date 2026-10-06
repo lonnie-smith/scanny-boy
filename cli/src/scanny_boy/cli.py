@@ -2076,6 +2076,7 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
     from scanny_boy.hashing import sha256_file
     from scanny_boy.library import repo
     from scanny_boy.metadata import UnreadableRawError, UnsupportedRawError
+    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
     from scanny_boy.roll_manifest import (
         ROLL_MANIFEST_FORMAT_VERSION,
         _now_iso,
@@ -2157,13 +2158,9 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         writer.write(Finished(status="failed", exit_status=1))
         return 1
 
-    if manifest.flat_field is not None and manifest.flat_field.get("locked_at") is None:
-        old_path = Path(manifest.flat_field["gain_map_path"])
-        if old_path.exists():
-            old_path.unlink()
-
-    gain_map_path = flatfield.roll_gain_map_path(manifest.roll_id)
-    path, sha256 = flatfield.save_gain_map(gain_map_path, gain_map)
+    # A new file, never the one the current block names: that block may be
+    # locked by a publish before the transaction below re-checks it.
+    path, sha256 = flatfield.save_roll_gain_map(manifest.roll_id, gain_map)
 
     new_flat_field = {
         "gain_map_path": str(path),
@@ -2178,19 +2175,47 @@ def _run_roll_set_flatfield_reference(args, writer: EventWriter) -> int:
         "attached_at": _now_iso(),
     }
 
-    def apply_flat_field(fresh) -> None:
+    def apply_flat_field(fresh) -> str | None:
+        """Returns the gain map the new block replaces, if any."""
         # Locked since the early check above (a first publish landing
         # while the reference was being built).
         if fresh.flat_field is not None and fresh.flat_field.get("locked_at"):
             raise _flatfield_reference_locked_error(fresh.flat_field)
+        replaced = (
+            None if fresh.flat_field is None else fresh.flat_field["gain_map_path"]
+        )
         fresh.flat_field = new_flat_field
+        return replaced
 
     try:
-        manifest, _ = mutate_roll_manifest(roll_dir, apply_flat_field)
-    except flatfield.FlatFieldError as exc:
+        with exclusive_roll_lock(roll_dir):
+            manifest, replaced = mutate_roll_manifest(roll_dir, apply_flat_field)
+    except RollBusyError as exc:
+        path.unlink(missing_ok=True)
+        return _fail_roll_busy(writer, exc)
+    except (
+        flatfield.FlatFieldError,
+        BadManifestError,
+        repo.RollNotRegisteredError,
+    ) as exc:
+        # Refused, or the roll is gone: nothing names the file just written.
+        path.unlink(missing_ok=True)
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
+
+    # The replaced reference was unlocked (the transaction refuses a locked
+    # one), so no published negative depends on its gain map.
+    if replaced is not None:
+        try:
+            Path(replaced).unlink(missing_ok=True)
+        except OSError as exc:
+            writer.write(
+                WarningEvent(
+                    code=Code.ORPHAN_FILE_NOT_REMOVED,
+                    message=f"{replaced} could not be removed: {exc}",
+                )
+            )
 
     writer.write(
         FlatFieldReferenceSet(

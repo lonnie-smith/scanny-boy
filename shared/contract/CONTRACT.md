@@ -18,8 +18,8 @@ always a new roll. The version history (what each protocol bump added and
 why) is in git log and `ARCHITECTURE.md` §3, not repeated here; what
 follows is current behaviour only.
 
-**The film-base reference**: `roll set-base-frame --roll DIR --frame FILE
-[--flatfield PROFILE_ID]` attaches one measured per-roll film-base
+**The film-base reference**: `roll set-base-frame --roll DIR --frame FILE`
+attaches one measured per-roll film-base
 reference — the per-channel median log density inside the film rebate of
 one dedicated reference frame, shot once per roll showing as much clear
 rebate as possible, exposed about two stops darker than the roll's scans.
@@ -31,9 +31,12 @@ top-level `film_base` object on the roll manifest, reported by `roll info`
 verbatim and by `probe --roll` (as `film_base` on `probe_result`) so the
 app can gate Convert without starting a run:
 `{density (3-array), locked_at, attached_at, source_name, source_sha256,
-flat_field_profile_id, camera_model, chosen_index, populations (array of
+camera_model, chosen_index, populations (array of
 {density, luma, area_fraction, cells, spread}, thinnest first),
-clipped_fractions, grid_cells, measure_version}`. `density` is always a
+clipped_fractions, grid_cells, measure_version, exposure}`. A roll whose
+base frame was attached before protocol 22 may also carry
+`flat_field_profile_id`, which nothing writes or reads any more (the gain map
+is the roll's own `flat_field` block). `density` is always a
 3-array, even on a monochrome roll (the block is provenance there, not
 consumed). The state machine: ABSENT (`film_base` null) → ATTACHED
 (`locked_at` null) → LOCKED (`locked_at` set). `set-base-frame` attaches or
@@ -356,7 +359,9 @@ profile. Each command brackets like `roll init`/`roll list` and carries no
 
 `roll set-flatfield-reference` decodes a bare-light `.NEF`, builds the gain
 map, writes the roll's `flat_field` block, and emits `flat_field_reference_set`.
-A locked roll refuses with `FLATFIELD_REFERENCE_LOCKED`.
+A locked roll refuses with `FLATFIELD_REFERENCE_LOCKED`, and a roll another
+command is writing refuses with `ROLL_BUSY`. The gain map always goes to a new
+file; the one it replaces is removed once the block is written.
 
 `grid create --name NAME --across N --down N` validates the shape with the
 same rules as `--grid AxD` (`INVALID_GRID` when refused), refuses duplicate

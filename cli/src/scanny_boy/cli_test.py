@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from scanny_boy import concurrency
+from scanny_boy import concurrency, flatfield
 from scanny_boy.cli import MAX_SELECTION_FILES, build_parser, main
 from scanny_boy.deband_support import make_banded_roll
 from scanny_boy.events import PROTOCOL_VERSION
@@ -20,6 +20,10 @@ from scanny_boy.output_folder import STAGING_SUFFIX
 from scanny_boy.pipeline import ConvertOutcome
 from scanny_boy.roll_folder import create_roll
 from scanny_boy.roll_manifest import load_roll_manifest, write_roll_manifest
+from scanny_boy.roll_manifest_schema_test_support import (
+    assert_matches_roll_manifest_schema,
+    load_roll_manifest_schema,
+)
 from scanny_boy.sample_nef_support import (
     FIXTURES_DIR,
     REAL_SAMPLE_FILES,
@@ -626,6 +630,9 @@ def test_roll_set_base_frame_attaches_on_an_absent_roll(capsys, tmp_path, monkey
     assert block["populations"][0]["area_fraction"] == 0.44
     assert block["grid_cells"] == 786432
     assert block["measure_version"] == 1
+    # What the writer really produces must match the published schema; the
+    # hand-built fixtures elsewhere cannot catch the two drifting apart.
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
 
 
 def test_roll_set_base_frame_replaces_on_an_attached_roll(
@@ -753,21 +760,24 @@ def _set_flatfield_reference(capsys, roll_dir: Path, frame: Path) -> int:
 
 
 def _patch_flatfield_build(monkeypatch, tmp_path, *, during_build=None):
-    """Replace the gain-map build and save, so the command runs without
-    decoding a RAW or writing under the real Application Support folder.
-    `during_build` runs while the reference is being built — the window in
-    which another writer can commit."""
+    """Replace the gain-map build, so the command runs without decoding a
+    RAW. The tiny map is really saved, under the per-test library folder
+    (`flatfield_root` follows `SCANNY_BOY_LIBRARY_DB`). `during_build` runs
+    while the reference is being built — the window in which another writer
+    can commit."""
 
     def build(_reference, *, chromatic_aberration=None):
         if during_build is not None:
             during_build()
-        return np.ones((4, 4, 3)), 4000, 3000
+        return np.ones((4, 4, 3), dtype=np.float32), 4000, 3000
 
     monkeypatch.setattr("scanny_boy.flatfield.build_gain_map", build)
-    monkeypatch.setattr(
-        "scanny_boy.flatfield.save_gain_map",
-        lambda _path, _gain_map: (tmp_path / "gain.npz", "a" * 64),
-    )
+
+
+def _roll_gain_maps() -> set[Path]:
+    from scanny_boy import flatfield
+
+    return set((flatfield.flatfield_root() / "rolls").glob("*.npz"))
 
 
 def test_roll_set_flatfield_reference_keeps_a_change_committed_during_the_build(
@@ -817,6 +827,66 @@ def test_roll_set_flatfield_reference_refuses_a_lock_that_appears_mid_build(
     block = load_roll_manifest(roll_dir).flat_field
     assert block["source_name"] == "_DSC5001.NEF"
     assert block["locked_at"] == "2026-09-06T19:00:00Z"
+    # The locked block's gain map is exactly what it recorded (the refused
+    # build never wrote over it), and the refused map left no file behind.
+    flatfield.load_gain_map_from_block(block)
+    assert _roll_gain_maps() == {Path(block["gain_map_path"])}
+
+
+def test_roll_set_flatfield_reference_replaces_an_unlocked_gain_map(
+    capsys, tmp_path, monkeypatch
+):
+    roll_dir = _init_roll(capsys, tmp_path)
+    _patch_flatfield_build(monkeypatch, tmp_path)
+    assert (
+        _set_flatfield_reference(
+            capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5001.NEF")
+        )
+        == 0
+    )
+    first = load_roll_manifest(roll_dir).flat_field
+
+    assert (
+        _set_flatfield_reference(
+            capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5002.NEF")
+        )
+        == 0
+    )
+
+    second = load_roll_manifest(roll_dir).flat_field
+    assert second["source_name"] == "_DSC5002.NEF"
+    assert second["gain_map_path"] != first["gain_map_path"]
+    flatfield.load_gain_map_from_block(second)
+    # The replaced map is removed once the new block has committed.
+    assert _roll_gain_maps() == {Path(second["gain_map_path"])}
+
+
+def test_roll_set_flatfield_reference_refuses_a_busy_roll(
+    capsys, tmp_path, monkeypatch
+):
+    from scanny_boy.roll_lock import exclusive_roll_lock
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    _patch_flatfield_build(monkeypatch, tmp_path)
+    assert (
+        _set_flatfield_reference(
+            capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5001.NEF")
+        )
+        == 0
+    )
+    before = load_roll_manifest(roll_dir).flat_field
+    capsys.readouterr()
+
+    with exclusive_roll_lock(roll_dir):
+        status = _set_flatfield_reference(
+            capsys, roll_dir, write_fake_nef(tmp_path / "_DSC5002.NEF")
+        )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert events[1]["code"] == "ROLL_BUSY"
+    assert load_roll_manifest(roll_dir).flat_field == before
+    assert _roll_gain_maps() == {Path(before["gain_map_path"])}
 
 
 def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(

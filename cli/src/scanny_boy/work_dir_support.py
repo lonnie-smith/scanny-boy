@@ -277,7 +277,6 @@ def base_frame_block(**overrides) -> dict:
         "attached_at": "2026-09-06T18:04:11Z",
         "source_name": "_DSC5012.NEF",
         "source_sha256": "3" * 64,
-        "flat_field_profile_id": None,
         "camera_model": None,
         "chosen_index": 0,
         "populations": [
