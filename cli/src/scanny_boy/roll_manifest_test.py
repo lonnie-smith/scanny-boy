@@ -20,7 +20,9 @@ from scanny_boy.roll_manifest import (
     format_negative_id,
     load_roll_manifest,
     merge_sources,
+    mutate_roll_manifest,
     new_roll_manifest,
+    stamp_derived_state,
     write_roll_manifest,
 )
 from scanny_boy.roll_manifest_schema_test_support import (
@@ -403,6 +405,79 @@ def test_write_refreshes_updated_at(tmp_path):
     write_roll_manifest(tmp_path, manifest)
     assert manifest.updated_at != before
     assert manifest.created_at == "2026-08-02T00:00:00Z"
+
+
+def test_stamp_derived_state_refreshes_updated_at_and_sequence():
+    manifest = _manifest(negatives=[_completed_negative(sequence=99)])
+    before = manifest.updated_at
+
+    stamp_derived_state(manifest)
+
+    assert manifest.updated_at != before
+    assert manifest.negatives[0].sequence == 1
+    assert manifest.created_at == "2026-08-02T00:00:00Z"
+
+
+def test_mutate_roll_manifest_applies_fn_and_returns_the_committed_roll(tmp_path):
+    write_roll_manifest(tmp_path, _manifest(negatives=[_completed_negative()]))
+
+    def rename(fresh):
+        fresh.roll_name = "Renamed"
+        return "result"
+
+    manifest, result = mutate_roll_manifest(tmp_path, rename)
+
+    assert result == "result"
+    assert manifest.roll_name == "Renamed"
+    assert manifest.negatives[0].sequence == 1
+    assert load_roll_manifest(tmp_path).to_dict() == manifest.to_dict()
+
+
+def test_mutate_roll_manifest_passes_roll_id_and_folder_through(tmp_path):
+    write_roll_manifest(tmp_path, _manifest())
+    moved = tmp_path.parent / (tmp_path.name + "-moved")
+    tmp_path.rename(moved)
+
+    manifest, _ = mutate_roll_manifest(
+        moved,
+        lambda fresh: setattr(fresh, "roll_name", "Moved"),
+        roll_id=_ROLL_ID,
+        folder=moved,
+    )
+
+    assert manifest.roll_name == "Moved"
+    assert load_roll_manifest(moved).roll_name == "Moved"
+
+
+def test_mutate_roll_manifest_rejects_an_output_escaping_the_folder(tmp_path):
+    write_roll_manifest(tmp_path, _manifest())
+
+    def escape(fresh):
+        fresh.negatives[0].expected_output = "../escape.tif"
+
+    with pytest.raises(BadManifestError):
+        mutate_roll_manifest(tmp_path, escape)
+    # Validated inside the transaction, so the escaping name never landed.
+    assert load_roll_manifest(tmp_path).negatives[0].expected_output != "../escape.tif"
+
+
+def test_mutate_roll_manifest_rejects_an_unregistered_folder(tmp_path):
+    with pytest.raises(RollNotRegisteredError) as exc_info:
+        mutate_roll_manifest(tmp_path, lambda fresh: None)
+    assert exc_info.value.code == Code.ROLL_NOT_FOUND
+
+
+def test_mutate_roll_manifest_propagates_fns_exception_without_saving(tmp_path):
+    write_roll_manifest(tmp_path, _manifest())
+
+    def fail(fresh):
+        fresh.roll_name = "half-applied"
+        raise BadManifestError("refused")
+
+    with pytest.raises(BadManifestError, match="refused"):
+        mutate_roll_manifest(tmp_path, fail)
+
+    assert load_roll_manifest(tmp_path).roll_name == "Tri-X, Portland 1998"
 
 
 def test_load_rejects_an_output_escaping_the_folder(tmp_path):

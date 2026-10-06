@@ -1256,3 +1256,375 @@ def test_malformed_deband_params_are_rejected_and_replay_as_none(roll_dir, mutat
 def test_non_object_deband_params_are_rejected():
     with pytest.raises(ValueError, match="object"):
         repo.validated_deband_params([])
+
+
+# --- read-modify-write transactions -----------------------------------------
+#
+# `mutate_roll` is the primitive every roll writer converts to
+# (docs/TRANSACTIONAL_WRITES_PLAN.md): the write lock is taken first, the roll
+# is loaded fresh, only the caller's change is applied, and the save and
+# commit share the transaction.
+
+
+def _published_negative(negative_id: str, source_time: str):
+    """A completed negative with a real capture time, so `sequence` ranks it."""
+    from scanny_boy.roll_manifest import CaptureTime, NegativeRecord
+
+    return NegativeRecord(
+        negative_id=negative_id,
+        run_id="run-1",
+        members=[f"{negative_id}.NEF"],
+        expected_output=f"{negative_id}.tif",
+        fill_color=(0, 0, 0),
+        status="completed",
+        capture_time=CaptureTime(source_datetime_original=source_time),
+    )
+
+
+def test_mutate_roll_commits_fns_change_and_nothing_else(roll_dir):
+    _negative_in(roll_dir, "rid-1-negative-01")
+    _negative_in(roll_dir, "rid-1-negative-02")
+    repo.append_edit(roll_dir, "rid-1-negative-02", repo.ROTATE_OP, {"direction": "cw"})
+    before = repo.load_roll(roll_dir)
+
+    manifest, result = repo.mutate_roll(
+        roll_dir, lambda fresh: setattr(fresh, "roll_name", "Renamed") or "done"
+    )
+
+    assert result == "done"
+    assert manifest.roll_name == "Renamed"
+    after = repo.load_roll(roll_dir)
+    assert after.roll_name == "Renamed"
+    # The returned manifest is what was committed.
+    assert after.to_dict() == manifest.to_dict()
+    # Everything fn did not touch survives, including the other negative's edits.
+    assert [n.to_dict() for n in after.negatives] == [
+        n.to_dict() for n in before.negatives
+    ]
+    assert after.film == before.film
+    assert repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-02") == 1
+
+
+def test_mutate_roll_persists_in_place_edits_to_nested_json(roll_dir):
+    """`fn` edits dicts inside the loaded manifest in place; the save must
+    still notice and write them."""
+    _negative_in(roll_dir, "rid-1-negative-01")
+
+    def set_output(fresh):
+        fresh.negatives[0].output = {"name": "a.tif"}
+        fresh.processing_params["gamma"] = 7
+
+    def grow_output(fresh):
+        fresh.negatives[0].output["size"] = 5
+
+    repo.mutate_roll(roll_dir, set_output)
+    repo.mutate_roll(roll_dir, grow_output)
+
+    after = repo.load_roll(roll_dir)
+    assert after.processing_params["gamma"] == 7
+    assert after.negatives[0].output == {"name": "a.tif", "size": 5}
+
+
+def test_mutate_roll_from_a_stale_snapshot_loses_no_update(roll_dir):
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    snapshot_a = load_roll_manifest(roll_dir)
+
+    # Another writer adds a negative and edits it.
+    def add_negative(fresh):
+        from scanny_boy.roll_manifest_test import _negative
+
+        fresh.negatives.append(_negative(negative_id="rid-1-negative-01"))
+
+    repo.mutate_roll(roll_dir, add_negative)
+    repo.append_edit(roll_dir, "rid-1-negative-01", repo.ROTATE_OP, {"direction": "cw"})
+
+    # This writer's slow work ran against snapshot A; it applies only its own
+    # value to the fresh roll.
+    new_name = snapshot_a.roll_name + " (edited)"
+    repo.mutate_roll(roll_dir, lambda fresh: setattr(fresh, "roll_name", new_name))
+
+    after = repo.load_roll(roll_dir)
+    assert after.roll_name == new_name
+    assert [n.negative_id for n in after.negatives] == ["rid-1-negative-01"]
+    assert repo.net_rotation_quarter_turns(roll_dir, "rid-1-negative-01") == 1
+
+
+def test_mutate_roll_serializes_concurrent_writers(roll_dir):
+    import threading
+
+    thread_1_in_fn = threading.Event()
+    release_thread_1 = threading.Event()
+    thread_2_done = threading.Event()
+    seen_by_thread_2: list[str] = []
+    errors: list[BaseException] = []
+
+    def first(fresh):
+        fresh.roll_name = "from thread 1"
+        thread_1_in_fn.set()
+        # Hold the write lock until the test lets go (bounded, so a broken
+        # test cannot hang).
+        assert release_thread_1.wait(timeout=20)
+
+    def second(fresh):
+        seen_by_thread_2.append(fresh.roll_name)
+        fresh.processing_params["gamma"] = 9
+
+    def run_first():
+        try:
+            repo.mutate_roll(roll_dir, first)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def run_second():
+        try:
+            repo.mutate_roll(roll_dir, second)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            thread_2_done.set()
+
+    thread_1 = threading.Thread(target=run_first, daemon=True)
+    thread_2 = threading.Thread(target=run_second, daemon=True)
+    try:
+        thread_1.start()
+        assert thread_1_in_fn.wait(timeout=20), "thread 1 never reached fn"
+        thread_2.start()
+        # Thread 2 is queued behind thread 1's write lock: it must not finish
+        # while thread 1 is still inside its transaction.
+        assert not thread_2_done.wait(timeout=1.0)
+    finally:
+        release_thread_1.set()
+    thread_1.join(timeout=20)
+    thread_2.join(timeout=20)
+
+    assert not thread_1.is_alive()
+    assert not thread_2.is_alive()
+    assert errors == []
+    # Thread 2 read the roll only after thread 1 committed.
+    assert seen_by_thread_2 == ["from thread 1"]
+    after = repo.load_roll(roll_dir)
+    assert after.roll_name == "from thread 1"
+    assert after.processing_params["gamma"] == 9
+
+
+def test_mutate_roll_rolls_back_and_reraises_when_fn_raises(roll_dir):
+    class Boom(Exception):
+        pass
+
+    boom = Boom("nope")
+
+    def fn(fresh):
+        fresh.roll_name = "half-applied"
+        fresh.negatives.clear()
+        raise boom
+
+    _negative_in(roll_dir, "rid-1-negative-01")
+    before = repo.load_roll(roll_dir)
+
+    with pytest.raises(Boom) as excinfo:
+        repo.mutate_roll(roll_dir, fn)
+
+    assert excinfo.value is boom
+    assert repo.load_roll(roll_dir).to_dict() == before.to_dict()
+    # The write lock was released: the next writer is not blocked.
+    repo.mutate_roll(roll_dir, lambda fresh: setattr(fresh, "roll_name", "after"))
+    assert repo.load_roll(roll_dir).roll_name == "after"
+
+
+def test_mutate_roll_recomputes_derived_state(roll_dir):
+    from scanny_boy.roll_manifest import RunRecord
+
+    def populate(fresh):
+        fresh.runs.append(
+            RunRecord(
+                run_id="run-1",
+                kind="stitch",
+                status="complete",
+                started_at="2026-08-02T00:00:00Z",
+            )
+        )
+        # Appended later-first: capture time, not list order, decides rank.
+        fresh.negatives.append(
+            _published_negative("rid-1-negative-01", "2026-08-02T12:00:02")
+        )
+        fresh.negatives.append(
+            _published_negative("rid-1-negative-02", "2026-08-02T12:00:01")
+        )
+        # A stale value the recompute must overwrite.
+        fresh.negatives[0].sequence = 99
+
+    before = repo.load_roll(roll_dir)
+    manifest, _ = repo.mutate_roll(roll_dir, populate)
+
+    assert [n.sequence for n in manifest.negatives] == [2, 1]
+    assert [n.sequence for n in repo.load_roll(roll_dir).negatives] == [2, 1]
+    assert manifest.updated_at != before.updated_at
+
+    # Removing the first-ranked negative renumbers the survivor from fresh state.
+    manifest, _ = repo.mutate_roll(
+        roll_dir,
+        lambda fresh: fresh.negatives.__delitem__(1),
+    )
+    assert [n.sequence for n in repo.load_roll(roll_dir).negatives] == [1]
+
+
+def test_mutate_roll_can_identify_the_roll_by_id_and_move_its_folder(
+    roll_dir, tmp_path
+):
+    new_dir = tmp_path / "Moved"
+    roll_dir.rename(new_dir)
+
+    manifest, _ = repo.mutate_roll(
+        roll_id="rid-1",
+        fn=lambda fresh: setattr(fresh, "roll_name", "Moved"),
+        folder=new_dir,
+    )
+
+    assert manifest.roll_name == "Moved"
+    assert repo.load_roll(new_dir).roll_id == "rid-1"
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.load_roll(roll_dir)
+
+
+def test_mutate_roll_defaults_the_folder_to_the_one_loaded_from(roll_dir):
+    repo.mutate_roll(roll_id="rid-1", fn=lambda fresh: None)
+    assert repo.roll_registered(roll_dir)
+
+
+def test_mutate_roll_requires_exactly_one_roll_identifier(roll_dir):
+    with pytest.raises(ValueError):
+        repo.mutate_roll(fn=lambda fresh: None)
+    with pytest.raises(ValueError):
+        repo.mutate_roll(roll_dir, lambda fresh: None, roll_id="rid-1")
+
+
+def test_mutate_roll_on_an_unregistered_roll_raises(tmp_path):
+    called = []
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.mutate_roll(tmp_path / "Nope", lambda fresh: called.append(1))
+    with pytest.raises(repo.RollNotRegisteredError):
+        repo.mutate_roll(roll_id="missing", fn=lambda fresh: called.append(1))
+    assert called == []
+
+
+def test_insert_roll_registers_a_new_roll_and_stamps_derived_state(tmp_path):
+    directory = tmp_path / "Fresh"
+    directory.mkdir()
+    manifest = new_roll_manifest(roll_id="rid-new", roll_name="Fresh")
+    manifest.updated_at = "2000-01-01T00:00:00Z"
+
+    repo.insert_roll(directory, manifest)
+
+    loaded = repo.load_roll(directory)
+    assert loaded.roll_id == "rid-new"
+    assert loaded.updated_at != "2000-01-01T00:00:00Z"
+
+
+def test_insert_roll_refuses_a_duplicate_roll_id_or_folder(roll_dir, tmp_path):
+    other_dir = tmp_path / "Other"
+    other_dir.mkdir()
+
+    with pytest.raises(repo.RollAlreadyRegisteredError) as same_id:
+        repo.insert_roll(other_dir, new_roll_manifest(roll_id="rid-1", roll_name="X"))
+    assert same_id.value.code == Code.ROLL_EXISTS
+    assert not repo.roll_registered(other_dir)
+
+    with pytest.raises(repo.RollAlreadyRegisteredError) as same_folder:
+        repo.insert_roll(roll_dir, new_roll_manifest(roll_id="rid-2", roll_name="X"))
+    assert same_folder.value.code == Code.ROLL_EXISTS
+    # The existing roll is untouched.
+    assert repo.load_roll(roll_dir).roll_id == "rid-1"
+    assert repo.load_roll(roll_dir).roll_name == "Roll"
+
+
+# --- BEGIN IMMEDIATE reaches SQLite -------------------------------------------
+
+
+def _raw_connection(timeout_seconds: float):
+    """A plain sqlite3 connection to the library database, outside
+    SQLAlchemy, that begins transactions only when told to."""
+    import sqlite3
+
+    return sqlite3.connect(
+        db.library_db_path(), timeout=timeout_seconds, isolation_level=None
+    )
+
+
+def test_begin_immediate_flag_takes_the_write_lock_before_any_write(roll_dir):
+    import sqlite3
+
+    from sqlalchemy import text
+
+    engine = db.open_engine()
+    probe = _raw_connection(timeout_seconds=0.1)
+    try:
+        with engine.connect().execution_options(
+            **{db.SQLITE_IMMEDIATE_OPTION: True}
+        ) as holder:
+            # A bare SELECT: under a deferred BEGIN this would take no lock.
+            holder.execute(text("SELECT 1"))
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                probe.execute("BEGIN IMMEDIATE")
+        # Released on close: the same begin now succeeds.
+        probe.execute("BEGIN IMMEDIATE")
+        probe.execute("ROLLBACK")
+    finally:
+        probe.close()
+
+
+def test_a_plain_session_begins_deferred_and_holds_no_write_lock(roll_dir):
+    from sqlalchemy import text
+
+    engine = db.open_engine()
+    probe = _raw_connection(timeout_seconds=0.1)
+    try:
+        with engine.connect() as reader:
+            reader.execute(text("SELECT 1"))
+            # No immediate flag: the read took no write lock, so a second
+            # connection can still begin (and commit) a write.
+            probe.execute("BEGIN IMMEDIATE")
+            probe.execute("ROLLBACK")
+    finally:
+        probe.close()
+
+
+def test_begin_immediate_waits_for_the_write_lock_then_proceeds(roll_dir):
+    import threading
+    import time
+
+    from sqlalchemy import text
+
+    engine = db.open_engine()
+    waiter_started = threading.Event()
+    waiter_done = threading.Event()
+    outcome: list[object] = []
+
+    def wait_for_lock():
+        connection = _raw_connection(timeout_seconds=20)
+        try:
+            waiter_started.set()
+            started = time.monotonic()
+            connection.execute("BEGIN IMMEDIATE")
+            outcome.append(time.monotonic() - started)
+            connection.execute("ROLLBACK")
+        except BaseException as exc:  # noqa: BLE001
+            outcome.append(exc)
+        finally:
+            connection.close()
+            waiter_done.set()
+
+    thread = threading.Thread(target=wait_for_lock, daemon=True)
+    with engine.connect().execution_options(
+        **{db.SQLITE_IMMEDIATE_OPTION: True}
+    ) as holder:
+        holder.execute(text("SELECT 1"))
+        thread.start()
+        assert waiter_started.wait(timeout=20)
+        # While the holder's immediate transaction is open, the waiter waits.
+        assert not waiter_done.wait(timeout=0.5)
+    assert waiter_done.wait(timeout=20)
+    thread.join(timeout=20)
+    assert not thread.is_alive()
+    assert len(outcome) == 1 and isinstance(outcome[0], float)
+    assert outcome[0] >= 0.3

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from scanny_boy.calibration import RigError, RigProfile
 from scanny_boy.events import Code
 from scanny_boy.grid_profile import GridProfile, GridProfileError
-from scanny_boy.library.db import open_engine
+from scanny_boy.library.db import SQLITE_IMMEDIATE_OPTION, open_engine
 from scanny_boy.library.models import (
     METADATA_FIELDS,
     ROLL_ONLY_METADATA_FIELDS,
@@ -172,6 +172,16 @@ class RollNotRegisteredError(Exception):
         self.message = message
 
 
+class RollAlreadyRegisteredError(Exception):
+    """Maps to `ROLL_EXISTS`: `insert_roll` found the roll id or the folder
+    already registered. Inserting never overwrites a roll."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.code = Code.ROLL_EXISTS
+        self.message = message
+
+
 @contextmanager
 def _session() -> Iterator[Session]:
     session = Session(open_engine())
@@ -195,152 +205,155 @@ def _folder_key(roll_dir: Path) -> str:
 
 
 def save_roll(roll_dir: Path, manifest: RollManifest) -> None:
+    with _session() as session:
+        _save_roll_rows(session, _folder_key(roll_dir), manifest)
+
+
+def _save_roll_rows(session: Session, folder: str, manifest: RollManifest) -> None:
+    """Make the database's rows for `manifest.roll_id` equal `manifest`,
+    inside the caller's session (and so the caller's transaction)."""
     from scanny_boy.roll_manifest import (
         NegativeRecord,
         RollSourceRecord,
         RunRecord,
     )
 
-    folder = _folder_key(roll_dir)
-    with _session() as session:
-        roll = session.get(RollRow, manifest.roll_id)
-        if roll is None:
-            roll = RollRow(roll_id=manifest.roll_id)
-            session.add(roll)
-        roll.folder_path = folder
-        roll.roll_name = manifest.roll_name
-        roll.scanny_boy_version = manifest.scanny_boy_version
-        roll.created_at = manifest.created_at
-        roll.updated_at = manifest.updated_at
-        roll.processing_params = manifest.processing_params
-        roll.icc_profile = manifest.icc_profile
-        roll.published_icc_profile = manifest.published_icc_profile
-        roll.stitch_params = manifest.stitch_params
-        roll.camera_color = (
-            None if manifest.camera_color is None else manifest.camera_color.to_dict()
+    roll = session.get(RollRow, manifest.roll_id)
+    if roll is None:
+        roll = RollRow(roll_id=manifest.roll_id)
+        session.add(roll)
+    roll.folder_path = folder
+    roll.roll_name = manifest.roll_name
+    roll.scanny_boy_version = manifest.scanny_boy_version
+    roll.created_at = manifest.created_at
+    roll.updated_at = manifest.updated_at
+    roll.processing_params = manifest.processing_params
+    roll.icc_profile = manifest.icc_profile
+    roll.published_icc_profile = manifest.published_icc_profile
+    roll.stitch_params = manifest.stitch_params
+    roll.camera_color = (
+        None if manifest.camera_color is None else manifest.camera_color.to_dict()
+    )
+    roll.film_kind = manifest.film
+    roll.film_base = manifest.film_base
+    roll.highlight_lock = manifest.highlight_lock
+    roll.flat_field = manifest.flat_field
+    roll.refresh_pending = 1 if manifest.refresh_pending else None
+    roll.setup = manifest.setup
+    roll.roll_capture_date = manifest.metadata.roll_capture_date
+    roll.last_applied_at = manifest.metadata.last_applied_at
+    for field in METADATA_FIELDS:
+        setattr(roll, field, getattr(manifest.metadata, field))
+    for field in ROLL_ONLY_METADATA_FIELDS:
+        setattr(roll, field, getattr(manifest.metadata, field))
+
+    # Diff by key so re-saving an unchanged child is a no-op and removed
+    # children (an adopted negative's removal) actually go away.
+    run_ids = {r.run_id for r in manifest.runs}
+    session.execute(
+        delete(RunRow).where(
+            RunRow.roll_id == manifest.roll_id, RunRow.run_id.not_in(run_ids)
         )
-        roll.film_kind = manifest.film
-        roll.film_base = manifest.film_base
-        roll.highlight_lock = manifest.highlight_lock
-        roll.flat_field = manifest.flat_field
-        roll.refresh_pending = 1 if manifest.refresh_pending else None
-        roll.setup = manifest.setup
-        roll.roll_capture_date = manifest.metadata.roll_capture_date
-        roll.last_applied_at = manifest.metadata.last_applied_at
-        for field in METADATA_FIELDS:
-            setattr(roll, field, getattr(manifest.metadata, field))
-        for field in ROLL_ONLY_METADATA_FIELDS:
-            setattr(roll, field, getattr(manifest.metadata, field))
-
-        # Diff by key so re-saving an unchanged child is a no-op and removed
-        # children (an adopted negative's removal) actually go away.
-        run_ids = {r.run_id for r in manifest.runs}
-        session.execute(
-            delete(RunRow).where(
-                RunRow.roll_id == manifest.roll_id, RunRow.run_id.not_in(run_ids)
-            )
-        )
-        for ordinal, run in enumerate(manifest.runs):
-            assert isinstance(run, RunRecord)
-            session.merge(
-                RunRow(
-                    run_id=run.run_id,
-                    roll_id=manifest.roll_id,
-                    ordinal=ordinal,
-                    short_id=run.short_id,
-                    kind=run.kind,
-                    status=run.status,
-                    convert_run_id=run.convert_run_id,
-                    input_folder=run.input_folder,
-                    source_order=run.source_order,
-                    work_dir=run.work_dir,
-                    started_at=run.started_at,
-                    finished_at=run.finished_at,
-                    normalization_aggregate=run.normalization_aggregate,
-                )
-            )
-
-        # Sources carry an autoincrement primary key, so a `merge` without a
-        # pre-loaded identity inserts a duplicate row on every save. The list
-        # is small and nothing holds a foreign key to it, so rewriting it
-        # wholesale is the safe diff: delete all, insert the incoming set.
-        session.execute(delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id))
-        for ordinal, source in enumerate(manifest.sources):
-            assert isinstance(source, RollSourceRecord)
-            session.add(
-                SourceRow(
-                    roll_id=manifest.roll_id,
-                    ordinal=ordinal,
-                    filename=source.filename,
-                    absolute_path=source.absolute_path,
-                    size=source.size,
-                    mtime=source.mtime,
-                    sha256=source.sha256,
-                    run_id=source.run_id,
-                    scan_clip_fractions=(
-                        None
-                        if source.scan_clip_fractions is None
-                        else list(source.scan_clip_fractions)
-                    ),
-                )
-            )
-
-        negative_ids = {n.negative_id for n in manifest.negatives}
-        # Deleting a negative cascades its edits; surviving negatives keep
-        # theirs, keyed by the stable `negative_id`.
-        session.execute(
-            delete(NegativeRow).where(
-                NegativeRow.roll_id == manifest.roll_id,
-                NegativeRow.negative_id.not_in(negative_ids),
+    )
+    for ordinal, run in enumerate(manifest.runs):
+        assert isinstance(run, RunRecord)
+        session.merge(
+            RunRow(
+                run_id=run.run_id,
+                roll_id=manifest.roll_id,
+                ordinal=ordinal,
+                short_id=run.short_id,
+                kind=run.kind,
+                status=run.status,
+                convert_run_id=run.convert_run_id,
+                input_folder=run.input_folder,
+                source_order=run.source_order,
+                work_dir=run.work_dir,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                normalization_aggregate=run.normalization_aggregate,
             )
         )
-        for ordinal, negative in enumerate(manifest.negatives):
-            assert isinstance(negative, NegativeRecord)
-            session.merge(
-                NegativeRow(
-                    negative_id=negative.negative_id,
-                    roll_id=manifest.roll_id,
-                    ordinal=ordinal,
-                    run_id=negative.run_id,
-                    sequence=negative.sequence,
-                    members=negative.members,
-                    expected_output=negative.expected_output,
-                    status=negative.status,
-                    output=negative.output,
-                    frames=[f.to_dict() for f in negative.frames],
-                    pairs=[p.to_dict() for p in negative.pairs],
-                    global_rms_px=negative.global_rms_px,
-                    canvas=(
-                        None
-                        if negative.canvas is None
-                        else {"width": negative.canvas[0], "height": negative.canvas[1]}
-                    ),
-                    valid_rect=(
-                        None
-                        if negative.valid_rect is None
-                        else list(negative.valid_rect)
-                    ),
-                    fill_color=list(negative.fill_color),
-                    normalized_fill=negative.normalized_fill,
-                    normalization=negative.normalization,
-                    auto_crop=negative.auto_crop,
-                    rectification=negative.rectification,
-                    rebate_deviation_px=negative.rebate_deviation_px,
-                    used_clahe_fallback=negative.used_clahe_fallback,
-                    error_code=negative.error_code,
-                    error_message=negative.error_message,
-                    capture_time=negative.capture_time.to_dict(),
-                    preview_path=negative.preview_path,
-                    grid=negative.grid,
-                    grid_cells=negative.grid_cells,
-                    grid_pitch_ratio=negative.grid_pitch_ratio,
-                    grid_alignment_ratio=negative.grid_alignment_ratio,
-                    **{
-                        field: getattr(negative.metadata, field)
-                        for field in METADATA_FIELDS
-                    },
-                )
+
+    # Sources carry an autoincrement primary key, so a `merge` without a
+    # pre-loaded identity inserts a duplicate row on every save. The list
+    # is small and nothing holds a foreign key to it, so rewriting it
+    # wholesale is the safe diff: delete all, insert the incoming set.
+    session.execute(delete(SourceRow).where(SourceRow.roll_id == manifest.roll_id))
+    for ordinal, source in enumerate(manifest.sources):
+        assert isinstance(source, RollSourceRecord)
+        session.add(
+            SourceRow(
+                roll_id=manifest.roll_id,
+                ordinal=ordinal,
+                filename=source.filename,
+                absolute_path=source.absolute_path,
+                size=source.size,
+                mtime=source.mtime,
+                sha256=source.sha256,
+                run_id=source.run_id,
+                scan_clip_fractions=(
+                    None
+                    if source.scan_clip_fractions is None
+                    else list(source.scan_clip_fractions)
+                ),
             )
+        )
+
+    negative_ids = {n.negative_id for n in manifest.negatives}
+    # Deleting a negative cascades its edits; surviving negatives keep
+    # theirs, keyed by the stable `negative_id`.
+    session.execute(
+        delete(NegativeRow).where(
+            NegativeRow.roll_id == manifest.roll_id,
+            NegativeRow.negative_id.not_in(negative_ids),
+        )
+    )
+    for ordinal, negative in enumerate(manifest.negatives):
+        assert isinstance(negative, NegativeRecord)
+        session.merge(
+            NegativeRow(
+                negative_id=negative.negative_id,
+                roll_id=manifest.roll_id,
+                ordinal=ordinal,
+                run_id=negative.run_id,
+                sequence=negative.sequence,
+                members=negative.members,
+                expected_output=negative.expected_output,
+                status=negative.status,
+                output=negative.output,
+                frames=[f.to_dict() for f in negative.frames],
+                pairs=[p.to_dict() for p in negative.pairs],
+                global_rms_px=negative.global_rms_px,
+                canvas=(
+                    None
+                    if negative.canvas is None
+                    else {"width": negative.canvas[0], "height": negative.canvas[1]}
+                ),
+                valid_rect=(
+                    None if negative.valid_rect is None else list(negative.valid_rect)
+                ),
+                fill_color=list(negative.fill_color),
+                normalized_fill=negative.normalized_fill,
+                normalization=negative.normalization,
+                auto_crop=negative.auto_crop,
+                rectification=negative.rectification,
+                rebate_deviation_px=negative.rebate_deviation_px,
+                used_clahe_fallback=negative.used_clahe_fallback,
+                error_code=negative.error_code,
+                error_message=negative.error_message,
+                capture_time=negative.capture_time.to_dict(),
+                preview_path=negative.preview_path,
+                grid=negative.grid,
+                grid_cells=negative.grid_cells,
+                grid_pitch_ratio=negative.grid_pitch_ratio,
+                grid_alignment_ratio=negative.grid_alignment_ratio,
+                **{
+                    field: getattr(negative.metadata, field)
+                    for field in METADATA_FIELDS
+                },
+            )
+        )
 
 
 # --- rows -> RollManifest --------------------------------------------------
@@ -410,6 +423,21 @@ def delete_roll(roll_dir: Path) -> str:
 
 
 def load_roll(roll_dir: Path) -> RollManifest:
+    with _session() as session:
+        return _load_roll_rows(session, _folder_key(roll_dir), label=roll_dir)
+
+
+def _load_roll_rows(
+    session: Session,
+    folder: str,
+    *,
+    roll_id: str | None = None,
+    label: object | None = None,
+) -> RollManifest:
+    """Read a roll into a manifest, inside the caller's session. The roll is
+    the one registered at `folder`, or the one with `roll_id` when given
+    (`folder` is then ignored). `label` spells the folder in the not-found
+    message; it defaults to `folder`."""
     from scanny_boy.roll_manifest import (
         CameraColor,
         CaptureTime,
@@ -423,161 +451,253 @@ def load_roll(roll_dir: Path) -> RollManifest:
         RunRecord,
     )
 
-    folder = _folder_key(roll_dir)
-    with _session() as session:
+    if roll_id is not None:
+        roll = session.get(RollRow, roll_id)
+        label = label if label is not None else roll_id
+    else:
         roll = session.scalar(select(RollRow).where(RollRow.folder_path == folder))
-        if roll is None:
-            raise RollNotRegisteredError(
-                f"{roll_dir} is not a registered roll; create the roll first"
-            )
-
-        runs = session.scalars(
-            select(RunRow)
-            .where(RunRow.roll_id == roll.roll_id)
-            .order_by(RunRow.ordinal)
-        ).all()
-        sources = session.scalars(
-            select(SourceRow)
-            .where(SourceRow.roll_id == roll.roll_id)
-            .order_by(SourceRow.ordinal)
-        ).all()
-        negatives = session.scalars(
-            select(NegativeRow)
-            .where(NegativeRow.roll_id == roll.roll_id)
-            .order_by(NegativeRow.ordinal)
-        ).all()
-
-        return RollManifest(
-            scanny_boy_version=roll.scanny_boy_version,
-            roll_id=roll.roll_id,
-            roll_name=roll.roll_name,
-            created_at=roll.created_at,
-            updated_at=roll.updated_at,
-            processing_params=roll.processing_params,
-            icc_profile=roll.icc_profile,
-            published_icc_profile=dict(roll.published_icc_profile or {}),
-            stitch_params=roll.stitch_params,
-            film=roll.film_kind,
-            film_base=roll.film_base,
-            highlight_lock=roll.highlight_lock,
-            flat_field=roll.flat_field,
-            refresh_pending=bool(roll.refresh_pending),
-            setup=roll.setup,
-            runs=[
-                RunRecord(
-                    run_id=r.run_id,
-                    short_id=r.short_id,
-                    kind=r.kind,
-                    status=r.status,
-                    convert_run_id=r.convert_run_id,
-                    input_folder=r.input_folder,
-                    source_order=list(r.source_order),
-                    work_dir=r.work_dir,
-                    started_at=r.started_at,
-                    finished_at=r.finished_at,
-                    normalization_aggregate=r.normalization_aggregate,
-                )
-                for r in runs
-            ],
-            sources=[
-                RollSourceRecord(
-                    filename=s.filename,
-                    absolute_path=s.absolute_path,
-                    size=s.size,
-                    mtime=s.mtime,
-                    sha256=s.sha256,
-                    run_id=s.run_id,
-                    scan_clip_fractions=(
-                        None
-                        if s.scan_clip_fractions is None
-                        else tuple(s.scan_clip_fractions)
-                    ),
-                )
-                for s in sources
-            ],
-            negatives=[
-                NegativeRecord(
-                    negative_id=n.negative_id,
-                    run_id=n.run_id,
-                    sequence=n.sequence,
-                    members=list(n.members),
-                    expected_output=n.expected_output,
-                    fill_color=tuple(n.fill_color),
-                    status=n.status,
-                    output=n.output,
-                    frames=[
-                        FrameRecord(
-                            name=f["name"],
-                            rotation_deg=f["rotation_deg"],
-                            translation=(f["translation"][0], f["translation"][1]),
-                            # Rows written before gain normalization carry no
-                            # `gain` (nothing was applied to them) — a missing
-                            # gain is unity, not a corrupt row.
-                            gain=tuple(f.get("gain", _UNITY_GAIN)),
-                            # Likewise, rows written before the per-frame scale
-                            # solve carry no `scale` — the layout was placed as
-                            # a rigid transform, which is scale 1.
-                            scale=f.get("scale", 1.0),
-                        )
-                        for f in n.frames
-                    ],
-                    pairs=[
-                        PairRecord(
-                            a=p["a"],
-                            b=p["b"],
-                            inliers=p["inliers"],
-                            good_matches=p["good_matches"],
-                            inlier_ratio=p["inlier_ratio"],
-                            rms_residual_px=p["rms_residual_px"],
-                            scale_drift=p["scale_drift"],
-                            overlap_fraction=p["overlap_fraction"],
-                            overlap_mad=p["overlap_mad"],
-                            # Likewise absent before gain normalization: no
-                            # pre-gain measurement was ever taken.
-                            overlap_mad_pregain=p.get("overlap_mad_pregain"),
-                            accepted=p["accepted"],
-                        )
-                        for p in n.pairs
-                    ],
-                    global_rms_px=n.global_rms_px,
-                    canvas=(
-                        None
-                        if n.canvas is None
-                        else (n.canvas["width"], n.canvas["height"])
-                    ),
-                    valid_rect=None if n.valid_rect is None else tuple(n.valid_rect),
-                    normalized_fill=n.normalized_fill,
-                    normalization=n.normalization,
-                    auto_crop=n.auto_crop,
-                    rectification=n.rectification,
-                    rebate_deviation_px=n.rebate_deviation_px,
-                    used_clahe_fallback=bool(n.used_clahe_fallback),
-                    error_code=n.error_code,
-                    error_message=n.error_message,
-                    capture_time=CaptureTime(**n.capture_time),
-                    metadata=NegativeMetadata(
-                        **{field: getattr(n, field) for field in METADATA_FIELDS}
-                    ),
-                    preview_path=n.preview_path,
-                    grid=n.grid,
-                    grid_cells=n.grid_cells,
-                    grid_pitch_ratio=n.grid_pitch_ratio,
-                    grid_alignment_ratio=n.grid_alignment_ratio,
-                )
-                for n in negatives
-            ],
-            metadata=RollMetadata(
-                roll_capture_date=roll.roll_capture_date,
-                last_applied_at=roll.last_applied_at,
-                **{field: getattr(roll, field) for field in METADATA_FIELDS},
-                **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
-            ),
-            camera_color=(
-                None
-                if roll.camera_color is None
-                else CameraColor.from_dict(roll.camera_color)
-            ),
+        label = label if label is not None else folder
+    if roll is None:
+        raise RollNotRegisteredError(
+            f"{label} is not a registered roll; create the roll first"
         )
+
+    runs = session.scalars(
+        select(RunRow).where(RunRow.roll_id == roll.roll_id).order_by(RunRow.ordinal)
+    ).all()
+    sources = session.scalars(
+        select(SourceRow)
+        .where(SourceRow.roll_id == roll.roll_id)
+        .order_by(SourceRow.ordinal)
+    ).all()
+    negatives = session.scalars(
+        select(NegativeRow)
+        .where(NegativeRow.roll_id == roll.roll_id)
+        .order_by(NegativeRow.ordinal)
+    ).all()
+
+    return RollManifest(
+        scanny_boy_version=roll.scanny_boy_version,
+        roll_id=roll.roll_id,
+        roll_name=roll.roll_name,
+        created_at=roll.created_at,
+        updated_at=roll.updated_at,
+        processing_params=roll.processing_params,
+        icc_profile=roll.icc_profile,
+        published_icc_profile=dict(roll.published_icc_profile or {}),
+        stitch_params=roll.stitch_params,
+        film=roll.film_kind,
+        film_base=roll.film_base,
+        highlight_lock=roll.highlight_lock,
+        flat_field=roll.flat_field,
+        refresh_pending=bool(roll.refresh_pending),
+        setup=roll.setup,
+        runs=[
+            RunRecord(
+                run_id=r.run_id,
+                short_id=r.short_id,
+                kind=r.kind,
+                status=r.status,
+                convert_run_id=r.convert_run_id,
+                input_folder=r.input_folder,
+                source_order=list(r.source_order),
+                work_dir=r.work_dir,
+                started_at=r.started_at,
+                finished_at=r.finished_at,
+                normalization_aggregate=r.normalization_aggregate,
+            )
+            for r in runs
+        ],
+        sources=[
+            RollSourceRecord(
+                filename=s.filename,
+                absolute_path=s.absolute_path,
+                size=s.size,
+                mtime=s.mtime,
+                sha256=s.sha256,
+                run_id=s.run_id,
+                scan_clip_fractions=(
+                    None
+                    if s.scan_clip_fractions is None
+                    else tuple(s.scan_clip_fractions)
+                ),
+            )
+            for s in sources
+        ],
+        negatives=[
+            NegativeRecord(
+                negative_id=n.negative_id,
+                run_id=n.run_id,
+                sequence=n.sequence,
+                members=list(n.members),
+                expected_output=n.expected_output,
+                fill_color=tuple(n.fill_color),
+                status=n.status,
+                output=n.output,
+                frames=[
+                    FrameRecord(
+                        name=f["name"],
+                        rotation_deg=f["rotation_deg"],
+                        translation=(f["translation"][0], f["translation"][1]),
+                        # Rows written before gain normalization carry no
+                        # `gain` (nothing was applied to them) — a missing
+                        # gain is unity, not a corrupt row.
+                        gain=tuple(f.get("gain", _UNITY_GAIN)),
+                        # Likewise, rows written before the per-frame scale
+                        # solve carry no `scale` — the layout was placed as
+                        # a rigid transform, which is scale 1.
+                        scale=f.get("scale", 1.0),
+                    )
+                    for f in n.frames
+                ],
+                pairs=[
+                    PairRecord(
+                        a=p["a"],
+                        b=p["b"],
+                        inliers=p["inliers"],
+                        good_matches=p["good_matches"],
+                        inlier_ratio=p["inlier_ratio"],
+                        rms_residual_px=p["rms_residual_px"],
+                        scale_drift=p["scale_drift"],
+                        overlap_fraction=p["overlap_fraction"],
+                        overlap_mad=p["overlap_mad"],
+                        # Likewise absent before gain normalization: no
+                        # pre-gain measurement was ever taken.
+                        overlap_mad_pregain=p.get("overlap_mad_pregain"),
+                        accepted=p["accepted"],
+                    )
+                    for p in n.pairs
+                ],
+                global_rms_px=n.global_rms_px,
+                canvas=(
+                    None
+                    if n.canvas is None
+                    else (n.canvas["width"], n.canvas["height"])
+                ),
+                valid_rect=None if n.valid_rect is None else tuple(n.valid_rect),
+                normalized_fill=n.normalized_fill,
+                normalization=n.normalization,
+                auto_crop=n.auto_crop,
+                rectification=n.rectification,
+                rebate_deviation_px=n.rebate_deviation_px,
+                used_clahe_fallback=bool(n.used_clahe_fallback),
+                error_code=n.error_code,
+                error_message=n.error_message,
+                capture_time=CaptureTime(**n.capture_time),
+                metadata=NegativeMetadata(
+                    **{field: getattr(n, field) for field in METADATA_FIELDS}
+                ),
+                preview_path=n.preview_path,
+                grid=n.grid,
+                grid_cells=n.grid_cells,
+                grid_pitch_ratio=n.grid_pitch_ratio,
+                grid_alignment_ratio=n.grid_alignment_ratio,
+            )
+            for n in negatives
+        ],
+        metadata=RollMetadata(
+            roll_capture_date=roll.roll_capture_date,
+            last_applied_at=roll.last_applied_at,
+            **{field: getattr(roll, field) for field in METADATA_FIELDS},
+            **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
+        ),
+        camera_color=(
+            None
+            if roll.camera_color is None
+            else CameraColor.from_dict(roll.camera_color)
+        ),
+    )
+
+
+# --- read-modify-write transactions ----------------------------------------
+
+
+@contextmanager
+def _immediate_session() -> Iterator[Session]:
+    """Like `_session`, but the transaction opens with `BEGIN IMMEDIATE`
+    (see `db._begin_transaction`): the database write lock is taken before
+    the first read, waiting up to `busy_timeout`, so a read followed by a
+    write is one atomic unit instead of a stale WAL snapshot."""
+    engine = open_engine().execution_options(**{SQLITE_IMMEDIATE_OPTION: True})
+    session = Session(engine)
+    try:
+        yield session
+        session.commit()
+    except BaseException:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def mutate_roll[T](
+    roll_dir: Path | None = None,
+    fn: Callable[[RollManifest], T] | None = None,
+    *,
+    roll_id: str | None = None,
+    folder: Path | None = None,
+) -> tuple[RollManifest, T]:
+    """One read-modify-write transaction on a roll: take the database write
+    lock, load the roll fresh, call `fn(manifest)`, recompute the derived
+    state (`updated_at`, every negative's `sequence`), save and commit.
+    Returns `(committed manifest, fn's return value)`.
+
+    Exactly one of `roll_dir` or `roll_id` identifies the roll (`roll_id` is
+    for `rename_roll`, whose folder has already moved). `folder`, when
+    given, is the `folder_path` to save; it defaults to the folder the roll
+    was loaded from. `fn` is typically a closure that copies precomputed
+    values into the fresh manifest.
+
+    If `fn` raises, the transaction rolls back and the exception propagates
+    unchanged. `RollNotRegisteredError` when the roll is gone.
+
+    `fn` runs while holding the database-wide write lock, so it must be
+    fast and must do no file I/O or image work."""
+    if fn is None:
+        raise TypeError("mutate_roll requires fn")
+    if (roll_dir is None) == (roll_id is None):
+        raise ValueError("mutate_roll takes exactly one of roll_dir or roll_id")
+    from scanny_boy.roll_manifest import stamp_derived_state
+
+    with _immediate_session() as session:
+        if roll_dir is not None:
+            loaded_folder = _folder_key(roll_dir)
+            manifest = _load_roll_rows(session, loaded_folder, label=roll_dir)
+        else:
+            row = session.get(RollRow, roll_id)
+            loaded_folder = None if row is None else row.folder_path
+            manifest = _load_roll_rows(session, loaded_folder or "", roll_id=roll_id)
+        # The manifest shares its JSON values (dicts) with the loaded rows,
+        # and `fn` may edit them in place. Detach the rows so the save below
+        # re-reads clean ones and diffs the manifest against what is really
+        # stored, rather than relying on how the ORM treats re-assigning an
+        # already-mutated object to its own attribute.
+        session.expunge_all()
+        result = fn(manifest)
+        stamp_derived_state(manifest)
+        save_folder = loaded_folder if folder is None else _folder_key(folder)
+        assert save_folder is not None
+        _save_roll_rows(session, save_folder, manifest)
+    return manifest, result
+
+
+def insert_roll(roll_dir: Path, manifest: RollManifest) -> None:
+    """Register a new roll in one transaction. Raises
+    `RollAlreadyRegisteredError` (`ROLL_EXISTS`) when `manifest.roll_id` or
+    the folder is already registered — never overwrites. Stamps the derived
+    state like `mutate_roll`."""
+    from scanny_boy.roll_manifest import stamp_derived_state
+
+    folder = _folder_key(roll_dir)
+    with _immediate_session() as session:
+        if session.get(RollRow, manifest.roll_id) is not None:
+            raise RollAlreadyRegisteredError(
+                f"a roll with id {manifest.roll_id} is already registered"
+            )
+        if session.scalar(select(RollRow.roll_id).where(RollRow.folder_path == folder)):
+            raise RollAlreadyRegisteredError(f"{roll_dir} is already a registered roll")
+        stamp_derived_state(manifest)
+        _save_roll_rows(session, folder, manifest)
 
 
 # --- the edits ops log ------------------------------------------------------

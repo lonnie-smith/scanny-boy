@@ -29,6 +29,7 @@ import dataclasses
 import datetime
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -573,14 +574,13 @@ def new_roll_manifest(
     )
 
 
-def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
-    """Persist the manifest to the library database, registering (or moving)
-    the roll row for `output_dir` as a side effect.
-
-    `updated_at` is rewritten and every negative's `sequence` is recomputed
-    on every write, so this mutates the manifest it is given. The import is
-    local to avoid a circular import: this module builds `RollManifest`,
-    and `roll_sequence` reads it."""
+def stamp_derived_state(manifest: RollManifest) -> None:
+    """Rewrite `updated_at` and recompute every negative's `sequence`, in
+    place. The one implementation shared by `write_roll_manifest` and
+    `repo.mutate_roll` / `repo.insert_roll`. `sequence` depends on every
+    negative and run, so it must run on the manifest about to be saved.
+    The import is local to avoid a circular import: this module builds
+    `RollManifest`, and `roll_sequence` reads it."""
     from scanny_boy.roll_sequence import sequence_negatives
 
     manifest.updated_at = _now_iso()
@@ -591,7 +591,42 @@ def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
     for negative in manifest.negatives:
         negative.sequence = rank_by_id.get(negative.negative_id)
 
+
+def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
+    """Persist the manifest to the library database, registering (or moving)
+    the roll row for `output_dir` as a side effect.
+
+    The derived state (`stamp_derived_state`) is rewritten on every write, so
+    this mutates the manifest it is given."""
+    stamp_derived_state(manifest)
     repo.save_roll(output_dir, manifest)
+
+
+def mutate_roll_manifest[T](
+    output_dir: Path | None,
+    fn: Callable[[RollManifest], T],
+    **kw: Any,
+) -> tuple[RollManifest, T]:
+    """`repo.mutate_roll` for the roll at `output_dir`: one read-modify-write
+    transaction against fresh state, returning `(committed manifest, fn's
+    result)`. Production code calls this, not `repo.mutate_roll`.
+
+    `**kw` is `repo.mutate_roll`'s `roll_id=` / `folder=`. When `roll_id` is
+    given it identifies the roll and `output_dir` is only the folder the
+    output paths are checked against (pass the roll's current folder, or
+    None to check against `folder`). The mutated manifest's output paths
+    are validated like `load_roll_manifest` does, inside the transaction:
+    `BadManifestError` rolls the change back."""
+    roll_dir = None if kw.get("roll_id") is not None else output_dir
+    base = output_dir if output_dir is not None else kw.get("folder")
+
+    def validated(manifest: RollManifest) -> T:
+        result = fn(manifest)
+        if base is not None:
+            _validate_output_paths_within(base, manifest)
+        return result
+
+    return repo.mutate_roll(roll_dir, validated, **kw)
 
 
 def estimate_roll_manifest_size(manifest: RollManifest) -> int:

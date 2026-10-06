@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, event, inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from scanny_boy.events import Code
 
@@ -77,12 +77,33 @@ def _script_location() -> Path:
     return Path(__file__).resolve().parent / "migrations"
 
 
+# The execution option that makes a session's transaction begin with
+# `BEGIN IMMEDIATE` (see `_begin_transaction`). `repo.mutate_roll` sets it.
+SQLITE_IMMEDIATE_OPTION = "sqlite_immediate"
+
+
 def _set_sqlite_pragmas(dbapi_connection: object, _record: object) -> None:
+    # Stop the driver emitting its own implicit `BEGIN` (lazily, at the
+    # first INSERT/UPDATE/DELETE); `_begin_transaction` emits it instead,
+    # so a transaction can take the write lock before its first read.
+    # SQLAlchemy's documented pysqlite recipe.
+    dbapi_connection.isolation_level = None  # type: ignore[attr-defined]
     cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
     cursor.close()
+
+
+def _begin_transaction(connection: Connection) -> None:
+    """Emit the transaction's `BEGIN` ourselves: `BEGIN IMMEDIATE` (take the
+    database write lock now, waiting up to `busy_timeout`) when the
+    connection carries `SQLITE_IMMEDIATE_OPTION`, a plain deferred `BEGIN`
+    otherwise — which is what the driver did implicitly before."""
+    if connection.get_execution_options().get(SQLITE_IMMEDIATE_OPTION):
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+    else:
+        connection.exec_driver_sql("BEGIN")
 
 
 def reset_engine_cache() -> None:
@@ -137,6 +158,7 @@ def open_engine() -> Engine:
                 },
             )
             event.listen(engine, "connect", _set_sqlite_pragmas)
+            event.listen(engine, "begin", _begin_transaction)
             ENGINES[key] = engine
     _upgrade_to_head(engine, path)
     return engine
