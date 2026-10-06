@@ -68,6 +68,7 @@ private struct CaptureCellView: View {
         }
         .help(failureMessage ?? "")
         .task(id: fileURL) {
+            thumbnail = nil
             guard let fileURL else { return }
             thumbnail = await ThumbnailLoader.shared.thumbnail(
                 for: fileURL,

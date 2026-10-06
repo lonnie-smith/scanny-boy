@@ -220,14 +220,14 @@ struct ContentView: View {
             pendingConvertAfterNewRoll = false
         }) {
             NewRollSheet(library: library) { roll in
+                model.seedRememberedSetup(on: roll.path)
                 selection = roll.id
-                // A freshly created roll has no scans yet — land on Add Scans
-                // so the user can begin adding them, regardless of which tab
-                // was active when the sheet opened.
-                workspaceTab = .addScans
                 if pendingConvertAfterNewRoll {
                     pendingConvertAfterNewRoll = false
+                    workspaceTab = .addScans
                     startRun()
+                } else {
+                    workspaceTab = .capture
                 }
             }
         }

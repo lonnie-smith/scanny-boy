@@ -153,12 +153,14 @@ struct ConfigurationModelTests {
     private static func rollInfoEvent(
         filmBaseJSON: String,
         flatFieldJSON: String? = nil,
-        filmKind: String? = "colour"
+        filmKind: String? = "colour",
+        setupJSON: String? = nil
     ) -> String {
         let filmKindJSON = filmKind.map { "\"\($0)\"" } ?? "null"
         let flatField = flatFieldJSON ?? attachedFlatFieldJSON()
+        let setupField = setupJSON.map { ",\"setup\":\($0)" } ?? ""
         let manifest = """
-        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON),"flat_field":\(flatField)}
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON),"flat_field":\(flatField)\(setupField)}
         """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
@@ -249,8 +251,9 @@ struct ConfigurationModelTests {
             """,
             in: directory
         )
+        let defaults = Self.isolatedDefaults()
         let model = ConfigurationModel(
-            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+            runner: CLIRunner(executable: executable), defaults: defaults
         )
         model.rollURL = URL(filePath: "/tmp/roll")
         await model.waitForPendingProbes()
@@ -261,12 +264,15 @@ struct ConfigurationModelTests {
         #expect(model.rollAutoCrop == true)
         #expect(model.rollSetupError == nil)
         #expect(model.isSettingRollSetup == false)
+        #expect(defaults.object(forKey: ConfigurationModel.lastAutoCropKey) != nil)
+        #expect(defaults.bool(forKey: ConfigurationModel.lastAutoCropKey))
         let logged = try String(contentsOf: log, encoding: .utf8)
         #expect(logged.contains("--auto-crop on"))
         #expect(!logged.contains("--format"))
 
         await model.setRollAutoCrop(false)
         #expect(model.rollAutoCrop == false)
+        #expect(defaults.bool(forKey: ConfigurationModel.lastAutoCropKey) == false)
     }
 
     @Test("A failed set-setup leaves rollAutoCrop unchanged and reports the error")
@@ -280,8 +286,9 @@ struct ConfigurationModelTests {
             """,
             in: directory
         )
+        let defaults = Self.isolatedDefaults()
         let model = ConfigurationModel(
-            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+            runner: CLIRunner(executable: executable), defaults: defaults
         )
         model.rollURL = URL(filePath: "/tmp/roll")
         await model.waitForPendingProbes()
@@ -290,6 +297,137 @@ struct ConfigurationModelTests {
 
         #expect(model.rollAutoCrop == false)
         #expect(model.rollSetupError != nil)
+        #expect(defaults.object(forKey: ConfigurationModel.lastAutoCropKey) == nil)
+    }
+
+    @Test("setRollFormat persists the last format in UserDefaults")
+    func setRollFormatPersistsInDefaults() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+            """,
+            in: directory
+        )
+        let defaults = Self.isolatedDefaults()
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: defaults
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingProbes()
+
+        await model.setRollFormat(.sixBySeven)
+
+        #expect(defaults.string(forKey: ConfigurationModel.lastFilmFormatKey) == FilmFormat.sixBySeven.rawValue)
+    }
+
+    @Test("A failed set-setup does not persist the last film format")
+    func setRollFormatFailureDoesNotPersist() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            echo '{"protocol_version":25,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":25,"event":"finished","status":"failed","exit_status":1}'
+            """,
+            in: directory
+        )
+        let defaults = Self.isolatedDefaults()
+        defaults.set(FilmFormat.f35mm.rawValue, forKey: ConfigurationModel.lastFilmFormatKey)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: defaults
+        )
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingProbes()
+
+        await model.setRollFormat(.sixBySeven)
+
+        #expect(defaults.string(forKey: ConfigurationModel.lastFilmFormatKey) == FilmFormat.f35mm.rawValue)
+    }
+
+    @Test("seedRememberedSetup applies last format and auto-crop after roll info")
+    func seedRememberedSetupAfterRollInfo() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "args.log")
+        let rollInfo = Self.rollInfoEvent(filmBaseJSON: Self.attachedFilmBaseJSON(), setupJSON: "null")
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              echo '\(rollInfo)'
+              echo '\(Self.finishedSuccess)'
+              exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+              exit 0
+            fi
+            echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+            """,
+            in: directory
+        )
+        let defaults = Self.isolatedDefaults()
+        defaults.set(FilmFormat.sixBySeven.rawValue, forKey: ConfigurationModel.lastFilmFormatKey)
+        defaults.set(true, forKey: ConfigurationModel.lastAutoCropKey)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: defaults
+        )
+        let rollURL = URL(filePath: "/tmp/new-roll")
+        model.seedRememberedSetup(on: rollURL)
+        model.rollURL = rollURL
+        await model.waitForPendingProbes()
+
+        #expect(model.rollFormat == .sixBySeven)
+        #expect(model.rollAutoCrop == true)
+        let logged = try String(contentsOf: log, encoding: .utf8)
+        #expect(logged.contains("--format"))
+        #expect(logged.contains("6x7"))
+        #expect(logged.contains("--auto-crop on"))
+    }
+
+    @Test("seedRememberedSetup skips rolls that already have a format")
+    func seedRememberedSetupSkipsExistingFormat() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "args.log")
+        let setup = #"{"format":"35mm","auto_crop":false}"#
+        let rollInfo = Self.rollInfoEvent(
+            filmBaseJSON: Self.attachedFilmBaseJSON(),
+            setupJSON: setup
+        )
+        let executable = try TestSupport.writeTestExecutable(
+            """
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+              echo '\(rollInfo)'
+              echo '\(Self.finishedSuccess)'
+              exit 0
+            fi
+            if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
+              echo "$@" >> '\(log.path)'
+              echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+              exit 0
+            fi
+            echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+            """,
+            in: directory
+        )
+        let defaults = Self.isolatedDefaults()
+        defaults.set(FilmFormat.sixBySeven.rawValue, forKey: ConfigurationModel.lastFilmFormatKey)
+        defaults.set(true, forKey: ConfigurationModel.lastAutoCropKey)
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: defaults
+        )
+        let rollURL = URL(filePath: "/tmp/existing-roll")
+        model.seedRememberedSetup(on: rollURL)
+        model.rollURL = rollURL
+        await model.waitForPendingProbes()
+
+        #expect(model.rollFormat == .f35mm)
+        let logged = try String(contentsOf: log, encoding: .utf8)
+        #expect(!logged.contains("--format"))
+        #expect(logged.contains("--auto-crop on"))
     }
 
     @Test("The capture setup sync key follows the roll's format and Auto-crop")

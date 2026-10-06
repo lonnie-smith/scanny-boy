@@ -21,6 +21,7 @@ struct CaptureStageView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            captureKeyFocusSink
             Form {
                 // Locked per section, not on the Form: disabling the Form
                 // also disables its scrolling, stranding the lower sections
@@ -66,61 +67,6 @@ struct CaptureStageView: View {
         } message: {
             Text(discardNegativeConfirmationMessage)
         }
-        // Bound to the stage, not the play/pause button: the button is
-        // removed from the hierarchy while focus assist is open and can't
-        // take focus at all while disabled (and, on macOS, a Button only
-        // takes focus with Full Keyboard Access on) — any of which used to
-        // strand F/Esc/R/C with nothing able to hold `captureFocused`.
-        .focusable()
-        .focusEffectDisabled()
-        .focused($captureFocused)
-        .onKeyPress("f") {
-            guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
-            guard capture.isSessionOpen else { return .ignored }
-            if capture.focusAssist.isOpen {
-                Task { await capture.focusAssist.close() }
-            } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused
-                || capture.sequencePhase == .stopped
-            {
-                capture.focusAssist.open()
-            } else {
-                return .ignored
-            }
-            return .handled
-        }
-        .onKeyPress("r") {
-            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
-                  capture.focusAssist.isOpen
-            else { return .ignored }
-            capture.focusAssist.resetPeak()
-            return .handled
-        }
-        .onKeyPress("c") {
-            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
-                  capture.focusAssist.isOpen, !capture.focusAssist.isCheckShotBusy
-            else { return .ignored }
-            Task { await capture.focusAssist.takeCheckShot(captureFolder: capture.captureFolder) }
-            return .handled
-        }
-        .onKeyPress(.delete) {
-            guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
-                  capture.sequencePhase == .paused || capture.sequencePhase == .stopped
-            else { return .ignored }
-            capture.handleDelete()
-            return .handled
-        }
-        .onKeyPress(.escape) {
-            guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
-            if capture.focusAssist.isOpen {
-                Task { await capture.focusAssist.close() }
-                return .handled
-            }
-            guard capture.sequencePhase == .running || capture.sequencePhase == .paused else {
-                return .ignored
-            }
-            capture.handleEscape()
-            return .handled
-        }
         .onAppear {
             captureFocused = true
         }
@@ -143,6 +89,75 @@ struct CaptureStageView: View {
         .onChange(of: grid.profiles) { _, profiles in
             resolveCaptureGridProfile(with: profiles)
         }
+    }
+
+    /// Holds keyboard focus outside the scrolling `Form` so re-focusing on
+    /// phase or loupe changes does not scroll the capture section off screen.
+    /// Bound here, not the play/pause button: the button is removed from the
+    /// hierarchy while focus assist is open and can't take focus at all while
+    /// disabled — any of which used to strand F/Esc/R/C/Space with nothing
+    /// able to hold `captureFocused`.
+    private var captureKeyFocusSink: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($captureFocused)
+            .onKeyPress(.space) {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      !capture.focusAssist.isOpen
+                else { return .ignored }
+                capture.handleSpace()
+                return .handled
+            }
+            .onKeyPress("f") {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
+                guard capture.isSessionOpen else { return .ignored }
+                if capture.focusAssist.isOpen {
+                    Task { await capture.focusAssist.close() }
+                } else if capture.sequencePhase == .idle || capture.sequencePhase == .paused
+                    || capture.sequencePhase == .stopped
+                {
+                    capture.focusAssist.open()
+                } else {
+                    return .ignored
+                }
+                return .handled
+            }
+            .onKeyPress("r") {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      capture.focusAssist.isOpen
+                else { return .ignored }
+                capture.focusAssist.resetPeak()
+                return .handled
+            }
+            .onKeyPress("c") {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      capture.focusAssist.isOpen, !capture.focusAssist.isCheckShotBusy
+                else { return .ignored }
+                Task { await capture.focusAssist.takeCheckShot(captureFolder: capture.captureFolder) }
+                return .handled
+            }
+            .onKeyPress(.delete) {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      capture.sequencePhase == .paused || capture.sequencePhase == .stopped
+                else { return .ignored }
+                capture.handleDelete()
+                return .handled
+            }
+            .onKeyPress(.escape) {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder() else { return .ignored }
+                if capture.focusAssist.isOpen {
+                    Task { await capture.focusAssist.close() }
+                    return .handled
+                }
+                guard capture.sequencePhase == .running || capture.sequencePhase == .paused else {
+                    return .ignored
+                }
+                capture.handleEscape()
+                return .handled
+            }
     }
 
     @ViewBuilder
@@ -495,7 +510,6 @@ struct CaptureStageView: View {
             Label(playPauseTitle, systemImage: playPauseSymbol)
         }
         .buttonStyle(.borderedProminent)
-        .keyboardShortcut(.space, modifiers: [])
         .disabled(!capture.canToggleSequence)
         .help(capture.startBlockedReason ?? playPauseTitle)
     }
