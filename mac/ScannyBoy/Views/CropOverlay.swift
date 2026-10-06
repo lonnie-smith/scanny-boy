@@ -218,6 +218,29 @@ enum CropGeometry {
         maxInscribedRect(in: bounds, ratio: ratio)
     }
 
+    /// The rect a band-region draw session starts on: centred, covering
+    /// `fraction` of each side of the image — something to adjust with the
+    /// handles at once, where a full-frame default would only be a rect
+    /// to shrink.
+    static func defaultRegion(in bounds: CGSize, fraction: CGFloat = 0.7) -> CGRect {
+        let width = max(min(bounds.width * fraction, bounds.width), min(minSize, bounds.width))
+        let height = max(min(bounds.height * fraction, bounds.height), min(minSize, bounds.height))
+        return CGRect(
+            x: (bounds.width - width) / 2,
+            y: (bounds.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    /// The rect dragged out between two display-space points — the draw
+    /// gesture's "drag to create" — clamped into `bounds` with the same
+    /// 16px floor as a corner resize (which it is: the start point is the
+    /// fixed anchor corner, the current point the dragged one).
+    static func drawn(from start: CGPoint, to end: CGPoint, in bounds: CGSize) -> CGRect {
+        cornerResized(anchor: start, dragged: end, ratio: nil, bounds: bounds)
+    }
+
     /// Largest axis-aligned rect with optional `ratio` that fits in `size`,
     /// centred in a `(0, 0)`-origin box of `size` unless `origin` is set.
     static func maxInscribedRect(
@@ -514,10 +537,17 @@ enum CropGeometry {
 /// rect maps in through `fitRect` the same way the preview image does;
 /// Apply sends display-space values to the CLI, so Swift converts nothing
 /// on the way out either.
+///
+/// Band-region draw mode (docs/DEBAND_PLAN.md §5.2) reuses it as-is on a
+/// second `CropSession` — free ratio, no tilt, no presets: `accent`
+/// recolours it, and `BandDrawSurface` sits beneath it so a drag in empty
+/// image space starts a fresh rect instead of only moving or resizing the
+/// one on screen.
 struct CropOverlayView: View {
     let session: CropSession
     let fitRect: CGRect
     let displaySize: CGSize
+    var accent: Color = .yellow
 
     @State private var isMoving = false
     @State private var resizingHandle: CropGeometry.Handle?
@@ -590,7 +620,7 @@ struct CropOverlayView: View {
                 .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
 
                 windowPath
-                    .stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.5))
+                    .stroke(accent, style: StrokeStyle(lineWidth: 1.5))
 
                 windowPath
                     .fill(Color.white.opacity(0.001))
@@ -617,7 +647,7 @@ struct CropOverlayView: View {
                         )
                         .overlay {
                             Circle()
-                                .fill(Color.yellow)
+                                .fill(accent)
                                 .stroke(Color.black.opacity(0.6), lineWidth: 1)
                                 .frame(width: 10, height: 10)
                         }
@@ -714,5 +744,43 @@ struct CropOverlayView: View {
                 resizingHandle = nil
                 syncCursor()
             }
+    }
+}
+
+/// The band-region draw session's "drag to create" surface: a transparent
+/// layer under `CropOverlayView`, so a press that lands on the overlay's
+/// window or handles moves or resizes the rect, and one anywhere else
+/// drags out a new one. Corners are clamped onto the image.
+struct BandDrawSurface: View {
+    let session: CropSession
+    let fitRect: CGRect
+    let displaySize: CGSize
+
+    private var scale: CGFloat {
+        displaySize.width > 0 ? fitRect.width / displaySize.width : 1
+    }
+
+    /// A pane point as a display-space point, clamped onto the image.
+    private func displayPoint(_ pane: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max((pane.x - fitRect.minX) / scale, 0), displaySize.width),
+            y: min(max((pane.y - fitRect.minY) / scale, 0), displaySize.height)
+        )
+    }
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.004))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                    .onChanged { value in
+                        session.rect = CropGeometry.drawn(
+                            from: displayPoint(value.startLocation),
+                            to: displayPoint(value.location),
+                            in: displaySize
+                        )
+                    }
+            )
     }
 }

@@ -742,7 +742,7 @@ struct EditModelTests {
         let flat = Self.multiNegative(id: "n1", toneSnapGamma: nil)
         let toned = Self.multiNegative(id: "n1", toneSnapGamma: 0.2)
 
-        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none#none")
+        #expect(EditModel.negativeViewGeneration(of: flat) == "0#false#none#none#none#none")
         #expect(EditModel.negativeViewGeneration(of: flat) == EditModel.negativeViewGeneration(of: toned))
     }
 
@@ -1597,6 +1597,294 @@ struct EditModelTests {
         #expect(
             EditModel.negativeViewGeneration(of: withScratches)
                 != EditModel.negativeViewGeneration(of: toggled)
+        )
+    }
+
+    // MARK: - Band removal (protocol 25)
+
+    private static let debandReportJSON = """
+        {"fit_version":1,"enabled":true,"strength":1.0,"axis":"vertical",\
+        "regions":[{"id":1,"display_rect":[150,5000,7970,1092]}],"stale":false}
+        """
+
+    /// A negative with the given `deband` block (and a scratches summary,
+    /// which an `edit_recorded` must not drop) in its roll-info JSON.
+    private static func debandNegativeJSON(block: String?) -> String {
+        let extra = #""scratches":{"detector_version":1,"enabled":true,"stale":false,"count":2}"#
+            + (block.map { #","deband":\#($0)"# } ?? "")
+        return Self.negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil)
+            .replacingOccurrences(
+                of: "\"tone_highlight_density\":null}",
+                with: "\"tone_highlight_density\":null,\(extra)}"
+            )
+    }
+
+    /// A helper whose `edit deband` calls log their argv to `args.log` and
+    /// answer with an `edit_recorded` carrying the contents of
+    /// `report.json` as the `deband` field — or, when `failure` is set,
+    /// with an `error` event. `roll info` answers with no deband block, so
+    /// whatever the model shows straight after an edit came from the event.
+    private static func debandRunner(
+        _ directory: URL, report: String? = nil, failure: String? = nil, delay: Double = 0
+    ) throws -> (runner: CLIRunner, log: URL, report: URL) {
+        let initial = Self.rollInfoEvent(negatives: [
+            Self.debandNegativeJSON(block: nil)
+        ])
+        let log = directory.appending(path: "args.log")
+        let reportFile = directory.appending(path: "report.json")
+        try (report ?? Self.debandReportJSON).write(to: reportFile, atomically: true, encoding: .utf8)
+        let outcome: String
+        if let failure {
+            outcome = """
+                echo '{"protocol_version":25,"event":"error","code":"INVALID_EDIT","message":"\(failure)"}'
+                echo '{"protocol_version":25,"event":"finished","status":"failure","exit_status":1}'
+                """
+        } else {
+            outcome = """
+                echo '{"protocol_version":25,"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"deband","params":{},\
+                "created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":1,"flipped_horizontally":false,\
+                "crop":null,"deband":'"$(cat '\(reportFile.path)')"',\
+                "preview_path":"/tmp/preview.png"}'
+                echo '{"protocol_version":25,"event":"finished","status":"success","exit_status":0}'
+                """
+        }
+        let script = """
+            if [ "$1" = "edit" ] && [ "$2" = "deband" ]; then
+              echo "$@" >> '\(log.path)'
+              sleep \(delay)
+              echo '{"protocol_version":25,"event":"started","command":"edit deband"}'
+              \(outcome)
+            else
+              echo '\(initial)'
+            fi
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return (CLIRunner(executable: executable), log, reportFile)
+    }
+
+    private static func loggedLines(_ log: URL) -> [String] {
+        ((try? String(contentsOf: log, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map(String.init)
+    }
+
+    @Test("roll info's deband block decodes into the negative's summary; null and absent are none")
+    func rollInfoDecodesDeband() async throws {
+        let withBlock = Self.debandNegativeJSON(block: Self.debandReportJSON)
+        let withNull = Self.debandNegativeJSON(block: "null")
+            .replacingOccurrences(of: "\"negative_id\":\"n1\"", with: "\"negative_id\":\"n2\"")
+            .replacingOccurrences(of: "\"sequence\":1", with: "\"sequence\":2")
+        let absent = Self.negativeJSON(negativeID: "n3", sequence: 3, intended: nil, applied: nil)
+        let runner = try Self.isolatedRunner(
+            rollInfoLines: [Self.rollInfoEvent(negatives: [withBlock, withNull, absent])]
+        )
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+
+        let summary = try #require(model.visibleNegatives[0].debandSummary)
+        #expect(summary.fitVersion == 1)
+        #expect(summary.enabled)
+        #expect(summary.strength == 1.0)
+        #expect(summary.axis == .vertical)
+        #expect(!summary.stale)
+        #expect(summary.regions.count == 1)
+        #expect(summary.regions[0].id == 1)
+        #expect(summary.regions[0].displayRect == CGRect(x: 150, y: 5000, width: 7970, height: 1092))
+        #expect(summary.regions[0].title == "Region 1 · 7970 × 1092")
+        #expect(model.visibleNegatives[1].debandSummary == nil)
+        #expect(model.visibleNegatives[2].debandSummary == nil)
+    }
+
+    @Test("a stale block with several regions, and a malformed block")
+    func debandSummaryEdges() throws {
+        let stale = try #require(
+            NegativeDeband.Summary(fields: [
+                "fit_version": .int(1), "enabled": .bool(false), "strength": .double(0.5),
+                "axis": .string("horizontal"), "stale": .bool(true),
+                "regions": .array([
+                    .object(["id": .int(1), "display_rect": .array([.int(0), .int(0), .int(10), .int(20)])]),
+                    .object(["id": .int(3), "display_rect": .array([.int(5), .int(6), .int(7), .int(8)])]),
+                ]),
+            ])
+        )
+        #expect(stale.stale)
+        #expect(stale.axis == .horizontal)
+        #expect(stale.regions.map(\.id) == [1, 3])
+        #expect(
+            NegativeDeband.Summary(fields: [
+                "fit_version": .int(1), "enabled": .bool(true), "strength": .double(1),
+                "axis": .string("diagonal"), "stale": .bool(false), "regions": .array([]),
+            ]) == nil
+        )
+        // A region the app cannot read makes the whole report untrusted.
+        #expect(
+            NegativeDeband.Summary(fields: [
+                "fit_version": .int(1), "enabled": .bool(true), "strength": .double(1),
+                "axis": .string("vertical"), "stale": .bool(false),
+                "regions": .array([.object(["id": .int(1)])]),
+            ]) == nil
+        )
+    }
+
+    @Test("each deband command sends its CLI flags and applies the confirmation's report")
+    func debandCommandsRoundTrip() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log, report) = try Self.debandRunner(directory)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+        #expect(anchor.debandSummary == nil)
+
+        // The confirmation's report lands in the summary at once — read
+        // synchronously after the call, before the follow-up refresh (which
+        // answers with no block) can replace it.
+        await model.addDebandRegion(anchor, displayRect: CGRect(x: 10, y: 20, width: 3000, height: 600))
+        var summary = try #require(model.visibleNegatives[0].debandSummary)
+        #expect(summary.regions.map(\.id) == [1])
+        #expect(model.visibleNegatives[0].rotationQuarterTurns == 1)
+        // The recorded report must not cost the negative its scratches summary.
+        #expect(model.visibleNegatives[0].scratchesSummary?.count == 2)
+
+        try """
+            {"fit_version":1,"enabled":true,"strength":1.0,"axis":"horizontal",\
+            "regions":[{"id":1,"display_rect":[1,2,3,4]},{"id":2,"display_rect":[5,6,7,8]}],"stale":false}
+            """.write(to: report, atomically: true, encoding: .utf8)
+        await model.addDebandRegion(
+            anchor, displayRect: CGRect(x: 1, y: 2, width: 30, height: 40), tilt: 2.5
+        )
+        summary = try #require(model.visibleNegatives[0].debandSummary)
+        #expect(summary.axis == .horizontal)
+        #expect(summary.regions.count == 2)
+        #expect(summary.regions[1].displayRect == CGRect(x: 5, y: 6, width: 7, height: 8))
+
+        await model.removeDebandRegion(anchor, id: 2)
+        await model.setDeband(anchor, enabled: false)
+        await model.setDeband(anchor, enabled: true)
+        await model.setDebandStrength(anchor, 0.75)
+        await model.setDebandStrength(anchor, 9)
+        await model.setDebandStrength(anchor, -1)
+        await model.setDebandAxis(anchor, .horizontal)
+        await model.clearDeband(anchor)
+
+        let prefix = "edit deband --roll /tmp/roll --negative n1"
+        #expect(Self.loggedLines(log) == [
+            "\(prefix) --add-region 10,20,3000,600",
+            "\(prefix) --add-region 1,2,30,40 --tilt 2.5",
+            "\(prefix) --remove-region 2",
+            "\(prefix) --off",
+            "\(prefix) --on",
+            "\(prefix) --strength 0.75",
+            "\(prefix) --strength 1.5",
+            "\(prefix) --strength 0.0",
+            "\(prefix) --axis horizontal",
+            "\(prefix) --clear",
+        ])
+        #expect(model.isDebanding == false)
+        #expect(model.debandFailure == nil)
+    }
+
+    @Test("a failed edit surfaces the CLI's message and leaves the report alone")
+    func debandFailureBecomesTheCaption() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let message = "too little background — pick a flatter area"
+        let (runner, log, _) = try Self.debandRunner(directory, failure: message)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+
+        await model.addDebandRegion(anchor, displayRect: CGRect(x: 0, y: 0, width: 600, height: 600))
+
+        #expect(model.debandFailure == message)
+        #expect(model.visibleNegatives[0].debandSummary == nil)
+        #expect(model.isDebanding == false)
+        #expect(Self.loggedLines(log).count == 1)
+
+        // A new selection forgets the old frame's failure.
+        model.selectedNegativeID = "other"
+        #expect(model.debandFailure == nil)
+    }
+
+    @Test("isDebanding covers the round trip and refuses a second command")
+    func debandBusyFlag() async throws {
+        let directory = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runner, log, _) = try Self.debandRunner(directory, delay: 0.6)
+        let model = EditModel(runner: runner)
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let anchor = try #require(model.selectedNegative)
+        #expect(model.isDebanding == false)
+
+        let first = Task { await model.setDeband(anchor, enabled: false) }
+        for _ in 0..<200 where !model.isDebanding {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.isDebanding)
+
+        // Refused while one is in flight — and so are the other ops-log
+        // writers that would race it.
+        await model.setDebandStrength(anchor, 0.5)
+        await model.rotate([anchor], clockwise: true)
+        await first.value
+
+        #expect(model.isDebanding == false)
+        #expect(Self.loggedLines(log) == ["edit deband --roll /tmp/roll --negative n1 --off"])
+    }
+
+    @Test("every deband edit changes both cache-generation tokens")
+    func debandChangesCacheTokens() {
+        func negative(_ summary: NegativeDeband.Summary?) -> RollManifest.Negative {
+            var copy = Self.multiNegative(id: "n1", toneSnapGamma: nil)
+            copy.debandSummary = summary
+            return copy
+        }
+        let region = NegativeDeband.Region(id: 1, displayRect: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let other = NegativeDeband.Region(id: 1, displayRect: CGRect(x: 50, y: 0, width: 800, height: 600))
+        let second = NegativeDeband.Region(id: 2, displayRect: CGRect(x: 0, y: 700, width: 800, height: 600))
+        func summary(
+            enabled: Bool = true, strength: Double = 1.0, axis: NegativeDeband.Axis = .vertical,
+            regions: [NegativeDeband.Region]? = nil, stale: Bool = false
+        ) -> NegativeDeband.Summary {
+            NegativeDeband.Summary(
+                enabled: enabled, strength: strength, axis: axis,
+                regions: regions ?? [region], stale: stale
+            )
+        }
+        let states: [(String, NegativeDeband.Summary?)] = [
+            ("none", nil),
+            ("base", summary()),
+            ("off", summary(enabled: false)),
+            ("strength", summary(strength: 0.5)),
+            ("axis", summary(axis: .horizontal)),
+            ("added", summary(regions: [region, second])),
+            ("removed to none", summary(regions: [])),
+            ("stale", summary(stale: true)),
+            // Remove one region and add another: the same count, other pixels.
+            ("replaced", summary(regions: [other])),
+        ]
+        for (index, lhs) in states.enumerated() {
+            for rhs in states[(index + 1)...] {
+                #expect(
+                    EditModel.renderGeneration(of: negative(lhs.1))
+                        != EditModel.renderGeneration(of: negative(rhs.1)),
+                    "\(lhs.0) vs \(rhs.0)"
+                )
+                #expect(
+                    EditModel.negativeViewGeneration(of: negative(lhs.1))
+                        != EditModel.negativeViewGeneration(of: negative(rhs.1)),
+                    "\(lhs.0) vs \(rhs.0) (negative view)"
+                )
+            }
+        }
+        #expect(
+            EditModel.renderGeneration(of: negative(summary()))
+                == EditModel.renderGeneration(of: negative(summary()))
         )
     }
 }

@@ -71,8 +71,8 @@ public struct CLIEvent: Sendable, Hashable {
     /// `color_warmth`/`color_tint`/`color_curve_*` roll manifest fields.
     /// Protocol 25 adds development-band removal: `edit deband`, the
     /// per-negative `deband` block in `roll info` and `edit_recorded`, and
-    /// the `DEBAND_REFIT_FAILED` warning code. Nothing the app must decode
-    /// yet; the app's own UI for it lands separately.
+    /// the `DEBAND_REFIT_FAILED` warning code; the app decodes the report
+    /// into `NegativeDeband.Summary`.
     public static let supportedProtocolVersion = 25
 
     public let protocolVersion: Int
@@ -380,6 +380,17 @@ extension CLIEvent {
         guard case .some = fields["crop"] else { return nil }
         guard let object = fields["crop"]?.objectValue else { return .some(nil) }
         return .some(CropState(fields: object))
+    }
+
+    /// The net deband report, carried by *every* `edit_recorded` (protocol
+    /// version 25) in display space — `null` for no op. A rotation or flip
+    /// moves the rects and swaps the displayed axis, so the app overwrites
+    /// from this after any edit. The outer optional is "the field is
+    /// absent" (a pre-25 CLI); the inner is the report's own null.
+    var deband: NegativeDeband.Summary?? {
+        guard case .some = fields["deband"] else { return nil }
+        guard let object = fields["deband"]?.objectValue else { return .some(nil) }
+        return .some(NegativeDeband.Summary(fields: object))
     }
 
     // `crop_suggested`: the answer to `edit suggest-crop`. `suggestedRect`

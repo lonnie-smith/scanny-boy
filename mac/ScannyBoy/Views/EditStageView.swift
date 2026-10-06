@@ -164,6 +164,11 @@ private struct PreviewPane: View {
     /// The crop-mode editing session: the overlay's
     /// rect/tilt/preset. Per-preview state; changing negatives ends it.
     @State private var cropSession = CropSession()
+    /// The Heal tab's band-region draw session: a second `CropSession`
+    /// (free ratio, no tilt) driving the reused `CropOverlayView`. Mutually
+    /// exclusive with crop mode; per-preview state, so changing negatives
+    /// or leaving the Heal tab ends it.
+    @State private var bandSession = CropSession()
 
     /// The negatives the controls act on, read once per invocation.
     private var targets: [RollManifest.Negative] { edit.selectionTargets }
@@ -176,6 +181,7 @@ private struct PreviewPane: View {
     private var zoomShortcutsEnabled: Bool {
         negative.output != nil
             && !cropSession.isActive
+            && !bandSession.isActive
             && !(edit.isRotating || edit.isDeleting || edit.isSettingTone || edit.isSettingColor || edit.isCropping || runIsActive)
     }
 
@@ -194,10 +200,13 @@ private struct PreviewPane: View {
                 isMonochromeRoll: isMonochromeRoll,
                 runIsActive: runIsActive,
                 cropSession: cropSession,
+                bandSession: bandSession,
                 displaySize: displaySize,
                 onBeginCrop: { beginCrop() },
                 onApplyCrop: { applyCrop() },
-                onAutoCrop: { autoCrop() }
+                onAutoCrop: { autoCrop() },
+                onBeginBandDraw: { beginBandDraw() },
+                onAddBandRegion: { addBandRegion() }
             )
             .frame(width: 360)
 
@@ -216,7 +225,7 @@ private struct PreviewPane: View {
                     }
                     .disabled(
                         negative.output == nil
-                            || cropSession.isActive
+                            || cropSession.isActive || bandSession.isActive
                             || edit.isRotating || edit.isDeleting || edit.isSettingTone
                             || edit.isSettingColor || edit.isCropping || runIsActive
                     )
@@ -232,7 +241,7 @@ private struct PreviewPane: View {
                     }
                     .disabled(
                         negative.output == nil
-                            || cropSession.isActive
+                            || cropSession.isActive || bandSession.isActive
                             || edit.isRotating || edit.isDeleting || edit.isSettingTone
                             || edit.isSettingColor || edit.isCropping || runIsActive
                     )
@@ -258,7 +267,8 @@ private struct PreviewPane: View {
                         Image(systemName: "trash")
                     }
                     .disabled(
-                        cropSession.isActive || edit.isRotating || edit.isDeleting
+                        cropSession.isActive || bandSession.isActive
+                            || edit.isRotating || edit.isDeleting || edit.isDebanding
                             || edit.isSettingTone || edit.isCropping || runIsActive
                     )
                     .help(deleteButtonHelp)
@@ -277,13 +287,14 @@ private struct PreviewPane: View {
             keyboard.zoomToggleCenter = previewCenter
         }
         .onChange(of: keyboard.zoomToggleRequest) {
-            guard !cropSession.isActive else { return }
+            guard !cropSession.isActive, !bandSession.isActive else { return }
             scheduleZoomToggle(at: previewCenter)
         }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyBeginCrop)) { _ in
             guard keyboard.canCrop else { return }
             guard !AppKeyboard.isTextInputFirstResponder() else { return }
             selectedTab = .geometry
+            bandSession.end()
             if !cropSession.isActive {
                 beginCrop()
             }
@@ -313,9 +324,15 @@ private struct PreviewPane: View {
             refreshZoomContext(paneSize: paneSize)
         }
         .onChange(of: negative.negativeID) {
-            // The crop session belongs to one negative's preview.
+            // The crop and band-draw sessions belong to one negative's preview.
             cropSession.end()
+            bandSession.end()
         }
+        .onChange(of: displaySize) {
+            // A rotation or crop moved the image under the drawn rect.
+            bandSession.end()
+        }
+
         .onChange(of: showsNegative) {
             // The on-screen 1:1 crop is the other mode's pixels until the
             // new render arrives; forget it and refetch through the new
@@ -374,7 +391,7 @@ private struct PreviewPane: View {
 
     /// Drives `AppKeyboardState` refresh when preview availability changes.
     private var previewKeyboardSyncToken: String {
-        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(edit.isCropping)|\(runIsActive)|\(cropSession.isActive)"
+        "\(negative.output != nil)|\(edit.isRotating)|\(edit.isDeleting)|\(edit.isSettingTone)|\(edit.isSettingColor)|\(edit.isCropping)|\(edit.isDebanding)|\(runIsActive)|\(cropSession.isActive)|\(bandSession.isActive)"
     }
 
     private func registerKeyboardShortcuts() {
@@ -412,7 +429,8 @@ private struct PreviewPane: View {
         keyboard.cropSessionActive = cropSession.isActive
         keyboard.previewOperationsBlocked =
             edit.isRotating || edit.isDeleting || edit.isSettingTone
-            || edit.isSettingColor || edit.isCropping || cropSession.isActive
+            || edit.isSettingColor || edit.isCropping || edit.isDebanding
+            || cropSession.isActive || bandSession.isActive
             || runIsActive
         keyboard.zoomToggleCenter = previewCenter
     }
@@ -561,6 +579,9 @@ private struct PreviewPane: View {
                 if showsSpotMarkers {
                     spotMarkers
                 }
+                if showsBandOutlines {
+                    bandOutlines
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
@@ -574,16 +595,24 @@ private struct PreviewPane: View {
                 PreviewEventHost(
                     zoom: zoom,
                     zoomEnabled: zoomShortcutsEnabled,
-                    cursorRectsEnabled: !cropSession.isActive,
+                    cursorRectsEnabled: !cropSession.isActive && !bandSession.isActive,
                     onZoomIn: { scheduleZoomIn(at: $0) },
                     onZoomOut: { scheduleZoomOut() },
-                    spotHitTester: showsSpotMarkers ? spotMarker(at:) : nil,
+                    spotHitTester: showsSpotMarkers && !bandSession.isActive
+                        ? spotMarker(at:) : nil,
                     onSpotToggled: { spotID in toggleSpot(spotID) },
                     onToggleZoom: {
                         guard zoomShortcutsEnabled else { return }
                         scheduleZoomToggle(at: previewCenter)
                     },
                     onApplyCrop: {
+                        if bandSession.isActive {
+                            guard !edit.isDebanding,
+                                !AppKeyboard.isTextInputFirstResponder()
+                            else { return false }
+                            addBandRegion()
+                            return true
+                        }
                         guard cropSession.isActive, !edit.isCropping,
                             !edit.isSuggestingCrop,
                             !AppKeyboard.isTextInputFirstResponder()
@@ -592,6 +621,11 @@ private struct PreviewPane: View {
                         return true
                     },
                     onCancelCrop: {
+                        if bandSession.isActive {
+                            guard !AppKeyboard.isTextInputFirstResponder() else { return false }
+                            bandSession.end()
+                            return true
+                        }
                         guard cropSession.isActive,
                             !AppKeyboard.isTextInputFirstResponder()
                         else { return false }
@@ -599,7 +633,18 @@ private struct PreviewPane: View {
                         return true
                     }
                 )
-                .allowsHitTesting(!cropSession.isActive)
+                .allowsHitTesting(!cropSession.isActive && !bandSession.isActive)
+            }
+            .overlay {
+                if bandSession.isActive, negative.output != nil {
+                    BandDrawSurface(
+                        session: bandSession,
+                        fitRect: PreviewZoomModel.fitRect(
+                            displaySize: displaySize, container: paneSize
+                        ),
+                        displaySize: displaySize
+                    )
+                }
             }
             .overlay {
                 if cropSession.isActive, negative.output != nil {
@@ -609,6 +654,16 @@ private struct PreviewPane: View {
                             displaySize: displaySize, container: paneSize
                         ),
                         displaySize: displaySize
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if bandSession.isActive, negative.output != nil {
+                    CropOverlayView(
+                        session: bandSession,
+                        fitRect: PreviewZoomModel.fitRect(
+                            displaySize: displaySize, container: paneSize
+                        ),
+                        displaySize: displaySize,
+                        accent: .cyan
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -652,6 +707,77 @@ private struct PreviewPane: View {
                 .position(x: screen.midX, y: screen.midY)
                 .allowsHitTesting(false)
         }
+    }
+
+    // MARK: - Band outlines and draw mode
+
+    /// The existing band regions' outlines show while the Heal tab is
+    /// selected (like the spot markers, they are a review aid, not part of
+    /// the image), in fit and 100% zoom alike. Crop mode hides them: the
+    /// tilt preview rotates the image under an axis-aligned box.
+    private var showsBandOutlines: Bool {
+        guard selectedTab == .heal, !cropSession.isActive, negative.output != nil,
+            let summary = negative.debandSummary
+        else { return false }
+        return !summary.regions.isEmpty
+    }
+
+    /// Dashed outlines straight from the report's display rects — the
+    /// same display→screen mapping as the spot markers. A stale or
+    /// switched-off op draws dimmed (it applies nothing); the region the
+    /// panel's list is hovering draws solid and heavier. The layer takes no
+    /// events.
+    @ViewBuilder
+    private var bandOutlines: some View {
+        let summary = negative.debandSummary
+        let applies = summary?.enabled == true && summary?.stale != true
+        ForEach(summary?.regions ?? []) { region in
+            let screen = spotScreenRect(region.displayRect)
+            let highlighted = edit.hoveredDebandRegionID == region.id
+            Rectangle()
+                .stroke(
+                    applies || highlighted ? Color.cyan : Color.cyan.opacity(0.45),
+                    style: StrokeStyle(
+                        lineWidth: highlighted ? 3 : 1.5,
+                        dash: highlighted ? [] : [6, 4]
+                    )
+                )
+                .frame(width: max(screen.width, 3), height: max(screen.height, 3))
+                .overlay(alignment: .topLeading) {
+                    Text("\(region.id)")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 4)
+                        .background(Color.cyan.opacity(highlighted ? 1 : 0.8), in: .rect(cornerRadius: 2))
+                        .foregroundStyle(.black)
+                        .padding(3)
+                }
+                .position(x: screen.midX, y: screen.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Starts band-region draw mode on the displayed image: fit view (the
+    /// overlay is drawn on the fit rect), no crop session, and a centred
+    /// default rect to adjust or replace by dragging. Drawn in display
+    /// space — a live crop is already part of the image the user sees — so
+    /// the rect goes to the CLI as-is, with no tilt of its own.
+    private func beginBandDraw() {
+        guard negative.output != nil, displaySize.width > 0, displaySize.height > 0 else {
+            return
+        }
+        cropSession.end()
+        zoom.reset()
+        bandSession.begin(
+            displaySize: displaySize,
+            rect: CropGeometry.defaultRegion(in: displaySize)
+        )
+    }
+
+    private func addBandRegion() {
+        guard bandSession.isActive else { return }
+        let rect = bandSession.rect
+        bandSession.end()
+        Task { await edit.addDebandRegion(negative, displayRect: rect, tilt: 0) }
     }
 
     /// Display-space rect → screen rect, the same way the image maps: the
@@ -801,6 +927,7 @@ private struct PreviewPane: View {
         // zoom's region space is cropped display space, and the overlay
         // belongs to the full uncropped canvas.
         zoom.reset()
+        bandSession.end()
         let canvas = uncroppedDisplaySize
         if let crop = negative.crop {
             cropSession.begin(
@@ -869,10 +996,13 @@ private struct EditSidebar: View {
     let isMonochromeRoll: Bool
     let runIsActive: Bool
     let cropSession: CropSession
+    let bandSession: CropSession
     let displaySize: CGSize
     let onBeginCrop: () -> Void
     let onApplyCrop: () -> Void
     let onAutoCrop: () -> Void
+    let onBeginBandDraw: () -> Void
+    let onAddBandRegion: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -897,6 +1027,8 @@ private struct EditSidebar: View {
                 // A crop session belongs to the Geometry tab; switching
                 // away cancels it.
                 if tab != .geometry { cropSession.end() }
+                // …and a band-region draw belongs to the Heal tab.
+                if tab != .heal { bandSession.end() }
                 edit.showsSpotsPopover = (tab == .heal)
             }
             .onChange(of: isMonochromeRoll) { _, mono in
@@ -973,6 +1105,17 @@ private struct EditSidebar: View {
                     isBusy: edit.isDetectingScratches || edit.isTogglingScratches,
                     isMonochromeRoll: isMonochromeRoll
                 )
+                .disabled(bandSession.isActive)
+                Divider()
+                DebandPanel(
+                    negative: negative,
+                    edit: edit,
+                    drawSession: bandSession,
+                    isMonochromeRoll: isMonochromeRoll,
+                    runIsActive: runIsActive,
+                    onBeginDraw: onBeginBandDraw,
+                    onAddDrawnRegion: onAddBandRegion
+                )
                 Divider()
                 SpotsReviewPanel(
                     negative: negative,
@@ -980,6 +1123,7 @@ private struct EditSidebar: View {
                     isBusy: edit.isDetectingSpots || edit.isReviewingSpots,
                     sensitivity: $spotsSensitivity
                 )
+                .disabled(bandSession.isActive)
             }
             .onAppear {
                 spotsSensitivity = negative.spotsSummary?.sensitivity ?? 0.5
@@ -1005,8 +1149,8 @@ private struct GeometryAdjustmentPanel: View {
 
     private var isDisabled: Bool {
         edit.isRotating || edit.isDeleting || edit.isSettingTone
-            || edit.isSettingColor || edit.isCropping || runIsActive
-            || cropSession.isActive
+            || edit.isSettingColor || edit.isCropping || edit.isDebanding
+            || runIsActive || cropSession.isActive
     }
 
     private var isCropAvailable: Bool {

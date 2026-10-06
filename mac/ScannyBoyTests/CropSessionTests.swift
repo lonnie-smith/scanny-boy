@@ -579,4 +579,92 @@ struct CropGeometryTests {
         #expect(abs(resized.width / resized.height - Self.ratio35) < 0.001)
     }
 
+
+    // MARK: - Band-region draw mode (docs/DEBAND_PLAN.md §5.2)
+
+    @Test("A draw session starts on a centred default region, free ratio, no tilt")
+    func drawSessionStartsOnACentredRegion() {
+        let session = CropSession()
+        session.begin(
+            displaySize: Self.bounds,
+            rect: CropGeometry.defaultRegion(in: Self.bounds)
+        )
+        #expect(session.isActive)
+        #expect(session.rect == CGRect(x: 150, y: 120, width: 700, height: 560))
+        #expect(session.orientedRatio == nil)
+        #expect(session.tiltDegrees == 0)
+        session.end()
+        #expect(!session.isActive)
+    }
+
+    @Test("Dragging out a region works from any corner and clamps to the image")
+    func drawnRegionFromAnyCornerClamps() {
+        let bounds = Self.bounds
+        #expect(
+            CropGeometry.drawn(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 300), in: bounds)
+                == CGRect(x: 100, y: 100, width: 300, height: 200)
+        )
+        // Up and to the left of the press point.
+        #expect(
+            CropGeometry.drawn(from: CGPoint(x: 400, y: 300), to: CGPoint(x: 100, y: 100), in: bounds)
+                == CGRect(x: 100, y: 100, width: 300, height: 200)
+        )
+        // Past the image: the display-space point is clamped by the overlay,
+        // and the rect stays inside either way.
+        let overshoot = CropGeometry.drawn(
+            from: CGPoint(x: 900, y: 700), to: CGPoint(x: 1400, y: 1000), in: bounds
+        )
+        #expect(overshoot.maxX <= bounds.width)
+        #expect(overshoot.maxY <= bounds.height)
+        #expect(overshoot.minX >= 0 && overshoot.minY >= 0)
+        // A click without a drag keeps the 16px floor.
+        let tiny = CropGeometry.drawn(
+            from: CGPoint(x: 500, y: 400), to: CGPoint(x: 502, y: 401), in: bounds
+        )
+        #expect(tiny.width >= CropGeometry.minSize)
+        #expect(tiny.height >= CropGeometry.minSize)
+    }
+
+    @Test("The handles resize and the body translates a free-ratio region")
+    func handlesResizeAndTranslateAFreeRegion() {
+        let bounds = Self.bounds
+        let region = CGRect(x: 200, y: 200, width: 400, height: 300)
+
+        let right = CropGeometry.resized(
+            region, handle: .right, to: CGPoint(x: 900, y: 0), ratio: nil, in: bounds
+        )
+        #expect(right == CGRect(x: 200, y: 200, width: 700, height: 300))
+
+        let topLeft = CropGeometry.resized(
+            region, handle: .topLeft, to: CGPoint(x: 100, y: 50), ratio: nil, in: bounds
+        )
+        #expect(topLeft == CGRect(x: 100, y: 50, width: 500, height: 450))
+
+        // Dragged past the image edge: clamped, never outside.
+        let beyond = CropGeometry.resized(
+            region, handle: .bottomRight, to: CGPoint(x: 5000, y: 5000), ratio: nil, in: bounds
+        )
+        #expect(CGRect(origin: .zero, size: bounds).contains(beyond))
+
+        let moved = CropGeometry.translated(region, by: CGSize(width: 900, height: -900), in: bounds)
+        #expect(moved == CGRect(x: 600, y: 0, width: 400, height: 300))
+    }
+
+    @Test("Two sessions are independent: a draw session never touches the crop's")
+    func drawAndCropSessionsAreIndependent() {
+        let crop = CropSession()
+        crop.begin(displaySize: Self.bounds, preset: .film35)
+        let draw = CropSession()
+        draw.begin(
+            displaySize: Self.bounds,
+            rect: CropGeometry.defaultRegion(in: Self.bounds)
+        )
+        draw.rect = CropGeometry.drawn(
+            from: CGPoint(x: 10, y: 10), to: CGPoint(x: 300, y: 200), in: Self.bounds
+        )
+        #expect(crop.preset == .film35)
+        #expect(crop.rect != draw.rect)
+        draw.end()
+        #expect(crop.isActive)
+    }
 }

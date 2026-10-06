@@ -729,6 +729,41 @@ struct CLICommandTests {
         )
     }
 
+    @Test("edit deband sends one structural option and any settings")
+    func editDebandArguments() {
+        let prefix = ["edit", "deband", "--roll", "/Volumes/Scans/roll-12", "--negative", "n1"]
+        func command(
+            add: CGRect? = nil, tilt: Double = 0, remove: Int? = nil, axis: String? = nil,
+            clear: Bool = false, enabled: Bool? = nil, strength: Double? = nil
+        ) -> [String] {
+            CLICommand.editDeband(
+                roll: Self.roll, negative: "n1", addRegion: add, tiltDegrees: tilt,
+                removeRegion: remove, axis: axis, clear: clear, enabled: enabled,
+                strength: strength
+            ).arguments
+        }
+        // The display-space rect rides as one X,Y,W,H; the tilt only with it.
+        #expect(
+            command(add: CGRect(x: 150, y: 5000, width: 7970, height: 1092))
+                == prefix + ["--add-region", "150,5000,7970,1092"]
+        )
+        #expect(
+            command(add: CGRect(x: 1, y: 2, width: 3, height: 4), tilt: -1.5)
+                == prefix + ["--add-region", "1,2,3,4", "--tilt", "-1.5"]
+        )
+        #expect(command(tilt: 3) == prefix)
+        #expect(command(remove: 2) == prefix + ["--remove-region", "2"])
+        #expect(command(axis: "horizontal") == prefix + ["--axis", "horizontal"])
+        #expect(command(clear: true) == prefix + ["--clear"])
+        #expect(command(enabled: true) == prefix + ["--on"])
+        #expect(command(enabled: false) == prefix + ["--off"])
+        #expect(command(strength: 1.25) == prefix + ["--strength", "1.25"])
+        #expect(
+            command(axis: "vertical", enabled: false, strength: 0.5)
+                == prefix + ["--axis", "vertical", "--off", "--strength", "0.5"]
+        )
+    }
+
     @Test("roll init passes library and name, with optional film kind")
     func rollInitArguments() {
         let library = URL(filePath: "/Volumes/Scans/library")

@@ -58,6 +58,7 @@ final class EditModel {
     var selectedNegativeID: String? {
         didSet {
             guard selectedNegativeID != oldValue else { return }
+            debandFailure = nil
             // The spot markers belong to the negative on screen; a new
             // selection fetches its set.
             fetchSpotsForSelection()
@@ -121,6 +122,21 @@ final class EditModel {
 
     private(set) var isDetectingScratches = false
     private(set) var isTogglingScratches = false
+
+    /// Set while one `edit deband` round trip is in flight (protocol
+    /// version 25) — adding or removing a region fits on the full TIFF, so
+    /// it can take seconds. Same one-helper-at-a-time discipline as
+    /// `isRotating`: the ops-log writers refuse re-entry while it is set.
+    private(set) var isDebanding = false
+
+    /// The last `edit deband` failure's message — the CLI's own words, e.g.
+    /// "too little background — pick a flatter area" — shown as the Bands
+    /// caption. Cleared by the next attempt and by a selection change.
+    private(set) var debandFailure: String?
+
+    /// The Bands region the pointer is over in the Heal panel's list; the
+    /// preview's outline layer draws that region's outline emphasised.
+    var hoveredDebandRegionID: Int?
 
     /// The spot set of the negative the preview pane shows (protocol
     /// version 13): display-space rects straight from the CLI, refreshed
@@ -320,7 +336,7 @@ final class EditModel {
     private func recordTransform(
         _ targets: [RollManifest.Negative], command: (URL) -> CLICommand
     ) async {
-        guard let rollURL, !isRotating, !isDeleting, !isSettingTone else { return }
+        guard let rollURL, !isRotating, !isDeleting, !isSettingTone, !isDebanding else { return }
         isRotating = true
         defer { isRotating = false }
         do {
@@ -590,7 +606,7 @@ final class EditModel {
     private func recordCrop(
         _ negative: RollManifest.Negative, command: (URL) -> CLICommand
     ) async {
-        guard let rollURL, !isCropping, !isRotating, !isDeleting else { return }
+        guard let rollURL, !isCropping, !isRotating, !isDeleting, !isDebanding else { return }
         isCropping = true
         defer { isCropping = false }
         do {
@@ -763,6 +779,108 @@ final class EditModel {
         refresh()
     }
 
+    // MARK: - Band removal (protocol version 25)
+
+    /// Fits and adds a region over flat banded film — `edit deband
+    /// --add-region`. `displayRect` is in display space, the image as it
+    /// renders with a live crop included, and `tilt` is the region's own
+    /// counter-clockwise tilt as displayed (the draw overlay draws
+    /// axis-aligned on the displayed image, so 0): the CLI maps it to the
+    /// TIFF, Swift converts nothing. Acts on the displayed negative only —
+    /// a region's position belongs to one frame, never the selection.
+    func addDebandRegion(
+        _ negative: RollManifest.Negative, displayRect: CGRect, tilt: Double = 0
+    ) async {
+        await recordDeband(negative) { rollURL in
+            .editDeband(
+                roll: rollURL, negative: negative.negativeID,
+                addRegion: displayRect, tiltDegrees: tilt
+            )
+        }
+    }
+
+    /// Removes one region by id; the CLI refits the rest.
+    func removeDebandRegion(_ negative: RollManifest.Negative, id: Int) async {
+        await recordDeband(negative) { rollURL in
+            .editDeband(roll: rollURL, negative: negative.negativeID, removeRegion: id)
+        }
+    }
+
+    /// Switches the correction on or off. No refit.
+    func setDeband(_ negative: RollManifest.Negative, enabled: Bool) async {
+        await recordDeband(negative) { rollURL in
+            .editDeband(roll: rollURL, negative: negative.negativeID, enabled: enabled)
+        }
+    }
+
+    /// Sets the correction strength (0 to 1.5, clamped). No refit. The
+    /// slider calls this on release, like the tone sliders' commit.
+    func setDebandStrength(_ negative: RollManifest.Negative, _ strength: Double) async {
+        let clamped = min(
+            NegativeDeband.Summary.strengthRange.upperBound,
+            max(NegativeDeband.Summary.strengthRange.lowerBound, strength)
+        )
+        await recordDeband(negative) { rollURL in
+            .editDeband(roll: rollURL, negative: negative.negativeID, strength: clamped)
+        }
+    }
+
+    /// Sets the direction the bands run, as displayed; the CLI converts it
+    /// through the quarter turns and refits every region.
+    func setDebandAxis(_ negative: RollManifest.Negative, _ axis: NegativeDeband.Axis) async {
+        await recordDeband(negative) { rollURL in
+            .editDeband(roll: rollURL, negative: negative.negativeID, axis: axis.rawValue)
+        }
+    }
+
+    /// Removes every region (the on/off and strength settings stay).
+    func clearDeband(_ negative: RollManifest.Negative) async {
+        await recordDeband(negative) { rollURL in
+            .editDeband(roll: rollURL, negative: negative.negativeID, clear: true)
+        }
+    }
+
+    /// One `edit deband` session. The confirmation's report overwrites the
+    /// negative's summary (rotate and flip move the rects, so every
+    /// `edit_recorded` carries it); an `error` event — `INVALID_EDIT` for a
+    /// region that is too small or has too little background — becomes
+    /// `debandFailure` for the panel's caption, and nothing is recorded.
+    private func recordDeband(
+        _ negative: RollManifest.Negative, command: (URL) -> CLICommand
+    ) async {
+        guard let rollURL, !isDebanding, !isRotating, !isDeleting, !isCropping else { return }
+        isDebanding = true
+        defer { isDebanding = false }
+        debandFailure = nil
+        var recorded = false
+        var failure: String?
+        do {
+            for await output in try await runner.session(for: command(rollURL)).start() {
+                guard case .event(let event) = output else { continue }
+                switch event.kind {
+                case .editRecorded:
+                    if let negativeID = event.negativeID {
+                        recorded = true
+                        applyEditRecorded(event, negativeID: negativeID)
+                    }
+                case .error:
+                    failure = event.message ?? "Band removal failed"
+                default:
+                    break
+                }
+            }
+        } catch {
+            failure = "Band removal could not run"
+        }
+        guard recorded else {
+            debandFailure = failure ?? "Band removal failed"
+            return
+        }
+        // The report above is what the user sees; the refresh reconciles
+        // anything the event's fields did not carry.
+        refresh()
+    }
+
     private func applyScratchesReported(_ event: CLIEvent) {
         guard
             let negativeID = event.scratchesNegativeID,
@@ -842,7 +960,7 @@ final class EditModel {
     /// member — the next one, else the previous — so the user is left
     /// looking at something sensible instead of a stale id.
     func delete(_ targets: [RollManifest.Negative]) async {
-        guard let rollURL, !isDeleting, !isRotating, !isSettingTone, !targets.isEmpty else { return }
+        guard let rollURL, !isDeleting, !isRotating, !isSettingTone, !isDebanding, !targets.isEmpty else { return }
         isDeleting = true
         defer { isDeleting = false }
 
@@ -1006,6 +1124,15 @@ final class EditModel {
                 gridPitchRatio: negative.gridPitchRatio,
                 gridAlignmentRatio: negative.gridAlignmentRatio,
                 spotsSummary: negative.spotsSummary,
+                scratchesSummary: negative.scratchesSummary,
+                // The deband report rides every `edit_recorded` too
+                // (protocol 25), in display space: a rotation or flip moves
+                // its rects and swaps its axis. Absent (a pre-25 CLI) leaves
+                // the state alone; a present null is "no op".
+                debandSummary: {
+                    if case .some(let reported) = event.deband { return reported }
+                    return negative.debandSummary
+                }(),
                 // The crop rides every `edit_recorded` as a full net
                 // report (protocol 19): overwrite it. A field absent from
                 // the event (a pre-19 CLI) leaves the state alone — a
@@ -1180,7 +1307,7 @@ final class EditModel {
         // into `matrix` would conflate "the camera body changed" with "the
         // roll's estimate was recomputed".
         let lock = highlightLock?.cacheTerm ?? "none"
-        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(matrix)#\(lock)"
+        return "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(tone)#\(colour)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(debandTerm(of: negative))#\(matrix)#\(lock)"
     }
 
     /// The net-geometry part of `renderGeneration` — everything the
@@ -1191,7 +1318,7 @@ final class EditModel {
     /// what the user compares when they toggle repair on and off is the
     /// same in both views.
     static func negativeViewGeneration(of negative: RollManifest.Negative) -> String {
-        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))"
+        "\(negative.rotationQuarterTurns)#\(negative.flippedHorizontally)#\(cropTerm(of: negative))#\(spotsTerm(of: negative))#\(scratchesTerm(of: negative))#\(debandTerm(of: negative))"
     }
 
     /// The crop half of a cache-generation token: dimensions, tilt, and
@@ -1212,6 +1339,22 @@ final class EditModel {
     private static func scratchesTerm(of negative: RollManifest.Negative) -> String {
         guard let summary = negative.scratchesSummary else { return "none" }
         return "\(summary.enabled)#\(summary.count)#\(summary.stale)"
+    }
+
+    /// The deband half of a cache-generation token:
+    /// `enabled#strength#axis#regionCount#regions#stale`. Forgetting any
+    /// edit here is the "bands don't refresh" bug. `regions` goes beyond
+    /// the plan's bare count: removing one region and adding another
+    /// returns to the same count with different pixels, and region ids are
+    /// reused when the largest one is removed, so each region's id and
+    /// rect is folded in.
+    private static func debandTerm(of negative: RollManifest.Negative) -> String {
+        guard let summary = negative.debandSummary else { return "none" }
+        let regions = summary.regions.map { region in
+            let rect = region.displayRect
+            return "\(region.id)@\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
+        }.joined(separator: ";")
+        return "\(summary.enabled)#\(summary.strength)#\(summary.axis.rawValue)#\(summary.regions.count)#\(regions)#\(summary.stale)"
     }
 
     /// Loads one cached 1:1 region — raw RGBA first, then legacy PNG.

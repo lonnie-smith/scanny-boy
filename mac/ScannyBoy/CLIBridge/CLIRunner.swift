@@ -665,6 +665,65 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// `scanny-boy edit deband --roll DIR --negative ID (--add-region X,Y,W,H
+    /// [--tilt DEG] | --remove-region ID | --axis vertical|horizontal |
+    /// --clear) [--on | --off] [--strength S]`
+    ///
+    /// Protocol version 25 (docs/DEBAND_PLAN.md): one negative's
+    /// development-band removal. At most one *structural* option —
+    /// `addRegion` (a rect in **display space**, the image as it renders
+    /// with a live crop included; the CLI maps it to the TIFF, so Swift
+    /// converts nothing), `removeRegion` (a region id), `axis` (the
+    /// direction the bands run **as displayed**, `"vertical"` or
+    /// `"horizontal"`) or `clear` — and any of `enabled` and `strength`
+    /// (0 to 1.5), which never refit. `tiltDegrees` is the added region's
+    /// own counter-clockwise tilt as displayed; it is omitted at 0 because
+    /// the CLI refuses a `--tilt` without `--add-region`.
+    public static func editDeband(
+        roll: URL,
+        negative: String,
+        addRegion: CGRect? = nil,
+        tiltDegrees: Double = 0,
+        removeRegion: Int? = nil,
+        axis: String? = nil,
+        clear: Bool = false,
+        enabled: Bool? = nil,
+        strength: Double? = nil
+    ) -> CLICommand {
+        var arguments = [
+            "edit", "deband",
+            "--roll", roll.path,
+            "--negative", negative,
+        ]
+        if let addRegion {
+            arguments.append(contentsOf: [
+                "--add-region",
+                "\(Int(addRegion.minX)),\(Int(addRegion.minY)),\(Int(addRegion.width)),\(Int(addRegion.height))",
+            ])
+            if tiltDegrees != 0 {
+                arguments.append(contentsOf: ["--tilt", String(tiltDegrees)])
+            }
+        }
+        if let removeRegion {
+            arguments.append(contentsOf: ["--remove-region", String(removeRegion)])
+        }
+        if let axis {
+            arguments.append(contentsOf: ["--axis", axis])
+        }
+        if clear {
+            arguments.append("--clear")
+        }
+        switch enabled {
+        case .some(true): arguments.append("--on")
+        case .some(false): arguments.append("--off")
+        case .none: break
+        }
+        if let strength {
+            arguments.append(contentsOf: ["--strength", String(strength)])
+        }
+        return CLICommand(arguments: arguments)
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]
     /// [--downsample N]`
     ///

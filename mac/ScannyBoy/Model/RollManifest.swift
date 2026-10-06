@@ -357,6 +357,10 @@ struct RollManifest: Sendable, Hashable {
         var spotsSummary: NegativeSpots.Summary? = nil
         /// Protocol 21's per-negative scratches summary from `roll info`.
         var scratchesSummary: NegativeScratches.Summary? = nil
+        /// Protocol 25's net development-band removal report from `roll
+        /// info` (and every `edit_recorded`), in display space; `nil` for a
+        /// negative with no deband op.
+        var debandSummary: NegativeDeband.Summary? = nil
         /// Protocol 19's net crop state — the cropped display image's
         /// dimensions, the window's tilt, and the ratio-preset label. The
         /// published TIFF is never cropped; the preview already shows the
@@ -661,6 +665,8 @@ struct RollManifest: Sendable, Hashable {
                 .flatMap(NegativeSpots.Summary.init(fields:)),
             scratchesSummary: fields["scratches"]?.objectValue
                 .flatMap(NegativeScratches.Summary.init(fields:)),
+            debandSummary: fields["deband"]?.objectValue
+                .flatMap(NegativeDeband.Summary.init(fields:)),
             crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:))
         )
     }

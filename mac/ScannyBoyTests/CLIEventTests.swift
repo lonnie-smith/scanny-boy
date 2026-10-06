@@ -255,6 +255,60 @@ struct CLIEventTests {
         #expect(crop.source == nil)
     }
 
+    // MARK: - edit_recorded's net deband report (protocol 25)
+
+    @Test("edit_recorded decodes the display-space deband report")
+    func editRecordedDebandDecodes() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "edit":{"id":1,"negative_id":"n1","position":1,"op":"deband",\
+                "params":{"enabled":true},"created_at":"2026-09-01T00:00:00Z"},\
+                "rotation_quarter_turns":1,"flipped_horizontally":false,\
+                "fine_rotation_deg":0.0,"crop":null,\
+                "deband":{"fit_version":1,"enabled":true,"strength":0.8,"axis":"horizontal",\
+                "regions":[{"id":1,"display_rect":[150,5000,7970,1092]},\
+                {"id":4,"display_rect":[0,0,512,256]}],"stale":false},\
+                "preview_path":"/tmp/preview.png"}
+                """)
+        )
+        let report = try #require(event.deband.flatMap { $0 })
+        #expect(report.fitVersion == 1)
+        #expect(report.enabled)
+        #expect(report.strength == 0.8)
+        #expect(report.axis == .horizontal)
+        #expect(!report.stale)
+        #expect(report.regions.map(\.id) == [1, 4])
+        #expect(report.regions[0].displayRect == CGRect(x: 150, y: 5000, width: 7970, height: 1092))
+        #expect(report.regions[1].displayRect == CGRect(x: 0, y: 0, width: 512, height: 256))
+    }
+
+    @Test("edit_recorded's deband is null for no op, and absent from a pre-25 CLI")
+    func editRecordedDebandNullAndAbsent() throws {
+        let null = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "rotation_quarter_turns":0,"flipped_horizontally":false,\
+                "crop":null,"deband":null,"preview_path":null}
+                """)
+        )
+        // A present null *is* the report ("no op") — distinct from absent.
+        guard case .some(let inner) = null.deband else {
+            Issue.record("a null deband field must read as a present report")
+            return
+        }
+        #expect(inner == nil)
+
+        let absent = try CLIEvent(
+            line: TestEvents.line("""
+                {"event":"edit_recorded","negative_id":"n1",\
+                "rotation_quarter_turns":0,"flipped_horizontally":false,\
+                "preview_path":null}
+                """)
+        )
+        #expect(absent.deband == nil)
+    }
+
     // MARK: - crop_suggested (auto-crop)
 
     @Test("crop_suggested decodes the rect and the fitted preset")
