@@ -48,6 +48,7 @@ enum CaptureSequencePhase: Sendable, Equatable {
 final class CaptureSessionModel {
     static let lastIntervalKey = "com.lonniesmith.scanny-boy.captureInterval"
     static let cuesEnabledKey = "com.lonniesmith.scanny-boy.captureCuesEnabled"
+    static let autoAdvanceKey = "com.lonniesmith.scanny-boy.captureAutoAdvance"
     static let destinationKey = "com.lonniesmith.scanny-boy.captureDestination"
     static let captureBaseKey = "com.lonniesmith.scanny-boy.captureBaseFolder"
 
@@ -99,6 +100,13 @@ final class CaptureSessionModel {
 
     var cuesEnabled: Bool {
         didSet { defaults.set(cuesEnabled, forKey: Self.cuesEnabledKey) }
+    }
+
+    /// "Capture next negative automatically": after a negative completes, the
+    /// next one starts at once (countdown first) until the operator pauses.
+    /// Only honoured for a 1×1 grid — see `autoAdvanceActive`.
+    var autoAdvanceEnabled: Bool {
+        didSet { defaults.set(autoAdvanceEnabled, forKey: Self.autoAdvanceKey) }
     }
 
     var destination: CaptureDestination {
@@ -155,6 +163,7 @@ final class CaptureSessionModel {
         self.defaults = defaults
         intervalSeconds = defaults.object(forKey: Self.lastIntervalKey) as? Int ?? 4
         cuesEnabled = defaults.object(forKey: Self.cuesEnabledKey) as? Bool ?? true
+        autoAdvanceEnabled = defaults.object(forKey: Self.autoAdvanceKey) as? Bool ?? false
         destination = CaptureDestination(
             rawValue: defaults.string(forKey: Self.destinationKey) ?? CaptureDestination.buffer.rawValue
         ) ?? .buffer
@@ -167,6 +176,12 @@ final class CaptureSessionModel {
 
     var perNegative: Int? {
         across.map { $0 * down }
+    }
+
+    /// One scan per negative, so there is no stitching move between shots and
+    /// the next negative can follow on its own.
+    var autoAdvanceActive: Bool {
+        autoAdvanceEnabled && perNegative == 1
     }
 
     var captureFolder: URL? {
@@ -541,16 +556,26 @@ final class CaptureSessionModel {
                 return
             }
         }
-        finishNegative(firstRelease: firstRelease)
+        // Pause (Space) or Esc during the last shot means "stop here": only a
+        // sequence still running rolls on to the next negative.
+        finishNegative(
+            firstRelease: firstRelease,
+            advancing: autoAdvanceActive && sequencePhase == .running
+        )
     }
 
-    private func finishNegative(firstRelease: Date) {
-        let stamp = CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
-            .replacingOccurrences(of: "_01.NEF", with: "")
+    /// `advancing` keeps the sequence running into the next negative (its
+    /// own initial countdown included) instead of returning to idle.
+    private func finishNegative(firstRelease: Date, advancing: Bool = false) {
         let frames = cellStates.compactMap { state -> URL? in
             if case .filled(let url) = state { return url }
             return nil
         }
+        // Derived from cell 1's real file name rather than recomputed from
+        // `firstRelease`: `exclusiveURL` appends a `-2`, `-3`, … suffix to
+        // the stamp when two negatives start in the same second, and this
+        // must track whichever stamp the frames actually landed under.
+        let stamp = Self.stamp(fromFirstFrame: frames.first, firstRelease: firstRelease)
         completedNegatives.append(
             CompletedNegative(id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease)
         )
@@ -558,10 +583,31 @@ final class CaptureSessionModel {
             baselineFrameURLs = frames
         }
         negativeFirstRelease = nil
-        sequencePhase = .idle
-        focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
         onNegativeCompleted?(completedNegatives.last!)
+        if advancing {
+            startNegative()
+        } else {
+            sequencePhase = .idle
+            focusAssist.updateSequencePhase(sequencePhase)
+        }
+    }
+
+    /// Strips cell 1's `_01` (or `_01.NEF`) suffix off its real file name,
+    /// leaving the stamp exactly as `CaptureNaming` chose it — including a
+    /// `-2`, `-3`, … collision suffix `CaptureNaming.filename` alone cannot
+    /// reproduce. Falls back to recomputing it when there is no frame
+    /// (should not happen: `finishNegative` only runs once every cell
+    /// filled).
+    private static func stamp(fromFirstFrame url: URL?, firstRelease: Date) -> String {
+        guard let url,
+            let underscoreRange = url.deletingPathExtension().lastPathComponent
+                .range(of: "_", options: .backwards)
+        else {
+            return CaptureNaming.filename(firstRelease: firstRelease, shotNumber: 1)
+                .replacingOccurrences(of: "_01.NEF", with: "")
+        }
+        return String(url.deletingPathExtension().lastPathComponent[..<underscoreRange.lowerBound])
     }
 
     var onNegativeCompleted: ((CompletedNegative) -> Void)?

@@ -222,6 +222,11 @@ struct CaptureStageView: View {
                     Text("\(seconds) s").tag(seconds)
                 }
             }
+            if capture.perNegative == 1 {
+                Toggle("Capture next negative automatically", isOn: $capture.autoAdvanceEnabled)
+                    .disabled(capture.sequencePhase != .idle)
+                    .help("After each shot, count down and shoot the next negative until you pause.")
+            }
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,

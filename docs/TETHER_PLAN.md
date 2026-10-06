@@ -393,10 +393,13 @@ first release, then the shot's number within the negative, `01` upward.
 - If a name already exists (two negatives started in one second), the file is
   created with `O_EXCL` and the suffix `-2`, `-3`, … is appended to the stamp.
 
-One consequence, accepted by the user: `roll_manifest.allocate_output_name`
-names a published TIFF after its first member's stem, so tethered negatives
-publish as `20260911-123325_01.tif`. No separate naming rule for tethered
-negatives.
+A tethered negative's first frame always ends `_01`, so `stitch`'s plain
+first-member-stem rule would publish every negative in a session as
+`..._01.tif`. `roll_manifest.allocate_output_name` special-cases this: a
+tethered group publishes as `<stamp>_<NN>.tif`, where `NN` runs through the
+roll's negatives in the order they are first published (`01`, `02`, …) —
+`_tethered_output_stem` in `roll_manifest.py`. Any other source name (Add
+Scans, camera-named files) keeps the plain stem rule.
 
 `CaptureNaming.swift` is the only place a capture name is chosen.
 
@@ -454,6 +457,12 @@ Rules:
   interval, the countdown shows "waiting for download" rather than firing late
   without saying so.
 - The last cell has no interval after it.
+- **Auto-advance** (Setup toggle "Capture next negative automatically",
+  shown for 1×1 grids only, off by default, remembered in `UserDefaults`):
+  when a negative completes while the sequence is still running, the next
+  negative starts at once — initial countdown, one shot, repeat — until the
+  operator pauses (Space) or stops (Esc), or a shot fails. A pause during the
+  final shot lets that frame finish and then goes idle rather than rolling on.
 
 Keys, active only when the Capture stage has focus and no text field does:
 
