@@ -36,6 +36,8 @@ final class ConfigurationModel {
     static let lastInputFolderKey = "com.lonniesmith.scanny-boy.lastInputFolder"
     static let lastRigProfileKey = "com.lonniesmith.scanny-boy.lastRigProfile"
     static let lastGridProfileKey = "com.lonniesmith.scanny-boy.lastGridProfile"
+    static let lastFilmFormatKey = "com.lonniesmith.scanny-boy.lastFilmFormat"
+    static let lastAutoCropKey = "com.lonniesmith.scanny-boy.lastAutoCrop"
 
     let runner: CLIRunner
     private let defaults: UserDefaults
@@ -85,9 +87,18 @@ final class ConfigurationModel {
     var rollURL: URL? {
         didSet {
             guard rollURL != oldValue else { return }
+            if setupSeedRollURL != rollURL {
+                setupSeedRollURL = nil
+            }
             clearValidationState()
             startRollFetch()
         }
+    }
+
+    /// Marks a newly created roll so its first `roll info` fetch applies
+    /// the user's last format and auto-crop choices from `UserDefaults`.
+    func seedRememberedSetup(on rollURL: URL) {
+        setupSeedRollURL = rollURL
     }
 
     /// The roll's attached film-base reference, read from `roll info` when
@@ -122,6 +133,9 @@ final class ConfigurationModel {
     private(set) var isSettingRollSetup = false
 
     @ObservationIgnored private var rollTask: Task<Void, Never>?
+    /// When set, the next `roll info` fetch for this URL seeds remembered
+    /// format and auto-crop onto a freshly created roll.
+    @ObservationIgnored private var setupSeedRollURL: URL?
 
     // MARK: - The batch's grouping
 
@@ -446,6 +460,29 @@ final class ConfigurationModel {
             self.rollIntervalSeconds = setup.captureSetup?.intervalSeconds
             self.rollFormat = setup.captureSetup?.format
             self.rollAutoCrop = setup.captureSetup?.autoCrop ?? false
+            await self.applyRememberedSetupIfSeeded(
+                rollURL: rollURL,
+                loadedFormat: setup.captureSetup?.format
+            )
+        }
+    }
+
+    private func applyRememberedSetupIfSeeded(rollURL: URL, loadedFormat: FilmFormat?) async {
+        guard setupSeedRollURL == rollURL else { return }
+        setupSeedRollURL = nil
+        guard self.rollURL == rollURL else { return }
+        if loadedFormat == nil,
+            let raw = defaults.string(forKey: Self.lastFilmFormatKey),
+            let format = FilmFormat(rawValue: raw)
+        {
+            await setRollFormat(format)
+        }
+        guard self.rollURL == rollURL else { return }
+        if defaults.object(forKey: Self.lastAutoCropKey) != nil {
+            let remembered = defaults.bool(forKey: Self.lastAutoCropKey)
+            if rollAutoCrop != remembered {
+                await setRollAutoCrop(remembered)
+            }
         }
     }
 
@@ -505,6 +542,7 @@ final class ConfigurationModel {
             return
         }
         rollFormat = format
+        defaults.set(format.rawValue, forKey: Self.lastFilmFormatKey)
     }
 
     /// Sets the roll's auto-crop flag immediately.
@@ -524,6 +562,7 @@ final class ConfigurationModel {
             return
         }
         rollAutoCrop = enabled
+        defaults.set(enabled, forKey: Self.lastAutoCropKey)
     }
 
     /// Runs `probe --files` with the current selection, grid, roll, and
