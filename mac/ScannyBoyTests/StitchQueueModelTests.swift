@@ -193,6 +193,138 @@ struct StitchQueueModelTests {
         _ = queue.discardUnpublished()
     }
 
+    /// A fake CLI whose checks pass, whose prepares take `slowPrepare`
+    /// seconds for negatives stamped `slow*` (instantly otherwise), and whose
+    /// stitches take `stitch` seconds and append their stamp to `stitchLog`.
+    private static func orderingScript(
+        slowPrepare: Double, stitch: Double, stitchLog: URL
+    ) -> String {
+        """
+        if [ "$1" = "capture" ]; then
+          echo '\(TestEvents.line(#"{"event":"started","command":"capture check"}"#))'
+          echo '\(TestEvents.line(#"{"event":"capture_checked","passed":true,"code":null,"message":null,"global_rms_px":1.0,"used_clahe_fallback":false}"#))'
+          echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+          exit 0
+        fi
+        if [ "$1" = "stitch" ]; then
+          echo '\(TestEvents.line(#"{"event":"started","command":"stitch"}"#))'
+          basename "$3" >> '\(stitchLog.path)'
+          sleep \(stitch)
+          echo '\(TestEvents.line(#"{"event":"negative_done","negative_id":"n1","output":"out.tif","width":1,"height":1,"global_rms_px":1.0,"max_overlap_mad":1.0}"#))'
+          echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+          exit 0
+        fi
+        echo '\(TestEvents.line(#"{"event":"started","command":"prepare"}"#))'
+        case "$*" in
+          */.work/slow*) sleep \(slowPrepare) ;;
+        esac
+        echo '\(TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#))'
+        """
+    }
+
+    @Test("a checked negative stitches while a later negative is still preparing")
+    func stitchStartsAheadOfLaterPrepare() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = Self.orderingScript(
+            slowPrepare: 3, stitch: 3, stitchLog: directory.appending(path: "stitches.log")
+        )
+        let executable = try Self.makeExecutable(in: directory, script: script)
+        let queue = StitchQueueModel(runner: CLIRunner(executable: executable))
+        let captureFolder = directory.appending(path: "capture", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: captureFolder, withIntermediateDirectories: true)
+        queue.configure(
+            roll: directory.appending(path: "roll", directoryHint: .isDirectory),
+            captureFolder: captureFolder,
+            across: 1,
+            down: 1
+        )
+        for stamp in ["fast", "slow"] {
+            queue.enqueue(
+                CaptureSessionModel.CompletedNegative(
+                    id: UUID(), stamp: stamp, frameURLs: [], startedAt: Date()
+                )
+            )
+        }
+        // Long enough for the first negative's prepare and check, well short
+        // of the second's prepare.
+        try await Task.sleep(for: .milliseconds(1000))
+        #expect(queue.negatives.map(\.step) == [.stitching, .preparing])
+        #expect(queue.isStitching)
+        _ = queue.discardUnpublished()
+    }
+
+    @Test("a later negative does not stitch ahead of an earlier one on its roll")
+    func laterNegativeWaitsForEarlierSameRoll() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stitchLog = directory.appending(path: "stitches.log")
+        let script = Self.orderingScript(slowPrepare: 1, stitch: 0.2, stitchLog: stitchLog)
+        let executable = try Self.makeExecutable(in: directory, script: script)
+        let queue = StitchQueueModel(runner: CLIRunner(executable: executable))
+        let captureFolder = directory.appending(path: "capture", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: captureFolder, withIntermediateDirectories: true)
+        queue.configure(
+            roll: directory.appending(path: "roll", directoryHint: .isDirectory),
+            captureFolder: captureFolder,
+            across: 1,
+            down: 1
+        )
+        for stamp in ["slow", "fast"] {
+            queue.enqueue(
+                CaptureSessionModel.CompletedNegative(
+                    id: UUID(), stamp: stamp, frameURLs: [], startedAt: Date()
+                )
+            )
+        }
+        // The second negative is checked; the first is still preparing.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(queue.negatives.map(\.step) == [.preparing, .waitingStitch])
+        #expect(!queue.isStitching)
+        try await Task.sleep(for: .milliseconds(2500))
+        #expect(queue.negatives.map(\.step) == [.published, .published])
+        let order = try String(contentsOf: stitchLog, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(order == ["slow", "fast"])
+    }
+
+    @Test("a negative on another roll does not wait for this roll's prepares")
+    func otherRollDoesNotBlockStitch() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = Self.orderingScript(
+            slowPrepare: 3, stitch: 3, stitchLog: directory.appending(path: "stitches.log")
+        )
+        let executable = try Self.makeExecutable(in: directory, script: script)
+        let queue = StitchQueueModel(runner: CLIRunner(executable: executable))
+        let folderA = directory.appending(path: "captureA", directoryHint: .isDirectory)
+        let folderB = directory.appending(path: "captureB", directoryHint: .isDirectory)
+        for url in [folderA, folderB] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        queue.configure(
+            roll: directory.appending(path: "rollA", directoryHint: .isDirectory),
+            captureFolder: folderA, across: 1, down: 1
+        )
+        queue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: UUID(), stamp: "slow", frameURLs: [], startedAt: Date()
+            )
+        )
+        queue.configure(
+            roll: directory.appending(path: "rollB", directoryHint: .isDirectory),
+            captureFolder: folderB, across: 1, down: 1
+        )
+        queue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: UUID(), stamp: "fast", frameURLs: [], startedAt: Date()
+            )
+        )
+        try await Task.sleep(for: .milliseconds(1000))
+        #expect(queue.negatives.map(\.step) == [.preparing, .stitching])
+        _ = queue.discardUnpublished()
+    }
+
     @Test("discardUnpublished removes queue entries and returns their paths")
     func discardUnpublished() async throws {
         let directory = try Self.makeTemporaryDirectory()

@@ -29,6 +29,14 @@ final class StitchQueueModel {
             default: false
             }
         }
+
+        /// Not yet checked: the entry may still reach `waitingStitch`.
+        var isBeforeStitch: Bool {
+            switch self {
+            case .waitingPrepare, .preparing, .waitingCheck, .checking, .waitingForDisk: true
+            default: false
+            }
+        }
     }
 
     /// Where an entry belongs, snapshotted when it is enqueued. The queue
@@ -334,10 +342,20 @@ final class StitchQueueModel {
     private func startNextStitchIfNeeded() {
         // `roll refresh` holds the roll lock; a stitch started now would fail.
         guard !isStitching, !isRefreshing else { return }
-        guard negatives.allSatisfy({ $0.step != .preparing && $0.step != .checking }) else { return }
-        guard let entry = negatives.first(where: { $0.step == .waitingStitch }),
-              let context = entry.context
-        else { return }
+        // TETHER_PLAN §4.1: same-roll stitches publish in capture order, so a
+        // negative waits while any earlier one on its roll is still short of
+        // its stitch. Later captures and other rolls do not hold it back.
+        let ready = negatives.indices.first { index in
+            guard negatives[index].step == .waitingStitch,
+                  let roll = negatives[index].context?.rollURL
+            else { return false }
+            return !negatives[..<index].contains { earlier in
+                earlier.step.isBeforeStitch
+                    && (earlier.context.map { Self.isSameRoll($0.rollURL, roll) } ?? true)
+            }
+        }
+        guard let ready, let context = negatives[ready].context else { return }
+        let entry = negatives[ready]
         let rollURL = context.rollURL
         isStitching = true
         let id = entry.id
