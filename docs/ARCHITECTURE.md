@@ -286,7 +286,7 @@ to bottom.
 | --- | --- |
 | `library/db.py` | The one SQLite store (`~/Library/Application Support/ScannyBoy/library.db`; `SCANNY_BOY_LIBRARY_DB` relocates it): engine cache, WAL/busy-timeout PRAGMAs, Alembic migrations applied programmatically on every open. |
 | `library/models.py` | The SQLAlchemy rows: roll, run, source, negative, edit. |
-| `library/repo.py` | `RollManifest` dataclasses to and from rows. `save_roll` upserts the whole manifest keyed by `roll_id`; children are diffed by key. Load and save are the only two shapes the rest of the program sees. |
+| `library/repo.py` | `RollManifest` dataclasses to and from rows. Writers use `mutate_roll` (one `BEGIN IMMEDIATE` transaction: reload the roll, apply the caller's change, recompute `updated_at` and `sequence`, commit) or `insert_roll` for a new roll; `load_roll` reads. `save_roll`, which upserts a whole manifest keyed by `roll_id` and diffs children by key (deleting rows the copy lacks), is the snapshot save underneath and is for test fixtures only (§9.2). |
 
 **Editing and export**
 | Module | Role |
@@ -874,8 +874,8 @@ identity in place, not by publishing a rival.
 - `roll_id` is a UUID and never appears in a path. `roll_name` is free text;
   the folder name is a slug of it (NFC, `[A-Za-z0-9._-]`, whitespace runs →
   single `-`, 60 chars, case-insensitive collision suffixes). Rename moves
-  the folder **first**, then saves the new name and location to the
-  database — so a failed move leaves both untouched. Delete is two steps,
+  the folder **first**, then writes the new name and location to the
+  database in one mutation — so a failed move leaves both untouched. Delete is two steps,
   in this order: the app moves the folder to the Trash with
   `NSWorkspace.recycle`, then `roll delete` removes the database
   registration (runs, sources, negatives, and edits cascade away with it)
@@ -946,9 +946,10 @@ registered.
   (`roll_sequence._sequenceable`); `pending` and `failed` negatives are
   unsequenced. Since replacement is in place (§9), a re-scan of the same
   frames keeps the position its capture time dictates.
-- `sequence` is recomputed on **every** `write_roll_manifest` call — the
-  manifest writer mutates the manifest it is given. `roll_sequence.py` is the
-  only computation of it.
+- `sequence` is recomputed on **every** roll write, inside the transaction,
+  from the fresh roll (`roll_manifest.stamp_derived_state`, shared by
+  `repo.mutate_roll` and `repo.insert_roll`); the committed manifest is the
+  one to read it from. `roll_sequence.py` is the only computation of it.
 - The applied timestamp is **rank-based**: `12:00:00 + (rank − 1)` seconds on
   the roll's capture date, or a negative's own date override, ranked within
   that date's negatives.
@@ -965,6 +966,28 @@ registered.
   automatically, without asking (`_maybe_reapply_metadata`), as the last step
   before the record write. A failed re-apply leaves the negative `completed`
   but dirty — recoverable with Apply — and never fails the stitch.
+
+### 9.2 Writing the roll
+
+A writer does its slow work (decode, composite, TIFF rewrite, preview
+render) outside the database, then changes the roll in one short
+transaction: `roll_manifest.mutate_roll_manifest(dir, apply)` runs
+`BEGIN IMMEDIATE`, reloads the roll, calls `apply(fresh)`, recomputes
+`updated_at` and `sequence`, and commits. `apply` sets only what that writer
+owns, re-checks its preconditions (no runs yet, the film base not locked, the
+negative still there) against the fresh roll, finds negatives by
+`negative_id`, and does no I/O, because it holds the database-wide write
+lock. So a writer holding an older copy cannot delete or revert another
+writer's runs, negatives or edits. The stitch keeps a working copy of the
+roll for planning and naming, and `_persist` copies only its own records,
+run and roll fields into the fresh roll. A new roll is `repo.insert_roll`.
+
+`write_roll_manifest` and `repo.save_roll` (the snapshot save: make the
+database equal this copy) remain for building test fixtures;
+`transactional_writes_test.py` fails if production code calls them. The
+per-roll lock (`roll_lock.py`, TETHER_PLAN §4.3) is unchanged: it also guards
+staging directories, published TIFFs and the normalization clamp, none of
+which a transaction covers. See `docs/TRANSACTIONAL_WRITES_PLAN.md`.
 
 ---
 

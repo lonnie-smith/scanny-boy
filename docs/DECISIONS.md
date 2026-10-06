@@ -2248,3 +2248,58 @@ slider setting. It now asserts the bands are live before comparing.
 under-read; they are replaced the next time a stitch or `roll refresh`
 measures the roll. No protocol version change: the block is recorded data
 read at render time, and no published pixel depends on it.
+
+# Roll writes are transactional mutations (docs/TRANSACTIONAL_WRITES_PLAN.md)
+
+**A roll is changed by a short read-modify-write transaction against fresh
+state, not by saving a copy loaded earlier.** Every writer used to load the
+whole roll, do its slow work, and write the whole roll back through
+`library/repo.save_roll`, which makes the database equal that copy: it deletes
+every run and negative row the copy lacks, and a negative's delete cascades
+its edits. Two overlapping writers therefore lost each other's changes (a
+stitch's write erased a negative another stitch had published, and with it
+that negative's edit history), and only the per-roll lock prevented it. Now
+the slow work (decode, composite, TIFF rewrite, preview render) happens
+outside the database, and the write is one `roll_manifest.mutate_roll_manifest`
+call: `BEGIN IMMEDIATE`, reload the roll, apply the writer's own change,
+recompute `updated_at` and `sequence`, commit. Concurrent writers serialize
+inside SQLite instead of overwriting each other. `library/db.py` sets
+`isolation_level = None` and emits the `BEGIN` itself, because the driver's
+lazy `BEGIN` would read a snapshot without the write lock and then fail with
+`SQLITE_BUSY` that `busy_timeout` does not retry.
+
+The rules for a writer:
+
+- **`apply` is fast.** It holds the database-wide write lock, so it copies
+  precomputed values into the fresh roll and does no file I/O or image work.
+- **Re-check preconditions inside `apply`.** "No runs yet", "the film base is
+  not locked" and "this negative exists" are checked again against the fresh
+  roll; the early check stays so the user hears of it before the slow work.
+- **Find negatives by `negative_id` in the fresh roll**, never by object from
+  the snapshot. One that has been deleted since is skipped, unless the
+  command's contract already says "not found".
+- **Merge, don't replace, dicts the writer partly owns.** Set
+  `normalization["auto_neutral"]`, or `output["size"]` and `output["sha256"]`,
+  not the whole dict.
+- **Derived state is recomputed from the fresh roll**, never copied from the
+  snapshot: `sequence`, `updated_at` and the highlight lock are whole-roll
+  aggregates.
+- **Rebind to the returned manifest** when the caller keeps reading after the
+  write.
+- **The stitch copies only its own pieces** (its records, its run, the
+  negatives it removed, named roll fields, sources re-merged by hash) from its
+  working copy through `stitch_pipeline._persist`, never the whole copy.
+- **A new roll is `repo.insert_roll`**, which refuses an existing id or
+  folder.
+
+`write_roll_manifest` remains only to build test fixtures, and
+`transactional_writes_test.py` fails if a production module calls it or
+`repo.save_roll`.
+
+**The roll lock is unchanged.** It was never only about database rows. It
+also guards the staging directories (recovery cleanup treats the roll's last
+run as their owner), the published TIFFs, and the stitch's order-dependent
+normalization clamp, whose reference negatives and names come from the
+start-of-stitch copy; none of that is in a transaction. Transactions make the
+lock no longer load-bearing for the record, which is what lets the later
+parallel-stitch work narrow it. This change did not.

@@ -12,9 +12,11 @@ scale (the global layout is a similarity, not a rigid transform). The
 record's shape is unchanged from the JSON-manifest era
 otherwise — `to_dict()` still emits exactly the fields
 `roll-manifest.schema.json` and the `roll info` event describe — but the
-file is gone: `load_roll_manifest` and `write_roll_manifest` read and write
-rows through `scanny_boy.library.repo`. A roll "exists" when it is
-registered in the library database (which `roll init` and every write do);
+file is gone: `load_roll_manifest` reads rows through
+`scanny_boy.library.repo`, and every writer changes them through
+`mutate_roll_manifest`, one transaction against the roll as it is now
+(docs/TRANSACTIONAL_WRITES_PLAN.md). A roll "exists" when it is
+registered in the library database (which `roll init` does);
 there is no migration from JSON files, because the app never shipped.
 
 The structural-validation layer that guarded against corrupt or foreign JSON
@@ -593,8 +595,16 @@ def stamp_derived_state(manifest: RollManifest) -> None:
 
 
 def write_roll_manifest(output_dir: Path, manifest: RollManifest) -> None:
-    """Persist the manifest to the library database, registering (or moving)
-    the roll row for `output_dir` as a side effect.
+    """Snapshot save: make the library database equal the given copy,
+    registering (or moving) the roll row for `output_dir` as a side effect.
+
+    Every run and negative row missing from `manifest` is deleted (a
+    negative's edits go with it), so a stale copy silently reverts or deletes
+    another writer's work. It is kept for building test fixtures only, and
+    must never run against a roll another writer may be using. Production
+    code changes a roll with `mutate_roll_manifest` (or `repo.insert_roll`
+    for a new one); `transactional_writes_test.py` fails if a production
+    module calls this.
 
     The derived state (`stamp_derived_state`) is rewritten on every write, so
     this mutates the manifest it is given."""

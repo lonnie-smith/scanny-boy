@@ -142,14 +142,17 @@ writes the record. So the queue splits the same way (§4.1): a negative's
 `prepare` starts the moment its last frame lands, alongside any others still
 preparing, and its `stitch` runs when the roll is free.
 
-Stitches of one roll never overlap, for reasons in the code, not preference:
+Stitches of one roll still never overlap, for reasons in the code, not
+preference:
 
-- **The record would be overwritten, repeatedly.** `run_stitch` loads the roll
-  once when it starts (`plan.existing_manifest`) and writes that whole copy
-  back after appending its run, after every negative it publishes, and at the
-  end. `library/repo.save_roll` deletes every run and negative row missing
-  from the copy it is given, so each write by one stitch deletes whatever the
-  other published since it started — and cascades away those negatives' edits.
+- **The record is no longer one of them.** Every roll write is now a short
+  transaction against fresh state
+  ([`TRANSACTIONAL_WRITES_PLAN.md`](TRANSACTIONAL_WRITES_PLAN.md)): it takes
+  the database write lock, reloads the roll, and applies only its own change. `run_stitch` still keeps its start-of-stitch copy as a working copy,
+  but each write copies in only this run's own records, run and roll fields, so
+  one stitch can no longer delete what another published or cascade away those
+  negatives' edits. (It used to write the whole copy back through
+  `library/repo.save_roll`, which did exactly that.)
 - **Cleanup assumes a single stitch.** The roll's staging rule treats the
   record's last run (`runs[-1]`) as the owner of staging directories; a second
   stitch planning mid-way through the first would see the first's unfinished
@@ -159,6 +162,7 @@ Stitches of one roll never overlap, for reasons in the code, not preference:
 - **Memory is budgeted per process**: each sizes itself to half of physical
   RAM without knowing about the others.
 
+The remaining three are why stitches stay serial and the roll lock stays.
 So stitches are serial (§4.1), nothing else writes that roll while they run
 (§4.2), and the CLI enforces it with a lock instead of trusting the app
 (§4.3). A serial stitch stage can fall behind capture, and that is accepted:
@@ -604,9 +608,10 @@ DECISIONS.md gets this as an amendment to the Phase 3 app rule.
 
 ### 4.3 The CLI enforces it: a roll lock
 
-§0.6's hazard is silent data loss, so the app's discipline is not the only
-guard. Every command that writes a roll takes an exclusive advisory lock
-(`fcntl.flock`, non-blocking) on
+§0.6's remaining hazards (a second stitch's recovery cleanup deleting the
+first's unfinished staging) are silent data loss, so the app's discipline is
+not the only guard. Every command that writes a roll takes an exclusive
+advisory lock (`fcntl.flock`, non-blocking) on
 `~/Library/Application Support/ScannyBoy/locks/<roll_id>.lock`, beside the
 library database. A second writer fails immediately with the new error
 `ROLL_BUSY`, before any work.
@@ -1003,8 +1008,10 @@ chunk reviewable; it must land before the feature is called done.
   arrive through it.
 - **Waiting on `ObjectAddedInSdram` alone.** On one of the two shots where the
   queue was polled, it did not arrive within 8 s.
-- **Overlapping stitches, as the code stands.** They overwrite each other's
-  record writes and clean up each other's staging (§0.6).
+- **Overlapping stitches, as the code stands.** They clean up each other's
+  staging and take names, ids and the clamp's reference negatives from stale
+  start-of-stitch copies (§0.6). Their record writes no longer collide, since
+  roll writes became transactional mutations.
 - **Several negatives composited inside one process.** "Parallelism never
   spans negatives" is a memory decision (ARCHITECTURE.md §11): NumPy does not
   return freed memory to the OS, and the 3.5× safety factor was measured one

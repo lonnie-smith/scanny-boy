@@ -1,7 +1,7 @@
 """A roll's display order and applied timestamps, both pure functions of
 the manifest.
 
-Nothing else recomputes either of these: `roll_manifest.write_roll_manifest`
+Nothing else recomputes either of these: `roll_manifest.stamp_derived_state`
 calls `sequence_negatives` to refresh every negative's `sequence` field on
 every write, and the metadata stage will call `intended_times` the same
 way. Neither function reads or writes anything itself.
