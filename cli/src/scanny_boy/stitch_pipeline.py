@@ -14,11 +14,13 @@ anything large is written or allocated.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime
 import math
 import shutil
 import sys
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
@@ -152,7 +154,7 @@ from scanny_boy.roll_manifest import (
     format_negative_id,
     load_roll_manifest,
     merge_sources,
-    write_roll_manifest,
+    mutate_roll_manifest,
 )
 from scanny_boy.selection import GridSpec
 from scanny_boy.stitched_tiff import stitched_image_description, write_stitched_tiff
@@ -1094,6 +1096,83 @@ def _required_free_bytes(canvases: list[tuple[int, int]], manifest_size: int) ->
     return math.ceil((sum(per_negative) + largest + d) * _DISK_SAFETY_MARGIN)
 
 
+def _persist[T](
+    out_dir: Path,
+    roll: RollManifest,
+    *,
+    records: Sequence[NegativeRecord] = (),
+    run: RunRecord | None = None,
+    removed: Sequence[str] = (),
+    roll_fields: Sequence[str] = (),
+    work_sources: list[Any] | None = None,
+    finish: Callable[[RollManifest], T] | None = None,
+) -> tuple[RollManifest, T | None]:
+    """Copy this run's own state from the working copy `roll` into a fresh
+    roll, in one transaction (docs/TRANSACTIONAL_WRITES_PLAN.md §4.2).
+
+    Never a snapshot save: anything not named here is whatever the fresh
+    roll already holds, so another writer's committed change survives.
+
+    - `records`: each replaces the same-id negative in the fresh roll with a
+      deep copy of the working record, or is appended when absent (new
+      ones in the working copy's order).
+    - `run`: replaces the run with the same `run_id`, or is appended.
+    - `removed`: `negative_id`s dropped from the fresh roll.
+    - `roll_fields`: roll attributes copied from the working copy.
+      `"sources"` is not a copy: the sources are merged in again from
+      `work_sources`, keyed by hash, under `run`'s id, exactly as
+      `_append_this_run` did.
+    - `finish`: runs last on the fresh roll, inside the transaction, for
+      state that must be derived from it (the highlight lock). Its result
+      is returned.
+
+    The copies are taken before the transaction opens, so the write lock is
+    held only for the cheap splice. The working copy is left as it is; it
+    stays accurate because the roll lock excludes other stitches.
+    """
+    record_copies = [copy.deepcopy(r) for r in records]
+    working_order = {n.negative_id: i for i, n in enumerate(roll.negatives)}
+    run_copy = copy.deepcopy(run) if run is not None else None
+    removed_ids = set(removed)
+    field_copies = {
+        name: copy.deepcopy(getattr(roll, name))
+        for name in roll_fields
+        if name != "sources"
+    }
+    merge_run_id = run.run_id if run is not None else None
+    merge_work_sources = work_sources if "sources" in roll_fields else None
+
+    def apply(fresh: RollManifest) -> T | None:
+        if removed_ids:
+            fresh.negatives = [
+                n for n in fresh.negatives if n.negative_id not in removed_ids
+            ]
+        index_by_id = {n.negative_id: i for i, n in enumerate(fresh.negatives)}
+        added: list[NegativeRecord] = []
+        for record in record_copies:
+            position = index_by_id.get(record.negative_id)
+            if position is None:
+                added.append(record)
+            else:
+                fresh.negatives[position] = record
+        added.sort(key=lambda n: working_order.get(n.negative_id, len(working_order)))
+        fresh.negatives.extend(added)
+        if run_copy is not None:
+            for i, existing in enumerate(fresh.runs):
+                if existing.run_id == run_copy.run_id:
+                    fresh.runs[i] = run_copy
+                    break
+            else:
+                fresh.runs.append(run_copy)
+        for name, value in field_copies.items():
+            setattr(fresh, name, value)
+        if merge_work_sources is not None and merge_run_id is not None:
+            merge_sources(fresh, merge_work_sources, merge_run_id)
+        return finish(fresh) if finish is not None else None
+
+    return mutate_roll_manifest(out_dir, apply)
+
+
 def run_stitch(
     work_dir: Path,
     out_dir: Path,
@@ -1154,6 +1233,16 @@ def run_stitch(
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
+
+    # `roll` below is a *working copy*, loaded once by `plan_rerun`, that
+    # drives planning, naming, the clamp's reference bounds and the
+    # previews. It is accurate only because the roll lock keeps every other
+    # writer out for the whole run. It is never saved wholesale: each
+    # database write goes through `_persist`, which copies just this run's
+    # own pieces into a fresh roll inside one transaction. Parallel
+    # stitching will lift the lock, so anything that reads `roll` for
+    # another writer's state must be revisited then
+    # (docs/TRANSACTIONAL_WRITES_PLAN.md §7).
 
     def on_warning(code: Code, message: str) -> None:
         emit(WarningEvent(run_id=run_id, code=code, message=message))
@@ -1424,8 +1513,23 @@ def run_stitch(
         except disk_check.DiskCheckError as exc:
             raise StitchError(exc.code, exc.message) from exc
 
-    # 7. Write the `running` roll manifest before publishing anything.
-    write_roll_manifest(out_dir, roll)
+    # 7. Write the `running` roll manifest before publishing anything:
+    #    this run's record, its sources and its negatives, plus the roll
+    #    fields `_append_this_run` seeded.
+    _persist(
+        out_dir,
+        roll,
+        records=list(records_by_group.values()),
+        run=run_record,
+        roll_fields=(
+            "processing_params",
+            "stitch_params",
+            "icc_profile",
+            "camera_color",
+            "sources",
+        ),
+        work_sources=work_manifest.sources,
+    )
 
     published: list[str] = []
     failed: list[str] = []
@@ -1535,6 +1639,7 @@ def run_stitch(
     run_record.normalization_aggregate = _normalization_aggregate(
         list(records_by_group.values())
     )
+
     # docs/ROLL_HIGHLIGHT_LOCK.md §1/§4: recompute the roll's highlight-lock
     # estimate wholesale — never merged — because this run may have
     # published negatives whose `highlight_refs` newly qualify (or, on a
@@ -1543,31 +1648,63 @@ def run_stitch(
     # `_remove_covered_negatives` and `edits.run_edit_delete` are the
     # other two. A change here is exactly when older negatives' previews
     # go stale, hence the forced `sync_previews` below.
-    if defer_roll_refresh:
-        roll.refresh_pending = True
-        lock_changed = False
-        auto_neutral_changed = False
-    else:
-        previous_lock = roll.highlight_lock
-        new_lock = highlight_lock.compute_roll_highlight_lock(roll)
-        roll.highlight_lock = None if new_lock is None else new_lock.to_dict()
-        lock_changed = roll.highlight_lock != previous_lock
+    #
+    # The lock is recomputed inside the transaction, from the *fresh* roll
+    # (never copied from the working copy: it is a whole-roll aggregate and
+    # the fresh roll is the truth), and the transaction is what says
+    # whether it changed. Measuring `auto_neutral` reads TIFFs, so it runs
+    # afterwards, outside any transaction, against the committed lock, and
+    # its blocks are written by one more small mutation.
+    def finish_run(fresh: RollManifest) -> bool:
+        """Inside the transaction: returns whether the lock changed."""
+        if defer_roll_refresh:
+            fresh.refresh_pending = True
+            return False
+        previous = fresh.highlight_lock
+        recomputed = highlight_lock.compute_roll_highlight_lock(fresh)
+        fresh.highlight_lock = None if recomputed is None else recomputed.to_dict()
+        return fresh.highlight_lock != previous
+
+    committed, lock_changed = _persist(out_dir, roll, run=run_record, finish=finish_run)
+    assert lock_changed is not None
+    roll.highlight_lock = copy.deepcopy(committed.highlight_lock)
+    roll.refresh_pending = committed.refresh_pending
+
+    auto_neutral_changed = False
+    if not defer_roll_refresh:
+        measure_ids: set[str] | None
         if lock_changed:
-            auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
-                roll, out_dir
-            )
+            measure_ids = None
         else:
             published_names = set(published)
-            published_ids = {
+            measure_ids = {
                 negative.negative_id
                 for negative in roll.negatives
                 if negative.output is not None
                 and negative.output["name"] in published_names
             }
-            auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
-                roll, out_dir, negative_ids=published_ids
-            )
-    write_roll_manifest(out_dir, roll)
+        auto_neutral_changed = auto_neutral.recompute_roll_auto_neutral(
+            roll, out_dir, negative_ids=measure_ids
+        )
+    if auto_neutral_changed:
+        # Only the `auto_neutral` key of each measured negative: the rest
+        # of its `normalization` is the fresh roll's.
+        measured = {
+            negative.negative_id: copy.deepcopy(negative.normalization["auto_neutral"])
+            for negative in roll.negatives
+            if (measure_ids is None or negative.negative_id in measure_ids)
+            and negative.status == "completed"
+            and negative.normalization is not None
+            and "auto_neutral" in negative.normalization
+        }
+
+        def store_auto_neutral(fresh: RollManifest) -> None:
+            for negative in fresh.negatives:
+                block = measured.get(negative.negative_id)
+                if block is not None and negative.normalization is not None:
+                    negative.normalization["auto_neutral"] = copy.deepcopy(block)
+
+        _persist(out_dir, roll, finish=store_auto_neutral)
 
     # Previews for the newly published negatives: the app's Edit tab shows
     # the CLI's rendering, never its own (Python owns every decision). The
@@ -1820,7 +1957,7 @@ def _record_failure(
     record.status = "failed"
     record.error_code = code.value
     record.error_message = message
-    write_roll_manifest(out_dir, roll)
+    _persist(out_dir, roll, records=[record])
     emit(
         NegativeFailed(
             run_id=run_id, negative_id=record.negative_id, code=code, message=message
@@ -2470,11 +2607,20 @@ def _composite_and_publish(
         # "a run that fails before publishing anything leaves the roll
         # ATTACHED" is automatic because of it: a run that fails mid-way
         # has published nothing, so `locked_at` stays null.
+        locked_fields: list[str] = []
         if roll.film_base is not None and roll.film_base.get("locked_at") is None:
             roll.film_base["locked_at"] = _now_iso()
+            locked_fields.append("film_base")
         if roll.flat_field is not None and roll.flat_field.get("locked_at") is None:
             roll.flat_field["locked_at"] = _now_iso()
-        write_roll_manifest(out_dir, roll)
+            locked_fields.append("flat_field")
+        _persist(
+            out_dir,
+            roll,
+            records=[record],
+            removed=[old.negative_id for old in entry.covered_to_remove],
+            roll_fields=locked_fields,
+        )
 
         # The seeding happens last: the negative row exists (the earlier
         # `running` manifest write merged it), the ops log entry lands

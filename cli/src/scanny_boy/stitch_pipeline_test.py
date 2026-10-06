@@ -49,6 +49,7 @@ from scanny_boy.roll_manifest import (
     RunRecord,
     append_run,
     load_roll_manifest,
+    mutate_roll_manifest,
     new_roll_manifest,
     write_roll_manifest,
 )
@@ -2818,3 +2819,147 @@ def test_a_failed_deband_refit_warns_and_never_fails_the_stitch(
     # The negative was still published.
     assert load_roll_manifest(out_dir).negatives[0].status == "completed"
     assert any(isinstance(e, NegativeDone) for e in events)
+
+
+# --- transactional roll writes (docs/TRANSACTIONAL_WRITES_PLAN.md §4.2) ----
+
+
+def _add_pending_negative(out_dir: Path, negative_id: str, member: str) -> None:
+    """A roll-level negative this stitch has no business touching."""
+    record = NegativeRecord(
+        negative_id=negative_id,
+        run_id="earlier-run",
+        members=[member],
+        expected_output=f"{Path(member).stem}.tif",
+        fill_color=stitch_pipeline.FILL_COLOR,
+    )
+    mutate_roll_manifest(out_dir, lambda fresh: fresh.negatives.append(record))
+
+
+def test_concurrent_roll_changes_survive_every_stitch_write(
+    work_dir, tmp_path, monkeypatch
+):
+    """The stitch keeps a working copy of the roll, but it must write only its
+    own pieces. A change another writer commits between the stitch's reads
+    and its writes — roll setup, a metadata field on a negative the run never
+    touches, a brand-new negative with an edit — must survive the step-7
+    `running` write, the publish write and the end-of-run write, and the
+    stitch's own results must be intact."""
+    # `previews.sync_previews` is another module's writer, covered by its own
+    # tests; keep this one about the stitch's own writes.
+    monkeypatch.setattr(stitch_pipeline.previews, "sync_previews", lambda *a, **k: None)
+    out_dir = make_roll_dir(tmp_path)
+    _add_pending_negative(out_dir, "keeper", "KEEPER.NEF")
+
+    fired: list[str] = []
+
+    def concurrent_before_the_running_write() -> None:
+        # Solving emits progress before step 7 writes the `running` roll.
+        def apply(fresh):
+            fresh.setup = {"format": "35mm", "auto_crop": False}
+            fresh.negative("keeper").metadata.caption = "kept by the other writer"
+
+        mutate_roll_manifest(out_dir, apply)
+
+    def concurrent_during_the_composite() -> None:
+        # After the `running` write, before the publish write.
+        def apply(fresh):
+            fresh.metadata.city = "Lisbon"
+            fresh.negatives.append(
+                NegativeRecord(
+                    negative_id="late",
+                    run_id="earlier-run",
+                    members=["LATE.NEF"],
+                    expected_output="LATE.tif",
+                    fill_color=stitch_pipeline.FILL_COLOR,
+                )
+            )
+
+        mutate_roll_manifest(out_dir, apply)
+        repo.append_edit(out_dir, "late", repo.FLIP_OP, {})
+
+    def emit(event) -> None:
+        if not isinstance(event, Progress):
+            return
+        if "solve" not in fired and event.step.value == "solve":
+            fired.append("solve")
+            concurrent_before_the_running_write()
+        if "composite" not in fired and event.step.value == "write_stitched":
+            fired.append("composite")
+            concurrent_during_the_composite()
+
+    outcome = run_stitch(
+        work_dir,
+        out_dir,
+        run_id="stitch-run",
+        overwrite=False,
+        allow_partial=False,
+        jobs=1,
+        cancel=CancellationToken(),
+        emit=emit,
+    )
+
+    assert fired == ["solve", "composite"]
+    # The stitch's own results.
+    assert outcome.status == "complete"
+    assert outcome.published == ["IMG_00.tif"]
+    roll = load_roll_manifest(out_dir)
+    assert [r.status for r in roll.runs] == ["complete"]
+    assert roll.runs[0].finished_at is not None
+    published = next(n for n in roll.negatives if n.status == "completed")
+    assert published.output["name"] == "IMG_00.tif"
+    assert hashing.sha256_file(out_dir / "IMG_00.tif") == published.output["sha256"]
+    assert roll.film_base["locked_at"] is not None
+    # The other writer's changes.
+    assert roll.setup == {"format": "35mm", "auto_crop": False}
+    assert roll.negative("keeper").metadata.caption == "kept by the other writer"
+    assert roll.negative("keeper").status == "pending"
+    assert roll.metadata.city == "Lisbon"
+    assert roll.negative("late").members == ["LATE.NEF"]
+    assert [e["op"] for e in repo.edits_for(out_dir, "late")] == [repo.FLIP_OP]
+
+
+def test_a_concurrent_change_survives_a_recorded_failure(tmp_path, monkeypatch):
+    """`_record_failure` writes one record's failure and nothing else: a
+    change committed just before it must survive."""
+    work_dir = make_work_dir(
+        tmp_path, negatives=2, overlapping=False, shots_per_negative=1
+    )
+    out_dir = make_roll_dir(tmp_path)
+    _add_pending_negative(out_dir, "keeper", "KEEPER.NEF")
+
+    real_message = stitch_pipeline._friendly_failure_message
+    injected: list[str] = []
+
+    def message_after_a_concurrent_change(*args, **kwargs):
+        # `_record_failure` builds its message, then writes: this is the gap.
+        if not injected:
+            injected.append("done")
+
+            def apply(fresh):
+                fresh.setup = {"format": "6x7", "auto_crop": False}
+                fresh.negative("keeper").metadata.caption = "kept by the other writer"
+
+            mutate_roll_manifest(out_dir, apply)
+        return real_message(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stitch_pipeline, "_friendly_failure_message", message_after_a_concurrent_change
+    )
+    events: list = []
+
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert injected == ["done"]
+    # The stitch's own results: every group failed, and the run says so.
+    assert outcome.status == "partial"
+    assert outcome.published == []
+    assert [e for e in events if isinstance(e, NegativeFailed)]
+    roll = load_roll_manifest(out_dir)
+    assert [r.status for r in roll.runs] == ["partial"]
+    failed = [n for n in roll.negatives if n.status == "failed"]
+    assert failed
+    assert all(n.error_code for n in failed)
+    # The other writer's changes.
+    assert roll.setup == {"format": "6x7", "auto_crop": False}
+    assert roll.negative("keeper").metadata.caption == "kept by the other writer"
