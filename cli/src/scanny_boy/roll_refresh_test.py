@@ -207,6 +207,46 @@ def test_refresh_keeps_changes_committed_while_it_measures(
     assert negative.metadata.city == "Lisbon"
 
 
+def test_refresh_stays_pending_when_a_negative_republishes_while_it_measures(
+    tmp_path, work_dir, monkeypatch
+):
+    """A negative republished during the measurement was not measured (its
+    TIFF changed under the refresh), so the roll must not be marked fresh:
+    the next refresh reconciles it."""
+    from scanny_boy.roll_manifest import mutate_roll_manifest
+
+    out_dir = make_roll_dir(tmp_path, "out")
+    assert run_stitch_with_defaults(
+        work_dir, out_dir, defer_roll_refresh=True
+    ).status == ("complete")
+    negative_id = load_roll_manifest(out_dir).negatives[0].negative_id
+
+    real_recompute = auto_neutral.recompute_negative_auto_neutral
+    fired: list[bool] = []
+
+    def measure_while_a_stitch_republishes(negative, roll_dir, *, highlight_lock):
+        if not fired:
+            fired.append(True)
+
+            def republish(fresh):
+                fresh.negative(negative_id).output["sha256"] = "f" * 64
+                fresh.refresh_pending = True
+
+            mutate_roll_manifest(roll_dir, republish)
+        return real_recompute(negative, roll_dir, highlight_lock=highlight_lock)
+
+    monkeypatch.setattr(
+        roll_refresh.auto_neutral,
+        "recompute_negative_auto_neutral",
+        measure_while_a_stitch_republishes,
+    )
+
+    run_roll_refresh(out_dir, emit=lambda e: None)
+
+    assert fired
+    assert load_roll_manifest(out_dir).refresh_pending is True
+
+
 def test_refresh_skips_a_negative_deleted_while_it_measures(
     tmp_path, work_dir, monkeypatch
 ):

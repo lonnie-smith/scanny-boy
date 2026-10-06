@@ -86,6 +86,16 @@ def _recompute_auto_neutral_tolerant(
     return changed
 
 
+def _completed_outputs(roll: RollManifest) -> set[tuple[str, str]]:
+    """Every published negative, as `(negative_id, TIFF sha256)`: a
+    re-stitch republishes under the same id with a new hash."""
+    return {
+        (negative.negative_id, negative.output["sha256"])
+        for negative in roll.negatives
+        if negative.status == "completed" and negative.output is not None
+    }
+
+
 def run_roll_refresh(roll_dir: Path, *, emit: EmitFn) -> RollRefreshOutcome:
     """Recompute ``highlight_lock``, measure ``auto_neutral`` for every
     completed colour negative, sync previews, and clear ``refresh_pending``."""
@@ -101,9 +111,16 @@ def run_roll_refresh(roll_dir: Path, *, emit: EmitFn) -> RollRefreshOutcome:
     measured = _recompute_auto_neutral_tolerant(roll, roll_dir, emit=emit)
     auto_neutral_changed = bool(measured)
     lock_value = roll.highlight_lock
+    measured_outputs = _completed_outputs(roll)
 
     def apply(fresh: RollManifest) -> None:
-        fresh.highlight_lock = lock_value
+        # The lock is a whole-roll aggregate, so it is recomputed from the
+        # roll as it is now. If the roll's published negatives changed while
+        # this refresh was measuring (one published, re-stitched, or a
+        # lock that moved under the survivors), record the current lock but
+        # leave `refresh_pending` as it is, so the next refresh reconciles.
+        recomputed = highlight_lock.compute_roll_highlight_lock(fresh)
+        fresh.highlight_lock = None if recomputed is None else recomputed.to_dict()
         by_id = {negative.negative_id: negative for negative in fresh.negatives}
         for negative_id, block in measured.items():
             # Deleted since the snapshot: nothing to record.
@@ -111,9 +128,14 @@ def run_roll_refresh(roll_dir: Path, *, emit: EmitFn) -> RollRefreshOutcome:
             if negative is None or negative.normalization is None:
                 continue
             negative.normalization["auto_neutral"] = block
-        fresh.refresh_pending = False
+        current = _completed_outputs(fresh)
+        if current <= measured_outputs and (
+            fresh.highlight_lock == lock_value or not current
+        ):
+            fresh.refresh_pending = False
 
     roll, _ = mutate_roll_manifest(roll_dir, apply)
+    lock_changed = roll.highlight_lock != previous_lock
 
     # `sync_previews`'s third argument names the output files *this call*
     # just published (`list[str]`, per `previews.py`) — refresh never
