@@ -31,4 +31,20 @@ enum FocusAssistTuning {
     /// Regions below this raw focus ratio are greyed out in the check-shot grid
     /// (matches `capture_analysis.FOCUS_MIN_TEXTURE`).
     static let focusMinTexture = 1e-4
+
+    /// Live view frame size on the Z f, in pixels. Sizes the loupe's
+    /// placeholder before the first frame arrives
+    /// (docs/FOCUS_LOCK_PLAN.md §1.1).
+    static let liveViewFrameWidth = 640
+    static let liveViewFrameHeight = 424
+
+    /// Frames, counted from a view change or R, whose centre-half luminance
+    /// the grain view takes its levels from; after that the levels are held
+    /// (docs/FOCUS_LOCK_PLAN.md §1.2).
+    static let grainLevelFrames = 3
+
+    /// Percentiles of the centre half's luminance that the grain view
+    /// stretches to black and white.
+    static let grainLowPercentile = 0.01
+    static let grainHighPercentile = 0.99
 }

@@ -13,8 +13,12 @@ struct FocusCheckCell: Sendable, Hashable, Identifiable {
 @MainActor
 @Observable
 final class FocusAssistModel {
+    static let loupeSizeKey = "com.lonniesmith.scanny-boy.focusLoupeSize"
+    static let grainViewKey = "com.lonniesmith.scanny-boy.focusGrainView"
+
     private let camera: any CameraControlling
     private let runner: CLIRunner
+    private let defaults: UserDefaults
 
     private(set) var isOpen = false
     private(set) var loupeImage: CGImage?
@@ -30,16 +34,51 @@ final class FocusAssistModel {
     private(set) var checkShotCells: [FocusCheckCell] = []
     private(set) var checkShotDiagnosis: String?
     private(set) var isCheckShotBusy = false
+    /// The score of the last frame scored, from the untouched frame whether or
+    /// not grain view is on.
+    private(set) var latestScore: Double?
+    /// The grain view's held levels (docs/FOCUS_LOCK_PLAN.md §1.2); provisional
+    /// until `grainLevelFrames` frames have been seen, nil before the first.
+    private(set) var grainLevels: GrainLevels?
+
+    /// The size the operator chose; the panel may draw smaller when the
+    /// window is too narrow. Sticky across launches.
+    var loupeSize: LoupeSize {
+        didSet { defaults.set(loupeSize.rawValue, forKey: Self.loupeSizeKey) }
+    }
+
+    /// Grain view: display only, never changes the score. Sticky across
+    /// launches.
+    var grainView: Bool {
+        didSet {
+            defaults.set(grainView, forKey: Self.grainViewKey)
+            redisplay = true
+        }
+    }
 
     private var frameTask: Task<Void, Never>?
     private var lastJPEG = Data()
     private var recentScores: [Double] = []
     private var peakScore = 0.0
     private var lastAreaKey = ""
+    private var grainSampler = GrainLevelSampler()
+    /// Bumped whenever the grain levels are retaken, so a frame that was in
+    /// flight at the time doesn't write its sampler back over the reset.
+    private var grainEpoch = 0
+    /// Show the last frame again with the current view, even though the
+    /// camera sent the same JPEG.
+    private var redisplay = false
 
-    init(camera: any CameraControlling, runner: CLIRunner) {
+    init(
+        camera: any CameraControlling,
+        runner: CLIRunner,
+        defaults: UserDefaults = AppEnvironment.defaults
+    ) {
         self.camera = camera
         self.runner = runner
+        self.defaults = defaults
+        loupeSize = LoupeSize(rawValue: defaults.integer(forKey: Self.loupeSizeKey)) ?? .medium
+        grainView = defaults.bool(forKey: Self.grainViewKey)
     }
 
     var focusAssistAvailable: Bool {
@@ -94,7 +133,16 @@ final class FocusAssistModel {
         frameTask = Task { await runFrameLoop() }
     }
 
+    func cycleLoupeSize() {
+        loupeSize = loupeSize.next
+    }
+
+    func toggleGrainView() {
+        grainView.toggle()
+    }
+
     func resetPeak() {
+        retakeGrainLevels()
         peakScore = 0
         peakPercentage = 0
         recentScores.removeAll()
@@ -154,27 +202,11 @@ final class FocusAssistModel {
         while !Task.isCancelled, isOpen {
             do {
                 let frame = try await camera.liveViewFrame()
-                if frame.jpegData == lastJPEG {
+                if frame.jpegData == lastJPEG, !redisplay {
                     try await Task.sleep(for: FocusAssistTuning.liveViewPollInterval)
                     continue
                 }
-                lastJPEG = frame.jpegData
-                let header = frame.header
-                areaSize = header.areaSize
-                areaCentre = header.areaCentre
-                updateZoomText(header: header)
-                resetPeakIfAreaChanged(header: header)
-
-                let imageAndScore: (CGImage?, Double?) = await Task.detached {
-                    let image = Self.decodeJPEG(frame.jpegData)
-                    let score = image.map { FocusScore.score(image: $0) }
-                    return (image, score)
-                }.value
-
-                loupeImage = imageAndScore.0
-                if let score = imageAndScore.1 {
-                    updateMeter(score: score)
-                }
+                await process(frame)
             } catch {
                 if !Task.isCancelled {
                     liveViewError = error.localizedDescription
@@ -185,6 +217,62 @@ final class FocusAssistModel {
         }
     }
 
+    /// Shows and scores one frame. A repeat of the last JPEG (`redisplay`,
+    /// after a view change) is drawn again but neither scored nor sampled.
+    func process(_ frame: LiveViewFrame) async {
+        let isNew = frame.jpegData != lastJPEG
+        redisplay = false
+        lastJPEG = frame.jpegData
+        let header = frame.header
+        areaSize = header.areaSize
+        areaCentre = header.areaCentre
+        updateZoomText(header: header)
+        resetPeakIfAreaChanged(header: header)
+
+        let epoch = grainEpoch
+        let sampler = grainSampler
+        let showGrain = grainView
+        let result = await Task.detached {
+            Self.analyse(jpeg: frame.jpegData, sampler: sampler, showGrain: showGrain, sample: isNew)
+        }.value
+
+        loupeImage = result.image
+        if epoch == grainEpoch {
+            grainSampler = result.sampler
+            grainLevels = result.sampler.levels
+        }
+        if isNew, let score = result.score {
+            latestScore = score
+            updateMeter(score: score)
+        }
+    }
+
+    /// Decodes, scores and (if asked) renders the grain view, off the main
+    /// actor. The grey buffer is drawn once and shared; the score reads it
+    /// untouched.
+    nonisolated private static func analyse(
+        jpeg: Data,
+        sampler: GrainLevelSampler,
+        showGrain: Bool,
+        sample: Bool
+    ) -> (image: CGImage?, score: Double?, sampler: GrainLevelSampler) {
+        guard let image = decodeJPEG(jpeg) else { return (nil, nil, sampler) }
+        guard let grey = FocusScore.greyFrame(image: image) else { return (image, 0, sampler) }
+        var sampler = sampler
+        if sample { sampler.add(grey) }
+        var shown = image
+        if showGrain, let levels = sampler.levels, let grain = GrainView.render(grey, levels: levels) {
+            shown = grain
+        }
+        return (shown, FocusScore.score(grey: grey), sampler)
+    }
+
+    private func retakeGrainLevels() {
+        grainSampler = GrainLevelSampler()
+        grainLevels = nil
+        grainEpoch += 1
+    }
+
     private func resetMeterState() {
         lastJPEG = Data()
         recentScores.removeAll()
@@ -193,6 +281,8 @@ final class FocusAssistModel {
         meterPercentage = nil
         meterMessage = nil
         lastAreaKey = ""
+        latestScore = nil
+        retakeGrainLevels()
     }
 
     private func resetPeakIfAreaChanged(header: PTP.LiveViewHeader) {

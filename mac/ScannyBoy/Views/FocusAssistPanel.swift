@@ -6,7 +6,36 @@ struct FocusAssistPanel: View {
     let onClose: () -> Void
     let onCheckShot: () -> Void
 
+    @Environment(\.displayScale) private var displayScale
+    /// Width the panel has to draw the loupe in, measured by `widthReader`.
+    @State private var availableWidth: CGFloat = .infinity
+
+    /// The chosen size, or the largest whole-pixel size that fits the panel
+    /// (docs/FOCUS_LOCK_PLAN.md §1.1).
+    private var loupeSize: LoupeSize {
+        focusAssist.loupeSize.fitting(
+            framePixels: loupeFramePixels.width,
+            displayScale: displayScale,
+            availableWidth: availableWidth
+        )
+    }
+
+    private var loupeFramePixels: (width: Int, height: Int) {
+        if let image = focusAssist.loupeImage {
+            return (image.width, image.height)
+        }
+        return (FocusAssistTuning.liveViewFrameWidth, FocusAssistTuning.liveViewFrameHeight)
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            widthReader
+                .frame(height: 0)
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let error = focusAssist.liveViewError {
                 Text(error)
@@ -16,14 +45,28 @@ struct FocusAssistPanel: View {
                     Button("Retry") { focusAssist.retryLiveView() }
                 }
             } else {
-                HStack(alignment: .top, spacing: 16) {
-                    loupe
-                    VStack(alignment: .leading, spacing: 8) {
-                        zoomSection
-                        areaOutline
-                        meterSection
+                if loupeSize == .small {
+                    HStack(alignment: .top, spacing: 16) {
+                        loupe
+                        VStack(alignment: .leading, spacing: 8) {
+                            zoomSection
+                            areaOutline
+                            meterSection
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    loupe
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            zoomSection
+                            areaOutline
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            meterSection
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
             if !focusAssist.checkShotCells.isEmpty {
@@ -43,27 +86,49 @@ struct FocusAssistPanel: View {
                 Button("Close", action: onClose)
                 Button("Check shot", action: onCheckShot)
                     .disabled(focusAssist.isCheckShotBusy)
+                Picker("Loupe", selection: $focusAssist.loupeSize) {
+                    ForEach(LoupeSize.allCases, id: \.self) { Text($0.label) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                Toggle("Grain view", isOn: $focusAssist.grainView)
             }
-            Text("F or Esc closes · R resets peak · C check shot")
+            Text("F or Esc closes · R resets peak · C check shot · L loupe size · G grain view")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
 
+    /// Reads the width the panel is offered, not the width it draws: a
+    /// sibling of the loupe, so a fixed-size loupe wider than the row cannot
+    /// widen what it is measured against.
+    private var widthReader: some View {
+        GeometryReader { geometry in
+            Color.clear
+                .onChange(of: geometry.size.width, initial: true) { _, width in
+                    availableWidth = width
+                }
+        }
+    }
+
     @ViewBuilder
     private var loupe: some View {
         Group {
+            // Whole screen pixels per frame pixel, drawn nearest-neighbour.
+            let pixels = loupeFramePixels
+            let width = loupeSize.points(framePixels: pixels.width, displayScale: displayScale)
+            let height = loupeSize.points(framePixels: pixels.height, displayScale: displayScale)
             if let image = focusAssist.loupeImage {
-                Image(decorative: image, scale: 2, orientation: .up)
+                Image(decorative: image, scale: 1, orientation: .up)
+                    .resizable()
                     .interpolation(.none)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 320, maxHeight: 220)
+                    .frame(width: width, height: height)
                     .background(Color.black)
             } else {
                 Rectangle()
                     .fill(Color.black.opacity(0.85))
-                    .frame(width: 320, height: 212)
+                    .frame(width: width, height: height)
                     .overlay {
                         ProgressView()
                             .tint(.white)

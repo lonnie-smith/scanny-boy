@@ -95,7 +95,7 @@ struct CaptureStageView: View {
     /// phase or loupe changes does not scroll the capture section off screen.
     /// Bound here, not the play/pause button: the button is removed from the
     /// hierarchy while focus assist is open and can't take focus at all while
-    /// disabled — any of which used to strand F/Esc/R/C/Space with nothing
+    /// disabled — any of which used to strand F/Esc/R/C/L/G/Space with nothing
     /// able to hold `captureFocused`.
     private var captureKeyFocusSink: some View {
         Color.clear
@@ -137,6 +137,20 @@ struct CaptureStageView: View {
                       capture.focusAssist.isOpen, !capture.focusAssist.isCheckShotBusy
                 else { return .ignored }
                 Task { await capture.focusAssist.takeCheckShot(captureFolder: capture.captureFolder) }
+                return .handled
+            }
+            .onKeyPress("l") {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      capture.focusAssist.isOpen
+                else { return .ignored }
+                capture.focusAssist.cycleLoupeSize()
+                return .handled
+            }
+            .onKeyPress("g") {
+                guard captureFocused, !AppKeyboard.isTextInputFirstResponder(),
+                      capture.focusAssist.isOpen
+                else { return .ignored }
+                capture.focusAssist.toggleGrainView()
                 return .handled
             }
             .onKeyPress(.delete) {

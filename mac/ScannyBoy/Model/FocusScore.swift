@@ -10,10 +10,18 @@ enum FocusScore {
         return score(image: image)
     }
 
-    static func score(image: CGImage) -> Double {
+    /// An image drawn into an 8-bit grey buffer — the input to both the score
+    /// and the grain view (docs/FOCUS_LOCK_PLAN.md §1.2), so it is drawn once.
+    struct GreyFrame: Sendable {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+    }
+
+    static func greyFrame(image: CGImage) -> GreyFrame? {
         let width = image.width
         let height = image.height
-        guard width > 4, height > 4 else { return 0 }
+        guard width > 4, height > 4 else { return nil }
         var grey = [UInt8](repeating: 0, count: width * height)
         let drawn = grey.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(
@@ -28,7 +36,17 @@ enum FocusScore {
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
-        guard drawn else { return 0 }
+        return drawn ? GreyFrame(width: width, height: height, pixels: grey) : nil
+    }
+
+    static func score(image: CGImage) -> Double {
+        greyFrame(image: image).map(score(grey:)) ?? 0
+    }
+
+    static func score(grey frame: GreyFrame) -> Double {
+        let width = frame.width
+        let height = frame.height
+        let grey = frame.pixels
         var sum = 0.0
         var count = 0
         for y in (height / 4)..<(height * 3 / 4) {

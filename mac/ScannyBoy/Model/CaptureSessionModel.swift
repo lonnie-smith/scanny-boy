@@ -171,7 +171,7 @@ final class CaptureSessionModel {
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Pictures/Scanny Boy Captures", directoryHint: .isDirectory)
         gridProfileID = defaults.string(forKey: ConfigurationModel.lastGridProfileKey)
-        focusAssist = FocusAssistModel(camera: camera, runner: runner)
+        focusAssist = FocusAssistModel(camera: camera, runner: runner, defaults: defaults)
     }
 
     var perNegative: Int? {
