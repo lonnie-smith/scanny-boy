@@ -97,10 +97,10 @@ struct CaptureQueueRow: View {
     private var iconName: String {
         switch negative.step {
         case .published: "checkmark.circle.fill"
-        case .preparing, .checking, .stitching: "gearshape.fill"
+        case .preparing, .checking, .composing, .stitching: "gearshape.fill"
         case .prepareFailed, .checkFailed, .stitchFailed: "xmark.octagon.fill"
         case .waitingForDisk: "externaldrive.badge.exclamationmark"
-        case .waitingPrepare, .waitingCheck, .waitingStitch: "clock.fill"
+        case .waitingPrepare, .waitingCheck, .waitingStitch, .waitingCommit: "clock.fill"
         }
     }
 
@@ -108,7 +108,7 @@ struct CaptureQueueRow: View {
         switch negative.step {
         case .published: .green
         case .prepareFailed, .checkFailed, .stitchFailed: .red
-        case .stitching, .preparing, .checking: .orange
+        case .stitching, .composing, .preparing, .checking: .orange
         case .waitingForDisk: .yellow
         default: .secondary
         }
@@ -133,8 +133,11 @@ struct CaptureQueueRow: View {
         case .checking:
             stepName = "Checking"
         case .waitingStitch: return "Waiting to stitch"
+        case .composing:
+            stepName = "Compositing"
+        case .waitingCommit: return "Waiting to publish"
         case .stitching:
-            stepName = "Stitching"
+            stepName = "Publishing"
         case .published: return "Published"
         case .prepareFailed:
             return "Prepare failed — \(negative.failureMessage ?? "unknown")"
@@ -154,7 +157,7 @@ struct CaptureQueueRow: View {
 
     private var showProgress: Bool {
         switch negative.step {
-        case .preparing, .checking, .stitching: true
+        case .preparing, .checking, .composing, .stitching: true
         default: false
         }
     }
@@ -179,7 +182,7 @@ struct CaptureQueueRow: View {
             if let published = negative.publishedAt {
                 Text(Self.formatDuration(published.timeIntervalSince(negative.enqueuedAt)))
             }
-        case .preparing, .checking, .stitching:
+        case .preparing, .checking, .composing, .stitching:
             elapsedView
         default:
             EmptyView()

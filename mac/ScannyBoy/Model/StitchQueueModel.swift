@@ -1,7 +1,12 @@
 import Foundation
 import Observation
 
-/// Background prepare → capture check → serial stitch queue.
+/// Background prepare → capture check → compose → commit queue.
+///
+/// Negatives of one roll compose (the order-independent half of a stitch)
+/// several at a time, up to `parallelStitches`, then commit (publish) one at
+/// a time in capture order. Different rolls commit concurrently, since their
+/// locks differ (PARALLEL_STITCH_PLAN §3.7).
 @MainActor
 @Observable
 final class StitchQueueModel {
@@ -17,6 +22,11 @@ final class StitchQueueModel {
         case waitingCheck
         case checking
         case waitingStitch
+        /// Composing the negative ahead of its commit (`stitch --compose-only`).
+        case composing
+        /// Composed (or its compose failed): waiting for its turn to publish.
+        case waitingCommit
+        /// The commit: `stitch` publishing the negative into the roll.
         case stitching
         case published
         case prepareFailed
@@ -33,10 +43,12 @@ final class StitchQueueModel {
             }
         }
 
-        /// Not yet checked: the entry may still reach `waitingStitch`.
-        var isBeforeStitch: Bool {
+        /// Not yet composing: the entry has not started its compose, and a
+        /// later negative of its roll must not start one ahead of it.
+        var precedesCompose: Bool {
             switch self {
-            case .waitingPrepare, .preparing, .waitingCheck, .checking, .waitingForDisk: true
+            case .waitingPrepare, .preparing, .waitingCheck, .checking, .waitingForDisk,
+                .waitingStitch: true
             default: false
             }
         }
@@ -99,7 +111,17 @@ final class StitchQueueModel {
     var onNegativePublished: (() -> Void)?
     private(set) var negatives: [QueuedNegative] = []
     private(set) var activePrepareCount = 0
-    private(set) var isStitching = false
+    /// Normalized paths of the rolls with a commit running that has not yet
+    /// published. A roll publishes one negative at a time, so it is in here
+    /// from the start of its commit until `negative_published` (or the
+    /// process exit, whichever comes first).
+    private(set) var committingRolls: Set<String> = []
+    /// Commits that have published their negative but whose process is still
+    /// running its tail (scratch detection, edit seeds, previews, the
+    /// end-of-run write), keyed by entry id, valued by normalized roll path.
+    /// The negative is in the roll, but the process still holds the roll lock
+    /// shared, so the queue is not drained and `roll refresh` cannot start.
+    private(set) var tailingCommits: [UUID: String] = [:]
     private(set) var isRefreshing = false
     private(set) var progress: [UUID: StepProgress] = [:]
 
@@ -114,30 +136,45 @@ final class StitchQueueModel {
     /// removed when `rollRefresh` runs for it.
     private var rollsNeedingRefresh: Set<String> = []
     private let defaults: UserDefaults
+    private let stateDirectory: URL
+    /// Compose sessions in flight, so Discard can cancel them.
+    private var composeSessions: [UUID: CLISession] = [:]
+    /// Entries that hit `ROLL_BUSY`, and the earliest time to try again.
+    private var retryNotBefore: [UUID: Date] = [:]
+    /// How long an entry that found its roll busy waits before it retries.
+    var busyRetryDelay: Duration = .milliseconds(500)
 
-    /// How many negatives are stitched at the same time. The queue will cap
-    /// concurrent composes, and the composed-ahead entries per roll, at this
-    /// value (PARALLEL_STITCH_PLAN §3.7–3.8); nothing schedules by it yet.
+    /// How many negatives are stitched at the same time. The queue caps
+    /// concurrent composes, and a roll's composed-but-unpublished entries
+    /// (see `startComposesIfNeeded`), at this value (PARALLEL_STITCH_PLAN
+    /// §3.7–3.8). It is read each time the queue schedules work, so lowering
+    /// it never cancels a running compose; it only stops new ones starting.
     /// Sticky across launches. The Capture tab's picker disables it while a
     /// capture sequence or the queue is busy.
     var parallelStitches: Int {
         didSet { defaults.set(parallelStitches, forKey: Self.parallelStitchesKey) }
     }
 
-    init(runner: CLIRunner, defaults: UserDefaults = AppEnvironment.defaults) {
+    init(
+        runner: CLIRunner,
+        defaults: UserDefaults = AppEnvironment.defaults,
+        stateDirectory: URL = AppEnvironment.supportDirectory
+    ) {
         self.runner = runner
         self.defaults = defaults
+        self.stateDirectory = stateDirectory
         let stored = defaults.integer(forKey: Self.parallelStitchesKey)
         self.parallelStitches =
             Self.parallelStitchesChoices.contains(stored) ? stored : Self.defaultParallelStitches
         restoreState()
     }
 
-    /// Entries still moving through prepare, check or stitch. A failed entry
-    /// is not work: it holds no roll lock and must not block the end-of-queue
-    /// roll refresh.
+    /// Entries still moving through prepare, check, compose or commit, and
+    /// commit processes still finishing after their negative published. A
+    /// failed entry is not work: it holds no roll lock and must not block the
+    /// end-of-queue roll refresh.
     var hasWork: Bool {
-        negatives.contains { !$0.step.isTerminal }
+        negatives.contains { !$0.step.isTerminal } || !tailingCommits.isEmpty
     }
 
     /// Everything not yet published, failures included — what Discard removes.
@@ -149,7 +186,7 @@ final class StitchQueueModel {
         Set(negatives.filter { $0.step == .published }.map(\.id))
     }
 
-    var isQueueBusy: Bool { hasWork || isStitching || isRefreshing }
+    var isQueueBusy: Bool { hasWork || !committingRolls.isEmpty || isRefreshing }
 
     /// The entries that belong to `roll`, oldest first. The queue holds
     /// entries for every roll it has worked on, but a roll's Capture tab
@@ -166,7 +203,18 @@ final class StitchQueueModel {
     }
 
     func hasWork(on roll: URL) -> Bool {
-        negatives(for: roll).contains { !$0.step.isTerminal }
+        hasWork(onRollPath: Self.normalizedPath(roll))
+    }
+
+    /// Whether `path` (a normalized roll path) has an unfinished entry, a
+    /// commit in flight, or a published commit's process still running.
+    private func hasWork(onRollPath path: String) -> Bool {
+        negatives.contains { entry in
+            !entry.step.isTerminal
+                && (entry.context.map { Self.normalizedPath($0.rollURL) == path } ?? false)
+        }
+            || committingRolls.contains(path)
+            || tailingCommits.values.contains(path)
     }
 
     func configure(
@@ -235,7 +283,6 @@ final class StitchQueueModel {
         if !leavesOtherWork {
             drainTask?.cancel()
             drainTask = nil
-            isStitching = false
             isRefreshing = false
         }
         var urls: [URL] = []
@@ -247,6 +294,10 @@ final class StitchQueueModel {
             urls.append(contentsOf: entry.framePaths.map { URL(fileURLWithPath: $0) })
             urls.append(URL(fileURLWithPath: entry.workFolder))
             progress.removeValue(forKey: entry.id)
+            retryNotBefore.removeValue(forKey: entry.id)
+            if let session = composeSessions.removeValue(forKey: entry.id) {
+                Task { await session.cancel() }
+            }
             return false
         }
         negatives = remaining
@@ -262,7 +313,10 @@ final class StitchQueueModel {
 
     private func pump() {
         startPreparesIfNeeded()
-        startNextStitchIfNeeded()
+        // Commits before composes: a commit leaving `waitingCommit` frees a
+        // slot in its roll's composed-ahead bound.
+        startCommitsIfNeeded()
+        startComposesIfNeeded()
     }
 
     private func mutateEntry(id: UUID, _ mutate: (inout QueuedNegative) -> Void) {
@@ -356,76 +410,249 @@ final class StitchQueueModel {
         pump()
     }
 
-    private func startNextStitchIfNeeded() {
-        // `roll refresh` holds the roll lock; a stitch started now would fail.
-        guard !isStitching, !isRefreshing else { return }
-        // TETHER_PLAN §4.1: same-roll stitches publish in capture order, so a
-        // negative waits while any earlier one on its roll is still short of
-        // its stitch. Later captures and other rolls do not hold it back.
-        let ready = negatives.indices.first { index in
-            guard negatives[index].step == .waitingStitch,
-                  let roll = negatives[index].context?.rollURL
-            else { return false }
-            return !negatives[..<index].contains { earlier in
-                earlier.step.isBeforeStitch
-                    && (earlier.context.map { Self.isSameRoll($0.rollURL, roll) } ?? true)
+    // MARK: - Compose
+
+    /// Starts composes for entries waiting on one, in capture order.
+    ///
+    /// A compose is the order-independent half of a stitch, so several run at
+    /// once. An entry starts when
+    /// - no earlier entry of its roll is still short of composing (still
+    ///   preparing, checking, waiting for disk, or waiting for its own turn),
+    ///   so a roll's composes start in capture order and an early negative
+    ///   never waits behind a later one's compose,
+    /// - fewer than `parallelStitches` composes are running in all, and
+    /// - fewer than `parallelStitches` entries of its roll are composing or
+    ///   composed and waiting to commit, which bounds the artifacts on disk
+    ///   to the same number. The entry next to publish on its roll (the
+    ///   earliest unfinished one) is exempt from this bound, so a bound full
+    ///   of later negatives, which a restored queue can hold, can never
+    ///   starve the one they are waiting for.
+    ///
+    /// `parallelStitches` is read here, at scheduling time.
+    private func startComposesIfNeeded() {
+        // `roll refresh` holds the roll lock exclusively; a compose started
+        // now would fail ROLL_BUSY.
+        guard !isRefreshing else { return }
+        let limit = parallelStitches
+        var composing = 0
+        var composedAhead: [String: Int] = [:]
+        for entry in negatives {
+            guard let context = entry.context else { continue }
+            if entry.step == .composing { composing += 1 }
+            if entry.step == .composing || entry.step == .waitingCommit {
+                composedAhead[Self.normalizedPath(context.rollURL), default: 0] += 1
             }
         }
-        guard let ready, let context = negatives[ready].context else { return }
-        let entry = negatives[ready]
-        let rollURL = context.rollURL
-        isStitching = true
-        let id = entry.id
-        mutateEntry(id: id) { $0.step = .stitching }
-        progress[id] = StepProgress(
-            completed: 0, total: 0, step: nil, startedAt: .now
-        )
-        let work = URL(fileURLWithPath: entry.workFolder)
-        Task {
-            let command = CLICommand.stitch(
-                work: work, roll: rollURL, rig: context.rigProfileID, deferRollRefresh: true
-            )
-            let result = await runCommand(id: id, command)
-            progress.removeValue(forKey: id)
-            if negatives.firstIndex(where: { $0.id == id }) != nil {
-                if result.failed {
-                    mutateEntry(id: id) {
-                        $0.step = .stitchFailed
-                        $0.failureCode = result.code?.name
-                        $0.failureMessage = result.message
-                    }
-                } else {
-                    mutateEntry(id: id) {
-                        $0.step = .published
-                        $0.publishedAt = Date()
-                        $0.outputFilename = result.outputFilename
-                    }
-                    rollsNeedingRefresh.insert(Self.normalizedPath(rollURL))
-                    onNegativePublished?()
-                    try? FileManager.default.removeItem(at: work)
-                }
-                persistState()
+        // Rolls with an earlier entry still short of composing, and rolls
+        // with any earlier entry not yet finished.
+        var heldRolls: Set<String> = []
+        var openRolls: Set<String> = []
+        for entry in negatives {
+            guard let context = entry.context else { continue }
+            let roll = Self.normalizedPath(context.rollURL)
+            defer { if !entry.step.isTerminal { openRolls.insert(roll) } }
+            guard entry.step == .waitingStitch else {
+                if entry.step.precedesCompose { heldRolls.insert(roll) }
+                continue
             }
-            isStitching = false
+            guard !heldRolls.contains(roll) else { continue }
+            // The entry next to publish on its roll is exempt from the
+            // per-roll bound, so a bound full of later negatives (a restored
+            // queue can hold them) can never starve the one they wait for.
+            let underRollBound = composedAhead[roll, default: 0] < limit || !openRolls.contains(roll)
+            guard composing < limit, underRollBound, isRetryDue(entry.id) else {
+                // It has to wait, so nothing behind it on its roll may start.
+                heldRolls.insert(roll)
+                continue
+            }
+            startCompose(id: entry.id, context: context, workFolder: entry.workFolder)
+            composing += 1
+            composedAhead[roll, default: 0] += 1
+        }
+    }
+
+    private func startCompose(id: UUID, context: EntryContext, workFolder: String) {
+        mutateEntry(id: id) { $0.step = .composing }
+        progress[id] = StepProgress(completed: 0, total: 0, step: nil, startedAt: .now)
+        persistState()
+        Task {
+            await runCompose(id: id, context: context, workFolder: workFolder)
             pump()
             await finishDrainIfNeeded()
         }
     }
 
+    private func runCompose(id: UUID, context: EntryContext, workFolder: String) async {
+        // Discarded between scheduling and this task running.
+        guard negatives.contains(where: { $0.id == id }) else { return }
+        let command = CLICommand.stitch(
+            work: URL(fileURLWithPath: workFolder),
+            roll: context.rollURL,
+            rig: context.rigProfileID,
+            composeOnly: true
+        )
+        let result = await runCommand(
+            id: id, command,
+            onSession: { [weak self] session in self?.composeSessions[id] = session }
+        )
+        composeSessions.removeValue(forKey: id)
+        progress.removeValue(forKey: id)
+        guard negatives.contains(where: { $0.id == id }) else { return }
+        if result.failed, result.code == .rollBusy {
+            // Something else holds the roll; try again shortly.
+            mutateEntry(id: id) { $0.step = .waitingStitch }
+            scheduleRetry(for: id)
+        } else {
+            // Success, or a failure the commit will redo and report itself:
+            // it recomposes when the artifact is missing, so a failed compose
+            // is never fatal here.
+            mutateEntry(id: id) { $0.step = .waitingCommit }
+        }
+        persistState()
+    }
+
+    // MARK: - Commit
+
+    /// Starts commits for entries that are composed and next in line.
+    ///
+    /// A commit publishes into the roll, so one roll commits one negative at a
+    /// time, in capture order: an entry waits while any earlier entry of its
+    /// roll is still short of published or failed (TETHER_PLAN §4.1). Different
+    /// rolls commit concurrently, since their locks differ. The roll frees up
+    /// for the next commit when the running one emits `negative_published`,
+    /// not when its process exits.
+    private func startCommitsIfNeeded() {
+        // `roll refresh` holds the roll lock; a commit started now would fail.
+        guard !isRefreshing else { return }
+        for index in negatives.indices {
+            let entry = negatives[index]
+            guard entry.step == .waitingCommit, let context = entry.context,
+                  isRetryDue(entry.id)
+            else { continue }
+            let roll = Self.normalizedPath(context.rollURL)
+            guard !committingRolls.contains(roll) else { continue }
+            let blocked = negatives[..<index].contains { earlier in
+                !earlier.step.isTerminal
+                    && (earlier.context.map { Self.normalizedPath($0.rollURL) == roll } ?? true)
+            }
+            guard !blocked else { continue }
+            startCommit(id: entry.id, context: context, workFolder: entry.workFolder)
+        }
+    }
+
+    private func startCommit(id: UUID, context: EntryContext, workFolder: String) {
+        let roll = Self.normalizedPath(context.rollURL)
+        committingRolls.insert(roll)
+        mutateEntry(id: id) { $0.step = .stitching }
+        progress[id] = StepProgress(completed: 0, total: 0, step: nil, startedAt: .now)
+        persistState()
+        Task {
+            await runCommit(id: id, context: context, workFolder: URL(fileURLWithPath: workFolder))
+            pump()
+            await finishDrainIfNeeded()
+        }
+    }
+
+    private func runCommit(id: UUID, context: EntryContext, workFolder: URL) async {
+        let roll = Self.normalizedPath(context.rollURL)
+        let command = CLICommand.stitch(
+            work: workFolder, roll: context.rollURL, rig: context.rigProfileID,
+            deferRollRefresh: true
+        )
+        let result = await runCommand(
+            id: id, command,
+            onEvent: { [weak self] event in
+                guard event.kind == .negativePublished else { return }
+                self?.commitPublished(id: id, roll: roll, output: event.output)
+            }
+        )
+        progress.removeValue(forKey: id)
+        let published = tailingCommits.removeValue(forKey: id) != nil
+        // A published commit freed the roll at `negative_published`, and the
+        // roll's next commit may hold it now; only an unpublished exit owns it.
+        if !published { committingRolls.remove(roll) }
+        if published {
+            // In the roll whatever the exit status says; only the tail failed.
+            try? FileManager.default.removeItem(at: workFolder)
+        } else if negatives.contains(where: { $0.id == id }) {
+            if result.failed, result.code == .rollBusy {
+                // The publish lock was held: nothing was written. Retry.
+                mutateEntry(id: id) { $0.step = .waitingCommit }
+                scheduleRetry(for: id)
+            } else if result.failed {
+                mutateEntry(id: id) {
+                    $0.step = .stitchFailed
+                    $0.failureCode = result.code?.name
+                    $0.failureMessage = result.message
+                }
+            } else {
+                // A CLI that does not emit `negative_published`: success at
+                // exit is the publish.
+                markPublished(id: id, roll: roll, output: result.outputFilename)
+                try? FileManager.default.removeItem(at: workFolder)
+            }
+        }
+        persistState()
+    }
+
+    /// The commit's `negative_published` event: the negative is in the roll.
+    /// Frees the roll for its next commit while this process runs its tail.
+    private func commitPublished(id: UUID, roll: String, output: String?) {
+        tailingCommits[id] = roll
+        markPublished(id: id, roll: roll, output: output)
+        committingRolls.remove(roll)
+        persistState()
+        pump()
+    }
+
+    private func markPublished(id: UUID, roll: String, output: String?) {
+        if negatives.contains(where: { $0.id == id }) {
+            mutateEntry(id: id) {
+                $0.step = .published
+                $0.publishedAt = Date()
+                $0.outputFilename = output
+            }
+        }
+        rollsNeedingRefresh.insert(roll)
+        onNegativePublished?()
+    }
+
+    // MARK: - Retry
+
+    private func isRetryDue(_ id: UUID) -> Bool {
+        guard let date = retryNotBefore[id] else { return true }
+        return date <= Date()
+    }
+
+    /// Holds `id` back for `busyRetryDelay`, then pumps. The delay also
+    /// keeps the completion's own `pump()` from respawning the process at once.
+    private func scheduleRetry(for id: UUID) {
+        let delay = busyRetryDelay
+        retryNotBefore[id] = Date().addingTimeInterval(
+            Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
+        )
+        Task {
+            try? await Task.sleep(for: delay)
+            retryNotBefore.removeValue(forKey: id)
+            pump()
+        }
+    }
+
     private func drainAndRefresh() async {
-        while hasWork || isStitching {
+        while hasWork {
             pump()
             try? await Task.sleep(for: .milliseconds(200))
         }
         await finishDrainIfNeeded()
     }
 
-    /// Once nothing is left in flight, runs the refresh this queue's
-    /// publishes deferred. Failed entries do not hold it back.
+    /// Runs the refresh this queue's publishes deferred, for each roll that
+    /// has nothing left in flight: no unfinished entry, no commit, and no
+    /// published commit's process still running. Failed entries do not hold
+    /// it back.
     private func finishDrainIfNeeded() async {
         updateSleepAssertion()
-        guard !hasWork, !isStitching else { return }
-        for path in rollsNeedingRefresh.sorted() {
+        for path in rollsNeedingRefresh.sorted() where !hasWork(onRollPath: path) {
             await rollRefresh(roll: URL(fileURLWithPath: path))
         }
     }
@@ -466,7 +693,7 @@ final class StitchQueueModel {
     // MARK: - Persistence
 
     private var stateFileURL: URL {
-        AppEnvironment.supportDirectory.appending(path: Self.stateFilename)
+        stateDirectory.appending(path: Self.stateFilename)
     }
 
     private func persistState() {
@@ -515,8 +742,12 @@ final class StitchQueueModel {
                 down: state.down
             )
             switch copy.step {
-            case .stitching:
+            case .composing:
                 copy.step = .waitingStitch
+            case .waitingCommit, .stitching:
+                // The commit falls back to a full stitch if the compose
+                // artifact is gone or stale.
+                copy.step = .waitingCommit
             case .preparing, .checking, .waitingCheck:
                 copy.step = .waitingPrepare
             default:
@@ -560,12 +791,23 @@ final class StitchQueueModel {
         var message: String?
     }
 
-    private func runCommand(id: UUID, _ command: CLICommand) async -> CommandResult {
+    /// Runs `command` to completion. `onSession` receives the session before
+    /// it starts, so a caller can cancel it; `onEvent` sees every event as it
+    /// arrives, before the command has finished.
+    private func runCommand(
+        id: UUID,
+        _ command: CLICommand,
+        onSession: ((CLISession) -> Void)? = nil,
+        onEvent: ((CLIEvent) -> Void)? = nil
+    ) async -> CommandResult {
         var result = CommandResult()
         do {
-            for await output in try await runner.session(for: command).start() {
+            let session = runner.session(for: command)
+            onSession?(session)
+            for await output in try await session.start() {
                 switch output {
                 case .event(let event):
+                    onEvent?(event)
                     if event.kind == .error, let code = event.code {
                         result.failed = true
                         result.code = code
