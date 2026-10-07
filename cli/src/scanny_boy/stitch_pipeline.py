@@ -1416,7 +1416,7 @@ def run_compose(
     saved for the commit to reuse (docs/PARALLEL_STITCH_PLAN.md §3.2).
 
     For each completed group in the work manifest: solve the layout, run
-    `compose_negative`, and write `<work>/composed/<group_id>/` (see
+    `compose_negative`, and write `<work>/.composed/<group_id>/` (see
     `compose_artifact`). A group whose solve or compose fails gets a failure
     artifact instead. Nothing is written to the roll: the roll is read once,
     as a snapshot, for only what composing needs — its film kind, the locked

@@ -4,7 +4,7 @@ beside its work folder so a later `stitch` can skip it
 
 `stitch --compose-only` solves a negative's layout and runs
 `composite.compose_negative`, then writes the result to
-`<work>/composed/<group_id>/`:
+`<work>/.composed/<group_id>/`:
 
 - `log.npy`, `covered.npy`, `grid.npy`, `keep.npy`: the four
   `ComposedNegative` arrays, plain `np.save` (no compression, so `log.npy`
@@ -46,7 +46,7 @@ import numpy as np
 from scanny_boy.composite import ComposedNegative
 
 COMPOSE_FORMAT_VERSION = 1
-COMPOSED_DIRNAME = "composed"
+COMPOSED_DIRNAME = ".composed"
 
 _ARRAY_FIELDS = ("img_log", "covered", "grid", "keep")
 _INPUTS_FILE = "inputs.json"

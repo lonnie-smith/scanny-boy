@@ -164,7 +164,7 @@ clamp at `composite.py:931` is the first roll-dependent line.
 
 - runs steps 1–5 and the solve;
 - calls `compose_negative`;
-- writes `W/composed/<group_id>/`, then exits.
+- writes `W/.composed/<group_id>/`, then exits.
 
 It writes **nothing to the roll** and takes no exclusive lock (§3.4).
 
@@ -189,13 +189,13 @@ the layout is solved. It fails `INSUFFICIENT_DISK` exactly like prepare, so
 the queue's waiting-for-disk path handles it.
 
 A compose failure (solve refused, `STITCH_UNDERCONSTRAINED`, and so on) is
-written as `W/composed/<group_id>/failure.json` and emitted as an
+written as `W/.composed/<group_id>/failure.json` and emitted as an
 `error`. The **commit** still records it in the roll, as today, so a failed
 negative's record looks the same either way.
 
 ### 3.3 The commit
 
-`stitch` (no new flag) looks for `W/composed/<group_id>/`.
+`stitch` (no new flag) looks for `W/.composed/<group_id>/`.
 
 - **A valid artifact** is one whose `inputs.json` matches the fresh roll
   and the work folder. The commit loads it instead of solving and

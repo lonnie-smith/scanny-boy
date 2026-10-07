@@ -314,7 +314,7 @@ a skip must remove a whole group's worth or the run fails
 half of a stitch ahead of time and writes nothing to the roll. For every
 completed group in the work manifest it validates the work folder exactly as
 a stitch does, solves the layout, warps and blends the negative, and saves
-the result as a *compose artifact* in `<work>/composed/<group_id>/`:
+the result as a *compose artifact* in `<work>/.composed/<group_id>/`:
 `log.npy`, `covered.npy`, `grid.npy` and `keep.npy` (the composed canvas and
 the arrays its metering needs), `composed.pkl` (the meters, the solve
 products, and the record fields the solve sets) and `inputs.json` (the

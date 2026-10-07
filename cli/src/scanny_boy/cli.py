@@ -301,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--compose-only",
         action="store_true",
         dest="compose_only",
-        help="solve and compose each negative into <work>/composed/ for a "
+        help="solve and compose each negative into <work>/.composed/ for a "
         "later stitch to reuse; writes nothing to the roll",
     )
     run = subparsers.add_parser(

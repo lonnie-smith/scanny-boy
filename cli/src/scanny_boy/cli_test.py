@@ -4137,7 +4137,7 @@ def test_stitch_compose_only_streams_started_progress_composed_finished(
 
     assert library_db_path().read_bytes() == db_before
     assert load_roll_manifest(roll).to_dict() == manifest_before
-    assert (work_dir / "composed" / "negative-01" / "log.npy").is_file()
+    assert (work_dir / ".composed" / "negative-01" / "log.npy").is_file()
 
 
 def test_stitch_compose_only_reports_a_failed_group_and_exits_1(capsys, tmp_path):
@@ -4156,7 +4156,7 @@ def test_stitch_compose_only_reports_a_failed_group_and_exits_1(capsys, tmp_path
     errors = [e for e in events if e["event"] == "error"]
     assert [e["code"] for e in errors] == ["STITCH_UNDERCONSTRAINED"]
     assert "negative_composed" not in kinds
-    assert (work / "composed" / "negative-01" / "failure.json").is_file()
+    assert (work / ".composed" / "negative-01" / "failure.json").is_file()
 
 
 def test_stitch_compose_only_with_negatives_is_a_usage_error(
@@ -4181,7 +4181,7 @@ def test_stitch_compose_only_with_negatives_is_a_usage_error(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "mutually exclusive" in captured.err
-    assert not (work_dir / "composed").exists()
+    assert not (work_dir / ".composed").exists()
 
 
 def test_stitch_compose_only_cannot_overlap_an_exclusive_writer(
@@ -4198,10 +4198,10 @@ def test_stitch_compose_only_cannot_overlap_an_exclusive_writer(
     events, _err = _stdout_events(capsys)
     assert [e["event"] for e in events] == ["started", "error", "finished"]
     assert events[1]["code"] == "ROLL_BUSY"
-    assert not (work_dir / "composed").exists()
+    assert not (work_dir / ".composed").exists()
 
     # A shared holder (another compose, an export) does not block it.
     with shared_roll_lock(roll):
         assert main(args) == 0
     capsys.readouterr()
-    assert (work_dir / "composed" / "negative-01" / "log.npy").is_file()
+    assert (work_dir / ".composed" / "negative-01" / "log.npy").is_file()

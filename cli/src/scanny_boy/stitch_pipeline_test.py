@@ -3006,7 +3006,7 @@ def _run_compose(work, roll, *, events=None, cancel=None, **kwargs):
 
 
 def _artifact(work: Path, group_id: str = "negative-01") -> Path:
-    return work / "composed" / group_id
+    return work / ".composed" / group_id
 
 
 def _published_hashes(roll: Path) -> dict[str, str]:
@@ -3090,7 +3090,7 @@ def test_compose_only_writes_the_artifact_and_nothing_to_the_roll(work_dir, tmp_
     ]
     log = np.load(artifact / "log.npy", mmap_mode="r")
     assert log.dtype == np.float32 and log.ndim == 3
-    assert not [p for p in (work_dir / "composed").iterdir() if p.name.startswith(".")]
+    assert not [p for p in (work_dir / ".composed").iterdir() if p.name.startswith(".")]
 
     composed = [e for e in events if isinstance(e, stitch_pipeline.NegativeComposed)]
     assert len(composed) == 1
@@ -3142,7 +3142,7 @@ def test_a_stitch_consuming_the_artifact_matches_a_plain_stitch(
     assert progress[-1].completed == progress[-1].total
     assert [e.completed for e in progress] == sorted(e.completed for e in progress)
     # The artifact has done its job.
-    assert not (work / "composed").exists()
+    assert not (work / ".composed").exists()
 
 
 def test_the_artifact_path_matches_when_the_clamp_engages(tmp_path, monkeypatch):
@@ -3258,7 +3258,7 @@ def test_each_fingerprint_field_alone_makes_the_stitch_recompute(
     stale = _stale_warnings(events)
     assert len(stale) == 1
     assert "negative-01" in stale[0].message
-    assert not (work_dir / "composed").exists()
+    assert not (work_dir / ".composed").exists()
 
 
 def test_real_input_changes_make_the_stitch_recompute(work_dir, tmp_path):
@@ -3452,7 +3452,7 @@ def test_a_failure_artifact_produces_the_same_failed_record_and_event(
     plain_codes = [e.code for e in plain_events if isinstance(e, WarningEvent)]
     assert codes == plain_codes
     assert Code.STITCH_CLAHE_FALLBACK_USED in codes
-    assert not (work / "composed").exists()
+    assert not (work / ".composed").exists()
 
 
 def test_compose_reports_insufficient_disk_before_writing_anything(
@@ -3476,7 +3476,7 @@ def test_compose_reports_insufficient_disk_before_writing_anything(
     assert [path for path, _ in seen] == [work_dir]
     # Sized from the artifact, not from nothing.
     assert seen[0][1] > 1024 * 1024
-    assert not (work_dir / "composed").exists()
+    assert not (work_dir / ".composed").exists()
 
 
 def test_compose_refuses_what_a_stitch_refuses(work_dir, tmp_path):
@@ -3497,7 +3497,7 @@ def test_compose_refuses_what_a_stitch_refuses(work_dir, tmp_path):
     with pytest.raises(StitchError) as exc_info:
         _run_compose(work_dir, unregistered)
     assert exc_info.value.code is Code.ROLL_NOT_FOUND
-    assert not (work_dir / "composed").exists()
+    assert not (work_dir / ".composed").exists()
 
 
 def test_a_cancelled_compose_leaves_no_artifact(work_dir, tmp_path):
@@ -3516,8 +3516,8 @@ def test_a_cancelled_compose_leaves_no_artifact(work_dir, tmp_path):
 
     assert outcome.status == "cancelled"
     assert outcome.published == []
-    assert not (work_dir / "composed").exists() or not list(
-        (work_dir / "composed").iterdir()
+    assert not (work_dir / ".composed").exists() or not list(
+        (work_dir / ".composed").iterdir()
     )
     assert not [e for e in events if isinstance(e, stitch_pipeline.NegativeComposed)]
 
@@ -3663,4 +3663,4 @@ def test_real_samples_composed_then_stitched_match_a_plain_stitch(
     assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
         plain_roll, plain_work, _PLAIN_RUN
     )
-    assert not (work / "composed").exists()
+    assert not (work / ".composed").exists()
