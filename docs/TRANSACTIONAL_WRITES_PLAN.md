@@ -112,6 +112,9 @@ negative still existing) are re-checked inside the transaction.
   treats the last run as the owner), published TIFF files, and the
   stitch's order-dependent normalization clamp. Narrowing it is the later
   parallel-stitching work, and this plan is its prerequisite.
+  (`PARALLEL_STITCH_PLAN.md` did that narrowing: compose and a deferred
+  stitch hold it shared, and a second per-roll publish lock orders the
+  commits.)
 - **Schema changes or migrations.** None are needed.
 - **App (Swift) changes.**
 - **Faster saves.** A transaction still rewrites the whole roll's rows
@@ -430,3 +433,7 @@ Each chunk leaves the fast tier green and is committed on its own.
   the roll lock still excludes other writers. Note that in a comment at
   the top of `run_stitch`, because the parallel-stitch work will remove
   that assumption.
+  *Resolved by `PARALLEL_STITCH_PLAN.md`:* a parallel commit loads its working
+  copy inside the publish lock, so planning, names and the clamp's reference
+  bounds see exactly the negatives published before it; only the
+  order-independent tail runs on the copy after the lock is released.

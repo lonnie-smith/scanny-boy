@@ -1,7 +1,8 @@
 # Capture queue progress: one row per negative
 
 While a roll is being shot, the stitch queue works through each negative in
-the background: prepare, check, stitch. Today the Capture tab shows that as a
+the background: prepare, check, compose, commit (originally prepare, check,
+stitch; the stitch was split by `docs/PARALLEL_STITCH_PLAN.md`). Today the Capture tab shows that as a
 strip of 64×48 tiles: a colour, an icon and a stamp, with the step and any
 failure message hidden in a hover tooltip. There is no way to tell how far
 along a negative is, or whether it is moving at all.
@@ -66,7 +67,8 @@ the inverted positive; that is expected, and it is what just landed.
 ## 1. The row
 
 ```
- ⚙  0913-142210   Stitching · Blending                ▓▓▓▓▓▓▓░░░   0:41
+ ⚙  0913-142210   Publishing · Writing stitched TIFF  ▓▓▓▓▓▓▓░░░   0:04
+ ⚙  0913-142235   Compositing · Blending               ▓▓▓▓▓░░░░░   0:21
  ⚙  0913-142305   Checking · Detecting features       ▓▓▓░░░░░░░   0:06
  ◷  0913-142350   Waiting to stitch                   ░░░░░░░░░░
  ✕  0913-142012   Check failed — too little overlap between frames
@@ -90,10 +92,21 @@ Status text per `Step`:
 | `waitingCheck` | Waiting to check |
 | `checking` | Checking · *step* |
 | `waitingStitch` | Waiting to stitch |
-| `stitching` | Stitching · *step* |
+| `composing` | Compositing · *step* |
+| `waitingCommit` | Waiting to publish |
+| `stitching` | Publishing · *step* |
 | `published` | Published |
 | `prepareFailed` / `checkFailed` / `stitchFailed` | Prepare / Check / Stitch failed — *message* |
 | `waitingForDisk` | Waiting for disk space |
+
+`composing` and `stitching` are the two halves of a stitch (the compose
+process and the commit process, `PARALLEL_STITCH_PLAN.md` §3.7), so a row
+reads Compositing, then Waiting to publish while earlier negatives of its roll
+publish, then Publishing. A composing row's *step* comes from
+`stitch --compose-only`'s `progress` events (`load` … `blend`); a publishing
+row's from the commit's. Several rows can be Compositing at once, up to the
+Capture tab's Parallel stitches setting. The failure label for a failed
+publish is still "Stitch failed".
 
 **Order.** Newest first, so the negative just shot is at the top and the
 published history runs down below it. Within the same session the queue
@@ -123,7 +136,7 @@ It is not a field of `QueuedNegative`, which is `Codable` and written to
 `stitch-queue.json` on every change. Progress is transient: after a relaunch
 `restoreState` resets active steps to waiting anyway.
 
-- When an entry enters `.preparing`, `.checking` or `.stitching`, set
+- When an entry enters `.preparing`, `.checking`, `.composing` or `.stitching`, set
   `progress[id] = StepProgress(completed: 0, total: 0, step: nil, startedAt: .now)`.
 - `runCommand` and `runCaptureCheck` take the entry's `id`. On
   `.event(e)` with `e.kind == .progress` and both counts present, update

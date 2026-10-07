@@ -2303,3 +2303,102 @@ normalization clamp, whose reference negatives and names come from the
 start-of-stitch copy; none of that is in a transaction. Transactions make the
 lock no longer load-bearing for the record, which is what lets the later
 parallel-stitch work narrow it. This change did not.
+
+# Stitches compose in parallel and publish in order (docs/PARALLEL_STITCH_PLAN.md)
+
+**The capture queue runs several of a roll's stitches at once, split into a
+roll-independent compose and an ordered commit, and the published result is
+identical to a serial run.** This reverses TETHER_PLAN's earlier rejection of
+a parallel stitch stage, which rested on the backlog being acceptable. The user
+now wants it to drain faster.
+
+**Why.** A stitch of one real 3-frame negative took about 25 s and used about
+1.2 of the Mac's 8 performance cores, so a backlog drained at one negative per
+25 s with most of the machine idle. About 5.8 s of that depends on the
+negatives published before it: the clamp's reference bounds, the TIFF write and
+its name. The rest (registration, warp, blend, metering, and the post-publish
+tail) does not.
+
+**The split.**
+
+- `composite()` is now `finish_negative(compose_negative(...))`. Compose runs
+  everything before the clamp; finish runs the clamp, normalize and encode.
+  The serial path runs literally the same code, so "identical to serial" holds
+  by construction.
+- `stitch --compose-only` saves the compose result to
+  `<work>/.composed/<group_id>/` (four `np.save` arrays, a pickle of the meters
+  and solve products, and an `inputs.json` fingerprint) and writes nothing to
+  the roll. The folder is a dot-folder so `prepare`'s folder-relatedness check
+  ignores it.
+- The commit (`stitch --defer-roll-refresh`, no `--negatives`) uses the
+  artifact when its fingerprint matches and recomputes in full otherwise.
+  **Correctness never depends on the artifact.** The fingerprint is
+  conservative: format and program versions, the work manifest hash, the rig
+  profile and its content hash, a hash of the stitch parameters, the film kind,
+  the film base's source hash and density, and the flat field's gain-map hash.
+  A stale or unreadable artifact emits `COMPOSE_ARTIFACT_STALE` and costs only
+  time. Deterministic compose failures are saved as failure artifacts, and the
+  commit records them as a stitch would; memory and write errors leave nothing,
+  and the commit recomposes.
+
+**Why the result stays identical.** Commits of a roll publish one at a time, in
+capture order, each against a roll loaded inside the publish lock. So the
+clamp's reference negatives, tethered `NN` names, collision suffixes, run ids
+and first-run seeding are what serial stitches compute, and recovery cleanup
+only ever sees earlier commits already completed with their staging gone. The
+commit replays the compose's warnings. Tests prove the ordering with a clamp
+that engages: three negatives composed in parallel and committed in order
+produce the same records, TIFF hashes and names as a serial stitch.
+
+**The lock model.** There are two per-roll advisory locks, both non-blocking
+(`ROLL_BUSY`).
+
+- The roll lock stays. Compose and a parallel commit hold it **shared** for
+  the whole process; every other writer, and a `stitch` without
+  `--defer-roll-refresh` or with `--negatives`, holds it exclusive, so they
+  still exclude every stitch and the reverse.
+- A new publish lock (`<roll_id>.publish.lock`) is held exclusively by a
+  commit for its publish section only: plan, name, clamp, TIFF write, record,
+  removal of the staging directory. `export` holds it shared, so a commit never
+  replaces a TIFF an export is reading. A missing or stale artifact is composed
+  to disk before the lock is taken.
+- Recovery cleanup under the roll's rules treats any run's staging directory as
+  stale. That is safe only because planning happens under the publish lock or
+  the exclusive roll lock. The prepare rules are unchanged.
+- The first publish checks, inside its transaction, that the film base and flat
+  field are still the ones the negative was normalized against, and raises
+  `FILM_BASE_CHANGED` otherwise. It sets only `locked_at`, never the whole
+  block.
+- `negative_published` is emitted after the publish lock is released, so the
+  app can start the roll's next commit while the previous one finishes its
+  tail. Scratch detection, the deband refit, the edit seeds and the end-of-run
+  write now run after the publish transaction in both modes; in parallel mode
+  `sync_previews` renders only the commit's own negatives, because the working
+  copy holds other commits' negatives whose tails may still be running.
+- Only deferred stitches run in parallel. A stitch that recomputes the
+  highlight lock and force-renders every preview keeps the exclusive lock.
+
+**The concurrency is the user's, not a measured one.** The Capture tab's
+Setup section has a "Parallel stitches" picker, 1–4, default 2, sticky across
+launches and disabled while a sequence or the queue is busy. One real
+negative's numbers do not predict a larger grid's, a compose peaks near 9 GiB
+and grows with the canvas, and the app cannot know what else the Mac is doing.
+Expected throughput on the measured negative is about 3x at 2 and about 4x
+from 3, where the serial commit becomes the bound. There is no silent memory
+cap; a warning under the picker is the remedy if swapping bites. Swapping makes
+the queue slow, never wrong.
+
+**The app schedules in order.** Composes start in capture order per roll,
+bounded globally and per roll (composed but unpublished) by the setting; the
+earliest unfinished entry of a roll is exempt from the per-roll bound so a
+restored queue cannot deadlock. The plan scheduled composes across rolls in
+capture order only; the per-roll in-order gate was added because, with one
+parallel stitch, a later negative could compose first and stall an earlier one.
+Commits are serial per roll and concurrent across rolls. `roll refresh` for a
+roll waits for that roll's entries, commits and post-publish tails.
+
+**What it did not change.** `run` (Add Scans) and Re-stitch keep the
+single-process, exclusive-lock stitch. Edit, metadata and delete are still
+excluded while a roll's queue has work, because `_persist` still replaces whole
+negative records. Every published pixel, name, id and record field is
+unchanged.

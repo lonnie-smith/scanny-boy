@@ -1,5 +1,102 @@
 # Parallel stitching plan
 
+## Status
+
+Implemented (PS-1 to PS-5). The sections below are the plan as written; this
+section records what was built and where it differs.
+
+| Commit | Subject |
+|---|---|
+| `34d1704` | Split composite() into compose and finish halves (PS-1) |
+| `307293c` | Add the Parallel stitches setting to the Capture tab |
+| `50488c1` | Compose a negative ahead of its stitch and reuse it (PS-2) |
+| `9eea58a` | Keep the compose artifact in a dot-folder |
+| `8dc7405` | Add the per-roll publish lock and clean every run's staging (PS-3) |
+| `64ed951` | Publish a stitch under its own lock so commits can overlap (PS-3) |
+| `953ba9a` | Compose negatives in parallel and publish them in order (PS-4) |
+| PS-5 | Document parallel stitching (this commit: TETHER_PLAN, DECISIONS, ARCHITECTURE, CAPTURE_QUEUE_PROGRESS_PLAN, TRANSACTIONAL_WRITES_PLAN; CONTRACT.md landed with PS-2 and PS-3) |
+
+### Deviations from this plan
+
+**The artifact (§3.2)**
+
+- The artifact is `<work>/.composed/<group_id>/`, a dot-folder, because a
+  non-dot folder made a later `prepare` into the same work folder fail
+  `OUTPUT_NOT_EMPTY` (folder-relatedness checks skip dot-entries).
+- The meters and solve products are one pickle, `composed.pkl`, not
+  `composed.json`; a failure artifact is `failure.json` plus
+  `record_fields.pkl`. Any unreadable file makes the reader report the artifact
+  unusable, and the caller recomputes.
+- The fingerprint (`inputs.json`) is wider than listed in §3.2. It adds the
+  group id and members and `stitch_params_sha256` (a hash of every threshold
+  and constant the solve and warp run under, so a changed constant invalidates
+  an artifact), and it leaves out the film-base `locked_at`, which moves at the
+  first publish and means nothing to a compose.
+- Only **deterministic** failures leave a failure artifact. A memory or write
+  error leaves nothing, and the commit falls back to the in-process path for
+  that group.
+- The artifact stores the warnings the solve emitted, and the **commit replays
+  them**, so a warning appears once, from the process that publishes.
+- A new warning code, `COMPOSE_ARTIFACT_STALE`, is emitted when the commit
+  discards an unusable artifact (protocol 26 adds it with `--compose-only`,
+  `negative_composed`, `negative_published` and `FILM_BASE_CHANGED`).
+  `--compose-only` with `--negatives` is a usage error.
+
+**The commit and the locks (§3.3 to §3.5)**
+
+- Parallel mode is `stitch --defer-roll-refresh` without `--negatives`. A
+  commit with no valid artifact **composes it to disk before taking the
+  publish lock**, one canvas at a time, so the publish section only finishes
+  from artifacts. A compose failure there is left as a failure artifact and
+  adopted like `--compose-only`'s.
+- In a work folder with several groups, every group's tail except the last
+  runs **inside** the publish lock, because each group's tail needs its encoded
+  image and deferring them all would hold every canvas in memory. Only the last
+  group's tail (all of a one-negative commit's) and the end-of-run work run
+  after the release.
+- Scratch detection, the deband refit and the edit seeds run after the publish
+  transaction in **both** modes, not only in parallel mode.
+- Recovery cleanup under `ROLL_RULES` treats **any** run's staging directory as
+  stale, not only a completed unit's. That is safe only because planning runs
+  under the publish lock or the exclusive roll lock; `PREPARE_RULES` is
+  unchanged.
+- The exclusive-lock path also emits `negative_published`, right after the
+  publish.
+- `FILM_BASE_CHANGED` rolls the publish back and the negative is recorded
+  failed in its own write, leaving no TIFF.
+
+**The app queue (§3.7)**
+
+- Composes start in **capture order per roll**: an entry starts only when no
+  earlier entry of its roll is still short of composing. The plan scheduled in
+  capture order across rolls only. Without the gate, with one parallel stitch
+  a later negative could compose first and stall an earlier one's commit.
+- The earliest unfinished entry of a roll is exempt from the per-roll bound
+  on composed-but-uncommitted entries. A restored queue can hold a full bound
+  of later negatives, which would otherwise starve the one they wait for.
+- A compose that fails for any reason moves on to the commit, which recomposes
+  and reports the real error. A `ROLL_BUSY` from a compose or a commit goes
+  back to waiting and retries after about 500 ms.
+- The queue tracks each published commit's process (`tailingCommits`), so the
+  roll counts as busy, and `roll refresh` waits, until that process exits. An
+  entry stays published whatever the exit status after `negative_published`.
+- `roll refresh` is per roll: it runs for a roll only once that roll has no
+  unfinished entry, commit or tail, and nothing composes or commits while one
+  runs. The session-end drain loop still waits for the whole queue before it
+  looks at rolls, so in practice it refreshes when every roll is idle; the
+  per-roll guard matters for rolls with failed entries and for an Edit or
+  Export tab opening a deferred roll.
+- The state-file directory is injectable, so tests stop sharing one
+  `stitch-queue.json`.
+
+**Order of work (§5)**
+
+- The Parallel stitches picker landed on its own first (`307293c`), as §5
+  allowed, with nothing reading it until PS-4.
+- CONTRACT.md was updated in PS-2 and PS-3 with the code, not in PS-5.
+
+---
+
 The capture queue stitches one negative at a time per roll, and a stitch
 uses about 1.2 cores of this Mac's 8 performance cores. A backlog of checked
 negatives therefore drains at ~25 s each while most of the machine idles.

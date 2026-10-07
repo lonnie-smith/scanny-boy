@@ -157,7 +157,8 @@ roll set-film-kind  --roll DIR --film-kind colour|monochrome
 
 probe   --input DIR [--files ...] [--per-negative N | --grid AxD] [--out DIR] [--roll DIR] [--flatfield ID]
 prepare --input DIR --files ... --out DIR [--per-negative N | --grid AxD] [--jobs N] [--overwrite] [--flatfield ID]
-stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial] [--negatives ID ...]
+stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
+        [--negatives ID ... | --compose-only] [--defer-roll-refresh]
         [--flatfield ID] [--no-auto-rotate]
 run     --input DIR --files ... --roll DIR [--per-negative N | --grid AxD] [--jobs N]
         [--work DIR] [--skip-sources FILE ...] [--flatfield ID] [--no-auto-rotate]
@@ -316,14 +317,15 @@ to bottom.
 | `rectification_fit.py` | The two-parameter shared rig-tilt homography fit (`scipy.optimize.least_squares`), its acceptance gates, and the per-negative `rectification` record. |
 | `layout.py` | The global layout solve (in rectified coordinates: three linear least-squares stages, then the joint `scipy.optimize.least_squares` refinement with its linear fallback), connectivity check, canvas size, valid rect — and the photometric counterpart `solve_gains`. |
 | `normalization.py` | The published TIFF's normalized-log-density bake: log transfer, block-median grid, rebate/dense-border/opaque-holder detectors, film-extent pass, bounds analysis, and the encode's headroom. |
-| `composite.py` | Warp (undoing rectification and distortion), solve and apply per-frame photometric gains, the separable feather blend raised to `FEATHER_EXPONENT`, overlap MAD, and the fused normalization encode. |
+| `composite.py` | Warp (undoing rectification and distortion), solve and apply per-frame photometric gains, the separable feather blend raised to `FEATHER_EXPONENT`, overlap MAD, and the fused normalization encode. `composite()` is `finish_negative(compose_negative(...))`: compose is everything before the clamp and needs no roll; finish is the clamp, normalize and encode. |
 
 **Orchestration**
 | Module | Role |
 | --- | --- |
 | `probe.py` | `probe`'s three levels of detail. |
 | `pipeline.py` | `run_convert`: the group-by-group conversion pipeline. |
-| `stitch_pipeline.py` | `run_stitch`: solve everything, then composite and publish per negative. |
+| `stitch_pipeline.py` | `run_stitch`: solve everything, then composite and publish per negative; with a publish lock it runs as a *parallel commit* (§6.1). `run_compose`: the compose-only half. |
+| `compose_artifact.py` | The compose artifact in `<work>/.composed/<group_id>/`: write, fingerprint check, load, and the failure artifact. |
 | `run_pipeline.py` | `run_full`: convert then stitch, with combined progress and supersession. |
 | `apply_metadata.py` | `apply-metadata`: rewrite EXIF dates in published TIFFs. |
 | `film_base.py` | The roll's film-base reference: its detector, gates, and the thin-end colour anchor the meters read. |
@@ -368,6 +370,19 @@ run --input IN --files ... --roll ROLL [--flatfield ID]
   │
   └─ finished
 ```
+
+**Parallel stitching (the capture queue).** The queue does not run the stitch
+above as one process. It runs `stitch --compose-only` (verify, solve,
+`compose_negative`; writes `<work>/.composed/<group_id>/`, nothing to the roll)
+for several negatives at once, then one `stitch --defer-roll-refresh` *commit*
+per roll at a time, in capture order (docs/PARALLEL_STITCH_PLAN.md). A commit
+uses the artifact when its fingerprint matches, composing in full otherwise,
+and runs *before the publish lock* (compose anything missing), *inside it*
+(load the roll fresh, plan, name, clamp against the negatives already
+published, write the TIFF, record, remove the staging directory) and *after it*
+(scratch detection, deband refit, edit seeds, end-of-run write, previews).
+`run` and Re-stitch keep the single-process path under the exclusive roll
+lock. The lock model is in §9.2.
 
 **Why flat-field correction sits inside the convert stage, before the
 stitch's gain solve:** the stitch stage's per-frame per-channel gains
@@ -985,9 +1000,22 @@ run and roll fields into the fresh roll. A new roll is `repo.insert_roll`.
 `write_roll_manifest` and `repo.save_roll` (the snapshot save: make the
 database equal this copy) remain for building test fixtures;
 `transactional_writes_test.py` fails if production code calls them. The
-per-roll lock (`roll_lock.py`, TETHER_PLAN §4.3) is unchanged: it also guards
+per-roll lock (`roll_lock.py`, TETHER_PLAN §4.3) stays: it also guards
 staging directories, published TIFFs and the normalization clamp, none of
 which a transaction covers. See `docs/TRANSACTIONAL_WRITES_PLAN.md`.
+
+Parallel stitching narrowed it without removing it
+(`docs/PARALLEL_STITCH_PLAN.md`). `compose-only` and a deferred `stitch`
+without `--negatives` hold the roll lock *shared*, so several run at once while
+every exclusive writer is still refused; a second lock,
+`<roll_id>.publish.lock`, is held exclusively by a commit for its publish
+section only and shared by `export` for its whole run. Everything
+order-dependent (planning, names, the clamp's reference bounds, the TIFF write,
+the record) happens inside the publish lock against a working copy loaded
+there, so the copy is exact and the result equals a serial stitch's. Recovery
+cleanup under the roll's rules treats any run's staging directory as stale,
+which is safe only because planning runs under that lock (or the exclusive roll
+lock).
 
 ---
 
@@ -1018,7 +1046,10 @@ cleans that up (`output_folder.plan_rerun` + `apply_recovery_cleanup`).
 (`<roll>/.work/<run_id>/`) is removed on **every** outcome — success, failure,
 and cancellation — because a rerun regenerates it. A directory the caller
 named with `--work` is *never* deleted by cleanup, because deleting a folder
-the user pointed at is not this program's decision.
+the user pointed at is not this program's decision. A compose artifact
+(`<work>/.composed/`, a dot-folder so `prepare`'s relatedness check ignores
+it) is removed by the commit that publishes or records the group; a missing or
+stale one only costs time.
 
 **Errors are typed exceptions carrying a stable `Code`**, translated at the
 `cli.py` boundary: `ConvertFailure` (convert), `StitchError` (stitch/
@@ -1073,10 +1104,16 @@ nothing keys off them.
   `FLATFIELD_BAND_ROWS = 512` rows — decode, multiply, re-encode each band
   back into the same `uint16` array in place — so the peak transient per
   worker is band-sized (~37 MB), not frame-sized.
-- Parallelism **never spans negatives** — a negative is published all at once
-  or not at all. In the stitch stage `--jobs` bounds feature detection only;
-  compositing is one negative at a time, single-threaded through the
-  accumulator.
+- Parallelism **never spans negatives within a process** — a negative is
+  published all at once or not at all. In the stitch stage `--jobs` bounds
+  feature detection only; compositing is one negative at a time,
+  single-threaded through the accumulator. The capture queue gets parallel
+  stitching by running *several processes*: up to `parallelStitches` (the
+  user's setting, 1–4, default 2) `stitch --compose-only` processes at once,
+  then ordered commits (§6.1, §9.2). Each is its own process, so memory goes
+  back to the OS when it exits, and each sizes its own worker budget to half of
+  RAM without knowing about the others. A compose peaks near 9 GiB on a
+  3-frame negative, so the setting is the user's to lower if the Mac swaps.
 - **Composite peak memory** is estimated before any allocation and multiplied
   by `MEMORY_SAFETY_FACTOR = 3.5`. That factor is measured, not padding:
   NumPy does not return freed arenas to the OS, so resident memory tracks the

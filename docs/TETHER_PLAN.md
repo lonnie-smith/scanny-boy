@@ -22,8 +22,9 @@ the copy stand into one continuous workflow:
    background, while the user captures the next one. Its RAW decoding and an
    alignment check run straight away, alongside other negatives', so a
    negative that won't align is flagged while it is still on the stand. Its
-   stitch waits for the roll, because stitches run strictly one at a time
-   (§0.6), and the backlog is allowed to build (§4.6).
+   composite then runs alongside the roll's other negatives', but it
+   publishes only after every earlier negative has (§0.6), and the backlog is
+   allowed to build (§4.6).
 6. **Whole-roll analyses** that would otherwise churn on every negative are
    deferred to the end of the session and run once (§5).
 
@@ -132,7 +133,7 @@ from the release would let a long exposure eat into it (at 1/2 s, a "4 s"
 interval would leave 3.5 s). The exposure's end is observable: `DeviceReady`
 returning OK (§0.1).
 
-### 0.6 Decode in parallel, stitch one at a time
+### 0.6 Decode and compose in parallel, publish one at a time
 
 `run` is two stages, and they differ in the one way that matters here.
 `prepare` decodes a negative's RAWs, applies the flat field and writes
@@ -140,35 +141,48 @@ intermediates into its own work folder; it never reads or writes the roll
 record. `stitch --work` registers, composites and publishes into the roll, and
 writes the record. So the queue splits the same way (§4.1): a negative's
 `prepare` starts the moment its last frame lands, alongside any others still
-preparing, and its `stitch` runs when the roll is free.
+preparing.
 
-Stitches of one roll still never overlap, for reasons in the code, not
-preference:
+The stitch itself splits again, along the line the roll draws
+([`PARALLEL_STITCH_PLAN.md`](PARALLEL_STITCH_PLAN.md)). Registration, warp,
+blend and metering (about 16 s of a 25 s stitch) read only the work folder and
+the roll's film base. They run as **compose** (`stitch --compose-only`), several
+at once, and leave a compose artifact beside the work folder. The clamp, the
+normalize, the encode, the TIFF write and the record (about 6 s) are the
+**commit**. They depend on which negatives are already published, so commits
+of one roll run one at a time, in capture order, each against a roll loaded
+inside the publish lock (§4.3). The published result is what serial stitches
+would have produced.
 
-- **The record is no longer one of them.** Every roll write is now a short
-  transaction against fresh state
+Those four things were why stitches used to be strictly serial. Each is now
+handled, not avoided:
+
+- **The record is not one of them.** Every roll write is a short transaction
+  against fresh state
   ([`TRANSACTIONAL_WRITES_PLAN.md`](TRANSACTIONAL_WRITES_PLAN.md)): it takes
-  the database write lock, reloads the roll, and applies only its own change. `run_stitch` still keeps its start-of-stitch copy as a working copy,
-  but each write copies in only this run's own records, run and roll fields, so
-  one stitch can no longer delete what another published or cascade away those
-  negatives' edits. (It used to write the whole copy back through
-  `library/repo.save_roll`, which did exactly that.)
-- **Cleanup assumes a single stitch.** The roll's staging rule treats the
-  record's last run (`runs[-1]`) as the owner of staging directories; a second
-  stitch planning mid-way through the first would see the first's unfinished
-  negatives as leftovers for `apply_recovery_cleanup` to delete.
-- **Names, negative ids and the clamp's reference negatives** all come from
-  the start-of-stitch copy.
+  the database write lock, reloads the roll, and applies only its own change.
+  `_persist` copies in only this run's own records, run and roll fields, so
+  one stitch cannot delete what another published or cascade away those
+  negatives' edits.
+- **Cleanup assumes a single live publisher.** Recovery cleanup treats every
+  staging directory under the roll as stale, whichever run made it. That is
+  safe only while no other publish section runs, which the publish lock (or the
+  exclusive roll lock) guarantees; a commit removes its own staging directory
+  before it releases the lock.
+- **Names, negative ids and the clamp's reference negatives** are order
+  dependent. The commit loads the roll inside the publish lock, so they come
+  from exactly the negatives published before it, as in a serial run.
 - **Memory is budgeted per process**: each sizes itself to half of physical
-  RAM without knowing about the others.
+  RAM without knowing about the others. Compose peaks about 9 GiB for a
+  3-frame negative, so the concurrency is the user's setting, 1–4, default 2
+  (§4.1), not something the app derives.
 
-The remaining three are why stitches stay serial and the roll lock stays.
-So stitches are serial (§4.1), nothing else writes that roll while they run
-(§4.2), and the CLI enforces it with a lock instead of trusting the app
-(§4.3). A serial stitch stage can fall behind capture, and that is accepted:
-the user does not mind stitching finishing after scanning does. What the user
-does mind is finding out late that a negative cannot be stitched, so the
-alignment gates run early instead, outside the queue (§4.1).
+What stays serial is the publish section (§4.3), and nothing else writes the
+roll while any stitch runs (§4.2); the CLI enforces that with locks instead of
+trusting the app. A commit stage can still fall behind capture, and that is
+accepted: the user does not mind stitching finishing after scanning does. What
+the user does mind is finding out late that a negative cannot be stitched, so
+the alignment gates run early instead, outside the queue (§4.1).
 
 ### 0.7 Whole-roll analyses
 
@@ -238,7 +252,8 @@ Capture tab, roll selected
   │     user advances the film ──────────────────────────────────────────────┘
   │
   │   meanwhile, StitchQueueModel: prepares and checks in parallel,
-  │   one `stitch --defer-roll-refresh` at a time, in capture order
+  │   composes in parallel, then one commit per roll at a time, in capture
+  │   order
   │
   └─ End session → wait for the queue → roll refresh (§4.4) → session summary
 ```
@@ -513,11 +528,11 @@ the stitch's progress), published (the stitched TIFF thumbnail), or failed
 
 ## 4. Background stitching
 
-### 4.1 The queue: prepare, check, stitch
+### 4.1 The queue: prepare, check, compose, commit
 
-`StitchQueueModel` takes each completed negative through three steps. The
-first two never touch the roll and run as soon as there is a slot; the third
-writes the roll and runs one at a time.
+`StitchQueueModel` takes each completed negative through four steps. The
+first three never write the roll and run as soon as there is a slot; the
+fourth publishes into it, one negative per roll at a time.
 
 **Prepare.** The moment a negative's last frame lands:
 
@@ -562,32 +577,76 @@ still arrive late, from the stitch. The user accepts reshooting in that case.
 
 Up to `MAX_PARALLEL_PREPARES` negatives prepare and check at once, each step
 in its own `CLISession`: 2 on this Mac. Each `prepare` already caps itself at
-4 decode workers, so two use 8 of the 10 cores and leave room for the stitch
-and the frame analysis. The cap only paces decoding. It does **not** limit how
-many negatives are prepared ahead of the stitcher: checked negatives wait for
-their stitch in any number (§4.6). Work folders live in the capture folder,
+4 decode workers, so two use 8 of the 10 cores and leave room for the
+composes and the frame analysis. The cap only paces decoding. It does **not**
+limit how many negatives are prepared ahead of the stitcher: checked
+negatives wait for their compose in any number (§4.6). Work folders live in the capture folder,
 never in the roll folder.
 
-**Stitch, one at a time, in capture order:**
+**Compose, several at once:**
+
+```
+stitch --work <capture folder>/.work/<negative stamp> --roll <roll>
+       [--rig <profile id>] --compose-only
+```
+
+Compose runs the roll-independent half of a stitch (the solve, warp, blend
+and metering) and writes a compose artifact to
+`<work folder>/.composed/<group id>/`. It writes nothing to the roll, holds the
+roll lock shared (§4.3), and reports `negative_composed`. The artifact is a
+cache: the commit re-checks a fingerprint of everything it was computed from
+and recomputes in full when it is missing or stale, so correctness never
+depends on it.
+
+Composes start in **capture order** per roll. An entry starts only when no
+earlier entry of its roll is still short of composing; otherwise, with one
+parallel stitch, a later negative could compose first and stall an earlier
+one's commit. They are bounded two ways by the sticky **Parallel stitches**
+setting (`parallelStitches`, 1–4, default 2; a picker in the Capture tab's
+Setup section, disabled while a sequence or the queue is busy):
+
+- at most `parallelStitches` composes run at once, in all;
+- at most `parallelStitches` of one roll's entries are composing or composed
+  and waiting to commit, which bounds the artifacts on disk. The earliest
+  unfinished entry of a roll is exempt from this bound, so a restored queue
+  full of later negatives can never starve the one they wait for.
+
+The setting is read each time the queue schedules work, so lowering it cancels
+nothing. A compose that fails for any reason still moves on to the commit,
+which recomposes and reports the real error. A `ROLL_BUSY` from a compose goes
+back to waiting and retries after about 500 ms.
+
+**Commit, one per roll at a time, in capture order:**
 
 ```
 stitch --work <capture folder>/.work/<negative stamp> --roll <roll>
        [--rig <profile id>] --defer-roll-refresh
 ```
 
-A negative's stitch waits for every earlier negative's stitch, even if its own
-check finished first, so the clamp's reference negatives are exactly what one
-run over the whole roll would have used (§5). A negative that failed its
-prepare or its check is skipped (§4.5).
+A negative's commit waits for every earlier negative of its roll to publish or
+fail, even if its own compose finished first, so the clamp's reference
+negatives are exactly what one run over the whole roll would have used (§5).
+Commits of different rolls run concurrently (their locks differ). A negative
+that failed its prepare or its check is skipped (§4.5).
 
-The stitch repeats the solve rather than trusting the check's result, so
-`stitch` itself stays unchanged; the repeat is a detection pass on
-2000-pixel images and a solve, not a composite.
+The commit uses the artifact, composing to disk first whatever lacks a valid
+one, then takes the publish lock and publishes (§4.3). The CLI emits
+`negative_published` once it has released that lock, and the queue starts the
+roll's next commit then, not at process exit, so the next negative's publish
+overlaps this one's post-publish tail (scratch detection, the deband refit,
+the edit seeds, previews). The queue tracks that tail: the roll counts as busy,
+and its `roll refresh` waits, until the process exits. A commit that finds the
+publish lock held fails `ROLL_BUSY` before touching the roll, and the queue
+retries it shortly rather than recording a failure.
+
+Compose and commit repeat the solve rather than trusting the check's result,
+so the check stays advisory; the repeat is a detection pass on 2000-pixel
+images and a solve, not a composite.
 
 This is what `run` does internally — `run_pipeline.run_full` calls
 `run_convert`, then `run_stitch` — so a capture folder behaves like any other
 input, including roll-overlap detection and in-place replacement if the same
-frames are ever stitched again. The app removes a work folder once its
+frames are ever stitched again. The app removes a work folder, compose artifact included, once its
 negative publishes; §4.5 covers the ones it keeps.
 
 ### 4.2 Relaxing "one helper at a time"
@@ -596,7 +655,8 @@ negative publishes; §4.5 covers the ones it keeps.
 sidebar, the tab picker and every stage's controls. That would freeze the
 Capture tab for the whole of every stitch. The rule becomes:
 
-- **Roll-writing work is serial per roll.** While a roll's queue is non-empty
+- **Roll-writing work is serial per roll**, apart from the queue's own
+  composes and commits (§4.3). While a roll's queue is non-empty
   or a session on it is open, every other control that writes that roll is
   disabled: Edit's ops, negative delete, Apply, Re-stitch, the base-frame
   field, roll rename and delete, Add Scans' Convert, and Export (§4.3).
@@ -606,26 +666,55 @@ Capture tab for the whole of every stitch. The rule becomes:
 
 DECISIONS.md gets this as an amendment to the Phase 3 app rule.
 
-### 4.3 The CLI enforces it: a roll lock
+### 4.3 The CLI enforces it: two roll locks
 
 §0.6's remaining hazards (a second stitch's recovery cleanup deleting the
-first's unfinished staging) are silent data loss, so the app's discipline is
-not the only guard. Every command that writes a roll takes an exclusive
-advisory lock (`fcntl.flock`, non-blocking) on
-`~/Library/Application Support/ScannyBoy/locks/<roll_id>.lock`, beside the
-library database. A second writer fails immediately with the new error
-`ROLL_BUSY`, before any work.
+first's unfinished staging, a stale clamp) are silent data loss, so the app's
+discipline is not the only guard. Every command that writes a roll takes an
+advisory lock (`fcntl.flock`, non-blocking) in
+`~/Library/Application Support/ScannyBoy/locks/`, beside the library database.
+A second writer fails immediately with the error `ROLL_BUSY`, before any work.
+There are two locks per roll, both in `roll_lock.py`:
 
-- **Exclusive**: `run`, `stitch`, every `edit` command that records an op or
-  deletes, `metadata set`, `apply-metadata`, `roll set-base-frame`,
-  `roll set-flatfield-reference`, `roll rename`, `roll delete`, and
-  `roll refresh` (§4.4).
-- **Shared**: `export`, which reads published TIFFs a stitch may be replacing.
-- **None**: `prepare` and `capture check` (neither touches the roll),
-  `roll list`, `roll info`, `probe`, `edit list-*`, `edit render-*`.
+- **The roll lock**, `<roll_id>.lock`, which every roll writer takes.
+- **The publish lock**, `<roll_id>.publish.lock`, which orders the parallel
+  commits' publish sections.
+
+| Command | Roll lock | Publish lock |
+|---|---|---|
+| `stitch --compose-only` | shared, whole process | none |
+| `stitch --defer-roll-refresh` without `--negatives` (a parallel commit) | shared, whole process | exclusive, publish section only |
+| `export` | shared | shared, whole process |
+| `run`, `stitch` without `--defer-roll-refresh` or with `--negatives`, every `edit` command that records an op or deletes, `metadata set`, `apply-metadata`, `roll set-base-frame`, `roll set-flatfield-reference`, `roll rename`, `roll delete`, `roll refresh` (§4.4) | exclusive | none |
+| `prepare`, `capture check`, `roll list`, `roll info`, `probe`, `edit list-*`, `edit render-*` | none | none |
+
+- **Every exclusive writer excludes every stitch, and the reverse.** This is
+  §4.2's app rule, still enforced by the CLI.
+- **Two stitches of one roll hold the roll lock shared together.** Only one
+  holds the publish lock at a time, so only one publishes at a time.
+- **The publish section** is: load the roll, plan, name the outputs, apply the
+  clamp against the negatives already published, write the TIFF, move it into
+  place, commit the record, remove the staging directory. The lock is released
+  after that and before `negative_published`. A missing or stale compose
+  artifact is composed to disk before the lock is taken, so the section only
+  finishes from artifacts. (A work folder with several groups runs every
+  group's tail but the last inside the lock, to hold one canvas in memory.)
+  Everything order-independent runs after the release, against fresh state.
+- **Export holds the publish lock shared**, so a commit never replaces a TIFF
+  an export is reading; the CLI does not rely on the app having disabled
+  Export.
+- **Only deferred stitches run in parallel.** A stitch that recomputes the
+  highlight lock and force-re-renders every preview keeps the exclusive roll
+  lock. In parallel mode `sync_previews` renders only the commit's own
+  negatives, since the working copy also holds other commits' negatives whose
+  tails may still be running.
+- **The first publish verifies the film base.** The publish transaction checks
+  that the film base's source hash and density and the flat field's gain-map
+  hash are still the ones the negative was normalized against, then sets only
+  `locked_at`. A mismatch raises `FILM_BASE_CHANGED` and rolls the publish
+  back; the roll lock already excludes `set-base-frame`, so this is defence in
+  depth against a stale artifact.
 - `serve` takes the lock per request, not for the daemon's lifetime.
-
-The lock lives in one new module, `roll_lock.py`.
 
 ### 4.4 Deferring the roll refresh
 
@@ -649,6 +738,9 @@ only at render and edit time (`color.read_metering` from `previews.py` and
 - **The app runs `roll refresh`** when a session ends and its queue has
   drained, and whenever it opens the Edit or Export tab on a roll with
   `refresh_pending` set — so a crash mid-session never leaves stale colour.
+  It takes the exclusive roll lock, so it runs for a roll only once that roll
+  has no unfinished entry, no commit in flight and no published commit's
+  process still running, and nothing composes or commits while one runs.
 - **An auto solve on a refresh-pending roll** (`edit tone --auto-grade`,
   `--auto-density`, `edit color --auto-balance`) warns `ROLL_REFRESH_PENDING`: it
   would read a lock the roll's newest negatives have not contributed to yet.
@@ -676,7 +768,9 @@ never part of a capture session.
 - **A prepare or stitch refused for disk space** (`INSUFFICIENT_DISK`) is not a
   failed negative. `prepare` checks its own volume before writing anything;
   `run_stitch` checks the roll's volume after solving and raises before its
-  first record write, so the roll is untouched. The queue holds the negative as
+  first record write, so the roll is untouched, and compose checks the work
+  folder's volume for its artifact before writing it. A compose refused for
+  space moves on to the commit, which recomposes and meets the same refusal. The queue holds the negative as
   waiting for space and stops starting prepares. If the waiting stitch still
   cannot fit, the queue deletes the work folders of the most recently prepared
   negatives, newest first — intermediates their NEFs can always rebuild —
@@ -706,18 +800,28 @@ A long backlog needs three things from the app:
 - **The queue survives quitting the app.** `StitchQueueModel` records each
   negative's frames, work folder and step in a small state file in
   Application Support as it goes. On the next launch, a negative whose check
-  passed goes straight to its stitch; any other goes back to `prepare`, which
-  recovers or rebuilds its work folder.
+  passed goes straight back to compose (`composing`), or to its commit
+  (`waitingCommit`, which was composed or publishing); the commit falls back to
+  a full stitch if its artifact is gone or stale. Any other goes back to
+  `prepare`, which recovers or rebuilds its work folder.
 - **Disk space.** Every negative prepared ahead of the stitcher holds its
   intermediates. The CLI's conservative estimate — uncompressed 16-bit RGB,
   though they are written Deflate-compressed — is about 147 MB per frame, so
   roughly 0.9 GB per 3×2 negative, and a whole roll's backlog can reach tens
   of GB on the capture folder's volume. There is no limit on it; running short
-  is handled as waiting, never as a failed negative (§4.5).
+  is handled as waiting, never as a failed negative (§4.5). Each composed but
+  unpublished negative adds its artifact, about 600 MiB on a 3-frame negative,
+  and `parallelStitches` bounds how many a roll holds.
 
-Memory needs nothing. The composite's check compares its estimate with half
-of physical RAM, not with free memory, so prepares running beside a stitch can
-slow it but cannot make it fail `INSUFFICIENT_MEMORY`.
+Memory is the user's to manage. A compose peaks near 9 GiB for a 3-frame
+negative and grows with the canvas; at 4 parallel stitches that is about
+36 GiB of peaks beside a commit and two prepares. Each process sizes its
+budget to half of physical RAM without knowing about the others, so a high
+setting on a large grid can swap. Swapping makes the queue slow, never wrong;
+the remedy is a lower setting, which is why the picker's help text names the
+memory cost. The composite's own check still compares its estimate with half
+of physical RAM, not free memory, so it cannot make a stitch fail
+`INSUFFICIENT_MEMORY` because of its neighbours.
 
 ---
 
@@ -851,7 +955,7 @@ scanny-boy capture summary --log FILE
 scanny-boy capture check   --work DIR [--rig PROFILE_ID]
 scanny-boy roll refresh    --roll DIR
 scanny-boy run    ... [--defer-roll-refresh]
-scanny-boy stitch ... [--defer-roll-refresh]
+scanny-boy stitch ... [--defer-roll-refresh | --compose-only]
 ```
 
 ### 7.2 Events
@@ -871,7 +975,7 @@ scanny-boy stitch ... [--defer-roll-refresh]
 
 | Code | Kind | When |
 |---|---|---|
-| `ROLL_BUSY` | error | A roll writer found the roll lock held (§4.3) |
+| `ROLL_BUSY` | error | A roll writer found the roll lock, or a commit or export the publish lock, held (§4.3) |
 | `ROLL_REFRESH_PENDING` | warning | An auto solve on a roll whose refresh is pending (§4.4) |
 | `CAPTURE_CLIPPED` | warning | A channel clips beyond `SCAN_CLIP_WARN` (§6.5) |
 | `CAPTURE_DENSE_END_LOW` | warning | A channel's dense end is too close to black (§6.5) |
@@ -908,7 +1012,7 @@ none.
 | `Capture/TetherTiming.swift` | Every timing constant in §2–§3 |
 | `Capture/CaptureNaming.swift` | The only place a capture file name is chosen |
 | `Model/CaptureSessionModel.swift` | Setup, the sequence state machine, the interval clock, cues, keys |
-| `Model/StitchQueueModel.swift` | The queue: `prepare` then `capture check` under `MAX_PARALLEL_PREPARES`, serial `stitch` in capture order, waiting for disk, work folders, the sleep assertion, the state file, `roll refresh` at the end |
+| `Model/StitchQueueModel.swift` | The queue: `prepare` then `capture check` under `MAX_PARALLEL_PREPARES`, then `stitch --compose-only` in capture order up to `parallelStitches` at once, then one `stitch --defer-roll-refresh` commit per roll at a time in capture order, waiting for disk, work folders, the sleep assertion, the state file, `roll refresh` per idle roll |
 | `Views/CaptureStageView.swift` | The tab |
 | `Views/CaptureMiniView.swift` | The grid |
 | `Views/CaptureQueueList.swift` | The session's negatives: one row per negative with status, progress bar, elapsed time, and stitched-TIFF thumbnail |
@@ -929,8 +1033,10 @@ No test touches a camera; CI has none.
 - **`CaptureSessionModel`** runs against the fake with an injectable clock:
   interval timing, the download-wait rule, pause and retake, stop and resume.
 - **`StitchQueueModel`** runs against fake CLI sessions: prepares never exceed
-  the cap; stitches never overlap and run in capture order even when checks
-  finish out of order; a failed prepare or check is never stitched; an
+  the cap; composes never exceed `parallelStitches` and start in capture
+  order; commits of a roll never overlap and run in capture order even when
+  composes finish out of order, while different rolls' commits overlap; a
+  failed prepare or check is never composed; an
   `INSUFFICIENT_DISK` refusal waits and frees prepared work folders newest
   first; the state file restores the queue; refresh at drain.
 
@@ -975,7 +1081,8 @@ frame without a retake.
 `capture check` in the CLI, confirming the solve needs no real roll record,
 with `capture_checked` joining protocol 22's contract changes (§7).
 `StitchQueueModel` with all three steps — `prepare` then `capture check` under
-the cap, serial `stitch` in capture order — plus work-folder cleanup, waiting
+the cap, serial `stitch` in capture order (parallelised later, in
+`PARALLEL_STITCH_PLAN.md`) — plus work-folder cleanup, waiting
 for disk, the sleep assertion and the state file; the `AppActivity`
 amendment; the session strip; reshoot and failed-record deletion; and
 `roll refresh` at session end and on opening Edit or Export. Requires T-2 and
@@ -1009,10 +1116,11 @@ chunk reviewable; it must land before the feature is called done.
   arrive through it.
 - **Waiting on `ObjectAddedInSdram` alone.** On one of the two shots where the
   queue was polled, it did not arrive within 8 s.
-- **Overlapping stitches, as the code stands.** They clean up each other's
-  staging and take names, ids and the clamp's reference negatives from stale
-  start-of-stitch copies (§0.6). Their record writes no longer collide, since
-  roll writes became transactional mutations.
+- **Overlapping whole stitches, as the code stood.** They cleaned up each
+  other's staging and took names, ids and the clamp's reference negatives from
+  stale start-of-stitch copies. Splitting the stitch into compose and commit,
+  with the commit under a publish lock and a roll loaded inside it, is what
+  made overlap safe (§0.6, §4.3).
 - **Several negatives composited inside one process.** "Parallelism never
   spans negatives" is a memory decision (ARCHITECTURE.md §11): NumPy does not
   return freed memory to the OS, and the 3.5× safety factor was measured one
@@ -1020,11 +1128,13 @@ chunk reviewable; it must land before the feature is called done.
   exit.
 - **One `run` for the whole roll at the end.** It defeats the point: a failure
   would surface after the roll is shot and the film is put away.
-- **A parallel stitch stage.** Computing against a read-only copy and
-  committing under the lock would let stitches overlap, at the price of a
-  `stitch_pipeline` refactor and a clamp whose reference negatives depend on
-  timing. The user does not need stitching to keep up with capture, so the
-  backlog is accepted instead (§4.6).
+- **Letting commits overlap.** The clamp's reference negatives, the tethered
+  names and the staging cleanup all depend on publish order, so only the
+  compose runs in parallel; commits publish one at a time in capture order
+  (§0.6).
+- **A concurrency derived from measurement.** The app does not pick how many
+  stitches run at once. Memory per compose depends on the grid, so the user
+  chooses 1–4 (§4.1) and the plan records what each step costs.
 - **Limiting how many negatives are prepared ahead of the stitcher.** It would
   bound the backlog's disk use; the user prefers no limit, and running short
   is handled as waiting (§4.5).
@@ -1075,6 +1185,8 @@ chunk reviewable; it must land before the feature is called done.
 - **`clamp_bounds` depends on order**: a roll's first negative clamps against
   nothing. That is true of every roll today and is not made worse.
 - **A pending refresh after a crash** is covered by `refresh_pending` (§4.4).
+- **A high `parallelStitches` can swap** on a large grid (§4.6). There is no
+  silent cap; a warning under the picker is the planned remedy if it bites.
 - **Focusing is left to the operator's eye.** Live view in the app, with a
   sharpness meter and a check shot for the corners, is planned separately in
   `docs/FOCUS_ASSIST_PLAN.md` on the measurements in §0.9.
