@@ -23,6 +23,7 @@ mac/ScannyBoy/Helpers/ScannyBoyCLI.app/
 
 # Sample RAW files and their local inventory: large, private, never committed
 tests/fixtures/nef/
+tests/fixtures/liveview/sweeps/
 tests/fixtures/INVENTORY.md
 
 # Output and staging folders produced by local runs

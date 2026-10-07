@@ -24,6 +24,23 @@
 //                      --out, decodes JPEG dimensions with ImageIO, and logs
 //                      latency/fps and a per-zoom summary table. Always sends
 //                      EndLiveView (0x9202) on exit, including on error.
+//   --lv-record SECS   Holds live view for SECS (at least 40) and records it for
+//                      docs/FOCUS_LOCK_PLAN.md §0: every distinct GetLiveViewImage
+//                      payload (384-byte header + JPEG, exactly as received) goes to
+//                      --out as frame-NNNNN.bin, with frames.csv (index, monotonic
+//                      time_s, and the header's area width/height/centre) and
+//                      passes.csv (when each pass began and ended). The five-pass
+//                      script (A still, B slow rack, C normal rack, D back to the
+//                      peak, E smallest steps) is printed first and read out as the
+//                      recording goes. On a terminal, Return moves to the next pass
+//                      (Return during E ends the recording); without one, the passes
+//                      run on a fixed schedule (A and D 5s, the rest split 3:2:3).
+//                      SECS is a hard cap either way, and Ctrl-C ends the recording
+//                      but keeps what was written. Magnify to the focusing zoom on
+//                      the body first. --out must be empty of earlier recordings.
+//                      Always sends EndLiveView (0x9202) on exit, including on error.
+//                      Turn frames.csv/frame-*.bin into the committed fixture CSV
+//                      with mac/Tools/SweepCSV.swift.
 //   --shots N, or interactive (Return)
 //                      requestTakePicture(), which does nothing on the Z f. Kept
 //                      because that negative result is part of the record.
@@ -34,6 +51,7 @@
 //       -framework Foundation -framework ImageCaptureCore -framework ImageIO
 //   /tmp/tether-probe --info
 //   /tmp/tether-probe --liveview --lv-frames 30
+//   /tmp/tether-probe --lv-record 60 --out tests/fixtures/liveview/sweeps/fine-dense
 //
 // Before running: the camera on and connected in its PTP mode (in mass storage
 // mode it mounts under /Volumes and cannot be driven), Photos and Image Capture
@@ -365,6 +383,7 @@ struct Options {
     var liveView = false
     var lvFrames = 30
     var lvPoint: (x: UInt32, y: UInt32)?
+    var lvRecordSeconds: TimeInterval?
 
     static func parse(_ arguments: [String]) -> Options {
         var options = Options()
@@ -425,6 +444,13 @@ struct Options {
                 }
                 options.lvPoint = (x, y)
                 index += 1
+            case "--lv-record":
+                guard let value, let seconds = TimeInterval(value), seconds >= 40 else {
+                    fail("--lv-record needs a duration of at least 40 seconds")
+                }
+                options.lvRecordSeconds = seconds
+                options.liveView = true
+                index += 1
             case "--help", "-h":
                 usage()
                 exit(0)
@@ -441,6 +467,7 @@ struct Options {
         tether-probe [--out DIR] [--shots N] [--name SUBSTRING]
                      [--discovery-timeout SECS] [--arrival-timeout SECS]
                      [--liveview [--lv-frames N] [--lv-point X,Y]]
+                     [--lv-record SECS [--lv-point X,Y]]
 
           --out                Where downloaded files land.
                                Default: $TMPDIR/tether-shots
@@ -464,7 +491,12 @@ struct Options {
                                Default: 30
           --lv-point X,Y       Move the live view zoom point (ChangeAfArea,
                                sensor coordinates) before sweeping zoom.
-                               Default: leave it centred.
+                               Default: leave it centred. Also applies to --lv-record.
+          --lv-record SECS     Hold live view for SECS (at least 40) and write every
+                               distinct frame to --out as frame-NNNNN.bin, plus
+                               frames.csv and passes.csv, while reading out the five
+                               focus passes. Return advances a pass on a terminal;
+                               otherwise a fixed schedule does. Needs an empty --out.
 
         Interactive keys (press then Return):
           <Return>  fire via requestTakePicture()
@@ -481,11 +513,52 @@ struct Options {
     }
 }
 
+// MARK: - Record control
+
+/// What outside the frame loop can ask of `--lv-record`: Ctrl-C and, on a
+/// terminal, Return presses that move on to the next pass. Locked, because the
+/// signal handler and the stdin reader run on other queues.
+final class RecordControl {
+    private let lock = NSLock()
+    private var advances = 0
+    private var stop = false
+
+    var stopRequested: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return stop
+    }
+
+    func requestStop() {
+        lock.lock(); defer { lock.unlock() }
+        stop = true
+    }
+
+    /// Return presses since the last call.
+    func takeAdvance() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        defer { advances = 0 }
+        return advances
+    }
+
+    /// Counts a line on stdin as one Return press. The reader thread is left
+    /// blocked in readLine when recording ends; the process exits soon after.
+    func watchStandardInput() {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            while readLine(strippingNewline: true) != nil {
+                lock.lock()
+                advances += 1
+                lock.unlock()
+            }
+        }
+    }
+}
+
 // MARK: - Probe
 
 final class Probe: NSObject {
     private let options: Options
     private let browser = ICDeviceBrowser()
+    private let recordControl = RecordControl()
 
     private var camera: ICCameraDevice?
     private var sessionRequestedAt: Date?
@@ -696,6 +769,11 @@ final class Probe: NSObject {
 
         if options.infoOnly {
             Task { await self.runInfo() }
+            return
+        }
+
+        if let seconds = options.lvRecordSeconds {
+            Task { await self.runLiveRecord(seconds: seconds) }
             return
         }
 
@@ -1267,7 +1345,10 @@ final class Probe: NSObject {
             + (bits.isEmpty ? "none" : bits.map(String.init).joined(separator: ", ")))
     }
 
-    private func runLiveView() async {
+    /// Starts live view and waits out the busy period after it. Shared by the
+    /// zoom sweep and `--lv-record`. On failure it has already sent EndLiveView;
+    /// the caller only has to finish.
+    private func beginLiveView() async -> Bool {
         log("before StartLiveView (why the camera might refuse):")
         await logPropValue(PTP.propLiveViewStatus, "LiveViewStatus")
         await logProhibitBits()
@@ -1295,10 +1376,9 @@ final class Probe: NSObject {
             }
         }
         guard startError == nil, startCode == PTP.responseOK else {
-            log("FAIL  StartLiveView did not return OK — aborting the sweep")
+            log("FAIL  StartLiveView did not return OK — aborting")
             await endLiveView()
-            DispatchQueue.main.async { self.finish(code: 1) }
-            return
+            return false
         }
 
         log("polling DeviceReady until the post-StartLiveView busy period clears:")
@@ -1313,6 +1393,14 @@ final class Probe: NSObject {
             }
             if code == PTP.responseOK { break }
             try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return true
+    }
+
+    private func runLiveView() async {
+        guard await beginLiveView() else {
+            DispatchQueue.main.async { self.finish(code: 1) }
+            return
         }
 
         log("live view status properties (logged raw; a read failure does not abort):")
@@ -1476,6 +1564,243 @@ final class Probe: NSObject {
 
         await endLiveView()
         DispatchQueue.main.async { self.finish(code: 0) }
+    }
+
+    // MARK: Record mode
+
+    /// The §0.2 pass script (docs/FOCUS_LOCK_PLAN.md). `fixedSeconds` pins a
+    /// pass's nominal length in the fixed-timing fallback; the rest of the
+    /// recording is split between the passes without one, by `weight`.
+    private struct RecordPass {
+        let letter: String
+        let instruction: String
+        let fixedSeconds: TimeInterval?
+        let weight: Double
+    }
+
+    private static let recordPasses = [
+        RecordPass(letter: "A", instruction: "Hold the ring still near focus.",
+                   fixedSeconds: 5, weight: 0),
+        RecordPass(letter: "B", instruction: "Rack slowly through focus, one way, and stop well past it.",
+                   fixedSeconds: nil, weight: 3),
+        RecordPass(letter: "C", instruction: "Rack back at normal speed.",
+                   fixedSeconds: nil, weight: 2),
+        RecordPass(letter: "D", instruction: "Return to the peak by eye and hold.",
+                   fixedSeconds: 5, weight: 0),
+        RecordPass(letter: "E", instruction: "Shift the ring by the smallest amount the hand can manage, "
+                       + "hold, and repeat four times.",
+                   fixedSeconds: nil, weight: 3),
+    ]
+
+    /// Where each pass ends on the fixed schedule, in seconds from the start;
+    /// the last is `seconds`.
+    private static func recordSchedule(seconds: TimeInterval) -> [TimeInterval] {
+        let fixed = recordPasses.compactMap(\.fixedSeconds).reduce(0, +)
+        let totalWeight = recordPasses.map(\.weight).reduce(0, +)
+        var end = 0.0
+        return recordPasses.map { pass in
+            end += pass.fixedSeconds ?? (seconds - fixed) * pass.weight / totalWeight
+            return end
+        }
+    }
+
+    private func printRecordScript(seconds: TimeInterval, interactive: Bool) {
+        log(String(format: "recording script — %.0fs, five passes (docs/FOCUS_LOCK_PLAN.md §0.2):", seconds))
+        let schedule = Probe.recordSchedule(seconds: seconds)
+        for (index, pass) in Probe.recordPasses.enumerated() {
+            let nominal = schedule[index] - (index > 0 ? schedule[index - 1] : 0)
+            note(String(format: "  %@  %@%@", pass.letter, pass.instruction,
+                        interactive ? "" : String(format: "  (%.0fs)", nominal)))
+        }
+        note("Magnify to the focusing zoom (512 sensor px across on the Z f) first.")
+        if interactive {
+            note("Press Return to move on to the next pass; Return during E ends the")
+            note("recording, as does Ctrl-C (frames and CSVs written so far are kept).")
+            note(String(format: "Pass A starts when the countdown ends; %.0fs is the hard cap.", seconds))
+        } else {
+            note("stdin is not a terminal, so the passes run on the fixed schedule above.")
+            note("Ctrl-C ends the recording early; frames and CSVs written so far are kept.")
+        }
+    }
+
+    /// `--lv-record`: holds live view for `seconds`, writing every distinct
+    /// GetLiveViewImage payload (header + JPEG, as received) to the output
+    /// directory as frame-NNNNN.bin, with frames.csv (index, time, the header's
+    /// area fields) and passes.csv (when each §0.2 pass began and ended). Times
+    /// are monotonic seconds from the first frame loop iteration. Always sends
+    /// EndLiveView on exit, including when the camera stops answering.
+    private func runLiveRecord(seconds: TimeInterval) async {
+        let directory = options.outputDirectory
+        let framesPath = directory.appendingPathComponent("frames.csv")
+        let existing = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        if existing.contains(where: { $0 == "frames.csv" || $0.hasPrefix("frame-") }) {
+            log("FAIL  \(directory.path) already holds a recording — use an empty --out")
+            DispatchQueue.main.async { self.finish(code: 1) }
+            return
+        }
+        guard FileManager.default.createFile(atPath: framesPath.path, contents: nil),
+              let csv = try? FileHandle(forWritingTo: framesPath)
+        else {
+            log("FAIL  could not create \(framesPath.path)")
+            DispatchQueue.main.async { self.finish(code: 1) }
+            return
+        }
+        csv.write(Data("index,time_s,area_width,area_height,area_centre_x,area_centre_y\n".utf8))
+
+        let interactive = isatty(STDIN_FILENO) != 0
+        printRecordScript(seconds: seconds, interactive: interactive)
+
+        guard await beginLiveView() else {
+            try? csv.close()
+            DispatchQueue.main.async { self.finish(code: 1) }
+            return
+        }
+        if let point = options.lvPoint {
+            log("PTP → ChangeAfArea(\(point.x), \(point.y))")
+            let (_, response, error) = await ptp(PTP.nikonChangeAfArea, params: [point.x, point.y])
+            log("PTP ← ChangeAfArea: "
+                + (error?.localizedDescription ?? PTP.describe(PTP.responseCode(response))))
+        }
+
+        if interactive { recordControl.watchStandardInput() }
+        log("recording starts in 5s — get a hand on the ring")
+        for remaining in stride(from: 5, to: 0, by: -1) {
+            note("\(remaining)…")
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        _ = recordControl.takeAdvance()  // a Return pressed during the countdown is not a pass change
+
+        let schedule = Probe.recordSchedule(seconds: seconds)
+        var passRows: [(letter: String, start: TimeInterval, end: TimeInterval)] = []
+        var passIndex = 0
+        var passStart = 0.0
+        var countdownShown = 0
+        func announce(_ index: Int, at time: TimeInterval) {
+            let pass = Probe.recordPasses[index]
+            log(String(format: "t%6.2fs  PASS %@ — %@", time, pass.letter, pass.instruction))
+        }
+
+        let start = ProcessInfo.processInfo.systemUptime
+        announce(0, at: 0)
+        var index = 0
+        var bytesWritten = 0
+        var fetches = 0
+        var failures = 0
+        var consecutiveFailures = 0
+        var lastJPEG = Data()
+        var latenciesMs: [Double] = []
+        var warnedHeaderLength = false
+        var elapsed = 0.0
+        var stopReason = "time"
+
+        recording: while true {
+            elapsed = ProcessInfo.processInfo.systemUptime - start
+            if elapsed >= seconds { break }
+            if recordControl.stopRequested { stopReason = "interrupt"; break }
+
+            // Pass changes: Return on a terminal, the fixed schedule otherwise.
+            if interactive {
+                if recordControl.takeAdvance() > 0 {
+                    passRows.append((Probe.recordPasses[passIndex].letter, passStart, elapsed))
+                    if passIndex == Probe.recordPasses.count - 1 { stopReason = "Return"; break }
+                    passIndex += 1
+                    passStart = elapsed
+                    announce(passIndex, at: elapsed)
+                }
+            } else if passIndex < schedule.count - 1 {
+                let untilNext = schedule[passIndex] - elapsed
+                if untilNext <= 0 {
+                    passRows.append((Probe.recordPasses[passIndex].letter, passStart, schedule[passIndex]))
+                    passIndex += 1
+                    passStart = schedule[passIndex - 1]
+                    countdownShown = 0
+                    announce(passIndex, at: elapsed)
+                } else if untilNext <= 3, Int(untilNext.rounded(.up)) != countdownShown {
+                    countdownShown = Int(untilNext.rounded(.up))
+                    note("  pass \(Probe.recordPasses[passIndex + 1].letter) in \(countdownShown)…")
+                }
+            }
+
+            let started = ProcessInfo.processInfo.systemUptime
+            let (data, response, error) = await ptp(PTP.nikonGetLiveViewImage)
+            let code = error == nil ? PTP.responseCode(response) : nil
+            fetches += 1
+            guard code == PTP.responseOK else {
+                // Busy (0x2019) and not-in-live-view (0xA00B) clear on their own;
+                // anything else that persists means the camera has gone.
+                failures += 1
+                consecutiveFailures += 1
+                if failures <= 5 {
+                    note("GetLiveViewImage: " + (error?.localizedDescription ?? PTP.describe(code)))
+                }
+                if consecutiveFailures >= 200 {
+                    log("FAIL  200 fetches in a row failed — ending the recording")
+                    stopReason = "camera stopped answering"
+                    break recording
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continue
+            }
+            consecutiveFailures = 0
+            let arrived = ProcessInfo.processInfo.systemUptime
+            latenciesMs.append((arrived - started) * 1000)
+
+            let bytes = PTP.payload(data)
+            guard let soi = findJPEGStart(bytes), soi >= 24 else { continue }
+            if soi != 384, !warnedHeaderLength {
+                warnedHeaderLength = true
+                log("WARN  header is \(soi) bytes, not 384 — area fields may be misread")
+            }
+            let jpeg = Data(bytes[soi...])
+            guard jpeg != lastJPEG else { continue }
+            lastJPEG = jpeg
+
+            // Big-endian: areaSize at 16–19 (width, height), areaCentre at 20–23.
+            func u16(_ offset: Int) -> Int { Int(bytes[offset]) << 8 | Int(bytes[offset + 1]) }
+            let name = String(format: "frame-%05d.bin", index)
+            do {
+                try Data(bytes).write(to: directory.appendingPathComponent(name))
+            } catch {
+                log("FAIL  could not write \(name): \(error.localizedDescription)")
+                stopReason = "write failed"
+                break
+            }
+            csv.write(Data(String(
+                format: "%d,%.4f,%d,%d,%d,%d\n", index, arrived - start,
+                u16(16), u16(18), u16(20), u16(22)).utf8))
+            bytesWritten += bytes.count
+            if index == 0 {
+                note(String(format: "first frame: area %dx%d sensor px at (%d, %d), %d bytes",
+                            u16(16), u16(18), u16(20), u16(22), bytes.count))
+            }
+            index += 1
+        }
+
+        let total = ProcessInfo.processInfo.systemUptime - start
+        if passRows.last?.letter != Probe.recordPasses[passIndex].letter {
+            passRows.append((Probe.recordPasses[passIndex].letter, passStart, total))
+        }
+        try? csv.close()
+        let passesText = "pass,start_s,end_s\n" + passRows.map {
+            String(format: "%@,%.4f,%.4f\n", $0.letter, $0.start, $0.end)
+        }.joined()
+        do {
+            try Data(passesText.utf8).write(to: directory.appendingPathComponent("passes.csv"))
+        } catch {
+            log("FAIL  could not write passes.csv: \(error.localizedDescription)")
+        }
+
+        let sorted = latenciesMs.sorted()
+        let medianMs = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+        log(String(format: "recording done (%@): %d frames written in %.1fs (%.1f distinct fps), %@ in %@",
+                   stopReason, index, total, total > 0 ? Double(index) / total : 0,
+                   byteCount(off_t(bytesWritten)), directory.path))
+        note(String(format: "%d fetches (median %.1fms), %d failed; passes recorded: %@",
+                    fetches, medianMs, failures, passRows.map(\.letter).joined(separator: " ")))
+        if index == 0 { log("WARN  no frames were written") }
+
+        await endLiveView()
+        DispatchQueue.main.async { self.finish(code: index > 0 ? 0 : 1) }
     }
 
     // MARK: Release mode
@@ -1961,6 +2286,17 @@ final class Probe: NSObject {
         }
     }
 
+    /// Ctrl-C. A recording stops itself so the frames so far are kept and live
+    /// view is ended; a second Ctrl-C (or any other mode) quits straight away.
+    func interrupted() {
+        if options.lvRecordSeconds != nil, !recordControl.stopRequested {
+            log("interrupt — ending the recording")
+            recordControl.requestStop()
+        } else {
+            finish(code: 0)
+        }
+    }
+
     func finish(code: Int32) {
         guard !shuttingDown else { return }
         shuttingDown = true
@@ -2126,7 +2462,7 @@ let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
 let probe = Probe(options: options)
 
 let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-interrupt.setEventHandler { probe.finish(code: 0) }
+interrupt.setEventHandler { probe.interrupted() }
 interrupt.resume()
 signal(SIGINT, SIG_IGN)
 
