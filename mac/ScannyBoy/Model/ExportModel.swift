@@ -200,6 +200,7 @@ final class ExportModel {
             .gridCreated, .gridList, .gridDeleted,
             .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
              .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
+             .negativeComposed, .negativePublished,
             .unknown:
             break
         }

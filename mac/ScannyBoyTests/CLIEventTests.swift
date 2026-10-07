@@ -114,6 +114,35 @@ struct CLIEventTests {
         #expect(event.message == "no space")
     }
 
+    @Test("negative_composed and negative_published")
+    func negativeComposedDecodes() throws {
+        let composed = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"negative_composed","run_id":"r1","group_id":"g0","width":7910,"height":6132,"artifact_bytes":581959680}"#
+            )
+        )
+        #expect(composed.kind == .negativeComposed)
+        #expect(composed.groupID == "g0")
+        #expect(composed.width == 7910)
+        #expect(composed.height == 6132)
+        #expect(composed.artifactBytes == 581_959_680)
+
+        let published = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"negative_published","run_id":"r1","negative_id":"negative-0","output":"_DSC4638.tif"}"#
+            )
+        )
+        #expect(published.kind == .negativePublished)
+        #expect(published.negativeID == "negative-0")
+        #expect(published.output == "_DSC4638.tif")
+    }
+
+    @Test("COMPOSE_ARTIFACT_STALE and FILM_BASE_CHANGED decode as known codes")
+    func composeCodesDecode() {
+        #expect(CLICode(name: "COMPOSE_ARTIFACT_STALE") == .composeArtifactStale)
+        #expect(CLICode(name: "FILM_BASE_CHANGED") == .filmBaseChanged)
+    }
+
     @Test("negative_done")
     func negativeDoneDecodes() throws {
         let event = try CLIEvent(
@@ -152,7 +181,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":25,"event":"negative_deleted",\
+                {"protocol_version":26,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -382,7 +411,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":25,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":26,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -621,7 +650,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":25,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":26,"command":"probe"}"#)
         }
     }
 

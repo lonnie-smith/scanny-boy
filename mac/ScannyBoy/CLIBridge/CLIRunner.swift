@@ -769,7 +769,8 @@ public struct CLICommand: Sendable, Hashable {
         overwrite: Bool = false,
         allowPartial: Bool = true,
         rig: String? = nil,
-        deferRollRefresh: Bool = false
+        deferRollRefresh: Bool = false,
+        composeOnly: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
         if let jobs {
@@ -786,6 +787,9 @@ public struct CLICommand: Sendable, Hashable {
         }
         if deferRollRefresh {
             arguments.append("--defer-roll-refresh")
+        }
+        if composeOnly {
+            arguments.append("--compose-only")
         }
         return CLICommand(arguments: arguments)
     }

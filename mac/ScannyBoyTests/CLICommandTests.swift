@@ -239,6 +239,22 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--allow-partial"))
     }
 
+    @Test("stitch adds --compose-only only when asked")
+    func stitchComposeOnly() {
+        let command = CLICommand.stitch(
+            work: Self.work, roll: Self.out, deferRollRefresh: true, composeOnly: true)
+        #expect(
+            command.arguments == [
+                "stitch", "--work", "/Volumes/Scans/roll-12-work",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--allow-partial",
+                "--defer-roll-refresh",
+                "--compose-only",
+            ]
+        )
+        #expect(!CLICommand.stitch(work: Self.work, roll: Self.out).arguments.contains("--compose-only"))
+    }
+
     @Test("edit delete names the roll and the negative")
     func editDeleteArguments() {
         let command = CLICommand.editDelete(roll: Self.out, negatives: ["a1b2c3-negative-01"])

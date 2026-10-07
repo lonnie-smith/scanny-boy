@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 25
+PROTOCOL_VERSION = 26
 
 
 class EventType(enum.StrEnum):
@@ -26,6 +26,10 @@ class EventType(enum.StrEnum):
     FINISHED = "finished"
     NEGATIVE_DONE = "negative_done"
     NEGATIVE_FAILED = "negative_failed"
+    NEGATIVE_COMPOSED = "negative_composed"
+    # Defined with the compose protocol bump; emitted by the commit's
+    # publish section (docs/PARALLEL_STITCH_PLAN.md PS-3), not yet.
+    NEGATIVE_PUBLISHED = "negative_published"
     ROLL_CREATED = "roll_created"
     ROLL_LIST = "roll_list"
     ROLL_INFO = "roll_info"
@@ -207,6 +211,14 @@ class Code(enum.StrEnum):
     # recorded but stale, and applies nothing until the user redraws.
     DEBAND_REFIT_FAILED = "DEBAND_REFIT_FAILED"
     ROLL_BUSY = "ROLL_BUSY"
+    # Warning: a `stitch --compose-only` artifact in the work folder no
+    # longer matches this stitch's inputs (or could not be read); the
+    # negative is recomputed in full, so the result is unaffected.
+    COMPOSE_ARTIFACT_STALE = "COMPOSE_ARTIFACT_STALE"
+    # The roll's film-base (or flat-field) reference changed between a
+    # negative's compose and its publish. Defined with the compose protocol
+    # bump; raised by the commit's verified first-publish lock (PS-3).
+    FILM_BASE_CHANGED = "FILM_BASE_CHANGED"
     ROLL_REFRESH_PENDING = "ROLL_REFRESH_PENDING"
     CAPTURE_CLIPPED = "CAPTURE_CLIPPED"
     CAPTURE_DENSE_END_LOW = "CAPTURE_DENSE_END_LOW"
@@ -357,6 +369,29 @@ class NegativeFailed(Event):
     negative_id: str
     code: Code
     message: str
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativeComposed(Event):
+    """`stitch --compose-only` wrote one group's compose artifact."""
+
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_COMPOSED
+
+    group_id: str
+    width: int
+    height: int
+    artifact_bytes: int
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NegativePublished(Event):
+    """A negative's TIFF and record are published and the publish lock is
+    released. Defined now, emitted only from PS-3 (the publish section)."""
+
+    event_type: ClassVar[EventType] = EventType.NEGATIVE_PUBLISHED
+
+    negative_id: str
+    output: str
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

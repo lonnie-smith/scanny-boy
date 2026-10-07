@@ -4082,3 +4082,126 @@ def test_edit_deband_invalid_values_are_invalid_edit_events(work_dir, capsys, tm
         assert [e["event"] for e in events] == ["started", "error", "finished"], argv
         assert events[1]["code"] == "INVALID_EDIT", argv
     assert repo.net_edit_state(roll_dir, nid).deband is None
+
+
+# --- PS-2: `stitch --compose-only` ---
+
+
+def test_compose_only_flag_parses_and_defaults_off():
+    parser = build_parser()
+    args = ["stitch", "--work", "w", "--roll", "r"]
+    assert parser.parse_args(args).compose_only is False
+    assert parser.parse_args([*args, "--compose-only"]).compose_only is True
+
+
+def test_stitch_compose_only_streams_started_progress_composed_finished(
+    work_dir, capsys, tmp_path
+):
+    from scanny_boy.library.db import library_db_path
+
+    roll = make_roll_dir(tmp_path)
+    db_before = library_db_path().read_bytes()
+    manifest_before = load_roll_manifest(roll).to_dict()
+
+    status = main(
+        [
+            "stitch",
+            "--work",
+            str(work_dir),
+            "--roll",
+            str(roll),
+            "--allow-partial",
+            "--defer-roll-refresh",
+            "--compose-only",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "started" and events[0]["command"] == "stitch"
+    assert kinds[-1] == "finished"
+    assert events[-1]["status"] == "success" and events[-1]["exit_status"] == 0
+    assert "progress" in kinds
+    assert kinds.count("negative_composed") == 1
+    assert kinds.index("negative_composed") > max(
+        i for i, kind in enumerate(kinds) if kind == "progress"
+    )
+    # Nothing a stitch publishes is announced: it is not a stitch.
+    assert not {"negative_done", "negative_failed", "negative_published"} & set(kinds)
+    composed = events[kinds.index("negative_composed")]
+    assert composed["group_id"] == "negative-01"
+    assert composed["artifact_bytes"] > 0
+    run_ids = {e["run_id"] for e in events}
+    assert len(run_ids) == 1
+
+    assert library_db_path().read_bytes() == db_before
+    assert load_roll_manifest(roll).to_dict() == manifest_before
+    assert (work_dir / "composed" / "negative-01" / "log.npy").is_file()
+
+
+def test_stitch_compose_only_reports_a_failed_group_and_exits_1(capsys, tmp_path):
+    work = make_work_dir(tmp_path, overlapping=False)
+    roll = make_roll_dir(tmp_path)
+
+    status = main(
+        ["stitch", "--work", str(work), "--roll", str(roll), "--compose-only"]
+    )
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "started" and kinds[-1] == "finished"
+    assert events[-1]["status"] == "failed" and events[-1]["exit_status"] == 1
+    errors = [e for e in events if e["event"] == "error"]
+    assert [e["code"] for e in errors] == ["STITCH_UNDERCONSTRAINED"]
+    assert "negative_composed" not in kinds
+    assert (work / "composed" / "negative-01" / "failure.json").is_file()
+
+
+def test_stitch_compose_only_with_negatives_is_a_usage_error(
+    work_dir, capsys, tmp_path
+):
+    roll = make_roll_dir(tmp_path)
+
+    status = main(
+        [
+            "stitch",
+            "--work",
+            str(work_dir),
+            "--roll",
+            str(roll),
+            "--compose-only",
+            "--negatives",
+            "stitch-negative-01",
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "mutually exclusive" in captured.err
+    assert not (work_dir / "composed").exists()
+
+
+def test_stitch_compose_only_cannot_overlap_an_exclusive_writer(
+    work_dir, capsys, tmp_path
+):
+    from scanny_boy.roll_lock import exclusive_roll_lock, shared_roll_lock
+
+    roll = make_roll_dir(tmp_path)
+    args = ["stitch", "--work", str(work_dir), "--roll", str(roll), "--compose-only"]
+
+    with exclusive_roll_lock(roll):
+        status = main(args)
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_BUSY"
+    assert not (work_dir / "composed").exists()
+
+    # A shared holder (another compose, an export) does not block it.
+    with shared_roll_lock(roll):
+        assert main(args) == 0
+    capsys.readouterr()
+    assert (work_dir / "composed" / "negative-01" / "log.npy").is_file()

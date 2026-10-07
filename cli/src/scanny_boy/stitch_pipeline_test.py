@@ -2963,3 +2963,704 @@ def test_a_concurrent_change_survives_a_recorded_failure(tmp_path, monkeypatch):
     # The other writer's changes.
     assert roll.setup == {"format": "6x7", "auto_crop": False}
     assert roll.negative("keeper").metadata.caption == "kept by the other writer"
+
+
+# --- PS-2: the compose artifact (docs/PARALLEL_STITCH_PLAN.md §3.2/§3.3) ---
+
+
+def _freeze_time(monkeypatch) -> None:
+    """Pin `datetime.now` inside the pipeline, so two stitches of the same
+    inputs write byte-identical TIFFs and equal timestamps."""
+    import datetime
+    import types
+
+    class Frozen(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 7, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(
+        stitch_pipeline,
+        "datetime",
+        types.SimpleNamespace(datetime=Frozen, UTC=datetime.UTC),
+    )
+
+
+def _copy_work(work_dir: Path, destination: Path) -> Path:
+    import shutil
+
+    shutil.copytree(work_dir, destination)
+    return destination
+
+
+def _run_compose(work, roll, *, events=None, cancel=None, **kwargs):
+    defaults = {"run_id": "compose-run", "jobs": 1}
+    defaults.update(kwargs)
+    return stitch_pipeline.run_compose(
+        work,
+        roll,
+        cancel=cancel if cancel is not None else CancellationToken(),
+        emit=(events.append if events is not None else (lambda event: None)),
+        **defaults,
+    )
+
+
+def _artifact(work: Path, group_id: str = "negative-01") -> Path:
+    return work / "composed" / group_id
+
+
+def _published_hashes(roll: Path) -> dict[str, str]:
+    return {p.name: hashing.sha256_file(p) for p in sorted(roll.glob("*.tif"))}
+
+
+# Two rolls in one library cannot share negative ids, and an id starts with
+# the run's first six characters, so the stitches being compared get
+# different (six-character) run ids; the dump masks them.
+_PLAIN_RUN = "plain0"
+_ARTIFACT_RUN = "arti01"
+
+
+def _roll_dump(roll: Path, work: Path, run_id: str) -> str:
+    """The roll's records as stable text, with what legitimately differs
+    between two copies masked: the roll and work folder paths, the run id,
+    the roll's identity and its bookkeeping timestamps."""
+    import json
+
+    manifest = load_roll_manifest(roll).to_dict()
+    roll_id = manifest["roll_id"]
+    for key in ("roll_id", "roll_name", "created_at", "updated_at"):
+        manifest.pop(key, None)
+    text = json.dumps(manifest, sort_keys=True, default=str)
+    return (
+        text.replace(roll_id, "<roll-id>")
+        .replace(str(work), "<work>")
+        .replace(str(roll), "<roll>")
+        .replace(run_id, "<run>")
+    )
+
+
+def _stale_warnings(events) -> list[WarningEvent]:
+    return [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.COMPOSE_ARTIFACT_STALE
+    ]
+
+
+def _plain_baseline(work_dir, tmp_path, monkeypatch):
+    """A plain stitch of a private copy of `work_dir` into its own roll:
+    the reference every artifact-consuming stitch must equal."""
+    _freeze_time(monkeypatch)
+    work = _copy_work(work_dir, tmp_path / "plain-work")
+    roll = make_roll_dir(tmp_path, "plain")
+    events: list = []
+    assert (
+        run_stitch_with_defaults(work, roll, events=events, run_id=_PLAIN_RUN).status
+        == "complete"
+    )
+    return work, roll, events
+
+
+def test_compose_only_writes_the_artifact_and_nothing_to_the_roll(work_dir, tmp_path):
+    from scanny_boy.library.db import library_db_path
+
+    roll = make_roll_dir(tmp_path, "composer")
+    db_bytes = library_db_path().read_bytes()
+    roll_before = load_roll_manifest(roll).to_dict()
+    roll_files = sorted(p.name for p in roll.iterdir())
+    events: list = []
+
+    outcome = _run_compose(work_dir, roll, events=events)
+
+    assert outcome.status == "complete"
+    assert outcome.published == ["negative-01"]
+    assert outcome.failed == []
+    assert library_db_path().read_bytes() == db_bytes
+    assert load_roll_manifest(roll).to_dict() == roll_before
+    assert sorted(p.name for p in roll.iterdir()) == roll_files
+
+    artifact = _artifact(work_dir)
+    assert sorted(p.name for p in artifact.iterdir()) == [
+        "composed.pkl",
+        "covered.npy",
+        "grid.npy",
+        "inputs.json",
+        "keep.npy",
+        "log.npy",
+    ]
+    log = np.load(artifact / "log.npy", mmap_mode="r")
+    assert log.dtype == np.float32 and log.ndim == 3
+    assert not [p for p in (work_dir / "composed").iterdir() if p.name.startswith(".")]
+
+    composed = [e for e in events if isinstance(e, stitch_pipeline.NegativeComposed)]
+    assert len(composed) == 1
+    assert (composed[0].group_id, composed[0].height, composed[0].width) == (
+        "negative-01",
+        log.shape[0],
+        log.shape[1],
+    )
+    assert composed[0].artifact_bytes == sum(
+        p.stat().st_size for p in artifact.iterdir()
+    )
+    steps = {e.step.value for e in events if isinstance(e, Progress)}
+    assert steps == {"load", "detect", "match", "solve", "warp", "blend"}
+    assert all(e.stage is Stage.STITCH for e in events if isinstance(e, Progress))
+    progress = [e for e in events if isinstance(e, Progress)]
+    assert progress[-1].completed == progress[-1].total
+
+
+def test_a_stitch_consuming_the_artifact_matches_a_plain_stitch(
+    work_dir, tmp_path, monkeypatch
+):
+    _plain_work, plain_roll, plain_events = _plain_baseline(
+        work_dir, tmp_path, monkeypatch
+    )
+
+    work = _copy_work(work_dir, tmp_path / "composed-work")
+    roll = make_roll_dir(tmp_path, "composed")
+    assert _run_compose(work, roll).status == "complete"
+    assert _artifact(work).is_dir()
+
+    # The solve and the roll-independent compose must not run again.
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the artifact should have stood in for this")
+
+    monkeypatch.setattr(stitch_pipeline, "_solve_negative", forbidden)
+    monkeypatch.setattr(stitch_pipeline, "compose_negative", forbidden)
+    events: list = []
+    outcome = run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN)
+
+    assert outcome.status == "complete"
+    assert _stale_warnings(events) == []
+    assert _published_hashes(roll) == _published_hashes(plain_roll)
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, _plain_work, _PLAIN_RUN
+    )
+    # Same observable stream: every event but the roll's own names.
+    assert [type(e) for e in events] == [type(e) for e in plain_events]
+    progress = [e for e in events if isinstance(e, Progress)]
+    assert progress[-1].completed == progress[-1].total
+    assert [e.completed for e in progress] == sorted(e.completed for e in progress)
+    # The artifact has done its job.
+    assert not (work / "composed").exists()
+
+
+def test_the_artifact_path_matches_when_the_clamp_engages(tmp_path, monkeypatch):
+    """Three negatives with a clamp reference population: the artifact path's
+    `finish_negative` must see exactly the references a plain stitch's
+    `composite` does, in capture order."""
+    from scanny_boy import normalization
+
+    monkeypatch.setattr(normalization, "CLAMP_MIN_SAMPLES", 1)
+    monkeypatch.setattr(normalization, "CLAMP_MIN_WINDOW", 0.0)
+    monkeypatch.setattr(normalization, "CLAMP_K_MAD", 0.0)
+    base = make_work_dir(tmp_path, negatives=3)
+    _freeze_time(monkeypatch)
+
+    plain_work = _copy_work(base, tmp_path / "plain-work")
+    plain_roll = make_roll_dir(tmp_path, "plain")
+    assert (
+        run_stitch_with_defaults(plain_work, plain_roll, run_id=_PLAIN_RUN).status
+        == "complete"
+    )
+    clamped = [
+        n.normalization["clamped"] for n in load_roll_manifest(plain_roll).negatives
+    ]
+    assert any(clamped), "the clamp never engaged, so this test proves nothing"
+
+    work = _copy_work(base, tmp_path / "composed-work")
+    roll = make_roll_dir(tmp_path, "composed")
+    assert _run_compose(work, roll).published == [
+        "negative-01",
+        "negative-02",
+        "negative-03",
+    ]
+    events: list = []
+    assert (
+        run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN).status
+        == "complete"
+    )
+
+    assert _stale_warnings(events) == []
+    assert _published_hashes(roll) == _published_hashes(plain_roll)
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, plain_work, _PLAIN_RUN
+    )
+
+
+def _fingerprint_of(work: Path) -> dict:
+    import json
+
+    return json.loads((_artifact(work) / "inputs.json").read_text())
+
+
+def _edit_fingerprint(work: Path, **changes) -> None:
+    import json
+
+    path = _artifact(work) / "inputs.json"
+    data = json.loads(path.read_text())
+    data.update(changes)
+    path.write_text(json.dumps(data))
+
+
+_CHANGED_FINGERPRINT_VALUES = {
+    "compose_format_version": 0,
+    "scanny_boy_version": "Scanny Boy 0.0.0",
+    "work_manifest_sha256": "0" * 64,
+    "group_id": "negative-77",
+    "members": ["IMG_00.NEF"],
+    "rig_profile_id": "some-rig",
+    "rig_profile_sha256": "1" * 64,
+    "stitch_params_sha256": "2" * 64,
+    "film_kind": "monochrome",
+    "film_base_source_sha256": "4" * 64,
+    "film_base_density": [-0.1, -0.2, -0.3],
+    "flat_field_gain_map_sha256": "5" * 64,
+}
+
+
+def test_the_fingerprint_names_every_input_the_plan_lists(work_dir, tmp_path):
+    roll = make_roll_dir(tmp_path, "fp")
+    _run_compose(work_dir, roll)
+    fingerprint = _fingerprint_of(work_dir)
+    assert set(fingerprint) == set(_CHANGED_FINGERPRINT_VALUES)
+    base_block = load_roll_manifest(roll).film_base
+    assert fingerprint["film_base_source_sha256"] == base_block["source_sha256"]
+    assert fingerprint["film_base_density"] == base_block["density"]
+    assert fingerprint["flat_field_gain_map_sha256"] is None
+    assert fingerprint["rig_profile_id"] is None
+    assert (
+        fingerprint["compose_format_version"] == stitch_pipeline.COMPOSE_FORMAT_VERSION
+    )
+
+
+@pytest.mark.parametrize("field", sorted(_CHANGED_FINGERPRINT_VALUES))
+def test_each_fingerprint_field_alone_makes_the_stitch_recompute(
+    field, work_dir, tmp_path, monkeypatch
+):
+    roll = make_roll_dir(tmp_path, "fp")
+    assert _run_compose(work_dir, roll).status == "complete"
+    _edit_fingerprint(work_dir, **{field: _CHANGED_FINGERPRINT_VALUES[field]})
+
+    solves: list[str] = []
+    real_solve = stitch_pipeline._solve_negative
+
+    def spy(*args, **kwargs):
+        solves.append("solved")
+        return real_solve(*args, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline, "_solve_negative", spy)
+    events: list = []
+    outcome = run_stitch_with_defaults(work_dir, roll, events=events)
+
+    assert outcome.status == "complete"
+    assert solves == ["solved"]
+    stale = _stale_warnings(events)
+    assert len(stale) == 1
+    assert "negative-01" in stale[0].message
+    assert not (work_dir / "composed").exists()
+
+
+def test_real_input_changes_make_the_stitch_recompute(work_dir, tmp_path):
+    """The same check with the inputs changed for real rather than by editing
+    `inputs.json`: the roll's film base, and the work manifest."""
+    roll = make_roll_dir(tmp_path, "real")
+    assert _run_compose(work_dir, roll).status == "complete"
+
+    def move_density(fresh):
+        fresh.film_base["density"] = [-0.5, -0.12, -0.99]
+
+    mutate_roll_manifest(roll, move_density)
+    events: list = []
+    assert run_stitch_with_defaults(work_dir, roll, events=events).status == "complete"
+    assert len(_stale_warnings(events)) == 1
+
+    # A work manifest that differs by even a byte is a different input.
+    other = _copy_work(work_dir, tmp_path / "other-work")
+    other_roll = make_roll_dir(tmp_path, "other")
+    assert _run_compose(other, other_roll).status == "complete"
+    manifest_path = other / "scanny-boy-manifest.json"
+    manifest_path.write_text(manifest_path.read_text() + "\n")
+    events = []
+    assert (
+        run_stitch_with_defaults(other, other_roll, events=events).status == "complete"
+    )
+    assert len(_stale_warnings(events)) == 1
+
+
+def test_a_different_rig_profile_makes_the_stitch_recompute(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy.calibration import RigProfile
+
+    frame_height, frame_width = FRAME_SIZE
+    geometry = {
+        "format_version": 1,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "fx": float(max(frame_width, frame_height)),
+        "fy": float(max(frame_width, frame_height)),
+        "cx": frame_width / 2.0,
+        "cy": frame_height / 2.0,
+        "k1": 0.0,
+        "k2": 0.0,
+    }
+    repo.save_rig_profile(
+        RigProfile(
+            profile_id="pid-geo",
+            name="Geo",
+            scanny_boy_version="0.3.0",
+            created_at="2026-09-01T00:00:00Z",
+            geometry=geometry,
+        )
+    )
+    roll = make_roll_dir(tmp_path, "rig")
+    assert _run_compose(work_dir, roll, rig_profile_id="pid-geo").status == "complete"
+    assert _fingerprint_of(work_dir)["rig_profile_id"] == "pid-geo"
+
+    # Matching rig: consumed. (The roll then carries the geometry bucket.)
+    solves: list[str] = []
+    real_solve = stitch_pipeline._solve_negative
+    monkeypatch.setattr(
+        stitch_pipeline,
+        "_solve_negative",
+        lambda *a, **k: solves.append("x") or real_solve(*a, **k),
+    )
+    events: list = []
+    run_stitch_with_defaults(work_dir, roll, events=events, rig_profile_id="pid-geo")
+    assert solves == [] and _stale_warnings(events) == []
+
+    # Composed with the rig, stitched without it: stale. (That stitch then
+    # refuses the roll's geometry invariant, but only after the solve loop
+    # would have run; use a fresh roll to isolate the artifact check.)
+    work = _copy_work(work_dir, tmp_path / "again-work")
+    roll2 = make_roll_dir(tmp_path, "rig-two")
+    assert _run_compose(work, roll2, rig_profile_id="pid-geo").status == "complete"
+    events = []
+    run_stitch_with_defaults(work, roll2, events=events)
+    assert len(_stale_warnings(events)) == 1
+
+
+def test_a_corrupt_artifact_array_falls_back_with_identical_output(
+    work_dir, tmp_path, monkeypatch
+):
+    plain_work, plain_roll, _ = _plain_baseline(work_dir, tmp_path, monkeypatch)
+
+    work = _copy_work(work_dir, tmp_path / "corrupt-work")
+    roll = make_roll_dir(tmp_path, "corrupt")
+    assert _run_compose(work, roll).status == "complete"
+    log = _artifact(work) / "log.npy"
+    log.write_bytes(log.read_bytes()[:200])
+    events: list = []
+
+    assert (
+        run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN).status
+        == "complete"
+    )
+
+    assert len(_stale_warnings(events)) == 1
+    assert _published_hashes(roll) == _published_hashes(plain_roll)
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, plain_work, _PLAIN_RUN
+    )
+
+
+@pytest.mark.parametrize("victim", ["composed.pkl", "covered.npy", "inputs.json"])
+def test_other_unreadable_artifact_files_fall_back(work_dir, tmp_path, victim):
+    roll = make_roll_dir(tmp_path, "unreadable")
+    assert _run_compose(work_dir, roll).status == "complete"
+    (_artifact(work_dir) / victim).write_bytes(b"not what was written")
+    events: list = []
+
+    assert run_stitch_with_defaults(work_dir, roll, events=events).status == "complete"
+
+    assert len(_stale_warnings(events)) == 1
+
+
+def test_a_fingerprint_matching_fallback_is_identical_to_a_plain_stitch(
+    work_dir, tmp_path, monkeypatch
+):
+    plain_work, plain_roll, _ = _plain_baseline(work_dir, tmp_path, monkeypatch)
+
+    work = _copy_work(work_dir, tmp_path / "stale-work")
+    roll = make_roll_dir(tmp_path, "stale-roll")
+    assert _run_compose(work, roll).status == "complete"
+    _edit_fingerprint(work, film_base_source_sha256="f" * 64)
+    events: list = []
+
+    assert (
+        run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN).status
+        == "complete"
+    )
+
+    assert len(_stale_warnings(events)) == 1
+    assert _published_hashes(roll) == _published_hashes(plain_roll)
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, plain_work, _PLAIN_RUN
+    )
+
+
+def test_a_failure_artifact_produces_the_same_failed_record_and_event(
+    tmp_path, monkeypatch
+):
+    base = make_work_dir(tmp_path, overlapping=False)
+    _freeze_time(monkeypatch)
+
+    plain_work = _copy_work(base, tmp_path / "plain-work")
+    plain_roll = make_roll_dir(tmp_path, "plain")
+    plain_events: list = []
+    plain = run_stitch_with_defaults(
+        plain_work, plain_roll, events=plain_events, run_id=_PLAIN_RUN
+    )
+    assert plain.status == "partial"
+
+    work = _copy_work(base, tmp_path / "composed-work")
+    roll = make_roll_dir(tmp_path, "composed")
+    compose_events: list = []
+    composed = _run_compose(work, roll, events=compose_events)
+    assert composed.status == "partial"
+    assert composed.failed == ["negative-01"]
+    assert (_artifact(work) / "failure.json").is_file()
+    assert not (_artifact(work) / "log.npy").exists()
+    compose_errors = [e for e in compose_events if type(e).__name__ == "ErrorEvent"]
+    assert [e.code for e in compose_errors] == [Code.STITCH_UNDERCONSTRAINED]
+    assert not [
+        e for e in compose_events if isinstance(e, stitch_pipeline.NegativeComposed)
+    ]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the failure artifact should have stood in")
+
+    monkeypatch.setattr(stitch_pipeline, "_solve_negative", forbidden)
+    events: list = []
+    outcome = run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN)
+
+    assert outcome.status == "partial"
+    assert outcome.failed == plain.failed
+    failed = [e for e in events if isinstance(e, NegativeFailed)]
+    plain_failed = [e for e in plain_events if isinstance(e, NegativeFailed)]
+    assert len(failed) == len(plain_failed) == 1
+    assert failed[0].code is plain_failed[0].code
+    assert failed[0].message.replace(_ARTIFACT_RUN, "<run>") == plain_failed[
+        0
+    ].message.replace(_PLAIN_RUN, "<run>")
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, plain_work, _PLAIN_RUN
+    )
+    # The solve's own warning (the CLAHE retry) is replayed by the commit.
+    codes = [e.code for e in events if isinstance(e, WarningEvent)]
+    plain_codes = [e.code for e in plain_events if isinstance(e, WarningEvent)]
+    assert codes == plain_codes
+    assert Code.STITCH_CLAHE_FALLBACK_USED in codes
+    assert not (work / "composed").exists()
+
+
+def test_compose_reports_insufficient_disk_before_writing_anything(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy import disk_check
+
+    seen: list[tuple] = []
+
+    def full(path, required):
+        seen.append((path, required))
+        raise disk_check.DiskCheckError(required, 0)
+
+    monkeypatch.setattr(disk_check, "check_disk_space", full)
+    roll = make_roll_dir(tmp_path, "full")
+
+    with pytest.raises(StitchError) as exc_info:
+        _run_compose(work_dir, roll)
+
+    assert exc_info.value.code is Code.INSUFFICIENT_DISK
+    assert [path for path, _ in seen] == [work_dir]
+    # Sized from the artifact, not from nothing.
+    assert seen[0][1] > 1024 * 1024
+    assert not (work_dir / "composed").exists()
+
+
+def test_compose_refuses_what_a_stitch_refuses(work_dir, tmp_path):
+    roll_without_base = make_roll_dir(tmp_path, "nobase")
+    mutate_roll_manifest(
+        roll_without_base, lambda fresh: setattr(fresh, "film_base", None)
+    )
+    with pytest.raises(StitchError) as exc_info:
+        _run_compose(work_dir, roll_without_base)
+    assert exc_info.value.code is Code.FILM_BASE_REQUIRED
+
+    with pytest.raises(StitchError) as exc_info:
+        _run_compose(work_dir, work_dir)
+    assert exc_info.value.code is Code.WORK_SAME_AS_OUTPUT
+
+    unregistered = tmp_path / "nowhere"
+    unregistered.mkdir()
+    with pytest.raises(StitchError) as exc_info:
+        _run_compose(work_dir, unregistered)
+    assert exc_info.value.code is Code.ROLL_NOT_FOUND
+    assert not (work_dir / "composed").exists()
+
+
+def test_a_cancelled_compose_leaves_no_artifact(work_dir, tmp_path):
+    roll = make_roll_dir(tmp_path, "cancel")
+    cancel = CancellationToken()
+    events: list = []
+
+    def emit(event):
+        events.append(event)
+        if isinstance(event, Progress) and event.step.value == "warp":
+            cancel.cancel()
+
+    outcome = stitch_pipeline.run_compose(
+        work_dir, roll, run_id="c", jobs=1, cancel=cancel, emit=emit
+    )
+
+    assert outcome.status == "cancelled"
+    assert outcome.published == []
+    assert not (work_dir / "composed").exists() or not list(
+        (work_dir / "composed").iterdir()
+    )
+    assert not [e for e in events if isinstance(e, stitch_pipeline.NegativeComposed)]
+
+
+def test_recomposing_replaces_an_existing_artifact(work_dir, tmp_path):
+    roll = make_roll_dir(tmp_path, "twice")
+    _run_compose(work_dir, roll)
+    marker = _artifact(work_dir) / "stale-leftover.txt"
+    marker.write_text("x")
+
+    _run_compose(work_dir, roll)
+
+    assert not marker.exists()
+    assert (_artifact(work_dir) / "log.npy").is_file()
+
+
+def test_the_solve_assigns_only_the_record_fields_the_artifact_carries(
+    work_dir, tmp_path, monkeypatch
+):
+    """The artifact restores exactly the record fields the solve assigned,
+    found by tracking assignments on the throwaway record. This pins that
+    list: if a new field starts being set by `_solve_negative`, the tracker
+    carries it automatically, and this test names it so the change is a
+    deliberate one."""
+    from scanny_boy.manifest import load_manifest
+
+    manifest = load_manifest(work_dir)
+    group = manifest.groups[0]
+    record = stitch_pipeline._tracked_record(group)
+    entry = stitch_pipeline._SolvedNegative(group=group, record=record, pairs=[])
+    progress = stitch_pipeline._StitchProgress(
+        total=100, emit=lambda event: None, run_id="r"
+    )
+
+    stitch_pipeline._solve_negative(
+        work_dir,
+        entry,
+        grid=manifest.grid_spec,
+        workers=1,
+        cancel=CancellationToken(),
+        progress=progress,
+        source_index=0,
+        on_warning=lambda code, message: None,
+    )
+
+    assert set(record.assigned_fields()) == {
+        "pairs",
+        "grid_cells",
+        "grid_pitch_ratio",
+        "grid_alignment_ratio",
+    }
+
+    # The CLAHE retry adds its flag; a fitted rectification adds its block.
+    fallback_record = stitch_pipeline._tracked_record(group)
+    fallback_entry = stitch_pipeline._SolvedNegative(
+        group=group, record=fallback_record, pairs=[]
+    )
+    clahe_by_call: list[bool] = []
+    real_detect_all = stitch_pipeline._detect_all
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+        clahe_by_call.append(use_clahe)
+        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+
+    def fake_register_pair(a, b, undistorter=None):
+        result = register_pair(a, b)
+        if not clahe_by_call[-1]:
+            return dataclasses.replace(
+                result, accepted=False, reject_code=Code.STITCH_INSUFFICIENT_MATCHES
+            )
+        return result
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+    stitch_pipeline._solve_negative(
+        work_dir,
+        fallback_entry,
+        grid=manifest.grid_spec,
+        workers=1,
+        cancel=CancellationToken(),
+        progress=progress,
+        source_index=0,
+        on_warning=lambda code, message: None,
+    )
+    assert "used_clahe_fallback" in fallback_record.assigned_fields()
+
+
+def test_the_compose_artifact_format_covers_every_composed_negative_field():
+    """`composed.pkl` is generated from the dataclass: a field added to
+    `ComposedNegative` is either an array (saved as .npy, and named in
+    `compose_artifact`) or travels in the pickle without further work."""
+    from scanny_boy import compose_artifact
+    from scanny_boy.composite import ComposedNegative
+
+    names = {f.name for f in dataclasses.fields(ComposedNegative)}
+    assert set(compose_artifact._ARRAY_FIELDS) <= names
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_real_samples_composed_then_stitched_match_a_plain_stitch(
+    tmp_path, monkeypatch
+):
+    """The artifact path on a real 3-frame negative: compose, then stitch from
+    the artifact, equals a plain stitch of an identical work folder — same
+    TIFF bytes, same roll records."""
+    from scanny_boy.pipeline import run_convert
+    from scanny_boy.sample_nef_support import stage_samples
+
+    input_dir = stage_samples(tmp_path, NEGATIVE_1)
+    converted = tmp_path / "converted"
+    converted.mkdir()
+    run_convert(
+        input_dir,
+        NEGATIVE_1,
+        converted,
+        3,
+        run_id="convert-run",
+        jobs=1,
+        cancel=CancellationToken(),
+        emit=lambda event: None,
+    )
+    _freeze_time(monkeypatch)
+
+    plain_work = _copy_work(converted, tmp_path / "plain-work")
+    plain_roll = make_roll_dir(tmp_path, "plain")
+    assert (
+        run_stitch_with_defaults(plain_work, plain_roll, run_id=_PLAIN_RUN).status
+        == "complete"
+    )
+
+    work = _copy_work(converted, tmp_path / "composed-work")
+    roll = make_roll_dir(tmp_path, "composed")
+    assert _run_compose(work, roll, jobs=1).status == "complete"
+    events: list = []
+    assert (
+        run_stitch_with_defaults(work, roll, events=events, run_id=_ARTIFACT_RUN).status
+        == "complete"
+    )
+
+    assert _stale_warnings(events) == []
+    assert _published_hashes(roll) == _published_hashes(plain_roll)
+    assert _roll_dump(roll, work, _ARTIFACT_RUN) == _roll_dump(
+        plain_roll, plain_work, _PLAIN_RUN
+    )
+    assert not (work / "composed").exists()

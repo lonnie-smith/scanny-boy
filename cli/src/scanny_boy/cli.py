@@ -297,6 +297,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="defer_roll_refresh",
         help="skip the highlight-lock recompute and defer it to roll refresh",
     )
+    stitch.add_argument(
+        "--compose-only",
+        action="store_true",
+        dest="compose_only",
+        help="solve and compose each negative into <work>/composed/ for a "
+        "later stitch to reuse; writes nothing to the roll",
+    )
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
     )
@@ -1023,8 +1030,12 @@ def _run_stitch_command(
     from scanny_boy.library import repo
     from scanny_boy.manifest import load_manifest
     from scanny_boy.registration import StitchError
-    from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
-    from scanny_boy.stitch_pipeline import run_stitch
+    from scanny_boy.roll_lock import (
+        RollBusyError,
+        exclusive_roll_lock,
+        shared_roll_lock,
+    )
+    from scanny_boy.stitch_pipeline import run_compose, run_stitch
 
     run_id = str(uuid.uuid4())
     writer.write(Started(command="stitch", run_id=run_id))
@@ -1036,26 +1047,42 @@ def _run_stitch_command(
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
 
+    # `--compose-only` writes only into the work folder and reads the roll
+    # as a snapshot, so it holds the roll lock shared; it still cannot
+    # overlap a stitch that holds it exclusively.
+    roll_lock = shared_roll_lock if args.compose_only else exclusive_roll_lock
     try:
         with (
             command_cancellation(cancel) as scope,
-            exclusive_roll_lock(Path(args.roll)),
+            roll_lock(Path(args.roll)),
         ):
-            outcome = run_stitch(
-                Path(args.work),
-                Path(args.roll),
-                run_id=run_id,
-                overwrite=args.overwrite,
-                allow_partial=args.allow_partial,
-                jobs=jobs,
-                cancel=scope,
-                emit=writer.write,
-                negatives=args.negatives,
-                rig_profile_id=args.rig,
-                auto_rotate=args.auto_rotate,
-                auto_crop=args.auto_crop,
-                defer_roll_refresh=args.defer_roll_refresh,
-            )
+            if args.compose_only:
+                outcome = run_compose(
+                    Path(args.work),
+                    Path(args.roll),
+                    run_id=run_id,
+                    allow_partial=args.allow_partial,
+                    jobs=jobs,
+                    cancel=scope,
+                    emit=writer.write,
+                    rig_profile_id=args.rig,
+                )
+            else:
+                outcome = run_stitch(
+                    Path(args.work),
+                    Path(args.roll),
+                    run_id=run_id,
+                    overwrite=args.overwrite,
+                    allow_partial=args.allow_partial,
+                    jobs=jobs,
+                    cancel=scope,
+                    emit=writer.write,
+                    negatives=args.negatives,
+                    rig_profile_id=args.rig,
+                    auto_rotate=args.auto_rotate,
+                    auto_crop=args.auto_crop,
+                    defer_roll_refresh=args.defer_roll_refresh,
+                )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
@@ -1073,7 +1100,10 @@ def _run_stitch_command(
                 run_id=run_id,
                 code=Code.CANCELLED,
                 message=(
-                    "cancelled at the user's request; completed negatives were "
+                    "cancelled at the user's request; the negative in progress "
+                    "was discarded"
+                    if args.compose_only
+                    else "cancelled at the user's request; completed negatives were "
                     "kept and the negative in progress was discarded"
                 ),
             )
@@ -2544,6 +2574,12 @@ def run_argv(
         return _usage_error(
             parser,
             "--grid and --per-negative are mutually exclusive; use one",
+        )
+    if args.command == "stitch" and args.compose_only and args.negatives:
+        return _usage_error(
+            parser,
+            "--compose-only and --negatives are mutually exclusive; a compose "
+            "covers every completed negative in the work folder",
         )
     if (
         args.command in ("prepare", "run")

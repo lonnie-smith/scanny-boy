@@ -24,9 +24,11 @@ from scanny_boy.events import (
     MetadataSkipped,
     MetadataUpdated,
     MetadataValues,
+    NegativeComposed,
     NegativeDeleted,
     NegativeDone,
     NegativeFailed,
+    NegativePublished,
     PipelineStep,
     PreviewRendered,
     ProbeResult,
@@ -94,6 +96,20 @@ ALL_EVENTS: list[Event] = [
         message="frame not reachable from any other frame",
         run_id="run-1",
     ),
+    NegativeComposed(
+        group_id="group-0",
+        width=7910,
+        height=6132,
+        artifact_bytes=581959680,
+        run_id="run-1",
+    ),
+    NegativePublished(negative_id="negative-0", output="_DSC4638.tif", run_id="run-1"),
+    WarningEvent(
+        code=Code.COMPOSE_ARTIFACT_STALE,
+        message="group-0: the compose artifact is stale; recomputing",
+        run_id="run-1",
+    ),
+    ErrorEvent(code=Code.FILM_BASE_CHANGED, message="the film base changed"),
     WarningEvent(code=Code.FILENAME_SORT_USED, message="fell back to filenames"),
     ErrorEvent(code=Code.INVALID_PER_NEGATIVE, message="out of range"),
     WarningEvent(
@@ -292,7 +308,7 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 25
+    assert PROTOCOL_VERSION == 26
 
 
 def test_new_event_kinds_round_trip():
@@ -439,6 +455,22 @@ def test_negative_failed_round_trips():
     assert data["code"] == "STITCH_UNDERCONSTRAINED"
     assert data["message"] == "frame not reachable from any other frame"
     assert json.loads(json.dumps(data)) == data
+
+
+def test_compose_events_round_trip():
+    composed = NegativeComposed(
+        group_id="group-0", width=7910, height=6132, artifact_bytes=1234, run_id="r"
+    ).to_dict()
+    assert composed["event"] == "negative_composed"
+    assert composed["group_id"] == "group-0"
+    assert composed["artifact_bytes"] == 1234
+    published = NegativePublished(
+        negative_id="negative-0", output="_DSC4638.tif", run_id="r"
+    ).to_dict()
+    assert published["event"] == "negative_published"
+    assert published["output"] == "_DSC4638.tif"
+    for data in (composed, published):
+        assert json.loads(json.dumps(data)) == data
 
 
 def test_progress_defaults_to_prepare_stage():

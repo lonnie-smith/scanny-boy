@@ -626,7 +626,8 @@ final class RunModel {
              .rigCreated, .rigList, .rigDeleted, .rigProgress, .flatFieldReferenceSet,
              .gridCreated, .gridList, .gridDeleted,
              .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
-             .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed:
+             .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
+             .negativeComposed, .negativePublished:
             break
         }
     }

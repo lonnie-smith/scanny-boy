@@ -17,6 +17,8 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime
+import hashlib
+import json
 import math
 import shutil
 import sys
@@ -34,6 +36,7 @@ from tifftools.constants import Tag
 from scanny_boy import auto_crop as auto_crop_module
 from scanny_boy import (
     auto_neutral,
+    compose_artifact,
     concurrency,
     deband,
     disk_check,
@@ -55,10 +58,13 @@ from scanny_boy.composite import (
     GAIN_DRIFT_WARN,
     MAX_OVERLAP_MAD,
     MIN_GAIN_OVERLAP_PX,
+    ComposedNegative,
     check_memory_budget,
     check_output_size,
+    compose_negative,
     composite,
     estimate_peak_bytes,
+    finish_negative,
 )
 from scanny_boy.detection import (
     DETECTION_LONG_EDGE,
@@ -68,8 +74,10 @@ from scanny_boy.detection import (
 from scanny_boy.events import (
     Code,
     EditRecorded,
+    ErrorEvent,
     MetadataApplied,
     MetadataSkipped,
+    NegativeComposed,
     NegativeDone,
     NegativeFailed,
     PipelineStep,
@@ -92,6 +100,7 @@ from scanny_boy.layout import (
 )
 from scanny_boy.library import repo
 from scanny_boy.manifest import (
+    MANIFEST_FILENAME,
     BadManifestError,
     GroupRecord,
     Manifest,
@@ -99,6 +108,7 @@ from scanny_boy.manifest import (
 )
 from scanny_boy.normalization import (
     ANALYSIS_BLOCK_PX,
+    ANALYSIS_PASSTHROUGH_PX,
     FILM_EXTENT_MIN_REGION_FRACTION,
     HEADROOM_CLIP_WARN_FRACTION,
     NORMALIZED_FILL,
@@ -207,6 +217,12 @@ class _SolvedNegative:
     # right after the publish's manifest write, so `sync_previews` renders
     # the net transform that already includes it.
     auto_rotation_deg: float | None = None
+    # Set when a valid compose artifact (`stitch --compose-only`) stood in
+    # for this negative's solve *and* its roll-independent compose: the
+    # composed canvas and the analysis region the solve products imply.
+    # `_composite_and_publish` then runs only `finish_negative`.
+    composed: ComposedNegative | None = None
+    valid_rect: tuple[int, int, int, int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1173,6 +1189,489 @@ def _persist[T](
     return mutate_roll_manifest(out_dir, apply)
 
 
+# --- compose: the roll-independent half of a stitch, run ahead of the commit ---
+
+COMPOSE_FORMAT_VERSION = compose_artifact.COMPOSE_FORMAT_VERSION
+
+# Progress steps `stitch --compose-only` spends: per frame load, detect and
+# warp; per negative match, solve and blend. (normalize and write_stitched
+# belong to the commit.)
+_COMPOSE_STEPS_PER_FRAME = 3
+_COMPOSE_STEPS_PER_NEGATIVE = 3
+
+
+class _SolveTrackedRecord(NegativeRecord):
+    """A throwaway record that remembers which of its fields were assigned.
+
+    `_solve_negative` writes the solve's findings onto the negative's record
+    as it goes (pairs, rectification, grid measures, the CLAHE flag).
+    Compose runs the solve on one of these so the artifact can carry exactly
+    the fields the solve assigned, however many the solve grows — a field is
+    restored on the commit's record if and only if the solve set it, which is
+    what makes the artifact path leave the record identical to a plain
+    stitch's, including for an adopted record whose old values the solve
+    would not have overwritten."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        assigned = self.__dict__.get("_assigned")
+        if assigned is not None and name != "_assigned":
+            assigned.add(name)
+
+    def assigned_fields(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in sorted(self._assigned)}
+
+
+def _tracked_record(group: GroupRecord) -> _SolveTrackedRecord:
+    record = _SolveTrackedRecord(
+        negative_id="compose",
+        run_id="compose",
+        members=list(group.members),
+        expected_output=_intermediate_name(group.members[0]),
+        fill_color=FILL_COLOR,
+    )
+    object.__setattr__(record, "_assigned", set())
+    return record
+
+
+def _compose_fingerprint(
+    *,
+    work_manifest_sha256: str,
+    group: GroupRecord,
+    rig_profile_id: str | None,
+    profile,
+    film_kind: FilmKind,
+    roll: RollManifest,
+) -> dict[str, Any]:
+    """Everything a group's compose artifact was computed from, as the JSON
+    object written to `inputs.json`. The writer (`run_compose`) and the
+    checker (`run_stitch`) both call this, so they cannot disagree about what
+    counts.
+
+    Conservative on purpose: a stale artifact is a lost optimisation, a
+    wrongly-accepted one is a wrong result. `compose_negative` does not read
+    the auto-rotate or auto-crop settings (they act on the finished image),
+    so those are not here; the film-base lock timestamp is not either (it
+    moves when the roll's first negative publishes, and means nothing to a
+    compose)."""
+    film_base_block = roll.film_base or {}
+    flat_field_block = roll.flat_field or {}
+    density = _locked_base_refs(roll)
+    profile_sha256 = None
+    if profile is not None:
+        profile_sha256 = hashlib.sha256(
+            json.dumps(
+                dataclasses.asdict(profile), sort_keys=True, default=str
+            ).encode()
+        ).hexdigest()
+    stitch_params_sha256 = hashlib.sha256(
+        json.dumps(_stitch_params(profile), sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return {
+        "compose_format_version": COMPOSE_FORMAT_VERSION,
+        "scanny_boy_version": software_tag_value(),
+        "work_manifest_sha256": work_manifest_sha256,
+        "group_id": group.group_id,
+        "members": list(group.members),
+        "rig_profile_id": rig_profile_id,
+        "rig_profile_sha256": profile_sha256,
+        # Every threshold and constant the solve and the warp run under.
+        "stitch_params_sha256": stitch_params_sha256,
+        "film_kind": film_kind.value,
+        "film_base_source_sha256": film_base_block.get("source_sha256"),
+        "film_base_density": None if density is None else list(density),
+        "flat_field_gain_map_sha256": flat_field_block.get("gain_map_sha256"),
+    }
+
+
+def _compose_kwargs(
+    entry: _SolvedNegative,
+    *,
+    profile,
+    valid_rect: tuple[int, int, int, int],
+    base_refs: tuple[float, ...] | None,
+    film_kind: FilmKind,
+) -> dict[str, Any]:
+    """The roll-independent keyword arguments `composite()` and
+    `compose_negative()` take, assembled in one place so the plain stitch and
+    `stitch --compose-only` cannot drift apart."""
+    return {
+        "geometry": profile.geometry if profile is not None else None,
+        "ca": entry.ca_maps if profile is not None else None,
+        "rectification": entry.rectification,
+        "region": valid_rect,
+        "base_refs": base_refs,
+        "film_kind": film_kind,
+    }
+
+
+def _require_roll_ready(roll: RollManifest) -> None:
+    """The roll-level gates both a stitch and a compose need before any
+    pixel work: a manifest new enough for film-base anchoring, and a
+    film-base reference to anchor to."""
+    # REBATE_ANCHORING §9: check the version once, before anything else. A
+    # roll whose manifest predates film-base anchoring stays readable,
+    # editable and exportable, but cannot take new negatives —
+    # re-stitching its scans under an anchor its published pixels never
+    # had would make the roll internally inconsistent.
+    if roll.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
+        raise StitchError(
+            Code.ROLL_PREDATES_FILM_BASE,
+            "this roll was stitched before film-base anchoring; create a "
+            "new roll and re-stitch its scans to add more negatives",
+        )
+
+    # §3.2 rule 4: a roll with no film-base reference refuses before any
+    # pixel work — the user must not wait through ten minutes of stitching
+    # to be told the roll has no base frame.
+    if roll.film_base is None:
+        raise StitchError(
+            Code.FILM_BASE_REQUIRED,
+            "this roll has no film-base reference; add one with the "
+            "base-frame field before converting scans "
+            "(docs/REBATE_ANCHORING.md)",
+        )
+
+
+def _load_rig_profile(rig_profile_id: str | None, work_dir: Path, groups):
+    """The calibration profile, if any: its geometry reaches the stitch
+    warp. Raises `StitchError` for an unknown profile or one fitted at other
+    frame dimensions."""
+    from scanny_boy import calibration
+
+    if rig_profile_id is None:
+        return None
+    try:
+        profile = repo.load_rig_profile(rig_profile_id)
+    except calibration.RigError as exc:
+        raise StitchError(exc.code, exc.message) from exc
+    if profile.geometry is not None:
+        height, width = _read_intermediate_size(
+            _intermediate_paths(work_dir, groups[0])[0]
+        )
+        try:
+            calibration.check_geometry_frame_size(profile, width, height)
+        except calibration.RigError as exc:
+            raise StitchError(exc.code, exc.message) from exc
+    return profile
+
+
+def _adopt_artifact(
+    entry: _SolvedNegative,
+    loaded: compose_artifact.LoadedArtifact,
+    *,
+    progress: _StitchProgress,
+    source_index: int,
+    on_warning,
+) -> None:
+    """Stand a valid compose artifact in for the solve: restore the entry's
+    solve products and the record fields the solve assigned, replay the
+    warnings the solve emitted, and advance the progress steps the solve
+    would have spent. A failure artifact becomes `entry.failure`, to be
+    recorded exactly like a solve failure.
+
+    Everything that can raise (an unknown code string) is converted before
+    anything is applied, so a rejected artifact leaves `entry` untouched."""
+    products = loaded.products
+    warnings = [(Code(code), message) for code, message in products.warnings]
+    failure = None
+    if loaded.failure is not None:
+        failure = (Code(loaded.failure[0]), loaded.failure[1])
+
+    for name, value in products.record_fields.items():
+        setattr(entry.record, name, value)
+    for code, message in warnings:
+        on_warning(code, message)
+    if failure is not None:
+        entry.failure = failure
+        return
+
+    entry.pairs = products.pairs
+    entry.rectification = products.rectification
+    entry.layout = products.layout
+    entry.frame_size = products.frame_size
+    entry.ca_maps = products.ca_maps
+    entry.valid_rect = products.valid_rect
+    entry.composed = loaded.composed
+    members = len(entry.group.members)
+    for step in (PipelineStep.LOAD, PipelineStep.DETECT):
+        for _ in range(members):
+            progress.advance(source_index, step)
+    progress.advance(source_index, PipelineStep.MATCH)
+    progress.advance(source_index, PipelineStep.SOLVE)
+
+
+def run_compose(
+    work_dir: Path,
+    out_dir: Path,
+    *,
+    run_id: str,
+    jobs: int | None,
+    cancel: CancellationToken,
+    emit: EmitFn,
+    rig_profile_id: str | None = None,
+    allow_partial: bool = False,
+) -> StitchOutcome:
+    """`stitch --compose-only`: the roll-independent half of a stitch,
+    saved for the commit to reuse (docs/PARALLEL_STITCH_PLAN.md §3.2).
+
+    For each completed group in the work manifest: solve the layout, run
+    `compose_negative`, and write `<work>/composed/<group_id>/` (see
+    `compose_artifact`). A group whose solve or compose fails gets a failure
+    artifact instead. Nothing is written to the roll: the roll is read once,
+    as a snapshot, for only what composing needs — its film kind, the locked
+    film-base density, and the fingerprint fields. The caller holds the
+    roll lock *shared*.
+
+    The returned outcome's `published` lists the groups composed, `failed`
+    the groups that failed. A failed group also emits an `ErrorEvent` with
+    its code; the run then ends `partial` (exit 1), like a stitch."""
+    work_dir = Path(work_dir)
+    out_dir = Path(out_dir)
+
+    def on_warning(code: Code, message: str) -> None:
+        emit(WarningEvent(run_id=run_id, code=code, message=message))
+
+    # Steps 1-4 of `run_stitch`, minus the roll-folder writability check:
+    # a compose writes only into the work folder.
+    if work_dir.resolve() == out_dir.resolve():
+        raise StitchError(
+            Code.WORK_SAME_AS_OUTPUT,
+            "the work directory resolves to the same folder as the output folder",
+        )
+    try:
+        work_manifest = load_manifest(work_dir)
+    except BadManifestError as exc:
+        raise StitchError(exc.code, exc.message) from exc
+    if work_manifest.status in ("running", "cancelled"):
+        raise StitchError(
+            Code.WORK_MANIFEST_UNUSABLE,
+            f"the work manifest's status is {work_manifest.status!r}; only a "
+            "complete or partial conversion can be stitched",
+        )
+    if work_manifest.status == "partial" and not allow_partial:
+        raise StitchError(
+            Code.WORK_MANIFEST_UNUSABLE,
+            "the work manifest is 'partial'; pass --allow-partial to stitch only "
+            "the negatives that converted successfully",
+        )
+    groups = [g for g in work_manifest.groups if g.status == "completed"]
+    if not groups:
+        raise StitchError(
+            Code.WORK_MANIFEST_UNUSABLE,
+            "the work manifest records no completed negatives to stitch",
+        )
+    for group in groups:
+        _verify_intermediates(work_dir, group)
+
+    if not repo.roll_registered(out_dir):
+        raise StitchError(
+            Code.ROLL_NOT_FOUND,
+            f"{out_dir} is not a registered roll; create the roll first",
+        )
+    try:
+        roll = load_roll_manifest(out_dir)
+    except (BadManifestError, repo.RollNotRegisteredError) as exc:
+        raise StitchError(exc.code, exc.message) from exc
+    film_kind = _film_kind_from_manifest(roll)
+    _require_roll_ready(roll)
+    profile = _load_rig_profile(rig_profile_id, work_dir, groups)
+    base_refs = _locked_base_refs(roll)
+
+    try:
+        workers = concurrency.resolve_worker_count(
+            work_manifest.shots_per_negative, jobs
+        )
+    except concurrency.MemoryBudgetError as exc:
+        raise StitchError(exc.code, exc.message) from exc
+
+    frame_count = sum(len(g.members) for g in groups)
+    progress = _StitchProgress(
+        total=frame_count * _COMPOSE_STEPS_PER_FRAME
+        + len(groups) * _COMPOSE_STEPS_PER_NEGATIVE,
+        emit=emit,
+        run_id=run_id,
+    )
+    work_manifest_sha256 = hashing.sha256_file(work_dir / MANIFEST_FILENAME)
+    channels = 1 if film_kind is FilmKind.MONOCHROME else 3
+
+    composed_ids: list[str] = []
+    failed_ids: list[str] = []
+    cancelled = False
+    for source_index, group in enumerate(groups):
+        if cancel.cancelled:
+            cancelled = True
+            break
+        fingerprint = _compose_fingerprint(
+            work_manifest_sha256=work_manifest_sha256,
+            group=group,
+            rig_profile_id=rig_profile_id,
+            profile=profile,
+            film_kind=film_kind,
+            roll=roll,
+        )
+        record = _tracked_record(group)
+        entry = _SolvedNegative(group=group, record=record, pairs=[])
+        warnings: list[tuple[str, str]] = []
+
+        def on_group_warning(code: Code, message: str, _sink=warnings) -> None:
+            _sink.append((code.value, message))
+            on_warning(code, message)
+
+        # Deterministic failures (a solve gate, an oversized canvas) become
+        # failure artifacts the commit records; infrastructure failures
+        # (out of memory, a write error) do not, so the commit retries the
+        # group in full instead of inheriting a failure a plain stitch
+        # would not have had.
+        failure: tuple[Code, str] | None = None
+        try:
+            layout, frame_size, ca_maps = _solve_negative(
+                work_dir,
+                entry,
+                grid=work_manifest.grid_spec,
+                workers=workers,
+                cancel=cancel,
+                progress=progress,
+                source_index=source_index,
+                on_warning=on_group_warning,
+                profile=profile,
+            )
+            entry.layout = layout
+            entry.frame_size = frame_size
+            entry.ca_maps = ca_maps
+            valid_rect = largest_valid_rect(
+                layout, frame_size, rectification=entry.rectification
+            )
+
+            required = math.ceil(
+                compose_artifact.estimate_artifact_bytes(
+                    layout.canvas_size,
+                    channels,
+                    passthrough=max(layout.canvas_size) <= ANALYSIS_PASSTHROUGH_PX,
+                )
+                * _DISK_SAFETY_MARGIN
+            )
+            disk_check.check_disk_space(work_dir, required)
+
+            paths = _intermediate_paths(work_dir, group)
+            by_name = {path.name: path for path in paths}
+
+            def load_frame(name: str, _by_name=by_name) -> np.ndarray:
+                cancel.raise_if_cancelled()
+                return _read_intermediate(_by_name[name])
+
+            composed = compose_negative(
+                layout,
+                load_frame,
+                cancel=cancel,
+                on_progress=lambda _i=source_index: progress.advance(
+                    _i, PipelineStep.WARP
+                ),
+                **_compose_kwargs(
+                    entry,
+                    profile=profile,
+                    valid_rect=valid_rect,
+                    base_refs=base_refs,
+                    film_kind=film_kind,
+                ),
+            )
+            progress.advance(source_index, PipelineStep.BLEND)
+            cancel.raise_if_cancelled()
+        except CancelledError:
+            cancelled = True
+            break
+        except disk_check.DiskCheckError as exc:
+            # Run-level, like prepare's and stitch's own disk checks: the
+            # queue's waiting-for-disk path keys off this code.
+            raise StitchError(exc.code, exc.message) from exc
+        except StitchError as exc:
+            failure = (exc.code, exc.message)
+        except MemoryError as exc:
+            _compose_infrastructure_failure(emit, run_id, group, exc)
+            failed_ids.append(group.group_id)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            failure = (Code.STITCH_FAILED, str(exc))
+
+        try:
+            if failure is not None:
+                compose_artifact.write_failure(
+                    work_dir,
+                    group.group_id,
+                    fingerprint,
+                    code=failure[0].value,
+                    message=failure[1],
+                    record_fields=record.assigned_fields(),
+                    warnings=warnings,
+                )
+                message = failure[1]
+                emit(
+                    ErrorEvent(
+                        run_id=run_id,
+                        code=failure[0],
+                        message=(
+                            message
+                            if message.startswith(group.group_id)
+                            else f"{group.group_id}: {message}"
+                        ),
+                    )
+                )
+                failed_ids.append(group.group_id)
+                continue
+
+            products = compose_artifact.SolveProducts(
+                layout=entry.layout,
+                frame_size=entry.frame_size,
+                ca_maps=entry.ca_maps,
+                pairs=entry.pairs,
+                rectification=entry.rectification,
+                valid_rect=valid_rect,
+                record_fields=record.assigned_fields(),
+                warnings=warnings,
+            )
+            height, width = composed.img_log.shape[:2]
+            artifact_bytes = compose_artifact.write_artifact(
+                work_dir, group.group_id, fingerprint, composed, products
+            )
+        except OSError as exc:
+            _compose_infrastructure_failure(emit, run_id, group, exc)
+            failed_ids.append(group.group_id)
+            continue
+        finally:
+            # Release the canvas before the next group solves.
+            composed = None
+
+        composed_ids.append(group.group_id)
+        emit(
+            NegativeComposed(
+                run_id=run_id,
+                group_id=group.group_id,
+                width=int(width),
+                height=int(height),
+                artifact_bytes=artifact_bytes,
+            )
+        )
+
+    status = "cancelled" if cancelled else "partial" if failed_ids else "complete"
+    return StitchOutcome(status=status, published=composed_ids, failed=failed_ids)
+
+
+def _compose_infrastructure_failure(
+    emit: EmitFn, run_id: str, group: GroupRecord, exc: BaseException
+) -> None:
+    """Report a compose that could not finish for a reason unrelated to the
+    negative itself. No failure artifact is written: the commit composes the
+    group in full."""
+    emit(
+        ErrorEvent(
+            run_id=run_id,
+            code=Code.STITCH_FAILED,
+            message=f"{group.group_id}: the compose did not finish ({exc!r}); "
+            "the stitch will compose it in full",
+        )
+    )
+
+
 def run_stitch(
     work_dir: Path,
     out_dir: Path,
@@ -1307,22 +1806,7 @@ def run_stitch(
     # The calibration profile, if any: its geometry reaches the stitch
     # warp. Loaded before the invariants are built, because the geometry
     # bucket is part of them.
-    from scanny_boy import calibration
-
-    profile = None
-    if rig_profile_id is not None:
-        try:
-            profile = repo.load_rig_profile(rig_profile_id)
-        except calibration.RigError as exc:
-            raise StitchError(exc.code, exc.message) from exc
-        if profile.geometry is not None:
-            height, width = _read_intermediate_size(
-                _intermediate_paths(work_dir, groups[0])[0]
-            )
-            try:
-                calibration.check_geometry_frame_size(profile, width, height)
-            except calibration.RigError as exc:
-                raise StitchError(exc.code, exc.message) from exc
+    profile = _load_rig_profile(rig_profile_id, work_dir, groups)
 
     invariants = RollInvariants(
         processing_params=work_manifest.processing_params,
@@ -1358,28 +1842,7 @@ def run_stitch(
     roll = plan.existing_manifest
     assert roll is not None
 
-    # REBATE_ANCHORING §9: check the version once, before anything else. A
-    # roll whose manifest predates film-base anchoring stays readable,
-    # editable and exportable, but cannot take new negatives —
-    # re-stitching its scans under an anchor its published pixels never
-    # had would make the roll internally inconsistent.
-    if roll.manifest_format_version < ROLL_MANIFEST_FORMAT_VERSION:
-        raise StitchError(
-            Code.ROLL_PREDATES_FILM_BASE,
-            "this roll was stitched before film-base anchoring; create a "
-            "new roll and re-stitch its scans to add more negatives",
-        )
-
-    # §3.2 rule 4: a roll with no film-base reference refuses before any
-    # pixel work — the user must not wait through ten minutes of stitching
-    # to be told the roll has no base frame.
-    if roll.film_base is None:
-        raise StitchError(
-            Code.FILM_BASE_REQUIRED,
-            "this roll has no film-base reference; add one with the "
-            "base-frame field before converting scans "
-            "(docs/REBATE_ANCHORING.md)",
-        )
+    _require_roll_ready(roll)
 
     if negatives:
         wanted_members = {
@@ -1460,9 +1923,14 @@ def run_stitch(
         run_id=run_id,
     )
     source_index_by_group = {g.group_id: i for i, g in enumerate(groups)}
+    work_manifest_sha256 = hashing.sha256_file(work_dir / MANIFEST_FILENAME)
 
     # Solve every layout before the disk check, so the free-space formula
-    # has real canvas sizes (see the module docstring).
+    # has real canvas sizes (see the module docstring). A valid compose
+    # artifact (`stitch --compose-only`) stands in for a group's solve and
+    # its roll-independent compose; anything else about it — missing,
+    # stale, unreadable — means today's full path. Correctness never
+    # depends on the artifact.
     solved: list[_SolvedNegative] = []
     cancelled = False
     for group in groups:
@@ -1476,6 +1944,34 @@ def run_stitch(
             pairs=[],
             covered_to_remove=removals_by_group.get(group.group_id, []),
         )
+        fingerprint = _compose_fingerprint(
+            work_manifest_sha256=work_manifest_sha256,
+            group=group,
+            rig_profile_id=rig_profile_id,
+            profile=profile,
+            film_kind=film_kind,
+            roll=roll,
+        )
+        try:
+            loaded = compose_artifact.load_artifact(
+                work_dir, group.group_id, fingerprint
+            )
+            if loaded is not None:
+                _adopt_artifact(
+                    entry,
+                    loaded,
+                    progress=progress,
+                    source_index=source_index_by_group[group.group_id],
+                    on_warning=on_warning,
+                )
+                solved.append(entry)
+                continue
+        except (compose_artifact.ArtifactUnusableError, ValueError) as exc:
+            on_warning(
+                Code.COMPOSE_ARTIFACT_STALE,
+                f"{group.group_id}: the compose artifact in {work_dir} cannot "
+                f"be used ({exc}); computing the negative in full",
+            )
         try:
             layout, frame_size, ca_maps = _solve_negative(
                 work_dir,
@@ -1559,6 +2055,7 @@ def run_stitch(
             code, message = entry.failure
             _record_failure(out_dir, roll, entry.record, code, message, emit, run_id)
             failed.append(entry.group.group_id)
+            compose_artifact.remove_artifact(work_dir, entry.group.group_id)
             continue
 
         try:
@@ -1611,6 +2108,8 @@ def run_stitch(
             continue
 
         published.append(entry.record.expected_output)
+        # The artifact has done its job (or was never used): best effort.
+        compose_artifact.remove_artifact(work_dir, entry.group.group_id)
         # The published negative joins the clamp's reference population for
         # the negatives still to come.
         block = entry.record.normalization
@@ -2265,26 +2764,40 @@ def _composite_and_publish(
         # The analysis region must be computed *before* compositing (section
         # 1.5): it takes only `layout` and `entry.frame_size`, both of which
         # exist at solve time. It restricts the meters only — it never crops
-        # the output.
-        valid_rect = largest_valid_rect(
-            layout, entry.frame_size, rectification=entry.rectification
+        # the output. A compose artifact carries the one its compose used.
+        valid_rect = (
+            entry.valid_rect
+            if entry.valid_rect is not None
+            else largest_valid_rect(
+                layout, entry.frame_size, rectification=entry.rectification
+            )
         )
 
-        geometry = profile.geometry if profile is not None else None
-        ca = entry.ca_maps if profile is not None else None
-        result = composite(
-            layout,
-            load_frame,
-            cancel=cancel,
-            on_progress=on_frame_warped,
-            geometry=geometry,
-            ca=ca,
-            rectification=entry.rectification,
-            region=valid_rect,
-            reference_bounds=reference_bounds,
-            base_refs=base_refs,
-            film_kind=film_kind,
-        )
+        if entry.composed is not None:
+            # The roll-independent half already ran in `stitch
+            # --compose-only`; only the clamp and everything after it
+            # remain. The warp steps it spent are advanced here so the
+            # run's declared step total still adds up.
+            for _ in paths:
+                on_frame_warped()
+            composed, entry.composed = entry.composed, None
+            result = finish_negative(composed, reference_bounds)
+            del composed
+        else:
+            result = composite(
+                layout,
+                load_frame,
+                cancel=cancel,
+                on_progress=on_frame_warped,
+                reference_bounds=reference_bounds,
+                **_compose_kwargs(
+                    entry,
+                    profile=profile,
+                    valid_rect=valid_rect,
+                    base_refs=base_refs,
+                    film_kind=film_kind,
+                ),
+            )
         progress.advance(source_index, PipelineStep.BLEND)
         progress.advance(source_index, PipelineStep.NORMALIZE)
         cancel.raise_if_cancelled()

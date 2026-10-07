@@ -18,6 +18,8 @@
         "finished",
         "negative_done",
         "negative_failed",
+        "negative_composed",
+        "negative_published",
         "roll_created",
         "roll_list",
         "roll_info",
@@ -170,6 +172,8 @@
         "SCRATCHES_STALE",
         "DEBAND_REFIT_FAILED",
         "ROLL_BUSY",
+        "COMPOSE_ARTIFACT_STALE",
+        "FILM_BASE_CHANGED",
         "ROLL_REFRESH_PENDING",
         "CAPTURE_CLIPPED",
         "CAPTURE_DENSE_END_LOW",
@@ -299,7 +303,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 25
+      "const": 26
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -354,6 +358,28 @@
           "negative_id": { "type": "string" },
           "code": { "$ref": "#/definitions/code" },
           "message": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "negative_composed" } } },
+      "then": {
+        "required": ["group_id", "width", "height", "artifact_bytes"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "artifact_bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "negative_published" } } },
+      "then": {
+        "required": ["negative_id", "output"],
+        "properties": {
+          "negative_id": { "type": "string" },
+          "output": { "type": "string" }
         }
       }
     },

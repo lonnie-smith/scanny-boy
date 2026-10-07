@@ -73,7 +73,12 @@ public struct CLIEvent: Sendable, Hashable {
     /// per-negative `deband` block in `roll info` and `edit_recorded`, and
     /// the `DEBAND_REFIT_FAILED` warning code; the app decodes the report
     /// into `NegativeDeband.Summary`.
-    public static let supportedProtocolVersion = 25
+    ///
+    /// Protocol 26 adds the parallel-stitch compose step: `stitch
+    /// --compose-only`, the `negative_composed` event (and, from a later
+    /// chunk, `negative_published`), and the `COMPOSE_ARTIFACT_STALE` and
+    /// `FILM_BASE_CHANGED` codes.
+    public static let supportedProtocolVersion = 26
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -96,6 +101,8 @@ public struct CLIEvent: Sendable, Hashable {
         case finished
         case negativeDone
         case negativeFailed
+        case negativeComposed
+        case negativePublished
         case rollCreated
         case rollList
         case rollInfo
@@ -143,6 +150,8 @@ public struct CLIEvent: Sendable, Hashable {
             case "finished": self = .finished
             case "negative_done": self = .negativeDone
             case "negative_failed": self = .negativeFailed
+            case "negative_composed": self = .negativeComposed
+            case "negative_published": self = .negativePublished
             case "roll_created": self = .rollCreated
             case "roll_list": self = .rollList
             case "roll_info": self = .rollInfo
@@ -190,6 +199,8 @@ public struct CLIEvent: Sendable, Hashable {
             case .finished: "finished"
             case .negativeDone: "negative_done"
             case .negativeFailed: "negative_failed"
+            case .negativeComposed: "negative_composed"
+            case .negativePublished: "negative_published"
             case .rollCreated: "roll_created"
             case .rollList: "roll_list"
             case .rollInfo: "roll_info"
@@ -332,7 +343,7 @@ extension CLIEvent {
     // `progress`
     public var stage: String? { fields["stage"]?.stringValue }
 
-    // `group_done` and `group_failed`
+    // `group_done`, `group_failed` and `negative_composed`
     public var groupID: String? { fields["group_id"]?.stringValue }
 
     // `warning`, `error`, `group_failed`, and `negative_failed`
@@ -345,7 +356,11 @@ extension CLIEvent {
     public var status: String? { fields["status"]?.stringValue }
     public var exitStatus: Int? { fields["exit_status"]?.intValue }
 
-    // `negative_done` and `negative_failed`
+    // `negative_composed` (its `group_id` is `groupID`; `width` and `height`
+    // are below)
+    public var artifactBytes: Int? { fields["artifact_bytes"]?.intValue }
+
+    // `negative_done`, `negative_failed` and `negative_published`
     public var negativeID: String? { fields["negative_id"]?.stringValue }
     // `negative_done`
     public var width: Int? { fields["width"]?.intValue }
@@ -676,6 +691,8 @@ public enum CLICode: Sendable, Hashable {
     case filmBaseCameraConflict
     case libraryDBUnsupported
     case rollBusy
+    case composeArtifactStale
+    case filmBaseChanged
     case rollRefreshPending
     case captureClipped
     case captureDenseEndLow
@@ -773,6 +790,8 @@ public enum CLICode: Sendable, Hashable {
         case "FILM_BASE_CAMERA_CONFLICT": self = .filmBaseCameraConflict
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "ROLL_BUSY": self = .rollBusy
+        case "COMPOSE_ARTIFACT_STALE": self = .composeArtifactStale
+        case "FILM_BASE_CHANGED": self = .filmBaseChanged
         case "ROLL_REFRESH_PENDING": self = .rollRefreshPending
         case "CAPTURE_CLIPPED": self = .captureClipped
         case "CAPTURE_DENSE_END_LOW": self = .captureDenseEndLow
@@ -872,6 +891,8 @@ public enum CLICode: Sendable, Hashable {
         case .filmBaseCameraConflict: "FILM_BASE_CAMERA_CONFLICT"
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .rollBusy: "ROLL_BUSY"
+        case .composeArtifactStale: "COMPOSE_ARTIFACT_STALE"
+        case .filmBaseChanged: "FILM_BASE_CHANGED"
         case .rollRefreshPending: "ROLL_REFRESH_PENDING"
         case .captureClipped: "CAPTURE_CLIPPED"
         case .captureDenseEndLow: "CAPTURE_DENSE_END_LOW"

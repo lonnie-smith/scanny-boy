@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **25**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **26**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -216,7 +216,8 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
                       [--jobs N] [--overwrite] [--rig ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ...] [--rig ID] [--no-auto-rotate] [--no-auto-crop]
+                      [--negatives ID ... | --compose-only] [--rig ID]
+                      [--no-auto-rotate] [--no-auto-crop]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
@@ -308,6 +309,44 @@ a skip must remove a whole group's worth or the run fails
 `NON_CONTIGUOUS_SELECTION`.
 
 `--negatives` on `stitch` restricts a re-stitch to named `negative_id`s.
+
+**Compose-only stitch**: `stitch --compose-only` runs the roll-independent
+half of a stitch ahead of time and writes nothing to the roll. For every
+completed group in the work manifest it validates the work folder exactly as
+a stitch does, solves the layout, warps and blends the negative, and saves
+the result as a *compose artifact* in `<work>/composed/<group_id>/`:
+`log.npy`, `covered.npy`, `grid.npy` and `keep.npy` (the composed canvas and
+the arrays its metering needs), `composed.pkl` (the meters, the solve
+products, and the record fields the solve sets) and `inputs.json` (the
+fingerprint: the artifact format version, the program version, the work
+manifest's SHA-256, the group's members, the rig profile id and content hash,
+the roll's film kind, the film-base `source_sha256` and `density`, the
+flat-field `gain_map_sha256`, and a hash of the stitch parameters in force).
+The artifact is built in a hidden temporary folder and renamed into place, so
+a reader never sees a partial one. A group that fails to solve or compose
+gets a `failure.json` (plus the fingerprint) instead, and an `error` event
+carrying the failure's code; the command then ends `failed` with exit
+status 1, like a stitch with a failed negative. Before composing a group the
+CLI checks the work folder's volume for the artifact's size and fails
+`INSUFFICIENT_DISK` if it will not fit. `--compose-only` is mutually
+exclusive with `--negatives` (a usage error, exit 2) and takes the roll lock
+*shared*: it reads the roll as a snapshot (film kind, film-base density,
+fingerprint fields), so it cannot overlap a command that holds the roll
+exclusively but does not exclude another compose or an export. It emits
+`progress` events (stage `stitch`; steps `load`, `detect`, `match`, `solve`,
+`warp`, `blend`) and one `negative_composed` event per artifact written.
+
+A plain `stitch` of the same work folder looks for each group's artifact. A
+valid one — `inputs.json` equal to the fingerprint recomputed against the
+roll and work folder as the stitch starts, and every file readable — stands
+in for that group's solve and compose, and the stitch continues from the
+clamp onward, publishing the same pixels, names, ids and record a stitch
+without the artifact would; a failure artifact is recorded as that group's
+failure. A missing artifact is the ordinary stitch. A **stale or unreadable**
+artifact emits a `COMPOSE_ARTIFACT_STALE` warning and the stitch recomputes
+that group in full: an artifact only ever saves time, never changes a
+result. A stitch removes a group's artifact once the group is published or
+its failure recorded.
 
 `--downsample` on `export` reduces each export to the chosen long edge
 (`none` is the default and keeps full resolution). The resize happens
@@ -829,6 +868,8 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `group_failed` | A negative's group failed and its staging directory was removed. |
 | `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad` (the worst post-gain overlap residual). |
 | `negative_failed` | A negative could not be stitched. Carries `negative_id`, `code`, and `message`. |
+| `negative_composed` | `stitch --compose-only` wrote one group's compose artifact. Carries `group_id`, the canvas `width` and `height`, and `artifact_bytes` (the artifact's size on disk). |
+| `negative_published` | A negative's TIFF and record are published. Carries `negative_id` and `output`. Defined with `negative_composed`; a stitch does not emit it yet. |
 | `roll_created` | A new roll folder was created. Carries `roll_id`, `roll_name`, and `path`. |
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
@@ -994,6 +1035,8 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_FILM_EXTENT_WITHHELD` | Informational: the film-extent pass withheld a non-film border band (likely the negative carrier) from the metering; the message names the four insets in canvas pixels. The published pixels are never cropped |
 | `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
 | `AUTO_CROP_NO_FORMAT` | Warning: the roll's Auto-crop is on but no film format is set; nothing is seeded (once per run) |
+| `COMPOSE_ARTIFACT_STALE` | Warning: a group's compose artifact (`stitch --compose-only`) no longer matches the stitch's inputs, or could not be read; the group is recomputed in full and the result is unaffected |
+| `FILM_BASE_CHANGED` | The roll's film-base or flat-field reference changed between a negative's compose and its publish, so the composed pixels no longer match the roll; defined now, raised by a later stitch |
 | `AUTO_CROP_FAILED` | Warning: the auto-crop detector raised on one negative; the negative was published without a new automatic crop (a refusal is not a failure: it is only recorded in the evidence block) |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |
