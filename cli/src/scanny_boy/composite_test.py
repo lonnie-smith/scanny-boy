@@ -13,17 +13,22 @@ from scanny_boy.composite import (
     MAX_CANVAS_DIMENSION,
     MAX_STITCHED_BYTES,
     MEMORY_SAFETY_FACTOR,
+    ComposedNegative,
+    CompositeResult,
     _region_keep,
     check_memory_budget,
     check_output_size,
+    compose_negative,
     composite,
     estimate_peak_bytes,
+    finish_negative,
 )
 from scanny_boy.events import Code
 from scanny_boy.layout import solve_layout
 from scanny_boy.linear import decode_to_linear, encode_from_linear
 from scanny_boy.normalization import (
     ANALYSIS_BLOCK_PX,
+    CLAMP_MIN_SAMPLES,
     FILM_EXTENT_CONVERGENCE_DELTA,
     NORMALIZED_FILL,
     Bounds,
@@ -2063,3 +2068,125 @@ def test_peak_estimate_counts_band_maps_for_rectification_without_geometry():
     assert with_rect > base
     # Geometry already accounts for the maps; rectification adds nothing.
     assert with_both == with_geometry
+
+
+# --- The compose / finish split (PS-1) ---------------------------------------
+
+_ARRAY_FIELDS = ("img_log", "covered", "grid", "keep")
+
+
+def _split_inputs(film_kind):
+    _scene, _names, uint16_frames, layout, _cut = _build_two_frame_scene()
+    return {
+        "layout": layout,
+        "load_frame": lambda name: uint16_frames[name],
+        "cancel": CancellationToken(),
+        "on_progress": lambda: None,
+        "film_kind": film_kind,
+    }
+
+
+def _compose(film_kind) -> ComposedNegative:
+    return compose_negative(**_split_inputs(film_kind))
+
+
+def _clamping_references(film_kind) -> list[Bounds]:
+    """A reference population far from anything the scene measures, with
+    enough samples for the clamp to act: every channel's window is
+    CLAMP_MIN_WINDOW wide around these, so the frame's own bounds fall
+    outside it."""
+    channels = 1 if film_kind is FilmKind.MONOCHROME else 3
+    return [
+        Bounds(
+            floors=(8.0 + 0.01 * i,) * channels,
+            ceils=(9.0 + 0.01 * i,) * channels,
+        )
+        for i in range(CLAMP_MIN_SAMPLES + 2)
+    ]
+
+
+def _assert_results_identical(actual: CompositeResult, expected: CompositeResult):
+    assert actual.image.dtype == expected.image.dtype
+    assert np.array_equal(actual.image, expected.image)
+    for field in dataclasses.fields(CompositeResult):
+        if field.name == "image":
+            continue
+        assert getattr(actual, field.name) == getattr(expected, field.name), field.name
+
+
+@pytest.mark.parametrize("film_kind", [FilmKind.COLOUR, FilmKind.MONOCHROME])
+@pytest.mark.parametrize("clamps", [None, False, True])
+def test_finish_of_compose_equals_composite(film_kind, clamps):
+    """`composite` is the two halves in order, so the split must be
+    invisible: bit-identical image, every other field equal — with no
+    reference bounds, with references too few to clamp, and with a
+    population that really clamps."""
+    if clamps is None:
+        references = None
+    elif clamps:
+        references = _clamping_references(film_kind)
+    else:
+        references = _clamping_references(film_kind)[: CLAMP_MIN_SAMPLES - 1]
+
+    expected = composite(**_split_inputs(film_kind), reference_bounds=references)
+    actual = finish_negative(_compose(film_kind), references)
+
+    assert expected.clamped is bool(clamps)
+    assert actual.clamped is bool(clamps)
+    if clamps:
+        assert actual.unclamped_bounds is not None
+        assert actual.bounds != actual.unclamped_bounds
+    _assert_results_identical(actual, expected)
+
+
+@pytest.mark.parametrize("film_kind", [FilmKind.COLOUR, FilmKind.MONOCHROME])
+def test_composed_negative_survives_an_array_round_trip(film_kind, tmp_path):
+    """The parallel stitch writes the composed arrays with `np.save` and
+    reads them back in another process, `img_log` through a read-only
+    memmap: finishing the reloaded value must still match bit for bit."""
+    references = _clamping_references(film_kind)
+    expected = composite(**_split_inputs(film_kind), reference_bounds=references)
+
+    composed = _compose(film_kind)
+    assert composed.img_log.dtype == np.float32
+    assert composed.img_log.shape[-1] == (1 if film_kind is FilmKind.MONOCHROME else 3)
+    reloaded_fields = {}
+    for field in dataclasses.fields(ComposedNegative):
+        value = getattr(composed, field.name)
+        if field.name in _ARRAY_FIELDS:
+            np.save(tmp_path / f"{field.name}.npy", value)
+            reloaded_fields[field.name] = np.load(
+                tmp_path / f"{field.name}.npy",
+                mmap_mode="r" if field.name == "img_log" else None,
+            )
+        else:
+            reloaded_fields[field.name] = value
+    reloaded = ComposedNegative(**reloaded_fields)
+    assert isinstance(reloaded.img_log, np.memmap)
+    assert not reloaded.img_log.flags.writeable
+
+    _assert_results_identical(finish_negative(reloaded, references), expected)
+
+
+def test_finish_negative_never_writes_into_the_composed_arrays():
+    """The tail must be safe on read-only inputs (the memmap case above):
+    freeze every array and finish."""
+    composed = _compose(FilmKind.COLOUR)
+    before = {name: getattr(composed, name).copy() for name in _ARRAY_FIELDS}
+    for name in _ARRAY_FIELDS:
+        getattr(composed, name).flags.writeable = False
+    arrays = {name: getattr(composed, name) for name in _ARRAY_FIELDS}
+
+    finish_negative(composed, _clamping_references(FilmKind.COLOUR))
+
+    for name in _ARRAY_FIELDS:
+        assert np.array_equal(arrays[name], before[name])
+
+
+def test_finish_negative_consumes_the_composed_canvas():
+    """Peak memory parity: after the call the caller's value no longer pins
+    the big arrays, and reuse fails loudly instead of reading freed data."""
+    composed = _compose(FilmKind.COLOUR)
+    finish_negative(composed, None)
+    for name in ("img_log", "grid", "keep"):
+        assert not hasattr(composed, name)

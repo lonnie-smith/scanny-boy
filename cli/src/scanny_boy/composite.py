@@ -618,6 +618,45 @@ def _warp_bands(
     return warped, warped_mask
 
 
+@dataclasses.dataclass
+class ComposedNegative:
+    """Everything `compose_negative` measures that does not depend on the
+    roll: the log-density canvas, the analysis grid and keep mask the
+    neutral-residual meter still needs, the *unclamped* bounds, every
+    per-negative meter, and the photometric results. `finish_negative`
+    turns it into a `CompositeResult` once the roll's reference bounds are
+    known.
+
+    Deliberately a plain (not frozen) dataclass: the arrays are large and
+    mutable, and are held by reference — never copied — so a composed
+    negative costs exactly what `composite()` held at the same point.
+    `finish_negative` *consumes* it (see there); a value must be finished at
+    most once. Every field round-trips through `np.save` / `np.load` (the
+    arrays) and plain JSON-able values (the rest), which is what lets the
+    two halves run in different processes."""
+
+    # float32 (H, W, C): the blended canvas in log density, C = 1 on a mono
+    # roll (after `collapse_to_mono`), 3 on a colour roll. Never mutated by
+    # `finish_negative`, so a read-only memmap is fine.
+    img_log: np.ndarray
+    covered: np.ndarray  # bool (H, W): where any frame contributed
+    grid: np.ndarray  # the block-median analysis grid of `img_log`
+    keep: np.ndarray  # bool, grid-shaped: the cells the meters may read
+    bounds: Bounds  # the frame's own meters' bounds, before any clamp
+    shadow_refs: tuple[float, float, float]
+    highlight_refs: tuple[float, ...] | None
+    anchor: float
+    textural_range: float
+    rebate: Rebate
+    dense_border: DenseBorder
+    opaque: Opaque
+    film_extent: FilmExtent
+    gains: dict[str, tuple[float, float, float]]
+    overlap_mad: dict[tuple[str, str], float]
+    overlap_mad_pregain: dict[tuple[str, str], float]
+    overlap_fraction: dict[tuple[str, str], float]
+
+
 def composite(
     layout: Layout,
     load_frame,
@@ -632,7 +671,47 @@ def composite(
     base_refs: tuple[float, ...] | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
 ) -> CompositeResult:
-    """load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
+    """Warp, blend, meter and encode one negative: `compose_negative` (the
+    roll-independent half) followed by `finish_negative` (the half that
+    reads the roll's `reference_bounds`). See `compose_negative` for the
+    arguments and the pipeline; the split exists so the first half can run
+    without the roll, and this function runs literally the same two
+    halves in order."""
+    return finish_negative(
+        compose_negative(
+            layout,
+            load_frame,
+            cancel=cancel,
+            on_progress=on_progress,
+            geometry=geometry,
+            ca=ca,
+            rectification=rectification,
+            region=region,
+            base_refs=base_refs,
+            film_kind=film_kind,
+        ),
+        reference_bounds,
+    )
+
+
+def compose_negative(
+    layout: Layout,
+    load_frame,
+    *,
+    cancel: CancellationToken,
+    on_progress,
+    geometry: dict | None = None,
+    ca: dict | None = None,
+    rectification: Rectification | None = None,
+    region: tuple[int, int, int, int] | None = None,
+    base_refs: tuple[float, ...] | None = None,
+    film_kind: FilmKind = FilmKind.COLOUR,
+) -> ComposedNegative:
+    """The roll-independent half of `composite`: everything up to, but not
+    including, section 3.4's clamp (the first line that reads the roll's
+    reference population). `finish_negative` runs the rest.
+
+    load_frame(name) -> uint16 (H, W, 3). Called once per frame and the
     result released immediately, so the caller controls residency.
 
     `region` is the analysis region `(x, y, width, height)` in canvas
@@ -918,6 +997,50 @@ def composite(
     anchor = measure_anchor(grid, keep)
     textural_range = measure_textural_range(grid, keep)
 
+    return ComposedNegative(
+        img_log=img_log,
+        covered=covered,
+        grid=grid,
+        keep=keep,
+        bounds=bounds,
+        shadow_refs=shadow_refs,
+        highlight_refs=highlight_refs,
+        anchor=anchor,
+        textural_range=textural_range,
+        rebate=rebate,
+        dense_border=dense_border,
+        opaque=opaque,
+        film_extent=film_extent,
+        gains=gains,
+        overlap_mad=overlap_mad,
+        overlap_mad_pregain=overlap_mad_pregain,
+        overlap_fraction=overlap_fraction,
+    )
+
+
+def finish_negative(
+    composed: ComposedNegative, reference_bounds: list[Bounds] | None
+) -> CompositeResult:
+    """The roll-dependent half of `composite`: section 3.4's clamp against
+    `reference_bounds`, the neutral-residual meter, the normalization and
+    the encode.
+
+    This **consumes** `composed`: to keep peak memory what `composite` had
+    before the split, it deletes the `img_log`, `grid` and `keep` attributes
+    from `composed` as soon as each is finished with (the caller's own
+    reference would otherwise pin the full canvas through the encode).
+    Reading those attributes afterwards raises `AttributeError`; a composed
+    negative must not be finished twice. It never writes into any of the
+    arrays, so they may be read-only memmaps."""
+    img_log = composed.img_log
+    covered = composed.covered
+    grid = composed.grid
+    keep = composed.keep
+    bounds = composed.bounds
+    # Drop the composed value's own references: from here the locals are the
+    # only holders, so the `del`s below really free the arrays.
+    del composed.img_log, composed.grid, composed.keep
+
     # Section 3.4's clamp: a frame whose own meters latched contamination
     # the per-frame detectors missed is pulled back toward the roll's
     # population, from references the already-composited negatives
@@ -970,25 +1093,25 @@ def composite(
 
     return CompositeResult(
         image=encoded,
-        gains=gains,
-        overlap_mad=overlap_mad,
-        overlap_mad_pregain=overlap_mad_pregain,
-        overlap_fraction=overlap_fraction,
+        gains=composed.gains,
+        overlap_mad=composed.overlap_mad,
+        overlap_mad_pregain=composed.overlap_mad_pregain,
+        overlap_fraction=composed.overlap_fraction,
         coverage_fraction=coverage_fraction,
         bounds=bounds,
-        shadow_refs=shadow_refs,
-        highlight_refs=highlight_refs,
+        shadow_refs=composed.shadow_refs,
+        highlight_refs=composed.highlight_refs,
         neutral_residual=neutral_residual,
-        anchor=anchor,
-        textural_range=textural_range,
+        anchor=composed.anchor,
+        textural_range=composed.textural_range,
         observed_min=observed_min,
         observed_max=observed_max,
         headroom_clipped_highlights=headroom_clipped_highlights,
         headroom_clipped_shadows=headroom_clipped_shadows,
-        rebate=rebate,
-        dense_border=dense_border,
-        opaque=opaque,
-        film_extent=film_extent,
+        rebate=composed.rebate,
+        dense_border=composed.dense_border,
+        opaque=composed.opaque,
+        film_extent=composed.film_extent,
         clamped=clamped,
         unclamped_bounds=unclamped_bounds,
     )
