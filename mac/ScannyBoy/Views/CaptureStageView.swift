@@ -237,6 +237,16 @@ struct CaptureStageView: View {
                     Text("\(seconds) s").tag(seconds)
                 }
             }
+            Picker("Parallel stitches", selection: $stitchQueue.parallelStitches) {
+                ForEach(StitchQueueModel.parallelStitchesChoices, id: \.self) { count in
+                    Text("\(count)").tag(count)
+                }
+            }
+            .disabled(capture.sequencePhase != .idle || stitchQueue.isQueueBusy)
+            .help(
+                "How many negatives are stitched at the same time. "
+                    + "Each one can use several GB of memory while it stitches."
+            )
             if capture.perNegative == 1 {
                 Toggle("Capture next negative automatically", isOn: $capture.autoAdvanceEnabled)
                     .disabled(capture.sequencePhase != .idle)

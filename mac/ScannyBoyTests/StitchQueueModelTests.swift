@@ -445,5 +445,42 @@ struct StitchQueueModelTests {
         #expect(urls.contains(captureFolder.appending(path: "queued.NEF")))
         #expect(!urls.contains(captureFolder.appending(path: "published.NEF")))
     }
+
+    // MARK: - Parallel stitches setting
+
+    private static func scratchDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "scanny-boy-tests-\(UUID().uuidString)")!
+    }
+
+    private static func makeQueue(defaults: UserDefaults) -> StitchQueueModel {
+        StitchQueueModel(
+            runner: CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/true")),
+            defaults: defaults
+        )
+    }
+
+    @Test("parallel stitches defaults to 2 on an empty suite")
+    func parallelStitchesDefault() {
+        let queue = Self.makeQueue(defaults: Self.scratchDefaults())
+        #expect(queue.parallelStitches == 2)
+        #expect(StitchQueueModel.defaultParallelStitches == 2)
+    }
+
+    @Test("parallel stitches is sticky across models on the same suite")
+    func parallelStitchesSticky() {
+        let defaults = Self.scratchDefaults()
+        let first = Self.makeQueue(defaults: defaults)
+        first.parallelStitches = 4
+        #expect(Self.makeQueue(defaults: defaults).parallelStitches == 4)
+        first.parallelStitches = 1
+        #expect(Self.makeQueue(defaults: defaults).parallelStitches == 1)
+    }
+
+    @Test("a stored parallel stitches value outside 1...4 reads as 2", arguments: [0, 7, -1])
+    func parallelStitchesOutOfRange(stored: Int) {
+        let defaults = Self.scratchDefaults()
+        defaults.set(stored, forKey: StitchQueueModel.parallelStitchesKey)
+        #expect(Self.makeQueue(defaults: defaults).parallelStitches == 2)
+    }
 }
 

@@ -7,6 +7,9 @@ import Observation
 final class StitchQueueModel {
     static let maxParallelPrepares = 2
     static let stateFilename = "stitch-queue.json"
+    static let parallelStitchesKey = "com.lonniesmith.scanny-boy.parallelStitches"
+    static let parallelStitchesChoices = 1...4
+    static let defaultParallelStitches = 2
 
     enum Step: String, Codable, Sendable {
         case waitingPrepare
@@ -110,9 +113,23 @@ final class StitchQueueModel {
     /// Rolls a stitch published to with the roll refresh deferred; each is
     /// removed when `rollRefresh` runs for it.
     private var rollsNeedingRefresh: Set<String> = []
+    private let defaults: UserDefaults
 
-    init(runner: CLIRunner) {
+    /// How many negatives are stitched at the same time. The queue will cap
+    /// concurrent composes, and the composed-ahead entries per roll, at this
+    /// value (PARALLEL_STITCH_PLAN §3.7–3.8); nothing schedules by it yet.
+    /// Sticky across launches. The Capture tab's picker disables it while a
+    /// capture sequence or the queue is busy.
+    var parallelStitches: Int {
+        didSet { defaults.set(parallelStitches, forKey: Self.parallelStitchesKey) }
+    }
+
+    init(runner: CLIRunner, defaults: UserDefaults = AppEnvironment.defaults) {
         self.runner = runner
+        self.defaults = defaults
+        let stored = defaults.integer(forKey: Self.parallelStitchesKey)
+        self.parallelStitches =
+            Self.parallelStitchesChoices.contains(stored) ? stored : Self.defaultParallelStitches
         restoreState()
     }
 
